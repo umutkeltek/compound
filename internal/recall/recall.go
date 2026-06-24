@@ -69,15 +69,26 @@ func MakePlan(query string, registry []memory.Entity, ambient bool) Plan {
 }
 
 type Result struct {
-	Plan   Plan
-	Claims []memory.Claim // owned, from the ledger
-	Hits   []engine.Hit   // breadth, from the rented engine
+	Plan      Plan
+	Positions []memory.Position // current stance(s) — surfaced first in entity mode
+	Claims    []memory.Claim    // owned, from the ledger
+	Hits      []engine.Hit      // breadth, from the rented engine
 }
 
-// Run executes a plan: owned Claims first (entity mode), then engine breadth.
+// Run executes a plan: active Positions, then owned Claims (entity mode), then
+// engine breadth.
 func Run(l *ledger.Ledger, eng engine.MemoryEngine, p Plan) (*Result, error) {
 	r := &Result{Plan: p}
 	if p.Mode == ModeEntity {
+		positions, err := LoadPositions(l)
+		if err != nil {
+			return nil, err
+		}
+		for _, pos := range positions {
+			if pos.EntitySlug == p.Entity {
+				r.Positions = append(r.Positions, pos)
+			}
+		}
 		claims, err := LoadClaims(l)
 		if err != nil {
 			return nil, err
@@ -120,6 +131,31 @@ func LoadClaims(l *ledger.Ledger) ([]memory.Claim, error) {
 		return nil, err
 	}
 	out := make([]memory.Claim, 0, len(order))
+	for _, id := range order {
+		out = append(out, byID[id])
+	}
+	return out, nil
+}
+
+// LoadPositions returns the current Position per ID (append-only last-wins).
+func LoadPositions(l *ledger.Ledger) ([]memory.Position, error) {
+	byID := map[string]memory.Position{}
+	var order []string
+	err := l.Each("positions", func(b []byte) error {
+		var p memory.Position
+		if json.Unmarshal(b, &p) != nil {
+			return nil
+		}
+		if _, ok := byID[p.ID]; !ok {
+			order = append(order, p.ID)
+		}
+		byID[p.ID] = p
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]memory.Position, 0, len(order))
 	for _, id := range order {
 		out = append(out, byID[id])
 	}

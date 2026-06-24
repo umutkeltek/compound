@@ -117,6 +117,17 @@ type Claim struct {
 	ResolverVer    string         `json:"resolver_version,omitempty"`
 }
 
+// Topic returns the claim's topic slug (its domain qualifier, else "general").
+// Positions and Patterns group claims by (SubjectEntity, Topic).
+func (c Claim) Topic() string {
+	if c.Qualifiers != nil {
+		if d, ok := c.Qualifiers["domain"].(string); ok && d != "" {
+			return d
+		}
+	}
+	return "general"
+}
+
 // Position is the current durable stance on a topic that can evolve. Current
 // truth is a Position, NOT "sort claims by date and pray".
 type Position struct {

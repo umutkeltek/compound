@@ -56,10 +56,12 @@ prototype-ts/          # the proven TS spike (distiller etc.) — reference for 
 
 🟢 Memory layer (Go): object model + append-only ledger + swappable engine adapter + **deep
   distiller** (parity-confirmed vs the TS prototype) + **scope resolver** (content, not cwd) +
-  **query planner** (entity/hybrid modes, hard filters) + **promotion gate**. Builds + vets clean;
-  the full chain (distill → scope → candidate claims → entity recall → promote) is proven on real data.
-🔜 Next tuning: distinctiveness/IDF downweight in scope; Position/Pattern construction; temporal &
-  ambient recall modes. Then layers 2–6 (Authority first, from infra-os).
+  **query planner** (entity/hybrid, hard filters) + **promotion gate** + **Position/Pattern
+  construction** (`compound build` — current stance per entity/topic, active⇔promoted; recurring
+  through-lines as hypotheses). Builds + vets clean; full chain proven on real data
+  (distill → scope → candidate claims → build positions → entity recall → promote → position goes active).
+🔜 Next tuning: distinctiveness/IDF downweight in scope; temporal & ambient recall modes; supersedes
+  edges (conflict detection); semantic Pattern naming. Then layers 2–6 (Authority first, from infra-os).
 
 ## Provenance
 

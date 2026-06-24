@@ -16,6 +16,8 @@ import (
 	"github.com/umutkeltek/compound/internal/engine"
 	"github.com/umutkeltek/compound/internal/ledger"
 	"github.com/umutkeltek/compound/internal/memory"
+	"github.com/umutkeltek/compound/internal/pattern"
+	"github.com/umutkeltek/compound/internal/position"
 	"github.com/umutkeltek/compound/internal/recall"
 	"github.com/umutkeltek/compound/internal/scope"
 )
@@ -36,6 +38,8 @@ func main() {
 		cmdScope(os.Args[2:])
 	case "promote":
 		cmdPromote(os.Args[2:])
+	case "build":
+		cmdBuild()
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -57,6 +61,7 @@ usage:
   compound scope <session.jsonl> [--explain]                attribute a session to entities (no cwd)
   compound recall "<query>"     planner: owned claims (entity mode) + engine breadth
   compound promote <claim-id> --basis=<b>   candidate -> promoted (the only path to canon)
+  compound build                derive current Positions + recurring Patterns from Claims
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
 `)
@@ -99,6 +104,13 @@ func cmdRecall(args []string) {
 		note = " · entity=" + plan.Entity
 	}
 	fmt.Printf("mode: %s%s\n\n", plan.Mode, note)
+	if len(res.Positions) > 0 {
+		fmt.Println("## Current positions")
+		for _, p := range res.Positions {
+			fmt.Printf("- [%s] %s/%s → active %s (%d in chain)\n", p.Status, p.EntitySlug, p.TopicSlug, p.ActiveClaimID, len(p.ClaimChain))
+		}
+		fmt.Println()
+	}
 	if len(res.Claims) > 0 {
 		fmt.Println("## Owned claims (ledger)")
 		for _, c := range res.Claims {
@@ -112,9 +124,37 @@ func cmdRecall(args []string) {
 			fmt.Printf("- `%s` — %s\n", h.Slug, h.Snippet)
 		}
 	}
-	if len(res.Claims) == 0 && len(res.Hits) == 0 {
+	if len(res.Positions) == 0 && len(res.Claims) == 0 && len(res.Hits) == 0 {
 		fmt.Println("(nothing — zero_result_not_proof; check coverage)")
 	}
+}
+
+func cmdBuild() {
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+	claims, err := recall.LoadClaims(l)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build: %v\n", err)
+		os.Exit(1)
+	}
+	positions := position.Build(claims)
+	patterns := pattern.Build(claims)
+	for _, p := range positions {
+		if err := l.Append("positions", p); err != nil {
+			fmt.Fprintf(os.Stderr, "build: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	for _, p := range patterns {
+		if err := l.Append("patterns", p); err != nil {
+			fmt.Fprintf(os.Stderr, "build: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	fmt.Printf("built %d positions, %d patterns from %d claims\n", len(positions), len(patterns), len(claims))
 }
 
 func cmdPromote(args []string) {
