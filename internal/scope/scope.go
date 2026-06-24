@@ -4,6 +4,8 @@
 package scope
 
 import (
+	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -11,7 +13,7 @@ import (
 	"github.com/umutkeltek/compound/internal/memory"
 )
 
-const ResolverVersion = "scope-resolver-v0.1"
+const ResolverVersion = "scope-resolver-v0.2"
 
 type Relation string
 
@@ -101,19 +103,26 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 	}
 	pkt := &Packet{SessionID: base(sessionPath), ResolverVersion: ResolverVersion}
 
-	// Score by DISTINCT signal types per entity, not raw mention count — otherwise a
-	// ubiquitous token (gbrain appears in nearly every session) drowns out the real
-	// subject. Each (entity, signal) contributes its weight at most once.
-	scores := map[string]map[string]int{} // slug -> signal -> weight
-	add := func(slug string, pts int, why string) {
+	// Score per signal TYPE with diminishing returns on repetition: a subject
+	// mentioned in 40 decision-turns must outrank a passing one-time mention, but
+	// without a ubiquitous token exploding linearly. weight * (1 + ln(count)).
+	type sigAcc struct {
+		weight int
+		count  int
+	}
+	scores := map[string]map[string]*sigAcc{} // slug -> sigType -> acc
+	add := func(slug, typ string, weight int) {
 		m := scores[slug]
 		if m == nil {
-			m = map[string]int{}
+			m = map[string]*sigAcc{}
 			scores[slug] = m
 		}
-		if _, ok := m[why]; !ok {
-			m[why] = pts
+		a := m[typ]
+		if a == nil {
+			a = &sigAcc{weight: weight}
+			m[typ] = a
 		}
+		a.count++
 	}
 
 	title := ""
@@ -127,7 +136,7 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 		for _, e := range registry {
 			for _, id := range e.Identifiers {
 				if id != "" && strings.Contains(lt, id) {
-					add(e.Slug, wIdentifier, "identifier:"+id)
+					add(e.Slug, "identifier", wIdentifier)
 				}
 			}
 			for _, al := range e.Aliases {
@@ -136,11 +145,11 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 				}
 				switch {
 				case dec:
-					add(e.Slug, wDecisionTurn, "decision-turn:"+al)
+					add(e.Slug, "decision-turn", wDecisionTurn)
 				case t.Role == distill.RoleUmut:
-					add(e.Slug, wUmutTurn, "umut:"+al)
+					add(e.Slug, "umut", wUmutTurn)
 				default:
-					add(e.Slug, wAgentTurn, "agent:"+al)
+					add(e.Slug, "agent", wAgentTurn)
 				}
 			}
 		}
@@ -148,37 +157,46 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 	for _, e := range registry {
 		for _, al := range e.Aliases {
 			if title != "" && mentions(title, al) {
-				add(e.Slug, wTitle, "title:"+al)
+				add(e.Slug, "title", wTitle)
 			}
 		}
 	}
 
+	strongSig := map[string]bool{}
 	for slug, m := range scores {
-		total := 0
+		total := 0.0
 		sig := make([]string, 0, len(m))
-		for s, w := range m {
-			total += w
-			sig = append(sig, s)
+		for typ, a := range m {
+			total += float64(a.weight) * (1 + math.Log(float64(a.count)))
+			sig = append(sig, fmt.Sprintf("%s×%d", typ, a.count))
+			if typ == "decision-turn" || typ == "identifier" {
+				strongSig[slug] = true
+			}
 		}
 		sort.Strings(sig)
-		pkt.Assignments = append(pkt.Assignments, Assignment{Entity: slug, Score: total, Signals: sig})
+		pkt.Assignments = append(pkt.Assignments, Assignment{Entity: slug, Score: int(total), Signals: sig})
 	}
 	sort.Slice(pkt.Assignments, func(i, j int) bool {
 		return pkt.Assignments[i].Score > pkt.Assignments[j].Score
 	})
 
-	// Thresholds: primary if clear leader; multi if several strong; else unresolved.
+	// Relative thresholds (robust to score rescaling): primary needs a clear lead
+	// AND a strong (decision-turn or identifier) signal; else multi/unresolved.
+	top := 0
+	if len(pkt.Assignments) > 0 {
+		top = pkt.Assignments[0].Score
+	}
 	switch {
 	case len(pkt.Assignments) == 0:
 		pkt.Status = "unresolved"
-	case pkt.Assignments[0].Score >= 100 && (len(pkt.Assignments) == 1 || pkt.Assignments[0].Score-pkt.Assignments[1].Score >= 40):
+	case (len(pkt.Assignments) == 1 || float64(top) >= 1.4*float64(pkt.Assignments[1].Score)) && strongSig[pkt.Assignments[0].Entity]:
 		pkt.Status = "primary_about"
 		pkt.PrimaryScope = pkt.Assignments[0].Entity
 		pkt.Assignments[0].Relation = RelPrimary
 	default:
 		strong := 0
 		for _, a := range pkt.Assignments {
-			if a.Score >= 70 {
+			if top > 0 && float64(a.Score) >= 0.4*float64(top) {
 				strong++
 			}
 		}
@@ -191,7 +209,7 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 	for i := range pkt.Assignments {
 		if pkt.Assignments[i].Relation == "" {
 			pkt.Assignments[i].Relation = RelMentions
-			if pkt.Assignments[i].Score >= 70 {
+			if top > 0 && float64(pkt.Assignments[i].Score) >= 0.4*float64(top) {
 				pkt.SecondaryScopes = append(pkt.SecondaryScopes, pkt.Assignments[i].Entity)
 			}
 		}
