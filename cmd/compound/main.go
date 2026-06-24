@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/umutkeltek/compound/internal/authority"
+	"github.com/umutkeltek/compound/internal/decisions"
 	"github.com/umutkeltek/compound/internal/distill"
 	"github.com/umutkeltek/compound/internal/engine"
 	"github.com/umutkeltek/compound/internal/ledger"
@@ -49,6 +51,8 @@ func main() {
 		cmdTimeline(os.Args[2:])
 	case "authority":
 		cmdAuthority(os.Args[2:])
+	case "decisions":
+		cmdDecisions(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -74,6 +78,7 @@ usage:
   compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
   compound timeline <entity>    how positions on this entity evolved (walks supersedes edges)
   compound authority import [f] | authority <project>   where projects live (from infra-os)
+  compound decisions import | decisions [--kind=K] | decisions doctor   one store, kinds: policy/doctrine/operational
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
 `)
@@ -302,6 +307,113 @@ func cmdPack(args []string) {
 	_ = os.WriteFile(out, []byte(b.String()), 0o644)
 	fmt.Println(out)
 	fmt.Fprintf(os.Stderr, "pack: %d positions, %d patterns, entity=%s\n", posN, patN, entity)
+}
+
+func latestBrainLedger() string {
+	matches, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), "brain/decisions/*live-decision-ledger*.md"))
+	if len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	return matches[len(matches)-1]
+}
+
+func cmdDecisions(args []string) {
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
+	}
+
+	switch sub {
+	case "import":
+		policy, _ := decisions.ImportDEC(filepath.Join(os.Getenv("HOME"), "Projects/operating-system/decisions"))
+		doctrine, _ := decisions.ImportBrainLedger(latestBrainLedger())
+		for _, c := range policy {
+			_ = l.Append("claims", c)
+		}
+		for _, c := range doctrine {
+			_ = l.Append("claims", c)
+		}
+		fmt.Printf("imported %d policy + %d doctrine decisions into one store (kind-separated)\n", len(policy), len(doctrine))
+		fmt.Fprintln(os.Stderr, "the 3 homes are now inputs; `compound decisions` lists them unified, `decisions doctor` checks coherence")
+		return
+
+	case "doctor":
+		decisionsDoctor(l)
+		return
+
+	default:
+		kindFilter := ""
+		for _, a := range args {
+			if strings.HasPrefix(a, "--kind=") {
+				kindFilter = strings.TrimPrefix(a, "--kind=")
+			}
+		}
+		claims, _ := recall.LoadClaims(l)
+		groups := map[string][]memory.Claim{}
+		for _, c := range claims {
+			if c.CreatedBy != "decision-import" {
+				continue
+			}
+			k := decisions.Kind(c)
+			if kindFilter != "" && k != kindFilter {
+				continue
+			}
+			groups[k] = append(groups[k], c)
+		}
+		any := false
+		for _, k := range []string{decisions.KindPolicy, decisions.KindDoctrine, decisions.KindOperational} {
+			cs := groups[k]
+			if len(cs) == 0 {
+				continue
+			}
+			any = true
+			fmt.Printf("## %s (%d)\n", k, len(cs))
+			for _, c := range cs {
+				fmt.Printf("- [%s] %s — %s\n", c.Status, c.ID, c.Object)
+			}
+			fmt.Println()
+		}
+		if !any {
+			fmt.Println("(no decisions — run `compound decisions import`)")
+		}
+	}
+}
+
+func decisionsDoctor(l *ledger.Ledger) {
+	claims, _ := recall.LoadClaims(l)
+	var policy, doctrine, decided, open, superseded, noTrigger int
+	for _, c := range claims {
+		if c.CreatedBy != "decision-import" {
+			continue
+		}
+		switch decisions.Kind(c) {
+		case decisions.KindPolicy:
+			policy++
+		case decisions.KindDoctrine:
+			doctrine++
+		}
+		switch c.Status {
+		case memory.StatusPromoted:
+			decided++
+		case memory.StatusCandidate:
+			open++
+		case memory.StatusSuperseded:
+			superseded++
+		}
+		if c.Qualifiers == nil || c.Qualifiers["review_trigger"] == nil {
+			noTrigger++
+		}
+	}
+	fmt.Printf("# decisions doctor (one store, kind-separated)\n\n")
+	fmt.Printf("- store:     %d policy + %d doctrine\n", policy, doctrine)
+	fmt.Printf("- lifecycle: %d decided · %d open · %d superseded\n", decided, open, superseded)
+	fmt.Printf("- coherence: %d missing a review_trigger (E4 — a decision needs its falsifier/review)\n", noTrigger)
 }
 
 func cmdAuthority(args []string) {
