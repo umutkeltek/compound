@@ -44,6 +44,8 @@ func main() {
 		cmdBuild()
 	case "reconcile":
 		cmdReconcile(os.Args[2:])
+	case "timeline":
+		cmdTimeline(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -67,6 +69,7 @@ usage:
   compound promote <claim-id> --basis=<b>   candidate -> promoted (the only path to canon)
   compound build                derive current Positions + recurring Patterns from Claims
   compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
+  compound timeline <entity>    how positions on this entity evolved (walks supersedes edges)
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
 `)
@@ -295,6 +298,59 @@ func cmdPack(args []string) {
 	_ = os.WriteFile(out, []byte(b.String()), 0o644)
 	fmt.Println(out)
 	fmt.Fprintf(os.Stderr, "pack: %d positions, %d patterns, entity=%s\n", posN, patN, entity)
+}
+
+func cmdTimeline(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound timeline <entity>")
+		os.Exit(2)
+	}
+	entity := args[0]
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+	positions, _ := recall.LoadPositions(l)
+	claims, _ := recall.LoadClaims(l)
+	edges, _ := recall.LoadEdges(l)
+	claimByID := make(map[string]memory.Claim, len(claims))
+	for _, c := range claims {
+		claimByID[c.ID] = c
+	}
+	supBy := map[string]string{} // olderID -> newerID
+	for _, e := range edges {
+		if e.EdgeType == memory.EdgeSupersedes {
+			supBy[e.ToID] = e.FromID
+		}
+	}
+
+	found := false
+	for _, p := range positions {
+		if p.EntitySlug != entity && p.ID != entity {
+			continue
+		}
+		if len(p.ClaimChain) < 2 {
+			continue // only show topics that actually evolved
+		}
+		found = true
+		fmt.Printf("## %s/%s — evolution (%d claims, now [%s])\n", p.EntitySlug, p.TopicSlug, len(p.ClaimChain), p.Status)
+		for i, cid := range p.ClaimChain {
+			c := claimByID[cid]
+			marker := ""
+			if cid == p.ActiveClaimID {
+				marker = "  ← current"
+			}
+			fmt.Printf("  %d. [%s] %s%s\n", i+1, c.Status, c.Object, marker)
+			if newer, ok := supBy[cid]; ok {
+				fmt.Printf("       ⤷ superseded by %s\n", newer)
+			}
+		}
+		fmt.Println()
+	}
+	if !found {
+		fmt.Printf("(no evolved positions for %s — needs >=2 claims on a topic; try `compound reconcile` first)\n", entity)
+	}
 }
 
 func quoteOf(c memory.Claim, ev map[string]memory.EvidenceItem) string {

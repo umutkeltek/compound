@@ -180,6 +180,19 @@ func LoadEvidence(l *ledger.Ledger) (map[string]memory.EvidenceItem, error) {
 	return m, err
 }
 
+// LoadEdges returns all edges (for temporal/supersession traversal).
+func LoadEdges(l *ledger.Ledger) ([]memory.Edge, error) {
+	var out []memory.Edge
+	err := l.Each("edges", func(b []byte) error {
+		var e memory.Edge
+		if json.Unmarshal(b, &e) == nil {
+			out = append(out, e)
+		}
+		return nil
+	})
+	return out, err
+}
+
 // LoadPositions returns the current Position per ID (append-only last-wins).
 func LoadPositions(l *ledger.Ledger) ([]memory.Position, error) {
 	byID := map[string]memory.Position{}
