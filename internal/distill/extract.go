@@ -65,8 +65,10 @@ func confToFloat(c string) float64 {
 
 // ToLedger appends an EvidenceItem (the verbatim quote) plus a CANDIDATE Claim per
 // decision. Claims enter as candidates — promotion is a separate gate, never the
-// distiller's call (preserves evidence ≠ canon).
-func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath string) (int, error) {
+// distiller's call (preserves evidence ≠ canon). primaryScope (from the scope
+// resolver, passed by the caller to avoid an import cycle) sets the subject entity
+// when resolved; otherwise the coarse domain slug is used.
+func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath, primaryScope string) (int, error) {
 	now := time.Now().UTC()
 	src := sessionBase(sessionPath)
 	n := 0
@@ -87,9 +89,13 @@ func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath string) (int, 
 		if err := l.Append("evidence", ev); err != nil {
 			return n, err
 		}
+		subject := primaryScope
+		if subject == "" {
+			subject = scopeFromDomain(d.Domain)
+		}
 		claim := memory.Claim{
 			ID:            fmt.Sprintf("cl_%s_%03d", src, idx),
-			SubjectEntity: scopeFromDomain(d.Domain),
+			SubjectEntity: subject,
 			Predicate:     "decided",
 			Object:        d.Statement,
 			ClaimType:     memory.ClaimDecision,

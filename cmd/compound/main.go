@@ -15,6 +15,8 @@ import (
 	"github.com/umutkeltek/compound/internal/distill"
 	"github.com/umutkeltek/compound/internal/engine"
 	"github.com/umutkeltek/compound/internal/ledger"
+	"github.com/umutkeltek/compound/internal/memory"
+	"github.com/umutkeltek/compound/internal/recall"
 	"github.com/umutkeltek/compound/internal/scope"
 )
 
@@ -32,6 +34,8 @@ func main() {
 		cmdDistill(os.Args[2:])
 	case "scope":
 		cmdScope(os.Args[2:])
+	case "promote":
+		cmdPromote(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -51,7 +55,8 @@ usage:
   compound version
   compound distill <session.jsonl> [--model=M] [--ingest]   deep-distill -> candidate claims
   compound scope <session.jsonl> [--explain]                attribute a session to entities (no cwd)
-  compound recall <entity>      entity-anchored recall (precision)
+  compound recall "<query>"     planner: owned claims (entity mode) + engine breadth
+  compound promote <claim-id> --basis=<b>   candidate -> promoted (the only path to canon)
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
 `)
@@ -65,23 +70,78 @@ func ledgerRoot() string {
 	return filepath.Join(home, ".compound", "ledger")
 }
 
+func scopeSuffix(primary string) string {
+	if primary == "" {
+		return ""
+	}
+	return " · primary=" + primary
+}
+
 func cmdRecall(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound recall <entity>")
+		fmt.Fprintln(os.Stderr, `usage: compound recall "<query>"`)
 		os.Exit(2)
 	}
-	facts, err := engine.NewGBrain().Recall(args[0])
+	query := strings.Join(args, " ")
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+	plan := recall.MakePlan(query, scope.SeedEntities(), false)
+	res, err := recall.Run(l, engine.NewGBrain(), plan)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "recall: %v\n", err)
 		os.Exit(1)
 	}
-	if len(facts) == 0 {
-		fmt.Println("(no matching facts — zero_result_not_proof; check freshness/coverage)")
-		return
+	note := ""
+	if plan.Entity != "" {
+		note = " · entity=" + plan.Entity
 	}
-	for _, f := range facts {
-		fmt.Printf("- %s\n", f.Claim)
+	fmt.Printf("mode: %s%s\n\n", plan.Mode, note)
+	if len(res.Claims) > 0 {
+		fmt.Println("## Owned claims (ledger)")
+		for _, c := range res.Claims {
+			fmt.Printf("- [%s] %s\n", c.Status, c.Object)
+		}
+		fmt.Println()
 	}
+	if len(res.Hits) > 0 {
+		fmt.Println("## Breadth (engine)")
+		for _, h := range res.Hits {
+			fmt.Printf("- `%s` — %s\n", h.Slug, h.Snippet)
+		}
+	}
+	if len(res.Claims) == 0 && len(res.Hits) == 0 {
+		fmt.Println("(nothing — zero_result_not_proof; check coverage)")
+	}
+}
+
+func cmdPromote(args []string) {
+	var id, basis string
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "--basis="):
+			basis = strings.TrimPrefix(a, "--basis=")
+		case !strings.HasPrefix(a, "--") && id == "":
+			id = a
+		}
+	}
+	if id == "" || basis == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound promote <claim-id> --basis=explicit_confirmation|curated_page|decision_record|runtime_proof")
+		os.Exit(2)
+	}
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+	c, err := recall.Promote(l, id, memory.PromotionBasis(basis))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "promote: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("promoted %s (basis: %s)\n  %s\n", c.ID, c.PromotionBasis, c.Object)
 }
 
 func cmdPack(args []string) {
@@ -160,7 +220,12 @@ func cmdDistill(args []string) {
 			fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
 			os.Exit(1)
 		}
-		n, err := distill.ToLedger(l, decisions, session)
+		primary := ""
+		if pkt, e := scope.Resolve(session, scope.SeedEntities()); e == nil {
+			primary = pkt.PrimaryScope
+			fmt.Fprintf(os.Stderr, "      scope: %s%s\n", pkt.Status, scopeSuffix(primary))
+		}
+		n, err := distill.ToLedger(l, decisions, session, primary)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ingest: %v\n", err)
 			os.Exit(1)

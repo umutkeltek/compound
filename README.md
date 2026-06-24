@@ -19,11 +19,19 @@ The foundation. Architecture: `docs/memory-architecture.md` (object model, ledge
 scope resolver, query planner — converged from Umut's doctrine + a GPT-5.5-Pro consult + mempalace).
 
 ```
-compound recall <entity>      # entity-anchored recall (precision) via the rented engine
-compound pack "<topic>"       # breadth via the rented engine
-compound ledger stat          # record counts per canonical object kind
+compound distill <session.jsonl> [--ingest]   # deep-distill a whole conversation → candidate claims
+compound scope   <session.jsonl> [--explain]  # attribute a session to entities (content, not cwd)
+compound recall  "<query>"                     # query planner: owned claims (entity mode) + engine breadth
+compound promote <claim-id> --basis=<b>        # candidate → promoted (the only path to canon)
+compound pack    "<topic>"                     # breadth via the rented engine
+compound ledger  stat                          # record counts per canonical object kind
 compound version
 ```
+
+Pipeline: `distill --ingest` cleans the whole session → worth-gates → map-reduces over a reasoning
+model → resolves scope → appends EvidenceItems + **candidate** Claims to the append-only ledger.
+`recall` plans a mode and surfaces owned claims; `promote` is the gate that turns a candidate into
+canon (the distiller can never self-canonize — evidence ≠ canon).
 
 ## Language & layout — Go
 
@@ -46,10 +54,12 @@ prototype-ts/          # the proven TS spike (distiller etc.) — reference for 
 
 ## Status
 
-🟢 Go foundation: object model, append-only ledger, engine interface + gbrain/null adapters, CLI
-  (build + vet clean, binary runs, gbrain adapter proven).
-🔜 Next: port the deep distiller (TS → Go, with parity check) · scope resolver · query planner ·
-  promotion gate. Then layers 2–6.
+🟢 Memory layer (Go): object model + append-only ledger + swappable engine adapter + **deep
+  distiller** (parity-confirmed vs the TS prototype) + **scope resolver** (content, not cwd) +
+  **query planner** (entity/hybrid modes, hard filters) + **promotion gate**. Builds + vets clean;
+  the full chain (distill → scope → candidate claims → entity recall → promote) is proven on real data.
+🔜 Next tuning: distinctiveness/IDF downweight in scope; Position/Pattern construction; temporal &
+  ambient recall modes. Then layers 2–6 (Authority first, from infra-os).
 
 ## Provenance
 
