@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/umutkeltek/compound/internal/distill"
 	"github.com/umutkeltek/compound/internal/engine"
@@ -62,7 +63,7 @@ usage:
   compound version
   compound distill <session.jsonl> [--model=M] [--ingest]   deep-distill -> candidate claims
   compound scope <session.jsonl> [--explain]                attribute a session to entities (no cwd)
-  compound recall "<query>"     planner: owned claims (entity mode) + engine breadth
+  compound recall "<query>" [--ambient]   planner: positions + claims + breadth (ambient = promoted-only)
   compound promote <claim-id> --basis=<b>   candidate -> promoted (the only path to canon)
   compound build                derive current Positions + recurring Patterns from Claims
   compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
@@ -91,13 +92,22 @@ func cmdRecall(args []string) {
 		fmt.Fprintln(os.Stderr, `usage: compound recall "<query>"`)
 		os.Exit(2)
 	}
-	query := strings.Join(args, " ")
+	var terms []string
+	ambient := false
+	for _, a := range args {
+		if a == "--ambient" {
+			ambient = true
+			continue
+		}
+		terms = append(terms, a)
+	}
+	query := strings.Join(terms, " ")
 	l, err := ledger.Open(ledgerRoot())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
 		os.Exit(1)
 	}
-	plan := recall.MakePlan(query, scope.SeedEntities(), false)
+	plan := recall.MakePlan(query, scope.SeedEntities(), ambient)
 	res, err := recall.Run(l, engine.NewGBrain(), plan)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "recall: %v\n", err)
@@ -106,6 +116,9 @@ func cmdRecall(args []string) {
 	note := ""
 	if plan.Entity != "" {
 		note = " · entity=" + plan.Entity
+	}
+	if ambient {
+		note += " · ambient(promoted-only)"
 	}
 	fmt.Printf("mode: %s%s\n\n", plan.Mode, note)
 	if len(res.Positions) > 0 {
@@ -211,20 +224,110 @@ func cmdPromote(args []string) {
 
 func cmdPack(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, `usage: compound pack "<topic>"`)
+		fmt.Fprintln(os.Stderr, `usage: compound pack "<topic-or-entity>"`)
 		os.Exit(2)
 	}
-	eng := engine.NewGBrain()
-	hits, err := eng.Query(args[0], 12)
+	query := strings.Join(args, " ")
+	l, err := ledger.Open(ledgerRoot())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pack: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("# Context Pack — %s\n\n## Breadth (engine:%s)\n", args[0], eng.Capabilities().Name)
-	for _, h := range hits {
-		fmt.Printf("- `%s` — %s\n", h.Slug, h.Snippet)
+	entity := recall.MakePlan(query, scope.SeedEntities(), false).Entity
+
+	positions, _ := recall.LoadPositions(l)
+	claims, _ := recall.LoadClaims(l)
+	patterns, _ := recall.LoadPatterns(l)
+	evidence, _ := recall.LoadEvidence(l)
+	claimByID := make(map[string]memory.Claim, len(claims))
+	for _, c := range claims {
+		claimByID[c.ID] = c
 	}
-	fmt.Fprintln(os.Stderr, "\n(note: distilled positions + grounding land when the distiller is ported)")
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "---\ntype: context-pack\nquery: %q\nentity: %s\ngenerated_at: %s\n---\n\n", query, entity, today())
+	fmt.Fprintf(&b, "# Context Pack — %s\n\n> Owned, evidence-backed context from your history. Inject this before a task instead of re-explaining yourself.\n\n", query)
+
+	fmt.Fprintln(&b, "## Current positions")
+	posN := 0
+	for _, p := range positions {
+		if entity != "" && p.EntitySlug != entity {
+			continue
+		}
+		ac, ok := claimByID[p.ActiveClaimID]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "- **[%s]** %s/%s — %s\n", p.Status, p.EntitySlug, p.TopicSlug, ac.Object)
+		if q := quoteOf(ac, evidence); q != "" {
+			fmt.Fprintf(&b, "  - _\"%s\"_\n", q)
+		}
+		posN++
+	}
+	if posN == 0 {
+		fmt.Fprintln(&b, "- _(no positions yet — distill + build first)_")
+	}
+
+	patN := 0
+	var pb strings.Builder
+	for _, p := range patterns {
+		if entity != "" && p.ScopeEntitySlug != entity {
+			continue
+		}
+		fmt.Fprintf(&pb, "- %s\n", p.Description)
+		patN++
+	}
+	if patN > 0 {
+		fmt.Fprintf(&b, "\n## Recurring patterns\n%s", pb.String())
+	}
+
+	if hits, herr := engine.NewGBrain().Query(query, 6); herr == nil && len(hits) > 0 {
+		fmt.Fprintln(&b, "\n## Related (engine breadth)")
+		for _, h := range hits {
+			fmt.Fprintf(&b, "- `%s` — %s\n", h.Slug, h.Snippet)
+		}
+	}
+
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".compound", "packs")
+	_ = os.MkdirAll(dir, 0o755)
+	out := filepath.Join(dir, slugify(query)+".md")
+	_ = os.WriteFile(out, []byte(b.String()), 0o644)
+	fmt.Println(out)
+	fmt.Fprintf(os.Stderr, "pack: %d positions, %d patterns, entity=%s\n", posN, patN, entity)
+}
+
+func quoteOf(c memory.Claim, ev map[string]memory.EvidenceItem) string {
+	for _, ref := range c.EvidenceRefs {
+		if e, ok := ev[ref]; ok && e.QuoteText != "" {
+			return e.QuoteText
+		}
+	}
+	return ""
+}
+
+func today() string { return time.Now().Format("2006-01-02") }
+
+func slugify(s string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			prevDash = false
+		} else if !prevDash {
+			b.WriteByte('-')
+			prevDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 60 {
+		out = out[:60]
+	}
+	if out == "" {
+		out = "pack"
+	}
+	return out
 }
 
 func cmdLedger(args []string) {

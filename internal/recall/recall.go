@@ -31,6 +31,7 @@ type Plan struct {
 	Mode        Mode
 	Entity      string
 	Query       string
+	Ambient     bool
 	HardFilters HardFilters
 }
 
@@ -38,7 +39,7 @@ type Plan struct {
 // entity) and sets hard filters. Ambient recall is conservative: promoted +
 // operational/world only.
 func MakePlan(query string, registry []memory.Entity, ambient bool) Plan {
-	p := Plan{Query: query, Mode: ModeHybrid}
+	p := Plan{Query: query, Mode: ModeHybrid, Ambient: ambient}
 	lq := strings.ToLower(query)
 	for _, e := range registry {
 		if mentions(lq, strings.ToLower(e.Slug)) {
@@ -85,9 +86,13 @@ func Run(l *ledger.Ledger, eng engine.MemoryEngine, p Plan) (*Result, error) {
 			return nil, err
 		}
 		for _, pos := range positions {
-			if pos.EntitySlug == p.Entity {
-				r.Positions = append(r.Positions, pos)
+			if pos.EntitySlug != p.Entity {
+				continue
 			}
+			if p.Ambient && pos.Status != "active" {
+				continue // ambient injection: only canon-backed (active) positions
+			}
+			r.Positions = append(r.Positions, pos)
 		}
 		claims, err := LoadClaims(l)
 		if err != nil {
@@ -135,6 +140,44 @@ func LoadClaims(l *ledger.Ledger) ([]memory.Claim, error) {
 		out = append(out, byID[id])
 	}
 	return out, nil
+}
+
+// LoadPatterns returns the current Pattern per ID (append-only last-wins).
+func LoadPatterns(l *ledger.Ledger) ([]memory.Pattern, error) {
+	byID := map[string]memory.Pattern{}
+	var order []string
+	err := l.Each("patterns", func(b []byte) error {
+		var p memory.Pattern
+		if json.Unmarshal(b, &p) != nil {
+			return nil
+		}
+		if _, ok := byID[p.ID]; !ok {
+			order = append(order, p.ID)
+		}
+		byID[p.ID] = p
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]memory.Pattern, 0, len(order))
+	for _, id := range order {
+		out = append(out, byID[id])
+	}
+	return out, nil
+}
+
+// LoadEvidence returns evidence items keyed by id (for citing quotes).
+func LoadEvidence(l *ledger.Ledger) (map[string]memory.EvidenceItem, error) {
+	m := map[string]memory.EvidenceItem{}
+	err := l.Each("evidence", func(b []byte) error {
+		var e memory.EvidenceItem
+		if json.Unmarshal(b, &e) == nil {
+			m[e.ID] = e
+		}
+		return nil
+	})
+	return m, err
 }
 
 // LoadPositions returns the current Position per ID (append-only last-wins).

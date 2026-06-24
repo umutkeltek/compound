@@ -25,7 +25,7 @@ compound recall  "<query>"                     # query planner: active positions
 compound promote <claim-id> --basis=<b>        # candidate → promoted (the only path to canon)
 compound build                                 # derive current Positions + recurring Patterns from claims
 compound reconcile [--entity=E]                # alive memory: supersede contradicted/duplicate claims
-compound pack    "<topic>"                     # breadth via the rented engine
+compound pack    "<topic-or-entity>"           # context pack from owned Memory (positions+claims+quotes+patterns) + breadth
 compound ledger  stat                          # record counts per canonical object kind
 compound version
 ```
