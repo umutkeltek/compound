@@ -54,3 +54,25 @@ The memory-palace idea is not "store more" — it's **structure + deliberate cue
 **Own deep, evidence-backed encoding (distill the whole thing → claims → context packs, every node
 cited) and structured cue-based recall; rent storage and vector search.** Depth + evidence +
 reusable output is the moat — exactly the three things gbrain's generic shortcut skips.
+
+## Alive memory — what compound took from mem0 (+ gbrain, mempalace)
+
+mem0's core is a **memory manager** that compares new facts against existing memory and emits
+**ADD / UPDATE / DELETE / NONE** (`mem0/configs/prompts.py:DEFAULT_UPDATE_MEMORY_PROMPT`) — memory
+evolves, it doesn't just accumulate. compound was append-only; now it has the same loop, mapped to
+its own primitives and kept append-only (nothing destroyed, only marked):
+
+- **NONE → deterministic dedup at ingest** (`distill.ToLedger`): a new candidate claim whose
+  statement is ≥0.82 Jaccard-similar to an existing claim on the same (entity, topic) is dropped.
+  Cheap, no LLM. Stops cross-session duplicate bloat (gbrain's no-dup, without the async).
+- **UPDATE/DELETE → `compound reconcile`** (`internal/reconcile`): per (entity, topic) group with
+  ≥2 live claims, an LLM decides which claims **supersede** or **duplicate** which; the older/dup
+  claim is marked `superseded` with `EffectiveTo` set and a `supersedes` **edge** is appended — the
+  same shape as gbrain's `superseded_by`/`valid_until`. Conservative by prompt; append-only.
+- Superseded claims drop out of recall (hard filter) and out of a Position's active claim, but stay
+  in the claim chain as history. "Current truth" = the surviving claim.
+
+From **gbrain**: the temporal/supersession field shape (`valid_until`, `superseded_by`, confidence)
+— compound sets these on supersession. From **mempalace**: the structured index (entity→topic→
+evidence ≈ wings→rooms→drawers) compound already mirrors; reconcile operates *within* a topic, the
+mempalace "room" boundary. Net: memory that adjudicates (reject/dedup/supersede/keep), not a pile.

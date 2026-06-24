@@ -21,8 +21,10 @@ scope resolver, query planner — converged from Umut's doctrine + a GPT-5.5-Pro
 ```
 compound distill <session.jsonl> [--ingest]   # deep-distill a whole conversation → candidate claims
 compound scope   <session.jsonl> [--explain]  # attribute a session to entities (content, not cwd)
-compound recall  "<query>"                     # query planner: owned claims (entity mode) + engine breadth
+compound recall  "<query>"                     # query planner: active positions + owned claims + engine breadth
 compound promote <claim-id> --basis=<b>        # candidate → promoted (the only path to canon)
+compound build                                 # derive current Positions + recurring Patterns from claims
+compound reconcile [--entity=E]                # alive memory: supersede contradicted/duplicate claims
 compound pack    "<topic>"                     # breadth via the rented engine
 compound ledger  stat                          # record counts per canonical object kind
 compound version

@@ -68,11 +68,30 @@ func confToFloat(c string) float64 {
 // distiller's call (preserves evidence ≠ canon). primaryScope (from the scope
 // resolver, passed by the caller to avoid an import cycle) sets the subject entity
 // when resolved; otherwise the coarse domain slug is used.
-func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath, primaryScope string) (int, error) {
+func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath, primaryScope string) (added, dropped int, err error) {
 	now := time.Now().UTC()
 	src := sessionBase(sessionPath)
-	n := 0
+	existing, _ := loadClaimTokens(l) // (entity::topic) -> token sets, for dedup (NONE)
 	for idx, d := range decisions {
+		subject := primaryScope
+		if subject == "" {
+			subject = scopeFromDomain(d.Domain)
+		}
+		topic := d.Domain
+		if topic == "" {
+			topic = "general"
+		}
+		// Key dedup on the ENTITY (not the LLM-assigned, volatile topic slug) so a
+		// near-identical statement is caught regardless of how this run sliced topics.
+		// This is the cheap EXACT/near-exact pass; semantic paraphrase dedup is the
+		// LLM reconcile's job (mem0's reason for using an LLM here).
+		nw := tokenize(d.Statement)
+		if isDuplicate(existing[subject], nw) {
+			dropped++ // alive-memory NONE: a near-identical claim already exists
+			continue
+		}
+		existing[subject] = append(existing[subject], nw) // dedup within this batch too
+
 		evID := fmt.Sprintf("ev_%s_%03d", src, idx)
 		ev := memory.EvidenceItem{
 			ID:          evID,
@@ -86,12 +105,8 @@ func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath, primaryScope 
 			Visibility:  memory.VisWorld,
 			Provenance:  "distill:" + src,
 		}
-		if err := l.Append("evidence", ev); err != nil {
-			return n, err
-		}
-		subject := primaryScope
-		if subject == "" {
-			subject = scopeFromDomain(d.Domain)
+		if err = l.Append("evidence", ev); err != nil {
+			return added, dropped, err
 		}
 		claim := memory.Claim{
 			ID:            fmt.Sprintf("cl_%s_%03d", src, idx),
@@ -104,16 +119,66 @@ func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath, primaryScope 
 			Status:        memory.StatusCandidate,
 			EvidenceRefs:  []string{evID},
 			CreatedBy:     "distiller",
+			Qualifiers:    map[string]any{"domain": topic},
 		}
-		if d.Domain != "" {
-			claim.Qualifiers = map[string]any{"domain": d.Domain}
+		if err = l.Append("claims", claim); err != nil {
+			return added, dropped, err
 		}
-		if err := l.Append("claims", claim); err != nil {
-			return n, err
-		}
-		n++
+		added++
 	}
-	return n, nil
+	return added, dropped, nil
+}
+
+// --- deterministic dedup (mem0 "NONE" / gbrain no-dup) ---
+
+func tokenize(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+}
+
+func jaccard(a, b []string) float64 {
+	sa := make(map[string]bool, len(a))
+	for _, w := range a {
+		sa[w] = true
+	}
+	sb := make(map[string]bool, len(b))
+	for _, w := range b {
+		sb[w] = true
+	}
+	inter := 0
+	for w := range sa {
+		if sb[w] {
+			inter++
+		}
+	}
+	union := len(sa) + len(sb) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+func isDuplicate(existing [][]string, nw []string) bool {
+	for _, ex := range existing {
+		if jaccard(ex, nw) >= 0.82 {
+			return true
+		}
+	}
+	return false
+}
+
+func loadClaimTokens(l *ledger.Ledger) (map[string][][]string, error) {
+	m := map[string][][]string{}
+	err := l.Each("claims", func(b []byte) error {
+		var c memory.Claim
+		if json.Unmarshal(b, &c) != nil {
+			return nil
+		}
+		m[c.SubjectEntity] = append(m[c.SubjectEntity], tokenize(c.Object))
+		return nil
+	})
+	return m, err
 }
 
 func sessionBase(p string) string {

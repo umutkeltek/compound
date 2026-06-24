@@ -116,3 +116,17 @@ func snip(b []byte) string {
 	}
 	return s
 }
+
+// LLMComplete is an exported one-shot completion (used by the reconcile pass).
+// Defaults to a cheap chat model.
+func LLMComplete(ctx context.Context, model, system, user string) (string, error) {
+	if model == "" {
+		model = "deepseek-chat"
+	}
+	c, err := newLLM(model)
+	if err != nil {
+		return "", err
+	}
+	out, _, err := c.call(ctx, system, user)
+	return out, err
+}

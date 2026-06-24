@@ -19,6 +19,7 @@ import (
 	"github.com/umutkeltek/compound/internal/pattern"
 	"github.com/umutkeltek/compound/internal/position"
 	"github.com/umutkeltek/compound/internal/recall"
+	"github.com/umutkeltek/compound/internal/reconcile"
 	"github.com/umutkeltek/compound/internal/scope"
 )
 
@@ -40,6 +41,8 @@ func main() {
 		cmdPromote(os.Args[2:])
 	case "build":
 		cmdBuild()
+	case "reconcile":
+		cmdReconcile(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -62,6 +65,7 @@ usage:
   compound recall "<query>"     planner: owned claims (entity mode) + engine breadth
   compound promote <claim-id> --basis=<b>   candidate -> promoted (the only path to canon)
   compound build                derive current Positions + recurring Patterns from Claims
+  compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
 `)
@@ -155,6 +159,27 @@ func cmdBuild() {
 		}
 	}
 	fmt.Printf("built %d positions, %d patterns from %d claims\n", len(positions), len(patterns), len(claims))
+}
+
+func cmdReconcile(args []string) {
+	var entity string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--entity=") {
+			entity = strings.TrimPrefix(a, "--entity=")
+		}
+	}
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+	sup, dups, err := reconcile.Reconcile(context.Background(), l, "", entity)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reconcile: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("reconciled: %d superseded, %d duplicates resolved\n", sup, dups)
+	fmt.Fprintln(os.Stderr, "run `compound build` to refresh positions")
 }
 
 func cmdPromote(args []string) {
@@ -265,12 +290,12 @@ func cmdDistill(args []string) {
 			primary = pkt.PrimaryScope
 			fmt.Fprintf(os.Stderr, "      scope: %s%s\n", pkt.Status, scopeSuffix(primary))
 		}
-		n, err := distill.ToLedger(l, decisions, session, primary)
+		added, dropped, err := distill.ToLedger(l, decisions, session, primary)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ingest: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "[3/3] appended %d candidate claims (+ evidence) to %s\n", n, l.Root())
+		fmt.Fprintf(os.Stderr, "[3/3] appended %d candidate claims (+ evidence), %d deduped → %s\n", added, dropped, l.Root())
 	} else {
 		fmt.Fprintln(os.Stderr, "[3/3] not ingested (pass --ingest to append candidate claims to the ledger)")
 	}
