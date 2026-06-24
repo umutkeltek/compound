@@ -63,8 +63,13 @@ prototype-ts/          # the proven TS spike (distiller etc.) — reference for 
   construction** (`compound build` — current stance per entity/topic, active⇔promoted; recurring
   through-lines as hypotheses). Builds + vets clean; full chain proven on real data
   (distill → scope → candidate claims → build positions → entity recall → promote → position goes active).
-🔜 Next tuning: distinctiveness/IDF downweight in scope; temporal & ambient recall modes; supersedes
-  edges (conflict detection); semantic Pattern naming. Then layers 2–6 (Authority first, from infra-os).
+🟢 Memory polish: alive memory (dedup + LLM reconcile/supersede), pack from owned memory, ambient
+  recall, scope v0.2 (count + diminishing returns), `compound timeline` (position evolution).
+🟢 **Layer 2 — Authority (v1):** `compound authority import` parses infra-os → promoted Claims
+  (project → repo/host/deployed_on/database/cloud/domain); `compound authority <project>` answers
+  "where does it live". Reuses the Memory machinery — migrations supersede for free.
+🔜 Next: Authority full retire (compound as canonical, infra-os as input) + scope reads ledger
+  entities; then layers 3–6 (Decisions, Procedures, Permissions, Doctrine).
 
 ## Provenance
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/umutkeltek/compound/internal/authority"
 	"github.com/umutkeltek/compound/internal/distill"
 	"github.com/umutkeltek/compound/internal/engine"
 	"github.com/umutkeltek/compound/internal/ledger"
@@ -46,6 +47,8 @@ func main() {
 		cmdReconcile(os.Args[2:])
 	case "timeline":
 		cmdTimeline(os.Args[2:])
+	case "authority":
+		cmdAuthority(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -70,6 +73,7 @@ usage:
   compound build                derive current Positions + recurring Patterns from Claims
   compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
   compound timeline <entity>    how positions on this entity evolved (walks supersedes edges)
+  compound authority import [f] | authority <project>   where projects live (from infra-os)
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
 `)
@@ -298,6 +302,53 @@ func cmdPack(args []string) {
 	_ = os.WriteFile(out, []byte(b.String()), 0o644)
 	fmt.Println(out)
 	fmt.Fprintf(os.Stderr, "pack: %d positions, %d patterns, entity=%s\n", posN, patN, entity)
+}
+
+func cmdAuthority(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml]  |  compound authority <project>")
+		os.Exit(2)
+	}
+	l, err := ledger.Open(ledgerRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		os.Exit(1)
+	}
+
+	if args[0] == "import" {
+		path := authority.DefaultRegistry()
+		if len(args) > 1 {
+			path = args[1]
+		}
+		entities, claims, err := authority.Import(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "authority import: %v\n", err)
+			os.Exit(1)
+		}
+		for _, e := range entities {
+			_ = l.Append("entities", e)
+		}
+		for _, c := range claims {
+			_ = l.Append("claims", c)
+		}
+		fmt.Printf("imported %d projects, %d authority facts from %s\n", len(entities), len(claims), filepath.Base(path))
+		fmt.Fprintln(os.Stderr, "run `compound build` to make positions; `compound authority <project>` to query")
+		return
+	}
+
+	project := args[0]
+	claims, _ := recall.LoadClaims(l)
+	fmt.Printf("# Authority — %s (what's true about where it lives)\n\n", project)
+	found := false
+	for _, c := range claims {
+		if c.SubjectEntity == project && c.CreatedBy == "authority-import" {
+			fmt.Printf("- **%s**: %s\n", c.Predicate, c.Object)
+			found = true
+		}
+	}
+	if !found {
+		fmt.Printf("(no authority facts for %s — run `compound authority import` first)\n", project)
+	}
 }
 
 func cmdTimeline(args []string) {
