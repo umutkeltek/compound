@@ -5,10 +5,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/umutkeltek/compound/internal/distill"
 	"github.com/umutkeltek/compound/internal/engine"
 	"github.com/umutkeltek/compound/internal/ledger"
 )
@@ -23,6 +26,8 @@ func main() {
 	switch os.Args[1] {
 	case "version", "--version", "-v":
 		fmt.Printf("compound %s\n", version)
+	case "distill":
+		cmdDistill(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -40,6 +45,7 @@ func usage() {
 
 usage:
   compound version
+  compound distill <session.jsonl> [--model=M] [--ingest]   deep-distill -> candidate claims
   compound recall <entity>      entity-anchored recall (precision)
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
@@ -102,4 +108,77 @@ func cmdLedger(args []string) {
 		n, _ := l.Count(kind)
 		fmt.Printf("  %-18s %d\n", kind, n)
 	}
+}
+
+func cmdDistill(args []string) {
+	var session, model string
+	ingest := false
+	for _, a := range args {
+		switch {
+		case a == "--ingest":
+			ingest = true
+		case strings.HasPrefix(a, "--model="):
+			model = strings.TrimPrefix(a, "--model=")
+		case !strings.HasPrefix(a, "--") && session == "":
+			session = a
+		}
+	}
+	if session == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound distill <session.jsonl> [--model=M] [--ingest]")
+		os.Exit(2)
+	}
+	ctx := context.Background()
+
+	fmt.Fprintf(os.Stderr, "[1/3] cleaning + distilling %s ...\n", session)
+	res, err := distill.Run(ctx, session, distill.Options{Model: model})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "distill: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "      %d Umut turns · %d decision-turns · %d chunks · %d calls · %d/%d tok\n",
+		res.Clean.UmutKept, res.DecisionTurns, res.Chunks, res.Calls, res.PromptTokens, res.CompletionTokens)
+
+	fmt.Fprintln(os.Stderr, "[2/3] extracting durable decisions ...")
+	decisions, err := distill.ExtractDecisions(ctx, res.Model, res.Distillation)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "extract: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "      %d durable decisions\n", len(decisions))
+
+	out := writeDecisionLedger(session, decisions)
+	fmt.Println(out)
+
+	if ingest {
+		l, err := ledger.Open(ledgerRoot())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+			os.Exit(1)
+		}
+		n, err := distill.ToLedger(l, decisions, session)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ingest: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "[3/3] appended %d candidate claims (+ evidence) to %s\n", n, l.Root())
+	} else {
+		fmt.Fprintln(os.Stderr, "[3/3] not ingested (pass --ingest to append candidate claims to the ledger)")
+	}
+}
+
+func writeDecisionLedger(session string, ds []distill.Decision) string {
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".compound", "distill")
+	_ = os.MkdirAll(dir, 0o755)
+	out := filepath.Join(dir, "decision-ledger.go.md")
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Decisions (Go distiller)\n\nSource: `%s`\n\n", session)
+	for _, d := range ds {
+		fmt.Fprintf(&b, "- **[SELECT]** %s\n  - confidence: %s · domain: %s\n", d.Statement, d.Confidence, d.Domain)
+		if d.Quote != "" {
+			fmt.Fprintf(&b, "  - quote: %q\n", d.Quote)
+		}
+	}
+	_ = os.WriteFile(out, []byte(b.String()), 0o644)
+	return out
 }
