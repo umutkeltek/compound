@@ -7,7 +7,9 @@ import "regexp"
 // them — signal, not size (a 30-byte decision beats a 700MB tool-noise session).
 var decRe = regexp.MustCompile(`(?i)\b(let'?s|we (should|need|could|can|must|do)|go ahead|yes|no|instead|actually|decided?|lock|i (want|think|prefer|like|don'?t|need)|why|can (we|you)|should we|fix|implement|build|use|skip|stop|continue|proceed|approve|reject|change|rethink|make sure|do it|do that|don'?t|better|correct)\b`)
 
-func isDecisionTurn(t Turn) bool {
+// IsDecisionTurn reports whether a turn is an Umut decision-turn (exported so the
+// scope resolver can weight alias mentions found inside decisions more heavily).
+func IsDecisionTurn(t Turn) bool {
 	n := len(t.Text)
 	return t.Role == RoleUmut && n >= 3 && n <= 2000 && decRe.MatchString(t.Text)
 }
@@ -16,7 +18,7 @@ func isDecisionTurn(t Turn) bool {
 func CountDecisionTurns(turns []Turn) int {
 	n := 0
 	for _, t := range turns {
-		if isDecisionTurn(t) {
+		if IsDecisionTurn(t) {
 			n++
 		}
 	}

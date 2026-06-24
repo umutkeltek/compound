@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/umutkeltek/compound/internal/distill"
 	"github.com/umutkeltek/compound/internal/engine"
 	"github.com/umutkeltek/compound/internal/ledger"
+	"github.com/umutkeltek/compound/internal/scope"
 )
 
 const version = "0.1.0"
@@ -28,6 +30,8 @@ func main() {
 		fmt.Printf("compound %s\n", version)
 	case "distill":
 		cmdDistill(os.Args[2:])
+	case "scope":
+		cmdScope(os.Args[2:])
 	case "recall":
 		cmdRecall(os.Args[2:])
 	case "pack":
@@ -46,6 +50,7 @@ func usage() {
 usage:
   compound version
   compound distill <session.jsonl> [--model=M] [--ingest]   deep-distill -> candidate claims
+  compound scope <session.jsonl> [--explain]                attribute a session to entities (no cwd)
   compound recall <entity>      entity-anchored recall (precision)
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
@@ -181,4 +186,36 @@ func writeDecisionLedger(session string, ds []distill.Decision) string {
 	}
 	_ = os.WriteFile(out, []byte(b.String()), 0o644)
 	return out
+}
+
+func cmdScope(args []string) {
+	var session string
+	explain := false
+	for _, a := range args {
+		switch {
+		case a == "--explain":
+			explain = true
+		case !strings.HasPrefix(a, "--") && session == "":
+			session = a
+		}
+	}
+	if session == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound scope <session.jsonl> [--explain]")
+		os.Exit(2)
+	}
+	pkt, err := scope.Resolve(session, scope.SeedEntities())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "scope: %v\n", err)
+		os.Exit(1)
+	}
+	if explain {
+		fmt.Printf("session: %s\nstatus:  %s\nprimary: %s\n\n", pkt.SessionID, pkt.Status, pkt.PrimaryScope)
+		fmt.Printf("  %-14s %5s  %-13s  signals\n", "entity", "score", "relation")
+		for _, a := range pkt.Assignments {
+			fmt.Printf("  %-14s %5d  %-13s  %s\n", a.Entity, a.Score, a.Relation, strings.Join(a.Signals, ", "))
+		}
+		return
+	}
+	b, _ := json.MarshalIndent(pkt, "", "  ")
+	fmt.Println(string(b))
 }
