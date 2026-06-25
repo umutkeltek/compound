@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /*
- * compound — personal OS. Memory layer entry point.
+ * compound — local information kernel. Memory layer entry point.
  *   distill <session> -> deep-distill a whole conversation into durable positions
  *   pack "<topic>"    -> assemble one evidence-backed context pack from your history
  *   ingest --slug ... -> ledger -> Facts page -> rented engine (recall)
@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gbrainEngine } from "./engine/gbrain.ts";
+import { cliEngine } from "./engine/cli.ts";
 import { buildPack } from "./memory/pack.ts";
 import { ledgerToFactsPage } from "./memory/ledger-to-facts.ts";
 
@@ -22,7 +22,7 @@ const argOf = (f: string) => {
 };
 
 function usage() {
-  console.error(`compound — personal OS (Memory layer)
+  console.error(`compound — local information kernel (Memory layer)
 
 usage:
   compound distill <session.jsonl> [--ledger] [--slug=...]    deep-distill a conversation -> positions
@@ -38,7 +38,7 @@ if (cmd === "distill") {
   const topic = rest.find((a) => !a.startsWith("--"));
   if (!topic) { usage(); process.exit(2); }
   const limit = argOf("--limit");
-  const out = await buildPack(gbrainEngine, topic, {
+  const out = await buildPack(cliEngine, topic, {
     limit: limit ? Number(limit) : undefined,
     ledger: argOf("--ledger"),
   });
@@ -49,8 +49,8 @@ if (cmd === "distill") {
   const ledger = argOf("--ledger") || join(HOME, ".compound/distill/decision-ledger.generated.md");
   const { outPath, count } = ledgerToFactsPage({ ledger, slug, title: argOf("--title") || "Distilled positions" });
   console.error(`wrote ${count} facts → ${outPath}`);
-  const res = await gbrainEngine.put(slug, readFileSync(outPath, "utf8"));
-  console.error(res.ok ? `ingested into ${gbrainEngine.name}` : `ingest failed: ${res.note}`);
+  const res = await cliEngine.put(slug, readFileSync(outPath, "utf8"));
+  console.error(res.ok ? `ingested into ${cliEngine.name}` : `ingest failed: ${res.note}`);
 } else {
   usage();
   process.exit(cmd ? 2 : 0);

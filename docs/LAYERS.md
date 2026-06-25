@@ -1,43 +1,43 @@
-# The six layers
+# Compound Layers
 
-Compound is a personal OS. Its architecture is a **separation of concerns** pulled from Umut's
-own words and own systems — each layer already existed as a separate thing he built; compound is
-the coherent home that absorbs them **one at a time**, each absorption retiring its old scattered
-home.
+Compound is one local information kernel. Layers are concerns inside that kernel,
+not services, repos, or separate authorities.
 
-> A personal OS **knows** (Memory) · knows **what's true** (Authority) · remembers **what it
-> decided** (Decisions) · knows **how to do things** (Procedures) · knows **what it's allowed to
-> do** (Permissions) · and has **a point of view** (Doctrine).
+| # | Layer | Concern | Current Shape |
+|---|---|---|---|
+| 1 | Memory | What is known: evidence-backed claims, positions, patterns, context packs | Building |
+| 2 | Authority | What is true about external things: repo, host, runtime, storage, domain | Early importer |
+| 3 | Decisions | What has been committed to, with status and review triggers | Early importer |
+| 4 | Procedures | How repeatable work is done | Planned |
+| 5 | Permissions | What actors may do on behalf of a user/team | Planned |
+| 6 | Doctrine | Durable principles and preferences | Planned |
 
-| # | Layer | The concern | Source organ harvested | Status |
-|---|-------|-------------|------------------------|--------|
-| 1 | **Memory** | what you know — history distilled into evidence-backed claims + context packs | the proven deep distiller; gbrain + mempalace studied | 🟢 building |
-| 2 | **Authority** | what's *true about your world* — project → AWS/server/repo/domain | `infra-os` (~80% structured YAML, alive) | ⬜ roadmap |
-| 3 | **Decisions** | what you've *committed to*, evolving with new info + falsifiers | `decisions` project (DEC-#### with supersession) | ⬜ roadmap |
-| 4 | **Procedures** | *how you do things* — repeatable SOPs / recipes | brain recipes / SOPs (scattered) | ⬜ roadmap |
-| 5 | **Permissions** | what agents may do *on your behalf* — autonomy envelopes, gates | D0/D3 governance (doctrine only) | ⬜ roadmap |
-| 6 | **Doctrine** | what the system *believes* — the opinionated laws | UNIVERSAL-PRINCIPLES | ⬜ roadmap |
+## Rented Engines Are Not Layers
 
-## The rented engine (not a layer you own)
+Storage engines, retrieval engines, LLM providers, editors, and external tools sit
+behind adapters. They can improve recall or import/export, but they do not own the
+object lifecycle.
 
-Storage + embedding + retrieval + LLM providers sit **behind `src/engine`**. gbrain implements the
-`Engine` interface today; nothing in `src/memory` imports a backend directly. Swap gbrain for raw
-Postgres+pgvector by writing one new adapter. "Own the spine, rent the executors" — applied to the
-storage engine itself.
+```text
+external source / engine
+-> adapter
+-> Evidence / Entity / Claim / Edge
+-> promotion / reconciliation
+-> Position / ContextPack
+```
 
-## Cross-cutting (every layer)
+## Cross-Cutting Invariants
 
-- **Provenance** — every node carries a source + confidence; nothing is asserted as bare truth.
-- **Observability** — what ran, what it cost.
-- **Self-healing** — the system hunts its own decay and proposes the smallest fix.
+- Provenance: every durable object is citeable.
+- Visibility: privacy and eligibility are filtered before recall.
+- Time: claims can be superseded without destroying evidence.
+- Placement: every object has one canonical lookup path.
+- Cwd independence: current working directory is a hint at most, never authority.
+- Subtraction: adding a layer should retire scattered handling, not create another
+  parallel home.
 
-## Build discipline
+## Build Discipline
 
-- **One layer at a time** — each becomes real and proven before the next starts.
-- **Subtractive** — absorbing a layer retires its old home; fewer systems after each step.
-- **Dogfood first, architect for people** — built on Umut's data, with boundaries clean enough that
-  someone else could load *their* Memory/Authority/Decisions later. That clean boundary is the
-  open-source product.
-- **Proof, not report** — each layer ships a working command on real data.
-
-Full plan + sequence: `~/Projects/operating-system/Plans/even-though-i-was-silly-thimble.md`.
+Build one concern into the existing kernel, prove it with a working command and
+synthetic fixtures, then retire the parallel handling it replaces. Do not begin a
+new service because the information type feels new.

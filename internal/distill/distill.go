@@ -10,23 +10,23 @@ import (
 // Prompts ported faithfully from the proven TS distiller. Reasoning, not
 // summarization; strict source attribution; hard verbatim preservation.
 
-const distillSystem = `You are distilling an AI agent work-session into durable insight for Umut's knowledge brain. This is REASONING, not summarization — go from noise to insight: identify what actually MATTERS and why; do not just shrink text.
-SOURCE ATTRIBUTION (this is an agent session): USER turns = Umut (harness injections already stripped). ASSISTANT turns = the AI agent, NOT Umut — never attribute the agent's words to Umut.
-Preserve, word-for-word, BOTH Umut's verbatim quotes AND specific factual findings (names, ids, provenance strings, file/commit refs, numbers) — a later synthesis pass depends on them; anything you generalize is lost permanently.
-Produce typed, signal-separated output: SELECT (Umut's decisions), SEE (what was surfaced + Umut's questions), TELL (the agent's substantive conclusions). Be exhaustive on real insight, terse on mechanics. Output structured markdown.`
+const distillSystem = `You are distilling an AI agent work-session into durable insight for the user's knowledge ledger. This is REASONING, not summarization — go from noise to insight: identify what actually MATTERS and why; do not just shrink text.
+SOURCE ATTRIBUTION (this is an agent session): USER turns are the human/operator (harness injections already stripped). ASSISTANT turns are the AI agent, NOT the user — never attribute the agent's words to the user.
+Preserve, word-for-word, BOTH the user's verbatim quotes AND specific factual findings (names, ids, provenance strings, file/commit refs, numbers) — a later synthesis pass depends on them; anything you generalize is lost permanently.
+Produce typed, signal-separated output: SELECT (the user's decisions), SEE (what was surfaced + the user's questions), TELL (the agent's substantive conclusions). Be exhaustive on real insight, terse on mechanics. Output structured markdown.`
 
 const mapSuffix = `
 
 This is chunk {i} of {n} of a longer session. Distill THIS chunk's typed insights now; be exhaustive on real insight.`
 
-const reduceSystem = `You are the SYNTHESIS pass of a reasoning-based distiller for Umut's knowledge brain. You receive per-chunk typed distillations from one continuous work-session. Your job is CROSS-CHUNK REASONING — connect threads across the whole session, resolve what Umut actually decided vs merely floated, and name patterns in how he thinks.
-VERBATIM PRESERVATION (HARD RULE): the chunk distillations already contain Umut's verbatim quotes and specific factual findings. Carry EVERY one through WORD-FOR-WORD. Never paraphrase a quote, never merge two quotes, never thin a concrete fact into a generalized theme. Cross-chunk reasoning ADDS connective insight AROUND preserved quotes/facts; it never replaces them.
-SOURCE ATTRIBUTION: USER = Umut, ASSISTANT = agent. Output structured markdown with SELECT/SEE/TELL plus named patterns.`
+const reduceSystem = `You are the SYNTHESIS pass of a reasoning-based distiller for the user's knowledge ledger. You receive per-chunk typed distillations from one continuous work-session. Your job is CROSS-CHUNK REASONING — connect threads across the whole session, resolve what the user actually decided vs merely floated, and name durable patterns.
+VERBATIM PRESERVATION (HARD RULE): the chunk distillations already contain the user's verbatim quotes and specific factual findings. Carry EVERY one through WORD-FOR-WORD. Never paraphrase a quote, never merge two quotes, never thin a concrete fact into a generalized theme. Cross-chunk reasoning ADDS connective insight AROUND preserved quotes/facts; it never replaces them.
+SOURCE ATTRIBUTION: USER = human/operator, ASSISTANT = agent. Output structured markdown with SELECT/SEE/TELL plus named patterns.`
 
 const ledgerExtractSystem = `You convert a session distillation into a DECISION LEDGER — only durable decisions worth recalling later.
-EVIDENCE CONTRACT (do NOT launder exploration into decisions): include an item ONLY if USER (Umut) actually committed — explicit decision language ("we decided", "lock this", "let's do X", "ship it"), an accepted recommendation ("yes", "do that", "go ahead", "approved"), a stated standing preference ("I always", "by default", "never"), or a correction ("no, do it this way"). A hypothetical / question / "maybe" / the agent's own conclusion is NOT a user decision — DROP it.
+EVIDENCE CONTRACT (do NOT launder exploration into decisions): include an item ONLY if the user actually committed — explicit decision language ("we decided", "lock this", "let's do X", "ship it"), an accepted recommendation ("yes", "do that", "go ahead", "approved"), a stated standing preference ("I always", "by default", "never"), or a correction ("no, do it this way"). A hypothetical / question / "maybe" / the agent's own conclusion is NOT a user decision — DROP it.
 COVERAGE: be COMPREHENSIVE on durable decisions; capture EVERY strategic/architectural/standing decision; if one decision has two clauses, capture both. MATERIALITY: drop one-off operational approvals that won't matter next week unless they encode a standing choice. FINDABILITY: each statement must NAME the concrete entities/systems it is about.
-Output ONLY a JSON array (no prose, no code fence) of objects: {"statement": "...", "confidence": "high|medium|low", "domain": "short-slug", "quote": "verbatim Umut quote"}. If there are no durable user decisions, output [].`
+Output ONLY a JSON array (no prose, no code fence) of objects: {"statement": "...", "confidence": "high|medium|low", "domain": "short-slug", "quote": "verbatim user quote"}. If there are no durable user decisions, output [].`
 
 const chunkChars = 220_000
 

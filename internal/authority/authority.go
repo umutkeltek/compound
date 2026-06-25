@@ -1,6 +1,6 @@
 // Package authority is Layer 2: what's TRUE about your world — which project runs
 // on which host/cloud, its repo, database, domain. It is NOT a new object model:
-// it imports infra-os into the SAME Memory primitives (Entity + promoted Claim),
+// it imports registry rows into the SAME Memory primitives (Entity + promoted Claim),
 // so authority facts get positions, supersession on migration, and recall for
 // free. The Memory machinery, pointed at infrastructure instead of conversations.
 package authority
@@ -17,9 +17,10 @@ import (
 	"github.com/umutkeltek/compound/internal/memory"
 )
 
-// DefaultRegistry is infra-os's richest project→authority source.
+// DefaultRegistry returns the configured authority registry path. The public core
+// has no private default; callers pass a path or set COMPOUND_AUTHORITY_REGISTRY.
 func DefaultRegistry() string {
-	return filepath.Join(os.Getenv("HOME"), "Projects/operating-system/infra-os/project-registry.yaml")
+	return strings.TrimSpace(os.Getenv("COMPOUND_AUTHORITY_REGISTRY"))
 }
 
 type registryFile struct {
@@ -48,7 +49,7 @@ type projectRec struct {
 	} `yaml:"urls"`
 }
 
-// Import parses an infra-os project registry into Entities + promoted authority
+// Import parses project registry rows into Entities + promoted authority
 // Claims. Claim IDs are deterministic (auth_<slug>_<predicate>) so re-import
 // updates current truth in place (a migration overwrites the old value).
 func Import(path string) (entities []memory.Entity, claims []memory.Claim, err error) {
@@ -61,7 +62,7 @@ func Import(path string) (entities []memory.Entity, claims []memory.Claim, err e
 		return nil, nil, err
 	}
 	now := time.Now().UTC()
-	src := "infra-os:" + filepath.Base(path)
+	src := "authority-registry:" + filepath.Base(path)
 
 	for slug, p := range rf.Production {
 		etype := memory.EntProject

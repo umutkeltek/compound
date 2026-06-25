@@ -14,7 +14,7 @@ import (
 type Role string
 
 const (
-	RoleUmut  Role = "UMUT"
+	RoleUser  Role = "USER"
 	RoleAgent Role = "AGENT"
 )
 
@@ -26,7 +26,7 @@ type Turn struct {
 type CleanResult struct {
 	Turns           []Turn
 	RawBytes        int64
-	UmutKept        int
+	UserKept        int
 	AgentKept       int
 	HarnessDropped  int
 	ToolDropped     int
@@ -142,7 +142,7 @@ func normalize(ev *rawEvent, res *CleanResult) (role string, content json.RawMes
 	return "", nil, true
 }
 
-// Clean streams a session JSONL into role-tagged Umut/agent turns, dropping tool,
+// Clean streams a session JSONL into role-tagged user/agent turns, dropping tool,
 // reasoning, and harness noise.
 func Clean(path string) (*CleanResult, error) {
 	f, err := os.Open(path)
@@ -185,8 +185,8 @@ func Clean(path string) (*CleanResult, error) {
 				res.HarnessDropped++
 				continue
 			}
-			res.Turns = append(res.Turns, Turn{RoleUmut, cleaned})
-			res.UmutKept++
+			res.Turns = append(res.Turns, Turn{RoleUser, cleaned})
+			res.UserKept++
 		case "assistant":
 			res.Turns = append(res.Turns, Turn{RoleAgent, cleaned})
 			res.AgentKept++

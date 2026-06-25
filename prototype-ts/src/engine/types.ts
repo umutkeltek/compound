@@ -1,7 +1,7 @@
 /*
  * Engine — the RENTED layer. Storage + embedding + retrieval live behind this
  * interface so the owned Memory spine never depends on a specific backend.
- * gbrain implements it today; a Postgres+pgvector engine could tomorrow.
+ * local engine implements it today; a Postgres+pgvector engine could tomorrow.
  * "Own the spine, rent the executors" — applied to the storage engine itself.
  */
 

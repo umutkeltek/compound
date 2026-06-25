@@ -1,7 +1,7 @@
 // Package reconcile is the alive-memory pass: it adjudicates claims that pile up
 // on the same (entity, topic), marking superseded/duplicate ones so memory evolves
 // instead of just accumulating. Inspired by mem0's ADD/UPDATE/DELETE/NONE memory
-// manager and gbrain's superseded_by. The deterministic NONE (dedup) happens at
+// manager and a superseded_by lineage model. The deterministic NONE (dedup) happens at
 // ingest; this LLM pass handles UPDATE/DELETE → superseded + supersedes edges.
 package reconcile
 

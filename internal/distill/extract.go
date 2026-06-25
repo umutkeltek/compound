@@ -129,7 +129,7 @@ func ToLedger(l *ledger.Ledger, decisions []Decision, sessionPath, primaryScope 
 	return added, dropped, nil
 }
 
-// --- deterministic dedup (mem0 "NONE" / gbrain no-dup) ---
+// --- deterministic dedup (memory-manager NONE path) ---
 
 func tokenize(s string) []string {
 	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {

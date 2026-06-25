@@ -1,78 +1,119 @@
 # compound
 
-> A personal OS that preserves and reuses how you think, know, decide, and operate —
-> so your thinking compounds instead of disappearing.
+> Local-first information kernel for preserving, adjudicating, and reusing what a
+> person or team knows, decides, and operates.
 
-Not generic. Opinionated. The opposite of a memory tool that "distills" by reading only the
-first and last message.
+Compound is opinionated: evidence is not canon, search is not truth, and current
+knowledge must be placed, cited, promoted, and superseded.
 
-## The six layers (separation of concerns)
+## Architecture
 
-A personal OS **knows** (Memory) · knows **what's true** (Authority) · remembers **what it
-decided** (Decisions) · knows **how to do things** (Procedures) · knows **what it's allowed to
-do** (Permissions) · and has **a point of view** (Doctrine). Built one at a time; each absorbed
-layer **retires** its old scattered home. See `docs/LAYERS.md`.
+Compound is a **local monolith information kernel** with deep internal modules and
+adapters at the edges. It is not a microservice estate and not an agent framework.
 
-## Memory layer
+Start with:
 
-The foundation. Architecture: `docs/memory-architecture.md` (object model, ledger-as-authority,
-scope resolver, query planner — converged from Umut's doctrine + a GPT-5.5-Pro consult + mempalace).
+- `CONTEXT.md` - domain glossary.
+- `docs/ARCHITECTURE.md` - monolith boundary, placement, cwd-independent scope,
+  and extensibility.
+- `docs/BOUNDARIES.md` - public core versus private overlay.
+- `docs/adr/0001-local-monolith-information-kernel.md` - accepted architecture
+  decision.
 
+## Layers
+
+Compound separates six concerns:
+
+- **Memory** - what is known.
+- **Authority** - what is currently true about external things.
+- **Decisions** - what has been committed to.
+- **Procedures** - how repeatable work is done.
+- **Permissions** - what actors are allowed to do.
+- **Doctrine** - durable principles and preferences.
+
+Each layer should be absorbed into the same object lifecycle instead of becoming a
+new service or scattered folder. See `docs/LAYERS.md`.
+
+## Memory Layer
+
+Architecture: `docs/memory-architecture.md`.
+
+Core pipeline:
+
+```text
+source material
+-> EvidenceItem
+-> candidate Claim
+-> promotion / adjudication
+-> Position / Pattern
+-> ContextPack
 ```
-compound distill <session.jsonl> [--ingest]   # deep-distill a whole conversation → candidate claims
-compound scope   <session.jsonl> [--explain]  # attribute a session to entities (content, not cwd)
-compound recall  "<query>"                     # query planner: active positions + owned claims + engine breadth
-compound promote <claim-id> --basis=<b>        # candidate → promoted (the only path to canon)
-compound build                                 # derive current Positions + recurring Patterns from claims
-compound reconcile [--entity=E]                # alive memory: supersede contradicted/duplicate claims
-compound timeline <entity>                     # how positions evolved (walks supersedes edges)
-compound pack    "<topic-or-entity>"           # context pack from owned Memory (positions+claims+quotes+patterns) + breadth
-compound ledger  stat                          # record counts per canonical object kind
+
+CLI shape:
+
+```text
+compound distill <session.jsonl> [--ingest]      # whole-session distillation -> candidate claims
+compound scope <session.jsonl> [--explain]       # content-based scope, not cwd
+compound recall "<query>"                        # active positions + claims + optional engine breadth
+compound promote <claim-id> --basis=<basis>      # candidate -> promoted
+compound build                                   # derive current positions and recurring patterns
+compound reconcile [--entity=E]                  # append supersession edges for contradictions/duplicates
+compound timeline <entity>                       # show position evolution
+compound pack "<topic-or-entity>"                # assemble a context pack
+compound authority import [registry.yaml]        # import authority registry rows
+compound decisions import                        # import configured decision sources
+compound ledger stat                             # record counts per object kind
 compound version
 ```
 
-Pipeline: `distill --ingest` cleans the whole session → worth-gates → map-reduces over a reasoning
-model → resolves scope → appends EvidenceItems + **candidate** Claims to the append-only ledger.
-`recall` plans a mode and surfaces owned claims; `promote` is the gate that turns a candidate into
-canon (the distiller can never self-canonize — evidence ≠ canon).
+The distiller can emit evidence and candidate claims. It cannot make canon by
+itself. Promotion and reconciliation are explicit lifecycle steps.
 
-## Language & layout — Go
+## Layout
 
-Go is the spine (CLI + daemon + ingestion/indexer + single binary). TypeScript/Bun is kept for
-the proven distiller prototype (`prototype-ts/`, being ported) and any future UI; Python only at
-the ML edge.
-
+```text
+cmd/compound/       CLI, one local binary boundary
+internal/memory/    owned object model: Evidence -> Claim -> Position -> Pattern
+internal/ledger/    append-only canonical store for derived knowledge objects
+internal/engine/    optional retrieval adapters behind MemoryEngine
+internal/scope/     cwd-independent attribution
+internal/recall/    query planner and visibility filters
+internal/authority/ authority registry importer
+internal/decisions/ decision source importer
+docs/               architecture notes and ADRs
+prototype-ts/       historical prototype reference while Go implementation matures
 ```
-cmd/compound/          # the CLI (single binary)
-internal/
-  memory/              # OWNED object model: Evidence → Claim → Position → Pattern, Entity, Edge
-  ledger/              # append-only canonical store — THE authority; engine is a rebuildable view
-  engine/              # RENTED storage/retrieval behind MemoryEngine (gbrain adapter today, swappable)
-docs/
-  LAYERS.md            # the six-layer architecture
-  memory-architecture.md  # the Memory design (canonical)
-  memory-study.md      # gbrain + mempalace study
-prototype-ts/          # the proven TS spike (distiller etc.) — reference for the Go port
-```
+
+## Configuration Seams
+
+The public core has no private path defaults.
+
+- `COMPOUND_LEDGER` overrides the local ledger root. Default: `~/.compound/ledger`.
+- `COMPOUND_ENGINE_BIN` enables an optional local retrieval CLI adapter. If unset,
+  Compound uses the no-op engine and still runs from its ledger.
+- `COMPOUND_AUTHORITY_REGISTRY` points `compound authority import` at a registry.
+- `COMPOUND_POLICY_DECISIONS_DIR` points `compound decisions import` at reusable
+  policy decision files.
+- `COMPOUND_OPERATOR_DECISIONS_GLOB` points `compound decisions import` at an
+  operator decision ledger pattern.
+
+Private data, private paths, and private retrieval engines belong in an overlay
+outside the public repository.
 
 ## Status
 
-🟢 Memory layer (Go): object model + append-only ledger + swappable engine adapter + **deep
-  distiller** (parity-confirmed vs the TS prototype) + **scope resolver** (content, not cwd) +
-  **query planner** (entity/hybrid, hard filters) + **promotion gate** + **Position/Pattern
-  construction** (`compound build` — current stance per entity/topic, active⇔promoted; recurring
-  through-lines as hypotheses). Builds + vets clean; full chain proven on real data
-  (distill → scope → candidate claims → build positions → entity recall → promote → position goes active).
-🟢 Memory polish: alive memory (dedup + LLM reconcile/supersede), pack from owned memory, ambient
-  recall, scope v0.2 (count + diminishing returns), `compound timeline` (position evolution).
-🟢 **Layer 2 — Authority (v1):** `compound authority import` parses infra-os → promoted Claims
-  (project → repo/host/deployed_on/database/cloud/domain); `compound authority <project>` answers
-  "where does it live". Reuses the Memory machinery — migrations supersede for free.
-🔜 Next: Authority full retire (compound as canonical, infra-os as input) + scope reads ledger
-  entities; then layers 3–6 (Decisions, Procedures, Permissions, Doctrine).
+- Memory layer: object model, append-only ledger, whole-session distillation,
+  content-based scope resolver, query planner, promotion gate, positions,
+  patterns, timeline, pack, and reconciliation.
+- Authority layer: imports configured registry rows into the same Claim lifecycle.
+- Decisions layer: imports configured policy and operator decisions into one
+  kind-separated store.
+- Next proof: synthetic end-to-end fixture that shows source -> evidence ->
+  candidate claim -> promoted claim -> position -> context pack -> supersession
+  -> updated context pack without any private overlay.
 
 ## Provenance
 
-Graduated from a proven spike (`~/Projects/operating-system/Plans/even-though-i-was-silly-thimble.md`;
-verdict `~/brain/reviews/system-audit/2026-06-24-context-engine-spike.md`). Dogfood-first; architected
-so another person could load *their* Memory/Authority/Decisions later.
+Compound is dogfooded against a private reference system, but that system is not
+the product. Public Compound must run with synthetic fixtures and explicit overlay
+inputs, without inheriting private data, paths, accounts, or doctrine.

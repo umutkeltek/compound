@@ -2,7 +2,7 @@
  * ledger-to-facts.ts — Memory layer: distilled ledger -> a `## Facts` fence page.
  *
  * The fence is the system-of-record for the distilled positions. The CLI ingests
- * the page via engine.put(). Use type:note — the rented engine (gbrain) refuses to
+ * the page via engine.put(). Use type:note — the rented engine (local engine) refuses to
  * extract facts from type:decision-ledger (eligibility gate); a real last-mile gap
  * the spike surfaced.
  */
@@ -57,11 +57,11 @@ Distilled, evidence-backed positions, extracted by the compound Memory distiller
 
 ## Facts
 
-<!--- gbrain:facts:begin -->
+<!--- local engine:facts:begin -->
 | # | claim | kind | confidence | visibility | notability | valid_from | valid_until | source | context |
 |---|-------|------|------------|------------|------------|------------|-------------|--------|---------|
 ${rows.join("\n")}
-<!--- gbrain:facts:end -->
+<!--- local engine:facts:end -->
 `;
 
   const outPath = join(BRAIN, `${opts.slug}.md`);

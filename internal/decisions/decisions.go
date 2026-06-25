@@ -1,10 +1,9 @@
 // Package decisions is Layer 3: ONE decisions store with clean separation by kind
-// — unifying what the old operating-system+brain mess had to scatter across three
-// repos. A decision is a Claim (claim_type=decision) with a `kind`:
+// — unifying what the domain-specific decision sources feed. A decision is a Claim (claim_type=decision) with a `kind`:
 //
 //	policy      — reusable cross-agent rule        (was decisions/ DEC-####)
-//	doctrine    — personal working decision        (was ~/brain/decisions D-ledger)
-//	operational — control/routing decision         (was umut-os registries)
+//	doctrine    — personal working decision        from an operator ledger
+//	operational — control/routing decision         from a domain adapter
 //
 // Lifecycle is a STATUS (open→decided→superseded), and promotion (doctrine→policy)
 // is a status/kind transition in one store, not a cross-repo copy.
@@ -104,9 +103,9 @@ func ImportDEC(root string) ([]memory.Claim, error) {
 
 var reDecHeader = regexp.MustCompile(`(?m)^###\s+([DO]\d+)\b[^\n]*?—\s*(.+)$`)
 
-// ImportBrainLedger parses the brain live ledger (### D<n>/O<n>) into DOCTRINE
+// ImportOperatorLedger parses the operator ledger (### D<n>/O<n>) into DOCTRINE
 // decisions. O<n> = open (candidate), D<n> = decided, SUPERSEDED markers honored.
-func ImportBrainLedger(path string) ([]memory.Claim, error) {
+func ImportOperatorLedger(path string) ([]memory.Claim, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -129,12 +128,12 @@ func ImportBrainLedger(path string) ([]memory.Claim, error) {
 		if regexp.MustCompile(`(?i)superseded`).MatchString(block) {
 			status = memory.StatusSuperseded
 		}
-		q := map[string]any{"kind": KindDoctrine, "scope": "personal", "source": "brain-ledger"}
+		q := map[string]any{"kind": KindDoctrine, "scope": "personal", "source": "operator-ledger"}
 		if mm := reReviewTrigger.FindStringSubmatch(block); mm != nil {
 			q["review_trigger"] = strings.TrimSpace(mm[1])
 		}
 		out = append(out, memory.Claim{
-			ID: "brain-" + id, SubjectEntity: "decisions", Predicate: "decided", Object: title,
+			ID: "operator-" + id, SubjectEntity: "decisions", Predicate: "decided", Object: title,
 			ClaimType: memory.ClaimDecision, Status: status, Confidence: 0.9,
 			Visibility: memory.VisWorld, CreatedBy: "decision-import", Qualifiers: q,
 		})

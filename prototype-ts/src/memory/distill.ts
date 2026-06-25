@@ -3,16 +3,16 @@
  * distill.ts — PROTOTYPE reasoning-based conversation distiller.
  *
  * Proves: sending the WHOLE cleaned conversation to a REASONING model + a
- * separation-typed prompt extracts the real insights that gbrain's shallow
+ * separation-typed prompt extracts the real insights that local engine's shallow
  * "dream" (first+last 8K char truncation) rejected as "meta-operational".
  *
- * SCRATCH ONLY — NOT wired into cron/circulation/gbrain. Read-only except
+ * SCRATCH ONLY — NOT wired into cron/circulation/local engine. Read-only except
  * writing this script + its output under this directory.
  *
  * Pipeline:
- *   STEP 1 CLEAN   — role-tag Umut + agent turns, drop harness injections &
+ *   STEP 1 CLEAN   — role-tag user + agent turns, drop harness injections &
  *                    tool_use/tool_result execution noise (patterns reused from
- *                    umut-os/cron/session_receipt_backfill.ts).
+ *                    earlier session-receipt tooling).
  *   STEP 2 DISTILL — map-reduce over a reasoning model (DeepSeek) with the
  *                    typed separation prompt. Cross-chunk synthesis is exactly
  *                    what the dream lacks.
@@ -62,7 +62,7 @@ const isHarnessUser = (s: string): boolean => {
     /^<[a-z_]+[ >/]/i.test(t) || // any XML-ish injected block
     // /context dump (the big token-budget table the harness injects)
     /Context Usage|tokens used|tokens free|Token usage:|⛁|⛀/.test(t) ||
-    // proxy/runtime plumbing errors that aren't Umut's words
+    // proxy/runtime plumbing errors that aren't the user's words
     /^■ unexpected status \d+|compression_refused|Payload Too Large/.test(t)
   );
 };
@@ -74,19 +74,19 @@ const cleanText = (s: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
-type Turn = { role: "UMUT" | "AGENT"; text: string };
+type Turn = { role: "USER" | "AGENT"; text: string };
 
 // ─────────────────── WORTH GATE + NEIGHBORHOOD ───────────────────
 // Decision-turn definition — kept IDENTICAL to the worth-filter (scratchpad
 // worth.ts) so the distiller and the bulk filter agree on which sessions are
-// worth spending on. A decision-turn is a Umut/user turn that is 3–2000 chars
+// worth spending on. A decision-turn is a user turn that is 3–2000 chars
 // AND matches DEC. (Harness/injection turns are already excluded upstream by
 // isHarnessUser during clean, matching worth.ts's INJ/INJ2 filtering.)
 const DEC =
   /\b(let'?s|we (should|need|could|can|must|do)|go ahead|yes|no|instead|actually|decided?|lock|i (want|think|prefer|like|don'?t|need)|why|can (we|you)|should we|this is (wrong|good|bad|important)|fix|implement|build|use|skip|stop|continue|proceed|approve|reject|change|rethink|make sure|do it|do that|don'?t|better|correct)\b/i;
 
 const isDecisionTurn = (t: Turn): boolean =>
-  t.role === "UMUT" && t.text.length >= 3 && t.text.length <= 2000 && DEC.test(t.text);
+  t.role === "USER" && t.text.length >= 3 && t.text.length <= 2000 && DEC.test(t.text);
 
 const countDecisionTurns = (turns: Turn[]): number => turns.reduce((n, t) => n + (isDecisionTurn(t) ? 1 : 0), 0);
 
@@ -96,8 +96,8 @@ const WORTH_MIN = Number(process.env.DISTILL_WORTH_MIN || 3);
 const FORCE = process.argv.includes("--force") || process.env.DISTILL_FORCE === "1";
 
 // Neighborhood-extraction config: reduce the cleaned turn list to decision
-// windows (each Umut decision-turn + the agent turns that immediately follow
-// it up to the next Umut turn). AUTO-ON for inputs > 50MB; flags override.
+// windows (each user decision-turn + the agent turns that immediately follow
+// it up to the next user turn). AUTO-ON for inputs > 50MB; flags override.
 const NEIGHBORHOOD_AUTO_BYTES = 50_000_000;
 function neighborhoodEnabled(rawBytes: number): boolean {
   if (process.argv.includes("--no-neighborhood") || process.env.DISTILL_NEIGHBORHOOD === "0") return false;
@@ -105,14 +105,14 @@ function neighborhoodEnabled(rawBytes: number): boolean {
   return rawBytes > NEIGHBORHOOD_AUTO_BYTES;
 }
 
-// Keep each decision-turn plus the agent turn(s) up to the next Umut turn
-// (the agent's response/conclusion to that decision). Drop non-decision Umut
+// Keep each decision-turn plus the agent turn(s) up to the next user turn
+// (the agent's response/conclusion to that decision). Drop non-decision user
 // turns and the agent responses that belong only to them.
 function extractNeighborhoods(turns: Turn[]): Turn[] {
   const out: Turn[] = [];
   for (let i = 0; i < turns.length; i++) {
     const t = turns[i];
-    if (t.role !== "UMUT") continue;
+    if (t.role !== "USER") continue;
     if (!isDecisionTurn(t)) continue;
     out.push(t);
     for (let j = i + 1; j < turns.length && turns[j].role === "AGENT"; j++) out.push(turns[j]);
@@ -124,7 +124,7 @@ type CleanResult = {
   turns: Turn[];
   rawBytes: number;
   cleanedChars: number;
-  umutKept: number;
+  userKept: number;
   harnessDropped: number;
   agentKept: number;
   toolResultsDropped: number;
@@ -136,7 +136,7 @@ type CleanResult = {
 // turns + counters) — never the whole raw file or a full line-array.
 type CleanAcc = {
   turns: Turn[];
-  umutKept: number;
+  userKept: number;
   harnessDropped: number;
   agentKept: number;
   toolResultsDropped: number;
@@ -146,7 +146,7 @@ type CleanAcc = {
 
 // Two on-disk session formats carry the same conversation. Normalize the Codex
 // `rollout-*.jsonl` envelope into the Claude projects shape so the SAME signal
-// definition applies to both (Umut/user turns + agent text kept; tools, thinking,
+// definition applies to both (user turns + agent text kept; tools, thinking,
 // reasoning, and harness/developer injections dropped). Claude lines pass through
 // untouched. Returns null when the line is a non-conversational wrapper to skip.
 function normalizeEvent(e: any): any | null {
@@ -188,7 +188,7 @@ function normalizeEvent(e: any): any | null {
 }
 
 // Process ONE parsed JSONL event into the accumulator. This is the exact
-// per-line cleaning/signal logic (Umut turns + agent text; tools/thinking
+// per-line cleaning/signal logic (user turns + agent text; tools/thinking
 // dropped) — unchanged, just lifted out of the line loop so it can be fed
 // incrementally by a streaming reader. A normalizer first folds the Codex
 // rollout schema into the Claude shape so the signal definition is identical.
@@ -208,7 +208,7 @@ function processEvent(rawEvent: any, acc: CleanAcc): void {
   const content = msg?.content;
 
   if (role === "user") {
-    // A user turn is either Umut's plain text OR a harness/tool injection.
+    // A user turn is either user's plain text OR a harness/tool injection.
     // Tool results arrive as content blocks of type tool_result (or the
     // event carries toolUseResult) — those are execution noise, drop them.
     if (e.toolUseResult !== undefined) {
@@ -235,8 +235,8 @@ function processEvent(rawEvent: any, acc: CleanAcc): void {
       acc.harnessDropped++;
       return;
     }
-    acc.turns.push({ role: "UMUT", text: cleaned });
-    acc.umutKept++;
+    acc.turns.push({ role: "USER", text: cleaned });
+    acc.userKept++;
   } else {
     // assistant: keep text blocks only; strip thinking + tool_use.
     if (!Array.isArray(content)) {
@@ -265,7 +265,7 @@ function processEvent(rawEvent: any, acc: CleanAcc): void {
 async function clean(inputPath: string): Promise<CleanResult> {
   const acc: CleanAcc = {
     turns: [],
-    umutKept: 0,
+    userKept: 0,
     harnessDropped: 0,
     agentKept: 0,
     toolResultsDropped: 0,
@@ -309,7 +309,7 @@ async function clean(inputPath: string): Promise<CleanResult> {
     turns: acc.turns,
     rawBytes,
     cleanedChars,
-    umutKept: acc.umutKept,
+    userKept: acc.userKept,
     harnessDropped: acc.harnessDropped,
     agentKept: acc.agentKept,
     toolResultsDropped: acc.toolResultsDropped,
@@ -325,38 +325,38 @@ function render(turns: Turn[]): string {
 
 // ───────────────────────── STEP 2: DISTILL ─────────────────────────
 
-const DISTILL_SYSTEM = `You are distilling an AI agent work-session into durable insight for Umut's knowledge brain. This is REASONING, not summarization — go from noise to insight: identify what actually MATTERS and why; do not just shrink the text.
-SOURCE ATTRIBUTION (this is an agent session): USER turns = Umut (but harness injections were already stripped). ASSISTANT turns = the AI agent, NOT Umut — never attribute the agent's words to Umut.
+const DISTILL_SYSTEM = `You are distilling an AI agent work-session into durable insight for the user's knowledge ledger. This is REASONING, not summarization — go from noise to insight: identify what actually MATTERS and why; do not just shrink the text.
+SOURCE ATTRIBUTION (this is an agent session): USER turns = user (but harness injections were already stripped). ASSISTANT turns = the AI agent, NOT user — never attribute the agent's words to user.
 Produce a TYPED distillation:
-1. SELECT/DECIDE — Umut's choices, decisions, locked positions, directions (highest value; quote him verbatim where memorable).
-2. SEE/ASK — what Umut asked, questioned, reacted to; his concerns and instincts.
+1. SELECT/DECIDE — the user's choices, decisions, locked positions, directions (highest value; quote him verbatim where memorable).
+2. SEE/ASK — what user asked, questioned, reacted to; his concerns and instincts.
 3. TELL/CONCLUDE — the agent's substantive conclusions/outcomes (attributed to the agent).
 4. (DROP execution mechanics — not insight.)
-For each: extract the THINKING — invent your own tags, surface key_insights, name PATTERNS in how Umut thinks/decides, note shifts/growth. Be specific and concrete. Output structured markdown with the four layers.`;
+For each: extract the THINKING — invent your own tags, surface key_insights, name PATTERNS in how the user thinks/decides, note shifts/growth. Be specific and concrete. Output structured markdown with the four layers.`;
 
-const MAP_SUFFIX = `\n\nThis is ONE CHUNK of a longer session (chunk {i} of {n}). Distill THIS chunk's typed insights now. Be exhaustive on real insight, terse on mechanics. Preserve, word-for-word, BOTH Umut's verbatim quotes AND specific factual findings (names, ids, provenance strings, file/commit refs, numbers) — the later synthesis pass depends on them and is forbidden from re-compressing them, so anything you generalize here is lost permanently.`;
+const MAP_SUFFIX = `\n\nThis is ONE CHUNK of a longer session (chunk {i} of {n}). Distill THIS chunk's typed insights now. Be exhaustive on real insight, terse on mechanics. Preserve, word-for-word, BOTH the user's verbatim quotes AND specific factual findings (names, ids, provenance strings, file/commit refs, numbers) — the later synthesis pass depends on them and is forbidden from re-compressing them, so anything you generalize here is lost permanently.`;
 
-const REDUCE_SYSTEM = `You are the SYNTHESIS pass of a reasoning-based distiller for Umut's knowledge brain. You receive several per-chunk typed distillations from one continuous agent work-session. Your job is CROSS-CHUNK REASONING — the thing a shallow truncated summary cannot do: connect threads across the whole session, resolve what Umut actually decided vs. merely floated, name the patterns in how he thinks, and surface the insights that only appear when you see the entire arc.
+const REDUCE_SYSTEM = `You are the SYNTHESIS pass of a reasoning-based distiller for the user's knowledge ledger. You receive several per-chunk typed distillations from one continuous agent work-session. Your job is CROSS-CHUNK REASONING — the thing a shallow truncated summary cannot do: connect threads across the whole session, resolve what the user actually decided vs. merely floated, name the patterns in how he thinks, and surface the insights that only appear when you see the entire arc.
 
 VERBATIM PRESERVATION (HARD RULE — re-compressing the chunk outputs is this pass's #1 failure mode):
-- The chunk distillations already contain Umut's verbatim quotes and specific factual findings (names, ids, provenance strings, file/commit refs, numbers). Carry EVERY one through WORD-FOR-WORD. Never paraphrase a quote, never merge two quotes into one, never thin a concrete quote or a specific fact into a generalized "theme".
+- The chunk distillations already contain the user's verbatim quotes and specific factual findings (names, ids, provenance strings, file/commit refs, numbers). Carry EVERY one through WORD-FOR-WORD. Never paraphrase a quote, never merge two quotes into one, never thin a concrete quote or a specific fact into a generalized "theme".
 - Cross-chunk reasoning ADDS connective insight AROUND the preserved quotes and facts; it NEVER replaces them. If you catch yourself summarizing a quote or a specific fact, stop and paste it instead.
-- Same quote in two chunks → keep it once, verbatim. Different quotes on one decision → keep ALL of them. When unsure whether to keep a quote/fact, keep it — completeness of Umut's actual words beats brevity.
+- Same quote in two chunks → keep it once, verbatim. Different quotes on one decision → keep ALL of them. When unsure whether to keep a quote/fact, keep it — completeness of the user's actual words beats brevity.
 
-Keep the same SOURCE ATTRIBUTION discipline: USER = Umut, ASSISTANT = the agent (never attribute the agent's words to Umut).
+Keep the same SOURCE ATTRIBUTION discipline: USER = human/operator, ASSISTANT = the agent (never attribute the agent's words to user).
 Produce the FINAL typed distillation with the four layers:
-1. SELECT/DECIDE — Umut's choices, decisions, locked positions, directions (highest value; carry through every verbatim Umut quote from the chunk distillations, word-for-word).
-2. SEE/ASK — what Umut asked, questioned, reacted to; concerns and instincts (keep his verbatim questions).
+1. SELECT/DECIDE — the user's choices, decisions, locked positions, directions (highest value; carry through every verbatim user quote from the chunk distillations, word-for-word).
+2. SEE/ASK — what user asked, questioned, reacted to; concerns and instincts (keep his verbatim questions).
 3. TELL/CONCLUDE — the agent's substantive conclusions/outcomes (attributed to the agent); keep specific findings (names, ids, commits, numbers) intact.
 4. (DROP execution mechanics.)
-Invent your own tags, surface key_insights, name PATTERNS in how Umut thinks/decides, note shifts/growth across the session. Be specific and concrete. Output structured markdown.`;
+Invent your own tags, surface key_insights, name PATTERNS in how the user thinks/decides, note shifts/growth across the session. Be specific and concrete. Output structured markdown.`;
 
 // Structured extraction of DURABLE decisions for the meaning-ledger page.
 // Bakes in the Oracle's authority-laundering guard: exploration must NOT become a decision.
 const LEDGER_EXTRACT_SYSTEM = `You convert a session distillation into a DECISION LEDGER — only the durable decisions worth recalling later.
 
 EVIDENCE CONTRACT (critical — do NOT launder exploration into decisions):
-Include an item ONLY if the USER (Umut) actually committed, shown by one of:
+Include an item ONLY if the the user actually committed, shown by one of:
 - explicit decision language ("we decided", "lock this", "let's do X", "ship it", "final")
 - accepted recommendation (user said "yes", "do that", "go ahead", "approved", "please do")
 - a stated standing preference ("I always", "by default", "never")
@@ -365,11 +365,11 @@ A hypothetical / question / "maybe we should…" / an agent's own conclusion is 
 
 COVERAGE: be COMPREHENSIVE on DURABLE decisions — capture EVERY strategic/architectural/standing decision (what to build, keep, retire, how the system should work, lasting preferences). Do NOT drop one because it resembles another; if one decision has two clauses (e.g. "build X AND keep Y"), capture BOTH clauses in the statement.
 MATERIALITY: prefer decisions with lasting consequence. DROP one-off operational approvals that won't matter next week ("continue", "go ahead on this step", "investigate that now") unless they encode a standing choice.
-FINDABILITY: each "statement" must NAME the concrete entities/systems it is about (e.g. gbrain, distillation layer, hook registration, 4090 GPU, owned-l2-facts, source boost) so it is retrievable by topic — never a vague "lock that decision".
+FINDABILITY: each "statement" must NAME the concrete entities/systems it is about (e.g. local engine, distillation layer, hook registration, 4090 GPU, owned-l2-facts, source boost) so it is retrievable by topic — never a vague "lock that decision".
 
 Output ONLY valid JSON, no prose, no code fence: an array of
-[{"statement":"<imperative decision naming its entities, in Umut's intent>","quote":"<verbatim Umut words>","confidence":"high|medium","domain":"<short-kebab-topic>"}]
-Use Umut's verbatim words for "quote". If there are no durable user decisions, output [].`;
+[{"statement":"<imperative decision naming its entities, in user's intent>","quote":"<verbatim user words>","confidence":"high|medium","domain":"<short-kebab-topic>"}]
+Use user's verbatim words for "quote". If there are no durable user decisions, output [].`;
 
 type Usage = { prompt_tokens: number; completion_tokens: number };
 
@@ -608,8 +608,8 @@ const MAP_CONCURRENCY = Math.max(1, Number(process.env.DISTILL_MAP_CONCURRENCY |
 
 type Decision = { statement: string; quote?: string; confidence?: string; domain?: string };
 
-// Render the gbrain-searchable decision-ledger page (the surface gbrain already indexes;
-// boosted via GBRAIN_SOURCE_BOOST="meaning/decisions/:1.8"). Derived artifact — never hand-edited.
+// Render the local engine-searchable decision-ledger page (the surface local engine already indexes;
+// boosted via ENGINE_BIN_SOURCE_BOOST="meaning/decisions/:1.8"). Derived artifact — never hand-edited.
 function renderLedger(decisions: Decision[], slug: string, sessionPath: string): string {
   const date = new Date().toISOString().slice(0, 10);
   const domain = (slug.split("/").pop() || "decisions").replace(/-\d{4}-\d{2}-\d{2}$/, "");
@@ -651,7 +651,7 @@ async function main() {
     rawBytes: c.rawBytes,
     cleanedChars: c.cleanedChars,
     cleanedBytes: Buffer.byteLength(transcript),
-    umutKept: c.umutKept,
+    userKept: c.userKept,
     harnessDropped: c.harnessDropped,
     agentKept: c.agentKept,
     toolResultsDropped: c.toolResultsDropped,
@@ -660,7 +660,7 @@ async function main() {
   };
   console.error("    stats:", JSON.stringify(stats));
 
-  // ── WORTH GATE (no LLM): count Umut decision-turns; skip low-worth before any spend.
+  // ── WORTH GATE (no LLM): count user decision-turns; skip low-worth before any spend.
   const decisionTurns = countDecisionTurns(c.turns);
   console.error(`worth: ${decisionTurns} decision-turns`);
   if (decisionTurns < WORTH_MIN && !FORCE) {
@@ -766,8 +766,8 @@ async function main() {
   let promptTokens = acct.promptTokens;
   let completionTokens = acct.completionTokens;
 
-  // Optional: emit a gbrain-searchable decision-ledger page (--ledger [--slug=meaning/decisions/...]).
-  // Path B+: materialize meaning into a page gbrain already indexes (boosted via GBRAIN_SOURCE_BOOST).
+  // Optional: emit a local engine-searchable decision-ledger page (--ledger [--slug=meaning/decisions/...]).
+  // Path B+: materialize meaning into a page local engine already indexes (boosted via ENGINE_BIN_SOURCE_BOOST).
   if (process.argv.includes("--ledger")) {
     console.error("[ledger] extracting durable decisions (authority-laundering guard) ...");
     const { content, usage } = await deepseek(LEDGER_EXTRACT_SYSTEM, finalDistillation);
@@ -817,7 +817,7 @@ async function main() {
     `| raw size | ${(stats.rawBytes / 1e6).toFixed(2)} MB (${stats.rawBytes.toLocaleString()} bytes) |`,
     `| cleaned size | ${(stats.cleanedBytes / 1e3).toFixed(1)} KB (${stats.cleanedBytes.toLocaleString()} bytes) |`,
     `| shrink ratio | ${(stats.rawBytes / stats.cleanedBytes).toFixed(1)}x |`,
-    `| Umut turns kept | ${stats.umutKept} |`,
+    `| User turns kept | ${stats.userKept} |`,
     `| harness turns dropped | ${stats.harnessDropped} |`,
     `| agent turns kept | ${stats.agentKept} |`,
     `| tool_result blocks dropped | ${stats.toolResultsDropped} |`,

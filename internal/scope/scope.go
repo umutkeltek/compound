@@ -42,32 +42,20 @@ type Packet struct {
 // identifiers and human decision-turns outrank tool/agent mentions.
 const (
 	wIdentifier   = 90 // exact domain/repo/bundle/port match
-	wDecisionTurn = 50 // alias inside an Umut decision-turn
-	wUmutTurn     = 30 // alias in an Umut turn
+	wDecisionTurn = 50 // alias inside a user decision-turn
+	wUserTurn     = 30 // alias in a user turn
 	wAgentTurn    = 20 // alias in an agent turn
-	wTitle        = 25 // alias in the session title (first Umut turn)
+	wTitle        = 25 // alias in the session title (first user turn)
 )
 
-// SeedEntities is a starter registry. The Authority layer will own the real one;
-// the resolver also merges any entities already in the ledger.
+// SeedEntities returns the public starter registry. Product-specific entities
+// belong in an imported registry/ledger overlay, not in the open core.
 func SeedEntities() []memory.Entity {
 	mk := func(slug string, t memory.EntityType, aliases, ids []string) memory.Entity {
 		return memory.Entity{Slug: slug, Type: t, Aliases: aliases, Identifiers: ids, VisibilityDefault: memory.VisWorld}
 	}
 	return []memory.Entity{
-		mk("compound", memory.EntProduct, []string{"compound"}, []string{"systems/compound", "github.com/umutkeltek/compound"}),
-		mk("gbrain", memory.EntTool, []string{"gbrain"}, []string{"/users/umut/gbrain"}),
-		mk("switchback", memory.EntProduct, []string{"switchback"}, []string{"18765", "18770", "18771"}),
-		mk("samplegame", memory.EntProduct, []string{"samplegame", "sample game"}, nil),
-		mk("exampleapp", memory.EntProduct, []string{"exampleapp", "exampletrack"}, []string{"example.app"}),
-		mk("umut-os", memory.EntProject, []string{"umut-os"}, []string{"projects/operating-system"}),
-		mk("infra-os", memory.EntProject, []string{"infra-os"}, nil),
-		mk("hermes", memory.EntTool, []string{"hermes"}, nil),
-		mk("openclaw", memory.EntTool, []string{"openclaw"}, nil),
-		mk("oracle", memory.EntTool, []string{"oracle"}, nil),
-		mk("mempalace", memory.EntTool, []string{"mempalace", "mem palace"}, []string{"github.com/mempalace"}),
-		mk("sampleforecast", memory.EntProduct, []string{"sampleforecast"}, []string{"sampleforecast.com"}),
-		mk("samplefin", memory.EntProduct, []string{"samplefin"}, nil),
+		mk("compound", memory.EntProduct, []string{"compound"}, []string{"systems/compound", "compound://self"}),
 	}
 }
 
@@ -132,7 +120,7 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 
 	for _, t := range c.Turns {
 		lt := strings.ToLower(t.Text)
-		dec := t.Role == distill.RoleUmut && distill.IsDecisionTurn(t)
+		dec := t.Role == distill.RoleUser && distill.IsDecisionTurn(t)
 		for _, e := range registry {
 			for _, id := range e.Identifiers {
 				if id != "" && strings.Contains(lt, id) {
@@ -146,8 +134,8 @@ func Resolve(sessionPath string, registry []memory.Entity) (*Packet, error) {
 				switch {
 				case dec:
 					add(e.Slug, "decision-turn", wDecisionTurn)
-				case t.Role == distill.RoleUmut:
-					add(e.Slug, "umut", wUmutTurn)
+				case t.Role == distill.RoleUser:
+					add(e.Slug, "user", wUserTurn)
 				default:
 					add(e.Slug, "agent", wAgentTurn)
 				}

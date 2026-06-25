@@ -49,7 +49,7 @@ export function readLedger(path: string): { positions: Position[]; source: strin
 }
 
 // ── Part B: synthesize recurring connections, grounded ──
-const CONNECT_SYSTEM = `You assemble a CONTEXT PACK from Umut's OWN material on a topic. Name the RECURRING CONNECTIONS — the concept-chains he repeatedly makes (A -> B -> C), the through-lines across his decisions and writings. Not a summary.
+const CONNECT_SYSTEM = `You assemble a CONTEXT PACK from the user's owned material on a topic. Name the RECURRING CONNECTIONS — the concept-chains he repeatedly makes (A -> B -> C), the through-lines across his decisions and writings. Not a summary.
 
 HARD GROUNDING RULE: every connection MUST end with one or more source tags drawn ONLY from the SOURCES list, formatted exactly as [src: <token>] (copy the token verbatim). If you cannot ground a connection in the provided material, DO NOT state it. No outside knowledge, no inventions. Prefer 4-8 strong connections.
 

@@ -77,7 +77,7 @@ usage:
   compound build                derive current Positions + recurring Patterns from Claims
   compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
   compound timeline <entity>    how positions on this entity evolved (walks supersedes edges)
-  compound authority import [f] | authority <project>   where projects live (from infra-os)
+  compound authority import [f] | authority <project>   where projects live (from a registry)
   compound decisions import | decisions [--kind=K] | decisions doctor   one store, kinds: policy/doctrine/operational
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
@@ -120,7 +120,7 @@ func cmdRecall(args []string) {
 		os.Exit(1)
 	}
 	plan := recall.MakePlan(query, scope.SeedEntities(), ambient)
-	res, err := recall.Run(l, engine.NewGBrain(), plan)
+	res, err := recall.Run(l, engine.NewConfigured(), plan)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "recall: %v\n", err)
 		os.Exit(1)
@@ -293,7 +293,7 @@ func cmdPack(args []string) {
 		fmt.Fprintf(&b, "\n## Recurring patterns\n%s", pb.String())
 	}
 
-	if hits, herr := engine.NewGBrain().Query(query, 6); herr == nil && len(hits) > 0 {
+	if hits, herr := engine.NewConfigured().Query(query, 6); herr == nil && len(hits) > 0 {
 		fmt.Fprintln(&b, "\n## Related (engine breadth)")
 		for _, h := range hits {
 			fmt.Fprintf(&b, "- `%s` — %s\n", h.Slug, h.Snippet)
@@ -309,8 +309,12 @@ func cmdPack(args []string) {
 	fmt.Fprintf(os.Stderr, "pack: %d positions, %d patterns, entity=%s\n", posN, patN, entity)
 }
 
-func latestBrainLedger() string {
-	matches, _ := filepath.Glob(filepath.Join(os.Getenv("HOME"), "brain/decisions/*live-decision-ledger*.md"))
+func latestOperatorDecisionLedger() string {
+	pattern := strings.TrimSpace(os.Getenv("COMPOUND_OPERATOR_DECISIONS_GLOB"))
+	if pattern == "" {
+		return ""
+	}
+	matches, _ := filepath.Glob(pattern)
 	if len(matches) == 0 {
 		return ""
 	}
@@ -331,8 +335,23 @@ func cmdDecisions(args []string) {
 
 	switch sub {
 	case "import":
-		policy, _ := decisions.ImportDEC(filepath.Join(os.Getenv("HOME"), "Projects/operating-system/decisions"))
-		doctrine, _ := decisions.ImportBrainLedger(latestBrainLedger())
+		var policy, doctrine []memory.Claim
+		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
+			var err error
+			policy, err = decisions.ImportDEC(root)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "policy decisions import: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		if ledgerPath := latestOperatorDecisionLedger(); ledgerPath != "" {
+			var err error
+			doctrine, err = decisions.ImportOperatorLedger(ledgerPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "operator decisions import: %v\n", err)
+				os.Exit(1)
+			}
+		}
 		for _, c := range policy {
 			_ = l.Append("claims", c)
 		}
@@ -340,7 +359,11 @@ func cmdDecisions(args []string) {
 			_ = l.Append("claims", c)
 		}
 		fmt.Printf("imported %d policy + %d doctrine decisions into one store (kind-separated)\n", len(policy), len(doctrine))
-		fmt.Fprintln(os.Stderr, "the 3 homes are now inputs; `compound decisions` lists them unified, `decisions doctor` checks coherence")
+		if len(policy)+len(doctrine) == 0 {
+			fmt.Fprintln(os.Stderr, "no decision sources configured; set COMPOUND_POLICY_DECISIONS_DIR and/or COMPOUND_OPERATOR_DECISIONS_GLOB")
+		} else {
+			fmt.Fprintln(os.Stderr, "`compound decisions` lists imported claims; `compound decisions doctor` checks coherence")
+		}
 		return
 
 	case "doctor":
@@ -431,6 +454,10 @@ func cmdAuthority(args []string) {
 		path := authority.DefaultRegistry()
 		if len(args) > 1 {
 			path = args[1]
+		}
+		if strings.TrimSpace(path) == "" {
+			fmt.Fprintln(os.Stderr, "authority import needs a registry path or COMPOUND_AUTHORITY_REGISTRY")
+			os.Exit(2)
 		}
 		entities, claims, err := authority.Import(path)
 		if err != nil {
@@ -587,8 +614,8 @@ func cmdDistill(args []string) {
 		fmt.Fprintf(os.Stderr, "distill: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "      %d Umut turns · %d decision-turns · %d chunks · %d calls · %d/%d tok\n",
-		res.Clean.UmutKept, res.DecisionTurns, res.Chunks, res.Calls, res.PromptTokens, res.CompletionTokens)
+	fmt.Fprintf(os.Stderr, "      %d user turns · %d decision-turns · %d chunks · %d calls · %d/%d tok\n",
+		res.Clean.UserKept, res.DecisionTurns, res.Chunks, res.Calls, res.PromptTokens, res.CompletionTokens)
 
 	fmt.Fprintln(os.Stderr, "[2/3] extracting durable decisions ...")
 	decisions, err := distill.ExtractDecisions(ctx, res.Model, res.Distillation)
