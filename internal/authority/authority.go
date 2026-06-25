@@ -14,7 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/memory"
 )
 
 // DefaultRegistry returns the configured authority registry path. The public core

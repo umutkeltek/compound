@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/umutkeltek/compound/internal/distill"
-	"github.com/umutkeltek/compound/internal/ledger"
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/distill"
+	"compound/internal/ledger"
+	"compound/internal/memory"
 )
 
 const reconcileSystem = `You are a memory reconciler. You are given CLAIMS the system currently holds about ONE entity/topic, each with an id and text. Decide their relationships, in the spirit of memory management (ADD/UPDATE/DELETE/NONE):

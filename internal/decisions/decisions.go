@@ -18,7 +18,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/memory"
 )
 
 const (

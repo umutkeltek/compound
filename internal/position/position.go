@@ -6,7 +6,7 @@ package position
 import (
 	"time"
 
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/memory"
 )
 
 // Build groups live Claims by (entity, topic) and picks the active claim

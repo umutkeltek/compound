@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/umutkeltek/compound/internal/engine"
-	"github.com/umutkeltek/compound/internal/ledger"
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/engine"
+	"compound/internal/ledger"
+	"compound/internal/memory"
 )
 
 type Mode string

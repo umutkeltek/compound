@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/memory"
 )
 
 // minClaims is the recurrence floor — a single claim is not a pattern.

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/umutkeltek/compound/internal/distill"
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/distill"
+	"compound/internal/memory"
 )
 
 const ResolverVersion = "scope-resolver-v0.2"

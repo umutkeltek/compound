@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/umutkeltek/compound/internal/ledger"
-	"github.com/umutkeltek/compound/internal/memory"
+	"compound/internal/ledger"
+	"compound/internal/memory"
 )
 
 // Decision is one durable, sourced position from the decision-ledger extract.
