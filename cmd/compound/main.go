@@ -18,6 +18,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distill"
 	"compound/internal/engine"
+	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/ledger"
 	"compound/internal/memory"
@@ -62,6 +63,8 @@ func main() {
 		cmdLedger(os.Args[2:])
 	case "home":
 		cmdHome(os.Args[2:])
+	case "envelope":
+		cmdEnvelope(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -85,6 +88,7 @@ usage:
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
   compound home <init|doctor|where> [--home P] [--local]   the COMPOUND_HOME runtime body
+  compound envelope <validate <file>...|kinds>             typed runtime envelopes
 `)
 }
 
@@ -164,6 +168,48 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
 	if !r.OK {
 		os.Exit(1)
+	}
+}
+
+// cmdEnvelope validates typed runtime envelopes (docs/architecture/runtime.md).
+func cmdEnvelope(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound envelope <validate <file>...|kinds>")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "kinds":
+		for _, k := range envelope.Kinds() {
+			fmt.Println(k)
+		}
+	case "validate":
+		files := args[1:]
+		if len(files) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound envelope validate <file>...")
+			os.Exit(2)
+		}
+		bad := 0
+		for _, f := range files {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				fmt.Printf("%s: read error: %v\n", f, err)
+				bad++
+				continue
+			}
+			kind, err := envelope.ValidateBytes(data)
+			if err != nil {
+				fmt.Printf("%s: INVALID (%s): %v\n", f, kind, err)
+				bad++
+				continue
+			}
+			fmt.Printf("%s: ok (%s)\n", f, kind)
+		}
+		if bad > 0 {
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound envelope <validate <file>...|kinds>")
+		os.Exit(2)
 	}
 }
 
