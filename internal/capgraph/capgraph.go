@@ -85,18 +85,34 @@ func (s *Store) Add(n Node) error {
 	return appendJSONL(s.nodesLog(), &n)
 }
 
-// Observe records an evolution-feedback edge from a capability observation: missed_when (the node
+// Observe records evolution-feedback edges from a capability observation: missed_when (the node
 // was relevant to a context but not surfaced) raises its future surfacing for that context;
-// false_triggered_by lowers it. This is what makes the graph LEARN.
-func (s *Store) Observe(node, signal, context string, conf float64, now time.Time) (Edge, error) {
+// false_triggered_by lowers it. A multi-word context is tokenized into ONE edge per token (so a
+// phrase context can match a task the same way Surface tokenizes), and confidence must be > 0 (a
+// zero/negative edge is inert or sign-inverted — refused loudly). This is what makes the graph LEARN.
+func (s *Store) Observe(node, signal, context string, conf float64, now time.Time) ([]Edge, error) {
 	if !FeedbackEdges[signal] {
-		return Edge{}, fmt.Errorf("observe signal must be missed_when or false_triggered_by, got %q", signal)
+		return nil, fmt.Errorf("observe signal must be missed_when or false_triggered_by, got %q", signal)
 	}
-	if strings.TrimSpace(node) == "" || strings.TrimSpace(context) == "" {
-		return Edge{}, fmt.Errorf("observe needs a node and a context")
+	if strings.TrimSpace(node) == "" {
+		return nil, fmt.Errorf("observe needs a node")
 	}
-	e := Edge{Kind: signal, From: "context:" + strings.ToLower(context), To: node, Confidence: conf, CreatedAt: now.UTC().Format(time.RFC3339)}
-	return e, appendJSONL(s.edgesLog(), &e)
+	if conf <= 0 {
+		return nil, fmt.Errorf("observe confidence must be > 0, got %.2f", conf)
+	}
+	toks := tokenList(context)
+	if len(toks) == 0 {
+		return nil, fmt.Errorf("observe context %q has no usable tokens", context)
+	}
+	var edges []Edge
+	for _, tok := range toks {
+		e := Edge{Kind: signal, From: "context:" + tok, To: node, Confidence: conf, CreatedAt: now.UTC().Format(time.RFC3339)}
+		if err := appendJSONL(s.edgesLog(), &e); err != nil {
+			return edges, err
+		}
+		edges = append(edges, e)
+	}
+	return edges, nil
 }
 
 // Surfaced is a node the graph offers for a task, with the score that ranked it. It is OFFERED,
@@ -191,14 +207,18 @@ func (s *Store) Consume(homePath string, now time.Time) (int, error) {
 			Subject    string  `json:"subject"`
 			Statement  string  `json:"statement"`
 			Detail     string  `json:"detail"`
+			Verdict    string  `json:"verdict"`
 			Confidence float64 `json:"confidence"`
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return applied, err
 		}
-		if json.Unmarshal(b, &obs) != nil || !FeedbackEdges[obs.Detail] || obs.Subject == "" || obs.Statement == "" {
-			continue // not a structured feedback observation; skip
+		// Respect adjudication: only OPERATIONALIZED feedback observations apply (a parked / low-
+		// confidence one must not silently re-weight surfacing — that would bypass the floor).
+		if json.Unmarshal(b, &obs) != nil || obs.Verdict != "operationalize" ||
+			!FeedbackEdges[obs.Detail] || obs.Subject == "" || obs.Statement == "" || obs.Confidence <= 0 {
+			continue
 		}
 		if _, err := s.Observe(obs.Subject, obs.Detail, obs.Statement, obs.Confidence, now); err != nil {
 			return applied, err
@@ -218,7 +238,7 @@ func (s *Store) loadNodes() ([]Node, error) {
 	err := readJSONL(s.nodesLog(), func(line []byte) error {
 		var n Node
 		if err := json.Unmarshal(line, &n); err != nil {
-			return err
+			return nil // skip a torn/malformed line rather than bricking the whole graph
 		}
 		if _, seen := byID[n.ID]; !seen {
 			order = append(order, n.ID)
@@ -236,16 +256,27 @@ func (s *Store) loadNodes() ([]Node, error) {
 	return out, nil
 }
 
+// loadEdges dedups last-wins by (kind, from, to), so re-Consuming the same observation is
+// IDEMPOTENT (it does not double-count a feedback edge); distinct contexts still accumulate.
 func (s *Store) loadEdges() ([]Edge, error) {
-	var out []Edge
+	byKey := map[string]Edge{}
+	var order []string
 	err := readJSONL(s.edgesLog(), func(line []byte) error {
 		var e Edge
 		if err := json.Unmarshal(line, &e); err != nil {
-			return err
+			return nil // skip a torn/malformed line
 		}
-		out = append(out, e)
+		k := e.Kind + "|" + e.From + "|" + e.To
+		if _, seen := byKey[k]; !seen {
+			order = append(order, k)
+		}
+		byKey[k] = e
 		return nil
 	})
+	out := make([]Edge, 0, len(order))
+	for _, k := range order {
+		out = append(out, byKey[k])
+	}
 	return out, err
 }
 
@@ -253,8 +284,18 @@ func (s *Store) loadEdges() ([]Edge, error) {
 
 func tokenSet(s string) map[string]bool {
 	out := map[string]bool{}
+	for _, t := range tokenList(s) {
+		out[t] = true
+	}
+	return out
+}
+
+func tokenList(s string) []string {
+	var out []string
 	for _, t := range strings.Fields(strings.ToLower(s)) {
-		out[strings.Trim(t, ".,;:!?\"'()")] = true
+		if tok := strings.Trim(t, ".,;:!?\"'()"); tok != "" {
+			out = append(out, tok)
+		}
 	}
 	return out
 }

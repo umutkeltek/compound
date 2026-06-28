@@ -210,15 +210,21 @@ func cmdCapability(args []string) {
 		signal, context := flag("--signal"), flag("--context")
 		conf := 0.8
 		if v := flag("--conf"); v != "" {
-			conf, _ = strconv.ParseFloat(v, 64)
+			parsed, perr := strconv.ParseFloat(v, 64)
+			if perr != nil {
+				die(fmt.Errorf("--conf %q is not a number: %w", v, perr))
+			}
+			conf = parsed
 		}
 		if len(node) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability observe <node> --signal <missed_when|false_triggered_by> --context <token> [--conf 0.8]")
+			fmt.Fprintln(os.Stderr, "usage: compound capability observe <node> --signal <missed_when|false_triggered_by> --context <phrase> [--conf 0.8]")
 			os.Exit(2)
 		}
-		e, err := store.Observe(node[0], signal, context, conf, time.Now())
+		edges, err := store.Observe(node[0], signal, context, conf, time.Now())
 		die(err)
-		fmt.Printf("recorded %s: %s -> %s (conf %.2f)\n", e.Kind, e.From, e.To, e.Confidence)
+		for _, e := range edges {
+			fmt.Printf("recorded %s: %s -> %s (conf %.2f)\n", e.Kind, e.From, e.To, e.Confidence)
+		}
 	case "consume":
 		n, err := store.Consume(homePath, time.Now())
 		die(err)

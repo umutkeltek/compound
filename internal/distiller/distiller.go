@@ -38,6 +38,13 @@ const (
 	KindPolicyPatch   = "policy_patch"
 )
 
+// Kinds is the typed allowlist. An unknown kind is rejected — it must never flow into a filesystem
+// path (the inbox is keyed by kind), and a typed fan-out must stay typed.
+var Kinds = []string{
+	KindMemory, KindSkill, KindDecision, KindFailure, KindTaste, KindProduct,
+	KindRoute, KindCapabilityObs, KindMethodUpgrade, KindEvalCase, KindPolicyPatch,
+}
+
 // Verdicts an adjudication can reach.
 const (
 	Reject        = "reject"
@@ -65,6 +72,7 @@ type Candidate struct {
 	Derivation    string   `json:"derivation"`
 	EvidenceRefs  []string `json:"evidence_refs"`
 	PolicyVersion string   `json:"policy_version"`
+	Verdict       string   `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
 }
 
 // Policy is the VERSIONED distillation method — so a method change is legible, not silent prompt drift.
@@ -107,6 +115,8 @@ type AdjudicationDecision struct {
 	CandidateID   string   `json:"candidate_id"`
 	Kind          string   `json:"kind"`
 	Verdict       string   `json:"verdict"`
+	Relation      string   `json:"relation,omitempty"`       // vs prior canon: new|duplicate|supersedes|contradicts
+	PriorClaimID  string   `json:"prior_claim_id,omitempty"` // the canon claim the relation points at
 	Basis         string   `json:"basis"`
 	EvidenceRefs  []string `json:"evidence_refs"`
 	PolicyVersion string   `json:"policy_version"`
@@ -137,15 +147,17 @@ func (ReferenceExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
 	}
 	for i := range t.Candidates {
 		c := &t.Candidates[i]
-		if c.Kind == "" {
-			return Trace{}, fmt.Errorf("candidate %d missing kind", i)
+		if !contains(Kinds, c.Kind) {
+			return Trace{}, fmt.Errorf("candidate %d has unknown kind %q (allowed: %v)", i, c.Kind, Kinds)
 		}
 		if c.Derivation == "" {
 			c.Derivation = "extracted"
 		}
 		c.PolicyVersion = policy.Stamp()
-		// Stable deterministic id: same trace replay ⇒ same ids (idempotent distillation).
-		c.ID = idFor("cand_", c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, t.TraceRef)
+		// Stable deterministic id over ALL identity-significant content (incl. Detail, which the
+		// capability bridge keys on) ⇒ replay = same ids, and two candidates differing only in
+		// Detail get DISTINCT ids (no silent inbox-file collision).
+		c.ID = idFor("cand_", c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail, t.TraceRef)
 		if len(c.EvidenceRefs) == 0 {
 			c.EvidenceRefs = []string{t.TraceRef}
 		}
@@ -167,6 +179,11 @@ func critique(c Candidate, prior PriorState) Critique {
 			if cl.Object == c.Object {
 				return Critique{Duplicate: true, Notes: "matches current claim " + cl.ID}
 			}
+			if c.Confidence < cl.Confidence {
+				// a weaker candidate conflicting with stronger canon is a CONTRADICTION, not a
+				// supersession — it must not silently overwrite higher-confidence current truth.
+				return Critique{Contradicts: cl.ID, Notes: fmt.Sprintf("conflicts with higher-confidence %s (%.2f < %.2f)", cl.ID, c.Confidence, cl.Confidence)}
+			}
 			return Critique{Supersedes: cl.ID, Notes: "changes " + cl.Object + " → " + c.Object}
 		}
 	}
@@ -185,6 +202,9 @@ func adjudicate(c Candidate, crit Critique) (string, string) {
 	case KindMemory:
 		if crit.Duplicate {
 			return Reject, "duplicate of current canon"
+		}
+		if crit.Contradicts != "" {
+			return Park, "contradicts higher-confidence canon " + crit.Contradicts + " — operator review"
 		}
 		return Promote, "new or superseding memory" // mem ledger performs the actual supersession
 	case KindEvalCase:
@@ -224,9 +244,19 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 	for _, c := range t.Candidates {
 		crit := critique(c, prior)
 		verdict, basis := adjudicate(c, crit)
+		c.Verdict = verdict // stamp onto the written record so a consumer respects adjudication
+		rel, priorClaim := "new", ""
+		switch {
+		case crit.Duplicate:
+			rel = "duplicate"
+		case crit.Contradicts != "":
+			rel, priorClaim = "contradicts", crit.Contradicts
+		case crit.Supersedes != "":
+			rel, priorClaim = "supersedes", crit.Supersedes
+		}
 		dec := AdjudicationDecision{
-			CandidateID: c.ID, Kind: c.Kind, Verdict: verdict, Basis: basis,
-			EvidenceRefs: c.EvidenceRefs, PolicyVersion: c.PolicyVersion, CreatedAt: rfc3339(now),
+			CandidateID: c.ID, Kind: c.Kind, Verdict: verdict, Relation: rel, PriorClaimID: priorClaim,
+			Basis: basis, EvidenceRefs: c.EvidenceRefs, PolicyVersion: c.PolicyVersion, CreatedAt: rfc3339(now),
 		}
 
 		switch {
@@ -267,6 +297,9 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 // --- persistence (under COMPOUND_HOME) ---
 
 func writeCandidate(homePath string, c Candidate) error {
+	if !contains(Kinds, c.Kind) { // belt-and-suspenders: Kind keys a path, so it must be a known typed kind
+		return fmt.Errorf("refusing to write candidate with unknown kind %q", c.Kind)
+	}
 	dir := filepath.Join(homePath, "inbox", c.Kind)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -301,3 +334,12 @@ func idFor(prefix string, parts ...string) string {
 	return prefix + hex.EncodeToString(h[:])[:12]
 }
 func rfc3339(now time.Time) string { return now.UTC().Format(time.RFC3339) }
+
+func contains(set []string, v string) bool {
+	for _, s := range set {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}

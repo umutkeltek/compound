@@ -149,6 +149,48 @@ func TestNoCandidateToAmbientWithoutAdjudication(t *testing.T) {
 	}
 }
 
+// A weaker candidate conflicting with HIGHER-confidence current canon is a CONTRADICTION → it parks
+// for operator review, never silently supersedes the stronger claim.
+func TestContradictionParks(t *testing.T) {
+	home, store := setup(t)
+	run(t, home, store, `{"trace_ref":"t1","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95}]}`)
+	res := run(t, home, store, `{"trace_ref":"t2","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"rust","confidence":0.4}]}`)
+	d := res.Decisions[0]
+	if d.Verdict != Park || d.Relation != "contradicts" {
+		t.Errorf("a 0.4 conflict vs 0.95 canon should PARK as a contradiction; got verdict=%q relation=%q", d.Verdict, d.Relation)
+	}
+	// canon unchanged — the weak contradiction did not supersede the strong claim.
+	cur, _ := store.AllCurrent()
+	if len(cur) != 1 || cur[0].Object != "go" {
+		t.Errorf("canon should still be 'go'; got %v", cur)
+	}
+}
+
+// Two candidates differing ONLY in Detail get distinct ids (no silent inbox collision).
+func TestDetailDistinguishesIDs(t *testing.T) {
+	raw := []byte(`{"trace_ref":"t","candidates":[
+	  {"kind":"capability_observation","subject":"skill:x","statement":"ctx","detail":"missed_when","confidence":0.8},
+	  {"kind":"capability_observation","subject":"skill:x","statement":"ctx","detail":"false_triggered_by","confidence":0.8}
+	]}`)
+	ext, err := ReferenceExtractor{}.Extract(raw, DefaultPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ext.Candidates[0].ID == ext.Candidates[1].ID {
+		t.Errorf("candidates differing in Detail must get distinct ids; both = %q", ext.Candidates[0].ID)
+	}
+}
+
+// An unknown / path-bearing kind is rejected — Kind keys a filesystem path and must stay typed.
+func TestUnknownKindRejected(t *testing.T) {
+	for _, k := range []string{"bogus", "../../evil"} {
+		raw := []byte(`{"trace_ref":"t","candidates":[{"kind":"` + k + `","subject":"x","confidence":0.9}]}`)
+		if _, err := (ReferenceExtractor{}).Extract(raw, DefaultPolicy()); err == nil {
+			t.Errorf("kind %q should be rejected", k)
+		}
+	}
+}
+
 func firstLine(b []byte) string {
 	for i, c := range b {
 		if c == '\n' {

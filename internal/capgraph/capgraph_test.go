@@ -107,15 +107,26 @@ func TestConsumeFromDistillerInbox(t *testing.T) {
 	// write what the distiller operationalizes: subject=node, statement=context, detail=signal.
 	dir := filepath.Join(home, "inbox", "capability_observation")
 	os.MkdirAll(dir, 0o755)
-	obs := map[string]any{"id": "cand_1", "kind": "capability_observation", "subject": "skill:cro", "statement": "paywall", "detail": EdMissedWhen, "confidence": 0.9}
+	obs := map[string]any{"id": "cand_1", "kind": "capability_observation", "subject": "skill:cro", "statement": "paywall page", "detail": EdMissedWhen, "confidence": 0.9, "verdict": "operationalize"}
 	b, _ := json.Marshal(obs)
 	os.WriteFile(filepath.Join(dir, "cand_1.json"), b, 0o644)
+	// a PARKED observation in the same inbox must NOT be applied (Consume respects adjudication).
+	parked := map[string]any{"id": "cand_2", "kind": "capability_observation", "subject": "skill:other", "statement": "signup", "detail": EdMissedWhen, "confidence": 0.3, "verdict": "park"}
+	pb, _ := json.Marshal(parked)
+	os.WriteFile(filepath.Join(dir, "cand_2.json"), pb, 0o644)
 
 	n, err := s.Consume(home, t0)
 	if err != nil || n != 1 {
-		t.Fatalf("consume should apply 1 observation, got %d (%v)", n, err)
+		t.Fatalf("consume should apply 1 (operationalized) observation, got %d (%v)", n, err)
 	}
-	if _, ok := surfaced(s, "fix the paywall")["skill:cro"]; !ok {
-		t.Error("after consuming the distiller's observation, the node must surface for that context")
+	// multi-word context "paywall page" must surface on a natural-language task (tokenized).
+	if _, ok := surfaced(s, "improve the paywall page conversion")["skill:cro"]; !ok {
+		t.Error("after consuming the observation, the node must surface for that (tokenized) context")
+	}
+	// re-consume must be IDEMPOTENT — surfacing score unchanged.
+	score1 := surfaced(s, "fix the paywall")["skill:cro"]
+	s.Consume(home, t0)
+	if score2 := surfaced(s, "fix the paywall")["skill:cro"]; score2 != score1 {
+		t.Errorf("re-consume must be idempotent: score %v -> %v", score1, score2)
 	}
 }
