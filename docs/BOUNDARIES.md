@@ -50,8 +50,11 @@ Private overlays include:
 - local retrieval engine configuration;
 - organization-specific policies.
 
-Private overlays can use the same core interfaces, but they must live outside the
-public repository.
+Private overlays can use the same core interfaces, but they must never be tracked or
+shipped. They live either outside the public repository, or in a gitignored in-tree
+directory (`docs_private/`) that is never committed. A gitignored in-tree overlay is
+convenient but reachable by `git add -f` or a removed ignore rule, so the public/private
+contamination check plus a redact scan gate every commit.
 
 ## Adapter Contract
 
