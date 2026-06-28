@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/contract"
 	"compound/internal/decisions"
 	"compound/internal/distill"
 	"compound/internal/engine"
@@ -65,6 +66,10 @@ func main() {
 		cmdHome(os.Args[2:])
 	case "envelope":
 		cmdEnvelope(os.Args[2:])
+	case "contract":
+		cmdContract(os.Args[2:])
+	case "orient":
+		cmdOrient(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -89,7 +94,95 @@ usage:
   compound ledger stat          record counts per object kind
   compound home <init|doctor|where> [--home P] [--local]   the COMPOUND_HOME runtime body
   compound envelope <validate <file>...|kinds>             typed runtime envelopes
+  compound contract compile --harness H --cwd D --task T   compile the EffectiveContract in force
+  compound orient --harness H [--cwd D] [--task T]         the ContextPack to orient from (records excluded)
 `)
+}
+
+// parseOrientArgs reads the shared orientation flags and resolves the repo kind
+// (explicit flag > committed marker > product default). Path-independent by design.
+func parseOrientArgs(args []string) contract.Input {
+	var harness, cwd, task, repoKind, mode string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--harness":
+			if i+1 < len(args) {
+				i++
+				harness = args[i]
+			}
+		case "--cwd":
+			if i+1 < len(args) {
+				i++
+				cwd = args[i]
+			}
+		case "--task":
+			if i+1 < len(args) {
+				i++
+				task = args[i]
+			}
+		case "--repo-kind":
+			if i+1 < len(args) {
+				i++
+				repoKind = args[i]
+			}
+		case "--mode":
+			if i+1 < len(args) {
+				i++
+				mode = args[i]
+			}
+		}
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	kind, via := contract.ResolveRepoKind(repoKind, cwd)
+	return contract.Input{Harness: harness, Cwd: cwd, Task: task, RepoKind: kind, RepoKindVia: via, Mode: mode}
+}
+
+func orientPolicy() contract.OrientationPolicy {
+	homePath, _ := home.Resolve("") // empty if none; LoadPolicy falls back to the built-in default
+	pol, _, err := contract.LoadPolicy(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	return pol
+}
+
+func printJSON(v any) {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(b))
+}
+
+// cmdContract compiles the EffectiveContract — the instructions/hooks/policies in force
+// for a harness+repo+task (docs/architecture/contracts/README.md).
+func cmdContract(args []string) {
+	if len(args) == 0 || args[0] != "compile" {
+		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
+		os.Exit(2)
+	}
+	in := parseOrientArgs(args[1:])
+	if in.Harness == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
+		os.Exit(2)
+	}
+	printJSON(contract.Compile(in, orientPolicy(), time.Now()))
+}
+
+// cmdOrient assembles the ContextPack an agent orients from. The excluded list — what
+// was NOT loaded and why — is required, so OS-governance context is not ambient noise
+// in a product repo.
+func cmdOrient(args []string) {
+	in := parseOrientArgs(args)
+	if in.Harness == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>]")
+		os.Exit(2)
+	}
+	printJSON(contract.Pack(in, orientPolicy(), time.Now()))
 }
 
 // cmdHome manages COMPOUND_HOME — the runtime body (docs/architecture/runtime.md).
