@@ -28,7 +28,7 @@ const (
 // EvidenceItem is immutable, citable raw material. Never "truth" — only material.
 type EvidenceItem struct {
 	ID          string     `json:"id"`
-	SourceKind  string     `json:"source_kind"` // claude_code, codex, hermes, openclaw, repo, note...
+	SourceKind  string     `json:"source_kind"` // e.g. claude_code, codex, agent_harness, repo, note
 	SourceID    string     `json:"source_id"`
 	SessionID   string     `json:"session_id,omitempty"`
 	TurnID      string     `json:"turn_id,omitempty"`

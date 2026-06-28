@@ -1,6 +1,6 @@
 // Package pattern surfaces recurring through-lines — (entity, topic) the owner
 // returns to across multiple sessions. These are HYPOTHESES with support, not
-// canon (Oracle: "across N claims and M sessions the owner repeatedly..."). The
+// canon (e.g. "across N claims and M sessions the owner repeatedly..."). The
 // semantic version (an LLM naming the through-line) is a later pass; this is the
 // deterministic recurrence detector. See docs/memory-architecture.md.
 package pattern

@@ -38,7 +38,7 @@ type Packet struct {
 	ResolverVersion string       `json:"resolver_version"`
 }
 
-// Scoring weights (Oracle's shape, adapted to content signals): explicit
+// Scoring weights (adapted to content signals): explicit
 // identifiers and human decision-turns outrank tool/agent mentions.
 const (
 	wIdentifier   = 90 // exact domain/repo/bundle/port match
