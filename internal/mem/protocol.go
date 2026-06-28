@@ -43,17 +43,20 @@ type Request struct {
 	Claims    []ClaimText `json:"claims,omitempty"`
 
 	// query
-	Text      string   `json:"text,omitempty"`
-	Gate      string   `json:"gate,omitempty"`
-	Allowlist []string `json:"allowlist,omitempty"`
+	Text string `json:"text,omitempty"`
+	Gate string `json:"gate,omitempty"`
+	// NOT omitempty: an empty allowlist under gate:list means "match nothing" (fail-closed). If it
+	// were dropped from the wire, a sidecar could misread an absent field as "no filter" = fail-open.
+	Allowlist []string `json:"allowlist"`
 	K         int      `json:"k,omitempty"`
 }
 
 // Response is one protocol reply. ok=false carries a typed error; logs never ride this channel.
 type Response struct {
-	OK        bool       `json:"ok"`
-	RequestID string     `json:"request_id,omitempty"`
-	Error     *WireError `json:"error,omitempty"`
+	OK            bool       `json:"ok"`
+	SchemaVersion int        `json:"schema_version,omitempty"` // engine echoes its protocol version; skew is a hard refuse
+	RequestID     string     `json:"request_id"`               // NOT omitempty: a missing id can't masquerade as a match
+	Error         *WireError `json:"error,omitempty"`
 
 	// capabilities
 	Name     string `json:"name,omitempty"`

@@ -133,7 +133,6 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 		adj[e.To] = append(adj[e.To], e)
 	}
 	seen := map[string]bool{}
-	usedRel := map[string]Edge{}
 	frontier := append([]string{}, res.SeedEntities...)
 	for _, e := range frontier {
 		seen[e] = true
@@ -146,7 +145,6 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 				if other == ent {
 					other = e.From
 				}
-				usedRel[relKey(e)] = e
 				if seen[other] {
 					continue
 				}
@@ -175,10 +173,16 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 		}
 	}
 	sort.Slice(res.Claims, func(i, j int) bool { return res.Claims[i].Seq < res.Claims[j].Seq })
-	for _, e := range usedRel {
-		// only relations fully inside the reached set
+	// ALL confidence-gated relations among the reached entities — including frontier cross-edges the
+	// BFS never traversed (it stops expanding at the depth boundary but the edge still connects two
+	// in-set entities), deduped.
+	emitted := map[string]bool{}
+	for _, e := range rels {
 		if entSet[e.From] && entSet[e.To] {
-			res.Relations = append(res.Relations, e)
+			if k := relKey(e); !emitted[k] {
+				emitted[k] = true
+				res.Relations = append(res.Relations, e)
+			}
 		}
 	}
 	sort.Slice(res.Relations, func(i, j int) bool { return res.Relations[i].Seq < res.Relations[j].Seq })

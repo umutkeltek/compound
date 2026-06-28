@@ -188,6 +188,14 @@ func cmdMemory(args []string) {
 		}
 		return out
 	}
+	// firstPos returns the first positional, correctly skipping value flags placed BEFORE it (plain
+	// pos() would consume a flag's value as the entity/seed/id).
+	firstPos := func(valueFlags map[string]bool) string {
+		if p := positionals(valueFlags); len(p) > 0 {
+			return p[0]
+		}
+		return ""
+	}
 
 	switch sub {
 	case "candidate":
@@ -230,7 +238,7 @@ func cmdMemory(args []string) {
 		if v := flag("--min-conf"); v != "" {
 			minConf, _ = strconv.ParseFloat(v, 64)
 		}
-		sg, err := store.RecallGraph(pos(), depth, budget, minConf)
+		sg, err := store.RecallGraph(firstPos(map[string]bool{"--depth": true, "--budget": true, "--min-conf": true}), depth, budget, minConf)
 		die(err)
 		fmt.Println("# " + sg.Coverage)
 		if len(sg.SeedEntities) > 0 {
@@ -243,7 +251,7 @@ func cmdMemory(args []string) {
 			fmt.Printf("  %s -%s-> %s  (conf %.2f)\n", r.From, r.Kind, r.To, r.Confidence)
 		}
 	case "adjudicate":
-		res, err := store.Adjudicate(pos(), flag("--verdict"), flag("--work"), time.Now())
+		res, err := store.Adjudicate(firstPos(map[string]bool{"--verdict": true, "--work": true}), flag("--verdict"), flag("--work"), time.Now())
 		die(err)
 		if res.Claim != nil {
 			line := fmt.Sprintf("%s: promoted claim %s (seq %d)", res.Candidate.ID, res.Claim.ID, res.Claim.Seq)
@@ -262,7 +270,7 @@ func cmdMemory(args []string) {
 		if v := flag("--as-of"); v != "" {
 			asOf, _ = strconv.ParseInt(v, 10, 64)
 		}
-		rr, err := store.Recall(pos(), mem.RecallOpts{AsOfSeq: asOf, IncludeRetired: has("--include-retired")})
+		rr, err := store.Recall(firstPos(map[string]bool{"--as-of": true}), mem.RecallOpts{AsOfSeq: asOf, IncludeRetired: has("--include-retired")})
 		die(err)
 		fmt.Println("# " + rr.Coverage)
 		for _, c := range rr.Claims {
@@ -283,14 +291,14 @@ func cmdMemory(args []string) {
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
 		// otherwise the in-process lexical engine. A model swap is a HARD refuse, not a degrade.
 		eng, closeEng := memBreadthEngine()
-		defer closeEng()
 		claims, err := store.QueryBreadth(pos(), 10, eng)
+		closeEng() // tear down the held engine BEFORE any exit/return (os.Exit skips defers)
 		switch {
 		case errors.Is(err, mem.ErrUnsupported), errors.Is(err, mem.ErrEngineUnavailable):
 			fmt.Println("# no breadth engine — exact/as-of recall available via `compound memory recall`")
 			return
-		case errors.Is(err, mem.ErrEmbedderMismatch):
-			fmt.Fprintln(os.Stderr, "error: breadth engine embedder mismatch (refusing breadth, not degrading):", err)
+		case errors.Is(err, mem.ErrEmbedderMismatch), errors.Is(err, mem.ErrProtocolVersion):
+			fmt.Fprintln(os.Stderr, "error: breadth engine refused (not degrading):", err)
 			os.Exit(1)
 		}
 		die(err)

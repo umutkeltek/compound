@@ -30,6 +30,14 @@ func RunReferenceEngine(in io.Reader, out io.Writer, embedder string) error {
 		}
 		var resp Response
 		resp.RequestID = req.RequestID
+		resp.SchemaVersion = ProtocolVersion
+		if req.SchemaVersion != 0 && req.SchemaVersion != ProtocolVersion {
+			resp.OK, resp.Error = false, &WireError{Code: CodeBadRequest, Message: "unsupported schema_version"}
+			if err := enc.Encode(&resp); err != nil {
+				return err
+			}
+			continue
+		}
 		switch req.Op {
 		case OpCapabilities:
 			resp.OK, resp.Name, resp.Breadth, resp.Embedder, resp.Ready, resp.CorpusGen = true, "reference", true, embedder, ready, gen

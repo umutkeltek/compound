@@ -14,6 +14,7 @@ var (
 	ErrUnsupported       = errors.New("capability not supported by this engine")
 	ErrEngineUnavailable = errors.New("breadth engine unavailable (transport down) — ledger answers exact/as-of")
 	ErrEmbedderMismatch  = errors.New("engine embedder does not match the indexed embedder (refusing breadth, not degrading)")
+	ErrProtocolVersion   = errors.New("engine protocol version skew (refusing breadth, not degrading)")
 )
 
 // Gate decouples the visibility decision from the allowlist CONTENTS. GateList honors the

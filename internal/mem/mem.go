@@ -492,13 +492,52 @@ func (s *Store) withLock(fn func() error) error {
 	return fn()
 }
 
+// nextSeq mints the next monotonic-unique seq under the caller's lock. It FAILS LOUD on a corrupt
+// counter (never silently resets to 1), SELF-HEALS from the immutable logs (the counter must exceed
+// every seq already on disk — claims and edges share the seq space), and persists atomically
+// (temp + rename) so an O_TRUNC-then-crash can't leave an empty counter.
 func (s *Store) nextSeq() (int64, error) {
 	cur := int64(0)
 	if b, err := os.ReadFile(s.seqFile()); err == nil {
-		cur, _ = strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+		if t := strings.TrimSpace(string(b)); t != "" {
+			v, perr := strconv.ParseInt(t, 10, 64)
+			if perr != nil {
+				return 0, fmt.Errorf("corrupt seq counter %q: %w", t, perr)
+			}
+			cur = v
+		}
+	}
+	hi, err := s.maxLedgerSeq()
+	if err != nil {
+		return 0, err
+	}
+	if hi > cur {
+		cur = hi // a lost/zeroed counter heals to above everything on disk
 	}
 	cur++
-	return cur, os.WriteFile(s.seqFile(), []byte(strconv.FormatInt(cur, 10)), 0o644)
+	tmp := s.seqFile() + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(cur, 10)), 0o644); err != nil {
+		return 0, err
+	}
+	return cur, os.Rename(tmp, s.seqFile())
+}
+
+// maxLedgerSeq is the highest seq across claims AND edges (they share the seq space: relate-edges
+// and supersedes edges both draw from nextSeq).
+func (s *Store) maxLedgerSeq() (int64, error) {
+	claims, err := s.loadClaims()
+	if err != nil {
+		return 0, err
+	}
+	hi := s.maxSeq(claims)
+	err = readJSONL(s.edgesLog(), func(line []byte) error {
+		var e Edge
+		if json.Unmarshal(line, &e) == nil && e.Seq > hi {
+			hi = e.Seq
+		}
+		return nil
+	})
+	return hi, err
 }
 
 func (s *Store) loadClaims() ([]Claim, error) {
@@ -526,7 +565,21 @@ func (s *Store) supersededAsOf(asOf int64) (map[string]bool, error) {
 		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	// Also honor each claim's own Supersedes pointer, so a lost/torn supersedes-edge append can
+	// never leave two "current" claims for one entity+predicate (the new claim records what it replaced).
+	claims, err := s.loadClaims()
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range claims {
+		if c.Supersedes != "" && c.Seq <= asOf {
+			out[c.Supersedes] = true
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) maxSeq(claims []Claim) int64 {

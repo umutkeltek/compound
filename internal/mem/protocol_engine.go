@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"time"
 )
 
 // Transport carries one protocol round-trip. The wire is the swap seam: a held coprocess (warm
@@ -22,8 +23,9 @@ type Transport interface {
 // the RAM-resident index stays warm across queries (no reload per call). Serialized by a mutex
 // (single-writer through the held pipe). stderr is the engine's log channel; stdout is data only.
 type HeldCoprocessTransport struct {
-	argv []string
-	env  []string
+	argv    []string
+	env     []string
+	timeout time.Duration
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -33,7 +35,13 @@ type HeldCoprocessTransport struct {
 }
 
 func NewHeldCoprocess(argv, extraEnv []string) *HeldCoprocessTransport {
-	return &HeldCoprocessTransport{argv: argv, env: extraEnv}
+	to := 10 * time.Second
+	if v := os.Getenv("COMPOUND_MEM_ENGINE_TIMEOUT"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			to = time.Duration(secs) * time.Second
+		}
+	}
+	return &HeldCoprocessTransport{argv: argv, env: extraEnv, timeout: to}
 }
 
 func (t *HeldCoprocessTransport) start() error {
@@ -51,13 +59,25 @@ func (t *HeldCoprocessTransport) start() error {
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		stdin.Close() // don't leak the stdin fd if StdoutPipe fails
 		return err
 	}
 	if err := cmd.Start(); err != nil {
+		stdin.Close()
 		return err
 	}
 	t.cmd, t.enc, t.dec, t.started = cmd, json.NewEncoder(stdin), json.NewDecoder(stdout), true
 	return nil
+}
+
+// teardownLocked kills+reaps the held process and clears the warm state, so the NEXT call re-spawns
+// cleanly and a desynced json.Decoder is discarded. Caller holds t.mu.
+func (t *HeldCoprocessTransport) teardownLocked() {
+	if t.cmd != nil && t.cmd.Process != nil {
+		_ = t.cmd.Process.Kill()
+		_ = t.cmd.Wait()
+	}
+	t.cmd, t.enc, t.dec, t.started = nil, nil, nil, false
 }
 
 func (t *HeldCoprocessTransport) RoundTrip(req Request) (Response, error) {
@@ -68,24 +88,46 @@ func (t *HeldCoprocessTransport) RoundTrip(req Request) (Response, error) {
 			return Response{}, err
 		}
 	}
-	if err := t.enc.Encode(req); err != nil {
-		return Response{}, err
+	// Run the framed exchange with a deadline so a hung sidecar can't block forever under the lock.
+	// On ANY error (encode/decode/timeout/id-desync) we tear the transport down and reset, so the
+	// next call re-spawns instead of staying wedged on a broken pipe or a desynced decoder.
+	enc, dec := t.enc, t.dec
+	type result struct {
+		resp Response
+		err  error
 	}
-	var resp Response
-	if err := t.dec.Decode(&resp); err != nil {
-		return Response{}, err
+	ch := make(chan result, 1)
+	go func() {
+		if err := enc.Encode(req); err != nil {
+			ch <- result{err: err}
+			return
+		}
+		var resp Response
+		err := dec.Decode(&resp)
+		ch <- result{resp: resp, err: err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			t.teardownLocked()
+			return Response{}, r.err
+		}
+		if r.resp.RequestID != req.RequestID {
+			// framing desync: the engine wrote an extra/duplicate object to the data channel.
+			t.teardownLocked()
+			return Response{}, fmt.Errorf("engine response id %q != request id %q (framing desync)", r.resp.RequestID, req.RequestID)
+		}
+		return r.resp, nil
+	case <-time.After(t.timeout):
+		t.teardownLocked() // kill so the blocked Decode returns and the pipe/child are released
+		return Response{}, fmt.Errorf("engine round-trip timed out after %s", t.timeout)
 	}
-	return resp, nil
 }
 
 func (t *HeldCoprocessTransport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.cmd != nil && t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
-		_ = t.cmd.Wait()
-		t.cmd, t.started = nil, false
-	}
+	t.teardownLocked()
 	return nil
 }
 
@@ -158,6 +200,10 @@ func (e *ProtocolEngine) ensureProbe() error {
 		e.probeErr = ErrEngineUnavailable
 		return e.probeErr
 	}
+	if resp.SchemaVersion != 0 && resp.SchemaVersion != ProtocolVersion {
+		e.probeErr = fmt.Errorf("%w: engine speaks v%d, core speaks v%d", ErrProtocolVersion, resp.SchemaVersion, ProtocolVersion)
+		return e.probeErr
+	}
 	if e.expectedEmbedder != "" && resp.Embedder != e.expectedEmbedder {
 		e.probeErr = fmt.Errorf("%w: indexed with %q, engine reports %q", ErrEmbedderMismatch, e.expectedEmbedder, resp.Embedder)
 		return e.probeErr
@@ -217,8 +263,12 @@ func wireErr(resp Response) error {
 	if resp.Error == nil {
 		return fmt.Errorf("engine error (no detail)")
 	}
-	if resp.Error.Code == CodeEmbedderMismatch {
-		return fmt.Errorf("%w: %s", ErrEmbedderMismatch, resp.Error.Message)
+	switch resp.Error.Code {
+	case CodeEmbedderMismatch, CodeDimMismatch:
+		// both are identity-class: wrong vectors → HARD refuse, never a silent degrade.
+		return fmt.Errorf("%w: [%s] %s", ErrEmbedderMismatch, resp.Error.Code, resp.Error.Message)
+	default:
+		// index_missing / stale_generation / bad_request: surfaced with their code (callers can branch).
+		return fmt.Errorf("engine error [%s]: %s", resp.Error.Code, resp.Error.Message)
 	}
-	return fmt.Errorf("engine error [%s]: %s", resp.Error.Code, resp.Error.Message)
 }

@@ -95,6 +95,32 @@ func TestRecallGraphSeedMiss(t *testing.T) {
 	}
 }
 
+// A relation between two reached entities at the depth FRONTIER (never traversed because the BFS
+// stops expanding there) must still be reported — relations are "all edges among reached entities".
+func TestRecallGraphFrontierRelation(t *testing.T) {
+	s := newStore(t)
+	mk := func(e string) {
+		c, _ := s.Capture([]Candidate{cand(e, "k", "v", "")}, t0)
+		s.Adjudicate(c[0].ID, "promote", "", t0)
+	}
+	mk("app")
+	mk("x")
+	mk("y")
+	s.Relate("app", "relates", "x", 0.9, t0)
+	s.Relate("app", "relates", "y", 0.9, t0)
+	s.Relate("x", "relates", "y", 0.9, t0) // boundary cross-edge: x and y are reached but never expanded
+	sg, _ := s.RecallGraph("app", 1, 20, 0) // depth 1 reaches app,x,y; x and y are frontier (not expanded)
+	hasXY := false
+	for _, r := range sg.Relations {
+		if (r.From == "x" && r.To == "y") || (r.From == "y" && r.To == "x") {
+			hasXY = true
+		}
+	}
+	if !hasXY {
+		t.Errorf("the x-y boundary relation (both ends reached) must be reported; relations=%v", sg.Relations)
+	}
+}
+
 // The structured extractor parses both a bare candidate array and an {candidates, relations} object.
 func TestStructuredExtractor(t *testing.T) {
 	bare := []byte(`[{"entity":"e","predicate":"p","object":"o","derivation":"extracted","source_trace_ref":"t","confidence":0.9}]`)

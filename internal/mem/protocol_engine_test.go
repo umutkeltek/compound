@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 )
 
 // TestMain lets the test binary re-exec itself AS the reference engine, so the held-coprocess
@@ -23,6 +24,7 @@ type fakeTransport struct {
 	gen                    int64
 	ready                  bool
 	embedder               string
+	schemaVersion          int // 0 = unstamped (tolerated); set != ProtocolVersion to test skew
 	indexCalls, queryCalls int
 	calls, failAfter       int // failAfter>=0: RoundTrip errors once calls exceed it
 }
@@ -34,7 +36,7 @@ func (f *fakeTransport) RoundTrip(req Request) (Response, error) {
 	}
 	switch req.Op {
 	case OpCapabilities:
-		return Response{OK: true, Name: "fake", Breadth: true, Embedder: f.embedder, Ready: f.ready, CorpusGen: f.gen}, nil
+		return Response{OK: true, SchemaVersion: f.schemaVersion, Name: "fake", Breadth: true, Embedder: f.embedder, Ready: f.ready, CorpusGen: f.gen}, nil
 	case OpIndex:
 		f.indexCalls++
 		if f.ready && req.CorpusGen == f.gen {
@@ -120,6 +122,59 @@ func TestProtocolUnavailableDegrades(t *testing.T) {
 	_, err := s.QueryBreadth("v", 10, eng)
 	if !errors.Is(err, ErrEngineUnavailable) {
 		t.Errorf("a down engine must degrade to ErrEngineUnavailable; got %v", err)
+	}
+}
+
+// Protocol-version skew is a HARD refuse (ErrProtocolVersion), not a degrade.
+func TestProtocolSchemaSkew(t *testing.T) {
+	s := storeWith(t, "x", "p", "v")
+	ft := &fakeTransport{embedder: "e", failAfter: -1, schemaVersion: ProtocolVersion + 1}
+	if _, err := s.QueryBreadth("v", 10, NewProtocolEngine(ft, "e")); !errors.Is(err, ErrProtocolVersion) {
+		t.Errorf("a protocol-version skew must hard-refuse with ErrProtocolVersion; got %v", err)
+	}
+}
+
+// dim_mismatch is identity-class and must map to ErrEmbedderMismatch (hard refuse).
+func TestWireErrMapping(t *testing.T) {
+	for _, code := range []string{CodeDimMismatch, CodeEmbedderMismatch} {
+		if !errors.Is(wireErr(Response{Error: &WireError{Code: code, Message: "x"}}), ErrEmbedderMismatch) {
+			t.Errorf("%s should map to ErrEmbedderMismatch", code)
+		}
+	}
+}
+
+// A non-responding sidecar must TIME OUT (and get killed), not hang forever holding the lock.
+func TestHeldCoprocessTimeout(t *testing.T) {
+	tr := &HeldCoprocessTransport{argv: []string{"sleep", "30"}, timeout: 200 * time.Millisecond}
+	defer tr.Close()
+	start := time.Now()
+	if _, err := tr.RoundTrip(Request{SchemaVersion: ProtocolVersion, RequestID: "r1", Op: OpCapabilities}); err == nil {
+		t.Error("a non-responding engine should time out, not hang")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("round-trip should have timed out fast, took %s", elapsed)
+	}
+}
+
+// Fail-closed across the REAL JSON wire: GateList + an empty allowlist (which omitempty would have
+// dropped) must still match nothing — proving the omitempty fix and the reference engine agree.
+func TestWireFailClosedAcrossWire(t *testing.T) {
+	tr := NewHeldCoprocess([]string{os.Args[0]}, []string{"COMPOUND_MOCK_ENGINE=1", "MOCK_EMBEDDER=ref:test:0:0"})
+	eng := NewProtocolEngine(tr, "ref:test:0:0")
+	defer eng.Close()
+	if err := eng.Index([]Claim{{ID: "c1", Entity: "x", Predicate: "lang", Object: "go"}}, 1); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := eng.Query("lang", GateList, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("GateList + empty allowlist over the real wire must fail closed; got %d hits", len(empty))
+	}
+	allowed, _ := eng.Query("lang", GateList, []string{"c1"}, 10)
+	if len(allowed) != 1 {
+		t.Errorf("an allowed id should match across the wire; got %d", len(allowed))
 	}
 }
 
