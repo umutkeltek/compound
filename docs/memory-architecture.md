@@ -140,6 +140,50 @@ canon. The discipline, learned under execution pressure:
   supports finalize/resume from those checkpoints — never re-pay upstream chunk calls when a late
   synthesis step fails or exceeds context.
 
+## Adopted Patterns (external-systems synthesis, 2026-06-28)
+
+A blind audit of eight memory/storage systems (mem0, mempalace, agentmemory, OpenViking, tidb,
+turbovec, a Postgres brain-layer, graphify/codegraph) converged on a small set of mechanisms. They validated
+this architecture (owned ledger + rented engine + relevance-gated recall + candidate-first adjudication)
+and sharpen it. The patterns, by the axis they improve:
+
+**ALIVE (delta / temporal) — MVCC-by-fold.** The append-only ledger carries a monotonic `seq` (a logical
+version clock). A supersession edge *is* the version chain; a claim/edge carries `valid_from` / `valid_to`
+(`current = valid_to is null`) and supersedes by stamping `valid_to`, never by deleting. "As of T" recall
+is a deterministic **fold** of the ledger bounded by `seq ≤ T`; "what changed from X to Y" is fold-to-X vs
+fold-to-Y diffed. Compaction is a periodic **materialized checkpoint snapshot** of folded Positions/Patterns
+at `seq N` — so `now` reads are fast — but claims are **never garbage-collected**: history is the product.
+
+**ACCURATE — provenance everywhere, contradiction over deletion.** Every Evidence→Claim and Claim→Claim
+edge is tagged with how it was derived (`deterministic | extracted | inferred | ambiguous`) and a
+confidence; `ambiguous` auto-surfaces for review, and unresolved claims sit in a queue awaiting evidence.
+A contradicted claim gets a **contradiction edge** and supersession, never a hard delete (retire by
+visibility). Adjudication is **LLM-extracts / code-decides**: the model proposes facts only — it may not
+update or delete — with relative dates resolved to absolute at extraction (observation date ≠ current date),
+and existing claim ids remapped to small integers before the model sees them (it cannot invent ids).
+
+**SMART — task-shaped recall, not flat top-k.** Hard filters (visibility/retired/scope/time) run before any
+engine breadth. Recall then seed-matches, walks **bounded typed edges** (BFS/DFS) around the seeds, and
+returns a **token-budget-trimmed subgraph** plus a **coverage verdict** — on a gap it names the missing
+claim rather than fabricating a trace. Patterns are computed **structurally** (high-degree claims =
+load-bearing positions; high-betweenness cross-cluster bridges = contradiction/cross-domain candidates),
+no LLM required. Temperature is a **derived** score (`salience·decay + reinforcement-on-access`), not a
+hand-assigned tier, with `salience` driven by evidence-count and position-strength.
+
+**EFFICIENT — the engine rents, and is cheap.** The `MemoryEngine` advertises a `capabilities` set
+(unsupported ops raise, never silently no-op) and holds only vectors/ids/metadata — zero authoritative
+state. Vector rows are stamped `<provider:model>:<dims>` + a corpus-generation hash, so a model/prompt/dim
+swap is detected as stale and only drifted rows re-embed; opening a store with a different embedder is a
+hard error. Claims carry tiered summaries (abstract / overview / detail) so recall returns the cheap tier
+and drills down on demand. The default engine is a no-op/local one (the ledger alone answers exact and
+delta queries); a quantized ANN engine (turbovec) is the breadth `Query` adapter — its allowlist is honored
+in-kernel, so "hard filters before breadth" stays cheap rather than a recall-losing post-filter.
+
+> Rationale, per-system attribution, the turbovec integration decision, and the rejected anti-patterns
+> (LLM-as-memory-manager, lexical contradiction, post-engine filtering, graph-RAG, hyperscale machinery)
+> are recorded in the private audit synthesis. Engines stay swappable; the typed Claim/Position/Pattern
+> edge graph with provenance is the part compound owns.
+
 ## Language And Runtime
 
 The core is Go: CLI, ledger, scope, recall planning, importers, and future local
