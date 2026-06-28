@@ -61,31 +61,46 @@ const confidenceFloor = 0.5
 // Candidate is a typed, untrusted extraction. memory-kind carries entity/predicate/object; other
 // kinds carry subject/statement/detail. All cite evidence and the policy version that produced them.
 type Candidate struct {
-	ID            string   `json:"id"`
-	Kind          string   `json:"kind"`
-	Entity        string   `json:"entity,omitempty"`
-	Predicate     string   `json:"predicate,omitempty"`
-	Object        string   `json:"object,omitempty"`
-	Subject       string   `json:"subject,omitempty"`
-	Statement     string   `json:"statement,omitempty"`
-	Detail        string   `json:"detail,omitempty"`
-	Confidence    float64  `json:"confidence"`
-	Derivation    string   `json:"derivation"`
-	EvidenceRefs  []string `json:"evidence_refs"`
-	PolicyVersion string   `json:"policy_version"`
-	Verdict       string   `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
+	ID             string   `json:"id"`
+	Kind           string   `json:"kind"`
+	Entity         string   `json:"entity,omitempty"`
+	Predicate      string   `json:"predicate,omitempty"`
+	Object         string   `json:"object,omitempty"`
+	Subject        string   `json:"subject,omitempty"`
+	Statement      string   `json:"statement,omitempty"`
+	Detail         string   `json:"detail,omitempty"`
+	Confidence     float64  `json:"confidence"`
+	Derivation     string   `json:"derivation"`
+	PromotionBasis string   `json:"promotion_basis,omitempty"` // memory-kind: the basis that allows promotion (candidates.PromotionBases); empty = none
+	EvidenceRefs   []string `json:"evidence_refs"`
+	PolicyVersion  string   `json:"policy_version"`
+	Verdict        string   `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
 }
+
+// Promotion modes: in live_candidate_only (the DEFAULT for real traces) a memory candidate parks
+// unless it carries a promotion basis — a model extraction's confidence is never a basis. The
+// fixture mode promotes on confidence and is for synthetic fixtures/tests only.
+const (
+	ModeLiveCandidateOnly  = "live_candidate_only"
+	ModeFixtureAutoPromote = "fixture_auto_promote"
+)
 
 // Policy is the VERSIONED distillation method — so a method change is legible, not silent prompt drift.
 type Policy struct {
-	ID      string   `json:"id"`
-	Version int      `json:"version"`
-	Lenses  []string `json:"lenses"`
+	ID            string   `json:"id"`
+	Version       int      `json:"version"`
+	PromotionMode string   `json:"promotion_mode"`
+	Lenses        []string `json:"lenses"`
 }
 
+// DefaultPolicy is live_candidate_only: nothing model-extracted promotes to canon without a basis.
 func DefaultPolicy() Policy {
-	return Policy{ID: "default", Version: 1, Lenses: []string{"memory", "skill", "decision", "failure", "capability", "method"}}
+	return Policy{ID: "default", Version: 1, PromotionMode: ModeLiveCandidateOnly,
+		Lenses: []string{"memory", "skill", "decision", "failure", "capability", "method"}}
 }
+
+// FixturePolicy is DefaultPolicy in fixture_auto_promote mode — synthetic fixtures/tests only.
+func FixturePolicy() Policy { p := DefaultPolicy(); p.PromotionMode = ModeFixtureAutoPromote; return p }
 
 // PolicyVersionString is the stable stamp every candidate carries.
 func (p Policy) Stamp() string { return fmt.Sprintf("%s.v%d", p.ID, p.Version) }
@@ -113,16 +128,17 @@ type Critique struct {
 
 // AdjudicationDecision is the durable verdict a candidate receives.
 type AdjudicationDecision struct {
-	CandidateID   string   `json:"candidate_id"`
-	Kind          string   `json:"kind"`
-	Verdict       string   `json:"verdict"`
-	Relation      string   `json:"relation,omitempty"`       // vs prior canon: new|duplicate|supersedes|contradicts
-	PriorClaimID  string   `json:"prior_claim_id,omitempty"` // the canon claim the relation points at
-	Basis         string   `json:"basis"`
-	EvidenceRefs  []string `json:"evidence_refs"`
-	PolicyVersion string   `json:"policy_version"`
-	ClaimID       string   `json:"claim_id,omitempty"` // set when a memory candidate promotes to a claim
-	CreatedAt     string   `json:"created_at"`
+	CandidateID    string   `json:"candidate_id"`
+	Kind           string   `json:"kind"`
+	Verdict        string   `json:"verdict"`
+	Relation       string   `json:"relation,omitempty"`        // vs prior canon: new|duplicate|supersedes|contradicts
+	PriorClaimID   string   `json:"prior_claim_id,omitempty"`  // the canon claim the relation points at
+	Basis          string   `json:"basis"`                     // the reason text for the verdict
+	PromotionBasis string   `json:"promotion_basis,omitempty"` // the structured basis that allowed a memory promote
+	EvidenceRefs   []string `json:"evidence_refs"`
+	PolicyVersion  string   `json:"policy_version"`
+	ClaimID        string   `json:"claim_id,omitempty"` // set when a memory candidate promotes to a claim
+	CreatedAt      string   `json:"created_at"`
 }
 
 // Trace is the structured input the reference extractor consumes (the LLM extractor produces this
@@ -195,7 +211,7 @@ func critique(c Candidate, prior PriorState) Critique {
 // rejects; new/changed memory promotes; a distiller mistake or a capability observation
 // OPERATIONALIZES (into its corpus/graph); a method upgrade or policy patch PARKS (an operator
 // reviews — a method change is never auto-applied); other kinds park as candidates.
-func adjudicate(c Candidate, crit Critique) (string, string) {
+func adjudicate(c Candidate, crit Critique, mode string) (string, string) {
 	if c.Confidence < confidenceFloor {
 		return Park, fmt.Sprintf("confidence %.2f below floor %.2f", c.Confidence, confidenceFloor)
 	}
@@ -207,7 +223,12 @@ func adjudicate(c Candidate, crit Critique) (string, string) {
 		if crit.Contradicts != "" {
 			return Park, "contradicts higher-confidence canon " + crit.Contradicts + " — operator review"
 		}
-		return Promote, "new or superseding memory" // mem ledger performs the actual supersession
+		// memory is evidence, not truth: in live mode a model-extracted fact PARKS unless it carries
+		// a promotion basis. High confidence is not a basis — that is the whole point.
+		if mode != ModeFixtureAutoPromote && !candidates.ValidBasis(c.PromotionBasis) {
+			return Park, "no promotion basis (extraction confidence is not a basis) — parked for operator/basis"
+		}
+		return Promote, "new or superseding memory (basis: " + c.PromotionBasis + ")" // mem ledger performs the actual supersession
 	case KindEvalCase:
 		return Operationalize, "added to the distiller's eval corpus"
 	case KindCapabilityObs:
@@ -244,7 +265,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 
 	for _, c := range t.Candidates {
 		crit := critique(c, prior)
-		verdict, basis := adjudicate(c, crit)
+		verdict, basis := adjudicate(c, crit, policy.PromotionMode)
 		c.Verdict = verdict // stamp onto the written record so a consumer respects adjudication
 		rel, priorClaim := "new", ""
 		switch {
@@ -257,7 +278,8 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 		}
 		dec := AdjudicationDecision{
 			CandidateID: c.ID, Kind: c.Kind, Verdict: verdict, Relation: rel, PriorClaimID: priorClaim,
-			Basis: basis, EvidenceRefs: c.EvidenceRefs, PolicyVersion: c.PolicyVersion, CreatedAt: rfc3339(now),
+			Basis: basis, PromotionBasis: c.PromotionBasis, EvidenceRefs: c.EvidenceRefs,
+			PolicyVersion: c.PolicyVersion, CreatedAt: rfc3339(now),
 		}
 
 		switch {
@@ -266,6 +288,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 			got, err := store.Capture([]mem.Candidate{{
 				Entity: c.Entity, Predicate: c.Predicate, Object: c.Object,
 				Confidence: c.Confidence, Derivation: c.Derivation,
+				PromotionBasis: c.PromotionBasis, // persist the "why" of promotion onto the claim
 				SourceTraceRef: t.TraceRef, Visibility: "operational",
 			}}, now)
 			if err != nil {

@@ -23,9 +23,16 @@ func setup(t *testing.T) (string, *mem.Store) {
 	return home, store
 }
 
+// run uses FixturePolicy (auto-promote) so the dup/supersede/contradict MECHANICS tests below stay
+// about the ledger, not the promotion-basis gate. The basis gate has its own tests (live mode).
 func run(t *testing.T, home string, store *mem.Store, raw string) RunResult {
 	t.Helper()
-	res, err := Run(home, store, []byte(raw), DefaultPolicy(), ReferenceExtractor{}, t0)
+	return runWith(t, home, store, raw, FixturePolicy())
+}
+
+func runWith(t *testing.T, home string, store *mem.Store, raw string, p Policy) RunResult {
+	t.Helper()
+	res, err := Run(home, store, []byte(raw), p, ReferenceExtractor{}, t0)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -190,6 +197,51 @@ func TestUnknownKindRejected(t *testing.T) {
 		if _, err := (ReferenceExtractor{}).Extract(raw, DefaultPolicy()); err == nil {
 			t.Errorf("kind %q should be rejected", k)
 		}
+	}
+}
+
+// In live mode (the DEFAULT), a high-confidence model-extracted memory candidate with NO promotion
+// basis PARKS — "the model was confident" is not a basis. Canon stays empty.
+func TestLiveModeParksMemoryWithoutBasis(t *testing.T) {
+	home, store := setup(t)
+	res := runWith(t, home, store,
+		`{"trace_ref":"t","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95}]}`,
+		DefaultPolicy())
+	if res.Decisions[0].Verdict != Park {
+		t.Errorf("live-mode memory without a basis must PARK; got %q (%s)", res.Decisions[0].Verdict, res.Decisions[0].Basis)
+	}
+	if cur, _ := store.AllCurrent(); len(cur) != 0 {
+		t.Errorf("nothing should be canon without a basis; got %d claims", len(cur))
+	}
+}
+
+// With a valid promotion basis, the same candidate PROMOTES and the basis is persisted on the claim
+// (the recallable "why" of canon — the first convergence increment of memory.PromotionBasis onto mem).
+func TestLiveModePromotesWithBasisPersisted(t *testing.T) {
+	home, store := setup(t)
+	raw := `{"trace_ref":"t","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95,"promotion_basis":"` + candidates.BasisExplicitConfirmation + `"}]}`
+	res := runWith(t, home, store, raw, DefaultPolicy())
+	d := res.Decisions[0]
+	if d.Verdict != Promote || d.ClaimID == "" {
+		t.Fatalf("a memory with an explicit_confirmation basis must promote; got %q claim=%q", d.Verdict, d.ClaimID)
+	}
+	if d.PromotionBasis != candidates.BasisExplicitConfirmation {
+		t.Errorf("the decision should record the basis; got %q", d.PromotionBasis)
+	}
+	cur, _ := store.AllCurrent()
+	if len(cur) != 1 || cur[0].PromotionBasis != candidates.BasisExplicitConfirmation {
+		t.Errorf("the promoted claim must carry the basis; got %+v", cur)
+	}
+}
+
+// An unknown basis string is treated as NO basis (parks) — only allowlisted bases promote.
+func TestLiveModeInvalidBasisParks(t *testing.T) {
+	home, store := setup(t)
+	res := runWith(t, home, store,
+		`{"trace_ref":"t","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95,"promotion_basis":"vibes"}]}`,
+		DefaultPolicy())
+	if res.Decisions[0].Verdict != Park {
+		t.Errorf("an unknown basis must be treated as no basis (park); got %q", res.Decisions[0].Verdict)
 	}
 }
 

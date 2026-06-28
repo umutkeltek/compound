@@ -41,6 +41,31 @@ const (
 	NoPromote      = "no_promote"
 )
 
+// PromotionBasis — the ONLY grounds on which a memory candidate may promote to canon. "the model
+// extracted it with high confidence" is deliberately NOT one of them: high confidence is not a
+// promotion basis (memory is evidence, not truth). This is the CANONICAL home for the taxonomy;
+// internal/memory.PromotionBasis converges here (it is a converge→retire package — see arch).
+const (
+	BasisExplicitConfirmation = "explicit_confirmation"        // the user decided it
+	BasisCuratedPage          = "curated_page"                 // it is in a curated source
+	BasisDecisionRecord       = "decision_record"              // backed by a Decision
+	BasisRuntimeProof         = "runtime_proof"                // proven by a run / state delta
+	BasisTrustedDeterministic = "trusted_deterministic_import" // a trusted deterministic importer/adapter
+)
+
+// PromotionBases is the allowlist; an empty or unknown basis means "no basis" (parks in live mode).
+var PromotionBases = []string{BasisExplicitConfirmation, BasisCuratedPage, BasisDecisionRecord, BasisRuntimeProof, BasisTrustedDeterministic}
+
+// ValidBasis reports whether s is a recognized promotion basis.
+func ValidBasis(s string) bool {
+	for _, b := range PromotionBases {
+		if b == s {
+			return true
+		}
+	}
+	return false
+}
+
 // Spec is everything the kernel needs to know about one candidate kind: where it lands, which
 // verdicts it may receive, and who consumes it. Consumer is what the architecture doctor uses to
 // prove "every inbox dir has a producer or consumer" — no orphan directories.

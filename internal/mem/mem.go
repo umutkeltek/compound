@@ -49,8 +49,9 @@ type Candidate struct {
 	ObservationDate string  `json:"observation_date"` // temporal grounding (when the fact was true)
 	Confidence      float64 `json:"confidence"`
 	Derivation      string  `json:"derivation"`
-	SourceTraceRef  string  `json:"source_trace_ref"` // provenance: where it came from
-	SnippetHash     string  `json:"snippet_hash"`     // bounded snippet, not the raw body
+	PromotionBasis  string  `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
+	SourceTraceRef  string  `json:"source_trace_ref"`          // provenance: where it came from
+	SnippetHash     string  `json:"snippet_hash"`              // bounded snippet, not the raw body
 	Visibility      string  `json:"visibility"`
 	State           string  `json:"state"` // proposed | parked | promoted | rejected
 	Reason          string  `json:"reason,omitempty"`
@@ -60,18 +61,19 @@ type Candidate struct {
 // Claim is a durable, IMMUTABLE assertion in the ledger. It is never mutated or deleted;
 // supersession and validity are derived from the seq order + supersedes edges (MVCC-by-fold).
 type Claim struct {
-	ID           string   `json:"id"`
-	Seq          int64    `json:"seq"` // monotonic version clock
-	Entity       string   `json:"entity"`
-	Predicate    string   `json:"predicate"`
-	Object       string   `json:"object"`
-	ValidFrom    string   `json:"valid_from"` // observation date (immutable)
-	Confidence   float64  `json:"confidence"`
-	Derivation   string   `json:"derivation"`    // provenance: how derived
-	EvidenceRefs []string `json:"evidence_refs"` // provenance: source candidate/trace
-	Supersedes   string   `json:"supersedes,omitempty"`
-	Visibility   string   `json:"visibility"`
-	CreatedAt    string   `json:"created_at"`
+	ID             string   `json:"id"`
+	Seq            int64    `json:"seq"` // monotonic version clock
+	Entity         string   `json:"entity"`
+	Predicate      string   `json:"predicate"`
+	Object         string   `json:"object"`
+	ValidFrom      string   `json:"valid_from"` // observation date (immutable)
+	Confidence     float64  `json:"confidence"`
+	Derivation     string   `json:"derivation"`                // provenance: how derived
+	PromotionBasis string   `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
+	EvidenceRefs   []string `json:"evidence_refs"`             // provenance: source candidate/trace
+	Supersedes     string   `json:"supersedes,omitempty"`
+	Visibility     string   `json:"visibility"`
+	CreatedAt      string   `json:"created_at"`
 }
 
 // Edge is an append-only relation between claims. Its seq is when the relation took effect,
@@ -202,17 +204,18 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 			return err
 		}
 		claim = Claim{
-			ID:           idFor("claim_", c.Entity, c.Predicate, c.Object, strconv.FormatInt(seq, 10)),
-			Seq:          seq,
-			Entity:       c.Entity,
-			Predicate:    c.Predicate,
-			Object:       c.Object,
-			ValidFrom:    orDef(c.ObservationDate, rfc3339(now)),
-			Confidence:   c.Confidence,
-			Derivation:   c.Derivation,
-			EvidenceRefs: []string{c.ID, c.SourceTraceRef},
-			Visibility:   orDef(c.Visibility, "operational"),
-			CreatedAt:    rfc3339(now),
+			ID:             idFor("claim_", c.Entity, c.Predicate, c.Object, strconv.FormatInt(seq, 10)),
+			Seq:            seq,
+			Entity:         c.Entity,
+			Predicate:      c.Predicate,
+			Object:         c.Object,
+			ValidFrom:      orDef(c.ObservationDate, rfc3339(now)),
+			Confidence:     c.Confidence,
+			Derivation:     c.Derivation,
+			PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
+			EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
+			Visibility:     orDef(c.Visibility, "operational"),
+			CreatedAt:      rfc3339(now),
 		}
 		if hasPrior {
 			claim.Supersedes = prior.ID
