@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/arch"
 	"compound/internal/authority"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
@@ -96,9 +97,37 @@ func main() {
 		cmdDistiller(os.Args[2:])
 	case "capability":
 		cmdCapability(os.Args[2:])
+	case "architecture":
+		cmdArchitecture(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
+	}
+}
+
+// cmdArchitecture runs the architecture doctor: candidate-map integrity, total package
+// classification (a new unclassified package fails), public-doc leak gate, and the visible
+// memory-stack convergence debt. Exits non-zero if any check FAILs.
+func cmdArchitecture(args []string) {
+	if len(args) == 0 || args[0] != "doctor" {
+		fmt.Fprintln(os.Stderr, "usage: compound architecture doctor [--repo <path>]")
+		os.Exit(2)
+	}
+	repo := "."
+	for i := 1; i < len(args)-1; i++ {
+		if args[i] == "--repo" {
+			repo = args[i+1]
+		}
+	}
+	r := arch.Doctor(repo)
+	for _, f := range r.Findings {
+		fmt.Printf("  [%-4s] %-14s %s\n", f.Severity, f.Check, f.Message)
+	}
+	if r.OK {
+		fmt.Println("verdict: ok")
+	} else {
+		fmt.Println("verdict: FAIL")
+		os.Exit(1)
 	}
 }
 
