@@ -18,6 +18,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distill"
 	"compound/internal/engine"
+	"compound/internal/home"
 	"compound/internal/ledger"
 	"compound/internal/memory"
 	"compound/internal/pattern"
@@ -59,6 +60,8 @@ func main() {
 		cmdPack(os.Args[2:])
 	case "ledger":
 		cmdLedger(os.Args[2:])
+	case "home":
+		cmdHome(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -81,7 +84,87 @@ usage:
   compound decisions import | decisions [--kind=K] | decisions doctor   one store, kinds: policy/doctrine/operational
   compound pack "<topic>"       breadth via the rented engine
   compound ledger stat          record counts per object kind
+  compound home <init|doctor|where> [--home P] [--local]   the COMPOUND_HOME runtime body
 `)
+}
+
+// cmdHome manages COMPOUND_HOME — the runtime body (docs/architecture/runtime.md).
+// The first envelope-first brick: generated state lives here, never in the repo.
+func cmdHome(args []string) {
+	flagHome, sub, kind := "", "", "global"
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--home" && i+1 < len(args):
+			flagHome = args[i+1]
+			i++
+		case a == "--local":
+			kind = "local"
+		case a == "--global":
+			kind = "global"
+		case strings.HasPrefix(a, "-"):
+			// ignore unknown flags
+		case sub == "":
+			sub = a
+		}
+	}
+	resolve := func() string {
+		p, err := home.Resolve(flagHome)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return p
+	}
+	switch sub {
+	case "init":
+		var hp string
+		if flagHome == "" && kind == "local" && os.Getenv("COMPOUND_HOME") == "" {
+			lp, err := home.LocalPath()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			hp = lp
+		} else {
+			hp = resolve()
+		}
+		if err := home.Init(hp, kind, time.Now()); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("compound home initialized: %s (%s)\n", hp, kind)
+	case "where":
+		fmt.Println(resolve())
+	case "doctor", "":
+		printHomeDoctor(home.Doctor(resolve()))
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where> [--home <path>] [--local|--global]")
+		os.Exit(2)
+	}
+}
+
+func homeOKStr(b bool) string {
+	if b {
+		return "ok"
+	}
+	return "MISSING"
+}
+
+func printHomeDoctor(r home.Report) {
+	// generated state must not be tracked: a global home inside a git repo is the
+	// smell; a --local home inside a repo is fine if it is gitignored.
+	smell := r.InsideGitRepo && r.Manifest.HomeKind != "local"
+	fmt.Printf("home: %s\n", r.Home)
+	fmt.Printf("kind: %s\n", r.Manifest.HomeKind)
+	fmt.Printf("manifest: %s\n", homeOKStr(r.ManifestOK))
+	fmt.Printf("dirs: %d/%d ok\n", r.DirsOK, len(home.Dirs))
+	fmt.Printf("inside_git_repo: %v\n", r.InsideGitRepo)
+	fmt.Printf("generated_state_in_repo_source: %v\n", smell)
+	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
+	if !r.OK {
+		os.Exit(1)
+	}
 }
 
 func ledgerRoot() string {
