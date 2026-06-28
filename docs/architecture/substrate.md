@@ -97,6 +97,31 @@ This is what stops "Claude knows one version, Codex another," and what lets gove
 adapters* (a mutation requires a `PolicyDecision`), not merely asked for in a prompt. Full schemas and the
 hook-as-client design: `runtime.md`.
 
+### The spine, concretely (what's built; what to adapt vs. port)
+
+"The spine" is not a new thing to build — it is what these slices already are:
+
+| Spine role | compound (Go, public core) |
+|---|---|
+| typed runtime grammar | `internal/envelope` (P1) |
+| orientation compiler ("what applies now") | `internal/contract` → EffectiveContract + ContextPack (P2) |
+| one work identity | `internal/work` → WorkEnvelope lifecycle (P3) |
+| governance gate | `internal/policy` → ActionIntent → PolicyDecision (P4) |
+| per-harness capability model + lifecycle | `internal/harness` (HarnessRegistry) + `internal/hook` (P5) |
+
+A mature **TS control-spine already implements this same pattern** — an `effective-contract` compiler,
+`gen-*` generators that project one owned source into per-harness views, `check-*` coherence gates, and
+per-harness capability graphs. compound is its **Go-native, public-core generalization**, not a rewrite from
+zero: the load-bearing contracts are extracted (above); the operator's actual steering/topology/lanes stay in
+the **private overlay** (P7), never the public core.
+
+**Adapt the pattern, do not port the code.** The one piece compound does not yet have is the TS spine's
+**projection + coherence step**: turning the owned source into actual per-harness config *files* (a served
+`AGENTS.md`/hooks/MCP definitions) plus a drift gate proving generated == source. Today compound produces
+runtime *objects* (a ContextPack); generating *served config* is a later slice (P7 overlay + a `spine
+project`/`spine check` step). Porting the TS spine wholesale would drag the personal control plane into the
+public core (a leak and a lock-in) — so compound rents it as source material and owns the generic engine.
+
 ## Kernel services (target) mapped onto existing layers
 
 The 6 layers in `../LAYERS.md` (Memory = building; Authority, Decisions = early importers; Procedures,

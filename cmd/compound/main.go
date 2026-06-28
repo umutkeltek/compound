@@ -20,7 +20,9 @@ import (
 	"compound/internal/distill"
 	"compound/internal/engine"
 	"compound/internal/envelope"
+	"compound/internal/harness"
 	"compound/internal/home"
+	"compound/internal/hook"
 	"compound/internal/ledger"
 	"compound/internal/memory"
 	"compound/internal/pattern"
@@ -76,6 +78,10 @@ func main() {
 		cmdWork(os.Args[2:])
 	case "policy":
 		cmdPolicy(os.Args[2:])
+	case "hook":
+		cmdHook(os.Args[2:])
+	case "harness":
+		cmdHarness(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -104,7 +110,83 @@ usage:
   compound orient --harness H [--cwd D] [--task T]         the ContextPack to orient from (records excluded)
   compound work <create|show|list|claim|advance|close|act> one work_id: intent->context->action->receipt->transition
   compound policy evaluate <action-intent.json>            governance v0: ActionIntent -> PolicyDecision (rc 0/3/4)
+  compound hook <name> <fixture.json>                      run a lifecycle hook over a fixture (capability-aware)
+  compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
 `)
+}
+
+// cmdHarness prints the HarnessRegistry — the spine's record of what each harness
+// verifiably supports and where it is weak (docs/architecture/runtime.md §3).
+func cmdHarness(args []string) {
+	reg := harness.DefaultRegistry()
+	target := "list"
+	if len(args) > 0 {
+		target = args[0]
+	}
+	print1 := func(h harness.Harness) {
+		c := h.Capabilities
+		fmt.Printf("%s  (%s)%s\n", h.Name, h.InstructionMechanism, fallbackTag(h.Fallback))
+		fmt.Printf("  hooks: session_start=%v user_prompt=%v pre_tool_block=%v post_tool=%v session_end=%v | skills=%v mcp=%v\n",
+			c.SessionStartContext, c.UserPromptContext, c.PreToolUseBlock, c.PostToolUseEvent, c.SessionEndReceipt, c.NativeSkills, c.MCP)
+		for _, l := range h.Limitations {
+			fmt.Printf("  limitation: %s\n", l)
+		}
+	}
+	if target == "list" {
+		for _, n := range reg.Names() {
+			h, _ := reg.Get(n)
+			print1(h)
+		}
+		return
+	}
+	h, ok := reg.Get(target)
+	if !ok {
+		fmt.Printf("(unknown harness %q — falling back to generic)\n", target)
+	}
+	print1(h)
+}
+
+func fallbackTag(b bool) string {
+	if b {
+		return "  [fallback]"
+	}
+	return ""
+}
+
+// cmdHook runs one lifecycle hook over a fixture, producing typed envelopes. Capability-
+// aware per harness; no live install (docs/architecture/runtime.md §3, roadmap P5).
+func cmdHook(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> <fixture.json>")
+		os.Exit(2)
+	}
+	hookName, fixturePath := args[0], args[1]
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	var fx hook.Fixture
+	if err := json.Unmarshal(data, &fx); err != nil {
+		fmt.Fprintln(os.Stderr, "error: parse hook fixture:", err)
+		os.Exit(1)
+	}
+	fx.Hook = hookName // the CLI verb is authoritative
+
+	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientPolicy(), Policy: policyConfig()}
+	if homePath, err := home.Resolve(""); err == nil {
+		if store, err := work.Open(homePath); err == nil {
+			deps.Store = store // session-end needs it; others tolerate nil
+		}
+	}
+
+	res, err := hook.Run(fx, deps, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	printJSON(res)
+	fmt.Fprintf(os.Stderr, "[%s/%s] %s — %s\n", fx.Harness, res.Event.Status, res.Event.HookName, res.Summary)
 }
 
 // gateExit maps a policy outcome to a scriptable exit code (0 allow, 3 hold, 4 deny).

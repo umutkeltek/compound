@@ -96,13 +96,13 @@ type CreateInput struct {
 	Privacy          string // default "private"
 }
 
-// Create writes a new WorkEnvelope and its first lifecycle event, returning the work.
-func (s *Store) Create(in CreateInput, now time.Time) (envelope.WorkEnvelope, error) {
-	state := orDefault(in.State, "ready")
-	w := envelope.WorkEnvelope{
+// BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
+// then persists) and by callers that need a candidate (e.g. a UserPromptSubmit hook).
+func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
+	return envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, idFor("work_", in.Owner, in.SuccessPredicate, ts(now)), now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
-		State:              state,
+		State:              orDefault(in.State, "ready"),
 		DesiredOutcome:     in.DesiredOutcome,
 		SuccessPredicate:   in.SuccessPredicate,
 		NonGoals:           orEmpty(in.NonGoals),
@@ -111,6 +111,12 @@ func (s *Store) Create(in CreateInput, now time.Time) (envelope.WorkEnvelope, er
 		VerificationIDs:    []string{},
 		MemoryCandidateIDs: []string{},
 	}
+}
+
+// Create writes a new WorkEnvelope and its first lifecycle event, returning the work.
+func (s *Store) Create(in CreateInput, now time.Time) (envelope.WorkEnvelope, error) {
+	w := BuildWork(in, now)
+	state := w.State
 	if err := w.Validate(); err != nil {
 		return w, err
 	}
