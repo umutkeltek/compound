@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/decisions"
 	"compound/internal/distill"
@@ -93,6 +94,8 @@ func main() {
 		cmdMemory(os.Args[2:])
 	case "distiller":
 		cmdDistiller(os.Args[2:])
+	case "capability":
+		cmdCapability(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -126,7 +129,114 @@ usage:
   compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
   compound memory <candidate|adjudicate|recall|timeline|query|relate|graph|doctor>  P6: claim ledger + as-of recall + rented-engine breadth + task-shaped graph recall
   compound distiller run <trace.json>                      P6: trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator (model extracts, code decides)
+  compound capability <add|surface|observe|consume|list>   P8: capability graph — auto-surface (never auto-execute), learns from observations
 `)
+}
+
+// cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
+// execute them), and learn which capability fits which context from the distiller's observations.
+func cmdCapability(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list> ...")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	sub, rest := args[0], args[1:]
+	flag := func(name string) string {
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == name && i+1 < len(rest) {
+				return rest[i+1]
+			}
+		}
+		return ""
+	}
+	posn := func(valueFlags map[string]bool) []string {
+		var out []string
+		for i := 0; i < len(rest); i++ {
+			a := rest[i]
+			if strings.HasPrefix(a, "-") {
+				if valueFlags[a] {
+					i++
+				}
+				continue
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+	die := func(e error) {
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "error:", e)
+			os.Exit(1)
+		}
+	}
+
+	switch sub {
+	case "add":
+		p := posn(map[string]bool{"--triggers": true})
+		if len(p) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability add <id> <kind> <name> --triggers a,b,c")
+			os.Exit(2)
+		}
+		var trig []string
+		if t := flag("--triggers"); t != "" {
+			trig = strings.Split(t, ",")
+		}
+		die(store.Add(capgraph.Node{ID: p[0], Kind: p[1], Name: p[2], Triggers: trig}))
+		fmt.Printf("added node %s (%s)\n", p[0], p[1])
+	case "surface":
+		p := posn(nil)
+		if len(p) == 0 {
+			fmt.Fprintln(os.Stderr, `usage: compound capability surface "<task>"`)
+			os.Exit(2)
+		}
+		hits, err := store.Surface(p[0])
+		die(err)
+		fmt.Printf("# %d capabilit(ies) surfaced for %q (offered, NOT executed)\n", len(hits), p[0])
+		for _, h := range hits {
+			fmt.Printf("  %-28s %-12s score %.1f  [%s]\n", h.Node.ID, h.Node.Kind, h.Score, h.Why)
+		}
+	case "observe":
+		node := posn(map[string]bool{"--signal": true, "--context": true, "--conf": true})
+		signal, context := flag("--signal"), flag("--context")
+		conf := 0.8
+		if v := flag("--conf"); v != "" {
+			conf, _ = strconv.ParseFloat(v, 64)
+		}
+		if len(node) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability observe <node> --signal <missed_when|false_triggered_by> --context <token> [--conf 0.8]")
+			os.Exit(2)
+		}
+		e, err := store.Observe(node[0], signal, context, conf, time.Now())
+		die(err)
+		fmt.Printf("recorded %s: %s -> %s (conf %.2f)\n", e.Kind, e.From, e.To, e.Confidence)
+	case "consume":
+		n, err := store.Consume(homePath, time.Now())
+		die(err)
+		fmt.Printf("applied %d capability observation(s) from the distiller inbox\n", n)
+	case "list":
+		nodes, err := store.List()
+		die(err)
+		for _, n := range nodes {
+			tag := ""
+			if n.Retired {
+				tag = " [retired]"
+			}
+			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list> ...")
+		os.Exit(2)
+	}
 }
 
 // cmdDistiller is the P6 distillation front-end: trace → prior state → candidate set → critic →
