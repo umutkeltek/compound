@@ -1,7 +1,8 @@
-// Command compound is the personal-OS CLI. v1 covers the Memory layer.
-// Architecture: docs/memory-architecture.md. The owned spine (object model,
-// ledger, scope/query planning, promotion) lives in internal/; storage is rented
-// behind internal/engine.
+// Command compound is the CLI for the compound information kernel / transition substrate.
+// Built envelope-first: the proven spine is P0-P5 (home, envelopes, contract/orient, work,
+// policy, harness/hook). Memory is one slice on top (P6, re-bound through the spine), not the
+// system boundary. Legacy/prototype memory-era commands still exist below and will be migrated.
+// Architecture: docs/architecture/{substrate,runtime,transition}.md, docs/roadmap/phases.md.
 package main
 
 import (
@@ -82,6 +83,8 @@ func main() {
 		cmdHook(os.Args[2:])
 	case "harness":
 		cmdHarness(os.Args[2:])
+	case "transition":
+		cmdTransition(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -112,7 +115,36 @@ usage:
   compound policy evaluate <action-intent.json>            governance v0: ActionIntent -> PolicyDecision (rc 0/3/4)
   compound hook <name> <fixture.json>                      run a lifecycle hook over a fixture (capability-aware)
   compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
+  compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
 `)
+}
+
+// cmdTransition gives proof-by-transition a first-class read path: inspect a Transition
+// (or any emitted envelope) by id under COMPOUND_HOME/events, validated through the spine.
+func cmdTransition(args []string) {
+	if len(args) < 2 || args[0] != "show" {
+		fmt.Fprintln(os.Stderr, "usage: compound transition show <id>")
+		os.Exit(2)
+	}
+	id := args[1]
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	path := filepath.Join(homePath, "events", id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: not found under COMPOUND_HOME/events:", id)
+		os.Exit(1)
+	}
+	kind, verr := envelope.ValidateBytes(data)
+	fmt.Println(string(data))
+	if verr != nil {
+		fmt.Fprintf(os.Stderr, "[%s] INVALID: %v\n", kind, verr)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "[%s] ok\n", kind)
 }
 
 // cmdHarness prints the HarnessRegistry — the spine's record of what each harness

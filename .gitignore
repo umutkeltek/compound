@@ -7,3 +7,6 @@ bin/
 docs_private/
 *.private.md
 .compound-private/
+
+# External memory systems cloned for audit (P6 evidence-gathering, never vendored)
+memory/
