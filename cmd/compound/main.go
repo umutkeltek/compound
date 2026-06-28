@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/ledger"
+	"compound/internal/mem"
 	"compound/internal/memory"
 	"compound/internal/pattern"
 	"compound/internal/policy"
@@ -85,6 +87,8 @@ func main() {
 		cmdHarness(os.Args[2:])
 	case "transition":
 		cmdTransition(os.Args[2:])
+	case "memory":
+		cmdMemory(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -116,7 +120,132 @@ usage:
   compound hook <name> <fixture.json>                      run a lifecycle hook over a fixture (capability-aware)
   compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
   compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
+  compound memory <candidate|adjudicate|recall|timeline|doctor>  P6: candidate -> claim -> as-of recall (MVCC-by-fold)
 `)
+}
+
+// cmdMemory is P6: the owned memory ledger re-bound through the spine. candidate-first
+// (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
+func cmdMemory(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|doctor>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	sub, rest := args[0], args[1:]
+	flag := func(name string) string {
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == name && i+1 < len(rest) {
+				return rest[i+1]
+			}
+		}
+		return ""
+	}
+	has := func(name string) bool {
+		for _, a := range rest {
+			if a == name {
+				return true
+			}
+		}
+		return false
+	}
+	pos := func() string {
+		for _, a := range rest {
+			if !strings.HasPrefix(a, "-") {
+				return a
+			}
+		}
+		return ""
+	}
+	die := func(e error) {
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "error:", e)
+			os.Exit(1)
+		}
+	}
+
+	switch sub {
+	case "candidate":
+		data, err := os.ReadFile(pos())
+		die(err)
+		var cands []mem.Candidate
+		die(json.Unmarshal(data, &cands))
+		got, err := store.Capture(cands, time.Now())
+		die(err)
+		for _, c := range got {
+			fmt.Printf("captured %s  %s.%s = %s  (%s)\n", c.ID, c.Entity, c.Predicate, c.Object, c.State)
+		}
+	case "adjudicate":
+		res, err := store.Adjudicate(pos(), flag("--verdict"), flag("--work"), time.Now())
+		die(err)
+		if res.Claim != nil {
+			line := fmt.Sprintf("%s: promoted claim %s (seq %d)", res.Candidate.ID, res.Claim.ID, res.Claim.Seq)
+			if res.Superseded != "" {
+				line += " superseding " + res.Superseded
+			}
+			fmt.Println(line)
+			if res.Transition != nil {
+				fmt.Printf("  transition %s — %s\n", res.Transition.ID, res.Transition.StateDelta)
+			}
+		} else {
+			fmt.Printf("%s: %s%s\n", res.Candidate.ID, res.Verdict, dashNote(res.Note))
+		}
+	case "recall":
+		var asOf int64
+		if v := flag("--as-of"); v != "" {
+			asOf, _ = strconv.ParseInt(v, 10, 64)
+		}
+		rr, err := store.Recall(pos(), mem.RecallOpts{AsOfSeq: asOf, IncludeRetired: has("--include-retired")})
+		die(err)
+		fmt.Println("# " + rr.Coverage)
+		for _, c := range rr.Claims {
+			fmt.Printf("%s.%s = %s  (seq %d, since %s, %s, conf %.2f)\n", c.Entity, c.Predicate, c.Object, c.Seq, c.ValidFrom, c.Derivation, c.Confidence)
+		}
+	case "timeline":
+		claims, err := store.Timeline(pos())
+		die(err)
+		for _, c := range claims {
+			arrow := "  +"
+			if c.Supersedes != "" {
+				arrow = "  ->"
+			}
+			fmt.Printf("%s seq %-3d %s.%s = %s\n", arrow, c.Seq, c.Entity, c.Predicate, c.Object)
+		}
+	case "doctor":
+		r := store.Doctor()
+		for _, h := range r.Hops {
+			fmt.Printf("%-15s %-8s %s\n", h.Name, h.Status, h.Detail)
+		}
+		fmt.Printf("verdict: %s — %s\n", okStr(r.OK), r.Note)
+		if !r.OK {
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|doctor> ...")
+		os.Exit(2)
+	}
+}
+
+func dashNote(n string) string {
+	if n == "" {
+		return ""
+	}
+	return " — " + n
+}
+func okStr(b bool) string {
+	if b {
+		return "ok"
+	}
+	return "FAIL"
 }
 
 // cmdTransition gives proof-by-transition a first-class read path: inspect a Transition
