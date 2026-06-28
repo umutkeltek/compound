@@ -160,6 +160,10 @@ func (s *Store) currentGen() int64 {
 	return s.maxSeq(claims)
 }
 
+// AllCurrent returns the current (non-superseded, non-retired) claims — the canon a distiller
+// compares new extractions against (RetrievedPriorState). Public accessor over currentVisible.
+func (s *Store) AllCurrent() ([]Claim, error) { return s.currentVisible() }
+
 // currentVisible returns the current (non-superseded as of now), non-retired claims — the set
 // an engine is allowed to surface (the relevance gate, computed by the ledger).
 func (s *Store) currentVisible() ([]Claim, error) {

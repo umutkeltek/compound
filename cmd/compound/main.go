@@ -21,6 +21,7 @@ import (
 	"compound/internal/contract"
 	"compound/internal/decisions"
 	"compound/internal/distill"
+	"compound/internal/distiller"
 	"compound/internal/engine"
 	"compound/internal/envelope"
 	"compound/internal/harness"
@@ -90,6 +91,8 @@ func main() {
 		cmdTransition(os.Args[2:])
 	case "memory":
 		cmdMemory(os.Args[2:])
+	case "distiller":
+		cmdDistiller(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -122,7 +125,46 @@ usage:
   compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
   compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
   compound memory <candidate|adjudicate|recall|timeline|query|relate|graph|doctor>  P6: claim ledger + as-of recall + rented-engine breadth + task-shaped graph recall
+  compound distiller run <trace.json>                      P6: trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator (model extracts, code decides)
 `)
+}
+
+// cmdDistiller is the P6 distillation front-end: trace → prior state → candidate set → critic →
+// adjudicator. Memory candidates flow through the mem ledger; everything else is candidate-first
+// and never becomes canon here; self-improvement signals (eval/method/capability) never auto-apply.
+func cmdDistiller(args []string) {
+	if len(args) < 2 || args[0] != "run" {
+		fmt.Fprintln(os.Stderr, "usage: compound distiller run <trace.json>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	data, err := os.ReadFile(args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	res, err := distiller.Run(homePath, store, data, distiller.DefaultPolicy(), distiller.ReferenceExtractor{}, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# distilled %s under policy %s — %d candidate(s)\n", res.TraceRef, res.Policy, len(res.Decisions))
+	for _, d := range res.Decisions {
+		extra := ""
+		if d.ClaimID != "" {
+			extra = " → claim " + d.ClaimID
+		}
+		fmt.Printf("%-22s %-14s %s%s\n", d.Kind, d.Verdict, d.Basis, extra)
+	}
 }
 
 // cmdMemory is P6: the owned memory ledger re-bound through the spine. candidate-first
