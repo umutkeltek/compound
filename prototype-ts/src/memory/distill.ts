@@ -31,7 +31,7 @@ if (!INPUT) {
 const OUTDIR = process.env.COMPOUND_OUT || join(HOME, ".compound", "distill");
 if (!existsSync(OUTDIR)) mkdirSync(OUTDIR, { recursive: true });
 
-// Provider-parameterized (2026-06-23): DeepSeek v4 vs NeuralWatt, same code path.
+// Provider-parameterized: any OpenAI-compatible provider, same code path.
 const BASE_URL = (process.env.DISTILL_BASE_URL || "https://api.deepseek.com/v1").replace(/\/+$/, "");
 const API_KEY = process.env.DISTILL_API_KEY || process.env.DEEPSEEK_API_KEY;
 if (!API_KEY) {
@@ -40,7 +40,7 @@ if (!API_KEY) {
 }
 const MODEL = process.env.DISTILL_MODEL || "deepseek-reasoner";
 // Exact-cost accumulators populated from the provider response when present
-// (NeuralWatt returns per-request `cost.request_cost_usd` + `energy.energy_kwh`).
+// (some providers return per-request `cost.request_cost_usd` + `energy.energy_kwh`).
 let PROVIDER_COST_USD = 0;
 let ENERGY_KWH = 0;
 let ENERGY_JOULES = 0;
@@ -352,7 +352,7 @@ Produce the FINAL typed distillation with the four layers:
 Invent your own tags, surface key_insights, name PATTERNS in how the user thinks/decides, note shifts/growth across the session. Be specific and concrete. Output structured markdown.`;
 
 // Structured extraction of DURABLE decisions for the meaning-ledger page.
-// Bakes in the Oracle's authority-laundering guard: exploration must NOT become a decision.
+// Bakes in an authority-laundering guard from external review: exploration must NOT become a decision.
 const LEDGER_EXTRACT_SYSTEM = `You convert a session distillation into a DECISION LEDGER — only the durable decisions worth recalling later.
 
 EVIDENCE CONTRACT (critical — do NOT launder exploration into decisions):
@@ -365,7 +365,7 @@ A hypothetical / question / "maybe we should…" / an agent's own conclusion is 
 
 COVERAGE: be COMPREHENSIVE on DURABLE decisions — capture EVERY strategic/architectural/standing decision (what to build, keep, retire, how the system should work, lasting preferences). Do NOT drop one because it resembles another; if one decision has two clauses (e.g. "build X AND keep Y"), capture BOTH clauses in the statement.
 MATERIALITY: prefer decisions with lasting consequence. DROP one-off operational approvals that won't matter next week ("continue", "go ahead on this step", "investigate that now") unless they encode a standing choice.
-FINDABILITY: each "statement" must NAME the concrete entities/systems it is about (e.g. local engine, distillation layer, hook registration, 4090 GPU, owned-l2-facts, source boost) so it is retrievable by topic — never a vague "lock that decision".
+FINDABILITY: each "statement" must NAME the concrete entities/systems it is about (e.g. the retrieval engine, the distillation layer, hook registration, the GPU host, the owned facts tier, retrieval ranking) so it is retrievable by topic — never a vague "lock that decision".
 
 Output ONLY valid JSON, no prose, no code fence: an array of
 [{"statement":"<imperative decision naming its entities, in user's intent>","quote":"<verbatim user words>","confidence":"high|medium","domain":"<short-kebab-topic>"}]
@@ -373,7 +373,7 @@ Use user's verbatim words for "quote". If there are no durable user decisions, o
 
 type Usage = { prompt_tokens: number; completion_tokens: number };
 
-// Pull exact cost/energy out of any object shape NeuralWatt may emit
+// Pull exact cost/energy out of any object shape the provider may emit
 // (top-level `cost`/`energy`, or a flattened `usage.cost`/`usage.energy`).
 // Returns whether anything was found so a header fallback can fill the gap.
 function captureCostEnergy(obj: any): { cost: boolean; energy: boolean } {
@@ -398,15 +398,15 @@ function captureCostEnergy(obj: any): { cost: boolean; energy: boolean } {
   return { cost, energy };
 }
 
-// Last NeuralWatt budget-remaining value seen on a response header (for reporting).
+// Last provider budget-remaining value seen on a response header (for reporting).
 let BUDGET_REMAINING_USD: number | null = null;
 
 const RETRYABLE = (status: number) => status >= 500 || status === 524 || status === 429;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// ONE streamed (SSE) chat-completion request. Streaming keeps the Cloudflare
-// edge connection alive (tokens flow) — this is the 524 fix for NeuralWatt's
-// NeuralWatt edge, which 524s a non-streaming request that idle-holds >~100s.
+// ONE streamed (SSE) chat-completion request. Streaming keeps the upstream
+// edge connection alive (tokens flow) — this is the 524 fix for edge providers
+// that 524 a non-streaming request idle-holding >~100s.
 async function llmCallOnce(
   system: string,
   user: string,
@@ -493,7 +493,7 @@ async function llmCallOnce(
     if (cap.cost || cap.energy) gotCost = true;
   };
 
-  // NeuralWatt emits cost/energy as SSE *comment* lines: `: energy {json}` and
+  // Some providers emit cost/energy as SSE *comment* lines: `: energy {json}` and
   // `: cost {json}` (NOT data: events, NOT headers). Parse those too.
   const handleComment = (comment: string) => {
     const m = comment.match(/^\s*(energy|cost)\s+(\{[\s\S]*\})\s*$/);
@@ -791,7 +791,7 @@ async function main() {
     console.error(`[ledger] ${decisions.length} durable decision(s) → decision-ledger.generated.md (slug: ${slug})`);
   }
 
-  // Cost: prefer the provider's EXACT per-request cost (NeuralWatt returns it); else token-estimate.
+  // Cost: prefer the provider's EXACT per-request cost (when the provider returns it); else token-estimate.
   const IN_PER_M = Number(process.env.DISTILL_IN_PER_M || 0.55);
   const OUT_PER_M = Number(process.env.DISTILL_OUT_PER_M || 2.19);
   const tokenEstCost = (promptTokens / 1e6) * IN_PER_M + (completionTokens / 1e6) * OUT_PER_M;

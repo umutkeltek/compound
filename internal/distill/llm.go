@@ -12,9 +12,9 @@ import (
 	"time"
 )
 
-// llmClient is a minimal OpenAI-compatible chat client (DeepSeek by default).
-// Non-streaming: simpler than the TS SSE path, which existed only to dodge a
-// NeuralWatt edge timeout; DeepSeek's own API is fine non-streamed.
+// llmClient is a minimal OpenAI-compatible chat client (provider set via env).
+// Non-streaming: simpler than a streaming SSE path, which existed only to dodge a
+// long-idle edge timeout some providers impose; a standard API is fine non-streamed.
 type llmClient struct {
 	baseURL string
 	apiKey  string
