@@ -24,6 +24,7 @@ import (
 	"compound/internal/ledger"
 	"compound/internal/memory"
 	"compound/internal/pattern"
+	"compound/internal/policy"
 	"compound/internal/position"
 	"compound/internal/recall"
 	"compound/internal/reconcile"
@@ -73,6 +74,8 @@ func main() {
 		cmdOrient(os.Args[2:])
 	case "work":
 		cmdWork(os.Args[2:])
+	case "policy":
+		cmdPolicy(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -99,8 +102,64 @@ usage:
   compound envelope <validate <file>...|kinds>             typed runtime envelopes
   compound contract compile --harness H --cwd D --task T   compile the EffectiveContract in force
   compound orient --harness H [--cwd D] [--task T]         the ContextPack to orient from (records excluded)
-  compound work <create|show|list|claim|advance|close>     one work_id: intent->context->action->receipt->transition
+  compound work <create|show|list|claim|advance|close|act> one work_id: intent->context->action->receipt->transition
+  compound policy evaluate <action-intent.json>            governance v0: ActionIntent -> PolicyDecision (rc 0/3/4)
 `)
+}
+
+// gateExit maps a policy outcome to a scriptable exit code (0 allow, 3 hold, 4 deny).
+func gateExit(pd envelope.PolicyDecision) int {
+	switch pd.Outcome {
+	case "allow", "allow_with_obligations":
+		return 0
+	case "hold":
+		return 3
+	case "deny":
+		return 4
+	default:
+		return 1
+	}
+}
+
+func policyConfig() policy.Config {
+	homePath, _ := home.Resolve("") // empty if none; LoadConfig falls back to the built-in default
+	cfg, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	return cfg
+}
+
+func loadActionIntent(path string) envelope.ActionIntent {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	var ai envelope.ActionIntent
+	if err := json.Unmarshal(data, &ai); err != nil {
+		fmt.Fprintln(os.Stderr, "error: parse action intent:", err)
+		os.Exit(1)
+	}
+	return ai
+}
+
+// cmdPolicy evaluates an ActionIntent into a PolicyDecision. Exit code reflects the gate
+// (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
+func cmdPolicy(args []string) {
+	if len(args) < 2 || args[0] != "evaluate" {
+		fmt.Fprintln(os.Stderr, "usage: compound policy evaluate <action-intent.json>")
+		os.Exit(2)
+	}
+	ai := loadActionIntent(args[1])
+	if err := ai.Validate(); err != nil {
+		fmt.Fprintln(os.Stderr, "error: invalid action intent:", err)
+		os.Exit(1)
+	}
+	pd := policy.Evaluate(ai, policyConfig(), time.Now())
+	printJSON(pd)
+	os.Exit(gateExit(pd))
 }
 
 // cmdWork is the lifecycle store: one work_id threads intent -> context -> action ->
@@ -194,6 +253,24 @@ func cmdWork(args []string) {
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s -> %s\n", w.ID, w.State)
+	case "act":
+		workID := pos()
+		intentFile := flag("--intent")
+		if workID == "" || intentFile == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound work act <work_id> --intent <action-intent.json>")
+			os.Exit(2)
+		}
+		ai := loadActionIntent(intentFile)
+		ai.IDs.WorkID = workID // bind the action to this work
+		pd := policy.Evaluate(ai, policyConfig(), time.Now())
+		printJSON(pd)
+		if !policy.Allowed(pd) {
+			fmt.Fprintf(os.Stderr, "BLOCKED: policy %s — action NOT recorded\n", pd.Outcome)
+			os.Exit(gateExit(pd))
+		}
+		w, err := store.RecordAction(workID, ai, pd, time.Now())
+		die(err)
+		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
 	case "close":
 		res, err := store.Close(pos(), work.CloseInput{
 			Outcome:  flag("--outcome"),

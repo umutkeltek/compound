@@ -157,6 +157,70 @@ func TestTerminalCannotAdvance(t *testing.T) {
 	}
 }
 
+// The store enforces governance structurally: a denied/held decision cannot be recorded
+// as a performed action; an allowing one links the action + policy into the work chain.
+func TestRecordActionGate(t *testing.T) {
+	s := newStore(t)
+	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	if _, err := s.Claim(w.ID, "claude_code", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	mkAI := func(id string) envelope.ActionIntent {
+		return envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent, ID: id, CreatedAt: fixedNow.Format(time.RFC3339),
+				Producer: envelope.Producer{Kind: "hook", Name: "compound"}, IDs: envelope.IDs{WorkID: w.ID},
+				Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+				EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
+			},
+			Capability: "filesystem.write", Action: "write_file",
+			Target: envelope.ActionTarget{Kind: "file", Path: "docs/x.md"},
+			MutationClass: "local_reversible", Reversibility: "easy",
+		}
+	}
+	mkPD := func(id, aiID, outcome string, obl []string) envelope.PolicyDecision {
+		return envelope.PolicyDecision{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVPolicyDecision, ID: id, CreatedAt: fixedNow.Format(time.RFC3339),
+				Producer: envelope.Producer{Kind: "cli", Name: "compound"}, IDs: envelope.IDs{WorkID: w.ID},
+				Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+				EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
+			},
+			ActionIntentID: aiID, Outcome: outcome, Obligations: obl,
+		}
+	}
+
+	// Denied action is refused and NOT recorded.
+	denyAI := mkAI("act_deny")
+	if _, err := s.RecordAction(w.ID, denyAI, mkPD("pol_deny", "act_deny", "deny", nil), fixedNow); err == nil {
+		t.Error("denied action should be refused")
+	}
+	if w2, _ := s.Get(w.ID); len(w2.RunIDs) != 0 || w2.PolicyDecisionID != "" {
+		t.Errorf("denied action must not be recorded; runs=%v policy=%q", w2.RunIDs, w2.PolicyDecisionID)
+	}
+	// Held action is also refused.
+	if _, err := s.RecordAction(w.ID, denyAI, mkPD("pol_hold", "act_deny", "hold", nil), fixedNow); err == nil {
+		t.Error("held action should be refused")
+	}
+	// Allowing decision records the action + links policy into the work.
+	okAI := mkAI("act_ok")
+	wOK, err := s.RecordAction(w.ID, okAI, mkPD("pol_ok", "act_ok", "allow_with_obligations", []string{"emit a Receipt"}), fixedNow)
+	if err != nil {
+		t.Fatalf("allowed action should record: %v", err)
+	}
+	if !contains(wOK.RunIDs, "act_ok") || wOK.PolicyDecisionID != "pol_ok" {
+		t.Errorf("allowed action should be linked; runs=%v policy=%q", wOK.RunIDs, wOK.PolicyDecisionID)
+	}
+	// Mismatched action/decision is rejected.
+	if _, err := s.RecordAction(w.ID, okAI, mkPD("pol_x", "act_other", "allow", nil), fixedNow); err == nil {
+		t.Error("decision for a different action should be rejected")
+	}
+}
+
 func contains(set []string, v string) bool {
 	for _, s := range set {
 		if s == v {

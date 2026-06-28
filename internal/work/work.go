@@ -249,6 +249,51 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: in.Note, Attached: attached})
 }
 
+// --- act (governed mutation) ---
+
+// RecordAction records a performed ActionIntent against a work — but ONLY if its
+// PolicyDecision allows it. This is the enforcement seam: a mutating adapter cannot
+// record an ungoverned mutation, so no model bypasses policy by prompt obedience.
+// (Decoupled from the policy package on purpose: the store enforces on the decision's
+// own outcome, so the gate holds even if a caller skips the evaluator.)
+func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) (envelope.WorkEnvelope, error) {
+	w, err := s.Get(workID)
+	if err != nil {
+		return w, err
+	}
+	if terminalStates[w.State] {
+		return w, fmt.Errorf("work %s is %s (terminal); cannot record an action", workID, w.State)
+	}
+	if ai.IDs.WorkID != workID {
+		return w, fmt.Errorf("action work_id %q does not match work %q", ai.IDs.WorkID, workID)
+	}
+	if pd.ActionIntentID != ai.ID {
+		return w, fmt.Errorf("policy decision is for action %q, not %q", pd.ActionIntentID, ai.ID)
+	}
+	if err := ai.Validate(); err != nil {
+		return w, fmt.Errorf("action intent invalid: %w", err)
+	}
+	if err := pd.Validate(); err != nil {
+		return w, fmt.Errorf("policy decision invalid: %w", err)
+	}
+	// THE GATE: refuse to record a performed action unless policy allows it.
+	if pd.Outcome != "allow" && pd.Outcome != "allow_with_obligations" {
+		return w, fmt.Errorf("cannot record action %s: policy %s (a mutating adapter requires an allowing PolicyDecision)", ai.ID, pd.Outcome)
+	}
+	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+		return w, err
+	}
+	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+		return w, err
+	}
+	w.RunIDs = append(w.RunIDs, ai.ID) // the performed action is an action ref in the chain
+	w.PolicyDecisionID = pd.ID
+	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
+		return w, err
+	}
+	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: w.State, To: w.State, Note: "action recorded: " + ai.Action + " (policy " + pd.Outcome + ")", Attached: []string{ai.ID, pd.ID}})
+}
+
 // --- close ---
 
 type CloseInput struct {
