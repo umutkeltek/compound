@@ -1,0 +1,44 @@
+package candidates
+
+import "testing"
+
+// Every kind maps to exactly one non-empty inbox dir, and no two kinds share a dir — this is the
+// invariant whose absence WAS the "three folder names for one concept" bug.
+func TestEveryKindHasUniqueNonEmptyDir(t *testing.T) {
+	seen := map[string]Kind{}
+	for _, k := range AllKinds() {
+		dir := InboxDir(k)
+		if dir == "" {
+			t.Errorf("kind %q has no inbox dir", k)
+		}
+		if prev, dup := seen[dir]; dup {
+			t.Errorf("kinds %q and %q collide on dir %q", prev, k, dir)
+		}
+		seen[dir] = k
+	}
+	if len(AllInboxDirs()) != len(AllKinds()) {
+		t.Errorf("AllInboxDirs (%d) and AllKinds (%d) must be 1:1", len(AllInboxDirs()), len(AllKinds()))
+	}
+}
+
+// The anti-drift contract: the distiller WRITES capability observations and capgraph READS them
+// via this same call, so a single source decides the dir — they can never disagree again.
+func TestCapabilityDirIsSingleSourced(t *testing.T) {
+	if got := InboxDir(CapabilityObs); got != "inbox/capability-observations" {
+		t.Errorf("capability_observation dir drifted to %q", got)
+	}
+	// parked memory must land where the P6 adjudicator reads (the old bug parked it in inbox/memory).
+	if got := InboxDir(Memory); got != "inbox/memory-candidates" {
+		t.Errorf("memory candidate dir = %q, want inbox/memory-candidates (the adjudicator's inbox)", got)
+	}
+}
+
+// An unknown / path-bearing kind has no dir — a Kind keys a filesystem path, so this is the
+// path-traversal guard the producers rely on.
+func TestUnknownKindHasNoDir(t *testing.T) {
+	for _, k := range []Kind{"bogus", "../../evil", ""} {
+		if InboxDir(k) != "" || Known(k) {
+			t.Errorf("unknown kind %q must have no dir and not be Known", k)
+		}
+	}
+}

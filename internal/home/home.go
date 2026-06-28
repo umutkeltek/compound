@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,26 +24,31 @@ const ManifestName = "manifest.yaml"
 // SchemaVersion of the home manifest.
 const SchemaVersion = "compound.home.v0.1"
 
-// Dirs is the typed habitat — each entry is a subdir compound owns under the home.
-var Dirs = []string{
-	"lock",
-	"config", "config/overlays", "config/harnesses", "config/adapters",
-	"contracts/effective", "contracts/schemas",
-	"events",
-	"work", "work/work", "work/runs", "work/leases", "work/checkpoints",
-	"context/requests", "context/packs", "context/injections",
-	"ledger",
-	"inbox/memory-candidates", "inbox/skill-candidates", "inbox/product-signals",
-	"inbox/capability-observations", "inbox/failure-patterns", "inbox/taste-observations",
-	"inbox/route-observations", "inbox/contradictions", "inbox/parked", "inbox/rejected",
-	"registries",
-	"artifacts/sha256", "artifacts/refs",
-	"indexes",
-	"projections",
-	"reviews",
-	"exports",
-	"tmp",
-}
+// Dirs is the typed habitat — each entry is a subdir compound owns under the home. The candidate
+// inbox dirs are NOT hand-listed here: they are derived from internal/candidates (the single
+// source of truth), so the home can never create a dir the producers don't write to, or miss one
+// they do. Operational sub-states (parked/rejected/contradictions) are added on top.
+var Dirs = func() []string {
+	d := []string{
+		"lock",
+		"config", "config/overlays", "config/harnesses", "config/adapters",
+		"contracts/effective", "contracts/schemas",
+		"events",
+		"work", "work/work", "work/runs", "work/leases", "work/checkpoints",
+		"context/requests", "context/packs", "context/injections",
+		"ledger",
+		"registries",
+		"artifacts/sha256", "artifacts/refs",
+		"indexes",
+		"projections",
+		"reviews",
+		"exports",
+		"tmp",
+	}
+	d = append(d, candidates.AllInboxDirs()...)                             // one canonical dir per candidate kind
+	d = append(d, "inbox/parked", "inbox/rejected", "inbox/contradictions") // adjudication sub-states
+	return d
+}()
 
 // Manifest is the home's identity record.
 type Manifest struct {

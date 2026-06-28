@@ -7,6 +7,7 @@
 //   - contradiction over delete: a promotion that changes a fact SUPERSEDES the prior claim
 //     via an edge (the version chain); the old claim stays as history.
 //   - provenance everywhere: every claim carries how it was derived + its evidence refs.
+//
 // A promotion emits a Transition (memory_delta) — memory is one projection of the spine.
 // No engine here: the ledger alone answers exact, delta, and as-of queries.
 // See docs/memory-architecture.md "Adopted Patterns".
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"compound/internal/candidates"
 
 	"compound/internal/envelope"
 )
@@ -58,7 +61,7 @@ type Candidate struct {
 // supersession and validity are derived from the seq order + supersedes edges (MVCC-by-fold).
 type Claim struct {
 	ID           string   `json:"id"`
-	Seq          int64    `json:"seq"`        // monotonic version clock
+	Seq          int64    `json:"seq"` // monotonic version clock
 	Entity       string   `json:"entity"`
 	Predicate    string   `json:"predicate"`
 	Object       string   `json:"object"`
@@ -89,7 +92,7 @@ func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
 	}
-	for _, d := range []string{"inbox/memory-candidates", "ledger", "events"} {
+	for _, d := range []string{candidates.InboxDir(candidates.Memory), "ledger", "events"} {
 		if err := os.MkdirAll(filepath.Join(homePath, d), 0o755); err != nil {
 			return nil, err
 		}
@@ -97,10 +100,12 @@ func Open(homePath string) (*Store, error) {
 	return &Store{home: homePath}, nil
 }
 
-func (s *Store) candDir() string    { return filepath.Join(s.home, "inbox", "memory-candidates") }
-func (s *Store) claimsLog() string  { return filepath.Join(s.home, "ledger", "claims.jsonl") }
-func (s *Store) edgesLog() string   { return filepath.Join(s.home, "ledger", "edges.jsonl") }
-func (s *Store) seqFile() string    { return filepath.Join(s.home, "ledger", "seq") }
+func (s *Store) candDir() string {
+	return filepath.Join(s.home, candidates.InboxDir(candidates.Memory))
+}
+func (s *Store) claimsLog() string          { return filepath.Join(s.home, "ledger", "claims.jsonl") }
+func (s *Store) edgesLog() string           { return filepath.Join(s.home, "ledger", "edges.jsonl") }
+func (s *Store) seqFile() string            { return filepath.Join(s.home, "ledger", "seq") }
 func (s *Store) eventPath(id string) string { return filepath.Join(s.home, "events", id+".json") }
 
 // --- capture (candidate-first) ---
@@ -650,8 +655,8 @@ func idFor(prefix string, parts ...string) string {
 	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return prefix + hex.EncodeToString(h[:])[:12]
 }
-func shortHash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:12] }
-func ts(now time.Time) string   { return strconv.FormatInt(now.UTC().UnixNano(), 10) }
+func shortHash(s string) string    { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:])[:12] }
+func ts(now time.Time) string      { return strconv.FormatInt(now.UTC().UnixNano(), 10) }
 func rfc3339(now time.Time) string { return now.UTC().Format(time.RFC3339) }
 
 func statusOf(ok bool) string {

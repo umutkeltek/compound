@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 // NodeKinds — skills are one kind, not the whole graph.
@@ -71,8 +73,12 @@ func Open(homePath string) (*Store, error) {
 	return &Store{home: homePath}, nil
 }
 
-func (s *Store) nodesLog() string { return filepath.Join(s.home, "registries", "capability-nodes.jsonl") }
-func (s *Store) edgesLog() string { return filepath.Join(s.home, "registries", "capability-edges.jsonl") }
+func (s *Store) nodesLog() string {
+	return filepath.Join(s.home, "registries", "capability-nodes.jsonl")
+}
+func (s *Store) edgesLog() string {
+	return filepath.Join(s.home, "registries", "capability-edges.jsonl")
+}
 
 // Add upserts a node (append-only; last write wins on load).
 func (s *Store) Add(n Node) error {
@@ -190,7 +196,7 @@ func (s *Store) Surface(task string) ([]Surfaced, error) {
 // them as feedback edges (the distiller→graph bridge). Convention: subject=node id, detail=signal
 // (missed_when|false_triggered_by), statement=context token. Returns how many were applied.
 func (s *Store) Consume(homePath string, now time.Time) (int, error) {
-	dir := filepath.Join(homePath, "inbox", "capability_observation")
+	dir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs)) // same canonical dir the distiller writes
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

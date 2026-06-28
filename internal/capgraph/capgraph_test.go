@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 var t0 = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -105,7 +107,7 @@ func TestConsumeFromDistillerInbox(t *testing.T) {
 	home, s := newStore(t)
 	s.Add(Node{ID: "skill:cro", Kind: "skill", Name: "cro", Triggers: []string{"pricing"}})
 	// write what the distiller operationalizes: subject=node, statement=context, detail=signal.
-	dir := filepath.Join(home, "inbox", "capability_observation")
+	dir := filepath.Join(home, candidates.InboxDir(candidates.CapabilityObs))
 	os.MkdirAll(dir, 0o755)
 	obs := map[string]any{"id": "cand_1", "kind": "capability_observation", "subject": "skill:cro", "statement": "paywall page", "detail": EdMissedWhen, "confidence": 0.9, "verdict": "operationalize"}
 	b, _ := json.Marshal(obs)

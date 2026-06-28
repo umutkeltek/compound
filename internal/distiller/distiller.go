@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/mem"
 )
 
@@ -47,11 +48,11 @@ var Kinds = []string{
 
 // Verdicts an adjudication can reach.
 const (
-	Reject        = "reject"
-	Park          = "park"
-	Promote       = "promote"
+	Reject         = "reject"
+	Park           = "park"
+	Promote        = "promote"
 	Operationalize = "operationalize"
-	Retire        = "retire"
+	Retire         = "retire"
 )
 
 // confidenceFloor: below this, a candidate parks regardless of kind (low-confidence never promotes).
@@ -104,7 +105,7 @@ func LoadPriorState(store *mem.Store) (PriorState, error) {
 type Critique struct {
 	IsNew                bool   `json:"is_new"`
 	Duplicate            bool   `json:"duplicate"`
-	Supersedes           string `json:"supersedes,omitempty"`  // current claim id, for memory kind
+	Supersedes           string `json:"supersedes,omitempty"` // current claim id, for memory kind
 	Contradicts          string `json:"contradicts,omitempty"`
 	ExposesMethodFailure bool   `json:"exposes_method_failure"`
 	Notes                string `json:"notes"`
@@ -300,7 +301,11 @@ func writeCandidate(homePath string, c Candidate) error {
 	if !contains(Kinds, c.Kind) { // belt-and-suspenders: Kind keys a path, so it must be a known typed kind
 		return fmt.Errorf("refusing to write candidate with unknown kind %q", c.Kind)
 	}
-	dir := filepath.Join(homePath, "inbox", c.Kind)
+	rel := candidates.InboxDir(candidates.Kind(c.Kind)) // one canonical inbox per kind (no three-names drift)
+	if rel == "" {
+		return fmt.Errorf("candidate kind %q has no inbox mapping", c.Kind)
+	}
+	dir := filepath.Join(homePath, rel)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

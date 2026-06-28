@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/mem"
 )
 
@@ -138,9 +139,10 @@ func TestNoCandidateToAmbientWithoutAdjudication(t *testing.T) {
 		t.Errorf("a parked skill candidate must not become a claim; got %d claims", len(cur))
 	}
 	// it IS recorded as a candidate in the inbox (candidate-first), and as an adjudication.
-	files, _ := filepath.Glob(filepath.Join(home, "inbox", KindSkill, "*.json"))
+	skillDir := candidates.InboxDir(candidates.Skill)
+	files, _ := filepath.Glob(filepath.Join(home, skillDir, "*.json"))
 	if len(files) != 1 {
-		t.Errorf("the skill candidate should be written to inbox/%s; found %d", KindSkill, len(files))
+		t.Errorf("the skill candidate should be written to %s; found %d", skillDir, len(files))
 	}
 	adj, _ := os.ReadFile(filepath.Join(home, "ledger", "adjudications.jsonl"))
 	var d AdjudicationDecision
