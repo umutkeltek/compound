@@ -109,6 +109,37 @@ whether it is safe to recall ambiently
 when it was last useful
 ```
 
+## Memory Health Is Per-Transition
+
+A memory miss is a *failed transition*, not just "missing memory." A health check (`memory doctor`,
+P6) reports WHICH hop failed, because the fix differs per hop:
+
+```text
+source capture → promotion → sync → embedding → retrieval → authority framing
+```
+
+The recurring legacy-index anchor drift was a failed `promotion/sync → retrieval` hop — curated
+facts never became retrieval facts — not absent memory. Reporting "memory missing" sends the fix to
+the wrong owner; reporting the failed hop sends it to the right one.
+
+## Distillation Is A Transition Format, Not A Memory Format
+
+Mining raw generated artifacts (session scratch, product-repo outputs) must not turn scratch into
+canon. The discipline, learned under execution pressure:
+
+- **Classify metadata before reading content.** Path/owner/size metadata routes most artifacts into
+  review lanes (promote-candidate, durable-mining, stale-compare, source-control, archive/ignore)
+  *without* opening their bodies — content is read only inside a bounded owner step.
+- **Emit bounded snippets, not copies.** Mining output is hashes + owner targets + short snippets +
+  `no_promote` rows — enough to route the next move, not enough to make the source's scratch into
+  canon. The source stays source.
+- **Owner writeback is a gate, not a write.** Before any canon mutation, a writeback gate maps each
+  candidate to its current owner surface, proves upstream status unchanged, and names the later apply
+  step as the *only* write path. Canon promotion happens at the owner, never in the mining artifact.
+- **Checkpoint long mines.** A rolling distillation checkpoints evidence at each bounded stage and
+  supports finalize/resume from those checkpoints — never re-pay upstream chunk calls when a late
+  synthesis step fails or exceeds context.
+
 ## Language And Runtime
 
 The core is Go: CLI, ledger, scope, recall planning, importers, and future local

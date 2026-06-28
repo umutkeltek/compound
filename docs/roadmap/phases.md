@@ -53,7 +53,10 @@ TasteObservation / ProductHypothesis / CapabilityObservation — **not just memo
 candidates first**. **Proof:** one real trace →
 MemoryCandidate → parked\|promoted\|rejected → EvidenceItem/Claim → Transition projection; recalled later
 only under relevant scope; no duplicate entity (entity-resolution precedence, `../architecture/contracts/`);
-distiller output is never piped straight into canon.
+distiller output is never piped straight into canon. `memory doctor` reports *which* hop failed
+(capture→promotion→sync→embedding→retrieval→authority), not just "missing"; mining classifies metadata
+before content, emits bounded snippets + owner targets (never copies), gates writeback behind an apply
+step, and checkpoints/resumes long mines (`../memory-architecture.md`).
 
 ## P7 — private dogfood overlay  (connect the real system as adapters)
 Overlay/adapters for the control-spine repo, the brain corpus, the legacy vector/fact store, the model
@@ -97,3 +100,6 @@ continuously alongside.
 - **Compounding-knowledge loop:** a transition-oriented observation that teaches something about compound's
   future architecture is written evidence-linked and packet-local, and *earns promotion* to a contract,
   script, check, decision, or recalled context only when consumed by a real executor — never just stored.
+  **Then it is archived:** once promoted, the workbench entry is marked `promoted → <destination>` and moved
+  out of the live log, so observation logs stay thin and no entry is mined twice. An observation that opens
+  no branch and names no consumer is `audit_only` (`../architecture/transition.md` → anti-bloat pipeline).

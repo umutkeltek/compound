@@ -139,3 +139,35 @@ Every non-trivial run classifies itself: `outward_delta | memory_delta | rule_de
 control_plane_repair | audit_only`. A receipt only matters if it becomes searchable experience
 or subtractive pressure. The one question every receipt answers: **"Did this run alter the
 future?"** If not, it is telemetry, not compounding.
+
+## Future-branch semantics (second-order, operationalized)
+
+Second-order asks "does this make X likelier tomorrow?" The operational form, learned under
+execution pressure: a placed artifact compounds *nothing* if it never changes recall, routing,
+action, evaluation, or pruning. Owner placement prevents fragmentation; it does not guarantee
+compounding. So a `Transition`/`Receipt` declares the branch it opens and who consumes it:
+
+- `opens_branches[]` — `{branch, owner, kind}`, kind ∈ `opens | blocks | supersedes | validates |
+  retires | routes_to`.
+- `next_consumer` — who is expected to act next. No named consumer ⇒ `audit_only` until one exists.
+- `delta_cause` — the causal *class* of a source-truth change (`repair | retire | accept |
+  invalidate`), carried with the new value so a future agent chooses repair/retirement/acceptance
+  instead of re-litigating the old value. A bare value change is ambiguous; the cause is the branch.
+
+**Branch coverage — open or it bloats.** An opened branch is an open loop and must move through
+`opened → expanded → resolved → retired`. Presence ≠ coverage: an upstream artifact must not keep
+anyone on an earlier branch once downstream evidence already covers it — surfaces compute branch
+*coverage*, not artifact *presence*. Every opened branch becomes an owner-bounded step, is explicitly
+deferred, or is subtracted; nothing sits unclassified. **Subtraction is a branch operation:** each
+retirement records the future wrong move it prevents (`prevents_branch`).
+
+**Brief before mutate.** When evidence is too broad to act on, insert a *transition brief* that
+converts the queue into decision classes and names the blocked moves — it narrows branch entropy
+*without* mutating. A brief is permission to think, not to mutate; stateful action still requires a
+later `ActionIntent` + `PolicyDecision`. This keeps `orient`/ContextPack (read) cleanly separate from
+`ActionIntent`/policy (write).
+
+**Anti-bloat pipeline.** An observation/evidence artifact is live only while its branch is open. Once
+promoted into a durable contract/check/decision — or subtracted — its workbench entry is marked
+`promoted → <destination>` and archived, so observation logs stay thin (consumed entries leave them).
+This is the archive half of the compounding-knowledge loop (`../roadmap/phases.md`).
