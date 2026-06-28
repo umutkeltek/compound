@@ -13,7 +13,7 @@ harness, hook, and run flows through, hung off one root `work_id`. Memory is one
 that spine — not the system boundary. It is a local monolith information kernel with deep internal
 modules and adapters at the edges, not a microservice estate and not an agent framework.
 
-The proven foundation (P0–P5, all tested):
+The proven foundation (P0-P6 first slice, all tested):
 
 | command | what it does |
 |---|---|
@@ -23,13 +23,14 @@ The proven foundation (P0–P5, all tested):
 | `compound work create/show/list/claim/advance/close/act` | one `work_id` threads intent → context → action → policy → receipt → transition |
 | `compound policy evaluate` | governance v0: ActionIntent → PolicyDecision (allow / allow_with_obligations / hold / deny), enforced at adapters |
 | `compound hook <name>` · `compound harness list` | capability-aware hook fixture loop + the HarnessRegistry |
+| `compound memory candidate/adjudicate/recall/timeline/doctor` | P6 first slice: candidate-first memory ledger, MVCC-by-fold, supersession edges, as-of recall, hop-specific doctor |
 
 Start with `CONTEXT.md` (glossary), `docs/architecture/{substrate,runtime,transition}.md`, and
 `docs/roadmap/phases.md`. Architecture decision: `docs/adr/0001-local-monolith-information-kernel.md`.
 
-## Memory (P6, in progress)
+## Memory (P6)
 
-Memory is the **next** slice, re-bound through the envelope/transition spine:
+Memory is now started as a spine-bound slice, not the system boundary:
 
 - an OWNED ledger is authority — Evidence → Claim → Position → Pattern, with supersession/contradiction edges (delta-aware: it remembers what a fact *was* and what it became);
 - engines (vector/embedding/search indexes) are **rented** behind a swappable `MemoryEngine` (Query/Recall/Put) and never own visibility, promotion, or supersession;
@@ -100,12 +101,12 @@ outside the public repository.
 
 ## Status
 
-- **Proven spine (P0–P5):** COMPOUND_HOME runtime body; typed envelope grammar; EffectiveContract +
-  ContextPack orientation; WorkEnvelope lifecycle on one `work_id`; ActionIntent → PolicyDecision
-  enforced at adapters; capability-aware hook loop + HarnessRegistry. All tested; generated state lives
-  under `COMPOUND_HOME`, never in repo source.
-- **Next (P6):** re-bind memory through the spine — one trace → candidate → adjudication → claim →
-  transition projection → relevance-gated recall, with a `memory doctor` that reports *which hop* failed.
+- **Proven spine (P0-P6 first slice):** COMPOUND_HOME runtime body; typed envelope grammar; EffectiveContract +
+  ContextPack orientation; WorkEnvelope lifecycle on one `work_id`; ActionIntent -> PolicyDecision
+  enforced at adapters; capability-aware hook loop + HarnessRegistry; candidate-first memory ledger with
+  as-of recall and hop-specific doctor. All tested; generated state lives under `COMPOUND_HOME`, never in repo source.
+- **Remaining P6:** broaden recall beyond exact entity matches, add engine breadth, structural patterns,
+  computed temperature, and other candidate kinds.
 - Legacy memory / authority / decisions commands (above) exist and will be **migrated, not deleted**, as P6 lands.
 
 ## Provenance
