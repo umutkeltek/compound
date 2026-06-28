@@ -121,7 +121,7 @@ usage:
   compound hook <name> <fixture.json>                      run a lifecycle hook over a fixture (capability-aware)
   compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
   compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
-  compound memory <candidate|adjudicate|recall|timeline|query|doctor>  P6: candidate -> claim -> as-of recall (MVCC-by-fold) + rented-engine breadth
+  compound memory <candidate|adjudicate|recall|timeline|query|relate|graph|doctor>  P6: claim ledger + as-of recall + rented-engine breadth + task-shaped graph recall
 `)
 }
 
@@ -174,16 +174,73 @@ func cmdMemory(args []string) {
 		}
 	}
 
+	positionals := func(valueFlags map[string]bool) []string {
+		var out []string
+		for i := 0; i < len(rest); i++ {
+			a := rest[i]
+			if strings.HasPrefix(a, "-") {
+				if valueFlags[a] {
+					i++
+				}
+				continue
+			}
+			out = append(out, a)
+		}
+		return out
+	}
+
 	switch sub {
 	case "candidate":
 		data, err := os.ReadFile(pos())
 		die(err)
-		var cands []mem.Candidate
-		die(json.Unmarshal(data, &cands))
-		got, err := store.Capture(cands, time.Now())
+		ext, err := mem.StructuredExtractor{}.Extract(data)
+		die(err)
+		got, err := store.Capture(ext.Candidates, time.Now())
 		die(err)
 		for _, c := range got {
 			fmt.Printf("captured %s  %s.%s = %s  (%s)\n", c.ID, c.Entity, c.Predicate, c.Object, c.State)
+		}
+		for _, r := range ext.Relations {
+			e, err := store.Relate(r.From, r.Kind, r.To, r.Confidence, time.Now())
+			die(err)
+			fmt.Printf("related  %s -%s-> %s  (seq %d, conf %.2f)\n", e.From, e.Kind, e.To, e.Seq, e.Confidence)
+		}
+	case "relate":
+		args := positionals(map[string]bool{"--conf": true})
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: compound memory relate <from-entity> <relates|contradicts|depends_on> <to-entity> [--conf 0.8]")
+			os.Exit(2)
+		}
+		conf := 0.8
+		if v := flag("--conf"); v != "" {
+			conf, _ = strconv.ParseFloat(v, 64)
+		}
+		e, err := store.Relate(args[0], args[1], args[2], conf, time.Now())
+		die(err)
+		fmt.Printf("related %s -%s-> %s  (seq %d, conf %.2f)\n", e.From, e.Kind, e.To, e.Seq, e.Confidence)
+	case "graph":
+		depth, budget := 2, 20
+		minConf := 0.0
+		if v := flag("--depth"); v != "" {
+			depth, _ = strconv.Atoi(v)
+		}
+		if v := flag("--budget"); v != "" {
+			budget, _ = strconv.Atoi(v)
+		}
+		if v := flag("--min-conf"); v != "" {
+			minConf, _ = strconv.ParseFloat(v, 64)
+		}
+		sg, err := store.RecallGraph(pos(), depth, budget, minConf)
+		die(err)
+		fmt.Println("# " + sg.Coverage)
+		if len(sg.SeedEntities) > 0 {
+			fmt.Printf("seeds: %s\n", strings.Join(sg.SeedEntities, ", "))
+		}
+		for _, c := range sg.Claims {
+			fmt.Printf("  %s.%s = %s  (seq %d, conf %.2f)\n", c.Entity, c.Predicate, c.Object, c.Seq, c.Confidence)
+		}
+		for _, r := range sg.Relations {
+			fmt.Printf("  %s -%s-> %s  (conf %.2f)\n", r.From, r.Kind, r.To, r.Confidence)
 		}
 	case "adjudicate":
 		res, err := store.Adjudicate(pos(), flag("--verdict"), flag("--work"), time.Now())
