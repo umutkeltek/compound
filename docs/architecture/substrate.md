@@ -1,16 +1,38 @@
 # Compound as a Substrate Kernel (target topology)
 
-This extends `../ARCHITECTURE.md` and `../LAYERS.md`. Those describe Compound as an
-*information* kernel. This describes the larger target: Compound as a **cognitive +
-execution substrate kernel** — the owned core that lets agents, models, tools, memory,
-skills, registries, product loops, evidence, cost, taste, and autonomy compose without
-fragmenting.
+This extends `../ARCHITECTURE.md` and `../LAYERS.md`. Those describe Compound as an *information* kernel.
+This describes the larger target: Compound as a **unified meaning + execution substrate** — the owned core
+that lets agents, models, tools, memory, skills, registries, product loops, evidence, cost, taste, and
+autonomy compose without fragmenting.
 
-Read this as the **map, not the work.** The topology below is the destination. Execution
-is one thin vertical slice at a time (see `../roadmap/phases.md`). A substrate diagram is
-not a substrate. The discipline in `../LAYERS.md` still governs: *build one concern, prove
-it with a working command + synthetic fixtures, retire the parallel handling it replaces;
-do not start a service because an information type feels new.*
+Read this as the **map, not the work.** The topology is the destination; execution is one thin vertical
+slice at a time (`../roadmap/phases.md`), built **envelope-first** (`runtime.md`), not memory-first. A
+substrate diagram is not a substrate. Build one concern, prove it with a command + fixtures, retire the
+parallel handling it replaces.
+
+## The one invariant: one meaning owner
+
+> There can be many sources, many indexes, many harnesses, many projections. **There must be one meaning
+> owner.** That owner is compound.
+
+The disease in a setup that grew by need is not that the parts exist — it is that **too many surfaces can
+act like the source of truth** (source, generated views, runtime config, hooks, receipts, memory pages, DB
+projections, decisions all drift out of sync). compound's job is to *reduce active meaning owners to one*,
+not to be a better connector between five systems forever.
+
+So the relationships are migration relationships, not permanent peerage:
+
+```text
+a private brain corpus     → compound's MEANING LAYER, imported/classified/materialized/governed/owned
+a control-spine repo       → compound's instruction/work/hook/policy/capability SOURCE MATERIAL
+a legacy vector/fact store  → a BRIDGE/INDEX adapter (retrieval + history), never the future authority
+a model-traffic gateway    → ExecutionRouteEvidence joined into compound transitions (execution-plane.md)
+harnesses (Claude/Codex/…) → CLIENTS of compound
+```
+
+A private corpus is not an external overlay sitting *next to* compound. It is **compound running with
+private data**. The public repo must not *ship* that data (a distribution boundary), but a running instance
+*owns* it internally. That is how compound is both "for everyone" and "does not leak the private corpus."
 
 ## What the substrate does (six jobs, at once)
 
@@ -25,94 +47,96 @@ do not start a service because an information type feels new.*
 
 ## Two planes: control + execution
 
-compound is the **control / meaning plane**. Model traffic flows through a separate
-**execution / data plane** — an AI provider gateway (e.g. an OpenAI/Anthropic-compatible
-router). They are siblings with a clean split, *not* nested:
-
-```text
-compound       = decides WHAT work is, WHAT matters, WHAT future behavior should change.
-exec gateway   = decides HOW model/provider traffic flows, what it cost, where it went,
-                 why there, and what evidence (RouteDecision/usage/cost) it left.
-```
-
-A gateway `RouteDecision` is **execution-route evidence, not proof of task success** — it
-becomes one *projection* inside a compound `Transition` (the cost/routing projection),
-joined with the harness receipt and the real state delta. compound owns the route **policy**;
-the gateway owns the route **decision + enforcement** (budgets/quotas/credentials/fallback).
-Detail: `execution-plane.md`.
+compound is the **control / meaning plane**. Model traffic flows through a separate **execution / data
+plane** (an OpenAI/Anthropic-compatible gateway). Siblings, not nested. compound owns route *policy*; the
+gateway owns route *decision + enforcement*. A `RouteDecision` is execution-route evidence, **not** proof of
+task success — it becomes one projection in a `Transition`. Detail: `execution-plane.md`.
 
 ## Core doctrine: own the meaning, rent everything replaceable
 
 ```text
 OWN  (the spine, never delegated):
-  identity, evidence/trace ledger, memory promotion, registries, routing policy,
-  receipts, promotion/supersession, writeback, cost/evidence accounting, doctrine.
+  identity, the trace/evidence ledger, the MEANING CORPUS, memory promotion, registries, routing policy,
+  work identity, receipts, promotion/supersession, writeback, cost/evidence accounting, doctrine.
 
 RENT (disposable, swappable behind adapters):
-  vector/search engines (e.g. turbovec, pgvector, a future index) — views rebuildable from the ledger
+  vector/search/fact engines — a LEGACY store is a bridge/index, never the authority; the arrow is
+    compound → materialized objects → engine index, never engine → truth → compound reads
   models / providers (behind the execution gateway)
   tools, MCPs, browsers
   harnesses (Claude Code, Codex, OpenCode, ChatGPT, local LLMs, future agents)
 ```
 
-No executor, framework, model, or memory engine becomes the source of truth. Agent-
-agnosticism is proven by **replacement** (swap the executor mid-task and the work
-continues from spine context), not by an adapter interface existing.
+Agent-agnosticism is proven by **replacement** (checkpoint → swap executor mid-task → verification succeeds
+from spine context), not by an adapter interface existing.
 
-## compound owns and generates the unified BASE (host-aware / distributed)
+## Three places (this is not optional)
 
-Today the operator's context is scattered across several roots. compound's job is to
-**generate and own one unified base** — a single home that unifies settings + information —
-and to retire the scattered roots over time (subtraction, not another parallel root).
+```text
+repo            = source code, schemas, contracts, docs, tests, fixtures
+COMPOUND_HOME   = the runtime body: the meaning corpus, ledgers, work, context packs, hooks, receipts,
+  (`.compound`)   transitions, registries, indexes, projections, inbox candidates, artifacts
+private overlay = real paths, credentials, accounts, private corpus, taste examples — the dogfood data
+```
 
-compound is **host-aware and distributed**: parts may run on other servers or edge devices,
-but the base lives on the working computer, and compound **knows what runs where**. Placement
-is a first-class fact: every component/entity can carry `host_bindings` and `deployment_bindings`
-(which machine, which service, which port/endpoint, health). "Know what is working in what place"
-is an identity + registry concern, resolved cwd-independently (a moved folder or a component that
-migrated to another host stays the same entity).
+Generated runtime state is written to `COMPOUND_HOME`, **never into the public source tree**, and operator
+paths are **never hardcoded into the public core**. The private dogfood reality is an *overlay/dataset*, not
+a private fork that bakes operator assumptions into the core. Layout + resolution: `runtime.md`.
+
+## The runtime grammar is the envelope spine (first-order)
+
+Memory is **one** vertical slice, not the substrate. The thing every harness and hook actually runs through
+is the typed envelope spine, hung off one root `work_id`:
+
+```text
+Intent → EffectiveContract → ContextPack → WorkEnvelope → ActionIntent → PolicyDecision
+       → Run/ToolEvents/RouteEvidence → Receipt → Transition → projections
+```
+
+This is what stops "Claude knows one version, Codex another," and what lets governance be *enforced at
+adapters* (a mutation requires a `PolicyDecision`), not merely asked for in a prompt. Full schemas and the
+hook-as-client design: `runtime.md`.
 
 ## Kernel services (target) mapped onto existing layers
 
-The 6 layers in `../LAYERS.md` (Memory = building; Authority, Decisions = early importers;
-Procedures, Permissions, Doctrine = planned) are not replaced — the substrate services are how
-those layers express at runtime:
+The 6 layers in `../LAYERS.md` (Memory = building; Authority, Decisions = early importers; Procedures,
+Permissions, Doctrine = planned) are not replaced — these services are how they express at runtime:
 
-| Substrate service | Question it answers | Maps onto / extends |
+| Service | Question | Maps onto / extends |
 |---|---|---|
 | Identity kernel | what *is* this thing? (survives path/host moves) | scope resolver + entity model |
-| Registry kernel | what exists, and when should it be used? | Authority layer → registry-of-registries |
-| Trace / evidence ledger | what actually happened? | ledger (the ground; everything else is a view) |
-| Memory / knowledge | what should be remembered/recalled/retired? | Memory layer |
-| Capability graph | what can act, think, judge, execute? | new (skills/tools/MCPs/models/harnesses as one graph) |
-| Orientation router | what context should this agent receive *now*? | new (uses identity scope; see phases "Orientation coherence") |
-| Job / routing engine | smallest meaningful unit of work, and who does it? | Procedures layer |
-| Execution broker / gateway | how do agents act without becoming the truth? | new (rented executors + the exec plane) |
-| Governance / autonomy gates | how does it act without chaos? | Permissions layer |
-| Product feedback engine | how does work become product learning? | new (Authority for products + hypotheses) |
-| Evaluation / hardening | what should become infrastructure / a rule? | new (Law 7 + Law 8 engine) |
-| Observability / control surface | what is happening, why, cost, what next? | new (operator cockpit) |
+| Registry kernel | what exists, and when to use it? | Authority → registry-of-registries |
+| Trace / evidence ledger | what actually happened? | ledger (the ground; everything else a view) |
+| Meaning / memory | what is known / recalled / retired? | Memory layer (absorbs the brain corpus) |
+| Capability graph | what can act/think/judge/execute? | new (skills/tools/MCPs/models/harnesses, one graph) |
+| Orientation router | what context *now*? | new (EffectiveContract + ContextPack; phases "Orientation") |
+| Work / routing | smallest unit of work, and who does it? | Procedures (WorkEnvelope + JobUnit fields) |
+| Execution broker / gateway | act without becoming the truth? | new (rented executors + exec plane) |
+| Governance / autonomy | act without chaos? | Permissions (ActionIntent → PolicyDecision → StandingGrant) |
+| Product feedback | work → product learning? | new (Authority for products + hypotheses) |
+| Evaluation / hardening | what becomes infrastructure / a rule? | new (Law 7 + Law 8) |
+| Observability / control surface | what's happening, cost, next? | new (operator cockpit; projections only) |
 
-**The registry is not flat inventory.** It distinguishes **inside-world** (this system's own
-projects/tools/products/deployments/configs/constraints) from **outside-world**
-(frameworks/libraries/methods/models/expert skills/repos), joined by a **synthesis layer** that
-answers *"given THIS job/context/cost/risk/evidence, which option is currently preferred, and why"*
-— not a static "X is good / Y is good" lookup — and which adapts over time.
+**The registry is not flat inventory.** It distinguishes **inside-world** (this system's own projects/tools/
+products/deployments/configs/constraints) from **outside-world** (frameworks/libraries/methods/models/expert
+skills/repos), joined by a **synthesis layer** answering *"given THIS job/context/cost/risk/evidence, which
+option is currently preferred, and why"* — not a static "X good / Y good" — and it adapts over time.
 
-**Memory is inside the substrate, not above it.** The trace/evidence ledger is the ground;
-memory, product loops, skill-mining, and self-healing are all *views over the ground*.
+**Memory is inside the substrate, not above it, and it is one slice of it.** The trace/evidence ledger is the
+ground; memory, product loops, skill-mining, and self-healing are views over the ground.
 
 ## The reconciliation principle (why this won't become overbuild)
 
-The substrate vision is seductive and the operator's #1 failure mode is overbuilding. Hold
-both:
+The substrate vision is seductive and the operator's #1 failure is overbuilding. Hold both:
 
-- The **topology above is the target** — captured so it is never re-derived (the rediscovery tax).
-- **Execution is thin vertical slices** — each touches several services but only as deep as a
-  single proof needs. The `Transition` primitive (`transition.md`) is what makes a small slice
-  substrate-shaped.
-- **Never build a service ahead of a proven need.** A new kernel service earns its place only when
-  a slice cannot complete without it. Default to subtraction; the control plane must earn its keep
-  (every move = an outward/memory/rule delta, or it is telemetry).
+- The topology is the **target** — captured so it is never re-derived (the rediscovery tax).
+- **Execution is thin vertical slices, envelope-first.** Build the `.compound` home + envelope spine + hook
+  fixtures **before** memory ingestion; memory is a later slice. Never build a kernel service ahead of a
+  slice that needs it.
+- **Extract contracts, reject mass.** From the control-spine repo, take the *load-bearing contracts*
+  (EffectiveContract, ContextPack, WorkEnvelope, ActionIntent→PolicyDecision, hook-as-client, the
+  distillation roles) — never the sprawling runtime tree.
+- Default to subtraction; every move = an outward/memory/rule delta, or it is telemetry. Every migrated
+  surface gets a **retirement condition**, or compound becomes one more layer.
 
-The order of construction is in `../roadmap/phases.md`.
+Construction order: `../roadmap/phases.md`.

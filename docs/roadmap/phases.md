@@ -1,106 +1,95 @@
-# Roadmap — Phase-Transition Proofs
+# Roadmap — envelope-first construction order
 
-Construction order is **vertical slices**, not horizontal layers. Each phase proves one
-*phase transition* of the living system with a real command and real (or faithfully synthetic)
-data. A phase is done only when its acceptance test (behavioral, not a document) passes.
+Construction is **vertical slices**, built **envelope-first, not memory-first**. The runtime spine
+(`../architecture/runtime.md`) — `.compound` home, typed envelopes, hook fixtures — comes before memory
+ingestion, because every adapter (memory, a legacy index, the model gateway, product) needs the same envelope spine; wire
+them first and you recreate "powerful parts, weak circulation."
 
-Discipline (from `../LAYERS.md` + the operator's laws): build one concern into the existing
-kernel, prove it, retire the parallel handling it replaces. Never build a kernel service ahead
-of a slice that needs it. A diagram is not a substrate; the map is not the work.
+Each phase proves one transition with a real command + real/synthetic fixtures. A phase is done only when
+its acceptance test (behavioral, not a document) passes, it ends in a state delta, and it names what it
+**retired**. Never build a service ahead of a slice that needs it. The map is not the work.
 
-> This file is the **generic** roadmap. The operator-specific sequencing, real data sources,
-> and coordination live in the private overlay (`docs_private/plan/COHERENT-PLAN.md`).
+> Generic roadmap. Operator-specific sequencing + real data sources live in `docs_private/plan/COHERENT-PLAN.md`.
 
-## Phase 0 — Reality coherence + the unified base
-**Question:** does the system know what exists (and where it runs) without hallucinating from
-docs/folders?
-**Adds:** identity + a reality inventory + the **unified base** (the single generated home for
-settings + information) + a **placement map** (what runs on which host).
-**Proof:** one discovered entity survives a path move *and* a host move (same entity, old binding
-retired, new binding active, no duplicate); one duplicate owner merged/killed; one stale path retired;
-one live automation mapped to owner + host + receipt surface.
+## P0 — `.compound` home (habitat only)
+`compound home init/doctor/where`. **Proof:** `home doctor` reports generated state lives under
+`COMPOUND_HOME`, not the repo; manifest/ledger/events/work/context/inbox/indexes/projections OK;
+private_overlay absent\|present; `generated_state_in_repo_source: false`. Host-aware: the home can record
+what runs where (`host_bindings`). No memory, no hooks, no legacy index.
 
-## Phase 1 — Projection coherence  (the first real vertical slice)
-**Question:** can one real event project into multiple spaces without losing identity?
-**Adds:** `TraceEnvelope` + `Transition` + adjudicated `Claim`/`MemoryDelta`.
-This replaces a thin "ingest contradictions → timeline" demo. The slice:
-```text
-one real session trace
-  → entity resolved (canonical id via the precedence order, not a duplicate)
-  → evidence written
-  → memory candidate created → ADJUDICATED (reject/park/promote) → delta (was→now→evidence→date)
-  → ALSO emit ≥2 more projections: one job receipt, one skill-used/missed signal
-  → all written as ONE Transition
-  → a future orientation packet is built from it
-  → a tiny future agent task consumes the packet
-  → a receipt proves behavior changed
-```
-**Acceptance (`compound transition show <id>` + behavioral):** timeline shows old→new→evidence;
-recall packet built; a future agent *used* it; receipt proves the use; **no duplicate entity**;
-unknown entity/low confidence → `parked`, never `promoted`. State plainly: *this proves multi-space
-projection + adjudicated delta; relevance-gated recall is tested by the agent-consumption step.*
+## P1 — envelope schemas
+Go structs + JSON validation + round-trip tests for every envelope in `../architecture/runtime.md`.
+**Proof:** `compound schema doctor`; `compound envelope validate fixtures/envelopes/*.json` — typed before clever.
 
-> Sub-steps if needed: **contract-first** (pin the trace/lens schema + entity+predicate
-> canonicalization + adjudication lifecycle) → **ingest** (public core + private glue separate) →
-> **quality** (`compound memory doctor`: processed/promoted/parked/rejected, unresolved entities,
-> duplicate candidates, claims-missing-evidence, timeline round-trip).
+## P2 — EffectiveContract + ContextPack  (orientation coherence)
+`compound contract compile --harness --cwd --task`; `compound orient`. **Proof:** the contract lists active
+instructions (generated vs manual), active hooks, memory-class eligibility, capability availability,
+conflicts/unknowns, and source revisions; the **same task in a product repo vs the control-plane repo yields
+different ContextPacks** (product repo omits OS-governance context + "all skills/all MCP by default"). The
+ContextPack records what was **excluded** and why → enables replacement.
 
-## Phase 2 — Recall / action coherence
-**Question:** does recalled context change agent behavior in the intended way?
-**Adds:** recall broker (scope/visibility/retired/freshness/confidence filters) before any engine.
-**Proof:** same job without the compound packet → weaker execution; with it → correct context, better
-route, better receipt. Engine swap (one `MemoryEngine` implementation → another) leaves the ledger
-byte-identical. Same recall packet consumed by ≥2 harnesses, citing the same claim/evidence ids.
-(Agent-agnosticism becomes real — proven by replacement.)
+## P3 — WorkEnvelope lifecycle  (one root identity)
+`compound work create/show/claim/advance/close`; `compound transition show`. **Proof:** one stable `work_id`
+links intent → context_pack → action → policy → run → receipt → transition. This is the first unification
+proof and exercises the `Transition` object mechanically.
 
-## Phase O — Orientation coherence  (context that fits the work)
-**Question:** does an agent get context appropriate to *what it is working on*, not global governance?
-**Adds:** orientation router (`compound orient --cwd --harness --task`).
-**Proof:** the **same task run in a product repo vs the control-plane repo produces different context
-packets** — the product repo omits control-plane/OS-governance context and "all skills / all MCP tools
-by default"; the control-plane repo includes them. This directly attacks the fragmentation the operator
-feels when working on a non-OS project.
+## P4 — policy v0  (governance enforced, not asked)
+`compound policy evaluate <action-intent>`. **Proof:** local reversible write → `allow_with_obligations`;
+forbidden path → `deny`; public/spend/destructive/security → `hold`. No model bypasses this via prompt
+obedience; a mutating adapter requires the `PolicyDecision`.
 
-## Phase 3 — Routing coherence
-**Question:** can compound choose the right executor across model/tool/harness/script/human?
-**Adds:** `JobUnit` + routing engine with an **uncertainty escalator** and **routing remorse**.
-**Proof:** one job → deterministic script; one → small model; one escalated to frontier/vision/human
-because uncertainty or risk demanded it; each route explains its tradeoff.
+## P5 — hook fixture loop  (no live install yet)
+`compound hook {session-start,user-prompt-submit,pre-tool-use,post-tool-use,session-end}` over fixtures.
+**Proof:** SessionStart fixture → HookEvent + ContextRequest + ContextPack; UserPromptSubmit → WorkEnvelope
+candidate + CapabilityNudge; PreToolUse → ActionIntent + PolicyDecision; SessionEnd → Receipt + Transition.
+Capability-aware per harness (a `HarnessRegistry` records what each actually supports).
 
-## Phase 4 — Product-feedback coherence
-**Question:** can a product action become a hypothesis, metric observation, taste judgment, next move?
-**Adds:** `ProductSignal` + `Hypothesis` + the `Product` market-control surface.
-**Proof:** `compound product timeline <product>` shows change → metric signal → *competing*
-interpretations (no causal over-claim) → confidence → next **gated** action.
+## P6 — memory candidate / adjudication  (memory is ONE slice, now)
+`compound memory candidate/adjudicate/promote/timeline/doctor`. Inputs: SELECT/SEE/TELL/EXECUTE +
+CONTRADICTIONS + taste + skills + outcomes — **all as candidates first**. **Proof:** one real trace →
+MemoryCandidate → parked\|promoted\|rejected → EvidenceItem/Claim → Transition projection; recalled later
+only under relevant scope; no duplicate entity (entity-resolution precedence, `../architecture/contracts/`);
+distiller output is never piped straight into canon.
 
-## Phase 5 — Hardening / subtraction coherence
-**Question:** does repetition change the system's structure?
-**Adds:** evaluation/hardening engine (Law 7 + Law 8) + OS-tax receipt.
-**Proof:** `compound mine repetitions` → repeated success → skill/script/checker candidate; repeated
-failure → rule/guard; dead surface → retirement; control-plane work → OS-tax signal.
+## P7 — private dogfood overlay  (connect the real system as adapters)
+Overlay/adapters for the control-spine repo, the brain corpus, the legacy vector/fact store, the model
+gateway, product registries, analytics. **Public core sees only adapters; no operator paths in core.**
+**Proof:** one real brain decision imports as Decision + EvidenceSpan; a project page as a Product/Project
+entity + claims; a review as provisional (not ambient); an inbox item as candidate (not canon); an entity
+survives a path **and** host move (no duplicate).
 
-## Execution-plane track (S0–S5) — runs alongside, read-only first
-The model-traffic gateway integrates *read-only first*, then controlled ingress, then relay canary
-(`../architecture/execution-plane.md`). Build only when a slice needs it.
-- **S0** — one low-risk request → gateway trace → imported as `ExecutionRouteEvidence` → shown as a
-  projection of a `Transition` (selected/rejected routes, cost, latency, status; no prompt/response).
-- **S1** — normalize gateway lanes into the `Harness`/gateway registry + classify them (direct-native,
-  observed-tap, ingress, relay-canary, manual/pro, cheap-scout) so one lane name means one thing.
-- **S2** — join route evidence with outcome evidence (route success ≠ task success).
-- **S3** — gateway eval evidence stays *preview-only* until compound has enough outcome data to promote
-  a route policy for a scope.
-- **S4** — compound defines autonomy/risk/cost policy; the gateway enforces provider/account/budget/quota.
-- **S5** — native relay only after its conformance/fixture gate is green (fail-closed; rollback keeps
-  direct-native usable).
+## P8 — capability registry import
+Import skills/tools/MCPs/models/providers/harnesses as a graph. **Proof:** `compound capability query
+--task "…"` returns relevant skills, required tools, MCP-vs-CLI recommendation, model/harness constraints,
+cost/risk, counter-skills, excluded capabilities (loaded on demand, not all-by-default).
+
+## P9 — product loop
+`compound product ingest-signal/record-change/hypothesis/timeline`. **Proof:** `compound product timeline
+<product>` shows change → metric signal → *competing* interpretations (no causal over-claim) → confidence →
+next **gated** action.
+
+## P10 — execution route evidence (model gateway)
+Import `ExecutionRouteEvidence` (`../architecture/execution-plane.md`), read-only first → ingress → relay
+canary. **Proof:** a route decision joins a WorkEnvelope + Receipt; **route success ≠ task success** (task
+success requires a state delta). Then lane normalization, the join with outcome evidence, eval-as-preview,
+and budget enforcement.
+
+## P11 — retirement (the step that gets skipped — don't)
+Every migrated surface gets a **retirement condition**: old brain write path retired when the compound
+writer is proven; old receipt path; old hook renderer; old skill matrix; old dashboard; legacy recall
+demoted when compound recall quality is proven. **Without retirement, compound becomes one more layer.**
+Hardening (Law 7/8: repeated success → infrastructure; repeated failure → rule; OS-tax receipt) runs
+continuously alongside.
 
 ## Cross-phase rules
-- **Integration has levels: orientation < pointer < merge < proof.** Knowing a thing exists, linking to
-  it, actually consolidating it, and proving it runs are four different states. Only **merge** and
-  **runtime proof** count toward de-fragmentation; a pointer or a doc does not.
-- Every phase splits **public core** (contracts, lifecycle, CLI, fixtures) vs **private overlay**
-  (paths, credentials, accounts, personal memory).
-- Every phase must pass the relevant **acceptance tests** in `../architecture/transition.md`.
-- Every phase ends with a state delta and names what it **retired** — or it does not count.
+- **Integration has levels: orientation < pointer < merge < proof.** Only merge and runtime proof count.
+- Every phase splits **public core** (contracts/lifecycle/CLI/fixtures) vs **private overlay** (paths/
+  credentials/accounts/corpus). Generated state → `COMPOUND_HOME`, never the repo.
+- **Agent-agnosticism is proven by checkpoint replacement** (Claude starts → checkpoint → Codex resumes →
+  verification succeeds from spine context), not by "both integrations exist."
+- Every move ends in one canonical `move_type` (`../architecture/contracts/`); `audit_only` does not count.
 - **Execution generates the architecture.** When a slice teaches you the design was wrong, update the
-  docs/contracts/tests/instructions in the same change (see `../../AGENTS.md` → "Execution is a
-  feedback loop"). It is about the path, not the direction.
+  docs/contracts/tests/instructions in the same change (`../../AGENTS.md` → "Execution is a feedback loop").
+- **Compounding-knowledge loop:** a transition-oriented observation that teaches something about compound's
+  future architecture is written evidence-linked and packet-local, and *earns promotion* to a contract,
+  script, check, decision, or recalled context only when consumed by a real executor — never just stored.
