@@ -1,6 +1,6 @@
 // Command compound is the CLI for the compound information kernel / transition substrate.
-// Built envelope-first: the proven spine is P0-P5 (home, envelopes, contract/orient, work,
-// policy, harness/hook). Memory is one slice on top (P6, re-bound through the spine), not the
+// Built envelope-first: the proven spine is P0-P6 first slice (home, envelopes, contract/orient, work,
+// policy, harness/hook, memory ledger). Memory is one slice on top (P6, re-bound through the spine), not the
 // system boundary. Legacy/prototype memory-era commands still exist below and will be migrated.
 // Architecture: docs/architecture/{substrate,runtime,transition}.md, docs/roadmap/phases.md.
 package main
@@ -96,7 +96,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `compound — personal OS (Memory layer)
+	fmt.Fprint(os.Stderr, `compound — local meaning + execution substrate
 
 usage:
   compound version
@@ -120,7 +120,7 @@ usage:
   compound hook <name> <fixture.json>                      run a lifecycle hook over a fixture (capability-aware)
   compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
   compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
-  compound memory <candidate|adjudicate|recall|timeline|doctor>  P6: candidate -> claim -> as-of recall (MVCC-by-fold)
+  compound memory <candidate|adjudicate|recall|timeline|query|doctor>  P6: candidate -> claim -> as-of recall (MVCC-by-fold) + rented-engine breadth
 `)
 }
 
@@ -219,6 +219,19 @@ func cmdMemory(args []string) {
 				arrow = "  ->"
 			}
 			fmt.Printf("%s seq %-3d %s.%s = %s\n", arrow, c.Seq, c.Entity, c.Predicate, c.Object)
+		}
+	case "query":
+		// breadth via the RENTED engine, relevance-gated by the ledger. A real engine
+		// (turbovec) swaps in behind mem.Engine; the default lexical engine works in-process.
+		claims, err := store.QueryBreadth(pos(), 10, &mem.LexicalEngine{})
+		if err == mem.ErrUnsupported {
+			fmt.Println("# no breadth engine wired — exact/as-of recall available via `compound memory recall`")
+			return
+		}
+		die(err)
+		fmt.Printf("# %d breadth hit(s) for %q (relevance-gated)\n", len(claims), pos())
+		for _, c := range claims {
+			fmt.Printf("%s.%s = %s  (seq %d, %s)\n", c.Entity, c.Predicate, c.Object, c.Seq, c.Visibility)
 		}
 	case "doctor":
 		r := store.Doctor()

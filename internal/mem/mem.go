@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/envelope"
@@ -173,49 +174,63 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 		return res, nil
 	}
 
-	// promote: find the prior CURRENT claim on this entity+predicate.
-	prior, hasPrior, err := s.currentClaim(c.Entity, c.Predicate, 0)
-	if err != nil {
-		return res, err
+	// promote: the prior-lookup + seq allocation + claim/edge append run under one lock so
+	// seq stays monotonic-unique and supersession is consistent even across concurrent writers
+	// (single-writer is the norm; the lock makes MVCC-by-fold mechanically true, not just a phrase).
+	var (
+		claim         Claim
+		prior         Claim
+		hasPrior, dup bool
+	)
+	lockErr := s.withLock(func() error {
+		p, hp, err := s.currentClaim(c.Entity, c.Predicate, 0)
+		if err != nil {
+			return err
+		}
+		prior, hasPrior = p, hp
+		if hasPrior && prior.Object == c.Object {
+			dup = true
+			return nil // same value already current → no redundant version
+		}
+		seq, err := s.nextSeq()
+		if err != nil {
+			return err
+		}
+		claim = Claim{
+			ID:           idFor("claim_", c.Entity, c.Predicate, c.Object, strconv.FormatInt(seq, 10)),
+			Seq:          seq,
+			Entity:       c.Entity,
+			Predicate:    c.Predicate,
+			Object:       c.Object,
+			ValidFrom:    orDef(c.ObservationDate, rfc3339(now)),
+			Confidence:   c.Confidence,
+			Derivation:   c.Derivation,
+			EvidenceRefs: []string{c.ID, c.SourceTraceRef},
+			Visibility:   orDef(c.Visibility, "operational"),
+			CreatedAt:    rfc3339(now),
+		}
+		if hasPrior {
+			claim.Supersedes = prior.ID
+		}
+		if err := appendJSONL(s.claimsLog(), &claim); err != nil {
+			return err
+		}
+		if hasPrior {
+			return appendJSONL(s.edgesLog(), &Edge{Seq: seq, Kind: "supersedes", From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)})
+		}
+		return nil
+	})
+	if lockErr != nil {
+		return res, lockErr
 	}
-	if hasPrior && prior.Object == c.Object {
-		// same value already current → duplicate; do not append a redundant version.
+	if dup {
 		c.State = "rejected"
 		c.Reason = "duplicate of current claim " + prior.ID
 		_ = writeJSON(filepath.Join(s.candDir(), c.ID+".json"), &c)
-		res.Verdict = "reject"
-		res.Candidate = c
-		res.Note = "already current: " + prior.ID
+		res.Verdict, res.Candidate, res.Note = "reject", c, "already current: "+prior.ID
 		return res, nil
 	}
-
-	seq, err := s.nextSeq()
-	if err != nil {
-		return res, err
-	}
-	claim := Claim{
-		ID:           idFor("claim_", c.Entity, c.Predicate, c.Object, strconv.FormatInt(seq, 10)),
-		Seq:          seq,
-		Entity:       c.Entity,
-		Predicate:    c.Predicate,
-		Object:       c.Object,
-		ValidFrom:    orDef(c.ObservationDate, rfc3339(now)),
-		Confidence:   c.Confidence,
-		Derivation:   c.Derivation,
-		EvidenceRefs: []string{c.ID, c.SourceTraceRef},
-		Visibility:   orDef(c.Visibility, "operational"),
-		CreatedAt:    rfc3339(now),
-	}
 	if hasPrior {
-		claim.Supersedes = prior.ID
-	}
-	if err := appendJSONL(s.claimsLog(), &claim); err != nil {
-		return res, err
-	}
-	if hasPrior {
-		if err := appendJSONL(s.edgesLog(), &Edge{Seq: seq, Kind: "supersedes", From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}); err != nil {
-			return res, err
-		}
 		res.Superseded = prior.ID
 	}
 
@@ -456,6 +471,26 @@ func (s *Store) Doctor() Report {
 }
 
 // --- ledger internals (MVCC-by-fold) ---
+
+// withLock serializes the seq-allocate + append critical section with an exclusive advisory
+// file lock under COMPOUND_HOME/lock. The lock is released when the fd closes, so a crashed
+// writer never wedges the ledger. (Darwin/Linux; compound's targets.)
+func (s *Store) withLock(fn func() error) error {
+	lockPath := filepath.Join(s.home, "lock", "mem.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return fn()
+}
 
 func (s *Store) nextSeq() (int64, error) {
 	cur := int64(0)

@@ -179,6 +179,14 @@ and drills down on demand. The default engine is a no-op/local one (the ledger a
 delta queries); a quantized ANN engine (turbovec) is the breadth `Query` adapter — its allowlist is honored
 in-kernel, so "hard filters before breadth" stays cheap rather than a recall-losing post-filter.
 
+**Mechanical invariants (so the patterns are true, not just phrases).** `seq` is allocated under an
+exclusive advisory file lock (`COMPOUND_HOME/lock`) that wraps the prior-lookup + seq-bump + claim/edge
+append — so monotonic-unique holds even across concurrent writers (single-writer is the norm; the lock
+makes it correct), and the lock releases on fd close so a crash can't wedge the ledger. An engine that
+lacks a capability returns an explicit `ErrUnsupported` — never a silent `nil` — so a missing index can
+never masquerade as "no results"; the default no-op engine raises, and recall stays answerable from the
+ledger alone.
+
 > Rationale, per-system attribution, the turbovec integration decision, and the rejected anti-patterns
 > (LLM-as-memory-manager, lexical contradiction, post-engine filtering, graph-RAG, hyperscale machinery)
 > are recorded in the private audit synthesis. Engines stay swappable; the typed Claim/Position/Pattern

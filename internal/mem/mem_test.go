@@ -139,6 +139,48 @@ func TestDoctorReportsHops(t *testing.T) {
 	}
 }
 
+// The rented-engine seam: NoEngine raises ErrUnsupported EXPLICITLY (never a silent empty),
+// and a real engine answers breadth gated by the ledger's allowlist.
+func TestEngineSeam(t *testing.T) {
+	s := newStore(t)
+	for _, o := range []string{"node", "go"} { // node first, then go supersedes it → go is current
+		c, _ := s.Capture([]Candidate{cand("project:api", "language", o, "")}, t0)
+		s.Adjudicate(c[0].ID, "promote", "", t0)
+	}
+	// NoEngine: breadth is unsupported, and it says so explicitly.
+	if _, err := s.QueryBreadth("language", 10, NoEngine{}); err != ErrUnsupported {
+		t.Errorf("NoEngine breadth should return ErrUnsupported, got %v", err)
+	}
+	if _, err := (NoEngine{}).Query("x", nil, 1); err != ErrUnsupported {
+		t.Errorf("NoEngine.Query must raise, not silently no-op; got %v", err)
+	}
+	// LexicalEngine: real breadth result, and only the CURRENT value (node was superseded by go).
+	hits, err := s.QueryBreadth("language", 10, &LexicalEngine{})
+	if err != nil {
+		t.Fatalf("lexical query: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Object != "go" {
+		t.Errorf("breadth should be gated to the current claim 'go'; got %v", objs(hits))
+	}
+}
+
+// The relevance gate is honored at the engine via the allowlist: a retired claim is never in
+// the allowed set, so breadth cannot surface it.
+func TestEngineRelevanceGate(t *testing.T) {
+	s := newStore(t)
+	c := cand("project:api", "secret_key", "abc123", "")
+	c.Visibility = "retired"
+	got, _ := s.Capture([]Candidate{c}, t0)
+	s.Adjudicate(got[0].ID, "promote", "", t0)
+	hits, err := s.QueryBreadth("secret", 10, &LexicalEngine{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("retired claim must be gated out of breadth via the allowlist; got %v", objs(hits))
+	}
+}
+
 func objs(cs []Claim) []string {
 	out := make([]string, len(cs))
 	for i, c := range cs {
