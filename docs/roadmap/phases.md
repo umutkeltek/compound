@@ -58,6 +58,34 @@ distiller output is never piped straight into canon. `memory doctor` reports *wh
 before content, emits bounded snippets + owner targets (never copies), gates writeback behind an apply
 step, and checkpoints/resumes long mines (`../memory-architecture.md`).
 
+**TraceDistiller (the P6 distillation front-end — extends the candidate loop, makes it compounding, not
+summaries).** Inputs are spine artifacts — TraceEnvelope + Receipt + ContextPack + HookEvents +
+ExecutionRouteEvidence + raw refs — not "a session." Pipeline: load **RetrievedPriorState** → extract a
+**CandidateSet** → **DistillationCritic** → Adjudicator → Ledger/Inbox → Transition. The depth that separates
+it from summarization:
+
+- **Distill against canon, not blind.** Before extracting, the distiller loads RetrievedPriorState — active +
+  superseded claims, open decisions, known failure patterns, existing capability nodes, taste standards,
+  product hypotheses, prior distillation false-positives/false-negatives, and the current
+  distillation-policy version. The critic then asks, per candidate: is it new? does it supersede / contradict
+  / duplicate canon? is it lower-quality than what's already promoted? does it reveal a better procedure?
+  should it become a skill/rule/eval, or be parked? — and **does it expose a failure in the distillation
+  method itself?**
+- **Versioned distillation.** Every candidate cites its raw `evidence_refs[]`, carries a stable deterministic
+  id (replay ⇒ identical ids), and stamps the `distillation_policy_version` that produced it — so a method
+  change is legible, never silent prompt drift.
+- **The distiller observes itself (the compounding loop).** A distiller mistake emits an
+  **EvalCaseCandidate** (the distiller's own regression corpus); a discovered better method emits a
+  **MethodUpgradeCandidate** (not a silent prompt edit); accumulated false-pos/neg emit a
+  **DistillationPolicyPatchCandidate**; a capability miss or false-trigger emits a **CapabilityObservation**
+  (feeds P8's `missed_when` / `false_triggered_by` edges). All are candidates — adjudicated, never
+  auto-applied (model extracts; code decides; nothing reaches ambient recall unadjudicated — already enforced
+  in `internal/mem`).
+- **Acceptance (added):** same trace replay ⇒ identical candidate ids; a low-confidence candidate parks,
+  never promotes; duplicate-vs-new and contradiction/supersession are detected against RetrievedPriorState; a
+  distiller mistake yields an EvalCaseCandidate; a missed/false capability trigger yields a
+  CapabilityObservation; a better method yields a MethodUpgradeCandidate (not a prompt edit).
+
 ## P7 — private dogfood overlay  (connect the real system as adapters)
 Overlay/adapters for the control-spine repo, the brain corpus, the legacy vector/fact store, the model
 gateway, product registries, analytics. **Public core sees only adapters; no operator paths in core.**
@@ -65,10 +93,20 @@ gateway, product registries, analytics. **Public core sees only adapters; no ope
 entity + claims; a review as provisional (not ambient); an inbox item as candidate (not canon); an entity
 survives a path **and** host move (no duplicate).
 
-## P8 — capability registry import
-Import skills/tools/MCPs/models/providers/harnesses as a graph. **Proof:** `compound capability query
---task "…"` returns relevant skills, required tools, MCP-vs-CLI recommendation, model/harness constraints,
-cost/risk, counter-skills, excluded capabilities (loaded on demand, not all-by-default).
+## P8 — capability registry import (the Capability Graph, not just a skill graph)
+Import skills/tools/MCPs/models/providers/harnesses as a typed **graph**. Nodes are RegistryEntry of kind
+`lens | procedure | script | tool | mcp | model_profile | harness | eval | workflow | adapter | doctrine |
+taste_standard` — skills are one node type. Edges carry routing AND evolution feedback:
+`surfaces_with | requires | conflicts_with | specializes | fallback_for | validated_by | missed_when |
+false_triggered_by | retired_by`. The feedback edges close the loop with the distiller: a CapabilityObservation
+adds a `missed_when` / `false_triggered_by` edge, evidenced repeated success adds `validated_by`, a superseded
+capability gets `retired_by` — so the graph *learns which capability fits which context* instead of a static
+list. **Auto-surface, never auto-execute:** a match surfaces capabilities into the ContextPack; execution still
+requires WorkEnvelope + ActionIntent + PolicyDecision (no chain auto-runs from a match). **Proof:** `compound
+capability query --task "…"` returns relevant capabilities, required tools, MCP-vs-CLI recommendation,
+model/harness constraints, cost/risk, counter-skills, and excluded capabilities with reasons (loaded on demand,
+not all-by-default) — **without executing them**; and a missed/false trigger recorded as a CapabilityObservation
+changes future surfacing probability.
 
 ## P9 — product loop
 `compound product ingest-signal/record-change/hypothesis/timeline`. **Proof:** `compound product timeline

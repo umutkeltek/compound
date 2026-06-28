@@ -53,6 +53,30 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 | **AutonomyEnvelope** | a trust gradient, not a boolean | allowed_without_approval[], requires_approval[], max_cost_usd, max_runtime, required_receipts, **branch_sandbox** |
 | **MemoryEngine** | rented breadth index — a **bridge/index, never authority** | current: `Capabilities/Query/Recall/Put` (`internal/engine/engine.go`); target port: `Query/Recall/PutProjection/Build/Health/ExplainResult`. A legacy vector/fact store is one implementation; the arrow is **compound → materialized objects → engine index**, never engine → truth → compound reads. The engine never owns promotion/visibility/supersession/source-class/privacy. When an adapter wraps a legacy store, distinguish its **durable** parts (facts, source-metadata, page-versions — preserve) from its **rebuildable** parts (chunks, embeddings, search — regenerate). |
 
+## Distillation & capability-growth contracts (the compounding layer — P6 continuation + P8)
+
+These turn traces into *adjudicated, versioned* knowledge and grow capability from evidence. They **extend**
+the candidate loop and the `Claim` / `Capability` / `RegistryEntry` rows above — they do not replace them.
+Defined here; implemented when a slice needs them (the candidate fan-out + as-of recall already exist in
+`internal/mem`). Invariant throughout: **model extracts, code decides; no candidate reaches ambient recall
+unadjudicated; distillation proposes candidates only.**
+
+| Contract | Purpose | Key fields / invariant |
+|---|---|---|
+| **TraceDistiller** | turns spine artifacts (TraceEnvelope + Receipt + ContextPack + HookEvents + ExecutionRouteEvidence + raw refs) into a CandidateSet — extraction only, never canon | loads RetrievedPriorState first; each output cites `evidence_refs[]` + `distillation_policy_version` + a stable deterministic id (replay ⇒ same ids) |
+| **RetrievedPriorState** | the canon the distiller compares against *before* extracting (distill-against-canon, not blind) | active + superseded claims, open decisions, failure patterns, capability nodes, taste standards, hypotheses, prior false-pos/neg, current policy version |
+| **CandidateSet** | the typed fan-out (all candidate-first) | MemoryCandidate · SkillCandidate · DecisionCandidate · FailurePattern · TasteObservation · ProductHypothesis · CapabilityObservation · RouteObservation · MethodUpgradeCandidate · DistillationPolicyPatchCandidate · EvalCaseCandidate |
+| **DistillationPolicy** | the *versioned* method that produced a candidate — so a method change is legible, not silent prompt drift | id, version, lenses[], thresholds, prompt_refs; changed only via an adjudicated DistillationPolicyPatchCandidate |
+| **DistillationCritique** | the critic verdict per candidate, before adjudication | new? · supersedes? · contradicts? · duplicate? · lower_quality_than_canon? · better_procedure? · become_skill_rule_eval? · park? · **exposes_method_failure?** |
+| **EvalCase** | a frozen distiller input→expected-output, born from a distiller mistake — the distiller's own regression corpus | id, trace_ref, expected, actual, regression_for_policy_version |
+| **AdjudicationDecision** | the durable verdict a candidate receives | candidate_ref, verdict (reject \| park \| promote \| operationalize \| retire), basis, evidence_refs[], policy_version |
+| **CapabilityGraph** | the typed graph over `Capability` / `RegistryEntry` nodes (P8) | node kinds (lens/procedure/script/tool/mcp/model_profile/harness/eval/workflow/adapter/doctrine/taste_standard) + edges (surfaces_with/requires/conflicts_with/specializes/fallback_for/validated_by/**missed_when**/**false_triggered_by**/retired_by); **auto-surface, never auto-execute** |
+
+The self-improving loop is what makes this *compound*: the distiller's own misses/false-triggers and a
+capability's `missed_when` / `false_triggered_by` edges become evidence that patches the next
+DistillationPolicy and re-weights surfacing — repeated success becomes infrastructure, repeated failure
+becomes a rule, **only after evidence** (Laws 7/8).
+
 ## Entity resolution — the precedence order (the root of anti-fragmentation)
 
 `NotesApp` / `notes-app` / a bundle id / "that app with the metrics" must collapse to **one** entity:
