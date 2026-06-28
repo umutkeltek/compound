@@ -1,27 +1,29 @@
-# Compound Layers — the canonical architecture
+# Compound Layers — object families inside the one spine
 
 > **The normalizing sentence every other doc points back to:**
 >
-> **Compound is a local-first meaning + execution substrate with two internal axes — the
-> Runtime / Envelope Spine that controls *how work flows*, and the Knowledge / Meaning Fold
-> that owns *what meaning becomes*. Rented engines and executors sit at the edge. The
-> compounding loop turns traces into candidates, adjudicates them into the Knowledge Fold,
-> and records their effect through Transitions on the Spine.**
+> **Compound is one architecture — the envelope spine. The spine defines lifecycle, execution
+> order, authority, proof, and anti-fragmentation. The "layers" are not a second architecture:
+> they are the object families the spine's transitions create, own, and adjudicate. Rented
+> engines and executors sit at the edge; the compounding loop feeds objects back in.**
 
-Compound is **one architecture with two axes, not two architectures.** Two construction
-generations exist in this repo — an older "information kernel" and a newer "envelope spine."
-They are **not rivals.** The spine is the *verbs* (how work flows); the fold is the *nouns*
-(what meaning is owned). Everything else is rented at the edge or is the loop that joins the
-two axes. When a doc, package, or command seems to belong to "the other architecture," it
-belongs to **the other axis of this one.** See `architecture/status.md` for which package and
-command belongs to which axis and which are legacy/bridge.
+> **Hard rule — read it literally:**
+> **Layers are not services, not phases, not owners, and not an alternate architecture. They are
+> object families processed by the envelope spine.**
+
+There is **one** architecture here: the **Runtime / Envelope Spine.** An earlier "information
+kernel" generation is not a peer architecture and not an "Axis B" — its concerns survive only as
+**object families** that flow through the spine. When a doc, package, or command seems to belong
+to "the other architecture," it belongs to **an object family the one spine processes.** See
+[`architecture/status.md`](./architecture/status.md) for which package/command is canonical vs
+legacy/bridge.
 
 ---
 
-## Axis A — Runtime / Envelope Spine *(how work flows)*
+## The spine (the architecture)
 
 The typed runtime grammar every harness, hook, and run flows through, hung off one root
-`work_id`:
+`work_id`. This is what defines lifecycle, authority, and proof:
 
 ```text
 Intent
@@ -35,56 +37,39 @@ Intent
 → Transition             the proof apex — state change + projections
 ```
 
-**Axis A owns:** `work_id`, context consumed, harness capabilities, **policy / permission gates**,
-receipts, state deltas, route evidence, observability, proof.
-
-**Packages:** `internal/{home, envelope, contract, work, policy, harness, hook}`.
-**Built:** P0–P5. Full schemas: `architecture/runtime.md`. Proof object: `architecture/transition.md`.
-
-> Permissions and governance live **here** (PolicyDecision / AutonomyEnvelope), not as a separate
-> knowledge layer — a permission is a gate on the flow of work, not a kind of meaning.
+**Packages:** `internal/{home, envelope, contract, work, policy, harness, hook}`. Built P0–P5.
+Full schemas: `architecture/runtime.md`. Proof object: `architecture/transition.md`.
 
 ---
 
-## Axis B — Knowledge / Meaning Fold *(what meaning becomes)*
+## Object families (what the spine processes)
 
-The durable object kinds compound is the **authority** for. This is the older "information
-kernel" recast into contract vocabulary — it did not disappear, it is this axis:
+These are the durable object kinds compound is the **authority** for. This is the old
+"information kernel," recast: **not a co-equal axis — object families inside the spine.** Each
+family must answer four questions, or it is not coherent:
 
-```text
-Source
-→ EvidenceItem           immutable, citeable raw material (never truth alone)
-→ Entity                  identity that survives path/host moves
-→ Claim / MemoryDelta     a stance, with supersession (alive, not static)
-   · Decision             committed choice with status + falsifier + review_trigger
-   · Capability           skill / tool / mcp / model / harness node in the graph
-   · ProductSignal        market observation (evidence, not truth)
-   · Hypothesis           testable product belief
-→ Position / Pattern / RegistryEntry
-```
+1. **Created/updated by** which spine transition?
+2. **Owned by** which ledger / inbox / projection?
+3. **Promote / park / reject / retire** — what adjudicates it?
+4. **Retires** which old surface?
 
-**The six knowledge layers** (reconciled from the earlier 6-layer table; "Permissions" moved to
-Axis A, "Capability" added):
+| Object family | Objects | 1 · Created/updated by | 2 · Owned by | 3 · Adjudicated by | 4 · Retires |
+|---|---|---|---|---|---|
+| **Memory** — knowledge objects | Evidence, Claim, Position, Pattern | distiller intake seam → `Adjudicate`; Receipt→Transition (memory projection) | `ledger/claims,edges`; `inbox/memory-candidates` | candidate-first: reject\|park\|promote\|no_promote; supersede, never delete | legacy `memory`/`position`/`pattern`/`recall`/`reconcile` + `recall`/`promote`/`build`/`reconcile`/`timeline` verbs |
+| **Authority** — external-state objects | Entity, RegistryEntry, RuntimeBinding, ServiceContract | source adapter → candidate → adjudication; host/path move updates bindings | `ledger/entities`; registries; `inbox/*-candidates` | promote/park/reject; `ProjectionFreshness` for derived views | infra-os runtime truth (when `runtime doctor` answers host/service/deploy/data/health) |
+| **Decisions** — committed-choice objects | Decision (+ `DecisionLifecycle`) | decision adapter → `inbox/decision-candidates`; status changes via transition | `ledger`; `inbox/decision-candidates` | promote/park/reject; status proposed→accepted→superseded→deprecated | decisions repo's status semantics, claim-flattening |
+| **Procedures / Capabilities** — reusable-action objects | Capability nodes, procedures, scripts (the CapabilityGraph) | `CapabilityObservation` (intake) → `missed_when`/`false_triggered_by`; surfaced into ContextPack | `registries/capability-{nodes,edges}`; `inbox/capability-observations` | operationalize/park; `validated_by`/`retired_by` edges | old flat skill matrix (when surfacing + usage receipts prove the graph) |
+| **Permissions** — policy/autonomy objects | PolicyDecision, AutonomyEnvelope, StandingGrant | ActionIntent → PolicyDecision (spine); grants set the envelope | `ledger` (policy decisions are append-only) | the policy evaluator (deterministic); humans own irreversible | ad-hoc prompt-obedience gating |
+| **Doctrine / Product / Taste** — durable preference/product objects | Doctrine, Product, TasteProfile, Hypothesis, ProductSignal | taste/product observation (intake) → candidate; ProductSignal→Hypothesis→Transition | `ledger`; `inbox/{taste-observations,product-hypotheses}` | operationalize/park; hypotheses resolve supported\|refuted | bland-automation / repo-summary "project pages" |
 
-| # | Layer | Owns | Shape |
-|---|---|---|---|
-| 1 | **Memory** | evidence-backed claims, positions, patterns, context packs | built (P6, `internal/mem`) |
-| 2 | **Authority** (inside-world registries) | repo / host / runtime / storage / deploy / cost / product facts | early importer (`internal/authority`); **RuntimeBinding / ServiceContract** missing |
-| 3 | **Decisions** | committed choices with status + review triggers | early importer (`internal/decisions`); **status lifecycle not yet first-class** |
-| 4 | **Capability** | skills / tools / MCPs / models / harnesses as a typed graph | built (P8, `internal/capgraph`) |
-| 5 | **Procedures** | repeatable deterministic work | planned |
-| 6 | **Doctrine** | durable principles, taste, red-lines | planned |
-
-**Axis B owns:** meaning, memory, identity, decisions, authority/infra facts, capabilities,
-skills, product-truth candidates, doctrine, taste. Detail: `memory-architecture.md` (the
-Memory slice), `architecture/contracts/README.md` (every contract).
+Detail per object: `architecture/contracts/README.md`. Memory slice in depth: `memory-architecture.md`.
 
 ---
 
-## The Rented Edge *(NOT a layer)*
+## The rented edge *(NOT a layer, NOT an object family)*
 
-Engines and executors sit behind adapters. They can index, retrieve, route, execute, import,
-or render — they **never own meaning, promotion, visibility, or supersession.**
+Engines and executors sit behind adapters. They index, retrieve, route, execute, import, or
+render — they **never own meaning, promotion, visibility, or supersession.**
 
 ```text
 MemoryEngine            turbovec / a legacy vector+fact index — breadth, not authority
@@ -101,9 +86,9 @@ spine context), not by "adapters exist."
 
 ---
 
-## The Compounding Loop *(the alive part)*
+## The compounding loop *(how object families get created and updated)*
 
-What makes the system *compound* instead of *accumulate* — it joins Axis A and Axis B:
+What makes the system *compound* instead of *accumulate* — it turns spine events into objects:
 
 ```text
 Trace / Receipt / HookEvent / RouteEvidence / ProductSignal
@@ -112,29 +97,29 @@ Trace / Receipt / HookEvent / RouteEvidence / ProductSignal
 → CandidateSet                 all candidate-first, typed fan-out
 → DistillationCritic           new? supersedes? contradicts? lower-quality? become skill/rule/eval?
 → AdjudicationDecision         reject | park | promote | operationalize | retire
-→ Knowledge Fold (Axis B)
+→ object families (above)
 → ContextPack / Capability surfacing / Policy / Hypothesis
 → future WorkEnvelope
-→ Receipt → Transition (Axis A)
+→ Receipt → Transition
 ```
 
 Model extracts; **code decides.** Nothing reaches ambient recall unadjudicated.
 
 ---
 
-## The two seams — where the axes meet *(read this twice)*
+## The two seams — where objects meet the spine *(read this twice)*
 
-The axes do **not** meet only at distillation. They meet **twice**:
+Object families connect to the spine at **two** points, not one:
 
-1. **Intake seam** — `Trace → Distill → Candidate → Critic → Adjudication → Knowledge Fold`.
-   A trace *becomes* meaning.
+1. **Intake seam** — `Trace → Distill → Candidate → Critic → Adjudication → object family`.
+   A spine event *becomes* an object.
 2. **Proof seam** — `WorkEnvelope → Receipt → Transition → projections` back into
-   memory / skill / product / cost / risk. A run *proves* meaning changed future behaviour.
+   memory / capability / product / cost / risk. A run *proves* an object changed future behaviour.
 
-**Transition is the proof apex — distillation is not.** If the architecture meets only at
-distillation, compound looks like a knowledge-ingestion tool. Its actual product is a
-**state-transition substrate**: storing a timeline or a memory delta does **not** prove
-relevance-gated recall or a behaviour change — a Transition does.
+**Transition is the proof apex — distillation is not.** If objects only entered at distillation,
+compound would be a knowledge-ingestion tool. Its product is a **state-transition substrate**:
+storing a claim or a timeline does **not** prove relevance-gated recall or a behaviour change — a
+Transition does.
 
 ```text
 Distillation = the intake seam.
@@ -150,24 +135,16 @@ Both are required.
 - **Visibility** — privacy and eligibility are filtered before recall (`source_class`).
 - **Time** — claims are superseded without destroying evidence (MVCC-by-fold).
 - **Placement** — every object has one canonical lookup path; cwd is a hint, never authority.
-- **Subtraction** — adding a layer must retire scattered handling, not create another parallel
-  home. Every move ends in one `move_type` (`outward_delta | memory_delta | rule_delta |
-  control_plane_repair | audit_only`); `audit_only` does not count.
-
-## Rented engines are not layers
-
-```text
-external source / engine → adapter → Evidence / Entity / Claim / Edge
-→ promotion / reconciliation → Position / ContextPack
-```
-
-Storage engines, retrieval engines, LLM providers, editors, and external tools improve recall
-or import/export, but do not own the object lifecycle.
+- **Subtraction** — every object family names the old surface it retires (column 4); adding one
+  must retire scattered handling, not create another parallel home. Every move ends in one
+  `move_type` (`outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only`);
+  `audit_only` does not count.
 
 ## Build discipline
 
-Build one concern into the existing kernel along the axis it belongs to, prove it with a
-working command and fixtures, then **retire** the parallel handling it replaces. Do not start a
-new service because an information type feels new, and do not let a second front door (doc,
-package, or command) survive once its canonical replacement is proven — that is how
-fragmentation survives while everyone believes it was solved.
+Build one object family into the existing spine, prove it with a working command and fixtures,
+then **retire** the surface it replaces (its column-4 entry) — but a code retirement is gated on
+**test coverage first** (retiring Gen-1 packages before tests is how you lose functionality). Do
+not start a new service because an object kind feels new, and do not let a second front door
+(doc, package, or command) be *presented as canonical* once its replacement is named — that is
+how fragmentation survives while everyone believes it was solved.

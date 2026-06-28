@@ -1,70 +1,73 @@
-# Package & command status — which family is canonical
+# Package & command status — what is canonical, what must converge
 
-> Compound carries **two construction generations** (see [`../LAYERS.md`](../LAYERS.md): one
-> architecture, two axes). Several packages and commands exist in **duplicate** — a legacy
-> "information kernel" family and the canonical "envelope spine / P6+" family. This file is the
-> single source of truth for **which is which**, so work lands on the canonical family and the
-> legacy family is retired, not extended. `compound architecture doctor` enforces this map
-> mechanically (a legacy package imported by `main` without a status entry is a finding).
+> Compound carries a **spine** (one canonical runtime) plus a **memory object family with TWO
+> implementations that must converge.** A verified audit (2026-06-29, 11 packages, every one
+> adversarially checked) overturned the lazy reading that "Gen-1 is legacy, `mem` replaced it."
+> **It did not.** `mem` is the spine-bound ledger but is *thinner* than the Gen-1 stack: the
+> canonical family has **no** `Position` (topic-grouped stance), **no** `Pattern`, **no** `Entity`
+> registry (mem's entity is a bare string), no `ClaimType`, no stored `EvidenceItem`, no
+> `PromotionBasis`, and none of the ingestion/recall/reconcile capability. So the Gen-1 packages
+> are **not redundant** — each has a logical job `mem` cannot yet do. The coherent move is
+> **migrate-then-retire** (absorb the object richness into the spine-bound family, *then* retire),
+> **gated on test coverage** — never a delete-before-tests. `compound architecture doctor`
+> tracks this debt so it stays observable and cannot silently grow.
 
-Status values: **canonical** (build here) · **canonical-target** (the right home, still
-thin — upgrade in place) · **bridge** (shared/transitional util — verify ownership before
-retiring) · **legacy** (Gen-1; retire when its canonical replacement is proven) · **retired**.
+Status values: **canonical** (the spine / the convergence target — build here) · **converge→retire**
+(a Gen-1 package whose capability must move onto the spine before it retires; retirement is
+**BLOCKED** until parity + tests) · **canonical-target** (an importer to upgrade in place) ·
+**retired**.
 
 ## Packages (`internal/`)
 
-| Package | Axis | Status | Replaced by / note | Retirement condition |
-|---|---|---|---|---|
-| `home` | A | canonical | runtime habitat | — |
-| `envelope` | A | canonical | 9 envelopes | — |
-| `contract` | A | canonical | EffectiveContract + ContextPack | — |
-| `work` | A | canonical | WorkEnvelope lifecycle | — |
-| `policy` | A | canonical | ActionIntent → PolicyDecision | — |
-| `harness` | A | canonical | HarnessRegistry | — |
-| `hook` | A | canonical | hook fixture loop | — |
-| `mem` | B | canonical | P6 ledger, MVCC-by-fold, candidate-first | — |
-| `mem` (Engine protocol) | edge | canonical | breadth-engine protocol | — |
-| `distiller` | loop | canonical | TraceDistiller / CandidateSet / Critic | — |
-| `capgraph` | B | canonical | Capability Graph (P8) | — |
-| `authority` | B | canonical-target | importer → claims; needs **RuntimeBinding / ServiceContract** | upgrade in place, do not fork |
-| `decisions` | B | canonical-target | importer → claims; needs **DecisionLifecycle** | upgrade in place, do not fork |
-| `memory` | B | **legacy** | → `mem` | retire when `mem` recall + candidate flow covers all callers |
-| `distill` | loop | **legacy** | → `distiller` | retire when `distiller` consumes real spine traces |
-| `engine` | edge | **legacy** | → `mem` Engine protocol | retire when the breadth adapter is the only engine seam |
-| `position` | B | **legacy** | → `mem` positions | retire with `memory` |
-| `pattern` | B | **legacy** | → `mem` patterns | retire with `memory` |
-| `recall` | B | **legacy** | → `mem` recall | retire with `memory` |
-| `reconcile` | B | **legacy** | → `mem` supersession | retire with `memory` |
-| `scope` | B | bridge | cwd-independent attribution | verify whether `mem` subsumes before retiring |
-| `ledger` | B | bridge | append/read JSONL | verify `mem` ledger subsumes before retiring |
+### Spine — canonical, no duplication
+| Package | Role |
+|---|---|
+| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | the runtime grammar (Axis-A spine) |
+| `candidates` | single source of truth for candidate kinds → inbox dirs |
+| `distiller` | spine-bound intake (the compounding loop's front-end) |
+| `capgraph` | the P8 Capability Graph (capability object family) |
 
-> The duplicate pairs to resolve, in priority order: **`memory` ↔ `mem`**, **`distill` ↔
-> `distiller`**, **`engine` ↔ `mem.Engine`**. Until resolved, every PR that touches one must
-> state which family it lands on. Do **not** migrate them in this coherence patch — flag only;
-> the migration is its own bounded move with its own proof (each retirement records the future
-> wrong move it prevents).
+### Memory object family — convergence-pending (retirement BLOCKED on parity + tests)
+`mem` is the **convergence target** (spine-bound: MVCC-by-fold, candidate-first, Transitions).
+The rest hold object richness / ingestion / recall that `mem` must absorb first.
+
+| Package | Status | Capability `mem` still lacks (the retire-blocker) |
+|---|---|---|
+| `mem` | **canonical (target)** | — it is the destination; it must *gain* the rows below |
+| `memory` | converge→retire | `Entity` registry (aliases/identifiers/parent), `Position`, `Pattern`, `ClaimType`, `PromotionBasis`, stored `EvidenceItem`, richer `EdgeType` (refines/supports/mentions/owns/part_of) |
+| `position` | converge→retire | topic-grouped `Position` with `ClaimChain` + active/unstable stability flag |
+| `pattern` | converge→retire | cross-session recurrence aggregation → typed `Pattern` hypothesis (no equivalent anywhere) |
+| `recall` | converge→retire | Position-aware + Pattern-surfacing recall; `PromotionBasis`-driven promote; scope alias resolution in query planning |
+| `reconcile` | converge→retire | LLM/semantic + topic-level reconciliation; batch maintenance pass marking stored claims superseded |
+| `distill` | converge→retire | raw session JSONL ingestion + cleaning; worth-gate / decision-turn detection; whole-conversation map-reduce |
+| `engine` | converge→retire | free-text snippet breadth; page-level ingest; external rented retrieval-CLI adapter |
+| `scope` | converge→retire | deterministic session→entity attribution; `primary_about`/`multi_scope`/`unresolved` verdict; alias registry |
+| `ledger` | converge→retire | generic multi-kind append store; positions/patterns/evidence as stored objects |
+
+### Importers — keep, upgrade in place (NOT redundant)
+| Package | Status | Becomes |
+|---|---|---|
+| `authority` | canonical-target | infra ingestion → `RuntimeBinding` / `ServiceContract` |
+| `decisions` | canonical-target | DEC/operator-ledger import → `DecisionLifecycle` (status + review_trigger) |
+
+> **The convergence direction is set by "spine is primary":** the object richness moves **into**
+> the spine-bound family (`mem` + new object types), not the reverse. Until a capability lands on
+> the spine **with tests**, its Gen-1 package stays — deleting it first would lose functionality
+> (the audit's unanimous `retire_safe=false`). This is a tracked debt, not a quick subtraction.
 
 ## Commands (`compound <verb>`)
 
 | Family | Verbs | Status |
 |---|---|---|
-| Canonical — Axis A | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition` | canonical |
-| Canonical — Axis B | `memory` (candidate/adjudicate/promote/timeline/doctor/query/relate/graph), `distiller`, `capability` | canonical |
-| Legacy — Gen-1 memory-era | `distill`, `scope`, `promote`, `build`, `reconcile`, `timeline` (top-level), `recall`, `pack`, `ledger` | **legacy** — label in `--help`, do not present as a peer of the canonical verbs |
-| Importers (canonical-target) | `authority`, `decisions` | upgrade toward first-class contracts |
+| Spine (canonical) | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition`, `memory`, `distiller`, `capability` | canonical |
+| Gen-1 memory-era (convergence-pending) | `distill`, `scope`, `promote`, `build`, `reconcile`, `timeline` (top-level), `recall`, `pack`, `ledger` | **not "legacy to delete"** — they are the *only* access to the un-migrated capabilities above; label them "Gen-1 (converging)" in `--help`, do not present as the canonical path, retire per-verb only as its capability lands on the spine |
+| Importers | `authority`, `decisions` | upgrade toward first-class contracts |
 
-**Rule:** a legacy verb may remain temporarily for migration, but it must be **labelled
-"legacy memory-era" in help output** and must not be documented as the canonical path. The
-canonical recall/meaning path is `compound memory …`; the canonical distillation path is
-`compound distiller run`.
+## What the architecture doctor checks (Patch B2)
 
-## What the architecture doctor checks (Patch B)
-
-`compound architecture doctor` fails (or warns) on:
-
-- a `legacy` package imported by `main` that has **no status entry** here;
-- a CandidateKind with **no inbox directory** (or an inbox dir with no producer/consumer) —
-  see `runtime.md` candidate map;
-- a **public doc that contains a private path** (leak gate);
-- `README` / CLI `--help` / docs **disagreeing on the current phase**;
-- a **legacy command presented as canonical** (no "legacy" label).
+- candidate-map integrity: every `candidates.Kind` has one non-empty inbox dir **and** `home.Dirs`
+  creates it; no inbox dir without a producer/consumer;
+- the **public-doc leak gate** (no private path/token in `docs/`);
+- **package classification is total**: every `internal/` package is classified (spine /
+  convergence-pending / importer); an **unclassified** package fails the doctor — so a new package
+  can't silently appear and the two-stack debt stays visible until it converges.
