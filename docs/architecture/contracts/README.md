@@ -77,6 +77,27 @@ capability's `missed_when` / `false_triggered_by` edges become evidence that pat
 DistillationPolicy and re-weights surfacing — repeated success becomes infrastructure, repeated failure
 becomes a rule, **only after evidence** (Laws 7/8).
 
+## Authority & governance contracts (the under-modeled organs — Axis B)
+
+These are the **inside-world registry and governance** seams that plain `Claim`s under-model
+once agents *act* on infra, decisions, and writeback. Generic and public — no private owner
+names (the named OS→contract mapping lives in `docs_private/plan/os-coverage-matrix.md`).
+
+| Contract | Purpose | Key fields / lifecycle |
+|---|---|---|
+| **RuntimeBinding** | where a thing actually runs (so autonomy knows what's real/production/reversible) | service_id, owner_entity, host_binding, deployment_binding, data_bindings[], credential_refs[] (private), health_check_refs[], risk_tier, evidence_refs[], status: candidate\|active\|stale\|retired |
+| **ServiceContract** | the promised interface/SLA of a running service | service_id, interface_refs[], dependencies[], owner_entity, risk_tier, evidence_refs[], status |
+| **DecisionLifecycle** | makes `Decision` first-class (the primary artifact), not a claim qualifier | choice, rationale, **falsifier**, **review_trigger**, scope, owner, effective_from, **status: proposed\|accepted\|superseded\|deprecated\|rejected**, replaced_by, evidence_refs[] |
+| **OwnerWritebackGate** | candidate → owner target → gate → policy → receipt → transition (writeback is command-shaped, not doctrine) | candidate_ref, owner_target, gate_basis, policy_decision_ref, receipt_ref; a mutating writeback requires a valid `PolicyDecision` |
+| **NoPromoteDecision** | an explicit lifecycle state — "seen, deliberately not promoted" — distinct from park/reject | candidate_ref, basis, expiry, evidence_refs[]; prevents the same candidate re-entering the loop as "new" |
+| **ProjectionFreshness** | a read model/dashboard cannot silently drift from the ledger | projection_id, source_ledger_seq, built_at, staleness, coverage_verdict, status: fresh\|stale\|drifted |
+| **SourceAuthority / PathAuthority** | which source owns a fact, and identity that survives path/host moves | entity_ref, authoritative_source, path_bindings[], host_bindings[], precedence_rank, evidence_refs[] |
+
+Build order (most likely to let fragmentation back in first): **RuntimeBinding/ServiceContract**
+→ **DecisionLifecycle** → **OwnerWritebackGate/NoPromoteDecision** → **ProjectionFreshness**.
+Each is **defined here before implementation** so agents stop re-deriving them; each is built
+only when a vertical slice needs it (`../../roadmap/phases.md`).
+
 ## Entity resolution — the precedence order (the root of anti-fragmentation)
 
 `NotesApp` / `notes-app` / a bundle id / "that app with the metrics" must collapse to **one** entity:

@@ -1,165 +1,72 @@
-# Compound Architecture
+# Compound Architecture — overview & reading order
 
-Compound is a local, adaptive information kernel. Its job is to make information
-placement explicit, evidence-backed, and easy to query without turning the system
-into a scattered microservice estate.
+> This file is an **overview and index**, not a second object model. The canonical
+> architecture — the two axes, the rented edge, the compounding loop, and the two seams — is
+> defined **once** in [`LAYERS.md`](./LAYERS.md). Read that first; everything here points into it.
 
-## Architectural Thesis
+Compound is a **local-first meaning + execution substrate** — a local monolith with deep
+internal modules. Agents and users see one coherent system, not a scattered microservice estate.
+It has two internal axes:
 
-Compound is a **local monolith with deep internal modules**. Agents and users
-should see one coherent information system:
+- **Axis A — Runtime / Envelope Spine** (how work flows): `architecture/runtime.md`,
+  `architecture/substrate.md`, proof object in `architecture/transition.md`.
+- **Axis B — Knowledge / Meaning Fold** (what meaning becomes): `memory-architecture.md` (the
+  Memory slice), all contracts in `architecture/contracts/README.md`.
 
-```text
-source material
--> evidence
--> candidate claims
--> promotion / adjudication
--> positions / patterns
--> context packs
-```
+Plus the **rented edge** (engines / harnesses / providers / adapters — `architecture/execution-plane.md`)
+and **the compounding loop** that joins the axes (`LAYERS.md`).
 
-The implementation can have packages, adapters, and optional engines, but those
-are internal seams. They must not become separate authority centers.
+## Reading order
 
-## Why Not Microservices
+1. [`LAYERS.md`](./LAYERS.md) — **the canonical architecture.** Start here.
+2. [`architecture/status.md`](./architecture/status.md) — which package / command is
+   **canonical vs legacy vs bridge vs planned vs retired.** Read before touching code, so you
+   don't improve the wrong family.
+3. [`architecture/runtime.md`](./architecture/runtime.md) — Axis A: `COMPOUND_HOME`, the
+   envelopes, hooks-as-clients.
+4. [`architecture/contracts/README.md`](./architecture/contracts/README.md) — every contract
+   (the lego seams), both axes.
+5. [`memory-architecture.md`](./memory-architecture.md) — the Memory slice of Axis B in depth.
+6. [`architecture/transition.md`](./architecture/transition.md) — the proof seam / compounding.
+7. [`roadmap/phases.md`](./roadmap/phases.md) — the envelope-first construction order.
+8. [`BOUNDARIES.md`](./BOUNDARIES.md) — public core vs private overlay.
 
-The reference-system failure mode was clear: many useful surfaces become hard to
-operate when every tool has a different root, cwd assumption, generated view, and
-authority interpretation.
+## Why a monolith, not microservices
 
-Compound removes that tax by giving agents one stable information interface:
-
-```text
-compound recall ...
-compound pack ...
-compound promote ...
-compound build ...
-compound reconcile ...
-```
-
-Adapters can read files where they already live, but Compound owns the lifecycle
-of derived knowledge.
-
-## Deep Modules
-
-| Module | Seam | What It Hides |
-|---|---|---|
-| `memory` | object types | evidence/claim/position vocabulary and lifecycle states |
-| `ledger` | append/read JSONL by kind | local file placement and append-only persistence |
-| `scope` | session -> scope packet | cwd-independent attribution and weighted signals |
-| `recall` | query -> plan/result | hard filters, promotion visibility, engine breadth |
-| `authority` | domain source -> entities/claims | external authority source shape |
-| `decisions` | decision source -> claims | decision source formats and status mapping |
-| `reconcile` | claims -> supersession edges | alive-memory adjudication |
-
-Deletion test: removing any module should leave a module-shaped hole behind a
-narrow seam. It should not force callers to learn many file formats or paths.
-
-## Information Placement
-
-Compound supports two placement modes.
-
-### Compound-Owned
-
-Compound owns canonical ledger objects:
-
-- `evidence`
-- `entities`
-- `claims`
-- `positions`
-- `patterns`
-- `edges`
-- `scope_assignments`
-
-These live under one ledger root as append-only JSONL files.
-
-### Source-In-Place
-
-External sources stay where they belong:
-
-- repository files;
-- notes;
-- decision documents;
-- runtime contracts;
-- issue trackers;
-- transcripts.
-
-Compound stores durable identifiers, evidence references, claims, positions, and
-citations. It does not need to copy every source into one folder to make it
-findable.
-
-## Cwd Independence
-
-Compound must not infer truth from the current working directory. Cwd is a weak
-operational hint, not placement authority.
-
-Correct attribution comes from:
-
-1. explicit identifiers;
-2. registered entity aliases;
-3. content signals;
-4. decision-turn signals;
-5. source metadata.
-
-If attribution is unclear, Compound returns `unresolved` or `multi_scope` instead
-of guessing.
-
-## Extensibility
-
-Domains extend Compound through adapters and entity/claim vocabularies, not by
-forking the core.
-
-An adapter may define:
-
-- source readers;
-- entity seeds;
-- path canonicalization;
-- visibility handling before recall;
-- positions that represent current stance for a domain.
-
-Adapters may not redefine core lifecycle semantics.
-
-## Public Core And Private Overlay
-
-The open-source core should contain:
-
-- core object model;
-- local ledger;
-- scope resolver;
-- recall planner;
-- promotion and reconciliation lifecycle;
-- context-pack assembly;
-- synthetic fixtures;
-- adapter interfaces and safe sample adapters.
-
-Private overlays should contain:
-
-- personal memory;
-- private project registries;
-- private decisions;
-- credentials;
-- local paths;
-- private retrieval engine configuration;
-- organization-specific policies.
-
-The public core should be useful without a private overlay. A private overlay can
-be the demanding dogfood adapter, but it is not the product.
-
-## Immediate Proof Standard
-
-Before adding new layers, Compound should prove:
+The reference-system failure mode: many useful surfaces become hard to operate when every tool
+has a different root, cwd assumption, generated view, and authority interpretation. Compound
+removes that tax by giving agents **one stable interface** over both axes:
 
 ```text
-synthetic session
--> scope packet
--> evidence item
--> candidate claim
--> promoted claim
--> position
--> context pack
--> supersession
--> updated context pack
+compound orient        # Axis A: what applies right now
+compound work ...       # Axis A: one unit of work
+compound policy ...     # Axis A: gates
+compound memory ...     # Axis B: meaning / memory
+compound capability ... # Axis B: skills / tools / models graph
+compound transition ... # the proof seam
 ```
 
-No model calls are required for this proof. The point is to prove placement,
-lifecycle, and findability.
+Adapters can read files where they already live, but **compound owns the lifecycle of derived
+knowledge.** Implementation packages, adapters, and optional engines are internal seams — they
+must not become separate authority centers.
+
+## Information placement
+
+- **Compound-owned** canonical ledger objects (append-only JSONL under one ledger root):
+  `evidence`, `entities`, `claims`, `positions`, `patterns`, `edges`, `scope_assignments`.
+- **Source-in-place**: external sources (repo files, notes, decision docs, runtime contracts,
+  transcripts) stay where they belong; compound stores durable identifiers, evidence refs,
+  claims, and citations. It does not copy every source into one folder to make it findable.
+
+## Cwd independence
+
+Compound never infers truth from the working directory. Correct attribution comes from explicit
+identifiers, registered aliases, content signals, decision-turn signals, and source metadata. If
+unclear, it returns `unresolved` / `multi_scope` rather than guessing.
+
+## Public core and private overlay
+
+The open-source core ships the substrate (object model, ledger, scope resolver, recall planner,
+promotion/reconciliation lifecycle, context-pack assembly, fixtures, adapter interfaces). A
+private running instance owns private meaning **inside `COMPOUND_HOME`** — not as a permanent
+external "overlay." The public core is useful without it. Detail and rules: `BOUNDARIES.md`.
