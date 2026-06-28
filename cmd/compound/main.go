@@ -110,16 +110,21 @@ func main() {
 // memory-stack convergence debt. Exits non-zero if any check FAILs.
 func cmdArchitecture(args []string) {
 	if len(args) == 0 || args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound architecture doctor [--repo <path>]")
+		fmt.Fprintln(os.Stderr, "usage: compound architecture doctor [--repo <path>] [--strict]")
 		os.Exit(2)
 	}
-	repo := "."
-	for i := 1; i < len(args)-1; i++ {
-		if args[i] == "--repo" {
-			repo = args[i+1]
+	repo, strict := ".", false
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--strict":
+			strict = true
+		case "--repo":
+			if i+1 < len(args) {
+				repo = args[i+1]
+			}
 		}
 	}
-	r := arch.Doctor(repo)
+	r := arch.Doctor(repo, strict)
 	for _, f := range r.Findings {
 		fmt.Printf("  [%-4s] %-14s %s\n", f.Severity, f.Check, f.Message)
 	}

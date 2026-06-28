@@ -89,16 +89,22 @@ func loadPrivateLeakTokens(repoRoot string) []string {
 	return toks
 }
 
+// ConvergePendingBudget is the RATCHET: the count of converge→retire packages must never exceed
+// this. `--strict` fails if it grows (new fragmentation). Lower it as packages converge onto the
+// spine — the budget can only go down, so the debt can never become wallpaper or quietly grow.
+const ConvergePendingBudget = 9
+
 // Doctor runs every check. repoRoot is the compound repo root for filesystem checks (classification
-// totality, doc leak); pass "" to run only the in-memory checks (candidate map). It never mutates.
-func Doctor(repoRoot string) Report {
+// totality, doc leak); pass "" to run only the in-memory checks (candidate map). strict turns the
+// convergence-debt ratchet into a hard failure if the debt exceeds its budget. It never mutates.
+func Doctor(repoRoot string, strict bool) Report {
 	var f []Finding
 	f = append(f, checkCandidateMap()...)
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot)...)
 	}
-	f = append(f, convergenceDebt()...)
+	f = append(f, convergenceDebt(strict)...)
 	ok := true
 	for _, x := range f {
 		if x.Severity == Fail {
@@ -200,7 +206,7 @@ func checkDocLeak(repoRoot string) []Finding {
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the
 // coherent treatment when a duplicate cannot yet be retired (Law 9: make it observable).
-func convergenceDebt() []Finding {
+func convergenceDebt(strict bool) []Finding {
 	var pending []string
 	for pkg, c := range Classification {
 		if c == ConvergePending {
@@ -209,9 +215,20 @@ func convergenceDebt() []Finding {
 	}
 	sort.Strings(pending)
 	if len(pending) == 0 {
-		return []Finding{{"convergence", Info, "memory object family converged — no Gen-1 packages pending"}}
+		return []Finding{{"convergence", Info, "memory object family converged — no Gen-1 packages pending; set ConvergePendingBudget to 0"}}
 	}
-	return []Finding{{"convergence", Info, itoa(len(pending)) + " package(s) converge→retire (BLOCKED on parity + tests): " + strings.Join(pending, ", ")}}
+	// the ratchet: in strict mode a debt over budget is a FAILURE (fragmentation grew).
+	sev := Info
+	msg := itoa(len(pending)) + "/" + itoa(ConvergePendingBudget) + " package(s) converge→retire (BLOCKED on parity + tests): " + strings.Join(pending, ", ")
+	if len(pending) > ConvergePendingBudget {
+		sev = Fail
+		msg = "convergence debt GREW past budget " + itoa(ConvergePendingBudget) + " → " + itoa(len(pending)) + " (new fragmentation: " + strings.Join(pending, ", ") + ")"
+	} else if strict && len(pending) < ConvergePendingBudget {
+		// a chance to ratchet down — surface it loudly so the budget tracks reality.
+		sev = Warn
+		msg = "debt is " + itoa(len(pending)) + " but budget is " + itoa(ConvergePendingBudget) + " — lower ConvergePendingBudget to lock the gain"
+	}
+	return []Finding{{"convergence", sev, msg}}
 }
 
 // --- tiny local helpers (no fmt dependency for hot strings) ---

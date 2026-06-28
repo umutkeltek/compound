@@ -69,8 +69,13 @@ new service or scattered folder (`docs/LAYERS.md`):
 
 ## Layout
 
+One spine + object families; `docs/architecture/status.md` is the authority for which package is
+canonical vs convergence-pending (and `compound architecture doctor` enforces it).
+
 ```text
 cmd/compound/       CLI, one local binary boundary
+
+# the spine (canonical — no duplication)
 internal/home/      COMPOUND_HOME runtime body (P0)
 internal/envelope/  the typed runtime grammar — 9 envelopes + universal header (P1)
 internal/contract/  EffectiveContract compiler + ContextPack assembler (P2)
@@ -78,12 +83,19 @@ internal/work/      WorkEnvelope lifecycle — one work_id, claim-before-touch (
 internal/policy/    ActionIntent -> PolicyDecision, enforced at adapters (P4)
 internal/harness/   the HarnessRegistry — per-harness capabilities + limits (P5)
 internal/hook/      capability-aware hook fixture loop (P5)
-internal/memory/    owned object model: Evidence -> Claim -> Position -> Pattern (legacy/P6)
-internal/ledger/    append-only canonical store for derived knowledge objects
-internal/engine/    optional retrieval adapters behind MemoryEngine
-internal/scope/     cwd-independent attribution
-internal/recall/    query planner and visibility filters
-docs/               architecture notes, contracts, roadmap, ADRs
+internal/candidates/ single source of truth: candidate kind -> inbox dir + verdicts
+internal/mem/       P6 memory ledger — MVCC-by-fold, candidate-first, PromotionBasis
+internal/distiller/ TraceDistiller — trace -> adjudicated CandidateSet (the compounding loop)
+internal/capgraph/  the Capability Graph (P8) — auto-surface, learn-from-observations
+internal/arch/      the architecture doctor — package classification + coherence checks
+
+# memory object family — convergence-pending (Gen-1; absorbed into mem, then retired; test-gated)
+internal/memory/    rich object model: Entity registry, Position, Pattern, ClaimType, PromotionBasis
+internal/ledger/ internal/engine/ internal/scope/ internal/recall/ internal/reconcile/
+internal/position/ internal/pattern/   ingestion / recall / reconcile not yet on the spine
+internal/authority/ internal/decisions/ importers — upgrade to RuntimeBinding / DecisionLifecycle
+
+docs/               architecture notes, contracts, roadmap, ADRs (start at docs/LAYERS.md)
 fixtures/           public, leak-free envelope / action-intent / hook fixtures
 prototype-ts/       historical prototype reference while the Go implementation matures
 ```
