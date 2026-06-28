@@ -28,6 +28,7 @@ import (
 	"compound/internal/recall"
 	"compound/internal/reconcile"
 	"compound/internal/scope"
+	"compound/internal/work"
 )
 
 const version = "0.1.0"
@@ -70,6 +71,8 @@ func main() {
 		cmdContract(os.Args[2:])
 	case "orient":
 		cmdOrient(os.Args[2:])
+	case "work":
+		cmdWork(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -96,7 +99,123 @@ usage:
   compound envelope <validate <file>...|kinds>             typed runtime envelopes
   compound contract compile --harness H --cwd D --task T   compile the EffectiveContract in force
   compound orient --harness H [--cwd D] [--task T]         the ContextPack to orient from (records excluded)
+  compound work <create|show|list|claim|advance|close>     one work_id: intent->context->action->receipt->transition
 `)
+}
+
+// cmdWork is the lifecycle store: one work_id threads intent -> context -> action ->
+// receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
+func cmdWork(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|show|list|claim|advance|close> ...")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	sub, rest := args[0], args[1:]
+	flag := func(name string) string {
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == name && i+1 < len(rest) {
+				return rest[i+1]
+			}
+		}
+		return ""
+	}
+	has := func(name string) bool {
+		for _, a := range rest {
+			if a == name {
+				return true
+			}
+		}
+		return false
+	}
+	pos := func() string {
+		for _, a := range rest {
+			if !strings.HasPrefix(a, "-") {
+				return a
+			}
+		}
+		return ""
+	}
+	die := func(e error) {
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "error:", e)
+			os.Exit(1)
+		}
+	}
+
+	switch sub {
+	case "create":
+		w, err := store.Create(work.CreateInput{
+			Owner:            flag("--owner"),
+			SuccessPredicate: flag("--predicate"),
+			DesiredOutcome:   flag("--outcome"),
+			ContextPackID:    flag("--context-pack"),
+			State:            flag("--state"),
+			Risk:             flag("--risk"),
+		}, time.Now())
+		die(err)
+		fmt.Printf("created %s (%s)\n", w.ID, w.State)
+		printJSON(w)
+	case "show":
+		w, evs, err := store.Show(pos())
+		die(err)
+		printJSON(w)
+		fmt.Println("--- lifecycle ---")
+		for _, e := range evs {
+			fmt.Printf("%s -> %s  %s %s\n", emptyDash(e.From), e.To, e.By, e.Note)
+		}
+	case "list":
+		ws, err := store.List()
+		die(err)
+		for _, w := range ws {
+			fmt.Printf("%s  %-10s %s\n", w.ID, w.State, w.SuccessPredicate)
+		}
+	case "claim":
+		w, err := store.Claim(pos(), flag("--by"), time.Now())
+		die(err)
+		fmt.Printf("%s claimed by %s (%s)\n", w.ID, w.Authority.Owner, w.State)
+	case "advance":
+		w, err := store.Advance(pos(), work.AdvanceInput{
+			To:             flag("--to"),
+			RunID:          flag("--run"),
+			ArtifactID:     flag("--artifact"),
+			VerificationID: flag("--verification"),
+			ContextPackID:  flag("--context-pack"),
+			Note:           flag("--note"),
+		}, time.Now())
+		die(err)
+		fmt.Printf("%s -> %s\n", w.ID, w.State)
+	case "close":
+		res, err := store.Close(pos(), work.CloseInput{
+			Outcome:  flag("--outcome"),
+			MoveType: flag("--move-type"),
+			Summary:  flag("--summary"),
+			Changed:  has("--changed"),
+		}, time.Now())
+		die(err)
+		fmt.Printf("%s closed: %s  move_type=%s  receipt=%s  transition=%s\n",
+			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Receipt.ID, res.Transition.ID)
+		printJSON(res)
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|show|list|claim|advance|close> ...")
+		os.Exit(2)
+	}
+}
+
+func emptyDash(s string) string {
+	if s == "" {
+		return "(new)"
+	}
+	return s
 }
 
 // parseOrientArgs reads the shared orientation flags and resolves the repo kind
