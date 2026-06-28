@@ -6,16 +6,30 @@ import (
 	"strings"
 )
 
-// ErrUnsupported is returned by an engine for a capability it does not implement. It is
-// EXPLICIT on purpose: a silent no-op hides a missing index as "no results", which is the
-// opposite of accurate. (The legacy markdown engine returned nil,nil; this seam does not.)
-var ErrUnsupported = errors.New("capability not supported by this engine")
+// Engine errors are EXPLICIT and distinct so a caller can tell apart "this engine has no
+// breadth" (degrade to ledger), "the engine process is down" (degrade to ledger, say so), and
+// "the engine's embedder does not match what we indexed with" (HARD refuse — a silent model
+// swap degrades recall invisibly). None of these is ever a silent nil.
+var (
+	ErrUnsupported       = errors.New("capability not supported by this engine")
+	ErrEngineUnavailable = errors.New("breadth engine unavailable (transport down) — ledger answers exact/as-of")
+	ErrEmbedderMismatch  = errors.New("engine embedder does not match the indexed embedder (refusing breadth, not degrading)")
+)
+
+// Gate decouples the visibility decision from the allowlist CONTENTS. GateList honors the
+// allowlist and an EMPTY allowlist matches NOTHING (fail-closed); GateAll is admin/debug only
+// and the core never emits it.
+const (
+	GateList = "list"
+	GateAll  = "all"
+)
 
 // EngineCapabilities advertises what an engine can do so callers adapt instead of assuming.
 type EngineCapabilities struct {
-	Name     string `json:"name"`
-	Breadth  bool   `json:"breadth"`  // semantic/lexical Query over many claims
-	Embedder string `json:"embedder"` // "<provider:model:dims>" — for the identity guard; "" = none
+	Name      string `json:"name"`
+	Breadth   bool   `json:"breadth"`    // semantic/lexical Query over many claims
+	Embedder  string `json:"embedder"`   // "<provider:model:dim:bits>" — for the identity guard; "" = none
+	CorpusGen int64  `json:"corpus_gen"` // the generation this engine is indexed at (ledger maxSeq)
 }
 
 // Hit is a breadth-query result: a claim id + score. The ledger resolves the id to the claim;
@@ -26,37 +40,47 @@ type Hit struct {
 }
 
 // Engine is the RENTED breadth index. Recall (exact / as-of) stays the ledger's job; the engine
-// only answers breadth Query, and honors the ledger-computed allowlist (the relevance gate) so a
-// hard filter stays cheap at the engine rather than a recall-losing post-filter (cf. turbovec's
-// kernel allowlist). This is the P6 replacement for the legacy markdown engine (internal/engine),
-// which retires with the legacy memory object model.
+// only answers breadth Query, honoring the ledger-computed allowlist (the relevance gate). Index
+// is idempotent on the corpus generation, so an out-of-process engine never re-embeds per query.
+// This is the P6 seam the turbovec sidecar plugs into (behind ProtocolEngine); the legacy
+// markdown engine (internal/engine) retires with the legacy memory object model.
 type Engine interface {
 	Capabilities() EngineCapabilities
-	Index(claims []Claim) error
-	Query(text string, allowlist []string, k int) ([]Hit, error)
+	Index(claims []Claim, gen int64) error
+	Query(text, gate string, allowlist []string, k int) ([]Hit, error)
 }
 
 // NoEngine is the default: no breadth. Its ops return ErrUnsupported EXPLICITLY — never nil,nil —
 // so a missing index cannot masquerade as an empty result.
 type NoEngine struct{}
 
-func (NoEngine) Capabilities() EngineCapabilities          { return EngineCapabilities{Name: "none"} }
-func (NoEngine) Index([]Claim) error                       { return ErrUnsupported }
-func (NoEngine) Query(string, []string, int) ([]Hit, error) { return nil, ErrUnsupported }
+func (NoEngine) Capabilities() EngineCapabilities                   { return EngineCapabilities{Name: "none"} }
+func (NoEngine) Index([]Claim, int64) error                         { return ErrUnsupported }
+func (NoEngine) Query(string, string, []string, int) ([]Hit, error) { return nil, ErrUnsupported }
 
 // LexicalEngine is a dependency-free, in-process breadth engine: case-insensitive token match
-// over claim text, honoring the allowlist. It proves the rent-the-engine seam end-to-end with
-// real results; a semantic ANN engine (turbovec) is a later swap behind this same interface.
-type LexicalEngine struct{ claims []Claim }
+// over claim text, honoring the allowlist. It proves the seam end-to-end with real results and
+// is the recall body the pure-Go mock sidecar reuses behind the wire. A semantic ANN engine
+// (turbovec) is a later swap behind this same interface, via ProtocolEngine.
+type LexicalEngine struct {
+	claims []Claim
+	gen    int64
+}
 
 func (e *LexicalEngine) Capabilities() EngineCapabilities {
-	return EngineCapabilities{Name: "lexical", Breadth: true}
+	return EngineCapabilities{Name: "lexical", Breadth: true, CorpusGen: e.gen}
 }
-func (e *LexicalEngine) Index(claims []Claim) error {
-	e.claims = claims
+
+// Index is idempotent on gen: re-indexing the same generation is a no-op (no re-embed storm).
+func (e *LexicalEngine) Index(claims []Claim, gen int64) error {
+	if e.claims != nil && gen == e.gen {
+		return nil
+	}
+	e.claims, e.gen = claims, gen
 	return nil
 }
-func (e *LexicalEngine) Query(text string, allowlist []string, k int) ([]Hit, error) {
+
+func (e *LexicalEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
 	allow := map[string]bool{}
 	for _, id := range allowlist {
 		allow[id] = true
@@ -64,8 +88,9 @@ func (e *LexicalEngine) Query(text string, allowlist []string, k int) ([]Hit, er
 	terms := strings.Fields(strings.ToLower(text))
 	var hits []Hit
 	for _, c := range e.claims {
-		if len(allowlist) > 0 && !allow[c.ID] {
-			continue // honor the ledger's relevance gate
+		// GateList: an empty allowlist matches NOTHING (fail-closed). GateAll skips the gate.
+		if gate != GateAll && !allow[c.ID] {
+			continue
 		}
 		hay := strings.ToLower(c.Entity + " " + c.Predicate + " " + c.Object)
 		score := 0.0
@@ -86,9 +111,11 @@ func (e *LexicalEngine) Query(text string, allowlist []string, k int) ([]Hit, er
 }
 
 // QueryBreadth answers a breadth query via the RENTED engine, relevance-gated: the LEDGER
-// computes the allowlist (current, non-retired claim ids) and passes it to the engine, so the
-// gate is honored at the engine (cheap), not as a post-filter. Returns ErrUnsupported when the
-// engine has no breadth capability — explicitly, so callers can say so plainly.
+// computes the allowlist (current, non-retired claim ids) and passes it under GateList, so the
+// gate is honored at the engine (cheap), not as a post-filter. It re-Indexes ONLY when the
+// engine's generation lags the ledger's (no re-embed per query). Returns ErrUnsupported /
+// ErrEngineUnavailable / ErrEmbedderMismatch explicitly — callers degrade or refuse, never
+// silently empty.
 func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	if !eng.Capabilities().Breadth {
 		return nil, ErrUnsupported
@@ -97,8 +124,11 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := eng.Index(cur); err != nil {
-		return nil, err
+	gen := s.currentGen()
+	if eng.Capabilities().CorpusGen != gen {
+		if err := eng.Index(cur, gen); err != nil {
+			return nil, err
+		}
 	}
 	allow := make([]string, 0, len(cur))
 	byID := make(map[string]Claim, len(cur))
@@ -106,7 +136,7 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 		allow = append(allow, c.ID)
 		byID[c.ID] = c
 	}
-	hits, err := eng.Query(text, allow, k)
+	hits, err := eng.Query(text, GateList, allow, k)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +147,16 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 		}
 	}
 	return out, nil
+}
+
+// currentGen is the ledger generation = the max claim seq. It changes only on a promote, so an
+// engine indexed at this gen is current.
+func (s *Store) currentGen() int64 {
+	claims, err := s.loadClaims()
+	if err != nil {
+		return 0
+	}
+	return s.maxSeq(claims)
 }
 
 // currentVisible returns the current (non-superseded as of now), non-retired claims — the set

@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -221,12 +222,19 @@ func cmdMemory(args []string) {
 			fmt.Printf("%s seq %-3d %s.%s = %s\n", arrow, c.Seq, c.Entity, c.Predicate, c.Object)
 		}
 	case "query":
-		// breadth via the RENTED engine, relevance-gated by the ledger. A real engine
-		// (turbovec) swaps in behind mem.Engine; the default lexical engine works in-process.
-		claims, err := store.QueryBreadth(pos(), 10, &mem.LexicalEngine{})
-		if err == mem.ErrUnsupported {
-			fmt.Println("# no breadth engine wired — exact/as-of recall available via `compound memory recall`")
+		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_ENGINE_BIN
+		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
+		// otherwise the in-process lexical engine. A model swap is a HARD refuse, not a degrade.
+		eng, closeEng := memBreadthEngine()
+		defer closeEng()
+		claims, err := store.QueryBreadth(pos(), 10, eng)
+		switch {
+		case errors.Is(err, mem.ErrUnsupported), errors.Is(err, mem.ErrEngineUnavailable):
+			fmt.Println("# no breadth engine — exact/as-of recall available via `compound memory recall`")
 			return
+		case errors.Is(err, mem.ErrEmbedderMismatch):
+			fmt.Fprintln(os.Stderr, "error: breadth engine embedder mismatch (refusing breadth, not degrading):", err)
+			os.Exit(1)
 		}
 		die(err)
 		fmt.Printf("# %d breadth hit(s) for %q (relevance-gated)\n", len(claims), pos())
@@ -246,6 +254,21 @@ func cmdMemory(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|doctor> ...")
 		os.Exit(2)
 	}
+}
+
+// memBreadthEngine selects the rented breadth engine: a protocol sidecar (held warm) when
+// COMPOUND_MEM_ENGINE_BIN is set (e.g. the turbovec sidecar, or compound-mock-engine), else the
+// in-process lexical engine. Its own env var — distinct from the legacy COMPOUND_ENGINE_BIN, which
+// speaks a different protocol and retires with the legacy engine. COMPOUND_MEM_ENGINE_EMBEDDER is
+// compound's record of what it indexed with; it drives the identity guard (empty = adopt on first use).
+func memBreadthEngine() (mem.Engine, func()) {
+	bin := strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN"))
+	if bin == "" {
+		return &mem.LexicalEngine{}, func() {}
+	}
+	tr := mem.NewHeldCoprocess(strings.Fields(bin), nil)
+	eng := mem.NewProtocolEngine(tr, os.Getenv("COMPOUND_MEM_ENGINE_EMBEDDER"))
+	return eng, func() { _ = eng.Close() }
 }
 
 func dashNote(n string) string {

@@ -151,7 +151,7 @@ func TestEngineSeam(t *testing.T) {
 	if _, err := s.QueryBreadth("language", 10, NoEngine{}); err != ErrUnsupported {
 		t.Errorf("NoEngine breadth should return ErrUnsupported, got %v", err)
 	}
-	if _, err := (NoEngine{}).Query("x", nil, 1); err != ErrUnsupported {
+	if _, err := (NoEngine{}).Query("x", GateList, nil, 1); err != ErrUnsupported {
 		t.Errorf("NoEngine.Query must raise, not silently no-op; got %v", err)
 	}
 	// LexicalEngine: real breadth result, and only the CURRENT value (node was superseded by go).

@@ -1,0 +1,82 @@
+package mem
+
+// The breadth-engine wire protocol. compound OWNS this protocol; the engine (turbovec sidecar,
+// or the pure-Go mock) is rented behind it. It is transport-agnostic: the same request/response
+// shapes ride a held coprocess (stdio), a per-op exec, or a socket. One JSON object per line;
+// stdout is the data channel (logs go to stderr only); every request carries a schema version +
+// request id. Golden fixtures under fixtures/engine/ pin this wire as the swap contract that BOTH
+// the mock and the real turbovec sidecar must satisfy. See docs/memory-architecture.md.
+
+const ProtocolVersion = 1
+
+// Ops.
+const (
+	OpCapabilities = "capabilities"
+	OpIndex        = "index"
+	OpQuery        = "query"
+)
+
+// Error codes (typed so a caller maps them to refuse-vs-degrade).
+const (
+	CodeEmbedderMismatch = "embedder_mismatch"
+	CodeDimMismatch      = "dim_mismatch"
+	CodeIndexMissing     = "index_missing"
+	CodeStaleGeneration  = "stale_generation"
+	CodeBadRequest       = "bad_request"
+)
+
+// ClaimText is a claim reduced to its indexable text — the only thing about a claim the engine
+// ever sees. The embedder (in the sidecar) turns this into a vector; the ledger keeps the truth.
+type ClaimText struct {
+	ClaimID string `json:"claim_id"`
+	Text    string `json:"text"`
+}
+
+// Request is one protocol call.
+type Request struct {
+	SchemaVersion int    `json:"schema_version"`
+	RequestID     string `json:"request_id"`
+	Op            string `json:"op"`
+
+	// index
+	CorpusGen int64       `json:"corpus_gen,omitempty"`
+	Claims    []ClaimText `json:"claims,omitempty"`
+
+	// query
+	Text      string   `json:"text,omitempty"`
+	Gate      string   `json:"gate,omitempty"`
+	Allowlist []string `json:"allowlist,omitempty"`
+	K         int      `json:"k,omitempty"`
+}
+
+// Response is one protocol reply. ok=false carries a typed error; logs never ride this channel.
+type Response struct {
+	OK        bool       `json:"ok"`
+	RequestID string     `json:"request_id,omitempty"`
+	Error     *WireError `json:"error,omitempty"`
+
+	// capabilities
+	Name     string `json:"name,omitempty"`
+	Breadth  bool   `json:"breadth,omitempty"`
+	Embedder string `json:"embedder,omitempty"`
+	Ready    bool   `json:"ready,omitempty"`
+
+	// index
+	Indexed int `json:"indexed,omitempty"`
+
+	// query
+	Hits []Hit `json:"hits,omitempty"`
+
+	CorpusGen int64 `json:"corpus_gen,omitempty"`
+}
+
+type WireError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// ClaimIndexText is the indexable text for a claim — the entity/predicate/object surface the
+// engine matches or embeds. Stable so the mock and the real sidecar agree.
+func ClaimIndexText(c Claim) string {
+	return c.Entity + " " + c.Predicate + " " + c.Object
+}

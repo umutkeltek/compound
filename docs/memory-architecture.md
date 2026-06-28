@@ -192,6 +192,38 @@ ledger alone.
 > are recorded in the private audit synthesis. Engines stay swappable; the typed Claim/Position/Pattern
 > edge graph with provenance is the part compound owns.
 
+## The breadth-engine protocol (how a real ANN engine plugs in)
+
+The default engine is in-process and lexical; a real semantic engine (turbovec) is rented as a
+**sidecar** behind one compound-owned wire protocol — chosen over cgo because cgo can't be tested
+without the native toolchain and shares a crash domain with the core, while a sidecar keeps the
+core a single pure-Go binary and the engine genuinely swappable.
+
+- **compound owns the protocol; the engine is rented behind it.** Newline-framed JSON, schema-
+  versioned, on stdout (logs to stderr only): `capabilities` · `index` · `query` · typed error
+  envelope. Defined in `internal/mem/protocol.go`; the pure-Go reference engine
+  (`RunReferenceEngine`, shipped as `compound-mock-engine`) is the executable conformance baseline
+  the real turbovec sidecar must match — so the whole adapter is proven with **zero Rust**.
+- **Transport-pluggable.** A `Transport` interface carries one round-trip; the default is a **held
+  coprocess** (spawn once, keep the index warm — no reload per query), with a per-op exec and a
+  socket as alternate impls behind the same client.
+- **The embedder lives in the sidecar.** Only claim *text* crosses the wire; the core never holds
+  model weights or serializes vectors, and stays a single cross-compilable binary.
+- **The relevance gate crosses explicitly.** The ledger computes the allowlist and sends it under
+  `gate:list`; an empty allowlist matches **nothing** (fail-closed — it can never leak retired or
+  superseded claims). `gate:all` is admin-only and the core never emits it.
+- **Index is idempotent on the corpus generation** (= ledger max seq), so the engine never
+  re-embeds the whole corpus per query.
+- **Identity guard, fail-closed.** compound records the embedder it indexed with; if the sidecar
+  reports a different one, breadth is **refused** (`ErrEmbedderMismatch`), never silently degraded —
+  a silent model swap would wreck recall invisibly. A down sidecar degrades to `ErrEngineUnavailable`
+  (the ledger still answers exact/as-of); the two are distinct on purpose.
+
+Config (overlay): `COMPOUND_MEM_ENGINE_BIN` (the sidecar command) and `COMPOUND_MEM_ENGINE_EMBEDDER`
+(the indexed-with stamp). Distinct from the legacy `COMPOUND_ENGINE_BIN`, which speaks a different
+protocol and retires with the legacy engine. The real turbovec sidecar (Rust, + its embedder) is an
+**external artifact**, never vendored into the public core.
+
 ## Language And Runtime
 
 The core is Go: CLI, ledger, scope, recall planning, importers, and future local
