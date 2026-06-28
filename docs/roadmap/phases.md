@@ -45,8 +45,12 @@ candidate + CapabilityNudge; PreToolUse → ActionIntent + PolicyDecision; Sessi
 Capability-aware per harness (a `HarnessRegistry` records what each actually supports).
 
 ## P6 — memory candidate / adjudication  (memory is ONE slice, now)
-`compound memory candidate/adjudicate/promote/timeline/doctor`. Inputs: SELECT/SEE/TELL/EXECUTE +
-CONTRADICTIONS + taste + skills + outcomes — **all as candidates first**. **Proof:** one real trace →
+`compound memory candidate/adjudicate/promote/timeline/doctor`. Inputs: the typed distillation roles —
+**SELECT** (user decisions/constraints/preferences), **SEE** (user questions/reactions/uncertainty),
+**TELL** (agent conclusions), **EXECUTE** (evidence of performed work) — plus CONTRADICTIONS, taste,
+skills, outcomes. These fan out to MemoryCandidate / SkillCandidate / DecisionCandidate / FailurePattern /
+TasteObservation / ProductHypothesis / CapabilityObservation — **not just memory** — and **all as
+candidates first**. **Proof:** one real trace →
 MemoryCandidate → parked\|promoted\|rejected → EvidenceItem/Claim → Transition projection; recalled later
 only under relevant scope; no duplicate entity (entity-resolution precedence, `../architecture/contracts/`);
 distiller output is never piped straight into canon.
@@ -54,7 +58,7 @@ distiller output is never piped straight into canon.
 ## P7 — private dogfood overlay  (connect the real system as adapters)
 Overlay/adapters for the control-spine repo, the brain corpus, the legacy vector/fact store, the model
 gateway, product registries, analytics. **Public core sees only adapters; no operator paths in core.**
-**Proof:** one real brain decision imports as Decision + EvidenceSpan; a project page as a Product/Project
+**Proof:** one real brain decision imports as Decision + EvidenceItem; a project page as a Product/Project
 entity + claims; a review as provisional (not ambient); an inbox item as candidate (not canon); an entity
 survives a path **and** host move (no duplicate).
 

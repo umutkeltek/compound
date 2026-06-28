@@ -72,4 +72,4 @@ another dashboard tax. Gateway work counts only if it reduces provider/model amb
 usable route evidence, enforces a real cost/risk gate, removes duplicate routing config, or enables a
 real product/system loop.
 
-The execution-plane construction track (S0–S5) is in `../roadmap/phases.md`.
+The execution-plane construction track is in `../roadmap/phases.md` (P10 — execution route evidence).

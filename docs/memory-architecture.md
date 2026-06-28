@@ -1,5 +1,10 @@
 # Memory Architecture
 
+> Scope note: in the substrate, **memory is one slice, not the whole system** — see
+> `architecture/substrate.md` (one meaning owner) and `architecture/transition.md` (the apex object is
+> `Transition`, not a memory record). This doc details the memory slice (built at roadmap **P6**); promoted
+> claims/positions are durable ledger authority, not rebuildable views.
+
 Memory's differentiator is not storage or summarization. Distillation produces
 candidates; memory decides what survives, why it survives, and how it is recalled.
 

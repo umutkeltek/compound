@@ -20,10 +20,11 @@ A `Transition` is a state change plus its **projections** into multiple represen
 ```json
 {
   "transition_id": "tr_...",
+  "work_id": "work_...",                    // the root id (runtime.md); links intent→…→transition
   "source_trace_id": "trace_...",
   "scope":  { "entity_id": "product:notes-app", "surface": "...", "mode": "product_loop|system|..." },
   "before": { "known_state_refs": ["claim_...", "metric_...", "asset_..."] },
-  "action": { "job_id": "job_...", "actor": "claude_code|codex|script|human",
+  "action": { "run_id": "run_...", "actor": "claude_code|codex|script|human",
               "capabilities_used": ["..."], "models_used": ["..."], "tools_used": ["..."] },
   "after":  { "state_delta": "...", "evidence_refs": ["ev_..."], "artifact_refs": ["..."] },
   "projections": {
@@ -33,12 +34,15 @@ A `Transition` is a state change plus its **projections** into multiple represen
     "cost":    ["cost_record_..."],
     "risk":    ["tier_..."],
     "taste":   ["taste_observation_..."],
-    "routing": ["route_decision_..."]
+    "routing": ["route_decision_..."],
+    "human_attention": ["synthesis_debt_...", "approval_needed_..."]
   },
-  "second_order": { "should_harden": false, "should_create_rule": false,
-                    "should_decay": false, "should_revisit_at": null }
+  "second_order": { "future_behavior_changed": true, "should_harden": false,
+                    "should_create_rule": false, "should_decay": false, "revisit_at": null }
 }
 ```
+This is the canonical `Transition` shape (`runtime.md` and `contracts/README.md` reference it). The root
+`work_id` ties it into the envelope spine; `source_trace_id` is the originating raw trace.
 
 It forces three questions on every run: **What changed? Across which spaces? What future
 behavior should this affect?**

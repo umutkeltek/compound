@@ -123,7 +123,14 @@ skills/repos), joined by a **synthesis layer** answering *"given THIS job/contex
 option is currently preferred, and why"* — not a static "X good / Y good" — and it adapts over time.
 
 **Memory is inside the substrate, not above it, and it is one slice of it.** The trace/evidence ledger is the
-ground; memory, product loops, skill-mining, and self-healing are views over the ground.
+ground *and the authority* — promoted claims/positions are durable ledger objects, not rebuildable views.
+What *are* views over the ground are projections, timelines, and indexes; product loops, skill-mining, and
+self-healing read from the ledger, they do not own it.
+
+**Proof semantics — never collapse the greens.** Four kinds of "green" verify different things and must not be
+conflated: a *dashboard* green = a rebuildable view is fresh; *work* green = a verified state delta; a
+*memory* green = adjudicated AND recall-tested; a *product* green = an observed signal with a hypothesis and
+confounders. A fresh dashboard is not done work; a stored claim is not adjudicated memory.
 
 ## The reconciliation principle (why this won't become overbuild)
 

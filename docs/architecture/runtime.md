@@ -26,7 +26,7 @@ $COMPOUND_HOME/
   config/          core.yaml; overlays/{private,local}.yaml; harnesses/*.yaml; adapters/*.yaml
   contracts/       effective/<date>/<id>.json + latest.json ; schemas/
   events/          <date>/{events,hook-events,tool-events,model-route-events}.ndjson   (raw nervous system)
-  work/            work/<id>.json ; runs/<id>.json ; leases/<id>.json ; checkpoints/   (execution identity)
+  work/            current.sqlite ; events.ndjson ; work/<id>.json ; runs/<id>.json ; leases/<id>.json ; checkpoints/   (execution identity)
   context/         requests/<id>.json ; packs/<id>.json ; injections/<hook_event_id>.md (EXACT injected text)
   ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions}.jsonl (durable truth)
   inbox/           memory-candidates/ skill-candidates/ product-signals/ capability-observations/
@@ -34,7 +34,7 @@ $COMPOUND_HOME/
   registries/      entities/ projects/ products/ skills/ tools/ mcps/ models/ providers/ harnesses/ hosts/ deployments/ sources/ adapters/
   artifacts/       sha256/ab/cd/<hash> ; refs/<id>.json ; retention/policy.yaml   (content-addressed evidence)
   indexes/         local/ vector/ fts/ embeddings/ + build-manifest.json                    (rented/search/cache)
-  projections/     dashboard/ memory-timelines/ product-timelines/ capability-graph/ cost/ markdown/  (rebuildable views)
+  projections/     dashboard/ context-summaries/ packs/ memory-timelines/ product-timelines/ capability-graph/ cost/ markdown/  (rebuildable views)
   reviews/         adjudication/ route-remorse/ memory-doctor/ public-private-boundary/
   exports/         public-fixtures/ private-backups/ handoff-packets/
   tmp/
@@ -71,7 +71,7 @@ authoritative ≠ current*.
 | **WorkEnvelope** | the one root identity for a unit of work | work_id, intent_id, contract_id, owner, canonical_surface, state (proposed→admitted→ready→claimed→running→verifying→completed\|held\|blocked\|failed\|cancelled), desired_outcome, success_predicate, non_goals[], risk, context_pack_id, route_decision_id, policy_decision_id, run_ids[], artifact_ids[], verification_ids[], memory_candidate_ids[] |
 | **ActionIntent** | a proposed mutation, pre-policy | actor, capability, action, target{kind,id,path}, mutation_class (read\|local_reversible\|external_side_effect\|public\|destructive\|financial\|security), reversibility, blast_radius, estimated_cost{}, preview, rollback_plan |
 | **PolicyDecision** | the governance verdict an adapter enforces | outcome (allow\|allow_with_obligations\|hold\|deny), reasons[], obligations[] (write_receipt, include_rollback_ref, run_verification), standing_grant_id, expires_at |
-| **HookEvent** | one normalized harness lifecycle event | harness, hook_name, hook_capability (context_injection\|policy_gate\|telemetry\|receipt), input_hash, side_effects[], output_ref, duration_ms, status (ok\|fail_open\|blocked\|error) |
+| **HookEvent** | one normalized harness lifecycle event (**no raw prompt stored by default** — only `input_hash`) | harness, hook_name, hook_capability (context_injection\|policy_gate\|telemetry\|receipt), input_hash, side_effects[], output_ref, duration_ms, status (ok\|fail_open\|blocked\|error) |
 | **Receipt** | how a run is learned from (proportional to risk/blast-radius) | outcome, state_delta{changed,summary,files_changed[],artifacts[],verification[]}, cost{model_calls[],tokens,usd_actual,usd_estimated,human_minutes}, skills{used/missed/candidate}, memory{candidates/promoted/parked}, next{suggested_work[],review_trigger} |
 | **Transition** | the apex object joining projections (see `transition.md`) | before_refs[], action_refs[], after_refs[], state_delta, projections{memory,skill,product,cost,risk,taste,routing,human_attention}, second_order{future_behavior_changed,should_harden,should_create_rule,should_decay,revisit_at} |
 
