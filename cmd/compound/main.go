@@ -145,6 +145,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
+  compound distiller eval <case.json>                         Offline request/response/adjudication eval, no model call
   compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
@@ -433,12 +434,50 @@ func cmdDistiller(args []string) {
 		}
 		return
 	}
+	if len(args) >= 1 && args[0] == "eval" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		report, err := distiller.EvaluateCaseFileInRoot(args[1], homePath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller eval:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller eval %s\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- trace_ref: %s\n", report.TraceRef)
+		fmt.Printf("- decisions: %d\n", report.Run.DecisionCount)
+		fmt.Printf("- current_claims: %d\n", report.Run.CurrentClaims)
+		fmt.Printf("- live_model_calls: %d\n", report.Run.LiveModelCalls)
+		fmt.Printf("- prior: current_claims=%d capability_observations=%d eval_cases=%d method_upgrades=%d\n",
+			report.Request.PriorCoverage.CurrentClaims,
+			report.Request.PriorCoverage.CapabilityObs,
+			report.Request.PriorCoverage.EvalCases,
+			report.Request.PriorCoverage.MethodUpgrades)
+		for _, check := range report.Checks {
+			fmt.Printf("- check:%s %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		if report.Status != "pass" {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) >= 1 && args[0] == "request" {
 		cmdDistillerRequest(args[1:])
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json> | request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 	extractor := distiller.Extractor(distiller.ReferenceExtractor{})
