@@ -211,6 +211,32 @@ func TestValidateSignalExportRejectsUnsupportedSource(t *testing.T) {
 	}
 }
 
+func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T) {
+	_, err := LoadSignal("../../fixtures/product/source-export.bad-extra.yaml")
+	if err == nil {
+		t.Fatal("unknown export field should fail strict load")
+	}
+	report := SignalDoctor("../../fixtures/product/source-export.bad-extra.yaml")
+	if report.Status != "fail" || report.SourceHash == "" || !checkStatus(report.Checks, "strict_contract", "fail") {
+		t.Fatalf("signal doctor report = %+v", report)
+	}
+	home := t.TempDir()
+	nop, appended, err := RecordSignalDoctorNoPromote(home, report, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !appended || nop.ID == "" || nop.OwnerTarget.Kind != "product_signal_source" || !hasString(nop.EvidenceRefs, report.SourceHash) {
+		t.Fatalf("no-promote = %+v appended=%v", nop, appended)
+	}
+	replayed, appended, err := RecordSignalDoctorNoPromote(home, report, tProduct.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if appended || replayed.ID != nop.ID {
+		t.Fatalf("replay no-promote = %+v appended=%v, want existing %s", replayed, appended, nop.ID)
+	}
+}
+
 func validBundle() Bundle {
 	return Bundle{
 		SchemaVersion: SchemaVersion,
@@ -293,6 +319,15 @@ func validSignalExportDocument() SignalExportDocument {
 func hasString(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func checkStatus(checks []SignalCheck, name, status string) bool {
+	for _, c := range checks {
+		if c.Name == name && c.Status == status {
 			return true
 		}
 	}

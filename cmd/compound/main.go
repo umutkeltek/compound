@@ -2047,6 +2047,50 @@ func cmdProduct(args []string) {
 		if len(report.TransitionIDs) > 0 {
 			fmt.Printf("- transition: %s\n", report.TransitionIDs[0])
 		}
+	case "signal-doctor":
+		if len(args) < 2 || len(args) > 3 || (len(args) == 3 && args[2] != "--record") {
+			fmt.Fprintln(os.Stderr, "usage: compound product signal-doctor <signal.yaml|source-export.yaml> [--record]")
+			os.Exit(2)
+		}
+		report := product.SignalDoctor(args[1])
+		fmt.Printf("# product signal doctor %s\n\n", report.SourceRef)
+		fmt.Printf("- status: %s\n", report.Status)
+		if report.SchemaVersion != "" {
+			fmt.Printf("- schema: %s\n", report.SchemaVersion)
+		}
+		if report.SignalID != "" {
+			fmt.Printf("- signal: %s\n", report.SignalID)
+		}
+		if report.ProductID != "" {
+			fmt.Printf("- product: %s\n", report.ProductID)
+		}
+		if report.MetricName != "" {
+			fmt.Printf("- metric: %s\n", report.MetricName)
+		}
+		for _, check := range report.Checks {
+			fmt.Printf("- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		if len(args) == 3 && args[2] == "--record" {
+			if report.Status == "ok" {
+				fmt.Printf("- no_promote: skipped valid source\n")
+			} else {
+				nop, appended, err := product.RecordSignalDoctorNoPromote(homePath, report, time.Now())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "product signal-doctor record:", err)
+					os.Exit(1)
+				}
+				report.NoPromoteID = nop.ID
+				fmt.Printf("- no_promote: %s", nop.ID)
+				if !appended {
+					fmt.Printf(" (existing)")
+				}
+				fmt.Println()
+			}
+		}
 	case "review":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml>")

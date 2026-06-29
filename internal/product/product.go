@@ -4,6 +4,7 @@
 package product
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -206,6 +207,27 @@ type DoctorReport struct {
 	MissingEvidenceRefs []string              `json:"missing_evidence_refs,omitempty"`
 }
 
+type SignalDoctorReport struct {
+	Path          string        `json:"path"`
+	SourceRef     string        `json:"source_ref"`
+	SourceHash    string        `json:"source_hash,omitempty"`
+	SchemaVersion string        `json:"schema_version,omitempty"`
+	Status        string        `json:"status"`
+	SignalID      string        `json:"signal_id,omitempty"`
+	ProductID     string        `json:"product_id,omitempty"`
+	MetricName    string        `json:"metric_name,omitempty"`
+	SourceKind    string        `json:"source_kind,omitempty"`
+	SourceID      string        `json:"source_id,omitempty"`
+	Checks        []SignalCheck `json:"checks"`
+	NoPromoteID   string        `json:"no_promote_id,omitempty"`
+}
+
+type SignalCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
 func Load(path string) (Bundle, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -223,6 +245,10 @@ func LoadSignal(path string) (SignalDocument, error) {
 	if err != nil {
 		return SignalDocument{}, err
 	}
+	return loadSignalBytes(b)
+}
+
+func loadSignalBytes(b []byte) (SignalDocument, error) {
 	var header struct {
 		SchemaVersion string `yaml:"schema_version"`
 	}
@@ -232,18 +258,94 @@ func LoadSignal(path string) (SignalDocument, error) {
 	switch header.SchemaVersion {
 	case SignalSchemaVersion:
 		var doc SignalDocument
-		if err := yaml.Unmarshal(b, &doc); err != nil {
+		if err := decodeKnownYAML(b, &doc); err != nil {
 			return SignalDocument{}, err
 		}
 		return doc, nil
 	case SignalExportSchemaVersion:
 		var doc SignalExportDocument
-		if err := yaml.Unmarshal(b, &doc); err != nil {
+		if err := decodeKnownYAML(b, &doc); err != nil {
 			return SignalDocument{}, err
 		}
 		return AdaptSignalExport(doc)
 	default:
 		return SignalDocument{}, fmt.Errorf("schema_version must be %s or %s, got %q", SignalSchemaVersion, SignalExportSchemaVersion, header.SchemaVersion)
+	}
+}
+
+func SignalDoctor(path string) SignalDoctorReport {
+	report := SignalDoctorReport{
+		Path:      path,
+		SourceRef: "product_signal_source:" + filepath.Base(path),
+		Status:    "ok",
+	}
+	add := func(name string, ok bool, detail string) {
+		status := "ok"
+		if !ok {
+			status = "fail"
+			report.Status = "fail"
+		}
+		report.Checks = append(report.Checks, SignalCheck{Name: name, Status: status, Detail: detail})
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		add("read", false, err.Error())
+		return report
+	}
+	report.SourceHash = "sha256:" + hashBytes(b)
+	add("read", true, report.SourceHash)
+	var header struct {
+		SchemaVersion string `yaml:"schema_version"`
+	}
+	if err := yaml.Unmarshal(b, &header); err != nil {
+		add("schema_header", false, err.Error())
+		return report
+	}
+	report.SchemaVersion = header.SchemaVersion
+	add("schema", oneOf(header.SchemaVersion, []string{SignalSchemaVersion, SignalExportSchemaVersion}), header.SchemaVersion)
+	doc, err := loadSignalBytes(b)
+	if err != nil {
+		add("strict_contract", false, err.Error())
+		return report
+	}
+	if err := ValidateSignalDocument(doc); err != nil {
+		add("signal_contract", false, err.Error())
+		return report
+	}
+	report.SignalID = doc.Signal.ID
+	report.ProductID = doc.Signal.ProductID
+	report.MetricName = doc.Signal.MetricName
+	report.SourceKind = doc.Source.Kind
+	report.SourceID = doc.Source.Ref
+	add("strict_contract", true, "known fields only")
+	add("signal_contract", true, doc.Signal.ID)
+	return report
+}
+
+func RecordSignalDoctorNoPromote(homePath string, report SignalDoctorReport, now time.Time) (writeback.NoPromoteDecision, bool, error) {
+	if report.Status == "ok" {
+		return writeback.NoPromoteDecision{}, false, fmt.Errorf("product signal source %q is valid; no no-promote decision needed", report.SourceRef)
+	}
+	store, err := writeback.Open(homePath)
+	if err != nil {
+		return writeback.NoPromoteDecision{}, false, err
+	}
+	return store.RecordNoPromote(SignalDoctorNoPromote(report), now)
+}
+
+func SignalDoctorNoPromote(report SignalDoctorReport) writeback.NoPromoteDecision {
+	ref := report.SourceHash
+	if ref == "" {
+		ref = report.SourceRef
+	}
+	evidenceRefs := compact([]string{report.SourceRef, report.SourceHash, "schema:" + report.SchemaVersion})
+	return writeback.NoPromoteDecision{
+		SchemaVersion: writeback.NoPromoteSchemaVersion,
+		CandidateRef:  "product_signal_source:" + ref,
+		OwnerTarget:   writeback.OwnerTarget{Kind: "product_signal_source", Ref: report.SourceRef},
+		Basis:         "product signal source failed strict contract: " + signalDoctorFailure(report),
+		EvidenceRefs:  evidenceRefs,
+		Status:        writeback.NoPromoteActive,
 	}
 }
 
@@ -975,6 +1077,29 @@ func readJSONL(path string, fn func([]byte) error) error {
 		}
 	}
 	return nil
+}
+
+func decodeKnownYAML(b []byte, out any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	return dec.Decode(out)
+}
+
+func hashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func signalDoctorFailure(report SignalDoctorReport) string {
+	for _, check := range report.Checks {
+		if check.Status == "fail" {
+			if check.Detail != "" {
+				return check.Name + ": " + check.Detail
+			}
+			return check.Name
+		}
+	}
+	return "unknown failure"
 }
 
 func canonicalMetricName(sourceKind, metricName string) string {

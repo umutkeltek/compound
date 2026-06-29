@@ -113,7 +113,7 @@ changes future surfacing probability.
 ## P9 — product loop
 `compound product import/signal/review/timeline/doctor --writeback`. **Proof:** `compound product signal
 <signal.yaml|source-export.yaml>` maps normalized signals and ASC/RevenueCat/PostHog-shaped source exports into the same ProductSignal ledger and emits a product
-Transition projection; `compound product timeline <product>` shows change → metric signal → *competing*
+Transition projection; `compound product signal-doctor <yaml> --record` rejects loose provider shapes into `NoPromoteDecision`; `compound product timeline <product>` shows change → metric signal → *competing*
 interpretations (no causal over-claim) → confidence; `compound product doctor <product> --writeback` turns
 pending hypothesis review into WorkEnvelope → ActionIntent → PolicyDecision → OwnerWritebackGate → Receipt →
 Transition before any product surface or external account changes; `compound product review <review.yaml>`

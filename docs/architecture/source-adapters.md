@@ -131,7 +131,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | runtime / service contracts | `RuntimeBinding` / `ServiceContract` candidates |
 | decision records | `DecisionLifecycle` candidates |
 | knowledge-base pages | Evidence / Claim / Position candidates |
-| product analytics exports | `ProductSignalExport` -> `ProductSignal` evidence + product `Transition` projection, never causality |
+| product analytics exports | `ProductSignalExport` -> `ProductSignal` evidence + product `Transition` projection, never causality; unknown/unsupported source fields fail strict doctor and may record `NoPromoteDecision` |
 | a retrieval / embedding store | retrieval engine or source index, never authority |
 
 A concrete mapping for a specific operating system — real repo paths and named
