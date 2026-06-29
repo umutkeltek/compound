@@ -111,13 +111,13 @@ not all-by-default) — **without executing them**; and a missed/false trigger r
 changes future surfacing probability.
 
 ## P9 — product loop
-`compound product import/signal/review/timeline/doctor --writeback`. **Proof:** `compound product signal
+`compound product import/signal/review/source-issue-review/timeline/doctor --writeback`. **Proof:** `compound product signal
 <signal.yaml|source-export.yaml>` maps normalized signals and ASC/RevenueCat/PostHog-shaped source exports into the same ProductSignal ledger and emits a product
-Transition projection; `compound product signal-doctor <yaml> --record` rejects loose provider shapes into `NoPromoteDecision`; `compound product timeline <product>` joins signals, hypotheses, transition deltas, and source issues to show change → metric signal → *competing*
+Transition projection; `compound product signal-doctor <yaml> --record` rejects loose provider shapes into `NoPromoteDecision`; `compound product timeline <product>` joins signals, hypotheses, transition deltas, and open/closed source issues to show change → metric signal → *competing*
 interpretations (no causal over-claim) → confidence; `compound product doctor <product> --writeback` turns
-pending hypothesis review or product source issues into WorkEnvelope → ActionIntent → PolicyDecision → OwnerWritebackGate → Receipt →
+pending hypothesis review or open product source issues into WorkEnvelope → ActionIntent → PolicyDecision → OwnerWritebackGate → Receipt →
 Transition before any product surface or external account changes; `compound product review <review.yaml>`
-records evidence, updates the same ProductHypothesis result without promotion, and emits a product Transition.
+records evidence, updates the same ProductHypothesis result without promotion, and emits a product Transition; `compound product source-issue-review <review.yaml>` records closure evidence, preserves the original `NoPromoteDecision`, and stops the issue recurring as open feedback debt.
 
 ## P10 — execution route evidence (model gateway)
 Import `ExecutionRouteEvidence` (`../architecture/execution-plane.md`), read-only first → ingress → relay

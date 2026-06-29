@@ -266,6 +266,35 @@ func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T)
 	if gate.CandidateKind != "" || gate.CandidateRef == "" || gate.OwnerTarget.Ref != "product:focus-notes" {
 		t.Fatalf("source issue gate = %+v", gate)
 	}
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := validSourceIssueReview(nop.ID)
+	reviewReport, err := ApplySourceIssueReview(home, store, review, "fixtures/product/source-issue-review.yaml", tProduct.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewReport.Status != "closed" || reviewReport.IssueID != nop.ID || reviewReport.TransitionID == "" || reviewReport.EvidenceID == "" {
+		t.Fatalf("source issue review report = %+v", reviewReport)
+	}
+	closed, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(closed.SourceIssues) != 1 || closed.SourceIssues[0].Status != "closed" || closed.SourceIssues[0].ReviewID != review.ID {
+		t.Fatalf("closed source issues = %+v", closed.SourceIssues)
+	}
+	if !hasTimelineObject(closed.Transitions, "product_source_issue_review:"+review.ID) {
+		t.Fatalf("timeline transitions missing source issue review: %+v", closed.Transitions)
+	}
+	postReviewDoctor, err := Doctor(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postReviewDoctor.Status != "ok" || postReviewDoctor.SourceIssueCount != 0 || NeedsWriteback(postReviewDoctor) {
+		t.Fatalf("post source issue review doctor = %+v", postReviewDoctor)
+	}
 }
 
 func validBundle() Bundle {
@@ -317,6 +346,18 @@ func validReview() Review {
 		Rationale:     "movement exists but evidence is not causal",
 		Confidence:    0.5,
 		EvidenceRefs:  []string{"fixture"},
+	}
+}
+
+func validSourceIssueReview(issueID string) SourceIssueReview {
+	return SourceIssueReview{
+		SchemaVersion: SourceIssueReviewSchemaVersion,
+		ID:            "source_issue_review_x",
+		ProductID:     "product:focus-notes",
+		IssueID:       issueID,
+		Result:        "resolved",
+		Rationale:     "source contract was reviewed and the adapter/source follow-up is captured",
+		EvidenceRefs:  []string{"fixture:source-issue-review"},
 	}
 }
 

@@ -162,7 +162,7 @@ compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doct
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
-compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
@@ -2116,6 +2116,31 @@ func cmdProduct(args []string) {
 		if report.TransitionID != "" {
 			fmt.Printf("- transition: %s\n", report.TransitionID)
 		}
+	case "source-issue-review":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product source-issue-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := product.LoadSourceIssueReview(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product source issue review:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplySourceIssueReview(homePath, store, review, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product source issue review:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product source issue review %s\n\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- issue: %s\n", report.IssueID)
+		fmt.Printf("- result: %s\n", report.Result)
+		fmt.Printf("- evidence: %s\n", report.EvidenceID)
+		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		if report.TransitionID != "" {
+			fmt.Printf("- transition: %s\n", report.TransitionID)
+		}
 	case "timeline":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product timeline <product_id>")
@@ -2157,9 +2182,16 @@ func cmdProduct(args []string) {
 			fmt.Printf(": %s\n", tr.StateDelta)
 		}
 		for _, issue := range tl.SourceIssues {
-			fmt.Printf("- source_issue %s: %s\n", issue.ID, issue.SourceRef)
+			status := issue.Status
+			if status == "" {
+				status = "open"
+			}
+			fmt.Printf("- source_issue %s [%s]: %s\n", issue.ID, status, issue.SourceRef)
 			if issue.Basis != "" {
 				fmt.Printf("  basis: %s\n", issue.Basis)
+			}
+			if issue.ReviewID != "" {
+				fmt.Printf("  review: %s (%s)\n", issue.ReviewID, issue.ReviewResult)
 			}
 		}
 	case "doctor":
@@ -2195,7 +2227,7 @@ func cmdProduct(args []string) {
 			}
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
 		os.Exit(2)
 	}
 }

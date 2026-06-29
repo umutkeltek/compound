@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	SchemaVersion              = "compound.product_registry.v0.1"
-	SignalSchemaVersion        = "compound.product_signal.v0.1"
-	SignalExportSchemaVersion  = "compound.product_signal_export.v0.1"
-	ProductHypothesisCandidate = "compound.product_hypothesis_candidate.v0.1"
-	ReviewSchemaVersion        = "compound.product_review.v0.1"
+	SchemaVersion                  = "compound.product_registry.v0.1"
+	SignalSchemaVersion            = "compound.product_signal.v0.1"
+	SignalExportSchemaVersion      = "compound.product_signal_export.v0.1"
+	ProductHypothesisCandidate     = "compound.product_hypothesis_candidate.v0.1"
+	ReviewSchemaVersion            = "compound.product_review.v0.1"
+	SourceIssueReviewSchemaVersion = "compound.product_source_issue_review.v0.1"
 )
 
 type Bundle struct {
@@ -153,6 +154,20 @@ type Review struct {
 	SourceRef     string   `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
 }
 
+type SourceIssueReview struct {
+	SchemaVersion string   `json:"schema_version" yaml:"schema_version"`
+	ID            string   `json:"id" yaml:"id"`
+	ProductID     string   `json:"product_id" yaml:"product_id"`
+	IssueID       string   `json:"issue_id" yaml:"issue_id"`
+	Result        string   `json:"result" yaml:"result"`
+	Rationale     string   `json:"rationale" yaml:"rationale"`
+	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
+	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
+	AppliedAt     string   `json:"applied_at,omitempty" yaml:"applied_at,omitempty"`
+	EvidenceID    string   `json:"evidence_id,omitempty" yaml:"evidence_id,omitempty"`
+	SourceRef     string   `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
+}
+
 type HypothesisCandidate struct {
 	SchemaVersion     string   `json:"schema_version"`
 	ID                string   `json:"id"`
@@ -191,6 +206,17 @@ type ReviewReport struct {
 	TransitionID string   `json:"transition_id,omitempty"`
 }
 
+type SourceIssueReviewReport struct {
+	Status       string   `json:"status"`
+	ProductID    string   `json:"product_id"`
+	IssueID      string   `json:"issue_id"`
+	ReviewID     string   `json:"review_id"`
+	Result       string   `json:"result"`
+	EvidenceID   string   `json:"evidence_id"`
+	EvidenceRefs []string `json:"evidence_refs"`
+	TransitionID string   `json:"transition_id,omitempty"`
+}
+
 type Timeline struct {
 	ProductID    string
 	Signals      []Signal
@@ -215,6 +241,9 @@ type ProductSourceIssue struct {
 	SourceRef    string   `json:"source_ref"`
 	Basis        string   `json:"basis"`
 	EvidenceRefs []string `json:"evidence_refs"`
+	Status       string   `json:"status,omitempty"`
+	ReviewID     string   `json:"review_id,omitempty"`
+	ReviewResult string   `json:"review_result,omitempty"`
 }
 
 type DoctorReport struct {
@@ -421,6 +450,18 @@ func LoadReview(path string) (Review, error) {
 	return review, nil
 }
 
+func LoadSourceIssueReview(path string) (SourceIssueReview, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SourceIssueReview{}, err
+	}
+	var review SourceIssueReview
+	if err := yaml.Unmarshal(b, &review); err != nil {
+		return SourceIssueReview{}, err
+	}
+	return review, nil
+}
+
 func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, now time.Time) (Report, error) {
 	if err := Validate(bundle); err != nil {
 		return Report{ProductID: bundle.Product.ID, Status: "fail"}, err
@@ -591,6 +632,74 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 	}, nil
 }
 
+func ApplySourceIssueReview(homePath string, store *mem.Store, review SourceIssueReview, sourcePath string, now time.Time) (SourceIssueReviewReport, error) {
+	if err := ValidateSourceIssueReview(review); err != nil {
+		return SourceIssueReviewReport{ProductID: review.ProductID, IssueID: review.IssueID, ReviewID: review.ID, Status: "fail"}, err
+	}
+	issues, err := loadProductSourceIssues(homePath, review.ProductID)
+	if err != nil {
+		return SourceIssueReviewReport{}, err
+	}
+	var issue ProductSourceIssue
+	for _, candidate := range issues {
+		if candidate.ID == review.IssueID {
+			issue = candidate
+			break
+		}
+	}
+	if issue.ID == "" {
+		return SourceIssueReviewReport{}, fmt.Errorf("product source issue %q not found for %s", review.IssueID, review.ProductID)
+	}
+	if issue.Status == "closed" {
+		return SourceIssueReviewReport{}, fmt.Errorf("product source issue %q already closed by review %q", issue.ID, issue.ReviewID)
+	}
+	if review.ReviewedAt == "" {
+		review.ReviewedAt = now.UTC().Format(time.RFC3339)
+	}
+	review.AppliedAt = now.UTC().Format(time.RFC3339)
+	review.SourceRef = "product-source-issue-review:" + filepath.Base(sourcePath)
+	evidence, err := store.RecordEvidence(mem.EvidenceItem{
+		SourceKind: "repo",
+		SourceID:   review.SourceRef,
+		QuoteText:  review.Rationale,
+		Actor:      "tool",
+	}, now)
+	if err != nil {
+		return SourceIssueReviewReport{}, err
+	}
+	review.EvidenceID = evidence.ID
+	review.EvidenceRefs = compact(append(review.EvidenceRefs, evidence.ID, "product_source_issue:"+issue.ID))
+	if err := appendUniqueSourceIssueReview(homePath, review); err != nil {
+		return SourceIssueReviewReport{}, err
+	}
+	tr, err := BuildLoopTransition(LoopTransitionInput{
+		Kind:         "product_source_issue_review",
+		ProductID:    review.ProductID,
+		ObjectID:     review.ID,
+		SourceTrace:  "product_source_issue_review:" + review.ID,
+		BeforeRefs:   compact(append([]string{"product_source_issue:" + issue.ID}, issue.EvidenceRefs...)),
+		AfterRefs:    compact(append([]string{"product_source_issue:" + issue.ID + ":" + review.Result, "product_source_issue_review:" + review.ID, evidence.ID}, review.EvidenceRefs...)),
+		EvidenceRefs: review.EvidenceRefs,
+		Summary:      fmt.Sprintf("product source issue review %s closed issue %s as %s; no product surface changed", review.ID, issue.ID, review.Result),
+	}, now)
+	if err != nil {
+		return SourceIssueReviewReport{}, err
+	}
+	if err := RecordTransition(homePath, tr); err != nil {
+		return SourceIssueReviewReport{}, err
+	}
+	return SourceIssueReviewReport{
+		Status:       "closed",
+		ProductID:    review.ProductID,
+		IssueID:      review.IssueID,
+		ReviewID:     review.ID,
+		Result:       review.Result,
+		EvidenceID:   evidence.ID,
+		EvidenceRefs: review.EvidenceRefs,
+		TransitionID: tr.ID,
+	}, nil
+}
+
 func Validate(bundle Bundle) error {
 	if bundle.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema_version must be %s, got %q", SchemaVersion, bundle.SchemaVersion)
@@ -746,6 +855,28 @@ func ValidateReview(review Review) error {
 	return nil
 }
 
+func ValidateSourceIssueReview(review SourceIssueReview) error {
+	if review.SchemaVersion != SourceIssueReviewSchemaVersion {
+		return fmt.Errorf("schema_version must be %s, got %q", SourceIssueReviewSchemaVersion, review.SchemaVersion)
+	}
+	if strings.TrimSpace(review.ID) == "" || strings.TrimSpace(review.ProductID) == "" || strings.TrimSpace(review.IssueID) == "" {
+		return fmt.Errorf("source issue review id product_id issue_id required")
+	}
+	if strings.ContainsAny(review.IssueID, `/\`) {
+		return fmt.Errorf("source issue review issue_id %q must not contain path separators", review.IssueID)
+	}
+	if !oneOf(review.Result, []string{"resolved", "waived", "false_positive"}) {
+		return fmt.Errorf("source issue review result must be resolved|waived|false_positive, got %q", review.Result)
+	}
+	if strings.TrimSpace(review.Rationale) == "" {
+		return fmt.Errorf("source issue review rationale required")
+	}
+	if len(review.EvidenceRefs) == 0 {
+		return fmt.Errorf("source issue review evidence_refs required")
+	}
+	return nil
+}
+
 func LoadTimeline(homePath, productID string) (Timeline, error) {
 	signals, err := loadSignals(homePath)
 	if err != nil {
@@ -791,7 +922,7 @@ func Doctor(homePath, productID string) (DoctorReport, error) {
 		Status:          "ok",
 		SignalCount:     len(tl.Signals),
 		HypothesisCount: len(tl.Hypotheses),
-		SourceIssues:    tl.SourceIssues,
+		SourceIssues:    openProductSourceIssues(tl.SourceIssues),
 	}
 	for _, h := range tl.Hypotheses {
 		if len(h.EvidenceRefs) == 0 {
@@ -1063,6 +1194,29 @@ func appendUniqueReview(homePath string, review Review) error {
 	return appendJSONL(path, &review)
 }
 
+func appendUniqueSourceIssueReview(homePath string, review SourceIssueReview) error {
+	path := sourceIssueReviewsLog(homePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	reviews, err := loadSourceIssueReviews(homePath)
+	if err != nil {
+		return err
+	}
+	for _, existing := range reviews {
+		if existing.ID == review.ID {
+			if !sameSourceIssueReview(existing, review) {
+				return fmt.Errorf("product source issue review %q already exists with different content", review.ID)
+			}
+			return nil
+		}
+		if existing.ProductID == review.ProductID && existing.IssueID == review.IssueID && sourceIssueClosed(existing.Result) {
+			return fmt.Errorf("product source issue %q already reviewed by %q", review.IssueID, existing.ID)
+		}
+	}
+	return appendJSONL(path, &review)
+}
+
 func loadSignals(homePath string) ([]Signal, error) {
 	var out []Signal
 	err := readJSONL(signalsLog(homePath), func(line []byte) error {
@@ -1106,6 +1260,19 @@ func loadReviews(homePath string) ([]Review, error) {
 	var out []Review
 	err := readJSONL(reviewsLog(homePath), func(line []byte) error {
 		var r Review
+		if err := json.Unmarshal(line, &r); err != nil || r.ID == "" {
+			return nil
+		}
+		out = append(out, r)
+		return nil
+	})
+	return out, err
+}
+
+func loadSourceIssueReviews(homePath string) ([]SourceIssueReview, error) {
+	var out []SourceIssueReview
+	err := readJSONL(sourceIssueReviewsLog(homePath), func(line []byte) error {
+		var r SourceIssueReview
 		if err := json.Unmarshal(line, &r); err != nil || r.ID == "" {
 			return nil
 		}
@@ -1170,8 +1337,18 @@ func loadProductTransitions(homePath, productID string) ([]TimelineTransition, e
 }
 
 func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, error) {
+	reviews, err := loadSourceIssueReviews(homePath)
+	if err != nil {
+		return nil, err
+	}
+	closed := map[string]SourceIssueReview{}
+	for _, review := range reviews {
+		if review.ProductID == productID && sourceIssueClosed(review.Result) {
+			closed[review.IssueID] = review
+		}
+	}
 	var out []ProductSourceIssue
-	err := readJSONL(noPromoteLog(homePath), func(line []byte) error {
+	err = readJSONL(noPromoteLog(homePath), func(line []byte) error {
 		var d writeback.NoPromoteDecision
 		if err := json.Unmarshal(line, &d); err != nil || d.ID == "" {
 			return nil
@@ -1186,13 +1363,20 @@ func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, 
 		if sourceRef == "" {
 			sourceRef = d.CandidateRef
 		}
-		out = append(out, ProductSourceIssue{
+		issue := ProductSourceIssue{
 			ID:           d.ID,
 			CreatedAt:    d.CreatedAt,
 			SourceRef:    sourceRef,
 			Basis:        d.Basis,
 			EvidenceRefs: d.EvidenceRefs,
-		})
+			Status:       "open",
+		}
+		if review, ok := closed[d.ID]; ok {
+			issue.Status = "closed"
+			issue.ReviewID = review.ID
+			issue.ReviewResult = review.Result
+		}
+		out = append(out, issue)
 		return nil
 	})
 	if err != nil {
@@ -1213,6 +1397,10 @@ func signalsLog(homePath string) string {
 
 func reviewsLog(homePath string) string {
 	return filepath.Join(homePath, "ledger", "product-reviews.jsonl")
+}
+
+func sourceIssueReviewsLog(homePath string) string {
+	return filepath.Join(homePath, "ledger", "product-source-issue-reviews.jsonl")
 }
 
 func noPromoteLog(homePath string) string {
@@ -1300,6 +1488,8 @@ func productProjectionObject(refs []string) (string, string) {
 			return "product_signal", ref
 		case strings.HasPrefix(ref, "product_review:"):
 			return "product_review", ref
+		case strings.HasPrefix(ref, "product_source_issue_review:"):
+			return "product_source_issue_review", ref
 		case strings.HasPrefix(ref, "product_hypothesis:"):
 			return "product_hypothesis", ref
 		}
@@ -1379,6 +1569,20 @@ func productDoctorCandidateKind(report DoctorReport) string {
 	return ""
 }
 
+func openProductSourceIssues(issues []ProductSourceIssue) []ProductSourceIssue {
+	var out []ProductSourceIssue
+	for _, issue := range issues {
+		if issue.Status != "closed" {
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+func sourceIssueClosed(result string) bool {
+	return oneOf(result, []string{"resolved", "waived", "false_positive"})
+}
+
 func compact(values []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -1400,6 +1604,14 @@ func sameReview(a, b Review) bool {
 		a.Rationale == b.Rationale &&
 		a.Confidence == b.Confidence &&
 		a.NextAction == b.NextAction &&
+		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00")
+}
+
+func sameSourceIssueReview(a, b SourceIssueReview) bool {
+	return a.ProductID == b.ProductID &&
+		a.IssueID == b.IssueID &&
+		a.Result == b.Result &&
+		a.Rationale == b.Rationale &&
 		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00")
 }
 
