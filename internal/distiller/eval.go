@@ -38,6 +38,7 @@ type EvalExpectations struct {
 	SourceRefs     []string           `json:"source_refs,omitempty"`
 	PriorCoverage  map[string]int     `json:"prior_coverage,omitempty"`
 	LiveModelCalls *int               `json:"live_model_calls,omitempty"`
+	ErrorContains  string             `json:"error_contains,omitempty"`
 }
 
 type ExpectedDecision struct {
@@ -66,6 +67,7 @@ type EvalRunReport struct {
 	DecisionCount  int                    `json:"decision_count"`
 	CurrentClaims  int                    `json:"current_claims"`
 	LiveModelCalls int                    `json:"live_model_calls"`
+	Error          string                 `json:"error,omitempty"`
 	Decisions      []AdjudicationDecision `json:"decisions"`
 }
 
@@ -151,7 +153,22 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 	}
 	run, err := Run(evalHome, store, response, DefaultPolicy(), LLMExtractor{}, now)
 	if err != nil {
-		return report, fmt.Errorf("run response %s: %w", ec.Response, err)
+		current, currentErr := store.AllCurrent()
+		if currentErr != nil {
+			return report, currentErr
+		}
+		report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, SourceRefs: req.SourceRefs}
+		report.Run = EvalRunReport{
+			CurrentClaims:  len(current),
+			LiveModelCalls: 0,
+			Error:          err.Error(),
+		}
+		report.Checks = evaluateExpectations(ec.Expect, req, report.Run)
+		finalizeEvalReport(&report)
+		if strings.TrimSpace(ec.Expect.ErrorContains) == "" {
+			return report, fmt.Errorf("run response %s: %w", ec.Response, err)
+		}
+		return report, nil
 	}
 	current, err := store.AllCurrent()
 	if err != nil {
@@ -165,6 +182,11 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 		Decisions:      run.Decisions,
 	}
 	report.Checks = evaluateExpectations(ec.Expect, req, report.Run)
+	finalizeEvalReport(&report)
+	return report, nil
+}
+
+func finalizeEvalReport(report *EvalReport) {
 	report.Status = "pass"
 	for _, check := range report.Checks {
 		if check.Status != "pass" {
@@ -172,7 +194,6 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 			break
 		}
 	}
-	return report, nil
 }
 
 func newEvalHome(evalRoot string) (string, error) {
@@ -273,7 +294,25 @@ func evaluateExpectations(expect EvalExpectations, req LLMExtractionRequest, run
 	if expect.LiveModelCalls != nil {
 		checks = append(checks, checkInt("live_model_calls", run.LiveModelCalls, *expect.LiveModelCalls))
 	}
+	if strings.TrimSpace(expect.ErrorContains) != "" || strings.TrimSpace(run.Error) != "" {
+		checks = append(checks, checkErrorContains(expect.ErrorContains, run.Error))
+	}
 	return checks
+}
+
+func checkErrorContains(want, got string) EvalCheck {
+	want = strings.TrimSpace(want)
+	got = strings.TrimSpace(got)
+	if want == "" && got != "" {
+		return EvalCheck{Name: "error", Status: "fail", Detail: "unexpected error: " + got}
+	}
+	if want != "" && got == "" {
+		return EvalCheck{Name: "error", Status: "fail", Detail: "missing error containing " + want}
+	}
+	if want != "" && !strings.Contains(got, want) {
+		return EvalCheck{Name: "error", Status: "fail", Detail: fmt.Sprintf("%q missing %q", got, want)}
+	}
+	return EvalCheck{Name: "error", Status: "pass"}
 }
 
 func checkSourceRefs(want, got []string) EvalCheck {

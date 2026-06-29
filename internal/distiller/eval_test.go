@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,88 @@ func TestEvaluateCaseFailsWrongExpectation(t *testing.T) {
 	}
 }
 
+func TestEvaluateCaseExpectedExtractorErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{
+			name: "promotion basis",
+			file: "llm-bad-promotion-basis-eval.json",
+			want: "attempted promotion_basis",
+		},
+		{
+			name: "unknown kind",
+			file: "llm-bad-unknown-kind-eval.json",
+			want: "unknown kind",
+		},
+		{
+			name: "missing confidence",
+			file: "llm-bad-missing-confidence-eval.json",
+			want: "missing confidence",
+		},
+		{
+			name: "bad confidence",
+			file: "llm-bad-confidence-eval.json",
+			want: "outside [0,1]",
+		},
+		{
+			name: "malformed json",
+			file: "llm-bad-malformed-eval.json",
+			want: "parse llm extraction response",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join("..", "..", "fixtures", "distiller", tt.file)
+			report, err := EvaluateCaseFile(path, t0)
+			if err != nil {
+				t.Fatalf("evaluate case: %v", err)
+			}
+			if report.Status != "pass" {
+				t.Fatalf("status = %q checks=%+v", report.Status, report.Checks)
+			}
+			if !strings.Contains(report.Run.Error, tt.want) {
+				t.Fatalf("run error = %q, want containing %q", report.Run.Error, tt.want)
+			}
+			if report.Run.DecisionCount != 0 {
+				t.Fatalf("decision_count = %d, want 0", report.Run.DecisionCount)
+			}
+			if report.Run.CurrentClaims != 0 {
+				t.Fatalf("current_claims = %d, want 0", report.Run.CurrentClaims)
+			}
+			if report.Run.LiveModelCalls != 0 {
+				t.Fatalf("live_model_calls = %d, want 0", report.Run.LiveModelCalls)
+			}
+			if !checkPassed(report.Checks, "error") {
+				t.Fatalf("expected error check pass, got %+v", report.Checks)
+			}
+		})
+	}
+}
+
+func TestEvaluateCaseUnexpectedExtractorErrorFailsHard(t *testing.T) {
+	path := filepath.Join("..", "..", "fixtures", "distiller", "llm-bad-promotion-basis-eval.json")
+	ec, err := LoadEvalCase(path)
+	if err != nil {
+		t.Fatalf("load case: %v", err)
+	}
+	ec.Expect.ErrorContains = ""
+
+	report, err := EvaluateCase(filepath.Dir(path), ec, t0)
+	if err == nil {
+		t.Fatalf("expected hard eval error, got report %+v", report)
+	}
+	if !strings.Contains(err.Error(), "attempted promotion_basis") {
+		t.Fatalf("err = %v, want attempted promotion_basis", err)
+	}
+	if !checkFailed(report.Checks, "error") {
+		t.Fatalf("expected error check failure, got %+v", report.Checks)
+	}
+}
+
 func TestLoadEvalCaseRejectsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
@@ -67,6 +150,15 @@ func TestLoadEvalCaseRejectsMalformed(t *testing.T) {
 	if _, err := LoadEvalCase(path); err == nil {
 		t.Fatal("expected malformed eval case to fail")
 	}
+}
+
+func checkPassed(checks []EvalCheck, name string) bool {
+	for _, check := range checks {
+		if check.Name == name && check.Status == "pass" {
+			return true
+		}
+	}
+	return false
 }
 
 func checkFailed(checks []EvalCheck, name string) bool {

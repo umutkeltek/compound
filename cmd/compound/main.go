@@ -455,6 +455,9 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- decisions: %d\n", report.Run.DecisionCount)
 		fmt.Printf("- current_claims: %d\n", report.Run.CurrentClaims)
 		fmt.Printf("- live_model_calls: %d\n", report.Run.LiveModelCalls)
+		if report.Run.Error != "" {
+			fmt.Printf("- error: %s\n", report.Run.Error)
+		}
 		fmt.Printf("- prior: current_claims=%d capability_observations=%d eval_cases=%d method_upgrades=%d\n",
 			report.Request.PriorCoverage.CurrentClaims,
 			report.Request.PriorCoverage.CapabilityObs,
