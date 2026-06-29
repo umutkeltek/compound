@@ -340,6 +340,11 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	if err != nil {
 		return res, err
 	}
+	usedCapabilities, err := s.usedCapabilitiesForRuns(w.RunIDs)
+	if err != nil {
+		return res, err
+	}
+	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs)
 
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
@@ -355,7 +360,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			Verification: orEmpty(w.VerificationIDs),
 		},
 		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: []string{}, Missed: []string{}, Candidate: capabilityRefs},
+		Skills: envelope.ReceiptSkills{Used: usedCapabilities, Missed: []string{}, Candidate: capabilityRefs},
 		Memory: envelope.ReceiptMemory{Candidates: orEmpty(w.MemoryCandidateIDs), Promoted: []string{}, Parked: []string{}},
 		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
 	}
@@ -376,7 +381,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		AfterRefs:  after,
 		StateDelta: in.Summary,
 		Projections: envelope.Projections{
-			Memory: []string{}, Skill: capabilityRefs, Product: []string{}, Cost: []string{},
+			Memory: []string{}, Skill: skillProjectionRefs, Product: []string{}, Cost: []string{},
 			Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{},
 		},
 		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: in.MoveType != "audit_only"},
@@ -439,6 +444,45 @@ func (s *Store) capabilityRefsForContextPack(contextPackID string) ([]string, er
 		refs = append(refs, included.Ref)
 	}
 	return refs, nil
+}
+
+func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
+	seen := map[string]bool{}
+	used := []string{}
+	for _, runID := range runIDs {
+		var ai envelope.ActionIntent
+		if err := s.readJSON(s.envPath(runID), &ai); err != nil {
+			if strings.HasPrefix(err.Error(), "not found:") {
+				continue
+			}
+			return nil, fmt.Errorf("read action intent %s for used capabilities: %w", runID, err)
+		}
+		if err := ai.Validate(); err != nil {
+			return nil, fmt.Errorf("action intent %s invalid: %w", runID, err)
+		}
+		if strings.TrimSpace(ai.Capability) == "" || seen[ai.Capability] {
+			continue
+		}
+		seen[ai.Capability] = true
+		used = append(used, ai.Capability)
+	}
+	return used, nil
+}
+
+func mergeUnique(groups ...[]string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, group := range groups {
+		for _, v := range group {
+			v = strings.TrimSpace(v)
+			if v == "" || seen[v] {
+				continue
+			}
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (s *Store) readJSON(path string, v any) error {

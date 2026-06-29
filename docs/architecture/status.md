@@ -5,6 +5,7 @@ This file is the current package/command map. `compound architecture doctor --st
 ## Recent Runtime Proof
 
 - Hook/session closure preserves capability-offer provenance: `work close` and `hook session-end` hydrate the persisted ContextPack and copy `capability://...` offers into Receipt `skills.candidate` plus Transition `projections.skill`. This records what the agent was offered without claiming any skill was executed.
+- Work closure also records used capability provenance: allowed recorded ActionIntent envelopes contribute their `capability` to Receipt `skills.used` and Transition `projections.skill`; denied or held actions never enter used skills because `RecordAction` refuses them.
 
 ## Current Verdict
 

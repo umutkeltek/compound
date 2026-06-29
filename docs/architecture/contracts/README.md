@@ -24,7 +24,7 @@ schemas: `../runtime.md`.
 | **PolicyDecision** | the governance verdict an adapter **enforces** (allow \| allow_with_obligations \| hold \| deny + obligations) | per ActionIntent |
 | **StandingGrant** | a pre-authorized envelope (scope/budget/blast-radius/reversibility) so agents act inside it without paging, escalate on leaving | granted → expires/revoked |
 | **HookEvent** | one normalized harness lifecycle event (capability, input_hash, side_effects, status, ids{work_id,context_pack_id}) | append-only; persisted as `events/<hook_event_id>.json` plus `events/hook-events.ndjson` when `COMPOUND_HOME` is available |
-| **Receipt** | how a run is learned from — proportional to risk/blast-radius (state_delta, `delta_cause`, cost, skills, memory, `next_consumer`, `opens_branches[]`, `move_type`) | append-only; mined |
+| **Receipt** | how a run is learned from — proportional to risk/blast-radius (state_delta, `delta_cause`, cost, skills, memory, `next_consumer`, `opens_branches[]`, `move_type`) | append-only; mined. `skills.used` is derived from allowed recorded ActionIntents; `skills.candidate` is derived from ContextPack capability offers. |
 | **Transition** | the apex object joining projections (`../transition.md`) | append-only; emits second-order signals |
 
 `work_id` is **the** anti-fragmentation object — one root id linking

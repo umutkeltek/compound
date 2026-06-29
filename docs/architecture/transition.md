@@ -47,7 +47,7 @@ This is the canonical `Transition` shape (`runtime.md` and `contracts/README.md`
 It forces three questions on every run: **What changed? Across which spaces? What future
 behavior should this affect?**
 
-`projections.skill` may include `capability://...` refs from the ContextPack. Those are capability offers the agent saw, not proof the skill executed; actual mutation still needs ActionIntent, PolicyDecision, run/artifact refs, and Receipt state delta.
+`projections.skill` may include capability refs from two sources: used capabilities from allowed recorded ActionIntents, and `capability://...` offers from the ContextPack. Offers alone are not proof the skill executed; actual mutation still needs ActionIntent, PolicyDecision, run/artifact refs, and Receipt state delta.
 
 ## The medium spaces (projections)
 

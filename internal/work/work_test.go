@@ -178,7 +178,7 @@ func TestRecordActionGate(t *testing.T) {
 				EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
 			},
 			Capability: "filesystem.write", Action: "write_file",
-			Target: envelope.ActionTarget{Kind: "file", Path: "docs/x.md"},
+			Target:        envelope.ActionTarget{Kind: "file", Path: "docs/x.md"},
 			MutationClass: "local_reversible", Reversibility: "easy",
 		}
 	}
@@ -218,6 +218,22 @@ func TestRecordActionGate(t *testing.T) {
 	// Mismatched action/decision is rejected.
 	if _, err := s.RecordAction(w.ID, okAI, mkPD("pol_x", "act_other", "allow", nil), fixedNow); err == nil {
 		t.Error("decision for a different action should be rejected")
+	}
+	closed, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Summary: "wrote file", Changed: true}, fixedNow)
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !contains(closed.Receipt.Skills.Used, "filesystem.write") {
+		t.Fatalf("receipt used skills = %v, want filesystem.write", closed.Receipt.Skills.Used)
+	}
+	if contains(closed.Receipt.Skills.Used, "filesystem.delete") {
+		t.Fatalf("denied capability leaked into used skills: %v", closed.Receipt.Skills.Used)
+	}
+	if len(closed.Receipt.Skills.Candidate) != 0 {
+		t.Fatalf("no context pack offers in this test, got candidates %v", closed.Receipt.Skills.Candidate)
+	}
+	if !contains(closed.Transition.Projections.Skill, "filesystem.write") {
+		t.Fatalf("transition skill projections = %v, want filesystem.write", closed.Transition.Projections.Skill)
 	}
 }
 
