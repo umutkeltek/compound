@@ -590,6 +590,7 @@ func cmdDistiller(args []string) {
 		}
 		fmt.Printf("%-22s %-14s %s%s\n", d.Kind, d.Verdict, d.Basis, extra)
 	}
+	autoConsumeDistillerCapabilityFeedback(homePath)
 }
 
 func printDistillerEval(report distiller.EvalReport) {
@@ -1760,6 +1761,26 @@ func autoConsumeCapabilityFeedback(homePath string) {
 	}
 	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_edges=%d validated=%d missed=%d false=%d\n",
 		report.AppliedEdges, report.AppliedValidatedEdges, report.AppliedMissedEdges, report.AppliedFalseEdges)
+}
+
+func autoConsumeDistillerCapabilityFeedback(homePath string) {
+	if !capgraph.Exists(homePath) {
+		return
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "capability feedback:", err)
+		os.Exit(1)
+	}
+	applied, err := store.Consume(homePath, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "capability feedback:", err)
+		os.Exit(1)
+	}
+	if applied == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_distiller_observations=%d\n", applied)
 }
 
 func cliHeader(schemaVersion, id, workID string, now time.Time, evidenceRefs []string) envelope.Header {

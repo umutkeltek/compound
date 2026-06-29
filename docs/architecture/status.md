@@ -4,6 +4,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Distiller/critic capability observations now feed the same graph path: `distiller run` auto-consumes operationalized `capability_observation` candidates when graph state already exists, while preserving no-graph no-op behavior.
+
 - Hook/session closure preserves capability-offer provenance: `work close` and `hook session-end` hydrate the persisted ContextPack and copy `capability://...` offers into Receipt `skills.candidate` plus Transition `projections.skill`. This records what the agent was offered without claiming any skill was executed.
 - Work closure also records used capability provenance: allowed recorded ActionIntent envelopes contribute their `capability` to Receipt `skills.used` and Transition `projections.skill`; denied or held actions never enter used skills because `RecordAction` refuses them.
 - Capability feedback now feeds the graph explicitly: `work close` and `hook session-end` auto-run receipt consumption when graph state exists; `capability consume-receipts` remains the manual/replay command. Completed changed `skills.used` becomes `validated_by`; explicit `skills.missed` becomes `missed_when`; explicit `skills.false_triggered` becomes `false_triggered_by`; `skills.candidate` offers stay inert.

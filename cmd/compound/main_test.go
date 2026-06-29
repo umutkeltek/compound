@@ -203,6 +203,61 @@ func TestWorkCloseExplicitFeedbackAutoConsumes(t *testing.T) {
 	}
 }
 
+func TestDistillerRunAutoConsumesCapabilityObservation(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	graph, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatalf("open capability graph: %v", err)
+	}
+	if err := graph.Add(capgraph.Node{ID: "skill:distill-pricing", Kind: "skill", Name: "Distill Pricing", Triggers: []string{"pricing"}}); err != nil {
+		t.Fatalf("add node: %v", err)
+	}
+
+	tracePath := writeJSONFile(t, `{
+		"trace_ref":"trace_distiller_feedback",
+		"candidates":[{
+			"kind":"capability_observation",
+			"subject":"skill:distill-pricing",
+			"statement":"pricing review",
+			"detail":"missed_when",
+			"confidence":0.9
+		}]
+	}`)
+	cmdDistiller([]string{"run", tracePath})
+
+	edges := readCapabilityEdges(t, homePath)
+	if !hasCapabilityEdgeTo(edges, capgraph.EdMissedWhen, "skill:distill-pricing") {
+		t.Fatalf("distiller run did not auto-consume capability observation; edges=%+v", edges)
+	}
+}
+
+func TestDistillerRunDoesNotCreateCapabilityGraph(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+		"trace_ref":"trace_no_graph",
+		"candidates":[{
+			"kind":"capability_observation",
+			"subject":"skill:no-graph",
+			"statement":"pricing review",
+			"detail":"missed_when",
+			"confidence":0.9
+		}]
+	}`)
+	cmdDistiller([]string{"run", tracePath})
+
+	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("distiller run created capability graph unexpectedly: %v", err)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
@@ -300,6 +355,15 @@ func writeJSONFixture(t *testing.T, path string, v any) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeJSONFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fixture.json")
+	if err := os.WriteFile(path, []byte(strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func readCapabilityEdges(t *testing.T, homePath string) []capgraph.Edge {

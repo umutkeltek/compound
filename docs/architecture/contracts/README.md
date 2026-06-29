@@ -96,6 +96,8 @@ capability's `missed_when` / `false_triggered_by` edges become evidence that pat
 DistillationPolicy and re-weights surfacing — repeated success becomes infrastructure, repeated failure
 becomes a rule, **only after evidence** (Laws 7/8).
 
+Operationalized `capability_observation` candidates are the distiller/critic feedback seam into CapabilityGraph. `distiller run` consumes them automatically only when graph state already exists; `capability consume` remains the manual replay/repair command. A distiller run never creates graph state by itself and never executes capabilities.
+
 ## Authority & governance contracts (the under-modeled organs — Axis B)
 
 These are the **inside-world registry and governance** seams that plain `Claim`s under-model
