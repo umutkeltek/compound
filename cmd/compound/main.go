@@ -2177,6 +2177,7 @@ func cmdProduct(args []string) {
 		fmt.Printf("- signals: %d\n", report.SignalCount)
 		fmt.Printf("- hypotheses: %d\n", report.HypothesisCount)
 		fmt.Printf("- pending_review: %d\n", report.PendingReviewCount)
+		fmt.Printf("- source_issues: %d\n", report.SourceIssueCount)
 		fmt.Printf("- missing_evidence_refs: %d\n", len(report.MissingEvidenceRefs))
 		if len(args) == 3 && args[2] == "--writeback" && product.NeedsWriteback(report) {
 			result, err := runProductWriteback(report, time.Now())
@@ -2741,8 +2742,8 @@ func runProductWriteback(report product.DoctorReport, now time.Time) (writebackW
 	}
 	w, err := workStore.Create(work.CreateInput{
 		Owner:            "product_strategy:" + report.ProductID,
-		DesiredOutcome:   "Route product hypothesis review through governed owner writeback",
-		SuccessPredicate: "product hypothesis writeback gate recorded with receipt/transition refs",
+		DesiredOutcome:   "Route product feedback review through governed owner writeback",
+		SuccessPredicate: "product feedback writeback gate recorded with receipt/transition refs",
 		NonGoals: []string{
 			"mutate product pages",
 			"declare product causality",
@@ -2766,15 +2767,15 @@ func runProductWriteback(report product.DoctorReport, now time.Time) (writebackW
 	}
 	evidenceRefs := product.EvidenceRefs(report)
 	ai := envelope.ActionIntent{
-		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "product-writeback", report.ProductID, strconv.Itoa(report.PendingReviewCount), cliTS(now)), w.ID, now, evidenceRefs),
+		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "product-writeback", report.ProductID, strconv.Itoa(report.PendingReviewCount), strconv.Itoa(report.SourceIssueCount), cliTS(now)), w.ID, now, evidenceRefs),
 		Actor:         "compound product doctor",
 		Capability:    "product.writeback",
-		Action:        "record_product_hypothesis_writeback_gate",
+		Action:        "record_product_feedback_writeback_gate",
 		Target:        envelope.ActionTarget{Kind: "product_strategy", ID: report.ProductID},
 		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("product doctor found %d pending hypothesis review(s); record owner writeback gate", report.PendingReviewCount),
+		Preview:       fmt.Sprintf("product doctor found %d pending hypothesis review(s) and %d source issue(s); record owner writeback gate", report.PendingReviewCount, report.SourceIssueCount),
 		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any product owner file or external surface is changed",
 	}
 	pd := policy.Evaluate(ai, policyConfig(), now)
@@ -2788,7 +2789,7 @@ func runProductWriteback(report product.DoctorReport, now time.Time) (writebackW
 		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
 			Outcome:  "failed",
 			MoveType: "audit_only",
-			Summary:  fmt.Sprintf("product hypothesis review writeback blocked for %s: gate %s", report.ProductID, checked.ID),
+			Summary:  fmt.Sprintf("product feedback writeback blocked for %s: gate %s", report.ProductID, checked.ID),
 			Changed:  true,
 		}, now)
 		if closeErr == nil {
@@ -2815,7 +2816,7 @@ func runProductWriteback(report product.DoctorReport, now time.Time) (writebackW
 	closeRes, err := workStore.Close(w.ID, work.CloseInput{
 		Outcome:  "completed",
 		MoveType: "outward_delta",
-		Summary:  fmt.Sprintf("product %s hypothesis review routed through owner writeback gate %s", report.ProductID, checked.ID),
+		Summary:  fmt.Sprintf("product %s feedback review routed through owner writeback gate %s", report.ProductID, checked.ID),
 		Changed:  true,
 	}, now)
 	if err != nil {

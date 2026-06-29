@@ -115,7 +115,7 @@ changes future surfacing probability.
 <signal.yaml|source-export.yaml>` maps normalized signals and ASC/RevenueCat/PostHog-shaped source exports into the same ProductSignal ledger and emits a product
 Transition projection; `compound product signal-doctor <yaml> --record` rejects loose provider shapes into `NoPromoteDecision`; `compound product timeline <product>` joins signals, hypotheses, transition deltas, and source issues to show change → metric signal → *competing*
 interpretations (no causal over-claim) → confidence; `compound product doctor <product> --writeback` turns
-pending hypothesis review into WorkEnvelope → ActionIntent → PolicyDecision → OwnerWritebackGate → Receipt →
+pending hypothesis review or product source issues into WorkEnvelope → ActionIntent → PolicyDecision → OwnerWritebackGate → Receipt →
 Transition before any product surface or external account changes; `compound product review <review.yaml>`
 records evidence, updates the same ProductHypothesis result without promotion, and emits a product Transition.
 

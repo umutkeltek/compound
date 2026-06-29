@@ -251,6 +251,21 @@ func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T)
 	if len(tl.SourceIssues) != 1 || tl.SourceIssues[0].ID != nop.ID {
 		t.Fatalf("timeline source issues = %+v", tl.SourceIssues)
 	}
+	doctor, err := Doctor(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.SourceIssueCount != 1 || len(doctor.SourceIssues) != 1 || !NeedsWriteback(doctor) {
+		t.Fatalf("source issue doctor = %+v", doctor)
+	}
+	refs := EvidenceRefs(doctor)
+	if !hasString(refs, "product_source_issue:"+nop.ID) || !hasString(refs, "product:source_issues:1") {
+		t.Fatalf("doctor evidence refs = %+v", refs)
+	}
+	gate := WritebackGate(doctor, "act_source_issue", "pd_source_issue", tProduct)
+	if gate.CandidateKind != "" || gate.CandidateRef == "" || gate.OwnerTarget.Ref != "product:focus-notes" {
+		t.Fatalf("source issue gate = %+v", gate)
+	}
 }
 
 func validBundle() Bundle {

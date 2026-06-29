@@ -222,8 +222,10 @@ type DoctorReport struct {
 	Status              string                `json:"status"`
 	SignalCount         int                   `json:"signal_count"`
 	HypothesisCount     int                   `json:"hypothesis_count"`
+	SourceIssueCount    int                   `json:"source_issue_count"`
 	PendingReviewCount  int                   `json:"pending_review_count"`
 	PendingReview       []HypothesisCandidate `json:"pending_review,omitempty"`
+	SourceIssues        []ProductSourceIssue  `json:"source_issues,omitempty"`
 	MissingEvidenceRefs []string              `json:"missing_evidence_refs,omitempty"`
 }
 
@@ -789,6 +791,7 @@ func Doctor(homePath, productID string) (DoctorReport, error) {
 		Status:          "ok",
 		SignalCount:     len(tl.Signals),
 		HypothesisCount: len(tl.Hypotheses),
+		SourceIssues:    tl.SourceIssues,
 	}
 	for _, h := range tl.Hypotheses {
 		if len(h.EvidenceRefs) == 0 {
@@ -800,14 +803,15 @@ func Doctor(homePath, productID string) (DoctorReport, error) {
 		}
 	}
 	report.PendingReviewCount = len(report.PendingReview)
-	if report.PendingReviewCount > 0 {
+	report.SourceIssueCount = len(report.SourceIssues)
+	if report.PendingReviewCount > 0 || report.SourceIssueCount > 0 {
 		report.Status = "needs_review"
 	}
 	return report, nil
 }
 
 func NeedsWriteback(report DoctorReport) bool {
-	return report.PendingReviewCount > 0 || len(report.MissingEvidenceRefs) > 0
+	return report.PendingReviewCount > 0 || report.SourceIssueCount > 0 || len(report.MissingEvidenceRefs) > 0
 }
 
 func EvidenceRefs(report DoctorReport) []string {
@@ -816,10 +820,15 @@ func EvidenceRefs(report DoctorReport) []string {
 		fmt.Sprintf("product:signals:%d", report.SignalCount),
 		fmt.Sprintf("product:hypotheses:%d", report.HypothesisCount),
 		fmt.Sprintf("product:pending_review:%d", report.PendingReviewCount),
+		fmt.Sprintf("product:source_issues:%d", report.SourceIssueCount),
 	}
 	for _, h := range report.PendingReview {
 		refs = append(refs, "product_hypothesis:"+h.ID+":"+h.Result)
 		refs = append(refs, h.EvidenceRefs...)
+	}
+	for _, issue := range report.SourceIssues {
+		refs = append(refs, "product_source_issue:"+issue.ID, issue.SourceRef)
+		refs = append(refs, issue.EvidenceRefs...)
 	}
 	for _, id := range report.MissingEvidenceRefs {
 		refs = append(refs, "product_hypothesis_missing_evidence:"+id)
@@ -831,10 +840,10 @@ func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef strin
 	return writeback.OwnerWritebackGate{
 		SchemaVersion:     writeback.GateSchemaVersion,
 		CreatedAt:         now.UTC().Format(time.RFC3339),
-		CandidateRef:      fmt.Sprintf("product:hypothesis_review:%s:%s", report.ProductID, productDoctorDigest(report)),
-		CandidateKind:     string(candidates.ProductHypothesis),
+		CandidateRef:      fmt.Sprintf("product:feedback_review:%s:%s", report.ProductID, productDoctorDigest(report)),
+		CandidateKind:     productDoctorCandidateKind(report),
 		OwnerTarget:       writeback.OwnerTarget{Kind: "product_strategy", Ref: report.ProductID},
-		GateBasis:         fmt.Sprintf("product doctor found %d pending hypothesis review(s) and %d missing-evidence hypothesis record(s)", report.PendingReviewCount, len(report.MissingEvidenceRefs)),
+		GateBasis:         fmt.Sprintf("product doctor found %d pending hypothesis review(s), %d source issue(s), and %d missing-evidence hypothesis record(s)", report.PendingReviewCount, report.SourceIssueCount, len(report.MissingEvidenceRefs)),
 		ActionIntentRef:   actionIntentRef,
 		MutationClass:     "local_reversible",
 		PolicyDecisionRef: policyDecisionRef,
@@ -1361,6 +1370,13 @@ func productDoctorDigest(report DoctorReport) string {
 	refs := EvidenceRefs(report)
 	sort.Strings(refs)
 	return stableID("", refs...)
+}
+
+func productDoctorCandidateKind(report DoctorReport) string {
+	if report.PendingReviewCount > 0 || len(report.MissingEvidenceRefs) > 0 {
+		return string(candidates.ProductHypothesis)
+	}
+	return ""
 }
 
 func compact(values []string) []string {
