@@ -78,6 +78,44 @@ func TestOrientUsesRepoKindRegistry(t *testing.T) {
 	}
 }
 
+func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	out := captureStdout(t, func() {
+		cmdWork([]string{"import-packet", packetPath})
+	})
+	if !strings.Contains(out, "created=true") || !strings.Contains(out, "Compound Goal Packet: Capability Intake") {
+		t.Fatalf("import-packet output missing proof:\n%s", out)
+	}
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("import-packet output missing JSON:\n%s", out)
+	}
+	var report work.PacketImportReport
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse import-packet report: %v\n%s", err, out)
+	}
+	if report.Work.State != "proposed" || report.Work.Owner != "compound-core" {
+		t.Fatalf("work state/owner = %s/%s", report.Work.State, report.Work.Owner)
+	}
+	if report.Work.Authority.SourceClass != "source" || report.Work.Uncertainty.Level != "inferred" {
+		t.Fatalf("work authority/uncertainty = %+v / %+v", report.Work.Authority, report.Work.Uncertainty)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("packet import must not create claims ledger, stat err=%v", err)
+	}
+	out = captureStdout(t, func() {
+		cmdWork([]string{"import-packet", packetPath})
+	})
+	if !strings.Contains(out, "created=false") {
+		t.Fatalf("reimport should be idempotent:\n%s", out)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

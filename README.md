@@ -20,7 +20,7 @@ The current public surface is:
 | `compound home init/doctor/where` | `COMPOUND_HOME` runtime body: generated state, never repo source |
 | `compound envelope validate/kinds` | typed envelope spine |
 | `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs |
-| `compound work create/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition |
+| `compound work create/import-packet/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition; packet markdown imports as source-backed proposed work, not proof |
 | `compound policy evaluate` | ActionIntent -> PolicyDecision, enforced at adapters |
 | `compound hook <name>` / `compound harness list` | capability-aware hook fixtures and HarnessRegistry |
 | `compound route import` / `compound route import-provider-ledger` / `compound route cost-doctor` / `compound route outcome-review` / `compound route plan --candidate <id>` | route metadata, provider-call NDJSON rows, cost-coverage gaps, receipt-linked outcome reviews, and route_observation candidates become evidence/review artifacts; no gateway or provider config mutation |
@@ -129,7 +129,7 @@ The ledger is authority. Engines are rebuildable views.
 - `compound architecture doctor --strict` enforces package classification, public
   doc leak checks, candidate-map integrity, retired-surface/distiller-contract/
   llm-grounding-contract/route-outcome-contract/knowledge-page-contract/
-  mcporter-topology-contract guards, and a convergence budget
+  packet-work-contract/mcporter-topology-contract guards, and a convergence budget
   of `0`.
 - `compound memory doctor` verifies the memory hop: capture, promotion,
   retrieval, authority, and optional engine sync.

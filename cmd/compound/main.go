@@ -145,7 +145,7 @@ usage:
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound contract compile --harness H --cwd D --task T        compile EffectiveContract in force
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create|show|list|claim|advance|close|act>      one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound policy evaluate <action-intent.json>                 ActionIntent -> PolicyDecision
   compound hook <name> <fixture.json>                           run lifecycle hook over fixture
   compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
@@ -2108,7 +2108,7 @@ func splitCSV(s string) []string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|show|list|claim|advance|close> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|claim|advance|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -2166,6 +2166,22 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("created %s (%s)\n", w.ID, w.State)
 		printJSON(w)
+	case "import-packet":
+		packetPath := pos()
+		if packetPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound work import-packet <packet.md> [--owner O] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]")
+			os.Exit(2)
+		}
+		report, err := store.ImportPacket(packetPath, work.PacketImportOptions{
+			Owner:         flag("--owner"),
+			State:         flag("--state"),
+			Risk:          flag("--risk"),
+			Privacy:       flag("--privacy"),
+			ContextPackID: flag("--context-pack"),
+		}, time.Now())
+		die(err)
+		fmt.Printf("imported packet %q -> %s created=%v state=%s\n", report.PacketTitle, report.Work.ID, report.Created, report.Work.State)
+		printJSON(report)
 	case "show":
 		w, evs, err := store.Show(pos())
 		die(err)
@@ -2228,7 +2244,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|show|list|claim|advance|close> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|claim|advance|close|act> ...")
 		os.Exit(2)
 	}
 }

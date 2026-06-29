@@ -351,6 +351,61 @@ func TestKnowledgePageContractFailsOnVagueDocs(t *testing.T) {
 	}
 }
 
+func TestWorkPacketContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "packet-work-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("packet work contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected packet-work-contract finding")
+	}
+}
+
+func TestWorkPacketContractFailsOnPointerOnlyDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "Active packets point agents to the current goal packet.\n"
+	if err := os.WriteFile(filepath.Join(docs, "runtime.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkWorkPacketContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "work import-packet") {
+		t.Fatalf("failure should name missing import-packet contract: %+v", findings)
+	}
+}
+
+func TestWorkPacketContractRequiresNoProofMutationOrPromotion(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`work import-packet` creates a packet hash proposed WorkEnvelope from markdown.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkWorkPacketContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "no packet mutation") {
+		t.Fatalf("failure should name missing no-mutation/no-proof guard: %+v", findings)
+	}
+}
+
 func TestMCPorterTopologyContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool

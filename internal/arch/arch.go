@@ -107,6 +107,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkDistillerCandidateShapeContract(repoRoot)...)
 		f = append(f, checkRouteOutcomeContract(repoRoot)...)
 		f = append(f, checkKnowledgePageContract(repoRoot)...)
+		f = append(f, checkWorkPacketContract(repoRoot)...)
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
@@ -437,6 +438,53 @@ func checkKnowledgePageContract(repoRoot string) []Finding {
 		return []Finding{{"knowledge-page-contract", Fail, "public docs do not describe memory import-page with compound.knowledge_page.v0.1 claims[] -> EvidenceItem/proposed candidates and no promoted claims"}}
 	}
 	return []Finding{{"knowledge-page-contract", Info, "knowledge-page import stays evidence-backed candidate-only no-promotion"}}
+}
+
+// checkWorkPacketContract keeps active/execution packet docs from drifting back
+// to pointer-only work. Packet markdown must enter the owned spine as proposed
+// work identity, while remaining source evidence rather than proof.
+func checkWorkPacketContract(repoRoot string) []Finding {
+	hasImportPacket := false
+	hasPacketHash := false
+	hasProposedWork := false
+	hasNoMutation := false
+	hasNoProof := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "work import-packet") {
+			hasImportPacket = true
+		}
+		if strings.Contains(low, "packet hash") {
+			hasPacketHash = true
+		}
+		if strings.Contains(low, "proposed work") || strings.Contains(low, "proposed workenvelope") {
+			hasProposedWork = true
+		}
+		if strings.Contains(low, "not mutating the packet") ||
+			strings.Contains(low, "no source mutation") ||
+			strings.Contains(low, "does not mutate the packet") {
+			hasNoMutation = true
+		}
+		if strings.Contains(low, "not proof") ||
+			strings.Contains(low, "not as proof") ||
+			strings.Contains(low, "not claiming success") ||
+			strings.Contains(low, "does not") && strings.Contains(low, "receipt/transition") && strings.Contains(low, "promote") {
+			hasNoProof = true
+		}
+		return nil
+	})
+	if !hasImportPacket || !hasPacketHash || !hasProposedWork || !hasNoMutation || !hasNoProof {
+		return []Finding{{"packet-work-contract", Fail, "public docs do not describe work import-packet as packet-hash proposed WorkEnvelope source evidence with no packet mutation, proof/receipt/transition, or memory promotion"}}
+	}
+	return []Finding{{"packet-work-contract", Info, "work packet import stays source-backed proposed work, not proof"}}
 }
 
 // checkMCPorterTopologyContract keeps real MCP catalog ingestion from drifting
