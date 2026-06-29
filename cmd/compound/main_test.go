@@ -493,6 +493,47 @@ func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) 
 	}
 }
 
+func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+
+	out := captureStdout(t, func() {
+		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
+	})
+	if !strings.Contains(out, "imported: 2") || !strings.Contains(out, "skipped: 0") {
+		t.Fatalf("event import output =\n%s", out)
+	}
+	tracePath := filepath.Join(homePath, "events", "traces.ndjson")
+	lines := splitJSONLines(readFile(t, tracePath))
+	if len(lines) != 2 {
+		t.Fatalf("trace lines = %d, want 2", len(lines))
+	}
+	var tr envelope.TraceEnvelope
+	if err := json.Unmarshal([]byte(lines[0]), &tr); err != nil {
+		t.Fatalf("parse trace: %v", err)
+	}
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("trace invalid: %v", err)
+	}
+	if tr.Kind() != "trace_envelope" || tr.Source.System != "os-event" || tr.MutationClass != "read" {
+		t.Fatalf("trace = %+v", tr)
+	}
+
+	replay := captureStdout(t, func() {
+		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
+	})
+	if !strings.Contains(replay, "imported: 0") || !strings.Contains(replay, "skipped: 2") {
+		t.Fatalf("event replay output =\n%s", replay)
+	}
+	if lines := splitJSONLines(readFile(t, tracePath)); len(lines) != 2 {
+		t.Fatalf("replay should not append duplicate traces, lines=%d", len(lines))
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("event import must not write claims ledger, stat err=%v", err)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -730,6 +771,15 @@ func writeJSONFile(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func captureStdout(t *testing.T, fn func()) string {

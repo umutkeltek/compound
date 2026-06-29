@@ -27,6 +27,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
+	"compound/internal/eventsource"
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
@@ -66,6 +67,8 @@ func main() {
 		cmdProduct(os.Args[2:])
 	case "source":
 		cmdSource(os.Args[2:])
+	case "event":
+		cmdEvent(os.Args[2:])
 	case "writeback":
 		cmdWriteback(os.Args[2:])
 	case "home":
@@ -166,6 +169,7 @@ compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | p
 compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
+compound event import-os <events.ndjson>                       OS-style append-only events -> TraceEnvelope evidence
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
@@ -421,6 +425,59 @@ func cmdSource(args []string) {
 	}
 	for _, id := range report.NoPromoteIDs {
 		fmt.Printf("- no_promote: %s\n", id)
+	}
+}
+
+func cmdEvent(args []string) {
+	if len(args) < 2 || args[0] != "import-os" {
+		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	path := args[1]
+	opts := eventsource.ImportOptions{}
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--limit":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "event import-os: --limit needs value")
+				os.Exit(2)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "event import-os: --limit must be non-negative integer")
+				os.Exit(2)
+			}
+			opts.Limit = n
+		case "--stream":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "event import-os: --stream needs value")
+				os.Exit(2)
+			}
+			i++
+			opts.Stream = args[i]
+		default:
+			fmt.Fprintln(os.Stderr, "event import-os: unknown arg", args[i])
+			os.Exit(2)
+		}
+	}
+	report, err := eventsource.ImportOSEvents(homePath, path, opts, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "event import-os:", err)
+		os.Exit(1)
+	}
+	fmt.Println("# event import")
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- stream: %s\n", report.Stream)
+	fmt.Printf("- imported: %d\n", report.Imported)
+	fmt.Printf("- skipped: %d\n", report.Skipped)
+	for _, id := range report.TraceIDs {
+		fmt.Printf("- trace: %s\n", id)
 	}
 }
 

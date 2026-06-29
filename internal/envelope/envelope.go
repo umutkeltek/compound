@@ -23,6 +23,7 @@ const (
 	SVActionIntent      = "compound.action_intent.v0.1"
 	SVPolicyDecision    = "compound.policy_decision.v0.1"
 	SVHookEvent         = "compound.hook_event.v0.1"
+	SVTraceEnvelope     = "compound.trace_envelope.v0.1"
 	SVReceipt           = "compound.receipt.v0.1"
 	SVTransition        = "compound.transition.v0.1"
 )
@@ -364,6 +365,41 @@ func (e *HookEvent) Validate() error {
 	return v.result(e.Kind())
 }
 
+type TraceSource struct {
+	System      string `json:"system"`
+	Stream      string `json:"stream,omitempty"`
+	SourceID    string `json:"source_id,omitempty"`
+	SourceKind  string `json:"source_kind,omitempty"`
+	EventClass  string `json:"event_class,omitempty"`
+	RawRef      string `json:"raw_ref,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Quality     string `json:"quality,omitempty"`
+	MutationRaw string `json:"mutation_raw,omitempty"`
+}
+
+type TraceEnvelope struct {
+	Header
+	Source          TraceSource `json:"source"`
+	Actor           string      `json:"actor,omitempty"`
+	StartedAt       string      `json:"started_at,omitempty"`
+	EndedAt         string      `json:"ended_at,omitempty"`
+	MutationClass   string      `json:"mutation_class"`
+	Summary         string      `json:"summary,omitempty"`
+	ToolsModelsUsed []string    `json:"tools_models_used"`
+	FilesTouched    []string    `json:"files_touched"`
+	Outputs         []string    `json:"outputs"`
+	Cost            ReceiptCost `json:"cost"`
+}
+
+func (e *TraceEnvelope) Kind() string { return "trace_envelope" }
+func (e *TraceEnvelope) Validate() error {
+	v := &verr{}
+	e.Header.validate(v, SVTraceEnvelope, "trace_")
+	v.req("source.system", e.Source.System)
+	v.enum("mutation_class", e.MutationClass, MutationClasses, true)
+	return v.result(e.Kind())
+}
+
 type StateDelta struct {
 	Changed      bool     `json:"changed"`
 	Summary      string   `json:"summary"`
@@ -461,6 +497,7 @@ var registry = map[string]func() Envelope{
 	SVActionIntent:      func() Envelope { return &ActionIntent{} },
 	SVPolicyDecision:    func() Envelope { return &PolicyDecision{} },
 	SVHookEvent:         func() Envelope { return &HookEvent{} },
+	SVTraceEnvelope:     func() Envelope { return &TraceEnvelope{} },
 	SVReceipt:           func() Envelope { return &Receipt{} },
 	SVTransition:        func() Envelope { return &Transition{} },
 }

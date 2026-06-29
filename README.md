@@ -27,6 +27,7 @@ The current public surface is:
 | `compound distiller run <trace.json>` | trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
 | `compound authority import/path/path-registry` / `compound decisions import` | import external authority, OS-style path authority, and DecisionLifecycle records through spine memory |
+| `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |
 | `compound runtime doctor <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle |
 | `compound runtime doctor --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor |
 | `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes |
@@ -93,6 +94,7 @@ internal/arch/         architecture doctor
 
 internal/authority/    importer into spine memory
 internal/decisions/    DecisionLifecycle importer/projection into spine memory
+internal/eventsource/  append-only event stream -> TraceEnvelope adapter
 
 docs/                  public architecture and contracts
 fixtures/              public, leak-free fixtures
