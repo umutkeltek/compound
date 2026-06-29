@@ -107,6 +107,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkDistillerCandidateShapeContract(repoRoot)...)
 		f = append(f, checkRouteOutcomeContract(repoRoot)...)
 		f = append(f, checkKnowledgePageContract(repoRoot)...)
+		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -436,6 +437,55 @@ func checkKnowledgePageContract(repoRoot string) []Finding {
 		return []Finding{{"knowledge-page-contract", Fail, "public docs do not describe memory import-page with compound.knowledge_page.v0.1 claims[] -> EvidenceItem/proposed candidates and no promoted claims"}}
 	}
 	return []Finding{{"knowledge-page-contract", Info, "knowledge-page import stays evidence-backed candidate-only no-promotion"}}
+}
+
+// checkMCPorterTopologyContract keeps real MCP catalog ingestion from drifting
+// back to normalized/generated topology only. mcporter catalogs are observations:
+// broken/auth/offline servers do not surface, and the source becomes
+// SourceObservation/no-promote evidence without executing tools or mutating MCP
+// configuration.
+func checkMCPorterTopologyContract(repoRoot string) []Finding {
+	hasImportTopology := false
+	hasMCPorterJSON := false
+	hasNonSurfacing := false
+	hasNoPromote := false
+	hasNoExecution := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "capability import-topology") {
+			hasImportTopology = true
+		}
+		if strings.Contains(low, "mcporter list --json") || strings.Contains(low, "mcporter-json") {
+			hasMCPorterJSON = true
+		}
+		if strings.Contains(low, "non-surfacing") ||
+			strings.Contains(low, "auth/error/offline") ||
+			strings.Contains(low, "auth_required") {
+			hasNonSurfacing = true
+		}
+		if strings.Contains(low, "sourceobservation") &&
+			(strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote")) {
+			hasNoPromote = true
+		}
+		if strings.Contains(low, "never executes") ||
+			strings.Contains(low, "none of these commands execute") ||
+			(strings.Contains(low, "does not execute") && strings.Contains(low, "mutate")) {
+			hasNoExecution = true
+		}
+		return nil
+	})
+	if !hasImportTopology || !hasMCPorterJSON || !hasNonSurfacing || !hasNoPromote || !hasNoExecution {
+		return []Finding{{"mcporter-topology-contract", Fail, "public docs do not describe mcporter list --json topology import with non-surfacing auth/error/offline servers, SourceObservation/no-promote, and no MCP execution/config mutation"}}
+	}
+	return []Finding{{"mcporter-topology-contract", Info, "mcporter catalog import stays observational non-executing capability graph evidence"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the

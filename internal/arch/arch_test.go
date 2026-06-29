@@ -350,3 +350,60 @@ func TestKnowledgePageContractFailsOnVagueDocs(t *testing.T) {
 		t.Fatalf("failure should name missing import-page contract: %+v", findings)
 	}
 }
+
+func TestMCPorterTopologyContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "mcporter-topology-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("mcporter topology contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected mcporter-topology-contract finding")
+	}
+}
+
+func TestMCPorterTopologyContractFailsOnNormalizedOnlyDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound capability import-topology` maps normalized topology YAML or generated resolver JSON into CapabilityGraph nodes.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkMCPorterTopologyContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "mcporter list --json") {
+		t.Fatalf("failure should name missing mcporter catalog contract: %+v", findings)
+	}
+}
+
+func TestMCPorterTopologyContractRequiresNoPromoteAndNoExecution(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound capability import-topology` adapts `mcporter list --json` output and marks auth/error/offline servers non-surfacing.\n"
+	if err := os.WriteFile(filepath.Join(docs, "source-adapters.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkMCPorterTopologyContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "SourceObservation/no-promote") {
+		t.Fatalf("failure should name missing source/no-promote guard: %+v", findings)
+	}
+}

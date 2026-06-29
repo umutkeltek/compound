@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound architecture doctor --strict` now includes `mcporter-topology-contract`, failing if public docs stop describing `mcporter list --json` topology import as observational, non-surfacing for auth/error/offline servers, SourceObservation/no-promote backed, and non-executing/no config mutation.
 - `compound capability import-topology --mcporter-json <mcporter-list.json>` now adapts `mcporter list --json` catalog output into existing ToolTopologyAdapter path: MCP server nodes plus MCP-tool nodes, auth/error/offline servers marked non-surfacing, source catalog recorded as `SourceObservation -> capability_observation candidate -> NoPromoteDecision`, and no claims ledger.
 - `compound architecture doctor --strict` now includes `knowledge-page-contract`, failing if public docs stop describing `compound memory import-page` as explicit `compound.knowledge_page.v0.1` `claims[]` -> EvidenceItem/proposed candidates with no promoted claims.
 - `compound memory import-page <markdown>` now adapts generic curated knowledge-base pages through `compound.knowledge_page.v0.1` frontmatter `claims[]`: one `EvidenceItem`, deterministic proposed memory candidates, idempotent reuse across same page id/content and path moves, and no `claims.jsonl` promotion. This closes the generic knowledge-page source adapter gap without extending the decision-specific brain importer or mutating curated source files.
@@ -163,6 +164,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - llm-grounding-contract guard: request-grounded candidate `evidence_refs[]` / request `source_refs[]` gating must remain documented for eval/live extraction;
 - distiller-shape-contract guard: memory candidate `entity`/`predicate`/`object` and non-memory `subject`/`statement` shape must remain documented before inbox write;
 - route-outcome-contract guard: receipt-linked route outcome review with `state_delta`/no-promote must remain documented before routing-policy review;
+- mcporter-topology-contract guard: `mcporter list --json` topology import must remain documented as observational SourceObservation/no-promote evidence with non-surfacing auth/error/offline servers and no MCP execution/config mutation;
 - convergence ratchet: `converge-pending` packages must not exceed budget, now fixed at `0`.
 
 ## Next Coverage Moves
