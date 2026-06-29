@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/mem"
+	"compound/internal/writeback"
 )
 
 func TestImportDECLifecycle(t *testing.T) {
@@ -89,6 +92,81 @@ func TestMissingRequiredLifecycleFields(t *testing.T) {
 	missing := MissingRequired(Lifecycle{Status: StatusAccepted, ReviewTrigger: "on drift"})
 	if len(missing) != 1 || missing[0] != "falsifier" {
 		t.Fatalf("MissingRequired = %v", missing)
+	}
+}
+
+func TestDoctorReportFromClaims(t *testing.T) {
+	claims := []mem.Claim{
+		{
+			ID:           "claim_decision_1",
+			ClaimType:    "decision",
+			Object:       "Use governed writeback",
+			Qualifiers:   lifecycleQualifiers(KindPolicy, "decisions-repo", "DEC-0001", StatusAccepted),
+			EvidenceRefs: []string{"evidence:dec-0001"},
+		},
+		{
+			ID:        "claim_memory_1",
+			ClaimType: "memory",
+			Object:    "ignored",
+		},
+	}
+
+	report := DoctorReportFromClaims(claims)
+	if report.Total != 1 {
+		t.Fatalf("Total = %d, want 1", report.Total)
+	}
+	if report.Counts[KindPolicy] != 1 || report.Statuses[StatusAccepted] != 1 {
+		t.Fatalf("counts/statuses = %+v %+v", report.Counts, report.Statuses)
+	}
+	if report.MissingLifecycleFields != 1 || len(report.LifecycleGaps) != 1 {
+		t.Fatalf("gaps = %+v", report)
+	}
+	gap := report.LifecycleGaps[0]
+	if gap.ClaimID != "claim_decision_1" || gap.DecisionID != "DEC-0001" {
+		t.Fatalf("gap identity = %+v", gap)
+	}
+	if len(gap.Missing) != 2 {
+		t.Fatalf("gap missing = %v", gap.Missing)
+	}
+	if !NeedsWriteback(report) {
+		t.Fatal("NeedsWriteback = false, want true")
+	}
+}
+
+func TestDecisionWritebackGate(t *testing.T) {
+	report := DoctorReport{
+		Total:                  1,
+		Counts:                 map[string]int{KindPolicy: 1},
+		Statuses:               map[string]int{StatusAccepted: 1},
+		MissingLifecycleFields: 1,
+		LifecycleGaps: []LifecycleGap{
+			{
+				ClaimID:    "claim_decision_1",
+				DecisionID: "DEC-0001",
+				Kind:       KindPolicy,
+				Status:     StatusAccepted,
+				Missing:    []string{"falsifier"},
+			},
+		},
+	}
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	gate := WritebackGate(report, "act_1", "pol_1", now)
+	if gate.SchemaVersion != writeback.GateSchemaVersion {
+		t.Fatalf("schema = %q", gate.SchemaVersion)
+	}
+	wantRef := "decisions:lifecycle_gaps:1:" + lifecycleGapDigest(report)
+	if gate.CandidateRef != wantRef {
+		t.Fatalf("candidate_ref = %q", gate.CandidateRef)
+	}
+	if gate.CandidateKind != string(candidates.Decision) {
+		t.Fatalf("candidate_kind = %q", gate.CandidateKind)
+	}
+	if gate.OwnerTarget.Kind != "decision_lifecycle" || gate.OwnerTarget.Ref == "" {
+		t.Fatalf("owner target = %+v", gate.OwnerTarget)
+	}
+	if len(gate.EvidenceRefs) < 3 {
+		t.Fatalf("evidence refs = %v", gate.EvidenceRefs)
 	}
 }
 

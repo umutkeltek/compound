@@ -3,16 +3,22 @@
 package decisions
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/writeback"
 )
 
 const (
@@ -47,6 +53,25 @@ type Lifecycle struct {
 	Supersedes    []string `json:"supersedes,omitempty"`
 	ReplacedBy    string   `json:"replaced_by,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+}
+
+// LifecycleGap identifies a promoted decision claim missing lifecycle proof.
+type LifecycleGap struct {
+	ClaimID      string   `json:"claim_id"`
+	DecisionID   string   `json:"decision_id,omitempty"`
+	Kind         string   `json:"kind"`
+	Status       string   `json:"status"`
+	Missing      []string `json:"missing"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+// DoctorReport is the typed report behind `compound decisions doctor`.
+type DoctorReport struct {
+	Total                  int            `json:"total"`
+	Counts                 map[string]int `json:"counts"`
+	Statuses               map[string]int `json:"statuses"`
+	MissingLifecycleFields int            `json:"missing_lifecycle_fields"`
+	LifecycleGaps          []LifecycleGap `json:"lifecycle_gaps,omitempty"`
 }
 
 func promotionBasisForStatus(s string) string {
@@ -279,6 +304,81 @@ func MissingRequired(l Lifecycle) []string {
 		missing = append(missing, "review_trigger")
 	}
 	return missing
+}
+
+// DoctorReportFromClaims projects current decision claims into a lifecycle audit.
+func DoctorReportFromClaims(claims []mem.Claim) DoctorReport {
+	report := DoctorReport{
+		Counts:   map[string]int{},
+		Statuses: map[string]int{},
+	}
+	for _, c := range claims {
+		if c.ClaimType != "decision" {
+			continue
+		}
+		l := LifecycleFromClaim(c)
+		report.Total++
+		report.Counts[l.Kind]++
+		report.Statuses[l.Status]++
+		missing := MissingRequired(l)
+		if len(missing) == 0 {
+			continue
+		}
+		report.MissingLifecycleFields++
+		report.LifecycleGaps = append(report.LifecycleGaps, LifecycleGap{
+			ClaimID:      c.ID,
+			DecisionID:   l.ID,
+			Kind:         l.Kind,
+			Status:       l.Status,
+			Missing:      append([]string(nil), missing...),
+			EvidenceRefs: append([]string(nil), l.EvidenceRefs...),
+		})
+	}
+	return report
+}
+
+// NeedsWriteback reports whether decision doctor found owner-fixable gaps.
+func NeedsWriteback(report DoctorReport) bool {
+	return len(report.LifecycleGaps) > 0
+}
+
+// WritebackGate converts decision lifecycle gaps into generic owner writeback.
+func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef string, now time.Time) writeback.OwnerWritebackGate {
+	return writeback.OwnerWritebackGate{
+		SchemaVersion:     writeback.GateSchemaVersion,
+		CreatedAt:         now.UTC().Format(time.RFC3339),
+		CandidateRef:      fmt.Sprintf("decisions:lifecycle_gaps:%d:%s", len(report.LifecycleGaps), lifecycleGapDigest(report)),
+		CandidateKind:     string(candidates.Decision),
+		OwnerTarget:       writeback.OwnerTarget{Kind: "decision_lifecycle", Ref: "spine-memory-decisions"},
+		GateBasis:         fmt.Sprintf("decision doctor found %d lifecycle gap(s); owner decision records may need writeback", len(report.LifecycleGaps)),
+		ActionIntentRef:   actionIntentRef,
+		MutationClass:     "local_reversible",
+		PolicyDecisionRef: policyDecisionRef,
+		EvidenceRefs:      EvidenceRefs(report),
+	}
+}
+
+// EvidenceRefs returns bounded metadata refs for decision doctor output.
+func EvidenceRefs(report DoctorReport) []string {
+	refs := []string{
+		fmt.Sprintf("decisions:total:%d", report.Total),
+		fmt.Sprintf("decisions:missing_lifecycle_fields:%d", report.MissingLifecycleFields),
+	}
+	for _, gap := range report.LifecycleGaps {
+		id := gap.DecisionID
+		if strings.TrimSpace(id) == "" {
+			id = gap.ClaimID
+		}
+		refs = append(refs, "decision_gap:"+id+":"+strings.Join(gap.Missing, ","))
+	}
+	return refs
+}
+
+func lifecycleGapDigest(report DoctorReport) string {
+	refs := EvidenceRefs(report)
+	sort.Strings(refs)
+	sum := sha256.Sum256([]byte(strings.Join(refs, "\n")))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 func kindFromQualifiers(q map[string]string) string {

@@ -1417,29 +1417,32 @@ func cmdDecisions(args []string) {
 		}
 		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured), promoted, parked)
 	case "doctor":
+		writebackEnabled := hasFlag(args[1:], "--writeback")
 		claims, err := store.AllCurrent()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "decisions doctor:", err)
 			os.Exit(1)
 		}
-		counts := map[string]int{}
-		statuses := map[string]int{}
-		missingLifecycle := 0
-		for _, c := range claims {
-			if c.ClaimType != "decision" {
-				continue
+		report := decisions.DoctorReportFromClaims(claims)
+		fmt.Printf("# decisions doctor\n\n")
+		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n", report.Counts[decisions.KindPolicy], report.Counts[decisions.KindDoctrine], report.Counts[decisions.KindOperational])
+		fmt.Printf("- proposed: %d\n- accepted: %d\n- superseded: %d\n- deprecated: %d\n- rejected: %d\n", report.Statuses[decisions.StatusProposed], report.Statuses[decisions.StatusAccepted], report.Statuses[decisions.StatusSuperseded], report.Statuses[decisions.StatusDeprecated], report.Statuses[decisions.StatusRejected])
+		fmt.Printf("- missing_lifecycle_fields: %d\n", report.MissingLifecycleFields)
+		if writebackEnabled && decisions.NeedsWriteback(report) {
+			result, err := runDecisionWriteback(report, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions writeback:", err)
+				os.Exit(1)
 			}
-			l := decisions.LifecycleFromClaim(c)
-			counts[l.Kind]++
-			statuses[l.Status]++
-			if len(decisions.MissingRequired(l)) > 0 {
-				missingLifecycle++
+			fmt.Printf("- writeback_gate: %s %s\n", result.GateID, result.GateStatus)
+			fmt.Printf("- work: %s\n", result.WorkID)
+			if result.ReceiptID != "" {
+				fmt.Printf("- receipt: %s\n", result.ReceiptID)
+			}
+			if result.TransitionID != "" {
+				fmt.Printf("- transition: %s\n", result.TransitionID)
 			}
 		}
-		fmt.Printf("# decisions doctor\n\n")
-		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n", counts[decisions.KindPolicy], counts[decisions.KindDoctrine], counts[decisions.KindOperational])
-		fmt.Printf("- proposed: %d\n- accepted: %d\n- superseded: %d\n- deprecated: %d\n- rejected: %d\n", statuses[decisions.StatusProposed], statuses[decisions.StatusAccepted], statuses[decisions.StatusSuperseded], statuses[decisions.StatusDeprecated], statuses[decisions.StatusRejected])
-		fmt.Printf("- missing_lifecycle_fields: %d\n", missingLifecycle)
 	default:
 		kindFilter := ""
 		for _, a := range args {
@@ -1469,6 +1472,111 @@ func cmdDecisions(args []string) {
 			fmt.Println("(no decisions - run compound decisions import)")
 		}
 	}
+}
+
+func runDecisionWriteback(report decisions.DoctorReport, now time.Time) (writebackWorkResult, error) {
+	var result writebackWorkResult
+	if !decisions.NeedsWriteback(report) {
+		return result, nil
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return result, err
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	writebackStore, err := writeback.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	gapCount := len(report.LifecycleGaps)
+	w, err := workStore.Create(work.CreateInput{
+		Owner:            "decisions:lifecycle",
+		DesiredOutcome:   "Route decision lifecycle gaps through governed owner writeback",
+		SuccessPredicate: "decision writeback gate recorded with receipt/transition refs",
+		NonGoals:         []string{"mutate decision owner files", "promote decision truth"},
+		State:            "ready",
+		Risk:             "tier1",
+		Privacy:          "private",
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	if _, err := workStore.Claim(w.ID, "compound decisions doctor", now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:   "running",
+		Note: "decisions doctor running writeback",
+	}, now); err != nil {
+		return result, err
+	}
+	evidenceRefs := decisions.EvidenceRefs(report)
+	ai := envelope.ActionIntent{
+		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "decision-writeback", strconv.Itoa(gapCount), cliTS(now)), w.ID, now, evidenceRefs),
+		Actor:         "compound decisions doctor",
+		Capability:    "decisions.writeback",
+		Action:        "record_decision_lifecycle_writeback_gate",
+		Target:        envelope.ActionTarget{Kind: "decision_lifecycle", ID: "spine-memory-decisions"},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("decisions doctor found %d lifecycle gap(s); record owner writeback gate", gapCount),
+		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any owner file is changed",
+	}
+	pd := policy.Evaluate(ai, policyConfig(), now)
+	gate := decisions.WritebackGate(report, ai.ID, pd.ID, now)
+	checked, err := writeback.EvaluateGate(gate, &pd, now)
+	if err != nil {
+		return result, err
+	}
+	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
+	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
+		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
+			Outcome:  "failed",
+			MoveType: "audit_only",
+			Summary:  fmt.Sprintf("decision lifecycle writeback blocked for %d gap(s): gate %s", gapCount, checked.Status),
+			Changed:  true,
+		}, now)
+		if closeErr == nil {
+			checked.ReceiptRef = closeRes.Receipt.ID
+			result.ReceiptID = closeRes.Receipt.ID
+			result.TransitionID = closeRes.Transition.ID
+		}
+		if err := writebackStore.RecordGate(checked); err != nil {
+			return result, err
+		}
+		return result, closeErr
+	}
+	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:             "running",
+		ArtifactID:     checked.ID,
+		VerificationID: checked.CandidateRef,
+		Note:           "decision writeback gate checked",
+	}, now); err != nil {
+		return result, err
+	}
+	closeRes, err := workStore.Close(w.ID, work.CloseInput{
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		Summary:  fmt.Sprintf("%d decision lifecycle gap(s) routed through owner writeback gate %s", gapCount, checked.ID),
+		Changed:  true,
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	checked.ReceiptRef = closeRes.Receipt.ID
+	if err := writebackStore.RecordGate(checked); err != nil {
+		return result, err
+	}
+	result.ReceiptID = closeRes.Receipt.ID
+	result.TransitionID = closeRes.Transition.ID
+	return result, nil
 }
 
 func runRuntimeWriteback(report runtimebinding.DoctorReport, now time.Time) (writebackWorkResult, error) {
