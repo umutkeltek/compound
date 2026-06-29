@@ -83,7 +83,7 @@ var specs = map[Kind]Spec{
 	Skill:             {Skill, "inbox/skill-candidates", []string{Park, Operationalize, Reject, NoPromote}, "operator review / capability import"},
 	Decision:          {Decision, "inbox/decision-candidates", []string{Park, Promote, Reject, NoPromote}, "compound decision (DecisionLifecycle)"},
 	FailurePattern:    {FailurePattern, "inbox/failure-patterns", []string{Park, Operationalize, Reject}, "compound distiller rule-plan"},
-	Taste:             {Taste, "inbox/taste-observations", []string{Park, Operationalize, Reject}, "doctrine / taste standards"},
+	Taste:             {Taste, "inbox/taste-observations", []string{Park, Operationalize, Reject}, "compound distiller taste-plan"},
 	ProductHypothesis: {ProductHypothesis, "inbox/product-hypotheses", []string{Park, Operationalize, Reject}, "compound product (P9)"},
 	RouteObservation:  {RouteObservation, "inbox/route-observations", []string{Park, Operationalize}, "routing policy (P10)"},
 	CapabilityObs:     {CapabilityObs, "inbox/capability-observations", []string{Operationalize, Park}, "capgraph.Consume"},

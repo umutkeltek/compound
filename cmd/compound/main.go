@@ -156,6 +156,7 @@ usage:
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller rule-plan --candidate C [--target file]  failure_pattern candidate -> reviewed rule draft, no doctrine mutation
+  compound distiller taste-plan --candidate C [--target file] taste candidate -> reviewed taste standard draft, no doctrine mutation
   compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
@@ -665,6 +666,46 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		return
 	}
+	if len(args) >= 1 && args[0] == "taste-plan" {
+		candidateID := flagValue(args[1:], "--candidate")
+		targetPath := flagValue(args[1:], "--target")
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller taste-plan --candidate <candidate_id> [--target <file>]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		plan, err := distiller.BuildTastePlan(homePath, candidateID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller taste-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := distiller.RecordTastePlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller taste-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller taste-plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- taste_key: %s\n", plan.TasteKey)
+		fmt.Printf("- standard_id: %s\n", plan.StandardDraft.StandardID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target: %s\n", plan.TargetPath)
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.StandardDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
 	if len(args) >= 1 && args[0] == "eval" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir>")
@@ -712,7 +753,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 

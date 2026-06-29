@@ -667,6 +667,78 @@ func TestDistillerRulePlanUsesFailureCandidateWithoutMutatingRuleTarget(t *testi
 	}
 }
 
+func TestDistillerTastePlanUsesTasteCandidateWithoutMutatingTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+ "trace_ref": "trace_taste_plan_candidate",
+ "candidates": [{
+  "kind": "taste",
+  "subject": "product:exampleapp:visuals",
+  "statement": "screenshots should feel native, specific, and inspection-ready rather than generic marketing cards",
+  "detail": "app_store_visuals",
+  "confidence": 0.88,
+  "evidence_refs": ["trace:taste", "asset:before-after"]
+ }]
+}`)
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	tasteRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.Taste)))
+	if len(tasteRows) != 1 || tasteRows[0].Verdict != distiller.Park {
+		t.Fatalf("taste candidates = %+v", tasteRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "taste.md")
+	original := "# Taste\n\nExisting standard source.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"taste-plan", "--candidate", tasteRows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# distiller taste-plan tsp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- taste_key: product-exampleapp-visuals") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_evidence: 4") ||
+		!strings.Contains(out, "- evidence_refs: 2") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("taste-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan distiller.TastePlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != distiller.TastePlanSchemaVersion ||
+		plan.CandidateID != tasteRows[0].ID ||
+		plan.CandidateVerdict != distiller.Park ||
+		plan.StandardDraft.StandardID == "" ||
+		!strings.Contains(plan.StandardDraft.PositiveStandard, "inspection-ready") {
+		t.Fatalf("bad taste plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate doctrine or product files") ||
+		!strings.Contains(review, "Required Evidence Before Apply") {
+		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("taste target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("taste-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
