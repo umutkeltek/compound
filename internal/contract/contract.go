@@ -26,6 +26,8 @@ const (
 	// repoMarker is the file a repo commits to self-declare its kind. Generic and
 	// leak-free: compound reads the marker, it does not heuristically sniff paths.
 	repoMarker = ".compound/repo.yaml"
+
+	repoKindRegistrySchema = "compound.repo_kind_registry.v0.1"
 )
 
 // ContextSource is one named class of orientation context and the repo kinds it is
@@ -51,6 +53,19 @@ type OrientationPolicy struct {
 	RepoKinds []string              `yaml:"repo_kinds" json:"repo_kinds"`
 	Sources   []ContextSource       `yaml:"sources" json:"sources"`
 	Memory    map[string]MemoryRule `yaml:"memory" json:"memory"`
+}
+
+// RepoKindRegistry is a private/runtime overlay for repos that cannot or should
+// not commit a repo-kind marker. It belongs under COMPOUND_HOME/config, not
+// public docs; it is still an explicit declaration, not path-name guessing.
+type RepoKindRegistry struct {
+	SchemaVersion string          `yaml:"schema_version" json:"schema_version"`
+	Repos         []RepoKindEntry `yaml:"repos" json:"repos"`
+}
+
+type RepoKindEntry struct {
+	Kind  string   `yaml:"kind" json:"kind"`
+	Roots []string `yaml:"roots" json:"roots"`
 }
 
 // DefaultPolicy is the built-in, leak-free orientation policy. Refs use generic
@@ -93,6 +108,39 @@ func LoadPolicy(homePath string) (OrientationPolicy, string, error) {
 	return DefaultPolicy(), "built-in", nil
 }
 
+// LoadRepoKindRegistry reads COMPOUND_HOME/config/repo-kinds.yaml when present.
+// Missing registry is not an error; malformed registry is, because silent
+// fallback would recreate ambient-context drift.
+func LoadRepoKindRegistry(homePath string) (RepoKindRegistry, string, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return RepoKindRegistry{}, "", nil
+	}
+	p := filepath.Join(homePath, "config", "repo-kinds.yaml")
+	data, err := os.ReadFile(p)
+	if os.IsNotExist(err) {
+		return RepoKindRegistry{}, "", nil
+	}
+	if err != nil {
+		return RepoKindRegistry{}, p, fmt.Errorf("read %s: %w", p, err)
+	}
+	var reg RepoKindRegistry
+	if err := yaml.Unmarshal(data, &reg); err != nil {
+		return RepoKindRegistry{}, p, fmt.Errorf("parse %s: %w", p, err)
+	}
+	if reg.SchemaVersion != repoKindRegistrySchema {
+		return RepoKindRegistry{}, p, fmt.Errorf("repo kind registry schema_version must be %s, got %q", repoKindRegistrySchema, reg.SchemaVersion)
+	}
+	for i, repo := range reg.Repos {
+		if strings.TrimSpace(repo.Kind) == "" {
+			return RepoKindRegistry{}, p, fmt.Errorf("repo kind registry repos[%d] missing kind", i)
+		}
+		if len(repo.Roots) == 0 {
+			return RepoKindRegistry{}, p, fmt.Errorf("repo kind registry repos[%d] missing roots", i)
+		}
+	}
+	return reg, p, nil
+}
+
 // DetectRepoKind walks up from cwd for a committed repo-kind marker. Returns ("","")
 // when none is found; the caller defaults to product (the lean pack).
 func DetectRepoKind(cwd string) (kind, via string) {
@@ -117,14 +165,52 @@ func DetectRepoKind(cwd string) (kind, via string) {
 
 // ResolveRepoKind picks the repo kind: explicit flag wins, else a committed marker,
 // else the product default. `via` explains the source for the contract's record.
-func ResolveRepoKind(flag, cwd string) (kind, via string) {
+func DetectRepoKindFromRegistry(reg RepoKindRegistry, registryPath, cwd string) (kind, via string) {
+	cwdAbs, err := filepath.Abs(expandPath(cwd))
+	if err != nil {
+		return "", ""
+	}
+	bestLen := -1
+	for _, repo := range reg.Repos {
+		for _, rawRoot := range repo.Roots {
+			root := expandPath(rawRoot)
+			if !filepath.IsAbs(root) && registryPath != "" {
+				root = filepath.Join(filepath.Dir(registryPath), root)
+			}
+			rootAbs, err := filepath.Abs(root)
+			if err != nil || !isWithin(rootAbs, cwdAbs) {
+				continue
+			}
+			if len(rootAbs) > bestLen {
+				bestLen = len(rootAbs)
+				kind = repo.Kind
+				via = "repo-kind-registry:" + registryPath
+			}
+		}
+	}
+	return kind, via
+}
+
+func ResolveRepoKindWithHome(homePath, flag, cwd string) (kind, via string, err error) {
 	if flag != "" {
-		return flag, "flag"
+		return flag, "flag", nil
 	}
 	if k, p := DetectRepoKind(cwd); k != "" {
-		return k, p
+		return k, p, nil
 	}
-	return defaultRepoKind, "default"
+	reg, registryPath, err := LoadRepoKindRegistry(homePath)
+	if err != nil {
+		return "", "", err
+	}
+	if k, p := DetectRepoKindFromRegistry(reg, registryPath, cwd); k != "" {
+		return k, p, nil
+	}
+	return defaultRepoKind, "default", nil
+}
+
+func ResolveRepoKind(flag, cwd string) (kind, via string) {
+	kind, via, _ = ResolveRepoKindWithHome("", flag, cwd)
+	return kind, via
 }
 
 // Input is a resolved orientation request (repo kind already resolved by the caller).
@@ -192,7 +278,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 	summary := fmt.Sprintf("Oriented as a **%s** repo for `%s`: %d sources included, %d excluded.",
 		in.RepoKind, in.Harness, len(incl), len(excl))
 	if len(excl) > 0 {
-		summary += " Out-of-scope (governance) context dropped — see `excluded`."
+		summary += " Out-of-scope context recorded — see `excluded`."
 	}
 	return envelope.ContextPack{
 		Header:             header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task), now, in),
@@ -289,6 +375,27 @@ func header(sv, id string, now time.Time, in Input) envelope.Header {
 func idFor(prefix string, parts ...string) string {
 	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return prefix + hex.EncodeToString(h[:])[:12]
+}
+
+func expandPath(path string) string {
+	path = os.ExpandEnv(strings.TrimSpace(path))
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+func isWithin(root, cwd string) bool {
+	rel, err := filepath.Rel(root, cwd)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
 func contains(set []string, v string) bool {

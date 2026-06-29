@@ -11,6 +11,8 @@ vertical slice needs it (`../../roadmap/phases.md`).
 
 ## Envelope-spine contracts (first-order — the runtime grammar)
 
+Context orientation resolves repo kind by explicit flag, committed `.compound/repo.yaml`, private `COMPOUND_HOME/config/repo-kinds.yaml`, then product default. Product repos exclude control-plane governance refs with recorded reasons; control-plane repos include them.
+
 These are the typed objects every harness/hook/run flows through, hung off one root **`work_id`**. Full JSON
 schemas: `../runtime.md`.
 

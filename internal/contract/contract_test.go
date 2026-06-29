@@ -135,6 +135,74 @@ func TestResolveRepoKind(t *testing.T) {
 	}
 }
 
+func TestResolveRepoKindUsesRuntimeRegistry(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controlRoot := t.TempDir()
+	controlNested := filepath.Join(controlRoot, "umut-os", "ops")
+	if err := os.MkdirAll(controlNested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	productRoot := t.TempDir()
+	productNested := filepath.Join(productRoot, "app")
+	if err := os.MkdirAll(productNested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := []byte("schema_version: " + repoKindRegistrySchema + "\nrepos:\n  - kind: control-plane\n    roots:\n      - " + controlRoot + "\n  - kind: product\n    roots:\n      - " + productRoot + "\n")
+	if err := os.WriteFile(filepath.Join(home, "config", "repo-kinds.yaml"), registry, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	kind, via, err := ResolveRepoKindWithHome(home, "", controlNested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "control-plane" || !strings.HasPrefix(via, "repo-kind-registry:") {
+		t.Fatalf("control kind = %q via %q", kind, via)
+	}
+	kind, _, err = ResolveRepoKindWithHome(home, "", productNested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "product" {
+		t.Fatalf("product kind = %q", kind)
+	}
+	kind, via, err = ResolveRepoKindWithHome(home, "library", controlNested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "library" || via != "flag" {
+		t.Fatalf("flag should win, kind=%q via=%q", kind, via)
+	}
+}
+
+func TestResolveRepoKindMarkerWinsOverRuntimeRegistry(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".compound", "repo.yaml"), []byte("kind: library\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config", "repo-kinds.yaml"), []byte("schema_version: "+repoKindRegistrySchema+"\nrepos:\n  - kind: control-plane\n    roots:\n      - "+root+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	kind, via, err := ResolveRepoKindWithHome(home, "", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != "library" || !strings.HasSuffix(via, filepath.Join(".compound", "repo.yaml")) {
+		t.Fatalf("marker should win, kind=%q via=%q", kind, via)
+	}
+}
+
 // Defaulting the repo kind is recorded as an unknown and softens uncertainty to inferred —
 // the contract never silently pretends it knew.
 func TestDefaultedRepoKindRecorded(t *testing.T) {

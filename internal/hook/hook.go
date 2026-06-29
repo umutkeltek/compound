@@ -141,8 +141,10 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 }
 
 func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
-	kind, via := contract.ResolveRepoKind(fx.RepoKind, fx.Cwd)
-	in := contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}
+	in, err := orientationInput(fx, deps)
+	if err != nil {
+		return Result{}, err
+	}
 	ec := contract.Compile(in, deps.Orient, now)
 	pack := contract.Pack(in, deps.Orient, now)
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -172,8 +174,10 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if fx.Task != "" {
 		pred = "address: " + fx.Task
 	}
-	kind, via := contract.ResolveRepoKind(fx.RepoKind, fx.Cwd)
-	in := contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}
+	in, err := orientationInput(fx, deps)
+	if err != nil {
+		return Result{}, err
+	}
 	ec := contract.Compile(in, deps.Orient, now)
 	pack := contract.Pack(in, deps.Orient, now)
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -213,8 +217,16 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		produced = []envelope.Envelope{&req, &ec, &pack, &cand}
 	}
 	summary := fmt.Sprintf("candidate work %s (proposed); scope=%q repo=%s; %d ctx in / %d excluded; mutations need ActionIntent+PolicyDecision",
-		cand.ID, orDash(fx.Task), kind, len(pack.Included), len(pack.Excluded))
+		cand.ID, orDash(fx.Task), in.RepoKind, len(pack.Included), len(pack.Excluded))
 	return Result{Event: ev, Produced: produced, Summary: summary, Injection: injection}, nil
+}
+
+func orientationInput(fx Fixture, deps Deps) (contract.Input, error) {
+	kind, via, err := contract.ResolveRepoKindWithHome(deps.HomePath, fx.RepoKind, fx.Cwd)
+	if err != nil {
+		return contract.Input{}, err
+	}
+	return contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}, nil
 }
 
 func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {

@@ -1688,6 +1688,11 @@ func emptyDash(s string) string {
 // parseOrientArgs reads the shared orientation flags and resolves the repo kind
 // (explicit flag > committed marker > product default). Path-independent by design.
 func parseOrientArgs(args []string) contract.Input {
+	in, _ := parseOrientArgsWithHome(args, "")
+	return in
+}
+
+func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, error) {
 	var harness, cwd, task, repoKind, mode string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -1721,8 +1726,11 @@ func parseOrientArgs(args []string) contract.Input {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	kind, via := contract.ResolveRepoKind(repoKind, cwd)
-	return contract.Input{Harness: harness, Cwd: cwd, Task: task, RepoKind: kind, RepoKindVia: via, Mode: mode}
+	kind, via, err := contract.ResolveRepoKindWithHome(homePath, repoKind, cwd)
+	if err != nil {
+		return contract.Input{}, err
+	}
+	return contract.Input{Harness: harness, Cwd: cwd, Task: task, RepoKind: kind, RepoKindVia: via, Mode: mode}, nil
 }
 
 func orientPolicy() contract.OrientationPolicy {
@@ -1815,7 +1823,10 @@ func cmdContract(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
 		os.Exit(2)
 	}
-	in := parseOrientArgs(args[1:])
+	homePath, err := home.Resolve("")
+	die(err)
+	in, err := parseOrientArgsWithHome(args[1:], homePath)
+	die(err)
 	if in.Harness == "" {
 		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
 		os.Exit(2)
@@ -1827,13 +1838,14 @@ func cmdContract(args []string) {
 // was NOT loaded and why — is required, so OS-governance context is not ambient noise
 // in a product repo.
 func cmdOrient(args []string) {
-	in := parseOrientArgs(args)
+	homePath, err := home.Resolve("")
+	die(err)
+	in, err := parseOrientArgsWithHome(args, homePath)
+	die(err)
 	if in.Harness == "" {
 		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>]")
 		os.Exit(2)
 	}
-	homePath, err := home.Resolve("")
-	die(err)
 	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, time.Now())
 	die(err)
 	printJSON(pack)

@@ -22,6 +22,56 @@ import (
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
+func TestOrientUsesRepoKindRegistry(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := os.MkdirAll(filepath.Join(homePath, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	controlRoot := t.TempDir()
+	controlCwd := filepath.Join(controlRoot, "umut-os")
+	if err := os.MkdirAll(controlCwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	productRoot := t.TempDir()
+	productCwd := filepath.Join(productRoot, "ios-app")
+	if err := os.MkdirAll(productCwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	registry := "schema_version: compound.repo_kind_registry.v0.1\nrepos:\n  - kind: control-plane\n    roots:\n      - " + controlRoot + "\n  - kind: product\n    roots:\n      - " + productRoot + "\n"
+	if err := os.WriteFile(filepath.Join(homePath, "config", "repo-kinds.yaml"), []byte(registry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var control envelope.ContextPack
+	out := captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--cwd", controlCwd, "--task", "audit hooks"})
+	})
+	if err := json.Unmarshal([]byte(out), &control); err != nil {
+		t.Fatalf("parse control orient: %v\n%s", err, out)
+	}
+	if !contextPackIncludes(control, "control-plane://workflow-contract") {
+		t.Fatalf("control-plane pack should include workflow contract: %+v", control.Included)
+	}
+	if control.Uncertainty.Level != "known" {
+		t.Fatalf("registry-resolved pack should be known, got %q", control.Uncertainty.Level)
+	}
+
+	var product envelope.ContextPack
+	out = captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--cwd", productCwd, "--task", "prepare release"})
+	})
+	if err := json.Unmarshal([]byte(out), &product); err != nil {
+		t.Fatalf("parse product orient: %v\n%s", err, out)
+	}
+	if contextPackIncludes(product, "control-plane://workflow-contract") {
+		t.Fatalf("product pack should not include workflow contract: %+v", product.Included)
+	}
+	if !contextPackExcludes(product, "control-plane://workflow-contract") {
+		t.Fatalf("product pack should record workflow contract exclusion: %+v", product.Excluded)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -609,6 +659,15 @@ func readContextPack(t *testing.T, homePath, id string) envelope.ContextPack {
 func contextPackIncludes(pack envelope.ContextPack, ref string) bool {
 	for _, included := range pack.Included {
 		if included.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func contextPackExcludes(pack envelope.ContextPack, ref string) bool {
+	for _, excluded := range pack.Excluded {
+		if excluded.Ref == ref && excluded.Reason != "" {
 			return true
 		}
 	}

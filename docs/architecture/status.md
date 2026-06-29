@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound orient` and hook context injection now resolve repo kind from explicit flag, committed repo marker, or private `COMPOUND_HOME/config/repo-kinds.yaml` before product default, so private/control-plane roots can include governance refs while product roots keep them excluded with reasons.
 
 - `compound projection repair-plan` now routes stale/drifted `ProjectionFreshness` through owner writeback gate and SourceObservation/no-promote, then writes reviewable regeneration JSON/Markdown artifacts without running generators or editing owner files.
 
