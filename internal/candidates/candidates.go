@@ -84,7 +84,7 @@ var specs = map[Kind]Spec{
 	Decision:          {Decision, "inbox/decision-candidates", []string{Park, Promote, Reject, NoPromote}, "compound decision (DecisionLifecycle)"},
 	FailurePattern:    {FailurePattern, "inbox/failure-patterns", []string{Park, Operationalize, Reject}, "compound distiller rule-plan"},
 	Taste:             {Taste, "inbox/taste-observations", []string{Park, Operationalize, Reject}, "compound distiller taste-plan"},
-	ProductHypothesis: {ProductHypothesis, "inbox/product-hypotheses", []string{Park, Operationalize, Reject}, "compound product (P9)"},
+	ProductHypothesis: {ProductHypothesis, "inbox/product-hypotheses", []string{Park, Operationalize, Reject}, "compound product hypothesis-plan"},
 	RouteObservation:  {RouteObservation, "inbox/route-observations", []string{Park, Operationalize}, "compound route plan"},
 	CapabilityObs:     {CapabilityObs, "inbox/capability-observations", []string{Operationalize, Park}, "capgraph.Consume"},
 	MethodUpgrade:     {MethodUpgrade, "inbox/method-upgrades", []string{Park, Operationalize}, "compound distiller improvement-plan"},

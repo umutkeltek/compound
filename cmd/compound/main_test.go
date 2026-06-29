@@ -1230,6 +1230,82 @@ func TestProductSignalImportsASCSalesSeriesWindows(t *testing.T) {
 	}
 }
 
+func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := filepath.Join(t.TempDir(), "trace.json")
+	if err := os.WriteFile(tracePath, []byte(`{
+  "trace_ref": "trace_product_hypothesis",
+  "candidates": [{
+    "kind": "product_hypothesis",
+    "subject": "product:focus-notes:app-store",
+    "statement": "screenshot clarity may improve product page conversion",
+    "detail": "Changed first screenshot to show fast capture moment",
+    "confidence": 0.82,
+    "evidence_refs": ["trace:product-hypothesis", "product_signal:sig_focus"]
+  }]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	rows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.ProductHypothesis)))
+	if len(rows) != 1 || rows[0].Verdict != distiller.Park {
+		t.Fatalf("product hypothesis candidates = %+v", rows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "product-strategy.md")
+	original := "# Product Strategy\n\nExisting strategy.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{"hypothesis-plan", "--candidate", rows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# product hypothesis-plan php_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- product: product:focus-notes") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_evidence: 4") ||
+		!strings.Contains(out, "- evidence_refs: 2") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("hypothesis-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan product.HypothesisPlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != product.HypothesisPlanSchemaVersion ||
+		plan.CandidateID != rows[0].ID ||
+		plan.CandidateVerdict != distiller.Park ||
+		plan.ProductID != "product:focus-notes" ||
+		plan.ReviewDraft.DecisionGate == "" ||
+		!strings.Contains(plan.ExpectedEffect, "conversion") {
+		t.Fatalf("bad hypothesis plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate product strategy") ||
+		!strings.Contains(review, "Required Evidence Before Action") {
+		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("hypothesis plan mutated target:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("hypothesis plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

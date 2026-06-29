@@ -31,6 +31,7 @@ The current public surface is:
 | `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |
 | `compound runtime doctor <runtime-binding.yaml>` / `runtime repair-plan <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle; failing reports can emit gated review artifacts |
 | `compound runtime doctor --project-contract <project.yaml>` / `runtime repair-plan --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor/repair path |
+| `compound product hypothesis-plan --candidate <id>` | product_hypothesis candidates become reviewed experiment/review drafts before product strategy, analytics, or store-surface changes |
 | `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes |
 
 Gen-1 memory-era top-level verbs are retired tombstones:

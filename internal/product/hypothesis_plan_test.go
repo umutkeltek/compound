@@ -1,0 +1,135 @@
+package product
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"compound/internal/candidates"
+)
+
+func TestHypothesisPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T) {
+	home := t.TempDir()
+	candidateID := "hyp_focus_visuals_conversion"
+	dir := filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := hypothesisPlanCandidate{
+		SchemaVersion:     ProductHypothesisCandidate,
+		ID:                candidateID,
+		Kind:              string(candidates.ProductHypothesis),
+		ProductID:         "product:focus-notes",
+		ChangeEvent:       "Changed first screenshot feature focused capture moment.",
+		ExpectedEffect:    "conversion improves because screenshot communicates capture speed",
+		Metrics:           []string{"app_store_product_page_conversion"},
+		ObservationWindow: "14d after change",
+		Result:            "unknown",
+		NextAction:        "review conversion after full window",
+		Confidence:        0.42,
+		Verdict:           candidates.Park,
+		EvidenceRefs:      []string{"fixture:app-store-metrics", "product_signal:sig_focus_screenshot"},
+	}
+	data, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, candidateID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targetPath := filepath.Join(t.TempDir(), "product-strategy.md")
+	original := []byte("# Product Strategy\n\nExisting strategy source.\n")
+	if err := os.WriteFile(targetPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildHypothesisPlan(home, candidateID, targetPath, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != HypothesisPlanSchemaVersion ||
+		plan.Status != "review_required" ||
+		plan.CandidateID != candidateID ||
+		plan.CandidateVerdict != candidates.Park ||
+		plan.ProductID != "product:focus-notes" ||
+		plan.HypothesisKey == "" ||
+		!strings.HasPrefix(plan.ReviewDraft.ReviewID, "review_") ||
+		!plan.TargetExists ||
+		plan.TargetHash == "" ||
+		len(plan.ReviewDraft.RequiredEvidence) != 4 {
+		t.Fatalf("bad hypothesis plan: %+v", plan)
+	}
+	paths, err := RecordHypothesisPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded HypothesisPlan
+	recordedData, err := os.ReadFile(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(recordedData, &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if recorded.ID != plan.ID || recorded.ReviewDraft.DecisionGate == "" {
+		t.Fatalf("recorded plan = %+v", recorded)
+	}
+	review, err := os.ReadFile(paths.ReviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(review), "does not mutate product strategy") ||
+		!strings.Contains(string(review), "Required Evidence Before Action") ||
+		!strings.Contains(string(review), "does not") {
+		t.Fatalf("review missing no-mutation/evidence text:\n%s", review)
+	}
+	after, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("target mutated:\n%s", after)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("hypothesis plan must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestHypothesisPlanAcceptsDistillerShapedProductCandidate(t *testing.T) {
+	home := t.TempDir()
+	candidateID := "cand_product_hypothesis"
+	dir := filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := hypothesisPlanCandidate{
+		ID:           candidateID,
+		Kind:         string(candidates.ProductHypothesis),
+		Subject:      "product:focus-notes:app-store",
+		Statement:    "screenshot clarity may improve product page conversion",
+		Detail:       "Changed first screenshot to show fast capture moment",
+		Confidence:   0.81,
+		Verdict:      candidates.Park,
+		EvidenceRefs: []string{"trace:product-hypothesis"},
+	}
+	data, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, candidateID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildHypothesisPlan(home, candidateID, "", tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.ProductID != "product:focus-notes" ||
+		plan.ChangeEvent != "Changed first screenshot to show fast capture moment" ||
+		plan.ExpectedEffect != "screenshot clarity may improve product page conversion" ||
+		len(plan.Metrics) != 1 ||
+		plan.Metrics[0] != "metric selection required" ||
+		plan.ObservationWindow != "review window required" {
+		t.Fatalf("distiller-shaped plan = %+v", plan)
+	}
+}
