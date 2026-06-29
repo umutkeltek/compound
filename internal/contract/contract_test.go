@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/projection"
 )
 
 var fixedNow = time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
@@ -89,6 +90,45 @@ func TestProductVsControlPlaneDifferentPacks(t *testing.T) {
 			t.Errorf("excluded ref %q has no reason", r.Ref)
 		}
 	}
+}
+
+func TestPackWithCapabilitiesIncludesProjectionContextByRepoKind(t *testing.T) {
+	home := t.TempDir()
+	report, err := projection.DoctorFile(filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml"), time.Date(2026, 6, 29, 3, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := projection.RecordContext(home, report, []string{"control-plane"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	control, err := PackWithCapabilities(mkInput("control-plane"), DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectionRef, ok := findIncludedRef(control, "projection://synthetic-runtime-dashboard")
+	if !ok {
+		t.Fatalf("control-plane pack should include projection freshness ref: %+v", control.Included)
+	}
+	if projectionRef.SourceClass != "generated" || projectionRef.Status != "stale" ||
+		!strings.Contains(projectionRef.Reason, "generated-view context evidence") {
+		t.Fatalf("projection context ref should stay generated/stale evidence, got %+v", projectionRef)
+	}
+	product, err := PackWithCapabilities(mkInput("product"), DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findIncludedRef(product, "projection://synthetic-runtime-dashboard"); ok {
+		t.Fatalf("product pack should not inherit control-plane projection context: %+v", product.Included)
+	}
+}
+
+func findIncludedRef(pack envelope.ContextPack, ref string) (envelope.IncludedRef, bool) {
+	for _, included := range pack.Included {
+		if included.Ref == ref {
+			return included, true
+		}
+	}
+	return envelope.IncludedRef{}, false
 }
 
 // Encodes the personal-corpus-not-ambient gate: a product repo forbids self-model /

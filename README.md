@@ -19,7 +19,7 @@ The current public surface is:
 |---|---|
 | `compound home init/doctor/where` | `COMPOUND_HOME` runtime body: generated state, never repo source |
 | `compound envelope validate/kinds` | typed envelope spine |
-| `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs |
+| `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs; can include recorded projection freshness refs as generated context evidence |
 | `compound work create/import-packet/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition; packet markdown imports as source-backed proposed work, not proof |
 | `compound policy evaluate` | ActionIntent -> PolicyDecision, enforced at adapters |
 | `compound hook <name>` / `compound harness list` | capability-aware hook fixtures and HarnessRegistry |
@@ -32,7 +32,7 @@ The current public surface is:
 | `compound runtime doctor <runtime-binding.yaml>` / `runtime repair-plan <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle; failing reports can emit gated review artifacts |
 | `compound runtime doctor --project-contract <project.yaml>` / `runtime repair-plan --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor/repair path |
 | `compound product hypothesis-plan --candidate <id>` | product_hypothesis candidates become reviewed experiment/review drafts before product strategy, analytics, or store-surface changes |
-| `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes |
+| `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes; `--record-context` makes freshness available to scoped `orient` |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
 

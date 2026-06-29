@@ -4174,6 +4174,14 @@ func runProjectionSourceObservation(report projection.Freshness, now time.Time) 
 	return sourceobs.Apply(homePath, obs, now)
 }
 
+func runProjectionContextRecord(report projection.Freshness, repoKindArg string, now time.Time) (projection.ContextRecord, string, error) {
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return projection.ContextRecord{}, "", err
+	}
+	return projection.RecordContext(homePath, report, splitCSV(repoKindArg), now)
+}
+
 func cmdProjectionRepairPlan(args []string) {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: compound projection repair-plan <freshness.yaml>")
@@ -4240,12 +4248,12 @@ func cmdProjectionRepairPlan(args []string) {
 }
 
 func projectionUsage() string {
-	return "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>"
+	return "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] [--record-context --repo-kind K] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] [--record-context --repo-kind K] | projection repair-plan <freshness.yaml>"
 }
 
 func cmdProjectionDashboardReadModel(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe]")
+		fmt.Fprintln(os.Stderr, "usage: compound projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] [--record-context --repo-kind K]")
 		os.Exit(2)
 	}
 	maxAgeHours := projection.DefaultDashboardMaxAgeHours
@@ -4264,7 +4272,7 @@ func cmdProjectionDashboardReadModel(args []string) {
 		os.Exit(1)
 	}
 	printProjectionDoctorReport(report)
-	finishProjectionDoctor(report, hasFlag(args[1:], "--writeback"), hasFlag(args[1:], "--source-observe"), now)
+	finishProjectionDoctor(report, hasFlag(args[1:], "--writeback"), hasFlag(args[1:], "--source-observe"), hasFlag(args[1:], "--record-context"), valueFlag(args[1:], "--repo-kind"), now)
 }
 
 func printProjectionDoctorReport(report projection.Freshness) {
@@ -4301,7 +4309,17 @@ func printProjectionDoctorReport(report projection.Freshness) {
 	}
 }
 
-func finishProjectionDoctor(report projection.Freshness, writebackEnabled, sourceObserveEnabled bool, now time.Time) {
+func finishProjectionDoctor(report projection.Freshness, writebackEnabled, sourceObserveEnabled, recordContextEnabled bool, contextRepoKind string, now time.Time) {
+	if recordContextEnabled {
+		record, path, err := runProjectionContextRecord(report, contextRepoKind, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "projection context record:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("- context_record: %s\n", record.ID)
+		fmt.Printf("- context_repo_kinds: %s\n", strings.Join(record.RepoKinds, ","))
+		fmt.Printf("- context_path: %s\n", path)
+	}
 	if report.Status != projection.StatusFresh {
 		if writebackEnabled {
 			result, err := runProjectionWriteback(report, now)
@@ -4332,7 +4350,7 @@ func finishProjectionDoctor(report projection.Freshness, writebackEnabled, sourc
 				fmt.Printf("- source_no_promote: %s\n", id)
 			}
 		}
-		if writebackEnabled || sourceObserveEnabled {
+		if writebackEnabled || sourceObserveEnabled || recordContextEnabled {
 			return
 		}
 		os.Exit(1)
@@ -4357,12 +4375,14 @@ func cmdProjection(args []string) {
 		os.Exit(2)
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe]")
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] [--record-context --repo-kind K]")
 		os.Exit(2)
 	}
 	now := time.Now()
 	writebackEnabled := hasFlag(args[2:], "--writeback")
 	sourceObserveEnabled := hasFlag(args[2:], "--source-observe")
+	recordContextEnabled := hasFlag(args[2:], "--record-context")
+	contextRepoKind := valueFlag(args[2:], "--repo-kind")
 	report, err := projection.DoctorFile(args[1], now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "projection doctor:", err)
@@ -4390,6 +4410,16 @@ func cmdProjection(args []string) {
 			fmt.Printf(" (%s)", check.Detail)
 		}
 		fmt.Println()
+	}
+	if recordContextEnabled {
+		record, path, err := runProjectionContextRecord(report, contextRepoKind, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "projection context record:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("- context_record: %s\n", record.ID)
+		fmt.Printf("- context_repo_kinds: %s\n", strings.Join(record.RepoKinds, ","))
+		fmt.Printf("- context_path: %s\n", path)
 	}
 	if report.Status != projection.StatusFresh {
 		if writebackEnabled {
@@ -4421,7 +4451,7 @@ func cmdProjection(args []string) {
 				fmt.Printf("- source_no_promote: %s\n", id)
 			}
 		}
-		if writebackEnabled || sourceObserveEnabled {
+		if writebackEnabled || sourceObserveEnabled || recordContextEnabled {
 			return
 		}
 		os.Exit(1)

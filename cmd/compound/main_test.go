@@ -2492,6 +2492,54 @@ func TestProjectionDashboardReadModelSourceObserve(t *testing.T) {
 	}
 }
 
+func TestProjectionContextRecordFlowsIntoOrient(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdProjection([]string{"doctor", filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml"), "--record-context", "--repo-kind", "control-plane"})
+	})
+	if !strings.Contains(out, "- context_record: pctx_") || !strings.Contains(out, "- context_repo_kinds: control-plane") {
+		t.Fatalf("projection doctor should record orientation context:\n%s", out)
+	}
+	out = captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--repo-kind", "control-plane", "--task", "runtime dashboard"})
+	})
+	var control envelope.ContextPack
+	if err := json.Unmarshal([]byte(out), &control); err != nil {
+		t.Fatalf("parse control context pack: %v\n%s", err, out)
+	}
+	if !contextPackIncludes(control, "projection://synthetic-runtime-dashboard") {
+		t.Fatalf("control-plane orient should include projection context: %+v", control.Included)
+	}
+	var projectionRef envelope.IncludedRef
+	for _, included := range control.Included {
+		if included.Ref == "projection://synthetic-runtime-dashboard" {
+			projectionRef = included
+			break
+		}
+	}
+	if projectionRef.SourceClass != "generated" || projectionRef.Status != "stale" ||
+		!strings.Contains(projectionRef.Reason, "generated-view context evidence") {
+		t.Fatalf("projection context ref should be generated/stale evidence, got %+v", projectionRef)
+	}
+	out = captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--repo-kind", "product", "--task", "runtime dashboard"})
+	})
+	var product envelope.ContextPack
+	if err := json.Unmarshal([]byte(out), &product); err != nil {
+		t.Fatalf("parse product context pack: %v\n%s", err, out)
+	}
+	if contextPackIncludes(product, "projection://synthetic-runtime-dashboard") {
+		t.Fatalf("product orient should not inherit control-plane projection context: %+v", product.Included)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("projection context orientation must not promote claims, stat err=%v", err)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{

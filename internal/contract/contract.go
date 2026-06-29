@@ -19,6 +19,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/projection"
 )
 
 const (
@@ -299,30 +300,59 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
 	}
-	if !capgraph.Exists(homePath) {
-		return pack, nil
+	if capgraph.Exists(homePath) {
+		store, err := capgraph.Open(homePath)
+		if err != nil {
+			return pack, err
+		}
+		surfaced, err := store.SurfaceForHarness(in.Task, in.Harness)
+		if err != nil {
+			return pack, err
+		}
+		for _, hit := range surfaced {
+			pack.Included = append(pack.Included, envelope.IncludedRef{
+				Ref:         "capability://" + hit.Node.ID,
+				SourceClass: "generated",
+				Reason:      fmt.Sprintf("capability_graph surface score=%.1f kind=%s why=%s", hit.Score, hit.Node.Kind, hit.Why),
+				Confidence:  hit.Score,
+				Status:      "current",
+			})
+		}
+		if len(surfaced) > 0 {
+			pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
+		}
 	}
-	store, err := capgraph.Open(homePath)
+	records, err := projection.LoadContext(homePath, in.RepoKind)
 	if err != nil {
 		return pack, err
 	}
-	surfaced, err := store.SurfaceForHarness(in.Task, in.Harness)
-	if err != nil {
-		return pack, err
-	}
-	for _, hit := range surfaced {
+	for _, record := range records {
+		freshness := record.Freshness
 		pack.Included = append(pack.Included, envelope.IncludedRef{
-			Ref:         "capability://" + hit.Node.ID,
+			Ref:         projection.ContextRef(freshness),
 			SourceClass: "generated",
-			Reason:      fmt.Sprintf("capability_graph surface score=%.1f kind=%s why=%s", hit.Score, hit.Node.Kind, hit.Why),
-			Confidence:  hit.Score,
-			Status:      "current",
+			Reason:      fmt.Sprintf("projection_freshness status=%s view=%s; generated-view context evidence, not authority or execution", freshness.Status, freshness.ViewRef),
+			Confidence:  projectionContextConfidence(freshness.Status),
+			Status:      projection.ContextStatus(freshness.Status),
 		})
 	}
-	if len(surfaced) > 0 {
-		pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
+	if len(records) > 0 {
+		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
 	return pack, nil
+}
+
+func projectionContextConfidence(status string) float64 {
+	switch status {
+	case projection.StatusFresh:
+		return 1
+	case projection.StatusStale:
+		return 0.6
+	case projection.StatusDrifted:
+		return 0.3
+	default:
+		return 0.1
+	}
 }
 
 // partition splits the policy's sources into included (ambient for this repo kind) and

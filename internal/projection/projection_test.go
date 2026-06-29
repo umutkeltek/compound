@@ -55,6 +55,38 @@ func TestDoctorDashboardReadModelFresh(t *testing.T) {
 	}
 }
 
+func TestRecordContextFiltersByRepoKind(t *testing.T) {
+	home := t.TempDir()
+	report, err := DoctorFile(filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml"), time.Date(2026, 6, 29, 3, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, path, err := RecordContext(home, report, []string{"control-plane"}, time.Date(2026, 6, 29, 3, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SchemaVersion != ContextRecordSchemaVersion || rec.ID == "" || path == "" {
+		t.Fatalf("bad context record: %+v path=%q", rec, path)
+	}
+	if ContextRef(report) != "projection://synthetic-runtime-dashboard" || ContextStatus(report.Status) != "stale" {
+		t.Fatalf("bad context ref/status: %s %s", ContextRef(report), ContextStatus(report.Status))
+	}
+	control, err := LoadContext(home, "control-plane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(control) != 1 || control[0].ID != rec.ID {
+		t.Fatalf("control-plane records = %+v, want %s", control, rec.ID)
+	}
+	product, err := LoadContext(home, "product")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(product) != 0 {
+		t.Fatalf("product records = %+v, want none", product)
+	}
+}
+
 func TestDoctorDashboardReadModelStaleAndPartial(t *testing.T) {
 	dir := t.TempDir()
 	modelPath := writeDashboardReadModel(t, dir, DashboardReadModel{

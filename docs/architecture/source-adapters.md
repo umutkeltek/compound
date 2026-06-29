@@ -96,7 +96,11 @@ view maps to one object family
 
 The output is `ProjectionFreshness`, not canon. If a dashboard says a service is
 healthy, Compound records that the dashboard projection said so at a time and
-revision. Runtime truth still needs a runtime source or ServiceContract evidence.
+revision. `projection doctor --record-context` and `projection dashboard-read-model
+--record-context` can persist that freshness under
+`COMPOUND_HOME/projections/context/`; `orient` may include it as a generated
+`projection://...` ref for the declared repo kind. Runtime truth still needs a
+runtime source or ServiceContract evidence.
 
 ## Adapter Port
 
@@ -119,8 +123,8 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 
 | Operating-system surface | Compound interpretation |
 |---|---|
-| generated spine views (`spine/views/*`) | `GeneratedViewObservation` + `ProjectionFreshness` |
-| dashboards / read models | `ProjectionFreshness` through dashboard read-model adapter; card/source coverage evidence, never authority |
+| generated spine views (`spine/views/*`) | `GeneratedViewObservation` + `ProjectionFreshness`; optional `--record-context` makes freshness visible to scoped `ContextPack` without running generators |
+| dashboards / read models | `ProjectionFreshness` through dashboard read-model adapter; card/source coverage evidence, optional scoped context ref, never authority |
 | event streams (`events/*.ndjson`) | `TraceEnvelope` / event evidence |
 | parked memory candidates -> curated knowledge markdown | `MeaningWritePlan` review artifacts under `COMPOUND_HOME`; no direct source mutation or memory promotion |
 | append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence; provider-call rows can become metadata-only `ExecutionRouteEvidence`, and cost-coverage gaps can become parked `route_observation` candidates plus no-promote decisions |
