@@ -34,6 +34,11 @@ import (
 // Derivation tags how a claim/candidate was produced (provenance). ambiguous auto-surfaces.
 var Derivations = []string{"deterministic", "extracted", "inferred", "ambiguous"}
 
+// ClaimTypes is the claim taxonomy — what KIND of statement a claim is. It sharpens the topic axis
+// (Position/Pattern group by Topic(), which prefers qualifiers["domain"] over the bare predicate).
+// The spine-native convergence of the Gen-1 memory.ClaimType. Empty is allowed (untyped).
+var ClaimTypes = []string{"preference", "decision", "architecture", "status", "constraint"}
+
 // Verdicts are the adjudication outcomes (candidate-first).
 var Verdicts = []string{"reject", "park", "promote"}
 
@@ -42,38 +47,51 @@ var Visibilities = []string{"ambient", "contextual", "candidate", "private", "op
 
 // Candidate is an untrusted, proposed fact awaiting adjudication (lives in the inbox).
 type Candidate struct {
-	ID              string  `json:"id"`
-	Entity          string  `json:"entity"`
-	Predicate       string  `json:"predicate"`
-	Object          string  `json:"object"`
-	ObservationDate string  `json:"observation_date"` // temporal grounding (when the fact was true)
-	Confidence      float64 `json:"confidence"`
-	Derivation      string  `json:"derivation"`
-	PromotionBasis  string  `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
-	SourceTraceRef  string  `json:"source_trace_ref"`          // provenance: where it came from
-	SnippetHash     string  `json:"snippet_hash"`              // bounded snippet, not the raw body
-	Visibility      string  `json:"visibility"`
-	State           string  `json:"state"` // proposed | parked | promoted | rejected
-	Reason          string  `json:"reason,omitempty"`
-	CreatedAt       string  `json:"created_at"`
+	ID              string            `json:"id"`
+	Entity          string            `json:"entity"`
+	Predicate       string            `json:"predicate"`
+	Object          string            `json:"object"`
+	ObservationDate string            `json:"observation_date"` // temporal grounding (when the fact was true)
+	Confidence      float64           `json:"confidence"`
+	Derivation      string            `json:"derivation"`
+	ClaimType       string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
+	Qualifiers      map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
+	PromotionBasis  string            `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
+	SourceTraceRef  string            `json:"source_trace_ref"`          // provenance: where it came from
+	SnippetHash     string            `json:"snippet_hash"`              // bounded snippet, not the raw body
+	Visibility      string            `json:"visibility"`
+	State           string            `json:"state"` // proposed | parked | promoted | rejected
+	Reason          string            `json:"reason,omitempty"`
+	CreatedAt       string            `json:"created_at"`
 }
 
 // Claim is a durable, IMMUTABLE assertion in the ledger. It is never mutated or deleted;
 // supersession and validity are derived from the seq order + supersedes edges (MVCC-by-fold).
 type Claim struct {
-	ID             string   `json:"id"`
-	Seq            int64    `json:"seq"` // monotonic version clock
-	Entity         string   `json:"entity"`
-	Predicate      string   `json:"predicate"`
-	Object         string   `json:"object"`
-	ValidFrom      string   `json:"valid_from"` // observation date (immutable)
-	Confidence     float64  `json:"confidence"`
-	Derivation     string   `json:"derivation"`                // provenance: how derived
-	PromotionBasis string   `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
-	EvidenceRefs   []string `json:"evidence_refs"`             // provenance: source candidate/trace
-	Supersedes     string   `json:"supersedes,omitempty"`
-	Visibility     string   `json:"visibility"`
-	CreatedAt      string   `json:"created_at"`
+	ID             string            `json:"id"`
+	Seq            int64             `json:"seq"` // monotonic version clock
+	Entity         string            `json:"entity"`
+	Predicate      string            `json:"predicate"`
+	Object         string            `json:"object"`
+	ValidFrom      string            `json:"valid_from"` // observation date (immutable)
+	Confidence     float64           `json:"confidence"`
+	Derivation     string            `json:"derivation"`                // provenance: how derived
+	ClaimType      string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes)
+	Qualifiers     map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → Topic()
+	PromotionBasis string            `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
+	EvidenceRefs   []string          `json:"evidence_refs"`             // provenance: source candidate/trace
+	Supersedes     string            `json:"supersedes,omitempty"`
+	Visibility     string            `json:"visibility"`
+	CreatedAt      string            `json:"created_at"`
+}
+
+// Topic is the axis Position/Pattern group by: the claim's domain qualifier if set, else the
+// predicate. So domain-tagged claims cluster by domain while plain ones stay predicate-grouped.
+func (c Claim) Topic() string {
+	if d := c.Qualifiers["domain"]; d != "" {
+		return d
+	}
+	return c.Predicate
 }
 
 // Edge is an append-only relation between claims. Its seq is when the relation took effect,
@@ -138,6 +156,9 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		}
 		if !oneOf(c.Derivation, Derivations) {
 			return out, fmt.Errorf("candidate %s: bad derivation %q", c.Entity, c.Derivation)
+		}
+		if c.ClaimType != "" && !oneOf(c.ClaimType, ClaimTypes) {
+			return out, fmt.Errorf("candidate %s: bad claim_type %q (allowed: %v)", c.Entity, c.ClaimType, ClaimTypes)
 		}
 		if c.Visibility == "" {
 			c.Visibility = "operational"
@@ -228,6 +249,8 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 			ValidFrom:      orDef(c.ObservationDate, rfc3339(now)),
 			Confidence:     c.Confidence,
 			Derivation:     c.Derivation,
+			ClaimType:      c.ClaimType, // carry the taxonomy + topic qualifiers onto the durable claim
+			Qualifiers:     c.Qualifiers,
 			PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
 			EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
 			Visibility:     orDef(c.Visibility, "operational"),
@@ -445,7 +468,7 @@ func (s *Store) Positions() ([]Position, error) {
 	groups := map[key][]Claim{}
 	var order []key
 	for _, c := range claims {
-		k := key{c.Entity, c.Predicate}
+		k := key{c.Entity, c.Topic()} // domain-aware topic axis (falls back to predicate)
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}

@@ -36,7 +36,7 @@ func (s *Store) Patterns() ([]Pattern, error) {
 	m := map[key]*agg{}
 	var order []key
 	for _, c := range claims {
-		k := key{c.Entity, c.Predicate}
+		k := key{c.Entity, c.Topic()} // domain-aware topic axis (falls back to predicate)
 		a := m[k]
 		if a == nil {
 			a = &agg{sessions: map[string]bool{}}

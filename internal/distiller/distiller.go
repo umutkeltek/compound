@@ -61,20 +61,22 @@ const confidenceFloor = 0.5
 // Candidate is a typed, untrusted extraction. memory-kind carries entity/predicate/object; other
 // kinds carry subject/statement/detail. All cite evidence and the policy version that produced them.
 type Candidate struct {
-	ID             string   `json:"id"`
-	Kind           string   `json:"kind"`
-	Entity         string   `json:"entity,omitempty"`
-	Predicate      string   `json:"predicate,omitempty"`
-	Object         string   `json:"object,omitempty"`
-	Subject        string   `json:"subject,omitempty"`
-	Statement      string   `json:"statement,omitempty"`
-	Detail         string   `json:"detail,omitempty"`
-	Confidence     float64  `json:"confidence"`
-	Derivation     string   `json:"derivation"`
-	PromotionBasis string   `json:"promotion_basis,omitempty"` // memory-kind: the basis that allows promotion (candidates.PromotionBases); empty = none
-	EvidenceRefs   []string `json:"evidence_refs"`
-	PolicyVersion  string   `json:"policy_version"`
-	Verdict        string   `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind"`
+	Entity         string            `json:"entity,omitempty"`
+	Predicate      string            `json:"predicate,omitempty"`
+	Object         string            `json:"object,omitempty"`
+	Subject        string            `json:"subject,omitempty"`
+	Statement      string            `json:"statement,omitempty"`
+	Detail         string            `json:"detail,omitempty"`
+	Confidence     float64           `json:"confidence"`
+	Derivation     string            `json:"derivation"`
+	ClaimType      string            `json:"claim_type,omitempty"`      // memory-kind: the claim taxonomy (mem.ClaimTypes)
+	Qualifiers     map[string]string `json:"qualifiers,omitempty"`      // memory-kind: e.g. {"domain": "languages"} → Topic()
+	PromotionBasis string            `json:"promotion_basis,omitempty"` // memory-kind: the basis that allows promotion (candidates.PromotionBases); empty = none
+	EvidenceRefs   []string          `json:"evidence_refs"`
+	PolicyVersion  string            `json:"policy_version"`
+	Verdict        string            `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
 }
 
 // Promotion modes: in live_candidate_only (the DEFAULT for real traces) a memory candidate parks
@@ -288,6 +290,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 			got, err := store.Capture([]mem.Candidate{{
 				Entity: c.Entity, Predicate: c.Predicate, Object: c.Object,
 				Confidence: c.Confidence, Derivation: c.Derivation,
+				ClaimType: c.ClaimType, Qualifiers: c.Qualifiers, // taxonomy + topic axis
 				PromotionBasis: c.PromotionBasis, // persist the "why" of promotion onto the claim
 				SourceTraceRef: t.TraceRef, Visibility: "operational",
 			}}, now)

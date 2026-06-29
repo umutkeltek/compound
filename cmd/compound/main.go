@@ -529,6 +529,26 @@ func cmdMemory(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound memory entity <register <slug> <kind> [--alias a,b] [--id x,y] [--parent p]|resolve <token>|list>")
 			os.Exit(2)
 		}
+	case "evidence":
+		// stored, citable, content-addressed raw material — the convergence of Gen-1 memory.EvidenceItem.
+		switch {
+		case len(rest) >= 1 && rest[0] == "record":
+			e, err := store.RecordEvidence(mem.EvidenceItem{
+				SourceKind: flag("--source-kind"), SourceID: flag("--source-id"),
+				QuoteText: flag("--quote"), Actor: flag("--actor"),
+			}, time.Now())
+			die(err)
+			fmt.Printf("recorded %s (%s) %q\n", e.ID, e.SourceKind, e.QuoteText)
+		case len(rest) >= 1 && rest[0] == "list":
+			items, err := store.Evidence()
+			die(err)
+			for _, e := range items {
+				fmt.Printf("%-18s %-12s %q\n", e.ID, e.SourceKind, e.QuoteText)
+			}
+		default:
+			fmt.Fprintln(os.Stderr, `usage: compound memory evidence <record --source-kind k --quote "..." [--source-id id] [--actor user]|list>`)
+			os.Exit(2)
+		}
 	case "query":
 		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_ENGINE_BIN
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
