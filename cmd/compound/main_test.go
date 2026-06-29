@@ -20,6 +20,7 @@ import (
 	"compound/internal/mem"
 	"compound/internal/product"
 	"compound/internal/projection"
+	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
 	"compound/internal/work"
@@ -736,6 +737,78 @@ func TestDistillerTastePlanUsesTasteCandidateWithoutMutatingTarget(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("taste-plan must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestRoutePlanUsesRouteObservationWithoutMutatingTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+ "trace_ref": "trace_route_policy_candidate",
+ "candidates": [{
+  "kind": "route_observation",
+  "subject": "task:cheap-extract",
+  "statement": "use cheap extraction lane for bounded candidate-only summaries when eval gate passes",
+  "detail": "model_router_cost_guard",
+  "confidence": 0.87,
+  "evidence_refs": ["route:req_123", "transition:tr_route"]
+ }]
+}`)
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	routeRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation)))
+	if len(routeRows) != 1 || routeRows[0].Verdict != distiller.Park {
+		t.Fatalf("route candidates = %+v", routeRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "route-policy.json")
+	original := `{"routes":[]}` + "\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"plan", "--candidate", routeRows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# route plan rpp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- route_key: task-cheap-extract") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_evidence: 4") ||
+		!strings.Contains(out, "- evidence_refs: 2") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("route plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan routeevidence.RoutePolicyPlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != routeevidence.RoutePolicyPlanSchemaVersion ||
+		plan.CandidateID != routeRows[0].ID ||
+		plan.CandidateVerdict != distiller.Park ||
+		plan.PolicyDraft.PolicyID == "" ||
+		!strings.Contains(plan.PolicyDraft.RoutePreference, "cheap extraction lane") {
+		t.Fatalf("bad route policy plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate gateway/provider config") ||
+		!strings.Contains(review, "Required Evidence Before Apply") {
+		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("route target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("route plan must not promote claims, stat err=%v", err)
 	}
 }
 

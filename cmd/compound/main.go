@@ -151,6 +151,7 @@ usage:
   compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
+  compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
@@ -1473,14 +1474,53 @@ func cmdTransition(args []string) {
 }
 
 func cmdRoute(args []string) {
-	if len(args) != 2 || args[0] != "import" {
-		fmt.Fprintln(os.Stderr, "usage: compound route import <execution-route-evidence.json>")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|plan --candidate C [--target file]>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
+	}
+	if args[0] == "plan" {
+		candidateID := flagValue(args[1:], "--candidate")
+		targetPath := flagValue(args[1:], "--target")
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound route plan --candidate <candidate_id> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := routeevidence.BuildRoutePolicyPlan(homePath, candidateID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route plan:", err)
+			os.Exit(1)
+		}
+		paths, err := routeevidence.RecordRoutePolicyPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# route plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- route_key: %s\n", plan.RouteKey)
+		fmt.Printf("- policy_id: %s\n", plan.PolicyDraft.PolicyID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target: %s\n", plan.TargetPath)
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.PolicyDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
+	if len(args) != 2 || args[0] != "import" {
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|plan --candidate C [--target file]>")
+		os.Exit(2)
 	}
 	result, err := routeevidence.ImportFile(homePath, args[1])
 	if err != nil {

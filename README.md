@@ -23,6 +23,7 @@ The current public surface is:
 | `compound work create/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition |
 | `compound policy evaluate` | ActionIntent -> PolicyDecision, enforced at adapters |
 | `compound hook <name>` / `compound harness list` | capability-aware hook fixtures and HarnessRegistry |
+| `compound route import` / `compound route plan --candidate <id>` | route metadata and route_observation candidates become evidence/review artifacts; no gateway or provider config mutation |
 | `compound memory candidate/adjudicate/recall/timeline/write-plan/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall, reviewed curated-source write plans |
 | `compound distiller request/run/eval/eval-plan/rule-plan/taste-plan` | typed trace/runtime/event source material -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator; eval_case, failure_pattern, and taste candidates become reviewed drafts before corpus, doctrine, or product mutation |
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |

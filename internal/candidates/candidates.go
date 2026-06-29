@@ -85,7 +85,7 @@ var specs = map[Kind]Spec{
 	FailurePattern:    {FailurePattern, "inbox/failure-patterns", []string{Park, Operationalize, Reject}, "compound distiller rule-plan"},
 	Taste:             {Taste, "inbox/taste-observations", []string{Park, Operationalize, Reject}, "compound distiller taste-plan"},
 	ProductHypothesis: {ProductHypothesis, "inbox/product-hypotheses", []string{Park, Operationalize, Reject}, "compound product (P9)"},
-	RouteObservation:  {RouteObservation, "inbox/route-observations", []string{Park, Operationalize}, "routing policy (P10)"},
+	RouteObservation:  {RouteObservation, "inbox/route-observations", []string{Park, Operationalize}, "compound route plan"},
 	CapabilityObs:     {CapabilityObs, "inbox/capability-observations", []string{Operationalize, Park}, "capgraph.Consume"},
 	MethodUpgrade:     {MethodUpgrade, "inbox/method-upgrades", []string{Park, Operationalize}, "distillation-policy review"},
 	EvalCase:          {EvalCase, "inbox/eval-cases", []string{Operationalize, Park}, "distiller regression corpus"},
