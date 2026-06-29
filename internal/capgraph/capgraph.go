@@ -301,9 +301,11 @@ type ReceiptConsumeReport struct {
 	ReceiptsScanned        int      `json:"receipts_scanned"`
 	UsedCapabilitiesSeen   int      `json:"used_capabilities_seen"`
 	MissedCapabilitiesSeen int      `json:"missed_capabilities_seen"`
+	FalseTriggersSeen      int      `json:"false_triggers_seen"`
 	AppliedEdges           int      `json:"applied_edges"`
 	AppliedValidatedEdges  int      `json:"applied_validated_edges"`
 	AppliedMissedEdges     int      `json:"applied_missed_edges"`
+	AppliedFalseEdges      int      `json:"applied_false_edges"`
 	SkippedNonCompleted    int      `json:"skipped_non_completed"`
 	SkippedUnchanged       int      `json:"skipped_unchanged"`
 	SkippedMissingContext  int      `json:"skipped_missing_context"`
@@ -312,8 +314,10 @@ type ReceiptConsumeReport struct {
 
 // ConsumeReceipts turns receipt feedback into graph edges. Used capabilities
 // validate only when a completed receipt changed state. Explicit missed
-// capabilities add missed_when context edges from the receipt summary; failed
-// receipts can still teach misses. ContextPack offers in skills.candidate are
+// capabilities add missed_when context edges from the receipt summary; explicit
+// false-triggered capabilities add false_triggered_by edges from the same
+// summary. Failed receipts can still teach misses/false triggers.
+// ContextPack offers in skills.candidate are
 // intentionally ignored: offer is not use.
 func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeReport, error) {
 	var report ReceiptConsumeReport
@@ -431,6 +435,34 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 				} else if added {
 					report.AppliedEdges++
 					report.AppliedMissedEdges++
+				}
+			}
+		}
+
+		for _, raw := range rec.Skills.FalseTriggered {
+			nodeID := capabilityNodeID(raw)
+			if nodeID == "" {
+				continue
+			}
+			report.FalseTriggersSeen++
+			if !nodeIDs[nodeID] {
+				if !unknown[nodeID] {
+					report.SkippedUnknown = append(report.SkippedUnknown, nodeID)
+					unknown[nodeID] = true
+				}
+				continue
+			}
+			if len(contextTokens) == 0 {
+				report.SkippedMissingContext++
+				continue
+			}
+			for _, tok := range contextTokens {
+				edge := Edge{Kind: EdFalseTriggeredBy, From: "context:" + tok, To: nodeID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
+					return report, err
+				} else if added {
+					report.AppliedEdges++
+					report.AppliedFalseEdges++
 				}
 			}
 		}

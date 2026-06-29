@@ -57,8 +57,12 @@ func oneOf(val string, set []string) bool {
 // verr accumulates validation problems so a caller sees all of them at once.
 type verr struct{ errs []string }
 
-func (v *verr) addf(f string, a ...any)        { v.errs = append(v.errs, fmt.Sprintf(f, a...)) }
-func (v *verr) req(field, val string)          { if strings.TrimSpace(val) == "" { v.addf("%s is required", field) } }
+func (v *verr) addf(f string, a ...any) { v.errs = append(v.errs, fmt.Sprintf(f, a...)) }
+func (v *verr) req(field, val string) {
+	if strings.TrimSpace(val) == "" {
+		v.addf("%s is required", field)
+	}
+}
 func (v *verr) enum(field, val string, s []string, required bool) {
 	if val == "" {
 		if required {
@@ -375,9 +379,10 @@ type ReceiptCost struct {
 	HumanMinutes *int     `json:"human_minutes"`
 }
 type ReceiptSkills struct {
-	Used      []string `json:"used"`
-	Missed    []string `json:"missed"`
-	Candidate []string `json:"candidate"`
+	Used           []string `json:"used"`
+	Missed         []string `json:"missed"`
+	FalseTriggered []string `json:"false_triggered,omitempty"`
+	Candidate      []string `json:"candidate"`
 }
 type ReceiptMemory struct {
 	Candidates []string `json:"candidates"`

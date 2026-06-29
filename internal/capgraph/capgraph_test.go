@@ -91,6 +91,43 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 }
 
+func TestConsumeReceiptsFalseTriggeredLowersSurfacing(t *testing.T) {
+	home, s := newStore(t)
+	if err := s.Add(Node{ID: "skill:noisy", Kind: "skill", Name: "Noisy", Triggers: []string{"receipt"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := surfaced(s, "receipt")["skill:noisy"]; !ok {
+		t.Fatal("precondition: noisy skill should surface before explicit false-trigger receipt")
+	}
+
+	rec := testReceipt("rec_false", "completed", true, nil, nil, nil)
+	rec.Skills.FalseTriggered = []string{"capability://skill:noisy"}
+	writeReceipt(t, home, rec)
+
+	report, err := s.ConsumeReceipts(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.FalseTriggersSeen != 1 || report.AppliedFalseEdges == 0 {
+		t.Fatalf("report = %+v, want false-trigger feedback applied", report)
+	}
+	edges := readCapEdges(t, home)
+	if !hasEdge(edges, EdFalseTriggeredBy, "context:receipt", "skill:noisy") {
+		t.Fatalf("edges = %+v, want false_triggered_by edge from receipt summary", edges)
+	}
+	if _, ok := surfaced(s, "receipt")["skill:noisy"]; ok {
+		t.Fatal("explicit false-trigger receipt should lower future surfacing for same context")
+	}
+
+	replay, err := s.ConsumeReceipts(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.AppliedEdges != 0 {
+		t.Fatalf("replay should be idempotent, got %+v", replay)
+	}
+}
+
 func TestConsumeReceiptsIfGraphExistsNoopsWithoutGraph(t *testing.T) {
 	home := t.TempDir()
 	writeReceipt(t, home, testReceipt("rec_no_graph", "completed", true,

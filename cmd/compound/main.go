@@ -350,9 +350,11 @@ func cmdCapability(args []string) {
 		fmt.Printf("- receipts_scanned: %d\n", report.ReceiptsScanned)
 		fmt.Printf("- used_capabilities_seen: %d\n", report.UsedCapabilitiesSeen)
 		fmt.Printf("- missed_capabilities_seen: %d\n", report.MissedCapabilitiesSeen)
+		fmt.Printf("- false_triggers_seen: %d\n", report.FalseTriggersSeen)
 		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
 		fmt.Printf("- applied_validated_edges: %d\n", report.AppliedValidatedEdges)
 		fmt.Printf("- applied_missed_edges: %d\n", report.AppliedMissedEdges)
+		fmt.Printf("- applied_false_edges: %d\n", report.AppliedFalseEdges)
 		fmt.Printf("- skipped_non_completed: %d\n", report.SkippedNonCompleted)
 		fmt.Printf("- skipped_unchanged: %d\n", report.SkippedUnchanged)
 		fmt.Printf("- skipped_missing_context: %d\n", report.SkippedMissingContext)
@@ -1754,8 +1756,8 @@ func autoConsumeCapabilityFeedback(homePath string) {
 	if !ok || report.AppliedEdges == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_edges=%d validated=%d missed=%d\n",
-		report.AppliedEdges, report.AppliedValidatedEdges, report.AppliedMissedEdges)
+	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_edges=%d validated=%d missed=%d false=%d\n",
+		report.AppliedEdges, report.AppliedValidatedEdges, report.AppliedMissedEdges, report.AppliedFalseEdges)
 }
 
 func cliHeader(schemaVersion, id, workID string, now time.Time, evidenceRefs []string) envelope.Header {
