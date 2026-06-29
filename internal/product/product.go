@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/writeback"
 
@@ -144,6 +145,7 @@ type Report struct {
 	ClaimIDs      []string `json:"claim_ids"`
 	SignalIDs     []string `json:"signal_ids"`
 	HypothesisIDs []string `json:"hypothesis_ids"`
+	TransitionIDs []string `json:"transition_ids,omitempty"`
 }
 
 type ReviewReport struct {
@@ -154,6 +156,7 @@ type ReviewReport struct {
 	Result       string   `json:"result"`
 	EvidenceID   string   `json:"evidence_id"`
 	EvidenceRefs []string `json:"evidence_refs"`
+	TransitionID string   `json:"transition_id,omitempty"`
 }
 
 type Timeline struct {
@@ -290,11 +293,28 @@ func ApplySignal(homePath string, store *mem.Store, doc SignalDocument, sourcePa
 	if err := appendUniqueSignal(homePath, signal); err != nil {
 		return Report{}, err
 	}
+	tr, err := BuildLoopTransition(LoopTransitionInput{
+		Kind:         "product_signal",
+		ProductID:    signal.ProductID,
+		ObjectID:     signal.ID,
+		SourceTrace:  "product_signal:" + signal.ID,
+		BeforeRefs:   doc.EvidenceRefs,
+		AfterRefs:    append([]string{"product_signal:" + signal.ID, evidence.ID}, signal.EvidenceRefs...),
+		EvidenceRefs: signal.EvidenceRefs,
+		Summary:      fmt.Sprintf("product signal %s recorded; no product surface changed", signal.ID),
+	}, now)
+	if err != nil {
+		return Report{}, err
+	}
+	if err := RecordTransition(homePath, tr); err != nil {
+		return Report{}, err
+	}
 	return Report{
-		ProductID:   signal.ProductID,
-		Status:      "ok",
-		EvidenceIDs: []string{evidence.ID},
-		SignalIDs:   []string{signal.ID},
+		ProductID:     signal.ProductID,
+		Status:        "ok",
+		EvidenceIDs:   []string{evidence.ID},
+		SignalIDs:     []string{signal.ID},
+		TransitionIDs: []string{tr.ID},
 	}, nil
 }
 
@@ -333,6 +353,22 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 	if err := writeHypothesisCandidate(homePath, candidate); err != nil {
 		return ReviewReport{}, err
 	}
+	tr, err := BuildLoopTransition(LoopTransitionInput{
+		Kind:         "product_review",
+		ProductID:    review.ProductID,
+		ObjectID:     review.ID,
+		SourceTrace:  "product_review:" + review.ID,
+		BeforeRefs:   compact(append([]string{"product_hypothesis:" + candidate.ID}, review.EvidenceRefs...)),
+		AfterRefs:    compact(append([]string{"product_hypothesis:" + candidate.ID, "product_review:" + review.ID, evidence.ID}, candidate.EvidenceRefs...)),
+		EvidenceRefs: candidate.EvidenceRefs,
+		Summary:      fmt.Sprintf("product review %s set hypothesis %s to %s; no product surface changed", review.ID, candidate.ID, review.Result),
+	}, now)
+	if err != nil {
+		return ReviewReport{}, err
+	}
+	if err := RecordTransition(homePath, tr); err != nil {
+		return ReviewReport{}, err
+	}
 	return ReviewReport{
 		Status:       "updated",
 		ProductID:    review.ProductID,
@@ -341,6 +377,7 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 		Result:       review.Result,
 		EvidenceID:   evidence.ID,
 		EvidenceRefs: candidate.EvidenceRefs,
+		TransitionID: tr.ID,
 	}, nil
 }
 
@@ -517,6 +554,78 @@ func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef strin
 		PolicyDecisionRef: policyDecisionRef,
 		EvidenceRefs:      EvidenceRefs(report),
 	}
+}
+
+type LoopTransitionInput struct {
+	Kind         string
+	ProductID    string
+	ObjectID     string
+	SourceTrace  string
+	BeforeRefs   []string
+	AfterRefs    []string
+	EvidenceRefs []string
+	Summary      string
+}
+
+func BuildLoopTransition(in LoopTransitionInput, now time.Time) (envelope.Transition, error) {
+	if strings.TrimSpace(in.Kind) == "" || strings.TrimSpace(in.ProductID) == "" || strings.TrimSpace(in.ObjectID) == "" {
+		return envelope.Transition{}, fmt.Errorf("product loop transition kind product_id object_id required")
+	}
+	if strings.TrimSpace(in.SourceTrace) == "" {
+		in.SourceTrace = in.Kind + ":" + in.ObjectID
+	}
+	evidenceRefs := compact(in.EvidenceRefs)
+	afterRefs := compact(in.AfterRefs)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = afterRefs
+	}
+	if in.Summary == "" {
+		in.Summary = fmt.Sprintf("%s %s recorded for %s", in.Kind, in.ObjectID, in.ProductID)
+	}
+	tr := envelope.Transition{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTransition,
+			ID:            stableID("tr_", in.Kind, in.ProductID, in.ObjectID),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: stableID("work_product_", in.Kind, in.ProductID, in.ObjectID)},
+			Scope:         envelope.Scope{ProductID: in.ProductID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  evidenceRefs,
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SourceTraceID: in.SourceTrace,
+		BeforeRefs:    compact(in.BeforeRefs),
+		ActionRefs:    []string{in.SourceTrace},
+		AfterRefs:     afterRefs,
+		StateDelta:    in.Summary,
+		Projections: envelope.Projections{
+			Product:        compact(append([]string{in.ProductID, in.Kind + ":" + in.ObjectID}, afterRefs...)),
+			HumanAttention: []string{},
+		},
+		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: true},
+	}
+	if err := tr.Validate(); err != nil {
+		return envelope.Transition{}, err
+	}
+	return tr, nil
+}
+
+func RecordTransition(homePath string, tr envelope.Transition) error {
+	if err := tr.Validate(); err != nil {
+		return err
+	}
+	path := filepath.Join(homePath, "events", tr.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(&tr, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
 func productClaims(bundle Bundle, evidenceID, sourcePath string) []mem.Candidate {

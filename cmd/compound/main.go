@@ -2044,6 +2044,9 @@ func cmdProduct(args []string) {
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- product: %s\n", report.ProductID)
 		fmt.Printf("- evidence: %s\n", report.EvidenceIDs[0])
+		if len(report.TransitionIDs) > 0 {
+			fmt.Printf("- transition: %s\n", report.TransitionIDs[0])
+		}
 	case "review":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml>")
@@ -2066,6 +2069,9 @@ func cmdProduct(args []string) {
 		fmt.Printf("- result: %s\n", report.Result)
 		fmt.Printf("- evidence: %s\n", report.EvidenceID)
 		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		if report.TransitionID != "" {
+			fmt.Printf("- transition: %s\n", report.TransitionID)
+		}
 	case "timeline":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product timeline <product_id>")

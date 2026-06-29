@@ -1,12 +1,14 @@
 package product
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/writeback"
 )
@@ -88,6 +90,13 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if reviewReport.Status != "updated" || reviewReport.Result != "inconclusive" || reviewReport.EvidenceID == "" {
 		t.Fatalf("review report = %+v", reviewReport)
 	}
+	if reviewReport.TransitionID == "" {
+		t.Fatalf("review transition missing: %+v", reviewReport)
+	}
+	reviewTransition := readTransition(t, home, reviewReport.TransitionID)
+	if reviewTransition.Scope.ProductID != "product:focus-notes" || !hasString(reviewTransition.Projections.Product, "product_review:review_focus_visuals_20260713") {
+		t.Fatalf("review transition = %+v", reviewTransition)
+	}
 	reviewed, err := LoadTimeline(home, "product:focus-notes")
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +125,13 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	}
 	if signalReport.Status != "ok" || len(signalReport.SignalIDs) != 1 || len(signalReport.EvidenceIDs) != 1 {
 		t.Fatalf("signal report = %+v", signalReport)
+	}
+	if len(signalReport.TransitionIDs) != 1 {
+		t.Fatalf("signal transitions = %+v", signalReport.TransitionIDs)
+	}
+	signalTransition := readTransition(t, home, signalReport.TransitionIDs[0])
+	if signalTransition.Scope.ProductID != "product:focus-notes" || !hasString(signalTransition.Projections.Product, "product_signal:sig_focus_conversion_14d_20260713") {
+		t.Fatalf("signal transition = %+v", signalTransition)
 	}
 	withSignal, err := LoadTimeline(home, "product:focus-notes")
 	if err != nil {
@@ -234,4 +250,20 @@ func findSignal(signals []Signal, id string) Signal {
 		}
 	}
 	return Signal{}
+}
+
+func readTransition(t *testing.T, home, id string) envelope.Transition {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(home, "events", id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tr envelope.Transition
+	if err := json.Unmarshal(b, &tr); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return tr
 }
