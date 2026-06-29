@@ -23,6 +23,7 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 | `runtimebinding` | canonical | RuntimeBinding + ServiceContract bundle and doctor |
 | `projection` | canonical | GeneratedViewObservation + ProjectionFreshness doctor |
 | `writeback` | canonical | OwnerWritebackGate + NoPromoteDecision: candidate/observation -> owner gate -> policy/no-promote ledger |
+| `product` | canonical | Product registry + ProductSignal ledger + parked ProductHypothesis candidates |
 | `arch` | canonical | architecture doctor |
 | `authority` | importer | external source/path authority records imported through spine memory; path authority preserves entity identity across path/source moves |
 | `decisions` | importer | DecisionLifecycle records imported/projected through spine memory; doctor surfaces missing falsifier/review trigger and can route gaps through owner writeback |
@@ -55,6 +56,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 | Capability | `capability add/surface/observe/consume/list/import-topology` | canonical; topology import maps tools/MCPs into CapabilityGraph nodes + fallback edges |
 | Runtime | `runtime doctor <runtime-binding.yaml> [--writeback]`; `runtime doctor --project-contract <project.yaml> [--writeback]` | canonical first slice + infra-os project-contract adapter; failing reports can enter work -> gate -> receipt/transition |
 | Projection | `projection doctor <freshness.yaml> [--writeback]` | canonical first slice; stale/drifted observations can enter work -> gate -> receipt/transition |
+| Product | `product import <product.yaml>`; `product timeline <product_id>` | canonical first product feedback-loop slice; imports product identity, deterministic claims, signal evidence, and parked hypotheses |
 | Writeback | `writeback gate <gate.json> --policy <policy-decision.json> [--record]`; `writeback no-promote --candidate C --basis B --evidence E1[,E2]` | canonical first slice |
 | Importers | `authority import [registry.yaml]`; `authority path <path-authority.yaml>`; `authority resolve <token>`; `decisions doctor [--writeback]`; `source observe <source-observation.yaml>` | canonical import/report surfaces; source/path authority imports resolve moved paths to stable entities; decision lifecycle gaps can enter work -> gate -> receipt/transition; source observations enter inbox/no-promote without direct promotion |
 | Gen-1 tombstones | `distill`, `scope`, `promote`, `build`, `reconcile`, top-level `timeline`, top-level `recall`, `pack`, `ledger` | retired; exit `2` replacement hint |
@@ -78,5 +80,6 @@ Next work is no longer memory-stack convergence. It is adapting existing operati
 - source documents -> source adapters emit evidence/candidates/no-promote without direct promotion;
 - source-map / path-authority -> `authority path` imports `PathAuthority` into entity identifiers + authority claims; `authority resolve` proves old path/new path/source remote map to one entity;
 - orientation scope -> project-aware context loading bridged with fixture repo markers; `compound orient` excludes governance context in product repos and includes it in control-plane repos, recording exclusions;
+- product feedback -> `product import` registers product identity, promoted deterministic product claims, `ProductSignal` evidence rows, and parked `ProductHypothesis` candidates; `product timeline` reads the loop without declaring causality;
 - rented retrieval -> `MemoryEngine` adapter leaves ledger unchanged;
 - skills/tools/MCPs/hooks -> `CapabilityGraph` imports observations; `compound capability import-topology` imports tool/MCP topology and CLI-vs-MCP fallback recommendation.

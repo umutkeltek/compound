@@ -30,6 +30,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/product"
 	"compound/internal/projection"
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
@@ -58,6 +59,8 @@ func main() {
 		cmdRuntime(os.Args[2:])
 	case "projection":
 		cmdProjection(os.Args[2:])
+	case "product":
+		cmdProduct(os.Args[2:])
 	case "source":
 		cmdSource(os.Args[2:])
 	case "writeback":
@@ -148,6 +151,7 @@ compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
+compound product import <product.yaml> | timeline <product>    Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
@@ -1508,6 +1512,71 @@ func cmdAuthority(args []string) {
 	}
 	if !found {
 		fmt.Printf("(no authority claims for %s; run compound authority import first)\n", entity)
+	}
+}
+
+func cmdProduct(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | timeline <product_id>")
+		os.Exit(2)
+	}
+	store, homePath := openMemStore()
+	switch args[0] {
+	case "import":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml>")
+			os.Exit(2)
+		}
+		bundle, err := product.Load(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product import:", err)
+			os.Exit(1)
+		}
+		report, err := product.Apply(homePath, store, bundle, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product import:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product import %s\n\n", report.ProductID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- entity: %s\n", report.EntityID)
+		fmt.Printf("- evidence: %d\n", len(report.EvidenceIDs))
+		fmt.Printf("- claims: %d\n", len(report.ClaimIDs))
+		fmt.Printf("- signals: %d\n", len(report.SignalIDs))
+		fmt.Printf("- hypotheses: %d\n", len(report.HypothesisIDs))
+	case "timeline":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product timeline <product_id>")
+			os.Exit(2)
+		}
+		tl, err := product.LoadTimeline(homePath, args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product timeline:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# Product timeline - %s\n\n", args[1])
+		if len(tl.Signals) == 0 && len(tl.Hypotheses) == 0 {
+			fmt.Println("(no product signals or hypotheses)")
+			return
+		}
+		for _, s := range tl.Signals {
+			fmt.Printf("- signal %s: %s %.4g -> %.4g on %s (%s)\n", s.ID, s.MetricName, s.Before, s.After, s.Surface, s.Window)
+			if s.NextAction != "" {
+				fmt.Printf("  next: %s\n", s.NextAction)
+			}
+			if len(s.Confounders) > 0 {
+				fmt.Printf("  confounders: %s\n", strings.Join(s.Confounders, ", "))
+			}
+		}
+		for _, h := range tl.Hypotheses {
+			fmt.Printf("- hypothesis %s: %s [%s]\n", h.ID, h.ExpectedEffect, h.Result)
+			if h.NextAction != "" {
+				fmt.Printf("  next: %s\n", h.NextAction)
+			}
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | timeline <product_id>")
+		os.Exit(2)
 	}
 }
 
