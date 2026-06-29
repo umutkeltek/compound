@@ -109,6 +109,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkKnowledgePageContract(repoRoot)...)
 		f = append(f, checkWorkPacketContract(repoRoot)...)
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
+		f = append(f, checkMemoryEngineContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -536,8 +537,55 @@ func checkMCPorterTopologyContract(repoRoot string) []Finding {
 	return []Finding{{"mcporter-topology-contract", Info, "mcporter catalog import stays observational non-executing capability graph evidence"}}
 }
 
-// convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the
-// coherent treatment when a duplicate cannot yet be retired (Law 9: make it observable).
+// checkMemoryEngineContract keeps rented memory engines observable without
+// granting them authority. A configured sidecar must be visible through normal
+// memory doctor health, leave ledger bytes unchanged, and stay behind the
+// MemoryEngine/engine-compare adapter seam.
+func checkMemoryEngineContract(repoRoot string) []Finding {
+	hasMemoryDoctor := false
+	hasConfiguredSidecar := false
+	hasSyncEmbedding := false
+	hasLedgerUnchanged := false
+	hasNoAuthority := false
+	hasCompare := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "memory doctor") {
+			hasMemoryDoctor = true
+		}
+		if strings.Contains(low, "compound_mem_engine_bin") || strings.Contains(low, "configured sidecar") {
+			hasConfiguredSidecar = true
+		}
+		if strings.Contains(low, "sync/embedding") {
+			hasSyncEmbedding = true
+		}
+		if strings.Contains(low, "ledger_unchanged") || strings.Contains(low, "ledger bytes unchanged") || strings.Contains(low, "leaves owned ledger bytes unchanged") {
+			hasLedgerUnchanged = true
+		}
+		if strings.Contains(low, "never authority") || strings.Contains(low, "without making it authority") || strings.Contains(low, "engine never owns") {
+			hasNoAuthority = true
+		}
+		if strings.Contains(low, "engine-compare") {
+			hasCompare = true
+		}
+		return nil
+	})
+	if !hasMemoryDoctor || !hasConfiguredSidecar || !hasSyncEmbedding || !hasLedgerUnchanged || !hasNoAuthority || !hasCompare {
+		return []Finding{{"memory-engine-contract", Fail, "public docs do not describe configured MemoryEngine health through memory doctor sync/embedding, ledger_unchanged proof, engine-compare swap parity, and never-authority semantics"}}
+	}
+	return []Finding{{"memory-engine-contract", Info, "configured MemoryEngine health stays observable rented ledger-safe"}}
+}
+
+// convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding —
+// the coherent treatment when a duplicate cannot yet be retired (Law 9: make it observable).
 func convergenceDebt(strict bool) []Finding {
 	var pending []string
 	for pkg, c := range Classification {

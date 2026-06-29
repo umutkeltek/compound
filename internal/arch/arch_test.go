@@ -462,3 +462,58 @@ func TestMCPorterTopologyContractRequiresNoPromoteAndNoExecution(t *testing.T) {
 		t.Fatalf("failure should name missing source/no-promote guard: %+v", findings)
 	}
 }
+
+func TestMemoryEngineContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "memory-engine-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("memory engine contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected memory-engine-contract finding")
+	}
+}
+
+func TestMemoryEngineContractFailsOnEngineDoctorOnlyDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`memory engine-doctor` and `memory engine-compare` prove a rented engine leaves ledger bytes unchanged.\n"
+	if err := os.WriteFile(filepath.Join(docs, "memory.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkMemoryEngineContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "memory doctor") {
+		t.Fatalf("failure should name missing memory doctor contract: %+v", findings)
+	}
+}
+
+func TestMemoryEngineContractRequiresLedgerAndAuthorityGuards(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`memory doctor` observes configured sidecar via `COMPOUND_MEM_ENGINE_BIN` sync/embedding and `engine-compare` checks swap parity.\n"
+	if err := os.WriteFile(filepath.Join(docs, "memory.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkMemoryEngineContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "ledger_unchanged") {
+		t.Fatalf("failure should name missing ledger/no-authority guard: %+v", findings)
+	}
+}
