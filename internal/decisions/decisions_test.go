@@ -112,6 +112,96 @@ Every non-trivial run leaves evidence before it can be treated as done.
 	}
 }
 
+func TestImportPolicyDecisionRecordsEvidenceAndAcceptedLifecycle(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decisions", "DEC-0042.md")
+	writeFile(t, path, `---
+id: DEC-0042
+title: Gate source mutations
+status: accepted
+domains: [architecture]
+supersedes: [DEC-0041]
+falsifier: Source adapters can mutate owners without a policy decision.
+review_trigger: Re-check after first source adapter writes through a gate.
+owner: compound
+scope: public-core
+---
+
+# Gate source mutations
+
+Source-specific adapters must enter through evidence and policy gates.
+`)
+
+	report, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 29, 19, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SourceKind != "policy" || report.EvidenceID == "" || report.CandidateID == "" || report.ClaimID == "" || report.Verdict != candidates.Promote {
+		t.Fatalf("report = %+v", report)
+	}
+	ev, ok, err := store.GetEvidence(report.EvidenceID)
+	if err != nil || !ok {
+		t.Fatalf("evidence lookup ok=%v err=%v", ok, err)
+	}
+	if ev.SourceKind != "repo" || ev.SourceID == "" || ev.QuoteText == "" || ev.Visibility != "operational" {
+		t.Fatalf("evidence = %+v", ev)
+	}
+	l := report.Lifecycle
+	if l.ID != "DEC-0042" || l.Kind != KindPolicy || l.Status != StatusAccepted {
+		t.Fatalf("lifecycle = %+v", l)
+	}
+	if l.Owner != "compound" || l.Scope != "public-core" || len(l.Supersedes) != 1 || l.Supersedes[0] != "DEC-0041" {
+		t.Fatalf("lifecycle ownership/supersession = %+v", l)
+	}
+	if missing := MissingRequired(l); len(missing) != 0 {
+		t.Fatalf("MissingRequired = %v", missing)
+	}
+}
+
+func TestImportPolicyDecisionParksSupersededLifecycleWithReplacement(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decisions", "DEC-0041.md")
+	writeFile(t, path, `---
+id: DEC-0041
+title: Import decisions as loose claims
+status: superseded
+replaced_by: DEC-0042
+falsifier: Superseded decisions still influence current agent behavior.
+review_trigger: Re-check if current recall surfaces this as active guidance.
+---
+
+# Import decisions as loose claims
+
+Old decision kept for provenance only.
+`)
+
+	report, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 29, 19, 5, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Verdict != candidates.Park || report.ClaimID != "" {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.Lifecycle.Status != StatusSuperseded || report.Lifecycle.ReplacedBy != "DEC-0042" {
+		t.Fatalf("lifecycle transition = %+v", report.Lifecycle)
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 0 {
+		t.Fatalf("superseded decision should not become current claim: %+v", claims)
+	}
+}
+
 func TestImportOperatorLedgerLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operator.md")
 	writeFile(t, path, `### O2 — Flip PlacementGuard

@@ -49,6 +49,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Decision source import hardening: `compound decisions import --policy <DEC.md>` now records policy markdown as evidence-backed `DecisionLifecycle`, preserves supersedes/replaced_by transitions, promotes only accepted decisions, and parks non-accepted lifecycle records.
+
 | Family | Verbs | Status |
 |---|---|---|
 | Spine | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition`, `route import` | canonical; `orient` freezes scope-aware ContextPacks and includes surfaced CapabilityGraph offers when graph state exists, filtering harness-specific offers by `surfaces_with -> harness:*`; hooks persist normalized `HookEvent` envelopes to `events/<hook_event_id>.json` and `events/hook-events.ndjson`; `hook session-start` uses the same harness-filtered pack path and persists redacted `context/requests/<ctxreq_id>.json`, `context/packs/<ctx_id>.json`, plus exact `context/injections/<hook_event_id>.md`; `route import` writes external `ExecutionRouteEvidence` metadata plus an audit-only Transition projection |
@@ -72,6 +74,8 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - convergence ratchet: `converge-pending` packages must not exceed budget, now fixed at `0`.
 
 ## Next Coverage Moves
+
+Recently closed: source-specific policy markdown decisions can now enter through the `DecisionLifecycle` owner without flattening lifecycle transitions into loose claims. Next decision hardening is private parity against a real decision-source page, not a new public decision registry.
 
 Next work is no longer memory-stack convergence. It is adapting existing operating-system functions into first-class Compound contracts without creating parallel owners:
 

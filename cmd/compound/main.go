@@ -158,7 +158,7 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
-compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
+  compound decisions import [--brain <md>] [--policy <DEC.md>] | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
@@ -2300,6 +2300,15 @@ func cmdDecisions(args []string) {
 			}
 			brainReports = append(brainReports, report)
 		}
+		var policyReports []decisions.DecisionImportReport
+		for _, path := range values("--policy") {
+			report, err := decisions.ImportPolicyDecision(store, path, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "policy decision import:", err)
+				os.Exit(1)
+			}
+			policyReports = append(policyReports, report)
+		}
 		var facts []mem.Candidate
 		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
 			got, err := decisions.ImportDEC(root)
@@ -2348,9 +2357,19 @@ func cmdDecisions(args []string) {
 				parked++
 			}
 		}
-		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured)+len(brainReports), promoted, parked)
+		for _, report := range policyReports {
+			if report.Verdict == candidates.Promote {
+				promoted++
+			} else {
+				parked++
+			}
+		}
+		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured)+len(brainReports)+len(policyReports), promoted, parked)
 		for _, report := range brainReports {
 			fmt.Printf("- brain %s: %s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.CandidateID, report.EvidenceID, report.ClaimID)
+		}
+		for _, report := range policyReports {
+			fmt.Printf("- policy %s: %s status=%s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.Lifecycle.Status, report.CandidateID, report.EvidenceID, report.ClaimID)
 		}
 	case "doctor":
 		writebackEnabled := hasFlag(args[1:], "--writeback")

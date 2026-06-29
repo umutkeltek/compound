@@ -127,19 +127,127 @@ type decFrontmatter struct {
 	Status        string   `yaml:"status"`
 	Domains       []string `yaml:"domains"`
 	Supersedes    []string `yaml:"supersedes"`
+	ReplacedBy    string   `yaml:"replaced_by"`
 	Falsifier     string   `yaml:"falsifier"`
 	ReviewTrigger string   `yaml:"review_trigger"`
 	Owner         string   `yaml:"owner"`
 	Scope         string   `yaml:"scope"`
 }
 
-type BrainDecisionReport struct {
+type DecisionImportReport struct {
 	SourcePath  string    `json:"source_path"`
+	SourceKind  string    `json:"source_kind,omitempty"`
 	EvidenceID  string    `json:"evidence_id"`
 	CandidateID string    `json:"candidate_id"`
 	ClaimID     string    `json:"claim_id,omitempty"`
 	Verdict     string    `json:"verdict"`
 	Lifecycle   Lifecycle `json:"lifecycle"`
+}
+
+type BrainDecisionReport = DecisionImportReport
+
+// ImportPolicyDecision imports one decisions-repo markdown record through the
+// same evidence-backed lifecycle path used by curated knowledge decisions.
+func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (DecisionImportReport, error) {
+	var report DecisionImportReport
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return report, err
+	}
+	fm, body := splitFrontmatter(string(b))
+	var f decFrontmatter
+	_ = yaml.Unmarshal([]byte(fm), &f)
+	if f.ID == "" {
+		f.ID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	if f.Title == "" {
+		f.Title = firstHeading(body)
+	}
+	if strings.TrimSpace(f.Title) == "" {
+		return report, fmt.Errorf("policy decision %s: title required", path)
+	}
+	if f.Kind == "" {
+		f.Kind = KindPolicy
+	}
+	if f.Falsifier == "" {
+		if mm := reFalsifier.FindStringSubmatch(body); mm != nil {
+			f.Falsifier = strings.TrimSpace(mm[1])
+		}
+	}
+	if f.ReviewTrigger == "" {
+		if mm := reReviewTrigger.FindStringSubmatch(body); mm != nil {
+			f.ReviewTrigger = strings.TrimSpace(mm[1])
+		}
+	}
+	evidence, err := store.RecordEvidence(mem.EvidenceItem{
+		SourceKind: "repo",
+		SourceID:   "policy-decision:" + filepath.ToSlash(path),
+		QuoteText:  decisionQuote(f.Title, body),
+		Actor:      "tool",
+		Visibility: "operational",
+	}, now)
+	if err != nil {
+		return report, err
+	}
+	q := lifecycleQualifiers(f.Kind, "decisions-repo", f.ID, f.Status)
+	if len(f.Domains) > 0 {
+		q["domain"] = strings.Join(f.Domains, ",")
+	}
+	if len(f.Supersedes) > 0 {
+		q["supersedes"] = strings.Join(f.Supersedes, ",")
+	}
+	if f.ReplacedBy != "" {
+		q["replaced_by"] = strings.TrimSpace(f.ReplacedBy)
+	}
+	if f.Falsifier != "" {
+		q["falsifier"] = strings.TrimSpace(f.Falsifier)
+	}
+	if f.ReviewTrigger != "" {
+		q["review_trigger"] = strings.TrimSpace(f.ReviewTrigger)
+	}
+	if f.Owner != "" {
+		q["owner"] = strings.TrimSpace(f.Owner)
+	}
+	if f.Scope != "" {
+		q["scope"] = strings.TrimSpace(f.Scope)
+	}
+	cands, err := store.Capture([]mem.Candidate{{
+		Entity:         "decisions",
+		Predicate:      "decided",
+		Object:         f.Title,
+		Confidence:     1.0,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     q,
+		PromotionBasis: promotionBasisForStatus(f.Status),
+		SourceTraceRef: evidence.ID,
+		SnippetHash:    digest12(f.ID + "\n" + f.Title),
+		Visibility:     "operational",
+	}}, now)
+	if err != nil {
+		return report, err
+	}
+	verdict := candidates.Park
+	if cands[0].PromotionBasis != "" {
+		verdict = candidates.Promote
+	}
+	res, err := store.Adjudicate(cands[0].ID, verdict, "policy-decision-import", now)
+	if err != nil {
+		return report, err
+	}
+	report = DecisionImportReport{
+		SourcePath:  path,
+		SourceKind:  "policy",
+		EvidenceID:  evidence.ID,
+		CandidateID: cands[0].ID,
+		Verdict:     verdict,
+		Lifecycle:   LifecycleFromCandidate(cands[0]),
+	}
+	if res.Claim != nil {
+		report.ClaimID = res.Claim.ID
+		report.Lifecycle = LifecycleFromClaim(*res.Claim)
+	}
+	return report, nil
 }
 
 // ImportDEC parses decisions/DEC markdown files into policy decision candidates.
@@ -174,6 +282,9 @@ func ImportDEC(root string) ([]mem.Candidate, error) {
 		}
 		if len(f.Supersedes) > 0 {
 			q["supersedes"] = strings.Join(f.Supersedes, ",")
+		}
+		if f.ReplacedBy != "" {
+			q["replaced_by"] = strings.TrimSpace(f.ReplacedBy)
 		}
 		if f.Falsifier != "" {
 			q["falsifier"] = strings.TrimSpace(f.Falsifier)
@@ -256,6 +367,9 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	if len(f.Supersedes) > 0 {
 		q["supersedes"] = strings.Join(f.Supersedes, ",")
 	}
+	if f.ReplacedBy != "" {
+		q["replaced_by"] = strings.TrimSpace(f.ReplacedBy)
+	}
 	if f.Falsifier != "" {
 		q["falsifier"] = strings.TrimSpace(f.Falsifier)
 	}
@@ -294,6 +408,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	}
 	report = BrainDecisionReport{
 		SourcePath:  path,
+		SourceKind:  "brain",
 		EvidenceID:  evidence.ID,
 		CandidateID: cands[0].ID,
 		Verdict:     verdict,
@@ -401,6 +516,7 @@ func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
 		Falsifier:     q["falsifier"],
 		ReviewTrigger: q["review_trigger"],
 		Supersedes:    splitCSV(q["supersedes"]),
+		ReplacedBy:    q["replaced_by"],
 		EvidenceRefs:  []string{c.ID},
 	}
 }
