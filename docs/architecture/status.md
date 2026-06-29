@@ -30,6 +30,7 @@ This file is the current package/command map. `compound architecture doctor --st
 
 - `compound event import-os` now adapts append-only OS-style event rows into typed `TraceEnvelope` files and `events/traces.ndjson` under `COMPOUND_HOME`; replay is idempotent and no memory claims are promoted.
 - `compound distiller request --event-trace <trace_id>` now consumes those imported `TraceEnvelope` files as provider-neutral extraction source material with prior-state coverage, still without model calls or memory promotion.
+- `compound distiller eval` now asserts event-trace memory candidates stay unpromoted under live policy and create no claims ledger.
 
 ## Current Verdict
 

@@ -81,7 +81,7 @@ func TestOpenAICompatibleExtractionCallsProviderAfterCorpusPasses(t *testing.T) 
 	if calls != 1 {
 		t.Fatalf("provider calls = %d, want 1", calls)
 	}
-	if report.Eval.Status != "pass" || report.Eval.CaseCount != 6 || report.Eval.LiveModelCalls != 0 {
+	if report.Eval.Status != "pass" || report.Eval.CaseCount != 7 || report.Eval.LiveModelCalls != 0 {
 		t.Fatalf("eval report = %+v", report.Eval)
 	}
 	if !report.Called || report.LiveModelCalls != 1 {

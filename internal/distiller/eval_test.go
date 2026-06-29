@@ -146,11 +146,11 @@ func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
 	if report.Status != "pass" {
 		t.Fatalf("status = %q", report.Status)
 	}
-	if report.CaseCount != 6 || report.PassCount != 6 || report.FailCount != 0 {
-		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 6/6/0", report.CaseCount, report.PassCount, report.FailCount)
+	if report.CaseCount != 7 || report.PassCount != 7 || report.FailCount != 0 {
+		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 7/7/0", report.CaseCount, report.PassCount, report.FailCount)
 	}
-	if report.DecisionCount != 4 {
-		t.Fatalf("decision_count = %d, want 4", report.DecisionCount)
+	if report.DecisionCount != 5 {
+		t.Fatalf("decision_count = %d, want 5", report.DecisionCount)
 	}
 	if report.CurrentClaims != 0 {
 		t.Fatalf("current_claims = %d, want 0", report.CurrentClaims)

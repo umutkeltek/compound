@@ -37,6 +37,7 @@ type EvalRequestSources struct {
 type EvalExpectations struct {
 	Decisions      []ExpectedDecision `json:"decisions"`
 	CurrentClaims  *int               `json:"current_claims,omitempty"`
+	ClaimsLedger   *bool              `json:"claims_ledger_exists,omitempty"`
 	SourceRefs     []string           `json:"source_refs,omitempty"`
 	PriorCoverage  map[string]int     `json:"prior_coverage,omitempty"`
 	LiveModelCalls *int               `json:"live_model_calls,omitempty"`
@@ -79,11 +80,12 @@ type EvalReqReport struct {
 }
 
 type EvalRunReport struct {
-	DecisionCount  int                    `json:"decision_count"`
-	CurrentClaims  int                    `json:"current_claims"`
-	LiveModelCalls int                    `json:"live_model_calls"`
-	Error          string                 `json:"error,omitempty"`
-	Decisions      []AdjudicationDecision `json:"decisions"`
+	DecisionCount      int                    `json:"decision_count"`
+	CurrentClaims      int                    `json:"current_claims"`
+	ClaimsLedgerExists bool                   `json:"claims_ledger_exists"`
+	LiveModelCalls     int                    `json:"live_model_calls"`
+	Error              string                 `json:"error,omitempty"`
+	Decisions          []AdjudicationDecision `json:"decisions"`
 }
 
 type EvalCheck struct {
@@ -228,9 +230,10 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 		}
 		report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, SourceRefs: req.SourceRefs}
 		report.Run = EvalRunReport{
-			CurrentClaims:  len(current),
-			LiveModelCalls: 0,
-			Error:          err.Error(),
+			CurrentClaims:      len(current),
+			ClaimsLedgerExists: claimsLedgerExists(evalHome),
+			LiveModelCalls:     0,
+			Error:              err.Error(),
 		}
 		report.Checks = evaluateExpectations(ec.Expect, req, report.Run)
 		finalizeEvalReport(&report)
@@ -245,10 +248,11 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 	}
 	report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, SourceRefs: req.SourceRefs}
 	report.Run = EvalRunReport{
-		DecisionCount:  len(run.Decisions),
-		CurrentClaims:  len(current),
-		LiveModelCalls: 0,
-		Decisions:      run.Decisions,
+		DecisionCount:      len(run.Decisions),
+		CurrentClaims:      len(current),
+		ClaimsLedgerExists: claimsLedgerExists(evalHome),
+		LiveModelCalls:     0,
+		Decisions:          run.Decisions,
 	}
 	report.Checks = evaluateExpectations(ec.Expect, req, report.Run)
 	finalizeEvalReport(&report)
@@ -274,6 +278,11 @@ func newEvalHome(evalRoot string) (string, error) {
 		return "", err
 	}
 	return os.MkdirTemp(parent, "eval-*")
+}
+
+func claimsLedgerExists(homePath string) bool {
+	_, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl"))
+	return err == nil
 }
 
 func buildEvalRequest(base string, ec EvalCase, prior PriorState) (LLMExtractionRequest, error) {
@@ -360,6 +369,9 @@ func evaluateExpectations(expect EvalExpectations, req LLMExtractionRequest, run
 	if expect.CurrentClaims != nil {
 		checks = append(checks, checkInt("current_claims", run.CurrentClaims, *expect.CurrentClaims))
 	}
+	if expect.ClaimsLedger != nil {
+		checks = append(checks, checkBool("claims_ledger_exists", run.ClaimsLedgerExists, *expect.ClaimsLedger))
+	}
 	if expect.LiveModelCalls != nil {
 		checks = append(checks, checkInt("live_model_calls", run.LiveModelCalls, *expect.LiveModelCalls))
 	}
@@ -439,6 +451,13 @@ func checkDecisions(want []ExpectedDecision, got []AdjudicationDecision) EvalChe
 func checkInt(name string, got, want int) EvalCheck {
 	if got != want {
 		return EvalCheck{Name: name, Status: "fail", Detail: fmt.Sprintf("got %d, want %d", got, want)}
+	}
+	return EvalCheck{Name: name, Status: "pass"}
+}
+
+func checkBool(name string, got, want bool) EvalCheck {
+	if got != want {
+		return EvalCheck{Name: name, Status: "fail", Detail: fmt.Sprintf("got %t, want %t", got, want)}
 	}
 	return EvalCheck{Name: name, Status: "pass"}
 }
