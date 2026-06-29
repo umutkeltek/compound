@@ -1,0 +1,18 @@
+{
+  "schema_version": "compound.owner_writeback_gate.v0.1",
+  "id": "owg_fixture_writeback",
+  "created_at": "2026-06-29T12:00:00Z",
+  "candidate_ref": "cand_fixture_runtime_observation",
+  "candidate_kind": "memory",
+  "owner_target": {
+    "kind": "project_contract",
+    "ref": "project://fixture/service/project.yaml"
+  },
+  "gate_basis": "runtime doctor observation would update owner contract",
+  "action_intent_ref": "act_fixture_writeback",
+  "mutation_class": "local_reversible",
+  "policy_decision_ref": "pol_fixture_writeback_allow",
+  "evidence_refs": [
+    "ev_fixture_runtime_doctor"
+  ]
+}

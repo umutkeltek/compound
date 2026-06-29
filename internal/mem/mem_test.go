@@ -133,6 +133,17 @@ func TestCandidateFirstNoCanonWithoutPromote(t *testing.T) {
 	if claims, _ := s.loadClaims(); len(claims) != 0 {
 		t.Errorf("reject must not write a claim; got %d", len(claims))
 	}
+	c3, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)
+	res, err := s.Adjudicate(c3[0].ID, "no_promote", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Candidate.State != "no_promote" {
+		t.Fatalf("no_promote candidate state = %q", res.Candidate.State)
+	}
+	if claims, _ := s.loadClaims(); len(claims) != 0 {
+		t.Errorf("no_promote must not write a claim; got %d", len(claims))
+	}
 }
 
 func TestDuplicateRejected(t *testing.T) {

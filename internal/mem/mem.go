@@ -40,7 +40,7 @@ var Derivations = []string{"deterministic", "extracted", "inferred", "ambiguous"
 var ClaimTypes = []string{"preference", "decision", "architecture", "status", "constraint"}
 
 // Verdicts are the adjudication outcomes (candidate-first).
-var Verdicts = []string{"reject", "park", "promote"}
+var Verdicts = []string{"reject", "park", "promote", "no_promote"}
 
 // Visibilities are the temperature tiers. retired is hidden from default recall but kept.
 var Visibilities = []string{"ambient", "contextual", "candidate", "private", "operational", "retired"}
@@ -210,7 +210,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	}
 
 	if verdict != "promote" {
-		c.State = map[string]string{"reject": "rejected", "park": "parked"}[verdict]
+		c.State = map[string]string{"reject": "rejected", "park": "parked", "no_promote": "no_promote"}[verdict]
 		if err := writeJSON(filepath.Join(s.candDir(), c.ID+".json"), &c); err != nil {
 			return res, err
 		}

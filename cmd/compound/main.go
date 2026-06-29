@@ -31,6 +31,7 @@ import (
 	"compound/internal/projection"
 	"compound/internal/runtimebinding"
 	"compound/internal/work"
+	"compound/internal/writeback"
 )
 
 const version = "0.1.0"
@@ -53,6 +54,8 @@ func main() {
 		cmdRuntime(os.Args[2:])
 	case "projection":
 		cmdProjection(os.Args[2:])
+	case "writeback":
+		cmdWriteback(os.Args[2:])
 	case "home":
 		cmdHome(os.Args[2:])
 	case "envelope":
@@ -139,6 +142,7 @@ compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml>            RuntimeBinding + ServiceContract health
 compound projection doctor <freshness.yaml>                    GeneratedViewObservation + ProjectionFreshness
+compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
   compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
@@ -748,6 +752,156 @@ func cmdPolicy(args []string) {
 	os.Exit(gateExit(pd))
 }
 
+// cmdWriteback governs candidate updates to owner surfaces.
+func cmdWriteback(args []string) {
+	if len(args) == 0 {
+		writebackUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "gate":
+		cmdWritebackGate(args[1:])
+	case "no-promote":
+		cmdWritebackNoPromote(args[1:])
+	default:
+		writebackUsage()
+		os.Exit(2)
+	}
+}
+
+func cmdWritebackGate(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound writeback gate <gate.json> --policy <policy-decision.json> [--record]")
+		os.Exit(2)
+	}
+	gatePath := args[0]
+	rest := args[1:]
+	policyPath := valueFlag(rest, "--policy")
+	record := hasFlag(rest, "--record")
+	gate := loadWritebackGate(gatePath)
+	var pd *envelope.PolicyDecision
+	if policyPath != "" {
+		loaded := loadPolicyDecision(policyPath)
+		pd = &loaded
+	}
+	checked, err := writeback.EvaluateGate(gate, pd, time.Now())
+	die(err)
+	if record {
+		homePath, err := home.Resolve("")
+		die(err)
+		store, err := writeback.Open(homePath)
+		die(err)
+		die(store.RecordGate(checked))
+	}
+	printJSON(checked)
+	os.Exit(writebackGateExit(checked.Status))
+}
+
+func cmdWritebackNoPromote(args []string) {
+	candidate := valueFlag(args, "--candidate")
+	kind := valueFlag(args, "--kind")
+	basis := valueFlag(args, "--basis")
+	evidence := splitCSV(valueFlag(args, "--evidence"))
+	ownerKind := valueFlag(args, "--owner-kind")
+	ownerRef := valueFlag(args, "--owner-ref")
+	expiry := valueFlag(args, "--expiry")
+	policyVersion := valueFlag(args, "--policy-version")
+	if candidate == "" || basis == "" || len(evidence) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound writeback no-promote --candidate C --basis B --evidence E1[,E2] [--kind K] [--owner-kind K --owner-ref R] [--expiry RFC3339]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	die(err)
+	store, err := writeback.Open(homePath)
+	die(err)
+	decision, created, err := store.RecordNoPromote(writeback.NoPromoteDecision{
+		CandidateRef:  candidate,
+		CandidateKind: kind,
+		OwnerTarget:   writeback.OwnerTarget{Kind: ownerKind, Ref: ownerRef},
+		Basis:         basis,
+		Expiry:        expiry,
+		EvidenceRefs:  evidence,
+		PolicyVersion: policyVersion,
+	}, time.Now())
+	die(err)
+	out := struct {
+		writeback.NoPromoteDecision
+		Created bool `json:"created"`
+	}{NoPromoteDecision: decision, Created: created}
+	printJSON(out)
+}
+
+func writebackUsage() {
+	fmt.Fprintln(os.Stderr, `usage:
+compound writeback gate <gate.json> --policy <policy-decision.json> [--record]
+compound writeback no-promote --candidate C --basis B --evidence E1[,E2] [--kind K] [--owner-kind K --owner-ref R] [--expiry RFC3339]`)
+}
+
+func loadWritebackGate(path string) writeback.OwnerWritebackGate {
+	data, err := os.ReadFile(path)
+	die(err)
+	var g writeback.OwnerWritebackGate
+	if err := json.Unmarshal(data, &g); err != nil {
+		die(fmt.Errorf("parse owner writeback gate: %w", err))
+	}
+	return g
+}
+
+func loadPolicyDecision(path string) envelope.PolicyDecision {
+	data, err := os.ReadFile(path)
+	die(err)
+	var pd envelope.PolicyDecision
+	if err := json.Unmarshal(data, &pd); err != nil {
+		die(fmt.Errorf("parse policy decision: %w", err))
+	}
+	return pd
+}
+
+func writebackGateExit(status string) int {
+	switch status {
+	case writeback.GateAllowed:
+		return 0
+	case writeback.GateDenied:
+		return 4
+	case writeback.GateHeld, writeback.GateNoPolicy:
+		return 3
+	default:
+		return 1
+	}
+}
+
+func valueFlag(args []string, name string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func hasFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name {
+			return true
+		}
+	}
+	return false
+}
+
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // cmdWork is the lifecycle store: one work_id threads intent -> context -> action ->
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
@@ -938,6 +1092,13 @@ func printJSON(v any) {
 		os.Exit(1)
 	}
 	fmt.Println(string(b))
+}
+
+func die(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 }
 
 // cmdContract compiles the EffectiveContract — the instructions/hooks/policies in force
