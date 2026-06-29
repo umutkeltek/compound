@@ -145,7 +145,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
-  compound distiller run <trace.json> | doctor [--writeback]    Trace -> candidate fan-out, adjudication, self-improvement debt
+  compound distiller run <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
 compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
@@ -359,6 +359,34 @@ func cmdSource(args []string) {
 // adjudicator. Memory candidates flow through the mem ledger; everything else is candidate-first
 // and never becomes canon here; self-improvement signals (eval/method/capability) never auto-apply.
 func cmdDistiller(args []string) {
+	if len(args) == 1 && args[0] == "prior-state" {
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		store, err := mem.Open(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		prior, err := distiller.LoadPriorStateFromHome(homePath, store, distiller.DefaultPolicy())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller prior-state:", err)
+			os.Exit(1)
+		}
+		cov := prior.Coverage()
+		fmt.Println("# distiller prior-state")
+		fmt.Printf("- policy: %s\n", prior.PolicyVersion)
+		fmt.Printf("- current_claims: %d\n", cov.CurrentClaims)
+		fmt.Printf("- claims: decisions=%d preferences=%d architectures=%d statuses=%d constraints=%d\n",
+			cov.Decisions, cov.Preferences, cov.Architectures, cov.Statuses, cov.Constraints)
+		fmt.Printf("- candidates: failures=%d taste=%d product_hypotheses=%d capability_observations=%d eval_cases=%d method_upgrades=%d policy_patches=%d\n",
+			cov.FailurePatterns, cov.TasteObservations, cov.ProductHypotheses, cov.CapabilityObs, cov.EvalCases, cov.MethodUpgrades, cov.PolicyPatches)
+		fmt.Printf("- capability_nodes: %d\n", cov.CapabilityNodes)
+		fmt.Printf("- no_promote_decisions: %d\n", cov.NoPromoteDecisions)
+		return
+	}
 	if len(args) >= 1 && args[0] == "doctor" {
 		writebackEnabled := hasFlag(args[1:], "--writeback")
 		homePath, err := home.Resolve("")
@@ -404,7 +432,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller run <trace.json> | doctor")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller run <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")

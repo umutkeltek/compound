@@ -18,7 +18,7 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 | `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
 | `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
 | `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall |
-| `distiller` | canonical | trace -> prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and can route method/policy debt through writeback gate |
+| `distiller` | canonical | trace -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and can route method/policy debt through writeback gate |
 | `capgraph` | canonical | capability graph: surface, observe, consume |
 | `runtimebinding` | canonical | RuntimeBinding + ServiceContract bundle and doctor |
 | `projection` | canonical | GeneratedViewObservation + ProjectionFreshness doctor |
@@ -52,7 +52,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 |---|---|---|
 | Spine | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition` | canonical |
 | Memory | `memory candidate/adjudicate/recall/timeline/query/engine-doctor/doctor` | canonical; `engine-doctor` proves rented breadth engines leave owned ledger bytes unchanged |
-| Distillation | `distiller run`; `distiller doctor [--writeback]` | canonical; duplicate memory outputs create idempotent `NoPromoteDecision` rows; doctor reads adjudications + inboxes and routes method/policy debt through `OwnerWritebackGate` |
+| Distillation | `distiller run`; `distiller doctor [--writeback]`; `distiller prior-state` | canonical; duplicate memory outputs create idempotent `NoPromoteDecision` rows; prior-state reads current claims, typed inboxes, capability nodes, and no-promote rows; doctor routes method/policy debt through `OwnerWritebackGate` |
 | Capability | `capability add/surface/observe/consume/list/import-topology` | canonical; topology import maps tools/MCPs into CapabilityGraph nodes + fallback edges |
 | Runtime | `runtime doctor <runtime-binding.yaml> [--writeback]`; `runtime doctor --project-contract <project.yaml> [--writeback]` | canonical first slice + infra-os project-contract adapter; failing reports can enter work -> gate -> receipt/transition |
 | Projection | `projection doctor <freshness.yaml> [--writeback]` | canonical first slice; stale/drifted observations can enter work -> gate -> receipt/transition |

@@ -111,12 +111,16 @@ func (p Policy) Stamp() string { return fmt.Sprintf("%s.v%d", p.ID, p.Version) }
 // PriorState is RetrievedPriorState: the canon the critic compares an extraction against, so it can
 // tell new from duplicate from supersession/contradiction (distill against canon, not blind).
 type PriorState struct {
-	Current []mem.Claim
+	PolicyVersion      string
+	Current            []mem.Claim
+	ClaimsByType       map[string][]mem.Claim
+	CandidatesByKind   map[string][]PriorCandidate
+	CapabilityNodes    []PriorCapabilityNode
+	NoPromoteDecisions []PriorNoPromote
 }
 
 func LoadPriorState(store *mem.Store) (PriorState, error) {
-	cur, err := store.AllCurrent()
-	return PriorState{Current: cur}, err
+	return LoadPriorStateFromHome("", store, DefaultPolicy())
 }
 
 // Critique is the per-candidate verdict before adjudication.
@@ -258,7 +262,7 @@ type RunResult struct {
 // Every candidate yields an AdjudicationDecision (appended to the ledger), so nothing is silent.
 func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extractor, now time.Time) (RunResult, error) {
 	res := RunResult{Policy: policy.Stamp()}
-	prior, err := LoadPriorState(store)
+	prior, err := LoadPriorStateFromHome(homePath, store, policy)
 	if err != nil {
 		return res, err
 	}
