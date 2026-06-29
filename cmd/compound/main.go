@@ -34,6 +34,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
+	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
 	"compound/internal/tooltopology"
@@ -85,6 +86,8 @@ func main() {
 		cmdHarness(os.Args[2:])
 	case "transition":
 		cmdTransition(os.Args[2:])
+	case "route":
+		cmdRoute(os.Args[2:])
 	case "memory":
 		cmdMemory(os.Args[2:])
 	case "distiller":
@@ -144,6 +147,7 @@ usage:
   compound hook <name> <fixture.json>                           run lifecycle hook over fixture
   compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
   compound transition show <id>                                 inspect a Transition or envelope
+  compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
@@ -701,17 +705,16 @@ func cmdDistillerExtract(args []string) {
 		fmt.Fprintln(os.Stderr, "distiller extract:", err)
 		os.Exit(1)
 	}
-	routeEvidence, err := distiller.BuildExecutionRouteEvidence(req, report, time.Now())
+	routeEvidence, err := distiller.BuildExecutionRouteEvidence(req, report, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller extract route evidence:", err)
 		os.Exit(1)
 	}
-	routeTransition, err := distiller.BuildExecutionRouteTransition(routeEvidence)
+	routeEvidence, routeTransition, err := distiller.JoinExecutionRouteTransition(routeEvidence)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller extract route transition:", err)
 		os.Exit(1)
 	}
-	routeEvidence.TransitionID = routeTransition.ID
 	if err := distiller.RecordExecutionRouteEvidence(homePath, routeEvidence); err != nil {
 		fmt.Fprintln(os.Stderr, "distiller extract route evidence:", err)
 		os.Exit(1)
@@ -1115,6 +1118,31 @@ func cmdTransition(args []string) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "[%s] ok\n", kind)
+}
+
+func cmdRoute(args []string) {
+	if len(args) != 2 || args[0] != "import" {
+		fmt.Fprintln(os.Stderr, "usage: compound route import <execution-route-evidence.json>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	result, err := routeevidence.ImportFile(homePath, args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "route import:", err)
+		os.Exit(1)
+	}
+	target := result.Evidence.SelectedTarget
+	fmt.Println("# route import")
+	fmt.Printf("- route_evidence: %s\n", result.Evidence.ID)
+	fmt.Printf("- route_transition: %s\n", result.Transition.ID)
+	fmt.Printf("- request: %s\n", result.Evidence.RequestID)
+	fmt.Printf("- selected_target: %s/%s (%s)\n", target.Provider, target.Model, target.Protocol)
+	fmt.Printf("- status: %s\n", result.Evidence.Status)
+	fmt.Println("- verdict: metadata_only_not_task_success")
 }
 
 // cmdHarness prints the HarnessRegistry — the spine's record of what each harness

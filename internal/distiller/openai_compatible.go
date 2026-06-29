@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"compound/internal/routeevidence"
 )
 
 const LiveExtractionSchemaVersion = "compound.distiller.live_extraction.v0.1"
@@ -23,11 +25,7 @@ type OpenAICompatibleOptions struct {
 	Now           time.Time
 }
 
-type OpenAIUsage struct {
-	PromptTokens     int `json:"prompt_tokens,omitempty"`
-	CompletionTokens int `json:"completion_tokens,omitempty"`
-	TotalTokens      int `json:"total_tokens,omitempty"`
-}
+type OpenAIUsage = routeevidence.Usage
 
 type LiveExtractionReport struct {
 	SchemaVersion  string                `json:"schema_version"`

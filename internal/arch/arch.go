@@ -32,7 +32,7 @@ var Classification = map[string]Class{
 	// spine (canonical runtime + spine-bound Gen-2)
 	"home": Spine, "envelope": Spine, "contract": Spine, "work": Spine,
 	"policy": Spine, "harness": Spine, "hook": Spine, "arch": Spine,
-	"distiller": Spine, "capgraph": Spine, "runtimebinding": Spine, "projection": Spine, "writeback": Spine, "product": Spine,
+	"distiller": Spine, "capgraph": Spine, "runtimebinding": Spine, "projection": Spine, "writeback": Spine, "product": Spine, "routeevidence": Spine,
 	// shared leaf
 	"candidates": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
