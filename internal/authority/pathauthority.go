@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"compound/internal/candidates"
@@ -62,9 +63,88 @@ func ImportPathAuthority(path string, existing []mem.Entity) (PathAuthority, mem
 	if err := validatePathAuthority(pa); err != nil {
 		return pa, mem.Entity{}, nil, PathAuthorityReport{EntityRef: pa.EntityRef, Status: "fail"}, err
 	}
+	entity, facts, report := buildPathAuthorityImport(pa, "path-authority:"+filepath.Base(path), existing)
+	return pa, entity, facts, report, nil
+}
 
+type OSPathRegistryReport struct {
+	Status         string                `json:"status"`
+	EntityCount    int                   `json:"entity_count"`
+	CandidateCount int                   `json:"candidate_count"`
+	Reports        []PathAuthorityReport `json:"reports"`
+}
+
+type osPathRegistryFile struct {
+	Version            int                   `yaml:"version"`
+	CanonicalRoots     map[string]osPathRoot `yaml:"canonical_roots"`
+	StaleOrCompatRoots map[string]osPathRoot `yaml:"stale_or_compat_roots"`
+}
+
+type osPathRoot struct {
+	Path        string   `yaml:"path"`
+	Status      string   `yaml:"status"`
+	Owns        []string `yaml:"owns"`
+	ArchivedTo  string   `yaml:"archived_to"`
+	MovedTo     string   `yaml:"moved_to"`
+	AllowedUse  string   `yaml:"allowed_use"`
+	WritePolicy string   `yaml:"write_policy"`
+}
+
+func ImportOSPathRegistry(path string, existing []mem.Entity) ([]PathAuthority, []mem.Entity, []mem.Candidate, OSPathRegistryReport, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, nil, OSPathRegistryReport{}, err
+	}
+	var rf osPathRegistryFile
+	if err := yaml.Unmarshal(data, &rf); err != nil {
+		return nil, nil, nil, OSPathRegistryReport{}, err
+	}
+	if rf.Version == 0 {
+		return nil, nil, nil, OSPathRegistryReport{Status: "fail"}, fmt.Errorf("version required")
+	}
+	if len(rf.CanonicalRoots) == 0 && len(rf.StaleOrCompatRoots) == 0 {
+		return nil, nil, nil, OSPathRegistryReport{Status: "fail"}, fmt.Errorf("canonical_roots or stale_or_compat_roots required")
+	}
+
+	allExisting := append([]mem.Entity{}, existing...)
+	var out []PathAuthority
+	var entities []mem.Entity
+	var facts []mem.Candidate
+	var reports []PathAuthorityReport
+	for _, key := range sortedKeys(rf.CanonicalRoots) {
+		pa, err := pathAuthorityFromOSRoot(key, rf.CanonicalRoots[key], true, filepath.Base(path))
+		if err != nil {
+			return out, entities, facts, OSPathRegistryReport{Status: "fail", Reports: reports}, err
+		}
+		entity, cs, report := buildPathAuthorityImport(pa, "os-path-authority:"+filepath.Base(path)+":"+key, allExisting)
+		out = append(out, pa)
+		entities = append(entities, entity)
+		facts = append(facts, cs...)
+		reports = append(reports, report)
+		allExisting = mergeEntityForImport(allExisting, entity)
+	}
+	for _, key := range sortedKeys(rf.StaleOrCompatRoots) {
+		pa, err := pathAuthorityFromOSRoot(key, rf.StaleOrCompatRoots[key], false, filepath.Base(path))
+		if err != nil {
+			return out, entities, facts, OSPathRegistryReport{Status: "fail", Reports: reports}, err
+		}
+		entity, cs, report := buildPathAuthorityImport(pa, "os-path-authority:"+filepath.Base(path)+":"+key, allExisting)
+		out = append(out, pa)
+		entities = append(entities, entity)
+		facts = append(facts, cs...)
+		reports = append(reports, report)
+		allExisting = mergeEntityForImport(allExisting, entity)
+	}
+	return out, entities, facts, OSPathRegistryReport{
+		Status:         "ok",
+		EntityCount:    len(entities),
+		CandidateCount: len(facts),
+		Reports:        reports,
+	}, nil
+}
+
+func buildPathAuthorityImport(pa PathAuthority, src string, existing []mem.Entity) (mem.Entity, []mem.Candidate, PathAuthorityReport) {
 	entity := mergePathAuthorityEntity(pa, existing)
-	src := "path-authority:" + filepath.Base(path)
 	var facts []mem.Candidate
 	add := func(pred, val string) {
 		val = strings.TrimSpace(val)
@@ -110,7 +190,7 @@ func ImportPathAuthority(path string, existing []mem.Entity) (PathAuthority, mem
 		Identifiers:    entity.Identifiers,
 		CandidateCount: len(facts),
 	}
-	return pa, entity, facts, report, nil
+	return entity, facts, report
 }
 
 func validatePathAuthority(pa PathAuthority) error {
@@ -178,6 +258,105 @@ func mergePathAuthorityEntity(pa PathAuthority, existing []mem.Entity) mem.Entit
 	}
 	e.Identifiers = mergeStrings(e.Identifiers, ids...)
 	return e
+}
+
+func pathAuthorityFromOSRoot(key string, root osPathRoot, canonical bool, sourceName string) (PathAuthority, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return PathAuthority{}, fmt.Errorf("os path root key required")
+	}
+	if strings.TrimSpace(root.Path) == "" {
+		return PathAuthority{}, fmt.Errorf("os path root %q path required", key)
+	}
+	status := normalizeOSPathStatus(root.Status, canonical)
+	if status == "" {
+		return PathAuthority{}, fmt.Errorf("os path root %q bad status %q", key, root.Status)
+	}
+	aliases := []string{key, strings.ReplaceAll(key, "_", "-")}
+	pa := PathAuthority{
+		SchemaVersion:       PathAuthoritySchemaVersion,
+		EntityRef:           "source:" + strings.ReplaceAll(key, "_", "-"),
+		EntityKind:          "repo",
+		Aliases:             aliases,
+		AuthoritativeSource: "os-path-authority:" + sourceName,
+		SourceBindings: []SourceBinding{
+			{Kind: "registry_key", Value: key},
+		},
+		PathBindings: []PathBinding{{
+			Path:   expandHome(root.Path),
+			Status: status,
+		}},
+		EvidenceRefs: []string{"os-path-authority:" + sourceName},
+	}
+	if root.ArchivedTo != "" {
+		pa.SourceBindings = append(pa.SourceBindings, SourceBinding{Kind: "archived_to", Value: root.ArchivedTo})
+	}
+	if root.MovedTo != "" {
+		pa.SourceBindings = append(pa.SourceBindings, SourceBinding{Kind: "moved_to", Value: root.MovedTo})
+	}
+	if root.AllowedUse != "" {
+		pa.SourceBindings = append(pa.SourceBindings, SourceBinding{Kind: "allowed_use", Value: root.AllowedUse})
+	}
+	if root.WritePolicy != "" {
+		pa.SourceBindings = append(pa.SourceBindings, SourceBinding{Kind: "write_policy", Value: root.WritePolicy})
+	}
+	if err := validatePathAuthority(pa); err != nil {
+		return PathAuthority{}, err
+	}
+	return pa, nil
+}
+
+func normalizeOSPathStatus(status string, canonical bool) string {
+	switch strings.TrimSpace(status) {
+	case "", "active":
+		if canonical {
+			return "active"
+		}
+		return ""
+	case "active_index":
+		return "active"
+	case "missing_stale":
+		return "stale"
+	case "retired_archived", "retired_merged", "retired":
+		return "retired"
+	default:
+		return ""
+	}
+}
+
+func expandHome(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func mergeEntityForImport(existing []mem.Entity, entity mem.Entity) []mem.Entity {
+	for i, e := range existing {
+		if e.Slug == entity.Slug {
+			existing[i] = entity
+			return existing
+		}
+	}
+	return append(existing, entity)
 }
 
 func mergeStrings(values []string, more ...string) []string {

@@ -26,7 +26,7 @@ The current public surface is:
 | `compound memory candidate/adjudicate/recall/timeline/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall |
 | `compound distiller run <trace.json>` | trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
-| `compound authority import` / `compound decisions import` | import external authority and DecisionLifecycle records through spine memory |
+| `compound authority import/path/path-registry` / `compound decisions import` | import external authority, OS-style path authority, and DecisionLifecycle records through spine memory |
 | `compound runtime doctor <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle |
 | `compound runtime doctor --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor |
 | `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes |

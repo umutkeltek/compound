@@ -157,7 +157,7 @@ usage:
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
-  compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
@@ -2004,7 +2004,7 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, _ := openMemStore()
@@ -2062,6 +2062,46 @@ func cmdAuthority(args []string) {
 		fmt.Printf("# path authority %s\n\n", report.EntityRef)
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- identifiers: %d\n", len(report.Identifiers))
+		fmt.Printf("- authority_claims: %d\n", promoted)
+		return
+	}
+	if args[0] == "path-registry" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority path-registry <os-path-authority.yaml>")
+			os.Exit(2)
+		}
+		existing, err := store.Entities()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority path-registry:", err)
+			os.Exit(1)
+		}
+		_, entities, facts, report, err := authority.ImportOSPathRegistry(args[1], existing)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority path-registry:", err)
+			os.Exit(1)
+		}
+		for _, entity := range entities {
+			if _, err := store.RegisterEntity(entity, time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "authority entity:", err)
+				os.Exit(1)
+			}
+		}
+		captured, err := store.Capture(facts, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority capture:", err)
+			os.Exit(1)
+		}
+		promoted := 0
+		for _, c := range captured {
+			if _, err := store.Adjudicate(c.ID, "promote", "path-authority-registry-import", time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "authority promote:", err)
+				os.Exit(1)
+			}
+			promoted++
+		}
+		fmt.Printf("# path authority registry\n\n")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- entities: %d\n", report.EntityCount)
 		fmt.Printf("- authority_claims: %d\n", promoted)
 		return
 	}

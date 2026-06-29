@@ -138,6 +138,44 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	}
 }
 
+func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("HOME", "/home/tester")
+	fixture := filepath.Join("..", "..", "fixtures", "authority", "os-path-authority.yaml")
+
+	out := captureStdout(t, func() {
+		cmdAuthority([]string{"path-registry", fixture})
+	})
+	if !strings.Contains(out, "entities: 5") || !strings.Contains(out, "status: ok") {
+		t.Fatalf("path-registry output =\n%s", out)
+	}
+
+	active := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "/home/tester/Projects/control-spine/root"})
+	})
+	if !strings.Contains(active, "status: resolved") || !strings.Contains(active, "entity: source:control-spine") {
+		t.Fatalf("active path resolve output =\n%s", active)
+	}
+
+	retired := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "/home/tester/Projects/old-control-spine"})
+	})
+	if !strings.Contains(retired, "status: resolved") || !strings.Contains(retired, "entity: source:old-control-spine") {
+		t.Fatalf("retired path resolve output =\n%s", retired)
+	}
+
+	oldAuthority := captureStdout(t, func() {
+		cmdAuthority([]string{"source:old-control-spine"})
+	})
+	if strings.Contains(oldAuthority, "**current_path**") {
+		t.Fatalf("retired root must not be current authority:\n%s", oldAuthority)
+	}
+	if !strings.Contains(oldAuthority, "**known_path_retired**: /home/tester/Projects/old-control-spine") {
+		t.Fatalf("retired authority output missing known retired path:\n%s", oldAuthority)
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
