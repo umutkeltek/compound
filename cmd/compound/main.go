@@ -1,18 +1,17 @@
 // Command compound is the CLI for the compound information kernel / transition substrate.
 // Built envelope-first: the proven spine is P0-P6 first slice (home, envelopes, contract/orient, work,
 // policy, harness/hook, memory ledger). Memory is one slice on top (P6, re-bound through the spine), not the
-// system boundary. Legacy/prototype memory-era commands still exist below and will be migrated.
+// system boundary. Gen-1 memory-era commands are retired tombstones; canonical memory lives
+// under `compound memory ...`.
 // Architecture: docs/architecture/{substrate,runtime,transition}.md, docs/roadmap/phases.md.
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,22 +21,13 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/decisions"
-	"compound/internal/distill"
 	"compound/internal/distiller"
-	"compound/internal/engine"
 	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
-	"compound/internal/ledger"
 	"compound/internal/mem"
-	"compound/internal/memory"
-	"compound/internal/pattern"
 	"compound/internal/policy"
-	"compound/internal/position"
-	"compound/internal/recall"
-	"compound/internal/reconcile"
-	"compound/internal/scope"
 	"compound/internal/work"
 )
 
@@ -51,28 +41,12 @@ func main() {
 	switch os.Args[1] {
 	case "version", "--version", "-v":
 		fmt.Printf("compound %s\n", version)
-	case "distill":
-		cmdDistill(os.Args[2:])
-	case "scope":
-		cmdScope(os.Args[2:])
-	case "promote":
-		cmdPromote(os.Args[2:])
-	case "build":
-		cmdBuild()
-	case "reconcile":
-		cmdReconcile(os.Args[2:])
-	case "timeline":
-		cmdTimeline(os.Args[2:])
+	case "distill", "scope", "promote", "build", "reconcile", "timeline", "recall", "pack", "ledger":
+		cmdRetiredGen1(os.Args[1])
 	case "authority":
 		cmdAuthority(os.Args[2:])
 	case "decisions":
 		cmdDecisions(os.Args[2:])
-	case "recall":
-		cmdRecall(os.Args[2:])
-	case "pack":
-		cmdPack(os.Args[2:])
-	case "ledger":
-		cmdLedger(os.Args[2:])
 	case "home":
 		cmdHome(os.Args[2:])
 	case "envelope":
@@ -141,29 +115,26 @@ func usage() {
 
 usage:
   compound version
-  compound distill <session.jsonl> [--model=M] [--ingest]   deep-distill -> candidate claims
-  compound scope <session.jsonl> [--explain]                attribute a session to entities (no cwd)
-  compound recall "<query>" [--ambient]   planner: positions + claims + breadth (ambient = promoted-only)
-  compound promote <claim-id> --basis=<b>   candidate -> promoted (the only path to canon)
-  compound build                derive current Positions + recurring Patterns from Claims
-  compound reconcile [--entity=E]   alive memory: supersede contradicted/duplicate claims (LLM)
-  compound timeline <entity>    how positions on this entity evolved (walks supersedes edges)
-  compound authority import [f] | authority <project>   where projects live (from a registry)
-  compound decisions import | decisions [--kind=K] | decisions doctor   one store, kinds: policy/doctrine/operational
-  compound pack "<topic>"       breadth via the rented engine
-  compound ledger stat          record counts per object kind
-  compound home <init|doctor|where> [--home P] [--local]   the COMPOUND_HOME runtime body
-  compound envelope <validate <file>...|kinds>             typed runtime envelopes
-  compound contract compile --harness H --cwd D --task T   compile the EffectiveContract in force
-  compound orient --harness H [--cwd D] [--task T]         the ContextPack to orient from (records excluded)
-  compound work <create|show|list|claim|advance|close|act> one work_id: intent->context->action->receipt->transition
-  compound policy evaluate <action-intent.json>            governance v0: ActionIntent -> PolicyDecision (rc 0/3/4)
-  compound hook <name> <fixture.json>                      run a lifecycle hook over a fixture (capability-aware)
-  compound harness <list|NAME>                             the HarnessRegistry: what each harness supports + limits
-  compound transition show <id>                            inspect a Transition (or any envelope) under COMPOUND_HOME/events
-  compound memory <candidate|adjudicate|recall|timeline|query|relate|graph|doctor>  P6: claim ledger + as-of recall + rented-engine breadth + task-shaped graph recall
-  compound distiller run <trace.json>                      P6: trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator (model extracts, code decides)
-  compound capability <add|surface|observe|consume|list>   P8: capability graph — auto-surface (never auto-execute), learns from observations
+  compound home <init|doctor|where> [--home P] [--local]        COMPOUND_HOME runtime body
+  compound envelope <validate <file>...|kinds>                  typed runtime envelopes
+  compound contract compile --harness H --cwd D --task T        compile EffectiveContract in force
+  compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
+  compound work <create|show|list|claim|advance|close|act>      one work_id: intent -> context -> action -> receipt -> transition
+  compound policy evaluate <action-intent.json>                 ActionIntent -> PolicyDecision
+  compound hook <name> <fixture.json>                           run lifecycle hook over fixture
+  compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
+  compound transition show <id>                                 inspect a Transition or envelope
+  compound memory <candidate|adjudicate|recall|timeline|query|doctor>
+                                                                 spine memory: candidates, claims, positions, patterns, evidence
+  compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
+  compound capability <add|surface|observe|consume|list>         capability graph: auto-surface, never auto-execute
+  compound authority import [f] | authority <entity>             import/query authority through spine memory
+  compound decisions import | decisions [--kind=K] | decisions doctor
+                                                                 import/query decisions through spine memory
+
+retired Gen-1 tombstones:
+  compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
+  These exit 2 and point to canonical compound memory/distiller surfaces.
 `)
 }
 
@@ -1109,292 +1080,166 @@ func cmdEnvelope(args []string) {
 	}
 }
 
-func ledgerRoot() string {
-	if r := os.Getenv("COMPOUND_LEDGER"); r != "" {
-		return r
+func cmdRetiredGen1(verb string) {
+	replacements := map[string]string{
+		"distill":   "compound distiller run <trace.json>",
+		"scope":     "compound memory entity resolve <token>",
+		"promote":   "compound memory adjudicate <candidate-id> --verdict promote",
+		"build":     "compound memory positions / compound memory patterns",
+		"reconcile": "compound memory adjudicate (supersession is spine-native)",
+		"timeline":  "compound memory timeline <entity>",
+		"recall":    "compound memory recall <query>",
+		"pack":      "compound memory query <query>",
+		"ledger":    "compound memory doctor",
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".compound", "ledger")
+	fmt.Fprintf(os.Stderr, "compound %s retired with the Gen-1 memory stack. Use %s.\n", verb, replacements[verb])
+	os.Exit(2)
 }
 
-func scopeSuffix(primary string) string {
-	if primary == "" {
-		return ""
+func openMemStore() (*mem.Store, string) {
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run compound home init)")
+		os.Exit(1)
 	}
-	return " · primary=" + primary
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	return store, homePath
 }
 
-func cmdRecall(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, `usage: compound recall "<query>"`)
+func cmdAuthority(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | authority <entity>")
 		os.Exit(2)
 	}
-	var terms []string
-	ambient := false
-	for _, a := range args {
-		if a == "--ambient" {
-			ambient = true
-			continue
+	store, _ := openMemStore()
+	if args[0] == "import" {
+		path := authority.DefaultRegistry()
+		if len(args) > 1 {
+			path = args[1]
 		}
-		terms = append(terms, a)
-	}
-	query := strings.Join(terms, " ")
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-	plan := recall.MakePlan(query, scope.SeedEntities(), ambient)
-	res, err := recall.Run(l, engine.NewConfigured(), plan)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "recall: %v\n", err)
-		os.Exit(1)
-	}
-	note := ""
-	if plan.Entity != "" {
-		note = " · entity=" + plan.Entity
-	}
-	if ambient {
-		note += " · ambient(promoted-only)"
-	}
-	fmt.Printf("mode: %s%s\n\n", plan.Mode, note)
-	if len(res.Positions) > 0 {
-		fmt.Println("## Current positions")
-		for _, p := range res.Positions {
-			fmt.Printf("- [%s] %s/%s → active %s (%d in chain)\n", p.Status, p.EntitySlug, p.TopicSlug, p.ActiveClaimID, len(p.ClaimChain))
+		if strings.TrimSpace(path) == "" {
+			fmt.Fprintln(os.Stderr, "authority import needs registry path or COMPOUND_AUTHORITY_REGISTRY")
+			os.Exit(2)
 		}
-		fmt.Println()
-	}
-	if len(res.Claims) > 0 {
-		fmt.Println("## Owned claims (ledger)")
-		for _, c := range res.Claims {
-			fmt.Printf("- [%s] %s\n", c.Status, c.Object)
-		}
-		fmt.Println()
-	}
-	if len(res.Hits) > 0 {
-		fmt.Println("## Breadth (engine)")
-		for _, h := range res.Hits {
-			fmt.Printf("- `%s` — %s\n", h.Slug, h.Snippet)
-		}
-	}
-	if len(res.Positions) == 0 && len(res.Claims) == 0 && len(res.Hits) == 0 {
-		fmt.Println("(nothing — zero_result_not_proof; check coverage)")
-	}
-}
-
-func cmdBuild() {
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-	claims, err := recall.LoadClaims(l)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "build: %v\n", err)
-		os.Exit(1)
-	}
-	positions := position.Build(claims)
-	patterns := pattern.Build(claims)
-	for _, p := range positions {
-		if err := l.Append("positions", p); err != nil {
-			fmt.Fprintf(os.Stderr, "build: %v\n", err)
+		entities, facts, err := authority.Import(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import:", err)
 			os.Exit(1)
 		}
-	}
-	for _, p := range patterns {
-		if err := l.Append("patterns", p); err != nil {
-			fmt.Fprintf(os.Stderr, "build: %v\n", err)
+		for _, e := range entities {
+			if _, err := store.RegisterEntity(e, time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "authority entity:", err)
+				os.Exit(1)
+			}
+		}
+		captured, err := store.Capture(facts, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority capture:", err)
 			os.Exit(1)
 		}
-	}
-	fmt.Printf("built %d positions, %d patterns from %d claims\n", len(positions), len(patterns), len(claims))
-}
-
-func cmdReconcile(args []string) {
-	var entity string
-	for _, a := range args {
-		if strings.HasPrefix(a, "--entity=") {
-			entity = strings.TrimPrefix(a, "--entity=")
+		promoted := 0
+		for _, c := range captured {
+			if _, err := store.Adjudicate(c.ID, "promote", "authority-import", time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "authority promote:", err)
+				os.Exit(1)
+			}
+			promoted++
 		}
+		fmt.Printf("imported %d entities, %d authority claims through spine memory\n", len(entities), promoted)
+		return
 	}
-	l, err := ledger.Open(ledgerRoot())
+	entity := args[0]
+	rr, err := store.Recall(entity, mem.RecallOpts{})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
+		fmt.Fprintln(os.Stderr, "authority recall:", err)
 		os.Exit(1)
 	}
-	sup, dups, err := reconcile.Reconcile(context.Background(), l, "", entity)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "reconcile: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("reconciled: %d superseded, %d duplicates resolved\n", sup, dups)
-	fmt.Fprintln(os.Stderr, "run `compound build` to refresh positions")
-}
-
-func cmdPromote(args []string) {
-	var id, basis string
-	for _, a := range args {
-		switch {
-		case strings.HasPrefix(a, "--basis="):
-			basis = strings.TrimPrefix(a, "--basis=")
-		case !strings.HasPrefix(a, "--") && id == "":
-			id = a
+	fmt.Printf("# Authority - %s\n\n", entity)
+	found := false
+	for _, c := range rr.Claims {
+		if c.Entity == entity && c.ClaimType == "status" {
+			fmt.Printf("- **%s**: %s\n", c.Predicate, c.Object)
+			found = true
 		}
 	}
-	if id == "" || basis == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound promote <claim-id> --basis=explicit_confirmation|curated_page|decision_record|runtime_proof")
-		os.Exit(2)
+	if !found {
+		fmt.Printf("(no authority claims for %s; run compound authority import first)\n", entity)
 	}
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-	c, err := recall.Promote(l, id, memory.PromotionBasis(basis))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "promote: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("promoted %s (basis: %s)\n  %s\n", c.ID, c.PromotionBasis, c.Object)
-}
-
-func cmdPack(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, `usage: compound pack "<topic-or-entity>"`)
-		os.Exit(2)
-	}
-	query := strings.Join(args, " ")
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-	entity := recall.MakePlan(query, scope.SeedEntities(), false).Entity
-
-	positions, _ := recall.LoadPositions(l)
-	claims, _ := recall.LoadClaims(l)
-	patterns, _ := recall.LoadPatterns(l)
-	evidence, _ := recall.LoadEvidence(l)
-	claimByID := make(map[string]memory.Claim, len(claims))
-	for _, c := range claims {
-		claimByID[c.ID] = c
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "---\ntype: context-pack\nquery: %q\nentity: %s\ngenerated_at: %s\n---\n\n", query, entity, today())
-	fmt.Fprintf(&b, "# Context Pack — %s\n\n> Owned, evidence-backed context from your history. Inject this before a task instead of re-explaining yourself.\n\n", query)
-
-	fmt.Fprintln(&b, "## Current positions")
-	posN := 0
-	for _, p := range positions {
-		if entity != "" && p.EntitySlug != entity {
-			continue
-		}
-		ac, ok := claimByID[p.ActiveClaimID]
-		if !ok {
-			continue
-		}
-		fmt.Fprintf(&b, "- **[%s]** %s/%s — %s\n", p.Status, p.EntitySlug, p.TopicSlug, ac.Object)
-		if q := quoteOf(ac, evidence); q != "" {
-			fmt.Fprintf(&b, "  - _\"%s\"_\n", q)
-		}
-		posN++
-	}
-	if posN == 0 {
-		fmt.Fprintln(&b, "- _(no positions yet — distill + build first)_")
-	}
-
-	patN := 0
-	var pb strings.Builder
-	for _, p := range patterns {
-		if entity != "" && p.ScopeEntitySlug != entity {
-			continue
-		}
-		fmt.Fprintf(&pb, "- %s\n", p.Description)
-		patN++
-	}
-	if patN > 0 {
-		fmt.Fprintf(&b, "\n## Recurring patterns\n%s", pb.String())
-	}
-
-	if hits, herr := engine.NewConfigured().Query(query, 6); herr == nil && len(hits) > 0 {
-		fmt.Fprintln(&b, "\n## Related (engine breadth)")
-		for _, h := range hits {
-			fmt.Fprintf(&b, "- `%s` — %s\n", h.Slug, h.Snippet)
-		}
-	}
-
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".compound", "packs")
-	_ = os.MkdirAll(dir, 0o755)
-	out := filepath.Join(dir, slugify(query)+".md")
-	_ = os.WriteFile(out, []byte(b.String()), 0o644)
-	fmt.Println(out)
-	fmt.Fprintf(os.Stderr, "pack: %d positions, %d patterns, entity=%s\n", posN, patN, entity)
-}
-
-func latestOperatorDecisionLedger() string {
-	pattern := strings.TrimSpace(os.Getenv("COMPOUND_OPERATOR_DECISIONS_GLOB"))
-	if pattern == "" {
-		return ""
-	}
-	matches, _ := filepath.Glob(pattern)
-	if len(matches) == 0 {
-		return ""
-	}
-	sort.Strings(matches)
-	return matches[len(matches)-1]
 }
 
 func cmdDecisions(args []string) {
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
+	store, _ := openMemStore()
 	sub := ""
 	if len(args) > 0 {
 		sub = args[0]
 	}
-
 	switch sub {
 	case "import":
-		var policy, doctrine []memory.Claim
+		var facts []mem.Candidate
 		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
-			var err error
-			policy, err = decisions.ImportDEC(root)
+			got, err := decisions.ImportDEC(root)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "policy decisions import: %v\n", err)
+				fmt.Fprintln(os.Stderr, "policy decisions import:", err)
 				os.Exit(1)
 			}
+			facts = append(facts, got...)
 		}
-		if ledgerPath := latestOperatorDecisionLedger(); ledgerPath != "" {
-			var err error
-			doctrine, err = decisions.ImportOperatorLedger(ledgerPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "operator decisions import: %v\n", err)
-				os.Exit(1)
+		if pattern := strings.TrimSpace(os.Getenv("COMPOUND_OPERATOR_DECISIONS_GLOB")); pattern != "" {
+			matches, _ := filepath.Glob(pattern)
+			for _, m := range matches {
+				got, err := decisions.ImportOperatorLedger(m)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "operator decisions import:", err)
+					os.Exit(1)
+				}
+				facts = append(facts, got...)
 			}
 		}
-		for _, c := range policy {
-			_ = l.Append("claims", c)
+		captured, err := store.Capture(facts, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions capture:", err)
+			os.Exit(1)
 		}
-		for _, c := range doctrine {
-			_ = l.Append("claims", c)
+		promoted, parked := 0, 0
+		for _, c := range captured {
+			verdict := "park"
+			if c.PromotionBasis != "" {
+				verdict = "promote"
+			}
+			if _, err := store.Adjudicate(c.ID, verdict, "decisions-import", time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "decisions adjudicate:", err)
+				os.Exit(1)
+			}
+			if verdict == "promote" {
+				promoted++
+			} else {
+				parked++
+			}
 		}
-		fmt.Printf("imported %d policy + %d doctrine decisions into one store (kind-separated)\n", len(policy), len(doctrine))
-		if len(policy)+len(doctrine) == 0 {
-			fmt.Fprintln(os.Stderr, "no decision sources configured; set COMPOUND_POLICY_DECISIONS_DIR and/or COMPOUND_OPERATOR_DECISIONS_GLOB")
-		} else {
-			fmt.Fprintln(os.Stderr, "`compound decisions` lists imported claims; `compound decisions doctor` checks coherence")
-		}
-		return
-
+		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured), promoted, parked)
 	case "doctor":
-		decisionsDoctor(l)
-		return
-
+		claims, err := store.AllCurrent()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions doctor:", err)
+			os.Exit(1)
+		}
+		counts := map[string]int{}
+		missingReview := 0
+		for _, c := range claims {
+			if c.ClaimType != "decision" {
+				continue
+			}
+			counts[decisions.Kind(c)]++
+			if c.Qualifiers["review_trigger"] == "" {
+				missingReview++
+			}
+		}
+		fmt.Printf("# decisions doctor\n\n")
+		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n- missing_review_trigger: %d\n", counts[decisions.KindPolicy], counts[decisions.KindDoctrine], counts[decisions.KindOperational], missingReview)
 	default:
 		kindFilter := ""
 		for _, a := range args {
@@ -1402,324 +1247,25 @@ func cmdDecisions(args []string) {
 				kindFilter = strings.TrimPrefix(a, "--kind=")
 			}
 		}
-		claims, _ := recall.LoadClaims(l)
-		groups := map[string][]memory.Claim{}
+		claims, err := store.AllCurrent()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions:", err)
+			os.Exit(1)
+		}
+		any := false
 		for _, c := range claims {
-			if c.CreatedBy != "decision-import" {
+			if c.ClaimType != "decision" {
 				continue
 			}
 			k := decisions.Kind(c)
 			if kindFilter != "" && k != kindFilter {
 				continue
 			}
-			groups[k] = append(groups[k], c)
-		}
-		any := false
-		for _, k := range []string{decisions.KindPolicy, decisions.KindDoctrine, decisions.KindOperational} {
-			cs := groups[k]
-			if len(cs) == 0 {
-				continue
-			}
+			fmt.Printf("- [%s] %s - %s\n", k, c.ID, c.Object)
 			any = true
-			fmt.Printf("## %s (%d)\n", k, len(cs))
-			for _, c := range cs {
-				fmt.Printf("- [%s] %s — %s\n", c.Status, c.ID, c.Object)
-			}
-			fmt.Println()
 		}
 		if !any {
-			fmt.Println("(no decisions — run `compound decisions import`)")
+			fmt.Println("(no decisions - run compound decisions import)")
 		}
 	}
-}
-
-func decisionsDoctor(l *ledger.Ledger) {
-	claims, _ := recall.LoadClaims(l)
-	var policy, doctrine, decided, open, superseded, noTrigger int
-	for _, c := range claims {
-		if c.CreatedBy != "decision-import" {
-			continue
-		}
-		switch decisions.Kind(c) {
-		case decisions.KindPolicy:
-			policy++
-		case decisions.KindDoctrine:
-			doctrine++
-		}
-		switch c.Status {
-		case memory.StatusPromoted:
-			decided++
-		case memory.StatusCandidate:
-			open++
-		case memory.StatusSuperseded:
-			superseded++
-		}
-		if c.Qualifiers == nil || c.Qualifiers["review_trigger"] == nil {
-			noTrigger++
-		}
-	}
-	fmt.Printf("# decisions doctor (one store, kind-separated)\n\n")
-	fmt.Printf("- store:     %d policy + %d doctrine\n", policy, doctrine)
-	fmt.Printf("- lifecycle: %d decided · %d open · %d superseded\n", decided, open, superseded)
-	fmt.Printf("- coherence: %d missing a review_trigger (E4 — a decision needs its falsifier/review)\n", noTrigger)
-}
-
-func cmdAuthority(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml]  |  compound authority <project>")
-		os.Exit(2)
-	}
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-
-	if args[0] == "import" {
-		path := authority.DefaultRegistry()
-		if len(args) > 1 {
-			path = args[1]
-		}
-		if strings.TrimSpace(path) == "" {
-			fmt.Fprintln(os.Stderr, "authority import needs a registry path or COMPOUND_AUTHORITY_REGISTRY")
-			os.Exit(2)
-		}
-		entities, claims, err := authority.Import(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "authority import: %v\n", err)
-			os.Exit(1)
-		}
-		for _, e := range entities {
-			_ = l.Append("entities", e)
-		}
-		for _, c := range claims {
-			_ = l.Append("claims", c)
-		}
-		fmt.Printf("imported %d projects, %d authority facts from %s\n", len(entities), len(claims), filepath.Base(path))
-		fmt.Fprintln(os.Stderr, "run `compound build` to make positions; `compound authority <project>` to query")
-		return
-	}
-
-	project := args[0]
-	claims, _ := recall.LoadClaims(l)
-	fmt.Printf("# Authority — %s (what's true about where it lives)\n\n", project)
-	found := false
-	for _, c := range claims {
-		if c.SubjectEntity == project && c.CreatedBy == "authority-import" {
-			fmt.Printf("- **%s**: %s\n", c.Predicate, c.Object)
-			found = true
-		}
-	}
-	if !found {
-		fmt.Printf("(no authority facts for %s — run `compound authority import` first)\n", project)
-	}
-}
-
-func cmdTimeline(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound timeline <entity>")
-		os.Exit(2)
-	}
-	entity := args[0]
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-	positions, _ := recall.LoadPositions(l)
-	claims, _ := recall.LoadClaims(l)
-	edges, _ := recall.LoadEdges(l)
-	claimByID := make(map[string]memory.Claim, len(claims))
-	for _, c := range claims {
-		claimByID[c.ID] = c
-	}
-	supBy := map[string]string{} // olderID -> newerID
-	for _, e := range edges {
-		if e.EdgeType == memory.EdgeSupersedes {
-			supBy[e.ToID] = e.FromID
-		}
-	}
-
-	found := false
-	for _, p := range positions {
-		if p.EntitySlug != entity && p.ID != entity {
-			continue
-		}
-		if len(p.ClaimChain) < 2 {
-			continue // only show topics that actually evolved
-		}
-		found = true
-		fmt.Printf("## %s/%s — evolution (%d claims, now [%s])\n", p.EntitySlug, p.TopicSlug, len(p.ClaimChain), p.Status)
-		for i, cid := range p.ClaimChain {
-			c := claimByID[cid]
-			marker := ""
-			if cid == p.ActiveClaimID {
-				marker = "  ← current"
-			}
-			fmt.Printf("  %d. [%s] %s%s\n", i+1, c.Status, c.Object, marker)
-			if newer, ok := supBy[cid]; ok {
-				fmt.Printf("       ⤷ superseded by %s\n", newer)
-			}
-		}
-		fmt.Println()
-	}
-	if !found {
-		fmt.Printf("(no evolved positions for %s — needs >=2 claims on a topic; try `compound reconcile` first)\n", entity)
-	}
-}
-
-func quoteOf(c memory.Claim, ev map[string]memory.EvidenceItem) string {
-	for _, ref := range c.EvidenceRefs {
-		if e, ok := ev[ref]; ok && e.QuoteText != "" {
-			return e.QuoteText
-		}
-	}
-	return ""
-}
-
-func today() string { return time.Now().Format("2006-01-02") }
-
-func slugify(s string) string {
-	var b strings.Builder
-	prevDash := false
-	for _, r := range strings.ToLower(s) {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
-			b.WriteRune(r)
-			prevDash = false
-		} else if !prevDash {
-			b.WriteByte('-')
-			prevDash = true
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if len(out) > 60 {
-		out = out[:60]
-	}
-	if out == "" {
-		out = "pack"
-	}
-	return out
-}
-
-func cmdLedger(args []string) {
-	l, err := ledger.Open(ledgerRoot())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("ledger: %s\n", l.Root())
-	for _, kind := range ledger.Kinds {
-		n, _ := l.Count(kind)
-		fmt.Printf("  %-18s %d\n", kind, n)
-	}
-}
-
-func cmdDistill(args []string) {
-	var session, model string
-	ingest := false
-	for _, a := range args {
-		switch {
-		case a == "--ingest":
-			ingest = true
-		case strings.HasPrefix(a, "--model="):
-			model = strings.TrimPrefix(a, "--model=")
-		case !strings.HasPrefix(a, "--") && session == "":
-			session = a
-		}
-	}
-	if session == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound distill <session.jsonl> [--model=M] [--ingest]")
-		os.Exit(2)
-	}
-	ctx := context.Background()
-
-	fmt.Fprintf(os.Stderr, "[1/3] cleaning + distilling %s ...\n", session)
-	res, err := distill.Run(ctx, session, distill.Options{Model: model})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "distill: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Fprintf(os.Stderr, "      %d user turns · %d decision-turns · %d chunks · %d calls · %d/%d tok\n",
-		res.Clean.UserKept, res.DecisionTurns, res.Chunks, res.Calls, res.PromptTokens, res.CompletionTokens)
-
-	fmt.Fprintln(os.Stderr, "[2/3] extracting durable decisions ...")
-	decisions, err := distill.ExtractDecisions(ctx, res.Model, res.Distillation)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "extract: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Fprintf(os.Stderr, "      %d durable decisions\n", len(decisions))
-
-	out := writeDecisionLedger(session, decisions)
-	fmt.Println(out)
-
-	if ingest {
-		l, err := ledger.Open(ledgerRoot())
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ledger: %v\n", err)
-			os.Exit(1)
-		}
-		primary := ""
-		if pkt, e := scope.Resolve(session, scope.SeedEntities()); e == nil {
-			primary = pkt.PrimaryScope
-			fmt.Fprintf(os.Stderr, "      scope: %s%s\n", pkt.Status, scopeSuffix(primary))
-		}
-		added, dropped, err := distill.ToLedger(l, decisions, session, primary)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ingest: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Fprintf(os.Stderr, "[3/3] appended %d candidate claims (+ evidence), %d deduped → %s\n", added, dropped, l.Root())
-	} else {
-		fmt.Fprintln(os.Stderr, "[3/3] not ingested (pass --ingest to append candidate claims to the ledger)")
-	}
-}
-
-func writeDecisionLedger(session string, ds []distill.Decision) string {
-	home, _ := os.UserHomeDir()
-	dir := filepath.Join(home, ".compound", "distill")
-	_ = os.MkdirAll(dir, 0o755)
-	out := filepath.Join(dir, "decision-ledger.go.md")
-	var b strings.Builder
-	fmt.Fprintf(&b, "# Decisions (Go distiller)\n\nSource: `%s`\n\n", session)
-	for _, d := range ds {
-		fmt.Fprintf(&b, "- **[SELECT]** %s\n  - confidence: %s · domain: %s\n", d.Statement, d.Confidence, d.Domain)
-		if d.Quote != "" {
-			fmt.Fprintf(&b, "  - quote: %q\n", d.Quote)
-		}
-	}
-	_ = os.WriteFile(out, []byte(b.String()), 0o644)
-	return out
-}
-
-func cmdScope(args []string) {
-	var session string
-	explain := false
-	for _, a := range args {
-		switch {
-		case a == "--explain":
-			explain = true
-		case !strings.HasPrefix(a, "--") && session == "":
-			session = a
-		}
-	}
-	if session == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound scope <session.jsonl> [--explain]")
-		os.Exit(2)
-	}
-	pkt, err := scope.Resolve(session, scope.SeedEntities())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "scope: %v\n", err)
-		os.Exit(1)
-	}
-	if explain {
-		fmt.Printf("session: %s\nstatus:  %s\nprimary: %s\n\n", pkt.SessionID, pkt.Status, pkt.PrimaryScope)
-		fmt.Printf("  %-14s %5s  %-13s  signals\n", "entity", "score", "relation")
-		for _, a := range pkt.Assignments {
-			fmt.Printf("  %-14s %5d  %-13s  %s\n", a.Entity, a.Score, a.Relation, strings.Join(a.Signals, ", "))
-		}
-		return
-	}
-	b, _ := json.MarshalIndent(pkt, "", "  ")
-	fmt.Println(string(b))
 }

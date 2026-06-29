@@ -220,8 +220,8 @@ core a single pure-Go binary and the engine genuinely swappable.
   (the ledger still answers exact/as-of); the two are distinct on purpose.
 
 Config (overlay): `COMPOUND_MEM_ENGINE_BIN` (the sidecar command) and `COMPOUND_MEM_ENGINE_EMBEDDER`
-(the indexed-with stamp). Distinct from the legacy `COMPOUND_ENGINE_BIN`, which speaks a different
-protocol and retires with the legacy engine. The real turbovec sidecar (Rust, + its embedder) is an
+(the indexed-with stamp). Older `COMPOUND_ENGINE_BIN` adapters speak a different
+protocol and are not part of the spine memory engine seam. The real turbovec sidecar (Rust, + its embedder) is an
 **external artifact**, never vendored into the public core.
 
 ## Language And Runtime

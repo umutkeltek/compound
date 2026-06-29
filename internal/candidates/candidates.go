@@ -44,7 +44,7 @@ const (
 // PromotionBasis — the ONLY grounds on which a memory candidate may promote to canon. "the model
 // extracted it with high confidence" is deliberately NOT one of them: high confidence is not a
 // promotion basis (memory is evidence, not truth). This is the CANONICAL home for the taxonomy;
-// internal/memory.PromotionBasis converges here (it is a converge→retire package — see arch).
+// Gen-1 internal/memory.PromotionBasis converged here; this is now the canonical taxonomy.
 const (
 	BasisExplicitConfirmation = "explicit_confirmation"        // the user decided it
 	BasisCuratedPage          = "curated_page"                 // it is in a curated source

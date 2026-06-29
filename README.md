@@ -1,128 +1,127 @@
 # compound
 
-> Local-first, agent-agnostic substrate for preserving, governing, and reusing what a
-> person or team knows, decides, and does — own the meaning, rent the engines.
+> Local-first, agent-agnostic substrate preserving, governing, and reusing what a
+> person or team knows, decides, and does: own meaning, rent engines.
 
-Compound is opinionated: evidence is not canon, search is not truth, a mutation requires a
-recorded decision, and current knowledge must be placed, cited, promoted, and superseded.
+Compound is opinionated: evidence is not canon, search is not truth, mutation
+requires a recorded decision, and current knowledge must be placed, cited,
+promoted, superseded, or deliberately parked.
 
-## What compound is (envelope-first)
+## What Compound Is
 
-Compound is built **envelope-first, not memory-first**: one typed runtime spine that every
-harness, hook, and run flows through, hung off one root `work_id`. Memory is one slice *on top of*
-that spine — not the system boundary. It is a local monolith information kernel with deep internal
-modules and adapters at the edges, not a microservice estate and not an agent framework.
+Compound is built **envelope-first, not memory-first**. One typed runtime spine
+threads harnesses, hooks, and runs through a root `work_id`. Memory is one object
+family on that spine, not the system boundary.
 
-The proven foundation (P0-P6 first slice, all tested):
+The current public surface is:
 
 | command | what it does |
 |---|---|
-| `compound home init/doctor/where` | the `COMPOUND_HOME` runtime body — generated state, never in repo source |
-| `compound envelope validate/kinds` | the typed envelope spine (9 envelopes + universal header) |
-| `compound contract compile` · `compound orient` | EffectiveContract → ContextPack; the same task differs by repo kind, and records what was excluded |
-| `compound work create/show/list/claim/advance/close/act` | one `work_id` threads intent → context → action → policy → receipt → transition |
-| `compound policy evaluate` | governance v0: ActionIntent → PolicyDecision (allow / allow_with_obligations / hold / deny), enforced at adapters |
-| `compound hook <name>` · `compound harness list` | capability-aware hook fixture loop + the HarnessRegistry |
-| `compound memory candidate/adjudicate/recall/timeline/doctor` | P6 first slice: candidate-first memory ledger, MVCC-by-fold, supersession edges, as-of recall, hop-specific doctor |
+| `compound home init/doctor/where` | `COMPOUND_HOME` runtime body: generated state, never repo source |
+| `compound envelope validate/kinds` | typed envelope spine |
+| `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs |
+| `compound work create/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition |
+| `compound policy evaluate` | ActionIntent -> PolicyDecision, enforced at adapters |
+| `compound hook <name>` / `compound harness list` | capability-aware hook fixtures and HarnessRegistry |
+| `compound memory candidate/adjudicate/recall/timeline/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall |
+| `compound distiller run <trace.json>` | trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
+| `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
+| `compound authority import` / `compound decisions import` | import external authority and decisions through spine memory |
 
-Start with `CONTEXT.md` (glossary), `docs/architecture/{substrate,runtime,transition}.md`, and
-`docs/roadmap/phases.md`. Architecture decision: `docs/adr/0001-local-monolith-information-kernel.md`.
-
-## Memory (P6)
-
-Memory is now started as a spine-bound slice, not the system boundary:
-
-- an OWNED ledger is authority — Evidence → Claim → Position → Pattern, with supersession/contradiction edges (delta-aware: it remembers what a fact *was* and what it became);
-- engines (vector/embedding/search indexes) are **rented** behind a swappable `MemoryEngine` (Query/Recall/Put) and never own visibility, promotion, or supersession;
-- recall is **relevance-gated** — hard filters (visibility/retired/scope/time) run before engine breadth;
-- incoming knowledge is **adjudicated** (reject | park | promote), candidate-first — nothing is piped straight to canon.
-
-Architecture: `docs/memory-architecture.md`.
-
-### Legacy / prototype memory commands
-
-These predate the envelope spine and will be **re-bound through P6** (candidate → claim → transition →
-relevance-gated recall). They run, but are not yet the proven path:
+Gen-1 memory-era top-level verbs are retired tombstones:
 
 ```text
-compound distill <session.jsonl> [--ingest]   # whole-session distillation -> candidate claims
-compound scope <session.jsonl> [--explain]    # content-based scope, not cwd
-compound recall "<query>"                     # active positions + claims + optional engine breadth
-compound promote <claim-id> --basis=<basis>   # candidate -> promoted
-compound build | reconcile | timeline | pack  # derive positions, supersede, evolve, assemble a pack
-compound authority import | decisions import | ledger stat | version
+compound distill
+compound scope
+compound promote
+compound build
+compound reconcile
+compound timeline
+compound recall
+compound pack
+compound ledger
 ```
 
-The distiller emits evidence and candidate claims; it cannot make canon by itself.
+They exit with status `2` and point to the canonical `compound memory ...` or
+`compound distiller ...` surface. There is no alias layer.
 
-## Layers
+## Architecture
 
-Compound separates six concerns, each absorbed into the same object lifecycle rather than becoming a
-new service or scattered folder (`docs/LAYERS.md`):
+One architecture: the **Runtime / Envelope Spine**. "Layers" are object families
+processed by the spine, not services, phases, or peer owners.
 
-- **Memory** — what is known.
-- **Authority** — what is currently true about external things.
-- **Decisions** — what has been committed to.
-- **Procedures** — how repeatable work is done.
-- **Permissions** — what actors are allowed to do.
-- **Doctrine** — durable principles and preferences.
+Object families currently named in the architecture:
+
+- **Memory**: Evidence, Claim, Position, Pattern.
+- **Authority**: Entity, RegistryEntry, RuntimeBinding, ServiceContract.
+- **Decisions**: committed choices and their lifecycle.
+- **Procedures / Capabilities**: skills, tools, MCPs, model profiles, workflows.
+- **Permissions**: policy, autonomy envelopes, gates.
+- **Doctrine / Product / Taste**: durable standards, product signals, hypotheses.
+
+Read in this order:
+
+1. `docs/LAYERS.md`
+2. `docs/architecture/status.md`
+3. `docs/architecture/runtime.md`
+4. `docs/architecture/contracts/README.md`
+5. `docs/memory-architecture.md`
+6. `docs/architecture/source-adapters.md`
 
 ## Layout
 
-One spine + object families; `docs/architecture/status.md` is the authority for which package is
-canonical vs convergence-pending (and `compound architecture doctor` enforces it).
-
 ```text
-cmd/compound/       CLI, one local binary boundary
+cmd/compound/          CLI, one local binary boundary
 
-# the spine (canonical — no duplication)
-internal/home/      COMPOUND_HOME runtime body (P0)
-internal/envelope/  the typed runtime grammar — 9 envelopes + universal header (P1)
-internal/contract/  EffectiveContract compiler + ContextPack assembler (P2)
-internal/work/      WorkEnvelope lifecycle — one work_id, claim-before-touch (P3)
-internal/policy/    ActionIntent -> PolicyDecision, enforced at adapters (P4)
-internal/harness/   the HarnessRegistry — per-harness capabilities + limits (P5)
-internal/hook/      capability-aware hook fixture loop (P5)
-internal/candidates/ single source of truth: candidate kind -> inbox dir + verdicts
-internal/mem/       P6 memory ledger — MVCC-by-fold, candidate-first, PromotionBasis
-internal/distiller/ TraceDistiller — trace -> adjudicated CandidateSet (the compounding loop)
-internal/capgraph/  the Capability Graph (P8) — auto-surface, learn-from-observations
-internal/arch/      the architecture doctor — package classification + coherence checks
+internal/home/         COMPOUND_HOME runtime body
+internal/envelope/     typed runtime grammar
+internal/contract/     EffectiveContract compiler + ContextPack assembler
+internal/work/         WorkEnvelope lifecycle
+internal/policy/       ActionIntent -> PolicyDecision
+internal/harness/      HarnessRegistry
+internal/hook/         lifecycle hook runner
+internal/candidates/   candidate kind -> inbox dir + verdicts
+internal/mem/          canonical memory object family
+internal/distiller/    trace -> candidate fan-out + critique
+internal/capgraph/     capability graph
+internal/arch/         architecture doctor
 
-# memory object family — convergence-pending (Gen-1; absorbed into mem, then retired; test-gated)
-internal/memory/    rich object model: Entity registry, Position, Pattern, ClaimType, PromotionBasis
-internal/ledger/ internal/engine/ internal/scope/ internal/recall/ internal/reconcile/
-internal/position/ internal/pattern/   ingestion / recall / reconcile not yet on the spine
-internal/authority/ internal/decisions/ importers — upgrade to RuntimeBinding / DecisionLifecycle
+internal/authority/    importer into spine memory
+internal/decisions/    importer into spine memory
 
-docs/               architecture notes, contracts, roadmap, ADRs (start at docs/LAYERS.md)
-fixtures/           public, leak-free envelope / action-intent / hook fixtures
-prototype-ts/       historical prototype reference while the Go implementation matures
+docs/                  public architecture and contracts
+fixtures/              public, leak-free fixtures
+prototype-ts/          historical prototype reference
 ```
 
-## Configuration seams
+Runtime state belongs in `COMPOUND_HOME`, resolved as:
 
-The public core has no private path defaults. Private data, paths, and engines live in an overlay
-outside the public repository.
+```text
+--home -> COMPOUND_HOME -> nearest .compound/manifest.yaml -> ~/.compound
+```
 
-- `COMPOUND_HOME` — the runtime body (generated state). Resolution: `--home` → `$COMPOUND_HOME` → nearest
-  ancestor `.compound/manifest.yaml` → `~/.compound`.
-- `COMPOUND_LEDGER` — legacy ledger root (`~/.compound/ledger`); to be derived from `COMPOUND_HOME`.
-- `COMPOUND_ENGINE_BIN` — optional local retrieval CLI adapter; unset → the no-op engine (still runs from the ledger).
-- `COMPOUND_AUTHORITY_REGISTRY` / `COMPOUND_POLICY_DECISIONS_DIR` / `COMPOUND_OPERATOR_DECISIONS_GLOB` — legacy importers.
+Public core has no private path defaults. Private paths, credentials, engines,
+accounts, and real operator data live in runtime state or private overlay files,
+never tracked public docs or fixtures.
+
+## Rented Edge
+
+Search, vector indexes, model providers, harnesses, MCPs, browser tools, and
+analytics APIs are replaceable edge adapters. They may broaden retrieval or
+execute work; they never own promotion, visibility, supersession, policy, or
+truth.
+
+The ledger is authority. Engines are rebuildable views.
 
 ## Status
 
-- **Proven spine (P0-P6 first slice):** COMPOUND_HOME runtime body; typed envelope grammar; EffectiveContract +
-  ContextPack orientation; WorkEnvelope lifecycle on one `work_id`; ActionIntent -> PolicyDecision
-  enforced at adapters; capability-aware hook loop + HarnessRegistry; candidate-first memory ledger with
-  as-of recall and hop-specific doctor. All tested; generated state lives under `COMPOUND_HOME`, never in repo source.
-- **Remaining P6:** broaden recall beyond exact entity matches, add engine breadth, structural patterns,
-  computed temperature, and other candidate kinds.
-- Legacy memory / authority / decisions commands (above) exist and will be **migrated, not deleted**, as P6 lands.
+- Gen-1 memory packages are retired from `internal/`.
+- Gen-1 top-level verbs are tombstones, not compatibility aliases.
+- `compound architecture doctor --strict` enforces package classification, public
+  doc leak checks, candidate-map integrity, and a convergence budget of `0`.
+- `compound memory doctor` verifies the memory hop: capture, promotion,
+  retrieval, authority, and optional engine sync.
 
-## Provenance
-
-Compound is dogfooded against a private reference system, but that system is not the product. Public
-Compound must run with synthetic fixtures and explicit overlay inputs, without inheriting private data,
-paths, accounts, or doctrine.
+Compound is dogfooded against a private reference system, but the product is the
+generic public substrate. Public behavior must be proven with synthetic fixtures
+or explicit overlay inputs.

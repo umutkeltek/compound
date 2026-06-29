@@ -35,11 +35,8 @@ var Classification = map[string]Class{
 	"distiller": Spine, "capgraph": Spine,
 	// shared leaf
 	"candidates": Leaf,
-	// memory object family — convergence-pending (retirement BLOCKED on parity + tests)
-	"mem":    MemTarget,
-	"memory": ConvergePending, "position": ConvergePending, "pattern": ConvergePending,
-	"recall": ConvergePending, "reconcile": ConvergePending, "distill": ConvergePending,
-	"engine": ConvergePending, "scope": ConvergePending, "ledger": ConvergePending,
+	// memory object family — canonical after Gen-1 package retirement
+	"mem": MemTarget,
 	// importers — keep, upgrade in place
 	"authority": Importer, "decisions": Importer,
 }
@@ -92,7 +89,7 @@ func loadPrivateLeakTokens(repoRoot string) []string {
 // ConvergePendingBudget is the RATCHET: the count of converge→retire packages must never exceed
 // this. `--strict` fails if it grows (new fragmentation). Lower it as packages converge onto the
 // spine — the budget can only go down, so the debt can never become wallpaper or quietly grow.
-const ConvergePendingBudget = 9
+const ConvergePendingBudget = 0
 
 // Doctor runs every check. repoRoot is the compound repo root for filesystem checks (classification
 // totality, doc leak); pass "" to run only the in-memory checks (candidate map). strict turns the
@@ -215,7 +212,7 @@ func convergenceDebt(strict bool) []Finding {
 	}
 	sort.Strings(pending)
 	if len(pending) == 0 {
-		return []Finding{{"convergence", Info, "memory object family converged — no Gen-1 packages pending; set ConvergePendingBudget to 0"}}
+		return []Finding{{"convergence", Info, "memory object family converged — no Gen-1 packages pending; budget is 0"}}
 	}
 	// the ratchet: in strict mode a debt over budget is a FAILURE (fragmentation grew).
 	sev := Info

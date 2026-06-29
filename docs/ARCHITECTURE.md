@@ -27,7 +27,7 @@ they are **object families the spine's transitions create, own, and adjudicate.*
 
 1. [`LAYERS.md`](./LAYERS.md) — **the canonical architecture.** Start here.
 2. [`architecture/status.md`](./architecture/status.md) — which package / command is **canonical
-   vs convergence-pending vs importer.** Read before touching code, so you don't extend the wrong
+   vs retired vs importer.** Read before touching code, so you don't extend the wrong
    family. (`compound architecture doctor` enforces it.)
 3. [`architecture/runtime.md`](./architecture/runtime.md) — the spine: `COMPOUND_HOME`, the
    envelopes, hooks-as-clients.

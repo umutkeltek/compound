@@ -92,8 +92,8 @@ Agents should not need to know whether a fact came from a note, repository,
 imported authority file, or runtime contract. They should ask Compound:
 
 ```text
-compound recall "<query>"
-compound pack "<topic-or-entity>"
+compound memory recall "<query>"
+compound memory query "<topic-or-entity>"
 compound authority <entity>
 ```
 

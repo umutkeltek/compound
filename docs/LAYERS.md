@@ -16,7 +16,7 @@ kernel" generation is not a peer architecture and not an "Axis B" — its concer
 **object families** that flow through the spine. When a doc, package, or command seems to belong
 to "the other architecture," it belongs to **an object family the one spine processes.** See
 [`architecture/status.md`](./architecture/status.md) for which package/command is canonical vs
-legacy/bridge.
+retired/importer.
 
 ---
 
@@ -55,7 +55,7 @@ family must answer four questions, or it is not coherent:
 
 | Object family | Objects | 1 · Created/updated by | 2 · Owned by | 3 · Adjudicated by | 4 · Retires |
 |---|---|---|---|---|---|
-| **Memory** — knowledge objects | Evidence, Claim, Position, Pattern | distiller intake seam → `Adjudicate`; Receipt→Transition (memory projection) | `ledger/claims,edges`; `inbox/memory-candidates` | candidate-first: reject\|park\|promote\|no_promote; supersede, never delete | legacy `memory`/`position`/`pattern`/`recall`/`reconcile` + `recall`/`promote`/`build`/`reconcile`/`timeline` verbs |
+| **Memory** — knowledge objects | Evidence, Claim, Position, Pattern | distiller intake seam → `Adjudicate`; Receipt→Transition (memory projection) | `ledger/claims,edges`; `inbox/memory-candidates` | candidate-first: reject\|park\|promote\|no_promote; supersede, never delete | retired Gen-1 memory packages + top-level memory-era verbs; canonical surface is `compound memory ...` |
 | **Authority** — external-state objects | Entity, RegistryEntry, RuntimeBinding, ServiceContract | source adapter → candidate → adjudication; host/path move updates bindings | `ledger/entities`; registries; `inbox/*-candidates` | promote/park/reject; `ProjectionFreshness` for derived views | infra-os runtime truth (when `runtime doctor` answers host/service/deploy/data/health) |
 | **Decisions** — committed-choice objects | Decision (+ `DecisionLifecycle`) | decision adapter → `inbox/decision-candidates`; status changes via transition | `ledger`; `inbox/decision-candidates` | promote/park/reject; status proposed→accepted→superseded→deprecated | decisions repo's status semantics, claim-flattening |
 | **Procedures / Capabilities** — reusable-action objects | Capability nodes, procedures, scripts (the CapabilityGraph) | `CapabilityObservation` (intake) → `missed_when`/`false_triggered_by`; surfaced into ContextPack | `registries/capability-{nodes,edges}`; `inbox/capability-observations` | operationalize/park; `validated_by`/`retired_by` edges | old flat skill matrix (when surfacing + usage receipts prove the graph) |
@@ -72,7 +72,7 @@ Engines and executors sit behind adapters. They index, retrieve, route, execute,
 render — they **never own meaning, promotion, visibility, or supersession.**
 
 ```text
-MemoryEngine            turbovec / a legacy vector+fact index — breadth, not authority
+MemoryEngine            turbovec / existing vector+fact index — breadth, not authority
 model gateway           a model-routing gateway — route evidence, not task success
 LLM providers           swappable
 harnesses               agent CLIs (Claude Code, Codex, OpenCode, …) — clients
@@ -142,9 +142,9 @@ Both are required.
 
 ## Build discipline
 
-Build one object family into the existing spine, prove it with a working command and fixtures,
-then **retire** the surface it replaces (its column-4 entry) — but a code retirement is gated on
-**test coverage first** (retiring Gen-1 packages before tests is how you lose functionality). Do
+Build one object family into the existing spine, prove it with command fixtures,
+then **retire** the surface it replaces (its column-4 entry). Code retirement is gated on
+**test coverage first**; Gen-1 memory already crossed that gate and is now retired. Do
 not start a new service because an object kind feels new, and do not let a second front door
 (doc, package, or command) be *presented as canonical* once its replacement is named — that is
 how fragmentation survives while everyone believes it was solved.

@@ -1,80 +1,84 @@
-# Package & command status — what is canonical, what must converge
+# Package & Command Status
 
-> Compound carries a **spine** (one canonical runtime) plus a **memory object family with TWO
-> implementations that must converge.** A verified audit (2026-06-29, 11 packages, every one
-> adversarially checked) overturned the lazy reading that "Gen-1 is legacy, `mem` replaced it."
-> **It did not.** `mem` is the spine-bound ledger but is *thinner* than the Gen-1 stack: the
-> canonical family has **no** `Position` (topic-grouped stance), **no** `Pattern`, **no** `Entity`
-> registry (mem's entity is a bare string), no `ClaimType`, no stored `EvidenceItem`, no
-> `PromotionBasis`, and none of the ingestion/recall/reconcile capability. So the Gen-1 packages
-> are **not redundant** — each has a logical job `mem` cannot yet do. The coherent move is
-> **migrate-then-retire** (absorb the object richness into the spine-bound family, *then* retire),
-> **gated on test coverage** — never a delete-before-tests. `compound architecture doctor`
-> tracks this debt so it stays observable and cannot silently grow.
+This file is the current package/command map. `compound architecture doctor
+--strict` enforces the mechanical side: package classification, candidate-map
+integrity, public-doc leak checks, and the memory convergence ratchet.
 
-Status values: **canonical** (the spine / the convergence target — build here) · **converge→retire**
-(a Gen-1 package whose capability must move onto the spine before it retires; retirement is
-**BLOCKED** until parity + tests) · **canonical-target** (an importer to upgrade in place) ·
-**retired**.
+## Current Verdict
+
+The Gen-1 memory stack has been migrated into the spine memory family and
+retired.
+
+- `ConvergePendingBudget = 0`.
+- No `internal/` packages are classified `converge-pending`.
+- Top-level Gen-1 verbs are tombstones only; they do not import or route through
+  retired packages.
+- The canonical surface is `compound memory ...` plus `compound distiller ...`.
 
 ## Packages (`internal/`)
 
-### Spine — canonical, no duplication
-| Package | Role |
-|---|---|
-| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | the runtime grammar (Axis-A spine) |
-| `candidates` | single source of truth for candidate kinds → inbox dirs |
-| `distiller` | spine-bound intake (the compounding loop's front-end) |
-| `capgraph` | the P8 Capability Graph (capability object family) |
-
-### Memory object family — convergence-pending (retirement BLOCKED on parity + tests)
-`mem` is the **convergence target** (spine-bound: MVCC-by-fold, candidate-first, Transitions).
-The rest hold object richness / ingestion / recall that `mem` must absorb first.
-
-| Package | Status | Capability `mem` still lacks (the retire-blocker) |
+| Package | Status | Role |
 |---|---|---|
-| `mem` | **canonical (target)** | the destination. ✓ landed: `PromotionBasis`, `Position`, `Entity` registry (path-independent identity), `Pattern` (recurrence), `ClaimType`+`Qualifiers` (domain-aware `Topic()`), stored `EvidenceItem` (content-addressed), richer `EdgeType` (refines/supports/mentions/owns/part_of) |
-| `memory` | converge→retire | ~~`Entity` registry~~ ✓, ~~`Position`~~ ✓, ~~`Pattern`~~ ✓, ~~`ClaimType`~~ ✓, ~~`PromotionBasis`~~ ✓, ~~stored `EvidenceItem`~~ ✓, ~~richer `EdgeType`~~ ✓ — **all capabilities landed; only the Replace (re-point CLI verbs, delete the stack) remains** |
-| `position` | converge→retire | ✓ **capability on the spine** (`mem.Positions`, topic-grouped current stance + supersession chain, parity-tested). Package retires with the Gen-1 stack (its sole consumer `cmdBuild` reads the Gen-1 ledger, so it retires *wholesale* when the spine reaches CLI parity — not in isolation) |
-| `pattern` | converge→retire | ✓ **on the spine** (`mem.Patterns` — recurrence hypothesis per (entity,topic) ≥2 claims/sessions, parity-tested). Retires with the Gen-1 stack |
-| `recall` | converge→retire | Position-aware + Pattern-surfacing recall; `PromotionBasis`-driven promote; scope alias resolution in query planning |
-| `reconcile` | converge→retire | LLM/semantic + topic-level reconciliation; batch maintenance pass marking stored claims superseded |
-| `distill` | converge→retire | raw session JSONL ingestion + cleaning; worth-gate / decision-turn detection; whole-conversation map-reduce |
-| `engine` | converge→retire | free-text snippet breadth; page-level ingest; external rented retrieval-CLI adapter |
-| `scope` | converge→retire | ~~alias/identifier registry + `multi`/`unresolved` resolution~~ ✓on-spine (`mem.ResolveEntity`); remaining gap = session-**content** scoring (weighting aliases by decision-turn/identifier/title to attribute a whole session) |
-| `ledger` | converge→retire | generic multi-kind append store; positions/patterns/evidence as stored objects |
+| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
+| `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
+| `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall |
+| `distiller` | canonical | trace -> prior state -> candidate set -> critique -> adjudication input |
+| `capgraph` | canonical | capability graph: surface, observe, consume |
+| `arch` | canonical | architecture doctor |
+| `authority` | importer | external authority records imported through spine memory |
+| `decisions` | importer | decision records imported through spine memory |
 
-### Importers — keep, upgrade in place (NOT redundant)
-| Package | Status | Becomes |
-|---|---|---|
-| `authority` | canonical-target | infra ingestion → `RuntimeBinding` / `ServiceContract` |
-| `decisions` | canonical-target | DEC/operator-ledger import → `DecisionLifecycle` (status + review_trigger) |
+Retired Gen-1 packages:
 
-> **The convergence direction is set by "spine is primary":** the object richness moves **into**
-> the spine-bound family (`mem` + new object types), not the reverse. Until a capability lands on
-> the spine **with tests**, its Gen-1 package stays — deleting it first would lose functionality
-> (the audit's unanimous `retire_safe=false`). This is a tracked debt, not a quick subtraction.
->
-> **Convergence shape (verified by the entanglement audit):** capabilities land on the spine **one
-> at a time** (`PromotionBasis` ✓, `Position` ✓, `Entity` registry ✓, `Pattern` ✓, `ClaimType` ✓, `EvidenceItem` ✓, `EdgeType` ✓ — each parity-tested; **all capabilities now landed**), but the Gen-1 **packages**
-> retire **wholesale**: `position`/`pattern`/`scope`/`recall`/`reconcile` are imported only by
-> `main.go`'s Gen-1 verbs, which read the Gen-1 ledger and share `memory.Claim` + each other's
-> imports. So `ConvergePendingBudget` drops in a **step** when the spine reaches CLI parity, not by
-> 1 each time a capability lands — landing capabilities is the work that *earns* that step.
+```text
+internal/memory
+internal/position
+internal/pattern
+internal/recall
+internal/reconcile
+internal/distill
+internal/engine
+internal/scope
+internal/ledger
+```
 
-## Commands (`compound <verb>`)
+They must not be resurrected or imported. Any missing capability should land on
+`internal/mem`, `internal/distiller`, or a new explicitly classified package only
+when it represents a new object family or adapter seam.
+
+## Commands
 
 | Family | Verbs | Status |
 |---|---|---|
-| Spine (canonical) | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition`, `memory`, `distiller`, `capability` | canonical |
-| Gen-1 memory-era (convergence-pending) | `distill`, `scope`, `promote`, `build`, `reconcile`, `timeline` (top-level), `recall`, `pack`, `ledger` | **not "legacy to delete"** — they are the *only* access to the un-migrated capabilities above; label them "Gen-1 (converging)" in `--help`, do not present as the canonical path, retire per-verb only as its capability lands on the spine |
-| Importers | `authority`, `decisions` | upgrade toward first-class contracts |
+| Spine | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition` | canonical |
+| Memory | `memory candidate/adjudicate/recall/timeline/query/doctor` | canonical |
+| Distillation | `distiller run` | canonical |
+| Capability | `capability add/surface/observe/consume/list` | canonical |
+| Importers | `authority`, `decisions` | canonical import surfaces |
+| Gen-1 tombstones | `distill`, `scope`, `promote`, `build`, `reconcile`, top-level `timeline`, top-level `recall`, `pack`, `ledger` | retired; exit `2` with replacement hint |
 
-## What the architecture doctor checks (Patch B2)
+There is intentionally no alias layer. Alias layers keep obsolete surfaces alive
+and recreate fragmentation.
 
-- candidate-map integrity: every `candidates.Kind` has one non-empty inbox dir **and** `home.Dirs`
-  creates it; no inbox dir without a producer/consumer;
-- the **public-doc leak gate** (no private path/token in `docs/`);
-- **package classification is total**: every `internal/` package is classified (spine /
-  convergence-pending / importer); an **unclassified** package fails the doctor — so a new package
-  can't silently appear and the two-stack debt stays visible until it converges.
+## What Architecture Doctor Checks
+
+- candidate-map integrity: every candidate kind has exactly one created inbox dir
+  and a consumer;
+- package classification totality: every `internal/` directory is classified, and
+  every classified package exists;
+- public-doc leak gate: generic path/email leaks plus private leak-token list;
+- convergence ratchet: `converge-pending` packages must not exceed budget, now
+  fixed at `0`.
+
+## Next Coverage Moves
+
+The next work is no longer memory-stack convergence. It is adapting existing
+operating-system functions into first-class Compound contracts without creating
+parallel owners:
+
+- runtime/service ownership -> `RuntimeBinding` / `ServiceContract`;
+- decisions -> `DecisionLifecycle` with falsifier and review trigger;
+- source documents -> source adapters that emit evidence/candidates;
+- orientation scope -> project-aware context loading;
+- rented retrieval -> `MemoryEngine` adapter that leaves the ledger unchanged;
+- skills/tools/MCPs/hooks -> `CapabilityGraph` imports and observations.

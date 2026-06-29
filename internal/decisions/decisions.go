@@ -1,12 +1,5 @@
-// Package decisions is Layer 3: ONE decisions store with clean separation by kind
-// — unifying what the domain-specific decision sources feed. A decision is a Claim (claim_type=decision) with a `kind`:
-//
-//	policy      — reusable cross-agent rule        (was decisions/ DEC-####)
-//	doctrine    — personal working decision        from an operator ledger
-//	operational — control/routing decision         from a domain adapter
-//
-// Lifecycle is a STATUS (open→decided→superseded), and promotion (doctrine→policy)
-// is a status/kind transition in one store, not a cross-repo copy.
+// Package decisions imports decision sources into the spine memory family. A decision
+// source becomes a mem candidate; promotion remains a separate adjudication step.
 package decisions
 
 import (
@@ -18,7 +11,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"compound/internal/memory"
+	"compound/internal/candidates"
+	"compound/internal/mem"
 )
 
 const (
@@ -29,17 +23,29 @@ const (
 
 var reReviewTrigger = regexp.MustCompile(`(?i)review[ \-]?trigger[:*\s]+\s*([^\n]+)`)
 
-func phaseFromStatus(s string) memory.ClaimStatus {
+func promotionBasisForStatus(s string) string {
+	s = strings.ToLower(s)
+	switch {
+	case strings.Contains(s, "supersed"), strings.Contains(s, "deprecat"), strings.Contains(s, "retired"):
+		return ""
+	case strings.Contains(s, "propos"), strings.Contains(s, "open"):
+		return ""
+	default:
+		return candidates.BasisDecisionRecord
+	}
+}
+
+func legacyStatus(s string) string {
 	s = strings.ToLower(s)
 	switch {
 	case strings.Contains(s, "supersed"):
-		return memory.StatusSuperseded
+		return "superseded"
 	case strings.Contains(s, "propos"), strings.Contains(s, "open"):
-		return memory.StatusCandidate
+		return "candidate"
 	case strings.Contains(s, "deprecat"), strings.Contains(s, "retired"):
-		return memory.StatusRetired
+		return "retired"
 	default:
-		return memory.StatusPromoted // accepted / decided
+		return "accepted"
 	}
 }
 
@@ -63,56 +69,68 @@ type decFrontmatter struct {
 	Supersedes []string `yaml:"supersedes"`
 }
 
-// ImportDEC parses the decisions/ project (DEC-####.md) into POLICY decisions.
-func ImportDEC(root string) ([]memory.Claim, error) {
-	var out []memory.Claim
+// ImportDEC parses decisions/DEC markdown files into policy decision candidates.
+func ImportDEC(root string) ([]mem.Candidate, error) {
 	base := filepath.Join(root, "decisions")
-	_ = filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasPrefix(d.Name(), "DEC-") || !strings.HasSuffix(d.Name(), ".md") {
-			return nil
+	var out []mem.Candidate
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return err
 		}
-		data, e := os.ReadFile(path)
-		if e != nil {
-			return nil
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
 		}
-		fmText, body := splitFrontmatter(string(data))
+		fm, body := splitFrontmatter(string(b))
 		var f decFrontmatter
-		if yaml.Unmarshal([]byte(fmText), &f) != nil || f.ID == "" {
-			return nil
+		_ = yaml.Unmarshal([]byte(fm), &f)
+		if f.ID == "" {
+			f.ID = strings.TrimSuffix(filepath.Base(path), ".md")
 		}
-		q := map[string]any{"kind": KindPolicy, "scope": "cross-agent", "source": "decisions/" + d.Name()}
+		if f.Title == "" {
+			for _, line := range strings.Split(body, "\n") {
+				if strings.HasPrefix(line, "#") {
+					f.Title = strings.Trim(strings.TrimLeft(line, "#"), " ")
+					break
+				}
+			}
+		}
+		q := map[string]string{"kind": KindPolicy, "source": "decisions-repo", "legacy_status": legacyStatus(f.Status)}
 		if len(f.Domains) > 0 {
-			q["domains"] = strings.Join(f.Domains, ",")
+			q["domain"] = strings.Join(f.Domains, ",")
 		}
 		if len(f.Supersedes) > 0 {
-			q["supersedes"] = strings.Join(f.Supersedes, "; ")
+			q["supersedes"] = strings.Join(f.Supersedes, ",")
 		}
-		if m := reReviewTrigger.FindStringSubmatch(body); m != nil {
-			q["review_trigger"] = strings.TrimSpace(m[1])
-		}
-		out = append(out, memory.Claim{
-			ID: f.ID, SubjectEntity: "decisions", Predicate: "decided", Object: f.Title,
-			ClaimType: memory.ClaimDecision, Status: phaseFromStatus(f.Status),
-			Confidence: 1.0, Visibility: memory.VisWorld, CreatedBy: "decision-import",
-			Qualifiers: q,
+		out = append(out, mem.Candidate{
+			Entity:         "decisions",
+			Predicate:      "decided",
+			Object:         f.Title,
+			Confidence:     1.0,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     q,
+			PromotionBasis: promotionBasisForStatus(f.Status),
+			SourceTraceRef: path,
+			SnippetHash:    f.ID,
+			Visibility:     "operational",
 		})
 		return nil
 	})
-	return out, nil
+	return out, err
 }
 
 var reDecHeader = regexp.MustCompile(`(?m)^###\s+([DO]\d+)\b[^\n]*?—\s*(.+)$`)
 
-// ImportOperatorLedger parses the operator ledger (### D<n>/O<n>) into DOCTRINE
-// decisions. O<n> = open (candidate), D<n> = decided, SUPERSEDED markers honored.
-func ImportOperatorLedger(path string) ([]memory.Claim, error) {
+// ImportOperatorLedger parses operator ledger headings into doctrine decision candidates.
+func ImportOperatorLedger(path string) ([]mem.Candidate, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	text := string(data)
 	idx := reDecHeader.FindAllStringSubmatchIndex(text, -1)
-	var out []memory.Claim
+	var out []mem.Candidate
 	for i, m := range idx {
 		id := text[m[2]:m[3]]
 		title := strings.Trim(strings.TrimSpace(text[m[4]:m[5]]), "~ ")
@@ -121,32 +139,45 @@ func ImportOperatorLedger(path string) ([]memory.Claim, error) {
 			end = idx[i+1][0]
 		}
 		block := text[m[1]:end]
-		status := memory.StatusPromoted
+		status := "accepted"
 		if strings.HasPrefix(id, "O") {
-			status = memory.StatusCandidate
+			status = "candidate"
 		}
 		if regexp.MustCompile(`(?i)superseded`).MatchString(block) {
-			status = memory.StatusSuperseded
+			status = "superseded"
 		}
-		q := map[string]any{"kind": KindDoctrine, "scope": "personal", "source": "operator-ledger"}
+		q := map[string]string{"kind": KindDoctrine, "scope": "personal", "source": "operator-ledger", "legacy_status": status}
 		if mm := reReviewTrigger.FindStringSubmatch(block); mm != nil {
 			q["review_trigger"] = strings.TrimSpace(mm[1])
 		}
-		out = append(out, memory.Claim{
-			ID: "operator-" + id, SubjectEntity: "decisions", Predicate: "decided", Object: title,
-			ClaimType: memory.ClaimDecision, Status: status, Confidence: 0.9,
-			Visibility: memory.VisWorld, CreatedBy: "decision-import", Qualifiers: q,
+		basis := candidates.BasisDecisionRecord
+		if status != "accepted" {
+			basis = ""
+		}
+		out = append(out, mem.Candidate{
+			Entity:         "decisions",
+			Predicate:      "decided",
+			Object:         title,
+			Confidence:     0.9,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     q,
+			PromotionBasis: basis,
+			SourceTraceRef: path,
+			SnippetHash:    id,
+			Visibility:     "operational",
 		})
 	}
 	return out, nil
 }
 
-// Kind returns a decision claim's kind (policy/doctrine/operational), or "".
-func Kind(c memory.Claim) string {
-	if c.Qualifiers != nil {
-		if k, ok := c.Qualifiers["kind"].(string); ok {
-			return k
-		}
+// Kind returns a decision kind from a spine claim.
+func Kind(c mem.Claim) string {
+	if c.Qualifiers == nil {
+		return KindOperational
 	}
-	return ""
+	if k := c.Qualifiers["kind"]; k != "" {
+		return k
+	}
+	return KindOperational
 }

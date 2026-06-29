@@ -1,10 +1,9 @@
 # Kernel Contracts (the lego seams)
 
-Fragmentation happens when the seams between pieces are fuzzy — change one and others break. The cure is the
-one already proven by `MemoryEngine` (`internal/engine/engine.go`): **every fuzzy subsystem becomes a small
-explicit contract — a port + a lifecycle + a receipt — and implementations swap behind it.** Defined here
-before implementation so agents stop re-deriving them. Implement a contract only when a vertical slice needs
-it (`../../roadmap/phases.md`).
+Fragmentation happens when seams between pieces are fuzzy: change one and others break. The cure is
+a small explicit contract — port + lifecycle + receipt — with implementations swapped behind it.
+Defined before implementation so agents stop re-deriving them. Implement a contract only when a
+vertical slice needs it (`../../roadmap/phases.md`).
 
 > Public/private rule (`../../BOUNDARIES.md`): the *contract* and generic lifecycle are public. Instances
 > carrying personal paths, credentials, accounts, or private bodies live in the private overlay
@@ -52,7 +51,7 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 | **Hypothesis** | a testable product belief | change_event, expected_effect, metrics[], observation_window, result (unknown\|supported\|refuted\|inconclusive), next_action |
 | **Decision** | a committed choice (the durable artifact) | choice, rationale, **falsifier**, **review_trigger**, evidence_refs[], status |
 | **AutonomyEnvelope** | a trust gradient, not a boolean | allowed_without_approval[], requires_approval[], max_cost_usd, max_runtime, required_receipts, **branch_sandbox** |
-| **MemoryEngine** | rented breadth index — a **bridge/index, never authority** | current: `Capabilities/Query/Recall/Put` (`internal/engine/engine.go`); target port: `Query/Recall/PutProjection/Build/Health/ExplainResult`. A legacy vector/fact store is one implementation; the arrow is **compound → materialized objects → engine index**, never engine → truth → compound reads. The engine never owns promotion/visibility/supersession/source-class/privacy. When an adapter wraps a legacy store, distinguish its **durable** parts (facts, source-metadata, page-versions — preserve) from its **rebuildable** parts (chunks, embeddings, search — regenerate). |
+| **MemoryEngine** | rented breadth index — **bridge/index, never authority** | protocol lives with spine memory (`internal/mem/protocol.go`); target port: `Query/Recall/PutProjection/Build/Health/ExplainResult`. A vector/fact store is one implementation; arrow is **compound → materialized objects → engine index**, never engine → truth → compound reads. Engine never owns promotion/visibility/supersession/source-class/privacy. When an adapter wraps an existing store, distinguish its **durable** parts (facts, source-metadata, page-versions — preserve) from **rebuildable** parts (chunks, embeddings, search — regenerate). |
 
 ## Distillation & capability-growth contracts (the compounding layer — P6 continuation + P8)
 

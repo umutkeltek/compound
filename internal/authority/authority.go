@@ -1,24 +1,21 @@
-// Package authority is Layer 2: what's TRUE about your world — which project runs
-// on which host/cloud, its repo, database, domain. It is NOT a new object model:
-// it imports registry rows into the SAME Memory primitives (Entity + promoted Claim),
-// so authority facts get positions, supersession on migration, and recall for
-// free. The Memory machinery, pointed at infrastructure instead of conversations.
+// Package authority imports external runtime/source authority rows into the spine memory
+// family. It is an importer only: it emits mem entities and candidates, and the caller
+// decides capture/adjudication through the normal mem store.
 package authority
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"compound/internal/memory"
+	"compound/internal/candidates"
+	"compound/internal/mem"
 )
 
-// DefaultRegistry returns the configured authority registry path. The public core
-// has no private default; callers pass a path or set COMPOUND_AUTHORITY_REGISTRY.
+// DefaultRegistry returns configured authority registry path. Public core has no private
+// default; callers pass a path or set COMPOUND_AUTHORITY_REGISTRY.
 func DefaultRegistry() string {
 	return strings.TrimSpace(os.Getenv("COMPOUND_AUTHORITY_REGISTRY"))
 }
@@ -49,10 +46,10 @@ type projectRec struct {
 	} `yaml:"urls"`
 }
 
-// Import parses project registry rows into Entities + promoted authority
-// Claims. Claim IDs are deterministic (auth_<slug>_<predicate>) so re-import
-// updates current truth in place (a migration overwrites the old value).
-func Import(path string) (entities []memory.Entity, claims []memory.Claim, err error) {
+// Import parses a project registry into spine-native entities and candidates.
+// Deterministic authority rows carry trusted_deterministic_import as promotion basis,
+// but still flow through mem capture/adjudication; the importer never writes canon.
+func Import(path string) (entities []mem.Entity, facts []mem.Candidate, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -61,39 +58,36 @@ func Import(path string) (entities []memory.Entity, claims []memory.Claim, err e
 	if err := yaml.Unmarshal(data, &rf); err != nil {
 		return nil, nil, err
 	}
-	now := time.Now().UTC()
 	src := "authority-registry:" + filepath.Base(path)
-
 	for slug, p := range rf.Production {
-		etype := memory.EntProject
-		if strings.Contains(p.Class, "product") {
-			etype = memory.EntProduct
+		kind := "project"
+		if strings.EqualFold(p.Class, "product") {
+			kind = "product"
 		}
-		entities = append(entities, memory.Entity{
-			Slug: slug, Type: etype, VisibilityDefault: memory.VisWorld, CreatedAt: now,
+		entities = append(entities, mem.Entity{
+			Slug:       slug,
+			Kind:       kind,
+			Visibility: "operational",
 		})
-
-		add := func(pred, obj string) {
-			obj = strings.TrimSpace(obj)
-			if obj == "" {
+		add := func(pred, val string) {
+			val = strings.TrimSpace(val)
+			if val == "" {
 				return
 			}
-			claims = append(claims, memory.Claim{
-				ID:             fmt.Sprintf("auth_%s_%s", slug, pred),
-				SubjectEntity:  slug,
+			facts = append(facts, mem.Candidate{
+				Entity:         slug,
 				Predicate:      pred,
-				Object:         obj,
-				ClaimType:      memory.ClaimTypeStatus,
+				Object:         val,
 				Confidence:     1.0,
-				Visibility:     memory.VisWorld,
-				Status:         memory.StatusPromoted, // declared infra truth, not a candidate
-				PromotionBasis: memory.PromoRuntimeProof,
-				CreatedBy:      "authority-import",
-				ResolverVer:    src,
-				Qualifiers:     map[string]any{"domain": pred},
+				Derivation:     "deterministic",
+				ClaimType:      "status",
+				Qualifiers:     map[string]string{"domain": pred},
+				PromotionBasis: candidates.BasisTrustedDeterministic,
+				SourceTraceRef: src,
+				SnippetHash:    src + ":" + slug + ":" + pred,
+				Visibility:     "operational",
 			})
 		}
-
 		runtime := firstNonEmpty(p.Runtime.Host, p.Runtime.Authority)
 		db := firstNonEmpty(p.DataAuthority.Database, p.DataAuthority.PrimaryDatabase)
 		add("source_repo", p.SourceAuthority.Repo)
@@ -103,7 +97,7 @@ func Import(path string) (entities []memory.Entity, claims []memory.Claim, err e
 		add("cloud_profile", p.AWS.Profile)
 		add("domain", p.URLs.App)
 	}
-	return entities, claims, nil
+	return entities, facts, nil
 }
 
 func firstNonEmpty(a, b string) string {
