@@ -36,6 +36,7 @@ type LiveExtractionReport struct {
 	Called         bool                  `json:"called"`
 	Eval           EvalCorpusReport      `json:"eval"`
 	Usage          OpenAIUsage           `json:"usage,omitempty"`
+	LatencyMS      int64                 `json:"latency_ms,omitempty"`
 	Response       LLMExtractionResponse `json:"response,omitempty"`
 	LiveModelCalls int                   `json:"live_model_calls"`
 }
@@ -94,10 +95,12 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 	if client == nil {
 		client = http.DefaultClient
 	}
+	started := time.Now()
 	response, usage, err := callOpenAICompatible(ctx, client, opts.BaseURL, opts.APIKey, report.Model, req)
 	report.Called = true
 	report.LiveModelCalls = 1
 	report.Usage = usage
+	report.LatencyMS = time.Since(started).Milliseconds()
 	report.Response = response
 	if err != nil {
 		return report, err

@@ -28,7 +28,7 @@ $COMPOUND_HOME/
   events/          <date>/{events,hook-events,tool-events,model-route-events}.ndjson   (raw nervous system)
   work/            current.sqlite ; events.ndjson ; work/<id>.json ; runs/<id>.json ; leases/<id>.json ; checkpoints/   (execution identity)
   context/         requests/<id>.json ; packs/<id>.json ; injections/<hook_event_id>.md (EXACT injected text)
-  ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions}.jsonl (durable truth)
+  ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions,execution-route-evidence}.jsonl (durable truth)
   inbox/           memory-candidates/ skill-candidates/ product-signals/ capability-observations/
                    failure-patterns/ taste-observations/ route-observations/ contradictions/ parked/ rejected/  (untrusted)
   registries/      entities/ projects/ products/ skills/ tools/ mcps/ models/ providers/ harnesses/ hosts/ deployments/ sources/ adapters/

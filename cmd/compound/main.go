@@ -700,11 +700,21 @@ func cmdDistillerExtract(args []string) {
 		fmt.Fprintln(os.Stderr, "distiller extract:", err)
 		os.Exit(1)
 	}
+	routeEvidence, err := distiller.BuildExecutionRouteEvidence(req, report, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract route evidence:", err)
+		os.Exit(1)
+	}
+	if err := distiller.RecordExecutionRouteEvidence(homePath, routeEvidence); err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract route evidence:", err)
+		os.Exit(1)
+	}
 	fmt.Printf("# distiller extract %s\n", report.Model)
 	fmt.Printf("- provider: %s\n", report.Provider)
 	fmt.Printf("- eval_status: %s\n", report.Eval.Status)
 	fmt.Printf("- eval_cases: %d\n", report.Eval.CaseCount)
 	fmt.Printf("- live_model_calls: %d\n", report.LiveModelCalls)
+	fmt.Printf("- route_evidence: %s\n", routeEvidence.ID)
 	fmt.Printf("- candidates: %d\n", len(report.Response.Candidates))
 	out, err := json.MarshalIndent(report.Response, "", " ")
 	if err != nil {
