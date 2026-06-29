@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -92,15 +91,9 @@ func ImportProviderLedgerFile(homePath, path string, opts ProviderLedgerImportOp
 }
 
 func ProviderLedgerRowToEvidence(raw string, lineNumber int) (Evidence, error) {
-	var row providerLedgerRow
-	if err := json.Unmarshal([]byte(raw), &row); err != nil {
-		return Evidence{}, fmt.Errorf("decode provider ledger line %d: %w", lineNumber, err)
-	}
-	if strings.TrimSpace(row.RequestID) == "" {
-		return Evidence{}, fmt.Errorf("provider ledger line %d: request_id required", lineNumber)
-	}
-	if strings.TrimSpace(row.TSStart) == "" {
-		return Evidence{}, fmt.Errorf("provider ledger line %d: ts_start required", lineNumber)
+	row, err := decodeProviderLedgerRow(raw, lineNumber)
+	if err != nil {
+		return Evidence{}, err
 	}
 	startedAt, err := time.Parse(time.RFC3339, row.TSStart)
 	if err != nil {

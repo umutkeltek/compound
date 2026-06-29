@@ -152,6 +152,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
+  compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
@@ -1552,7 +1553,7 @@ func cmdTransition(args []string) {
 
 func cmdRoute(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|plan --candidate C [--target file]>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -1632,8 +1633,51 @@ func cmdRoute(args []string) {
 		fmt.Println("- verdict: metadata_only_not_task_success")
 		return
 	}
+	if args[0] == "cost-doctor" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]")
+			os.Exit(2)
+		}
+		limit, err := intFlag(args[2:], "--limit")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route cost-doctor:", err)
+			os.Exit(2)
+		}
+		tail, err := intFlag(args[2:], "--tail")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route cost-doctor:", err)
+			os.Exit(2)
+		}
+		report, err := routeevidence.DoctorProviderLedgerCosts(args[1], routeevidence.ProviderLedgerImportOptions{Limit: limit, Tail: tail})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route cost-doctor:", err)
+			os.Exit(1)
+		}
+		if hasFlag(args[2:], "--record") && report.Status != "ok" {
+			report, err = routeevidence.RecordCostDoctorObservation(homePath, report, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "route cost-doctor:", err)
+				os.Exit(1)
+			}
+		}
+		fmt.Println("# route cost-doctor")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- rows_read: %d\n", report.RowsRead)
+		fmt.Printf("- rows_checked: %d\n", report.RowsChecked)
+		fmt.Printf("- token_usage_rows: %d\n", report.TokenUsageRows)
+		fmt.Printf("- cost_known_rows: %d\n", report.CostKnownRows)
+		fmt.Printf("- token_usage_missing_cost: %d\n", report.TokenUsageMissingCost)
+		fmt.Printf("- unknown_project_rows: %d\n", report.UnknownProjectRows)
+		fmt.Printf("- partial_metadata_rows: %d\n", report.PartialMetadataRows)
+		if report.CandidateID != "" {
+			fmt.Printf("- candidate: %s\n", report.CandidateID)
+			fmt.Printf("- no_promote: %s\n", report.NoPromoteID)
+		}
+		fmt.Println("- verdict: route_cost_observation_not_policy")
+		return
+	}
 	if len(args) != 2 || args[0] != "import" {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|plan --candidate C [--target file]>")
 		os.Exit(2)
 	}
 	result, err := routeevidence.ImportFile(homePath, args[1])

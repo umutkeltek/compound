@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/envelope"
 )
 
@@ -164,6 +165,63 @@ func TestImportProviderLedgerFileTailRecordsRouteEvidenceOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("provider-ledger import must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestDoctorProviderLedgerCostsRecordsRouteObservationNoPromote(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(t.TempDir(), "provider-calls.ndjson")
+	rows := strings.Join([]string{
+		`{"request_id":"req_cost_ok","ts_start":"2026-06-29T09:00:00Z","caller":"codex","project":"product-x","purpose":"classify","route_alias":"cheap.classify","provider":"fixture-provider","model":"fixture-small","transport":"chat_completions","input_tokens":10,"output_tokens":2,"estimated_cost_usd":0.0001,"metadata_quality":"complete","status":"ok"}`,
+		`{"request_id":"req_cost_gap","ts_start":"2026-06-29T10:00:00Z","caller":"codex","project":"unknown_project","purpose":"deep-review","route_alias":"premium.reasoning","provider":"fixture-provider","model":"fixture-large","transport":"responses","input_tokens":100,"output_tokens":50,"metadata_quality":"partial","status":"ok"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(ledgerPath, []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := DoctorProviderLedgerCosts(ledgerPath, ProviderLedgerImportOptions{})
+	if err != nil {
+		t.Fatalf("cost doctor: %v", err)
+	}
+	if report.Status != "review" ||
+		report.RowsChecked != 2 ||
+		report.TokenUsageRows != 2 ||
+		report.CostKnownRows != 1 ||
+		report.TokenUsageMissingCost != 1 ||
+		report.UnknownProjectRows != 1 ||
+		report.PartialMetadataRows != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	recorded, err := RecordCostDoctorObservation(home, report, t0)
+	if err != nil {
+		t.Fatalf("record cost observation: %v", err)
+	}
+	if recorded.CandidateID == "" || recorded.NoPromoteID == "" || !recorded.RecordedNoPromote {
+		t.Fatalf("recorded report = %+v", recorded)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.RouteObservation), recorded.CandidateID+".json")
+	data := readFile(t, candidatePath)
+	var cand RouteCostCandidate
+	if err := json.Unmarshal(data, &cand); err != nil {
+		t.Fatalf("parse candidate: %v", err)
+	}
+	if cand.Kind != string(candidates.RouteObservation) ||
+		cand.Verdict != candidates.NoPromote ||
+		!strings.Contains(cand.Statement, "without cost metadata") {
+		t.Fatalf("candidate = %+v", cand)
+	}
+	nopData := readFile(t, filepath.Join(home, "ledger", "no-promote-decisions.jsonl"))
+	if !strings.Contains(string(nopData), cand.ID) || !strings.Contains(string(nopData), "route_cost_coverage") {
+		t.Fatalf("no-promote rows:\n%s", nopData)
+	}
+	rerecorded, err := RecordCostDoctorObservation(home, report, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("rerecord cost observation: %v", err)
+	}
+	if rerecorded.CandidateID != recorded.CandidateID || rerecorded.RecordNoPromoteInserted {
+		t.Fatalf("rerecorded report = %+v, want same candidate and no duplicate no-promote", rerecorded)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("cost doctor must not promote claims, stat err=%v", err)
 	}
 }
 

@@ -44,7 +44,9 @@ changed, PR opened, product signal moved, or an explicit blocker).
 External gateways use `compound route import <execution-route-evidence.json>`; provider-call NDJSON
 ledgers use `compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]`.
 Both paths write metadata-only evidence rows and emit the same audit-only Transition routing/cost
-projection. The provider-ledger adapter copies route/cost fields and drops source-specific row payloads
+projection. `compound route cost-doctor <provider-calls.ndjson> [--record]` records missing
+cost/metadata coverage as a parked route observation plus no-promote decision, not billing truth or
+policy. The provider-ledger adapter copies route/cost fields and drops source-specific row payloads
 instead of importing prompts, responses, paths, or provider secrets.
 
 Local `compound distiller extract` follows the same rule: successful extraction writes metadata-only

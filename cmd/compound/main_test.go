@@ -1006,6 +1006,55 @@ func TestRouteImportProviderLedgerWritesEvidenceWithoutClaims(t *testing.T) {
 	}
 }
 
+func TestRouteCostDoctorRecordsReviewableObservation(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls-cost-gaps.ndjson")
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"cost-doctor", fixture, "--record"})
+	})
+	if !strings.Contains(out, "- status: review") ||
+		!strings.Contains(out, "- token_usage_missing_cost: 1") ||
+		!strings.Contains(out, "- verdict: route_cost_observation_not_policy") ||
+		!strings.Contains(out, "- candidate:") ||
+		!strings.Contains(out, "- no_promote:") {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	candidateID := outputValue(out, "- candidate:")
+	candidatePath := filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation), candidateID+".json")
+	candidateData := readFile(t, candidatePath)
+	if !strings.Contains(string(candidateData), "provider ledger has 1 token-usage row") ||
+		strings.Contains(string(candidateData), "ignored") {
+		t.Fatalf("bad route-cost candidate:\n%s", candidateData)
+	}
+	noPromoteRows := readNoPromoteDecisionRows(t, homePath)
+	if len(noPromoteRows) != 1 ||
+		noPromoteRows[0].CandidateRef != candidateID ||
+		noPromoteRows[0].OwnerTarget.Kind != "route_cost_coverage" {
+		t.Fatalf("no-promote rows = %+v", noPromoteRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "route-policy.md")
+	original := []byte("# route policy\n")
+	if err := os.WriteFile(targetPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planOut := captureStdout(t, func() {
+		cmdRoute([]string{"plan", "--candidate", candidateID, "--target", targetPath})
+	})
+	if !strings.Contains(planOut, "# route plan") || !strings.Contains(planOut, "- status: review_required") {
+		t.Fatalf("route plan did not consume cost observation:\n%s", planOut)
+	}
+	if got := readFile(t, targetPath); string(got) != string(original) {
+		t.Fatalf("route policy target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("cost doctor must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestCapabilitySkillPlanUsesSkillCandidateWithoutMutatingGraphOrTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

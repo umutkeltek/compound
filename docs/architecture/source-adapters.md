@@ -123,7 +123,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | dashboards / read models | `ProjectionFreshness` through dashboard read-model adapter; card/source coverage evidence, never authority |
 | event streams (`events/*.ndjson`) | `TraceEnvelope` / event evidence |
 | parked memory candidates -> curated knowledge markdown | `MeaningWritePlan` review artifacts under `COMPOUND_HOME`; no direct source mutation or memory promotion |
-| append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence |
+| append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence; provider-call rows can become metadata-only `ExecutionRouteEvidence`, and cost-coverage gaps can become parked `route_observation` candidates plus no-promote decisions |
 | contract files | source material for contract candidates |
 | source-control snapshots | `SourceAuthority` status claims via read-only git inspection; branch/head/ahead/behind/dirty counts only, no cleanup/staging/push authority; `PreToolUse` may consume the same observation to hold dirty-repo mutations; `authority dirty-plan` turns dirty snapshots into owner-review cleanup artifacts without mutating the repo or promoting claims |
 | registries | `RegistryEntry` candidates |
