@@ -39,6 +39,7 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 | **Entity** | canonical identity that survives path/host moves | id, kind, aliases[], owners[], path_bindings[], source_bindings[], **host_bindings[]**, **deployment_bindings[]**, **credential_bindings[]** (private), evidence_refs[] · candidate → active → merged/retired |
 | **RegistryEntry** | one capability/tool/model/product made legible & routable | id, kind, name, owner, scope, **world** (inside\|outside), capabilities[], constraints[], cost_model, risk_tier, trigger_conditions[], I/O contract, evidence_refs[], status, replacement_for |
 | **TraceEnvelope** | what actually happened (the ground) | trace_id, source, actor, scope, work_id, times, tools/models_used[], files_touched[], cost{}, outputs[], evidence_refs[], risk_tier, receipt_id · append-only |
+| **SourceObservation** | one adapter observation over an existing source or generated view | adapter_id, source_system, source_ref{path, kind, owner, source_class, revision}, generated_view{view_kind, generated_from[], generator, marker, freshness}, maps_to[], evidence_refs[] · append-only evidence/candidate input, never promotion by itself |
 | **EvidenceItem** | immutable, citeable raw material (never truth alone) | id, source, occurred_at, body_ref, entity_ref · append-only |
 | **Claim / MemoryDelta** | smallest durable statement; carries delta + temperature | claim_id, entity_id, predicate, value, confidence, status, **temperature**, source_trace_ids[], evidence_refs[], last_verified_at, expires_at, contradicts[], supersedes[] · observed → candidate → **rejected** \| parked \| promoted \| operationalized → superseded → retired |
 | **Capability / Skill** | a routable affordance (lens/procedure/checker/tool-wrapper/taste/script) | + trigger_conditions[], compatible_harnesses[], **counter_skills[]**, **decay_rule**, **second_order_risks[]**, evidence_score{} · candidate → active → needs_review → deprecated → retired |
@@ -93,8 +94,17 @@ names (the named OS→contract mapping lives in `docs_private/plan/os-coverage-m
 | **ProjectionFreshness** | a read model/dashboard cannot silently drift from the ledger | projection_id, source_ledger_seq, built_at, staleness, coverage_verdict, status: fresh\|stale\|drifted |
 | **SourceAuthority / PathAuthority** | which source owns a fact, and identity that survives path/host moves | entity_ref, authoritative_source, path_bindings[], host_bindings[], precedence_rank, evidence_refs[] |
 
+### Generated views
+
+`GeneratedViewObservation` is the contract for generated instruction/dashboard/registry
+views. It records `view_ref`, `source_refs[]`, `output_hash`, `source_hashes[]`,
+`generator`, `consumer`, `marker_status`, `freshness`, and the object family it maps
+to. It may create `ProjectionFreshness`, evidence, or a parked/no_promote candidate.
+It cannot promote truth by itself.
+
 Build order (most likely to let fragmentation back in first): **RuntimeBinding/ServiceContract**
-→ **DecisionLifecycle** → **OwnerWritebackGate/NoPromoteDecision** → **ProjectionFreshness**.
+→ **DecisionLifecycle** → **GeneratedViewObservation/ProjectionFreshness** →
+**OwnerWritebackGate/NoPromoteDecision**.
 Each is **defined here before implementation** so agents stop re-deriving them; each is built
 only when a vertical slice needs it (`../../roadmap/phases.md`).
 

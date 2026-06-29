@@ -486,6 +486,41 @@ func cmdMemory(args []string) {
 		for _, p := range ps {
 			fmt.Printf("%-28s = %-12s [%s]  chain:%d\n", p.ID, p.ActiveObject, p.Status, len(p.ClaimChain))
 		}
+	case "entity":
+		// the routing backbone: a canonical identity resolvable by slug/identifier/alias/path, so
+		// project identity survives a folder move. Convergence of Gen-1 memory.Entity + scope onto the spine.
+		split := func(s string) []string {
+			if s == "" {
+				return nil
+			}
+			return strings.Split(s, ",")
+		}
+		switch {
+		case len(rest) >= 3 && rest[0] == "register":
+			e, err := store.RegisterEntity(mem.Entity{
+				Slug: rest[1], Kind: rest[2],
+				Aliases: split(flag("--alias")), Identifiers: split(flag("--id")), Parent: flag("--parent"),
+			}, time.Now())
+			die(err)
+			fmt.Printf("registered %s (%s) aliases=%v ids=%v\n", e.Slug, e.Kind, e.Aliases, e.Identifiers)
+		case len(rest) >= 2 && rest[0] == "resolve":
+			r, err := store.ResolveEntity(rest[1])
+			die(err)
+			if r.Status == "resolved" {
+				fmt.Printf("%s  (via %s)\n", r.Slug, r.Via)
+			} else {
+				fmt.Printf("%s %s\n", r.Status, r.Slug)
+			}
+		case len(rest) >= 1 && rest[0] == "list":
+			ents, err := store.Entities()
+			die(err)
+			for _, e := range ents {
+				fmt.Printf("%-24s %-10s aliases=%v ids=%v\n", e.Slug, e.Kind, e.Aliases, e.Identifiers)
+			}
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound memory entity <register <slug> <kind> [--alias a,b] [--id x,y] [--parent p]|resolve <token>|list>")
+			os.Exit(2)
+		}
 	case "query":
 		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_ENGINE_BIN
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;

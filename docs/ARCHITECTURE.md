@@ -16,6 +16,8 @@ they are **object families the spine's transitions create, own, and adjudicate.*
   `architecture/contracts/README.md`; the Memory family in depth in `memory-architecture.md`.
 - **The rented edge** (engines / harnesses / providers / adapters — never own meaning):
   `architecture/execution-plane.md`.
+- **Source adapters and generated views** (how existing systems enter Compound without
+  becoming peer authorities): `architecture/source-adapters.md`.
 - **The compounding loop** (turns spine events into object families): `LAYERS.md`.
 
 > Layers are not services, phases, owners, or an alternate architecture. They are object families
@@ -31,10 +33,12 @@ they are **object families the spine's transitions create, own, and adjudicate.*
    envelopes, hooks-as-clients.
 4. [`architecture/contracts/README.md`](./architecture/contracts/README.md) — every contract /
    object family (the lego seams).
-5. [`memory-architecture.md`](./memory-architecture.md) — the Memory family in depth.
-6. [`architecture/transition.md`](./architecture/transition.md) — the proof seam / compounding.
-7. [`roadmap/phases.md`](./roadmap/phases.md) — the envelope-first construction order.
-8. [`BOUNDARIES.md`](./BOUNDARIES.md) — public core vs private overlay.
+5. [`architecture/source-adapters.md`](./architecture/source-adapters.md) — generated/source
+observations before importing existing views, dashboards, registries, or instructions.
+6. [`memory-architecture.md`](./memory-architecture.md) — the Memory family in depth.
+7. [`architecture/transition.md`](./architecture/transition.md) — the proof seam / compounding.
+8. [`roadmap/phases.md`](./roadmap/phases.md) — the envelope-first construction order.
+9. [`BOUNDARIES.md`](./BOUNDARIES.md) — public core vs private overlay.
 
 ## Why a monolith, not microservices
 
