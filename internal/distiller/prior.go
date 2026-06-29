@@ -57,9 +57,12 @@ type PriorCoverage struct {
 	Architectures      int `json:"architectures"`
 	Statuses           int `json:"statuses"`
 	Constraints        int `json:"constraints"`
+	SkillCandidates    int `json:"skill_candidates"`
+	DecisionCandidates int `json:"decision_candidates"`
 	FailurePatterns    int `json:"failure_patterns"`
 	TasteObservations  int `json:"taste_observations"`
 	ProductHypotheses  int `json:"product_hypotheses"`
+	RouteObservations  int `json:"route_observations"`
 	CapabilityObs      int `json:"capability_observations"`
 	EvalCases          int `json:"eval_cases"`
 	MethodUpgrades     int `json:"method_upgrades"`
@@ -128,9 +131,12 @@ func (p PriorState) Coverage() PriorCoverage {
 		Architectures:      len(p.ClaimsByType["architecture"]),
 		Statuses:           len(p.ClaimsByType["status"]),
 		Constraints:        len(p.ClaimsByType["constraint"]),
+		SkillCandidates:    len(p.CandidatesByKind[KindSkill]),
+		DecisionCandidates: len(p.CandidatesByKind[KindDecision]),
 		FailurePatterns:    len(p.CandidatesByKind[KindFailure]),
 		TasteObservations:  len(p.CandidatesByKind[KindTaste]),
 		ProductHypotheses:  len(p.CandidatesByKind[KindProduct]),
+		RouteObservations:  len(p.CandidatesByKind[KindRoute]),
 		CapabilityObs:      len(p.CandidatesByKind[KindCapabilityObs]),
 		EvalCases:          len(p.CandidatesByKind[KindEvalCase]),
 		MethodUpgrades:     len(p.CandidatesByKind[KindMethodUpgrade]),

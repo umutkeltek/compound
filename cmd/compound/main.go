@@ -566,8 +566,8 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- current_claims: %d\n", cov.CurrentClaims)
 		fmt.Printf("- claims: decisions=%d preferences=%d architectures=%d statuses=%d constraints=%d\n",
 			cov.Decisions, cov.Preferences, cov.Architectures, cov.Statuses, cov.Constraints)
-		fmt.Printf("- candidates: failures=%d taste=%d product_hypotheses=%d capability_observations=%d eval_cases=%d method_upgrades=%d policy_patches=%d\n",
-			cov.FailurePatterns, cov.TasteObservations, cov.ProductHypotheses, cov.CapabilityObs, cov.EvalCases, cov.MethodUpgrades, cov.PolicyPatches)
+		fmt.Printf("- candidates: skills=%d decisions=%d failures=%d taste=%d product_hypotheses=%d routes=%d capability_observations=%d eval_cases=%d method_upgrades=%d policy_patches=%d\n",
+			cov.SkillCandidates, cov.DecisionCandidates, cov.FailurePatterns, cov.TasteObservations, cov.ProductHypotheses, cov.RouteObservations, cov.CapabilityObs, cov.EvalCases, cov.MethodUpgrades, cov.PolicyPatches)
 		fmt.Printf("- capability_nodes: %d\n", cov.CapabilityNodes)
 		fmt.Printf("- no_promote_decisions: %d\n", cov.NoPromoteDecisions)
 		return
@@ -882,11 +882,15 @@ func printDistillerEval(report distiller.EvalReport) {
 	if report.Run.Error != "" {
 		fmt.Printf("- error: %s\n", report.Run.Error)
 	}
-	fmt.Printf("- prior: current_claims=%d capability_observations=%d eval_cases=%d method_upgrades=%d\n",
+	fmt.Printf("- prior: current_claims=%d skill_candidates=%d decision_candidates=%d route_observations=%d capability_observations=%d eval_cases=%d method_upgrades=%d policy_patches=%d\n",
 		report.Request.PriorCoverage.CurrentClaims,
+		report.Request.PriorCoverage.SkillCandidates,
+		report.Request.PriorCoverage.DecisionCandidates,
+		report.Request.PriorCoverage.RouteObservations,
 		report.Request.PriorCoverage.CapabilityObs,
 		report.Request.PriorCoverage.EvalCases,
-		report.Request.PriorCoverage.MethodUpgrades)
+		report.Request.PriorCoverage.MethodUpgrades,
+		report.Request.PriorCoverage.PolicyPatches)
 	for _, check := range report.Checks {
 		fmt.Printf("- check:%s %s", check.Name, check.Status)
 		if check.Detail != "" {

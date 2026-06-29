@@ -409,6 +409,13 @@ func checkPriorCoverage(want map[string]int, got PriorCoverage) []EvalCheck {
 		return nil
 	}
 	fields := map[string]int{
+		"skill_candidates":        got.SkillCandidates,
+		"decision_candidates":     got.DecisionCandidates,
+		"failure_patterns":        got.FailurePatterns,
+		"taste_observations":      got.TasteObservations,
+		"product_hypotheses":      got.ProductHypotheses,
+		"route_observations":      got.RouteObservations,
+		"policy_patches":          got.PolicyPatches,
 		"current_claims":          got.CurrentClaims,
 		"capability_observations": got.CapabilityObs,
 		"eval_cases":              got.EvalCases,
