@@ -85,8 +85,8 @@ names (the named OS→contract mapping lives in `docs_private/plan/os-coverage-m
 
 | Contract | Purpose | Key fields / lifecycle |
 |---|---|---|
-| **RuntimeBinding** | where a thing actually runs (so autonomy knows what's real/production/reversible) | service_id, owner_entity, host_binding, deployment_binding, data_bindings[], credential_refs[] (private), health_check_refs[], risk_tier, evidence_refs[], status: candidate\|active\|stale\|retired |
-| **ServiceContract** | the promised interface/SLA of a running service | service_id, interface_refs[], dependencies[], owner_entity, risk_tier, evidence_refs[], status |
+| **RuntimeBinding** | where thing actually runs (so autonomy knows what is real/production/reversible) | service_id, owner_entity, host_binding, deployment_binding, data_bindings[], credential_refs[] (private), health_check_refs[], risk_tier, evidence_refs[], status: candidate\|active\|stale\|retired. First slice: `compound runtime doctor <bundle>` |
+| **ServiceContract** | promised interface/SLA of running service | service_id, interface_refs[], dependencies[], owner_entity, risk_tier, evidence_refs[], status. First slice pairs with RuntimeBinding in one checked bundle |
 | **DecisionLifecycle** | makes `Decision` lifecycle typed and auditable instead of loose prose on a claim | choice, rationale, **falsifier**, **review_trigger**, scope, owner, effective_from, **status: proposed\|accepted\|superseded\|deprecated\|rejected**, replaced_by, evidence_refs[] |
 | **OwnerWritebackGate** | candidate → owner target → gate → policy → receipt → transition (writeback is command-shaped, not doctrine) | candidate_ref, owner_target, gate_basis, policy_decision_ref, receipt_ref; a mutating writeback requires a valid `PolicyDecision` |
 | **NoPromoteDecision** | an explicit lifecycle state — "seen, deliberately not promoted" — distinct from park/reject | candidate_ref, basis, expiry, evidence_refs[]; prevents the same candidate re-entering the loop as "new" |
@@ -101,8 +101,7 @@ views. It records `view_ref`, `source_refs[]`, `output_hash`, `source_hashes[]`,
 to. It may create `ProjectionFreshness`, evidence, or a parked/no_promote candidate.
 It cannot promote truth by itself.
 
-Build order (most likely to let fragmentation back in first): **RuntimeBinding/ServiceContract**
-→ **GeneratedViewObservation/ProjectionFreshness** →
+Build order (most likely to let fragmentation back in first): **GeneratedViewObservation/ProjectionFreshness** →
 **OwnerWritebackGate/NoPromoteDecision**.
 Each is **defined here before implementation** so agents stop re-deriving them; each is built
 only when a vertical slice needs it (`../../roadmap/phases.md`).

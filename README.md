@@ -27,6 +27,7 @@ The current public surface is:
 | `compound distiller run <trace.json>` | trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
 | `compound authority import` / `compound decisions import` | import external authority and DecisionLifecycle records through spine memory |
+| `compound runtime doctor <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
 
@@ -84,6 +85,7 @@ internal/candidates/   candidate kind -> inbox dir + verdicts
 internal/mem/          canonical memory object family
 internal/distiller/    trace -> candidate fan-out + critique
 internal/capgraph/     capability graph
+internal/runtimebinding/ RuntimeBinding + ServiceContract doctor
 internal/arch/         architecture doctor
 
 internal/authority/    importer into spine memory

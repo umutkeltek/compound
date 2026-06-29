@@ -28,6 +28,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/runtimebinding"
 	"compound/internal/work"
 )
 
@@ -47,6 +48,8 @@ func main() {
 		cmdAuthority(os.Args[2:])
 	case "decisions":
 		cmdDecisions(os.Args[2:])
+	case "runtime":
+		cmdRuntime(os.Args[2:])
 	case "home":
 		cmdHome(os.Args[2:])
 	case "envelope":
@@ -128,9 +131,10 @@ usage:
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
   compound capability <add|surface|observe|consume|list>         capability graph: auto-surface, never auto-execute
-  compound authority import [f] | authority <entity>             import/query authority through spine memory
-  compound decisions import | decisions [--kind=K] | decisions doctor
+compound authority import [f] | authority <entity>             import/query authority through spine memory
+compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
+compound runtime doctor <runtime-binding.yaml>                 RuntimeBinding + ServiceContract health
 
 retired Gen-1 tombstones:
   compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
@@ -1273,5 +1277,36 @@ func cmdDecisions(args []string) {
 		if !any {
 			fmt.Println("(no decisions - run compound decisions import)")
 		}
+	}
+}
+
+func cmdRuntime(args []string) {
+	if len(args) < 1 || args[0] != "doctor" {
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor <runtime-binding.yaml>")
+		os.Exit(2)
+	}
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor <runtime-binding.yaml>")
+		os.Exit(2)
+	}
+	bundle, err := runtimebinding.Load(args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime doctor:", err)
+		os.Exit(1)
+	}
+	report := runtimebinding.Doctor(bundle)
+	fmt.Printf("# runtime doctor\n\n")
+	fmt.Printf("- service: %s\n", report.ServiceID)
+	fmt.Printf("- owner: %s\n", report.Owner)
+	fmt.Printf("- status: %s\n", report.Status)
+	for _, check := range report.Checks {
+		fmt.Printf("- %s: %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
+	}
+	if report.Status != "ok" {
+		os.Exit(1)
 	}
 }
