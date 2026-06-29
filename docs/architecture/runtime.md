@@ -25,10 +25,10 @@ $COMPOUND_HOME/
   lock/            installed-hooks.lock.json, effective-contract.lock.json
   config/          core.yaml; overlays/{private,local}.yaml; harnesses/*.yaml; adapters/*.yaml
   contracts/       effective/<date>/<id>.json + latest.json ; schemas/
-  events/          <date>/{events,hook-events,tool-events,model-route-events}.ndjson   (raw nervous system)
+  events/          <date>/{events,hook-events,tool-events,model-route-events}.ndjson   (raw nervous system); <transition_id>.json for emitted Transition envelopes, including route-evidence projections
   work/            current.sqlite ; events.ndjson ; work/<id>.json ; runs/<id>.json ; leases/<id>.json ; checkpoints/   (execution identity)
   context/         requests/<id>.json ; packs/<id>.json ; injections/<hook_event_id>.md (EXACT injected text)
-  ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions,execution-route-evidence}.jsonl (durable truth)
+  ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions,execution-route-evidence}.jsonl (durable truth; route evidence is metadata, not task success)
   inbox/           memory-candidates/ skill-candidates/ product-signals/ capability-observations/
                    failure-patterns/ taste-observations/ route-observations/ contradictions/ parked/ rejected/  (untrusted)
   registries/      entities/ projects/ products/ skills/ tools/ mcps/ models/ providers/ harnesses/ hosts/ deployments/ sources/ adapters/

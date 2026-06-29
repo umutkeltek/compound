@@ -688,13 +688,14 @@ func cmdDistillerExtract(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
+	now := time.Now()
 	report, err := distiller.ExtractWithOpenAICompatible(context.Background(), req, distiller.OpenAICompatibleOptions{
 		BaseURL:       baseURL,
 		APIKey:        apiKey,
 		Model:         model,
 		EvalCorpusDir: evalCorpus,
 		EvalRoot:      homePath,
-		Now:           time.Now(),
+		Now:           now,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller extract:", err)
@@ -705,8 +706,18 @@ func cmdDistillerExtract(args []string) {
 		fmt.Fprintln(os.Stderr, "distiller extract route evidence:", err)
 		os.Exit(1)
 	}
+	routeTransition, err := distiller.BuildExecutionRouteTransition(routeEvidence)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract route transition:", err)
+		os.Exit(1)
+	}
+	routeEvidence.TransitionID = routeTransition.ID
 	if err := distiller.RecordExecutionRouteEvidence(homePath, routeEvidence); err != nil {
 		fmt.Fprintln(os.Stderr, "distiller extract route evidence:", err)
+		os.Exit(1)
+	}
+	if err := distiller.RecordExecutionRouteTransition(homePath, routeTransition); err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract route transition:", err)
 		os.Exit(1)
 	}
 	fmt.Printf("# distiller extract %s\n", report.Model)
@@ -715,6 +726,7 @@ func cmdDistillerExtract(args []string) {
 	fmt.Printf("- eval_cases: %d\n", report.Eval.CaseCount)
 	fmt.Printf("- live_model_calls: %d\n", report.LiveModelCalls)
 	fmt.Printf("- route_evidence: %s\n", routeEvidence.ID)
+	fmt.Printf("- route_transition: %s\n", routeTransition.ID)
 	fmt.Printf("- candidates: %d\n", len(report.Response.Candidates))
 	out, err := json.MarshalIndent(report.Response, "", " ")
 	if err != nil {

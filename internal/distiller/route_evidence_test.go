@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/envelope"
 )
 
 func TestBuildExecutionRouteEvidenceMetadataOnly(t *testing.T) {
@@ -98,6 +100,105 @@ func TestRecordExecutionRouteEvidenceAppendsJSONL(t *testing.T) {
 	}
 	if got.ID != ev.ID || got.RequestID != "llm_extraction:trace_route" {
 		t.Fatalf("row = %+v", got)
+	}
+}
+
+func TestBuildExecutionRouteTransitionProjectsRoutingNotTaskSuccess(t *testing.T) {
+	req := LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_route",
+		RawTrace:      "SECRET_PROMPT_BODY",
+		SourceRefs:    []string{"raw:turn_7", "raw:turn_7"},
+		Work:          &LLMWork{ID: "work_123"},
+	}
+	report := LiveExtractionReport{
+		SchemaVersion:  LiveExtractionSchemaVersion,
+		Provider:       "openai-compatible",
+		Model:          "fixture-model",
+		Called:         true,
+		Eval:           EvalCorpusReport{Dir: "fixtures/distiller", Status: "pass", CaseCount: 6},
+		Usage:          OpenAIUsage{PromptTokens: 10, CompletionTokens: 4, TotalTokens: 14},
+		LatencyMS:      23,
+		LiveModelCalls: 1,
+		Response: LLMExtractionResponse{
+			TraceRef: "trace_route",
+			Candidates: []LLMCandidate{{
+				Kind:       KindMemory,
+				Object:     "SECRET_RESPONSE_BODY",
+				Confidence: ptrFloat(0.9),
+			}},
+		},
+	}
+	ev, err := BuildExecutionRouteEvidence(req, report, t0)
+	if err != nil {
+		t.Fatalf("route evidence: %v", err)
+	}
+	tr, err := BuildExecutionRouteTransition(ev)
+	if err != nil {
+		t.Fatalf("route transition: %v", err)
+	}
+	if err := tr.Validate(); err != nil {
+		t.Fatalf("transition invalid: %v", err)
+	}
+	if tr.IDs.WorkID != "work_123" || tr.SourceTraceID != "llm_extraction:trace_route" {
+		t.Fatalf("transition ids = work:%q source:%q", tr.IDs.WorkID, tr.SourceTraceID)
+	}
+	if len(tr.Projections.Routing) != 1 || tr.Projections.Routing[0] != ev.ID {
+		t.Fatalf("routing projection = %+v, want %s", tr.Projections.Routing, ev.ID)
+	}
+	if len(tr.Projections.Cost) != 1 || tr.Projections.Cost[0] != ev.ID {
+		t.Fatalf("cost projection = %+v, want %s", tr.Projections.Cost, ev.ID)
+	}
+	if tr.SecondOrder.FutureBehaviorChanged {
+		t.Fatal("route evidence alone must not claim future behavior changed")
+	}
+	body, err := json.Marshal(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "SECRET_PROMPT_BODY") || strings.Contains(string(body), "SECRET_RESPONSE_BODY") {
+		t.Fatalf("transition leaked prompt/response body: %s", string(body))
+	}
+	if !strings.Contains(tr.StateDelta, "not task success") {
+		t.Fatalf("state_delta = %q, want explicit not-task-success caveat", tr.StateDelta)
+	}
+}
+
+func TestRecordExecutionRouteTransitionWritesEnvelope(t *testing.T) {
+	home := t.TempDir()
+	ev, err := BuildExecutionRouteEvidence(LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_route",
+	}, LiveExtractionReport{
+		SchemaVersion:  LiveExtractionSchemaVersion,
+		Provider:       "openai-compatible",
+		Model:          "fixture-model",
+		Called:         true,
+		Usage:          OpenAIUsage{TotalTokens: 14},
+		LatencyMS:      23,
+		LiveModelCalls: 1,
+	}, t0)
+	if err != nil {
+		t.Fatalf("route evidence: %v", err)
+	}
+	tr, err := BuildExecutionRouteTransition(ev)
+	if err != nil {
+		t.Fatalf("route transition: %v", err)
+	}
+	if err := RecordExecutionRouteTransition(home, tr); err != nil {
+		t.Fatalf("record transition: %v", err)
+	}
+	path := filepath.Join(home, "events", tr.ID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read transition: %v", err)
+	}
+	var got envelope.Transition
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode transition: %v", err)
+	}
+	if got.ID != tr.ID || got.Projections.Routing[0] != ev.ID {
+		t.Fatalf("transition = %+v", got)
 	}
 }
 

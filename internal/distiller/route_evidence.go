@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"compound/internal/envelope"
 )
 
 const ExecutionRouteEvidenceSchemaVersion = "compound.execution_route_evidence.v0.1"
@@ -82,6 +84,55 @@ func BuildExecutionRouteEvidence(req LLMExtractionRequest, report LiveExtraction
 	return ev, nil
 }
 
+func BuildExecutionRouteTransition(ev ExecutionRouteEvidence) (envelope.Transition, error) {
+	if err := validateExecutionRouteEvidence(ev); err != nil {
+		return envelope.Transition{}, err
+	}
+	workID := ev.WorkID
+	if workID == "" {
+		workID = idFor("work_route_", ev.ID)
+	}
+	evidenceRefs := dedupeRefs(append([]string{ev.ID}, ev.EvidenceRefs...))
+	costRefs := []string{}
+	if ev.CostMicros > 0 || ev.Usage.TotalTokens > 0 {
+		costRefs = []string{ev.ID}
+	}
+	tr := envelope.Transition{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTransition,
+			ID:            idFor("tr_", ev.ID, ev.RequestID, ev.CreatedAt),
+			CreatedAt:     ev.CreatedAt,
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  evidenceRefs,
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SourceTraceID: ev.RequestID,
+		BeforeRefs:    append([]string{}, ev.EvidenceRefs...),
+		ActionRefs:    []string{ev.RequestID},
+		AfterRefs:     []string{ev.ID},
+		StateDelta:    routeTransitionDelta(ev),
+		Projections: envelope.Projections{
+			Memory:         []string{},
+			Skill:          []string{},
+			Product:        []string{},
+			Cost:           costRefs,
+			Risk:           []string{},
+			Taste:          []string{},
+			Routing:        []string{ev.ID},
+			HumanAttention: []string{},
+		},
+		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: false},
+	}
+	if err := tr.Validate(); err != nil {
+		return envelope.Transition{}, err
+	}
+	return tr, nil
+}
+
 func RecordExecutionRouteEvidence(homePath string, ev ExecutionRouteEvidence) error {
 	if err := validateExecutionRouteEvidence(ev); err != nil {
 		return err
@@ -101,6 +152,21 @@ func RecordExecutionRouteEvidence(homePath string, ev ExecutionRouteEvidence) er
 	}
 	_, err = f.Write(append(b, '\n'))
 	return err
+}
+
+func RecordExecutionRouteTransition(homePath string, tr envelope.Transition) error {
+	if err := tr.Validate(); err != nil {
+		return err
+	}
+	path := filepath.Join(homePath, "events", tr.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(&tr, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
 func validateExecutionRouteEvidence(ev ExecutionRouteEvidence) error {
@@ -132,6 +198,37 @@ func validateExecutionRouteEvidence(ev ExecutionRouteEvidence) error {
 		return fmt.Errorf("execution route evidence invalid: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+func routeTransitionDelta(ev ExecutionRouteEvidence) string {
+	parts := []string{
+		"route evidence recorded",
+		ev.SelectedTarget.Provider + "/" + ev.SelectedTarget.Model,
+		"via " + ev.Protocol,
+		"status " + ev.Status,
+	}
+	if ev.Usage.TotalTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d tokens", ev.Usage.TotalTokens))
+	}
+	if ev.LatencyMS > 0 {
+		parts = append(parts, fmt.Sprintf("%dms", ev.LatencyMS))
+	}
+	parts = append(parts, "not task success")
+	return strings.Join(parts, "; ")
+}
+
+func dedupeRefs(refs []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
 }
 
 func routeEvidenceRefs(req LLMExtractionRequest, report LiveExtractionReport) []string {

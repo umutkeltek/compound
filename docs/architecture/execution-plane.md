@@ -41,6 +41,10 @@ target, rejected candidates + reasons, model/provider/account, cost, latency, st
 only, no prompt/response/secrets.** Task success still requires a state delta (tests passed, file
 changed, PR opened, product signal moved, or an explicit blocker).
 
+Local `compound distiller extract` follows the same rule: successful extraction writes metadata-only
+`ExecutionRouteEvidence` and an audit-only Transition whose routing/cost projections point at that
+evidence; it still does not prove the extracted candidates are true or promoted.
+
 ## Second-order effects (design against these)
 
 - **Cheap-mediocre drift.** If the router optimizes cost/latency without *outcome* feedback, the
