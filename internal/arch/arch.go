@@ -102,6 +102,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
+		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -244,6 +245,36 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 		return []Finding{{"retired-surface", Fail, "retired capability-matrix surface still listed in public docs: " + strings.Join(hits, "; ")}}
 	}
 	return []Finding{{"retired-surface", Info, "capability graph replaced public old-skill-matrix debt"}}
+}
+
+// checkDistillerDuplicateContract keeps the public distiller contract aligned
+// with the actual anti-churn path. Duplicate suppression is no longer memory-only:
+// non-memory candidate meanings also point at prior_candidate_id and no-promote.
+func checkDistillerDuplicateContract(repoRoot string) []Finding {
+	mentionsCandidateDuplicate := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			low := strings.ToLower(line)
+			if strings.Contains(low, "prior_candidate_id") ||
+				strings.Contains(low, "duplicate non-memory") ||
+				strings.Contains(low, "duplicate candidate") {
+				mentionsCandidateDuplicate = true
+			}
+		}
+		return nil
+	})
+	if !mentionsCandidateDuplicate {
+		return []Finding{{"distiller-contract", Fail, "public docs do not describe non-memory duplicate candidate anti-churn (prior_candidate_id/no-promote)"}}
+	}
+	return []Finding{{"distiller-contract", Info, "distiller duplicate anti-churn covers memory claims and candidate inboxes"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the

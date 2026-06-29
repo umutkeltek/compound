@@ -127,7 +127,8 @@ The ledger is authority. Engines are rebuildable views.
 - Gen-1 memory packages are retired from `internal/`.
 - Gen-1 top-level verbs are tombstones, not compatibility aliases.
 - `compound architecture doctor --strict` enforces package classification, public
-  doc leak checks, candidate-map integrity, and a convergence budget of `0`.
+  doc leak checks, candidate-map integrity, retired-surface/distiller-contract
+  guards, and a convergence budget of `0`.
 - `compound memory doctor` verifies the memory hop: capture, promotion,
   retrieval, authority, and optional engine sync.
 
