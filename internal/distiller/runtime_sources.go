@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"compound/internal/envelope"
@@ -51,6 +52,14 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 		src.ContextPack = ctx
 	}
 
+	hookEvents, err := loadHookEvents(homePath, w.ID, w.IDs.ContextPackID)
+	if err != nil {
+		return src, err
+	}
+	for i := range hookEvents {
+		src.Extra = append(src.Extra, &hookEvents[i])
+	}
+
 	if terminalWork(w.State) && strings.TrimSpace(w.IDs.TransitionID) == "" {
 		return src, fmt.Errorf("closed work %s missing transition_id", workID)
 	}
@@ -83,6 +92,46 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 	}
 
 	return src, nil
+}
+
+func loadHookEvents(homePath, workID, contextPackID string) ([]envelope.HookEvent, error) {
+	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
+	data, err := os.ReadFile(streamPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read hook events: %w", err)
+	}
+	var out []envelope.HookEvent
+	seen := map[string]bool{}
+	for lineNo, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev envelope.HookEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return nil, fmt.Errorf("parse hook event line %d: %w", lineNo+1, err)
+		}
+		if err := ev.Validate(); err != nil {
+			return nil, fmt.Errorf("hook event line %d invalid: %w", lineNo+1, err)
+		}
+		if seen[ev.ID] {
+			continue
+		}
+		if ev.IDs.WorkID == workID || (contextPackID != "" && ev.IDs.ContextPackID == contextPackID) {
+			seen[ev.ID] = true
+			out = append(out, ev)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 func readRuntimeEnvelope(path string) (envelope.Envelope, error) {

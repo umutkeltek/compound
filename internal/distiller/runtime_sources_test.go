@@ -82,8 +82,8 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if src.Receipt == nil || src.Receipt.ID != rec.ID {
 		t.Fatalf("loaded receipt = %+v, want %s", src.Receipt, rec.ID)
 	}
-	if len(src.Extra) != 1 || src.Extra[0].Kind() != "transition" {
-		t.Fatalf("loaded extra = %+v, want transition only", src.Extra)
+	if countKind(src.Extra, "hook_event") < 2 || countKind(src.Extra, "transition") != 1 {
+		t.Fatalf("loaded extra = %+v, want hook events plus one transition", src.Extra)
 	}
 
 	prior, err := LoadPriorStateFromHome(homePath, memStore, DefaultPolicy())
@@ -116,8 +116,11 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if req.Receipt == nil || req.Receipt.StateDelta.Summary == "" {
 		t.Fatalf("request receipt summary incomplete: %+v", req.Receipt)
 	}
-	if len(req.Envelopes) != 1 || req.Envelopes[0].ID != tr.ID {
-		t.Fatalf("request extra envelopes = %+v, want transition %s", req.Envelopes, tr.ID)
+	if countLLMKind(req.Envelopes, "hook_event") < 2 || countLLMKind(req.Envelopes, "transition") != 1 {
+		t.Fatalf("request extra envelopes = %+v, want hook events plus transition %s", req.Envelopes, tr.ID)
+	}
+	if !hasString(req.SourceRefs, "hook_event:"+start.Event.ID) || !hasString(req.SourceRefs, "hook_event:"+closed.Event.ID) {
+		t.Fatalf("request source refs missing hook events %q/%q: %v", start.Event.ID, closed.Event.ID, req.SourceRefs)
 	}
 }
 
@@ -151,4 +154,24 @@ func findProduced[T envelope.Envelope](t *testing.T, produced []envelope.Envelop
 	}
 	t.Fatalf("produced does not include %T: %v", zero, produced)
 	return zero
+}
+
+func countKind(items []envelope.Envelope, kind string) int {
+	var count int
+	for _, item := range items {
+		if item.Kind() == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func countLLMKind(items []LLMEnvelope, kind string) int {
+	var count int
+	for _, item := range items {
+		if item.Kind == kind {
+			count++
+		}
+	}
+	return count
 }

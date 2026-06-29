@@ -217,14 +217,37 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 	if len(events) != 1 || events[0].To != "proposed" || !containsString(events[0].Attached, pack.Header.ID) {
 		t.Fatalf("lifecycle events = %+v, want proposed attached to context pack", events)
 	}
-	for _, path := range []string{res.Injection.ContextRequestPath, res.Injection.ContextPackPath, res.Injection.Path, filepath.Join(homePath, "work", "work", cand.ID+".json")} {
+	hookEventPath := filepath.Join(homePath, "events", res.Event.ID+".json")
+	hookStreamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
+	for _, path := range []string{res.Injection.ContextRequestPath, res.Injection.ContextPackPath, res.Injection.Path, filepath.Join(homePath, "work", "work", cand.ID+".json"), hookEventPath, hookStreamPath} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected persisted artifact %s: %v", path, err)
 		}
 	}
+	hookBytes, err := os.ReadFile(hookEventPath)
+	if err != nil {
+		t.Fatalf("read hook event: %v", err)
+	}
+	var persisted envelope.HookEvent
+	if err := json.Unmarshal(hookBytes, &persisted); err != nil {
+		t.Fatalf("parse hook event: %v", err)
+	}
+	if persisted.IDs.WorkID != cand.ID || persisted.IDs.ContextPackID != pack.ID {
+		t.Fatalf("hook ids = %+v, want work %s context %s", persisted.IDs, cand.ID, pack.ID)
+	}
+	streamBytes, err := os.ReadFile(hookStreamPath)
+	if err != nil {
+		t.Fatalf("read hook stream: %v", err)
+	}
+	if !strings.Contains(string(streamBytes), res.Event.ID) {
+		t.Fatalf("hook stream missing event %s:\n%s", res.Event.ID, string(streamBytes))
+	}
 	blob, _ := json.Marshal(res)
 	if strings.Contains(string(blob), raw) {
 		t.Fatalf("raw prompt leaked into result:\n%s", string(blob))
+	}
+	if strings.Contains(string(hookBytes), raw) || strings.Contains(string(streamBytes), raw) {
+		t.Fatalf("raw prompt leaked into hook persistence")
 	}
 	if !containsString(res.Event.SideEffects, filepath.Join("work", "work", cand.ID+".json")) {
 		t.Fatalf("side effects = %v, want persisted work ref", res.Event.SideEffects)

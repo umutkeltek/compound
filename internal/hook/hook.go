@@ -130,6 +130,11 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 			return res, fmt.Errorf("produced %s invalid: %w", e.Kind(), err)
 		}
 	}
+	if strings.TrimSpace(deps.HomePath) != "" {
+		if err := writeHookEvent(deps.HomePath, res.Event); err != nil {
+			return res, fmt.Errorf("persist hook event: %w", err)
+		}
+	}
 	return res, nil
 }
 
@@ -147,6 +152,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 	}
 	req := buildContextRequest(name, fx, ec, pack, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Task), nil, now)
+	ev.IDs.ContextPackID = pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
@@ -177,6 +183,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	req := buildContextRequest(name, fx, ec, pack, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Prompt), nil, now)
+	ev.IDs.ContextPackID = pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
@@ -191,6 +198,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		create.ContextPackID = pack.Header.ID
 	}
 	cand := work.BuildWork(create, now)
+	ev.IDs.WorkID = cand.ID
 	produced := []envelope.Envelope{&cand}
 	if deps.Store != nil && injection != nil {
 		var err error
@@ -198,6 +206,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if err != nil {
 			return Result{}, err
 		}
+		ev.IDs.WorkID = cand.ID
 		ev.SideEffects = append(ev.SideEffects, filepath.Join("work", "work", cand.ID+".json"))
 		produced = []envelope.Envelope{&req, &ec, &pack, &cand}
 	}
@@ -227,6 +236,7 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		}
 	}
 	ev := newEvent(name, fx, st, hashStr(ai.ID), nil, now)
+	ev.IDs.WorkID = ai.IDs.WorkID
 	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: fmt.Sprintf("policy %s for %s%s", pd.Outcome, ai.Action, warn)}, nil
 }
 
@@ -252,6 +262,7 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		return Result{}, err
 	}
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.WorkID), []string{res.Receipt.ID, res.Transition.ID}, now)
+	ev.IDs.ContextPackID = res.Work.IDs.ContextPackID
 	summary := fmt.Sprintf("closed %s: %s, receipt %s, transition %s", res.Work.ID, res.Work.State, res.Receipt.ID, res.Transition.ID)
 	return Result{Event: ev, Produced: []envelope.Envelope{&res.Receipt, &res.Transition}, Summary: summary}, nil
 }
@@ -274,6 +285,7 @@ func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []strin
 			ID:            idFor("hook_", fx.Harness, name, ts(now)),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: fx.WorkID},
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier0",
@@ -359,6 +371,28 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 		ContextPackRef:     packRef,
 		ContextPackPath:    packPath,
 	}, nil
+}
+
+func writeHookEvent(homePath string, ev envelope.HookEvent) error {
+	eventRef := filepath.Join("events", ev.Header.ID+".json")
+	if err := writeJSON(filepath.Join(homePath, eventRef), ev); err != nil {
+		return err
+	}
+	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
+	if err := os.MkdirAll(filepath.Dir(streamPath), 0o755); err != nil {
+		return err
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(streamPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(b, '\n'))
+	return err
 }
 
 func writeJSON(path string, v any) error {

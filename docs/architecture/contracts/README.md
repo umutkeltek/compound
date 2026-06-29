@@ -23,7 +23,7 @@ schemas: `../runtime.md`.
 | **ActionIntent** | a proposed mutation, pre-policy (capability, target, mutation_class, reversibility, blast_radius, rollback_plan) | per proposed action |
 | **PolicyDecision** | the governance verdict an adapter **enforces** (allow \| allow_with_obligations \| hold \| deny + obligations) | per ActionIntent |
 | **StandingGrant** | a pre-authorized envelope (scope/budget/blast-radius/reversibility) so agents act inside it without paging, escalate on leaving | granted → expires/revoked |
-| **HookEvent** | one normalized harness lifecycle event (capability, input_hash, side_effects, status) | append-only |
+| **HookEvent** | one normalized harness lifecycle event (capability, input_hash, side_effects, status, ids{work_id,context_pack_id}) | append-only; persisted as `events/<hook_event_id>.json` plus `events/hook-events.ndjson` when `COMPOUND_HOME` is available |
 | **Receipt** | how a run is learned from — proportional to risk/blast-radius (state_delta, `delta_cause`, cost, skills, memory, `next_consumer`, `opens_branches[]`, `move_type`) | append-only; mined |
 | **Transition** | the apex object joining projections (`../transition.md`) | append-only; emits second-order signals |
 
@@ -64,8 +64,9 @@ unadjudicated; distillation proposes candidates only.**
 `LLMExtractionRequest` is the provider-neutral request packet. It carries bounded raw trace text,
 prior-state coverage, source refs, and typed summaries of ContextPack, WorkEnvelope, Receipt, and
 extra spine envelopes. It can be assembled from explicit typed files or from a closed
-`COMPOUND_HOME` work chain via `distiller request --work-id <work_id>`; it is prompt material only,
-not a model call and not authority.
+`COMPOUND_HOME` work chain via `distiller request --work-id <work_id>`, including matching
+HookEvents from `events/hook-events.ndjson`; it is prompt material only, not a model call and not
+authority.
 
 `LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
 `schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.

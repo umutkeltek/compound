@@ -25,7 +25,7 @@ $COMPOUND_HOME/
   lock/            installed-hooks.lock.json, effective-contract.lock.json
   config/          core.yaml; overlays/{private,local}.yaml; harnesses/*.yaml; adapters/*.yaml
   contracts/       effective/<date>/<id>.json + latest.json ; schemas/
-  events/          <date>/{events,hook-events,tool-events,model-route-events}.ndjson   (raw nervous system); <transition_id>.json for emitted Transition envelopes, including route-evidence projections
+  events/          hook-events.ndjson ; <hook_event_id>.json ; <transition_id>.json   (raw nervous system + emitted envelopes, including route-evidence projections)
   work/            current.sqlite ; events.ndjson ; work/<id>.json ; runs/<id>.json ; leases/<id>.json ; checkpoints/   (execution identity)
   context/         requests/<id>.json ; packs/<id>.json ; injections/<hook_event_id>.md (EXACT injected text)
   ledger/          {evidence,entities,claims,positions,patterns,edges,decisions,transitions,execution-route-evidence}.jsonl (durable truth; route evidence is metadata, not task success)
@@ -71,7 +71,7 @@ authoritative ≠ current*.
 | **WorkEnvelope** | the one root identity for a unit of work | work_id, intent_id, contract_id, owner, canonical_surface, state (proposed→admitted→ready→claimed→running→verifying→completed\|held\|blocked\|failed\|cancelled), desired_outcome, success_predicate, non_goals[], risk, context_pack_id, route_decision_id, policy_decision_id, run_ids[], artifact_ids[], verification_ids[], memory_candidate_ids[] |
 | **ActionIntent** | a proposed mutation, pre-policy | actor, capability, action, target{kind,id,path}, mutation_class (read\|local_reversible\|external_side_effect\|public\|destructive\|financial\|security), reversibility, blast_radius, estimated_cost{}, preview, rollback_plan |
 | **PolicyDecision** | the governance verdict an adapter enforces | outcome (allow\|allow_with_obligations\|hold\|deny), reasons[], obligations[] (write_receipt, include_rollback_ref, run_verification), standing_grant_id, expires_at |
-| **HookEvent** | one normalized harness lifecycle event (**no raw prompt stored by default** — only `input_hash`) | harness, hook_name, hook_capability (context_injection\|policy_gate\|telemetry\|receipt), input_hash, side_effects[], output_ref, duration_ms, status (ok\|fail_open\|blocked\|error) |
+| **HookEvent** | one normalized harness lifecycle event (**no raw prompt stored by default** — only `input_hash`) | harness, hook_name, hook_capability (context_injection\|policy_gate\|telemetry\|receipt), ids{work_id,context_pack_id}, input_hash, side_effects[], output_ref, duration_ms, status (ok\|fail_open\|blocked\|error); persisted to `events/<hook_event_id>.json` and `events/hook-events.ndjson` when `COMPOUND_HOME` is available |
 | **Receipt** | how a run is learned from (proportional to risk/blast-radius) | outcome, state_delta{changed,summary,files_changed[],artifacts[],verification[]}, cost{model_calls[],tokens,usd_actual,usd_estimated,human_minutes}, skills{used/missed/candidate}, memory{candidates/promoted/parked}, next{suggested_work[],review_trigger} |
 | **Transition** | the apex object joining projections (see `transition.md`) | before_refs[], action_refs[], after_refs[], state_delta, projections{memory,skill,product,cost,risk,taste,routing,human_attention}, second_order{future_behavior_changed,should_harden,should_create_rule,should_decay,revisit_at} |
 
@@ -95,7 +95,7 @@ arbitration. (Hooks sit at high-gravity points — a tiny SessionStart nudge ben
 them thin.)
 
 Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-tool-use, session-end, stop}`.
-Each: `stdin JSON → normalized HookEvent → compound service → typed object written under .compound → small
+Each: `stdin JSON → normalized HookEvent persisted under events/ → compound service → typed object written under .compound → small
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 
 ```text
