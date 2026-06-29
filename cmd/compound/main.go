@@ -145,7 +145,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
-  compound distiller eval <case.json>                         Offline request/response/adjudication eval, no model call
+  compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
@@ -436,7 +436,7 @@ func cmdDistiller(args []string) {
 	}
 	if len(args) >= 1 && args[0] == "eval" {
 		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json>")
+			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir>")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -444,32 +444,29 @@ func cmdDistiller(args []string) {
 			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 			os.Exit(1)
 		}
+		info, err := os.Stat(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller eval:", err)
+			os.Exit(1)
+		}
+		if info.IsDir() {
+			report, err := distiller.EvaluateCorpusDirInRoot(args[1], homePath, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "distiller eval:", err)
+				os.Exit(1)
+			}
+			printDistillerEvalCorpus(report)
+			if report.Status != "pass" {
+				os.Exit(1)
+			}
+			return
+		}
 		report, err := distiller.EvaluateCaseFileInRoot(args[1], homePath, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "distiller eval:", err)
 			os.Exit(1)
 		}
-		fmt.Printf("# distiller eval %s\n", report.ID)
-		fmt.Printf("- status: %s\n", report.Status)
-		fmt.Printf("- trace_ref: %s\n", report.TraceRef)
-		fmt.Printf("- decisions: %d\n", report.Run.DecisionCount)
-		fmt.Printf("- current_claims: %d\n", report.Run.CurrentClaims)
-		fmt.Printf("- live_model_calls: %d\n", report.Run.LiveModelCalls)
-		if report.Run.Error != "" {
-			fmt.Printf("- error: %s\n", report.Run.Error)
-		}
-		fmt.Printf("- prior: current_claims=%d capability_observations=%d eval_cases=%d method_upgrades=%d\n",
-			report.Request.PriorCoverage.CurrentClaims,
-			report.Request.PriorCoverage.CapabilityObs,
-			report.Request.PriorCoverage.EvalCases,
-			report.Request.PriorCoverage.MethodUpgrades)
-		for _, check := range report.Checks {
-			fmt.Printf("- check:%s %s", check.Name, check.Status)
-			if check.Detail != "" {
-				fmt.Printf(" (%s)", check.Detail)
-			}
-			fmt.Println()
-		}
+		printDistillerEval(report)
 		if report.Status != "pass" {
 			os.Exit(1)
 		}
@@ -480,9 +477,10 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json> | request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
+
 	extractor := distiller.Extractor(distiller.ReferenceExtractor{})
 	tracePath := args[1]
 	if args[1] == "--llm-response" {
@@ -522,6 +520,53 @@ func cmdDistiller(args []string) {
 			extra = " → no_promote " + d.NoPromoteID
 		}
 		fmt.Printf("%-22s %-14s %s%s\n", d.Kind, d.Verdict, d.Basis, extra)
+	}
+}
+
+func printDistillerEval(report distiller.EvalReport) {
+	fmt.Printf("# distiller eval %s\n", report.ID)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- trace_ref: %s\n", report.TraceRef)
+	fmt.Printf("- decisions: %d\n", report.Run.DecisionCount)
+	fmt.Printf("- current_claims: %d\n", report.Run.CurrentClaims)
+	fmt.Printf("- live_model_calls: %d\n", report.Run.LiveModelCalls)
+	if report.Run.Error != "" {
+		fmt.Printf("- error: %s\n", report.Run.Error)
+	}
+	fmt.Printf("- prior: current_claims=%d capability_observations=%d eval_cases=%d method_upgrades=%d\n",
+		report.Request.PriorCoverage.CurrentClaims,
+		report.Request.PriorCoverage.CapabilityObs,
+		report.Request.PriorCoverage.EvalCases,
+		report.Request.PriorCoverage.MethodUpgrades)
+	for _, check := range report.Checks {
+		fmt.Printf("- check:%s %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
+	}
+}
+
+func printDistillerEvalCorpus(report distiller.EvalCorpusReport) {
+	fmt.Printf("# distiller eval corpus %s\n", report.Dir)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- cases: %d\n", report.CaseCount)
+	fmt.Printf("- pass: %d\n", report.PassCount)
+	fmt.Printf("- fail: %d\n", report.FailCount)
+	fmt.Printf("- decisions: %d\n", report.DecisionCount)
+	fmt.Printf("- current_claims: %d\n", report.CurrentClaims)
+	fmt.Printf("- live_model_calls: %d\n", report.LiveModelCalls)
+	for _, caseReport := range report.Reports {
+		fmt.Printf("- case:%s %s decisions=%d current_claims=%d live_model_calls=%d",
+			caseReport.ID,
+			caseReport.Status,
+			caseReport.Run.DecisionCount,
+			caseReport.Run.CurrentClaims,
+			caseReport.Run.LiveModelCalls)
+		if caseReport.Run.Error != "" {
+			fmt.Printf(" error=%q", caseReport.Run.Error)
+		}
+		fmt.Println()
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 )
 
 const EvalCaseSchemaVersion = "compound.distiller.eval_case.v0.1"
+const EvalCorpusSchemaVersion = "compound.distiller.eval_corpus.v0.1"
 
 type EvalCase struct {
 	SchemaVersion string             `json:"schema_version"`
@@ -58,6 +60,19 @@ type EvalReport struct {
 	Run           EvalRunReport `json:"run"`
 }
 
+type EvalCorpusReport struct {
+	SchemaVersion  string       `json:"schema_version"`
+	Dir            string       `json:"dir"`
+	Status         string       `json:"status"`
+	CaseCount      int          `json:"case_count"`
+	PassCount      int          `json:"pass_count"`
+	FailCount      int          `json:"fail_count"`
+	DecisionCount  int          `json:"decision_count"`
+	CurrentClaims  int          `json:"current_claims"`
+	LiveModelCalls int          `json:"live_model_calls"`
+	Reports        []EvalReport `json:"reports"`
+}
+
 type EvalReqReport struct {
 	PriorCoverage PriorCoverage `json:"prior_coverage"`
 	SourceRefs    []string      `json:"source_refs"`
@@ -88,6 +103,60 @@ func EvaluateCaseFileInRoot(path, evalRoot string, now time.Time) (EvalReport, e
 	}
 	base := filepath.Dir(path)
 	return EvaluateCaseInRoot(base, ec, evalRoot, now)
+}
+
+func EvaluateCorpusDir(dir string, now time.Time) (EvalCorpusReport, error) {
+	return EvaluateCorpusDirInRoot(dir, "", now)
+}
+
+func EvaluateCorpusDirInRoot(dir, evalRoot string, now time.Time) (EvalCorpusReport, error) {
+	report := EvalCorpusReport{
+		SchemaVersion: EvalCorpusSchemaVersion,
+		Dir:           dir,
+		Status:        "fail",
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return report, err
+	}
+	if !info.IsDir() {
+		return report, fmt.Errorf("%s is not a directory", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return report, err
+	}
+	var cases []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "-eval.json") {
+			continue
+		}
+		cases = append(cases, filepath.Join(dir, entry.Name()))
+	}
+	sort.Strings(cases)
+	if len(cases) == 0 {
+		return report, fmt.Errorf("%s contains no eval case json files", dir)
+	}
+	for _, path := range cases {
+		caseReport, err := EvaluateCaseFileInRoot(path, evalRoot, now)
+		if err != nil {
+			return report, fmt.Errorf("eval case %s: %w", path, err)
+		}
+		report.Reports = append(report.Reports, caseReport)
+		report.CaseCount++
+		report.DecisionCount += caseReport.Run.DecisionCount
+		report.CurrentClaims += caseReport.Run.CurrentClaims
+		report.LiveModelCalls += caseReport.Run.LiveModelCalls
+		if caseReport.Status == "pass" {
+			report.PassCount++
+		} else {
+			report.FailCount++
+		}
+	}
+	if report.FailCount == 0 {
+		report.Status = "pass"
+	}
+	return report, nil
 }
 
 func LoadEvalCase(path string) (EvalCase, error) {

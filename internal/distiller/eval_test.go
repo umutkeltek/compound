@@ -137,6 +137,75 @@ func TestEvaluateCaseUnexpectedExtractorErrorFailsHard(t *testing.T) {
 	}
 }
 
+func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
+	dir := filepath.Join("..", "..", "fixtures", "distiller")
+	report, err := EvaluateCorpusDir(dir, t0)
+	if err != nil {
+		t.Fatalf("evaluate corpus: %v", err)
+	}
+	if report.Status != "pass" {
+		t.Fatalf("status = %q", report.Status)
+	}
+	if report.CaseCount != 6 || report.PassCount != 6 || report.FailCount != 0 {
+		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 6/6/0", report.CaseCount, report.PassCount, report.FailCount)
+	}
+	if report.DecisionCount != 3 {
+		t.Fatalf("decision_count = %d, want 3", report.DecisionCount)
+	}
+	if report.CurrentClaims != 0 {
+		t.Fatalf("current_claims = %d, want 0", report.CurrentClaims)
+	}
+	if report.LiveModelCalls != 0 {
+		t.Fatalf("live_model_calls = %d, want 0", report.LiveModelCalls)
+	}
+	if got := report.Reports[0].ID; got != "eval_rejects_llm_bad_confidence" {
+		t.Fatalf("first report id = %q, want sorted corpus order", got)
+	}
+}
+
+func TestEvaluateCorpusDirReportsFailingCase(t *testing.T) {
+	dir := t.TempDir()
+	response := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_fail","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91}]}`
+	if err := os.WriteFile(filepath.Join(dir, "response.json"), []byte(response), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evalCase := `{
+  "schema_version": "compound.distiller.eval_case.v0.1",
+  "id": "eval_expected_failure",
+  "request": {"trace_ref": "trace_fail"},
+  "response": "response.json",
+  "expect": {
+    "decisions": [{"kind":"memory","verdict":"promote"}],
+    "current_claims": 0,
+    "live_model_calls": 0
+  }
+}`
+	if err := os.WriteFile(filepath.Join(dir, "case-eval.json"), []byte(evalCase), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := EvaluateCorpusDir(dir, t0)
+	if err != nil {
+		t.Fatalf("evaluate corpus: %v", err)
+	}
+	if report.Status != "fail" {
+		t.Fatalf("status = %q, want fail", report.Status)
+	}
+	if report.CaseCount != 1 || report.PassCount != 0 || report.FailCount != 1 {
+		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 1/0/1", report.CaseCount, report.PassCount, report.FailCount)
+	}
+	if !checkFailed(report.Reports[0].Checks, "decisions") {
+		t.Fatalf("expected decisions check failure, got %+v", report.Reports[0].Checks)
+	}
+}
+
+func TestEvaluateCorpusDirRejectsEmptyDirectory(t *testing.T) {
+	_, err := EvaluateCorpusDir(t.TempDir(), t0)
+	if err == nil || !strings.Contains(err.Error(), "contains no eval case") {
+		t.Fatalf("err = %v, want contains no eval case", err)
+	}
+}
+
 func TestLoadEvalCaseRejectsMalformed(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
