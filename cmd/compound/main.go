@@ -156,7 +156,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
 compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
@@ -176,7 +176,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -255,6 +255,31 @@ func cmdCapability(args []string) {
 		for _, id := range report.EdgeIDs {
 			fmt.Printf("- edge: %s\n", id)
 		}
+	case "import-skills":
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml>")
+			os.Exit(2)
+		}
+		manifest, err := capgraph.LoadSkillManifest(p[0])
+		die(err)
+		report, err := capgraph.ApplySkillManifest(homePath, manifest, time.Now())
+		die(err)
+		fmt.Printf("# capability import-skills %s\n", report.ManifestID)
+		fmt.Printf("- status: %s\n", report.Status)
+		for _, check := range report.Checks {
+			fmt.Printf("- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		for _, id := range report.NodeIDs {
+			fmt.Printf("- node: %s\n", id)
+		}
+		for _, id := range report.EdgeIDs {
+			fmt.Printf("- edge: %s\n", id)
+		}
 	case "add":
 		p := posn(map[string]bool{"--triggers": true})
 		if len(p) < 3 {
@@ -314,7 +339,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills> ...")
 		os.Exit(2)
 	}
 }

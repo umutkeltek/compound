@@ -85,6 +85,8 @@ memory directly.
 | **DistillerDoctorReport** | read model over distiller compounding state, never a writer | adjudication counts, memory verdicts, eval corpus size, method/policy debt, capability observations, duplicate/no-promote churn; method/policy debt can enter `OwnerWritebackGate` |
 | **CapabilityGraph** | the typed graph over `Capability` / `RegistryEntry` nodes (P8) | node kinds (lens/procedure/script/tool/mcp/model_profile/harness/eval/workflow/adapter/doctrine/taste_standard) + edges (surfaces_with/requires/conflicts_with/specializes/fallback_for/validated_by/**missed_when**/**false_triggered_by**/retired_by); `ToolTopologyAdapter` imports tool/MCP nodes + CLI-vs-MCP fallback recommendations; **auto-surface, never auto-execute** |
 
+`SkillManifestAdapter` is the skill-import seam for this graph: it imports strict versioned skill/lens/procedure manifests into `CapabilityGraph`, rejects unknown fields, records compatible harnesses as graph edges, treats needs_review/deprecated/retired as non-surfacing, and never runs imported procedures.
+
 The self-improving loop is what makes this *compound*: the distiller's own misses/false-triggers and a
 capability's `missed_when` / `false_triggered_by` edges become evidence that patches the next
 DistillationPolicy and re-weights surfacing — repeated success becomes infrastructure, repeated failure

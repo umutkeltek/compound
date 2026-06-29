@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,219 @@ func newStore(t *testing.T) (string, *Store) {
 		t.Fatal(err)
 	}
 	return home, s
+}
+
+func TestApplySkillManifestImportsSkillsAndEdges(t *testing.T) {
+	home, s := newStore(t)
+	manifest := SkillManifest{
+		SchemaVersion: SkillManifestSchemaVersion,
+		ID:            "skill_manifest_fixture",
+		AdapterID:     "fixture.skill-manifest",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: SkillSourceRef{
+			Path:        "fixtures/skills/skill-manifest.yaml",
+			Kind:        "generated_view",
+			Owner:       "capability-fixture",
+			SourceClass: "generated",
+			Revision:    "rev_fixture",
+		},
+		EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
+		Skills: []SkillManifestEntry{
+			{
+				ID:                  "skill:pricing",
+				Name:                "Pricing",
+				Status:              "active",
+				Triggers:            []string{"pricing", "paywall"},
+				Capabilities:        []string{"monetization"},
+				CompatibleHarnesses: []string{"codex", "claude_code"},
+				Requires:            []string{"tool:analytics"},
+				ValidatedBy:         []string{"eval:pricing-copy"},
+				Weight:              2,
+			},
+			{
+				ID:             "lens:paywall-risk",
+				Kind:           "lens",
+				Name:           "Paywall Risk Lens",
+				Status:         "active",
+				Triggers:       []string{"paywall"},
+				Specializes:    []string{"skill:pricing"},
+				ConflictsWith:  []string{"skill:old-paywall"},
+				ReplacementFor: []string{"skill:old-paywall"},
+			},
+			{
+				ID:       "skill:old-paywall",
+				Name:     "Old Paywall",
+				Status:   "retired",
+				Triggers: []string{"paywall"},
+			},
+		},
+	}
+	report, err := ApplySkillManifest(home, manifest, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.NodeIDs) != 3 || len(report.EdgeIDs) != 7 {
+		t.Fatalf("report = %+v", report)
+	}
+	nodes, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Node{}
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	if byID["skill:pricing"].Kind != "skill" || byID["skill:pricing"].Weight != 2 {
+		t.Fatalf("pricing node = %+v", byID["skill:pricing"])
+	}
+	if byID["lens:paywall-risk"].Kind != "lens" {
+		t.Fatalf("lens node = %+v", byID["lens:paywall-risk"])
+	}
+	if !byID["skill:old-paywall"].Retired {
+		t.Fatalf("old skill should be retired: %+v", byID["skill:old-paywall"])
+	}
+	hits := surfaced(s, "improve paywall monetization")
+	if _, ok := hits["skill:pricing"]; !ok {
+		t.Fatal("imported skill should surface for paywall monetization task")
+	}
+	if _, ok := hits["lens:paywall-risk"]; !ok {
+		t.Fatal("imported lens should surface for paywall task")
+	}
+	if _, ok := hits["skill:old-paywall"]; ok {
+		t.Fatal("retired imported skill must not surface")
+	}
+	edges := readCapEdges(t, home)
+	if !hasEdge(edges, EdRequires, "skill:pricing", "tool:analytics") ||
+		!hasEdge(edges, EdValidatedBy, "skill:pricing", "eval:pricing-copy") ||
+		!hasEdge(edges, EdSurfacesWith, "skill:pricing", "harness:codex") ||
+		!hasEdge(edges, EdSurfacesWith, "skill:pricing", "harness:claude_code") ||
+		!hasEdge(edges, EdSpecializes, "lens:paywall-risk", "skill:pricing") ||
+		!hasEdge(edges, EdConflictsWith, "lens:paywall-risk", "skill:old-paywall") ||
+		!hasEdge(edges, EdRetiredBy, "skill:old-paywall", "lens:paywall-risk") {
+		t.Fatalf("edges = %+v", edges)
+	}
+}
+
+func TestValidateSkillManifestRejectsUnknownKind(t *testing.T) {
+	manifest := validSkillManifestForTest()
+	manifest.Skills[0].Kind = "plugin"
+	report := ValidateSkillManifest(manifest)
+	if report.Status != "fail" {
+		t.Fatalf("status = %s, want fail", report.Status)
+	}
+}
+
+func TestLoadSkillManifestRejectsUnknownFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	if err := os.WriteFile(path, []byte(`
+schema_version: compound.skill_manifest.v0.1
+id: skill_manifest_fixture
+adapter_id: fixture.skill-manifest
+source_system: fixture-os
+observed_at: "2026-06-29T00:00:00Z"
+source_ref:
+  path: fixtures/skills/skill-manifest.yaml
+  kind: generated_view
+  owner: capability-fixture
+  source_class: generated
+  revision: rev_fixture
+evidence_refs:
+  - artifact_sha256:skill-fixture
+skills:
+  - id: skill:pricing
+    name: Pricing
+    status: active
+    triggers:
+      - pricing
+    hidden_payload: should-not-pass
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSkillManifest(path); err == nil {
+		t.Fatal("expected unknown field to be rejected")
+	}
+}
+
+func TestApplySkillManifestDoesNotSurfaceNeedsReviewSkill(t *testing.T) {
+	home, s := newStore(t)
+	manifest := validSkillManifestForTest()
+	manifest.Skills[0].Status = "needs_review"
+	if _, err := ApplySkillManifest(home, manifest, t0); err != nil {
+		t.Fatal(err)
+	}
+	if hits := surfaced(s, "pricing"); hits["skill:pricing"] != 0 {
+		t.Fatalf("needs_review skill surfaced: %+v", hits)
+	}
+}
+
+func TestValidateSkillManifestRejectsUnknownStatus(t *testing.T) {
+	manifest := validSkillManifestForTest()
+	manifest.Skills[0].Status = "ambient"
+	report := ValidateSkillManifest(manifest)
+	if report.Status != "fail" {
+		t.Fatalf("status = %s, want fail", report.Status)
+	}
+}
+
+func TestValidateSkillManifestRejectsBadObservedAt(t *testing.T) {
+	manifest := validSkillManifestForTest()
+	manifest.ObservedAt = "today"
+	report := ValidateSkillManifest(manifest)
+	if report.Status != "fail" {
+		t.Fatalf("status = %s, want fail", report.Status)
+	}
+}
+
+func validSkillManifestForTest() SkillManifest {
+	return SkillManifest{
+		SchemaVersion: SkillManifestSchemaVersion,
+		ID:            "skill_manifest_fixture",
+		AdapterID:     "fixture.skill-manifest",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: SkillSourceRef{
+			Path:        "fixtures/skills/skill-manifest.yaml",
+			Kind:        "generated_view",
+			Owner:       "capability-fixture",
+			SourceClass: "generated",
+			Revision:    "rev_fixture",
+		},
+		EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
+		Skills: []SkillManifestEntry{{
+			ID:       "skill:pricing",
+			Name:     "Pricing",
+			Status:   "active",
+			Triggers: []string{"pricing"},
+		}},
+	}
+}
+
+func readCapEdges(t *testing.T, home string) []Edge {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, "registries", "capability-edges.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edges []Edge
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var edge Edge
+		if err := json.Unmarshal([]byte(line), &edge); err != nil {
+			t.Fatalf("parse edge %q: %v", line, err)
+		}
+		edges = append(edges, edge)
+	}
+	return edges
+}
+
+func hasEdge(edges []Edge, kind, from, to string) bool {
+	for _, edge := range edges {
+		if edge.Kind == kind && edge.From == from && edge.To == to {
+			return true
+		}
+	}
+	return false
 }
 
 func surfaced(s *Store, task string) map[string]float64 {

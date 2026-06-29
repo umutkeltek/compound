@@ -1,0 +1,249 @@
+package capgraph
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+const SkillManifestSchemaVersion = "compound.skill_manifest.v0.1"
+
+type SkillManifest struct {
+	SchemaVersion string               `json:"schema_version" yaml:"schema_version"`
+	ID            string               `json:"id" yaml:"id"`
+	AdapterID     string               `json:"adapter_id" yaml:"adapter_id"`
+	SourceSystem  string               `json:"source_system" yaml:"source_system"`
+	ObservedAt    string               `json:"observed_at" yaml:"observed_at"`
+	SourceRef     SkillSourceRef       `json:"source_ref" yaml:"source_ref"`
+	Skills        []SkillManifestEntry `json:"skills" yaml:"skills"`
+	EvidenceRefs  []string             `json:"evidence_refs" yaml:"evidence_refs"`
+}
+
+type SkillSourceRef struct {
+	Path        string `json:"path" yaml:"path"`
+	Kind        string `json:"kind" yaml:"kind"`
+	Owner       string `json:"owner" yaml:"owner"`
+	SourceClass string `json:"source_class" yaml:"source_class"`
+	Revision    string `json:"revision" yaml:"revision"`
+}
+
+type SkillManifestEntry struct {
+	ID                  string   `json:"id" yaml:"id"`
+	Kind                string   `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Name                string   `json:"name" yaml:"name"`
+	Status              string   `json:"status" yaml:"status"`
+	Triggers            []string `json:"triggers" yaml:"triggers"`
+	Capabilities        []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	CompatibleHarnesses []string `json:"compatible_harnesses,omitempty" yaml:"compatible_harnesses,omitempty"`
+	Requires            []string `json:"requires,omitempty" yaml:"requires,omitempty"`
+	Specializes         []string `json:"specializes,omitempty" yaml:"specializes,omitempty"`
+	ConflictsWith       []string `json:"conflicts_with,omitempty" yaml:"conflicts_with,omitempty"`
+	ValidatedBy         []string `json:"validated_by,omitempty" yaml:"validated_by,omitempty"`
+	ReplacementFor      []string `json:"replacement_for,omitempty" yaml:"replacement_for,omitempty"`
+	Weight              float64  `json:"weight,omitempty" yaml:"weight,omitempty"`
+	Retired             bool     `json:"retired,omitempty" yaml:"retired,omitempty"`
+	EvidenceRefs        []string `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
+}
+
+type SkillManifestCheck struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type SkillManifestReport struct {
+	ManifestID string               `json:"manifest_id"`
+	Status     string               `json:"status"`
+	Checks     []SkillManifestCheck `json:"checks"`
+	NodeIDs    []string             `json:"node_ids"`
+	EdgeIDs    []string             `json:"edge_ids"`
+}
+
+func LoadSkillManifest(path string) (SkillManifest, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SkillManifest{}, err
+	}
+	var manifest SkillManifest
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&manifest); err != nil {
+		return SkillManifest{}, err
+	}
+	return manifest, nil
+}
+
+func ValidateSkillManifest(manifest SkillManifest) SkillManifestReport {
+	r := SkillManifestReport{ManifestID: manifest.ID, Status: "ok"}
+	add := func(name string, ok bool, detail string) {
+		status := "ok"
+		if !ok {
+			status = "fail"
+			r.Status = "fail"
+		}
+		r.Checks = append(r.Checks, SkillManifestCheck{Name: name, Status: status, Detail: detail})
+	}
+	add("schema_version", manifest.SchemaVersion == SkillManifestSchemaVersion, manifest.SchemaVersion)
+	add("id", strings.TrimSpace(manifest.ID) != "", manifest.ID)
+	add("adapter", strings.TrimSpace(manifest.AdapterID) != "" && strings.TrimSpace(manifest.SourceSystem) != "", manifest.AdapterID+"/"+manifest.SourceSystem)
+	add("observed_at", skillObservedAtOK(manifest.ObservedAt), manifest.ObservedAt)
+	add("source_ref", skillSourceRefOK(manifest.SourceRef), manifest.SourceRef.Path)
+	add("evidence", len(manifest.EvidenceRefs) > 0, strings.Join(manifest.EvidenceRefs, ","))
+	add("skills", len(manifest.Skills) > 0, fmt.Sprintf("%d", len(manifest.Skills)))
+	seen := map[string]bool{}
+	for _, skill := range manifest.Skills {
+		kind := skillKind(skill)
+		add("skill:"+skill.ID, skillOK(skill, manifest.EvidenceRefs), kind)
+		add("skill_kind:"+skill.ID, contains(NodeKinds, kind), kind)
+		add("skill_status:"+skill.ID, skillStatusOK(skill.Status), skill.Status)
+		if seen[skill.ID] {
+			add("duplicate:"+skill.ID, false, "duplicate skill id")
+		}
+		seen[skill.ID] = true
+	}
+	return r
+}
+
+func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) (SkillManifestReport, error) {
+	report := ValidateSkillManifest(manifest)
+	if report.Status != "ok" {
+		return report, fmt.Errorf("skill manifest invalid")
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		return report, err
+	}
+	for _, skill := range manifest.Skills {
+		node := Node{
+			ID:       skill.ID,
+			Kind:     skillKind(skill),
+			Name:     skill.Name,
+			Triggers: skillTriggers(skill),
+			Weight:   skill.Weight,
+			Retired:  skillRetired(skill),
+		}
+		if err := store.Add(node); err != nil {
+			return report, err
+		}
+		report.NodeIDs = append(report.NodeIDs, skill.ID)
+		for _, edge := range skillEdges(skill, now) {
+			if err := store.AddEdge(edge, now); err != nil {
+				return report, err
+			}
+			report.EdgeIDs = append(report.EdgeIDs, edge.Kind+":"+edge.From+"->"+edge.To)
+		}
+	}
+	return report, nil
+}
+
+func skillSourceRefOK(ref SkillSourceRef) bool {
+	return strings.TrimSpace(ref.Path) != "" &&
+		strings.TrimSpace(ref.Kind) != "" &&
+		strings.TrimSpace(ref.Owner) != "" &&
+		strings.TrimSpace(ref.SourceClass) != "" &&
+		strings.TrimSpace(ref.Revision) != ""
+}
+
+func skillObservedAtOK(v string) bool {
+	if strings.TrimSpace(v) == "" {
+		return false
+	}
+	_, err := time.Parse(time.RFC3339, v)
+	return err == nil
+}
+
+func skillOK(skill SkillManifestEntry, manifestEvidence []string) bool {
+	return strings.TrimSpace(skill.ID) != "" &&
+		strings.TrimSpace(skill.Name) != "" &&
+		contains(NodeKinds, skillKind(skill)) &&
+		skillStatusOK(skill.Status) &&
+		len(skillTriggers(skill)) > 0 &&
+		(len(skill.EvidenceRefs) > 0 || len(manifestEvidence) > 0 || strings.TrimSpace(skill.Status) != "")
+}
+
+func skillStatusOK(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "", "active", "needs_review", "deprecated", "retired":
+		return true
+	default:
+		return false
+	}
+}
+
+func skillRetired(skill SkillManifestEntry) bool {
+	switch strings.TrimSpace(skill.Status) {
+	case "needs_review", "deprecated", "retired":
+		return true
+	default:
+		return skill.Retired
+	}
+}
+
+func skillKind(skill SkillManifestEntry) string {
+	if strings.TrimSpace(skill.Kind) == "" {
+		return "skill"
+	}
+	return strings.TrimSpace(skill.Kind)
+}
+
+func skillTriggers(skill SkillManifestEntry) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(v string) {
+		v = strings.TrimSpace(strings.ToLower(v))
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, v := range skill.Triggers {
+		add(v)
+	}
+	for _, v := range skill.Capabilities {
+		add(v)
+	}
+	return out
+}
+
+func skillEdges(skill SkillManifestEntry, now time.Time) []Edge {
+	var edges []Edge
+	add := func(kind, from, to string) {
+		to = strings.TrimSpace(to)
+		if to == "" {
+			return
+		}
+		edges = append(edges, Edge{Kind: kind, From: from, To: to, Confidence: 1, CreatedAt: now.UTC().Format(time.RFC3339)})
+	}
+	for _, to := range skill.Requires {
+		add(EdRequires, skill.ID, to)
+	}
+	for _, to := range skill.Specializes {
+		add(EdSpecializes, skill.ID, to)
+	}
+	for _, to := range skill.ConflictsWith {
+		add(EdConflictsWith, skill.ID, to)
+	}
+	for _, harness := range skill.CompatibleHarnesses {
+		add(EdSurfacesWith, skill.ID, skillHarnessID(harness))
+	}
+	for _, to := range skill.ValidatedBy {
+		add(EdValidatedBy, skill.ID, to)
+	}
+	for _, old := range skill.ReplacementFor {
+		add(EdRetiredBy, old, skill.ID)
+	}
+	return edges
+}
+
+func skillHarnessID(harness string) string {
+	harness = strings.TrimSpace(strings.ToLower(harness))
+	if harness == "" || strings.HasPrefix(harness, "harness:") {
+		return harness
+	}
+	return "harness:" + harness
+}
