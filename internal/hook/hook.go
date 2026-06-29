@@ -240,9 +240,12 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		ai.IDs.WorkID = fx.WorkID
 	}
 	evalCtx := policy.EvaluationContext{}
+	var sourceControl *policy.SourceControlContext
 	sideEffects := []string(nil)
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
-		sourceControl, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
+		var effects []string
+		var err error
+		sourceControl, effects, err = sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
 		if err != nil {
 			return Result{}, err
 		}
@@ -259,6 +262,15 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		}
 		sideEffects = append(sideEffects, effects...)
 	}
+	reviewWorkID := ""
+	if deps.Store != nil && sourceControl != nil && !policy.Allowed(pd) && strings.TrimSpace(sourceControl.Status) == "dirty" {
+		review, err := createHeldGateReview(deps.Store, fx, ai, pd, *sourceControl, now)
+		if err != nil {
+			return Result{}, err
+		}
+		reviewWorkID = review.ID
+		sideEffects = append(sideEffects, filepath.Join("work", "work", review.ID+".json"))
+	}
 
 	// Capability-aware enforcement: a block only counts if the harness can actually block.
 	st, warn := "ok", ""
@@ -272,7 +284,48 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	ev := newEvent(name, fx, st, hashStr(ai.ID), sideEffects, now)
 	ev.IDs.WorkID = ai.IDs.WorkID
-	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: fmt.Sprintf("policy %s for %s%s", pd.Outcome, ai.Action, warn)}, nil
+	summary := fmt.Sprintf("policy %s for %s%s", pd.Outcome, ai.Action, warn)
+	if reviewWorkID != "" {
+		summary += "; held review work " + reviewWorkID
+	}
+	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: summary}, nil
+}
+
+func createHeldGateReview(store *work.Store, fx Fixture, ai envelope.ActionIntent, pd envelope.PolicyDecision, sc policy.SourceControlContext, now time.Time) (envelope.WorkEnvelope, error) {
+	target := strings.TrimSpace(ai.Target.Path)
+	if target == "" {
+		target = ai.Target.ID
+	}
+	predicate := fmt.Sprintf("review held policy gate for %s on %s", ai.Action, target)
+	return store.Create(work.CreateInput{
+		Owner:            fx.Harness,
+		State:            "held",
+		Risk:             orDef(ai.Risk, "tier1"),
+		Privacy:          orDef(ai.Privacy, "private"),
+		SuccessPredicate: predicate,
+		DesiredOutcome:   "decide whether to clean the repo, revise the action, or explicitly review the dirty source-control state before mutation",
+		NonGoals: []string{
+			"do not mutate the target before policy allows it",
+			"do not treat git status as source truth for meaning",
+		},
+		EvidenceRefs: mergeRefs([]string{ai.ID, pd.ID}, pd.EvidenceRefs, sc.EvidenceRefs),
+	}, now)
+}
+
+func mergeRefs(groups ...[]string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, group := range groups {
+		for _, ref := range group {
+			ref = strings.TrimSpace(ref)
+			if ref == "" || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.PolicyDecision) ([]string, error) {

@@ -401,6 +401,11 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	}
 	deps := baseDeps()
 	deps.HomePath = homePath
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps.Store = store
 	ai := &envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
@@ -458,6 +463,20 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	}
 	if !hasClaim(claims, "source_control_status", "dirty") {
 		t.Fatalf("source control claims = %+v, want dirty status", claims)
+	}
+	works, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := findWorkByPredicate(works, "review held policy gate")
+	if review.ID == "" {
+		t.Fatalf("held review work missing: %+v", works)
+	}
+	if review.State != "held" {
+		t.Fatalf("review work state = %q, want held", review.State)
+	}
+	if !containsString(review.EvidenceRefs, pd.ID) || !containsString(review.EvidenceRefs, pd.EvidenceRefs[0]) {
+		t.Fatalf("review work evidence refs = %v, want policy and source-control refs", review.EvidenceRefs)
 	}
 	for _, ref := range []string{filepath.Join("events", "act_dirty_write.json"), filepath.Join("events", pd.ID+".json")} {
 		if _, err := os.Stat(filepath.Join(homePath, ref)); err != nil {
@@ -556,6 +575,15 @@ func hasClaim(claims []mem.Claim, predicate, object string) bool {
 		}
 	}
 	return false
+}
+
+func findWorkByPredicate(works []envelope.WorkEnvelope, needle string) envelope.WorkEnvelope {
+	for _, w := range works {
+		if strings.Contains(w.SuccessPredicate, needle) {
+			return w
+		}
+	}
+	return envelope.WorkEnvelope{}
 }
 
 func containsString(xs []string, want string) bool {

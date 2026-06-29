@@ -90,6 +90,7 @@ type CreateInput struct {
 	SuccessPredicate string
 	DesiredOutcome   string
 	NonGoals         []string
+	EvidenceRefs     []string
 	ContextPackID    string
 	State            string // default "ready"
 	Risk             string // default "tier1"
@@ -99,7 +100,7 @@ type CreateInput struct {
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
 // then persists) and by callers that need a candidate (e.g. a UserPromptSubmit hook).
 func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
-	return envelope.WorkEnvelope{
+	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, idFor("work_", in.Owner, in.SuccessPredicate, ts(now)), now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
 		State:              orDefault(in.State, "ready"),
@@ -111,6 +112,8 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		VerificationIDs:    []string{},
 		MemoryCandidateIDs: []string{},
 	}
+	w.EvidenceRefs = orEmpty(in.EvidenceRefs)
+	return w
 }
 
 // Create writes a new WorkEnvelope and its first lifecycle event, returning the work.

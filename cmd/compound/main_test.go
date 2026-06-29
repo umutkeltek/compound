@@ -266,6 +266,14 @@ func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
 	if !foundPolicy {
 		t.Fatalf("policy decision artifact missing in events dir")
 	}
+	listOut := captureStdout(t, func() {
+		cmdWork([]string{"list"})
+	})
+	for _, want := range []string{"held", "review held policy gate"} {
+		if !strings.Contains(listOut, want) {
+			t.Fatalf("work list output missing held review %q:\n%s", want, listOut)
+		}
+	}
 }
 
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
