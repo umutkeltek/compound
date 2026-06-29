@@ -46,18 +46,20 @@ var hookCapability = map[string]string{
 
 // Fixture is one normalized hook invocation (a fixture file, or a live hook's stdin).
 type Fixture struct {
-	Hook     string                 `json:"hook"`
-	Harness  string                 `json:"harness"`
-	Cwd      string                 `json:"cwd,omitempty"`
-	Task     string                 `json:"task,omitempty"`
-	RepoKind string                 `json:"repo_kind,omitempty"`
-	Prompt   string                 `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
-	Action   *envelope.ActionIntent `json:"action,omitempty"`  // pre-tool-use
-	WorkID   string                 `json:"work_id,omitempty"` // session-end
-	MoveType string                 `json:"move_type,omitempty"`
-	Outcome  string                 `json:"outcome,omitempty"`
-	Summary  string                 `json:"summary,omitempty"`
-	Tool     string                 `json:"tool,omitempty"` // post-tool-use
+	Hook           string                 `json:"hook"`
+	Harness        string                 `json:"harness"`
+	Cwd            string                 `json:"cwd,omitempty"`
+	Task           string                 `json:"task,omitempty"`
+	RepoKind       string                 `json:"repo_kind,omitempty"`
+	Prompt         string                 `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
+	Action         *envelope.ActionIntent `json:"action,omitempty"`  // pre-tool-use
+	WorkID         string                 `json:"work_id,omitempty"` // session-end
+	MoveType       string                 `json:"move_type,omitempty"`
+	Outcome        string                 `json:"outcome,omitempty"`
+	Summary        string                 `json:"summary,omitempty"`
+	Missed         []string               `json:"missed,omitempty"`
+	FalseTriggered []string               `json:"false_triggered,omitempty"`
+	Tool           string                 `json:"tool,omitempty"` // post-tool-use
 }
 
 // Deps are the services a hook orchestrates.
@@ -253,10 +255,12 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		return Result{}, fmt.Errorf("session-end needs a work store (run `compound home init`)")
 	}
 	res, err := deps.Store.Close(fx.WorkID, work.CloseInput{
-		Outcome:  orDef(fx.Outcome, "completed"),
-		MoveType: orDef(fx.MoveType, "audit_only"),
-		Summary:  fx.Summary,
-		Changed:  strings.TrimSpace(fx.Summary) != "",
+		Outcome:                    orDef(fx.Outcome, "completed"),
+		MoveType:                   orDef(fx.MoveType, "audit_only"),
+		Summary:                    fx.Summary,
+		Changed:                    strings.TrimSpace(fx.Summary) != "",
+		MissedCapabilities:         fx.Missed,
+		FalseTriggeredCapabilities: fx.FalseTriggered,
 	}, now)
 	if err != nil {
 		return Result{}, err

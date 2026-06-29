@@ -402,7 +402,15 @@ func TestSessionEndClosesWork(t *testing.T) {
 
 	deps := baseDeps()
 	deps.Store = store
-	fx := Fixture{Hook: "session-end", Harness: "claude_code", WorkID: w.ID, MoveType: "outward_delta", Summary: "shipped"}
+	fx := Fixture{
+		Hook:           "session-end",
+		Harness:        "claude_code",
+		WorkID:         w.ID,
+		MoveType:       "outward_delta",
+		Summary:        "shipped",
+		Missed:         []string{"capability://skill:pricing"},
+		FalseTriggered: []string{"capability://skill:generic-copy"},
+	}
 	res, err := Run(fx, deps, fixedNow)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -410,7 +418,14 @@ func TestSessionEndClosesWork(t *testing.T) {
 	if got := kinds(res.Produced); len(got) != 2 || got[0] != "receipt" || got[1] != "transition" {
 		t.Fatalf("produced = %v, want [receipt transition]", got)
 	}
+	rec := res.Produced[0].(*envelope.Receipt)
 	tr := res.Produced[1].(*envelope.Transition)
+	if !containsString(rec.Skills.Missed, "capability://skill:pricing") {
+		t.Fatalf("receipt missed skills = %v", rec.Skills.Missed)
+	}
+	if !containsString(rec.Skills.FalseTriggered, "capability://skill:generic-copy") {
+		t.Fatalf("receipt false_triggered skills = %v", rec.Skills.FalseTriggered)
+	}
 	if tr.IDs.WorkID != w.ID {
 		t.Errorf("transition work_id = %q, want %q", tr.IDs.WorkID, w.ID)
 	}

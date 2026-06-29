@@ -303,10 +303,12 @@ func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelop
 // --- close ---
 
 type CloseInput struct {
-	Outcome  string // completed | failed | cancelled
-	MoveType string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
-	Summary  string
-	Changed  bool
+	Outcome                    string // completed | failed | cancelled
+	MoveType                   string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
+	Summary                    string
+	Changed                    bool
+	MissedCapabilities         []string
+	FalseTriggeredCapabilities []string
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -359,8 +361,13 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			Artifacts:    orEmpty(w.ArtifactIDs),
 			Verification: orEmpty(w.VerificationIDs),
 		},
-		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: usedCapabilities, Missed: []string{}, Candidate: capabilityRefs},
+		Cost: envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills: envelope.ReceiptSkills{
+			Used:           usedCapabilities,
+			Missed:         orEmpty(in.MissedCapabilities),
+			FalseTriggered: orEmpty(in.FalseTriggeredCapabilities),
+			Candidate:      capabilityRefs,
+		},
 		Memory: envelope.ReceiptMemory{Candidates: orEmpty(w.MemoryCandidateIDs), Promoted: []string{}, Parked: []string{}},
 		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
 	}

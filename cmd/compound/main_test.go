@@ -147,6 +147,62 @@ func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	}
 }
 
+func TestWorkCloseExplicitFeedbackAutoConsumes(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	graph, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatalf("open capability graph: %v", err)
+	}
+	for _, node := range []capgraph.Node{
+		{ID: "skill:missed-cli", Kind: "skill", Name: "Missed CLI", Triggers: []string{"pricing"}},
+		{ID: "skill:false-cli", Kind: "skill", Name: "False CLI", Triggers: []string{"pricing"}},
+	} {
+		if err := graph.Add(node); err != nil {
+			t.Fatalf("add node %s: %v", node.ID, err)
+		}
+	}
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "record explicit feedback"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, cliTestNow); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+
+	cmdWork([]string{
+		"close", w.ID,
+		"--outcome", "failed",
+		"--move-type", "outward_delta",
+		"--summary", "pricing review",
+		"--changed",
+		"--missed", "capability://skill:missed-cli",
+		"--false-triggered", "capability://skill:false-cli",
+	})
+
+	edges := readCapabilityEdges(t, homePath)
+	if !hasCapabilityEdgeTo(edges, capgraph.EdMissedWhen, "skill:missed-cli") {
+		t.Fatalf("work close did not auto-consume missed feedback; edges=%+v", edges)
+	}
+	if !hasCapabilityEdgeTo(edges, capgraph.EdFalseTriggeredBy, "skill:false-cli") {
+		t.Fatalf("work close did not auto-consume false-trigger feedback; edges=%+v", edges)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
@@ -276,6 +332,15 @@ func splitJSONLines(s string) []string {
 func hasCapabilityEdge(edges []capgraph.Edge, kind, from string) bool {
 	for _, edge := range edges {
 		if edge.Kind == kind && edge.From == from {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCapabilityEdgeTo(edges []capgraph.Edge, kind, to string) bool {
+	for _, edge := range edges {
+		if edge.Kind == kind && edge.To == to {
 			return true
 		}
 	}

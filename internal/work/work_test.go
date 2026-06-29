@@ -157,6 +157,38 @@ func TestTerminalCannotAdvance(t *testing.T) {
 	}
 }
 
+func TestClosePreservesExplicitCapabilityFeedback(t *testing.T) {
+	s := newStore(t)
+	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome:                    "failed",
+		MoveType:                   "outward_delta",
+		Summary:                    "pricing capability feedback",
+		Changed:                    true,
+		MissedCapabilities:         []string{"capability://skill:pricing"},
+		FalseTriggeredCapabilities: []string{"capability://skill:generic-copy"},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(closed.Receipt.Skills.Missed, "capability://skill:pricing") {
+		t.Fatalf("receipt missed skills = %v", closed.Receipt.Skills.Missed)
+	}
+	if !contains(closed.Receipt.Skills.FalseTriggered, "capability://skill:generic-copy") {
+		t.Fatalf("receipt false_triggered skills = %v", closed.Receipt.Skills.FalseTriggered)
+	}
+}
+
 // The store enforces governance structurally: a denied/held decision cannot be recorded
 // as a performed action; an allowing one links the action + policy into the work chain.
 func TestRecordActionGate(t *testing.T) {

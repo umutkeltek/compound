@@ -1658,10 +1658,12 @@ func cmdWork(args []string) {
 		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
 	case "close":
 		res, err := store.Close(pos(), work.CloseInput{
-			Outcome:  flag("--outcome"),
-			MoveType: flag("--move-type"),
-			Summary:  flag("--summary"),
-			Changed:  has("--changed"),
+			Outcome:                    flag("--outcome"),
+			MoveType:                   flag("--move-type"),
+			Summary:                    flag("--summary"),
+			Changed:                    has("--changed"),
+			MissedCapabilities:         splitCSV(flag("--missed")),
+			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s closed: %s  move_type=%s  receipt=%s  transition=%s\n",
