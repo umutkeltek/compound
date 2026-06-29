@@ -106,6 +106,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkLLMExtractionGroundingContract(repoRoot)...)
 		f = append(f, checkDistillerCandidateShapeContract(repoRoot)...)
 		f = append(f, checkRouteOutcomeContract(repoRoot)...)
+		f = append(f, checkKnowledgePageContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -391,6 +392,50 @@ func checkRouteOutcomeContract(repoRoot string) []Finding {
 		return []Finding{{"route-outcome-contract", Fail, "public docs do not describe receipt-linked route outcome review with state_delta/no-promote and no provider/gateway/model-router mutation"}}
 	}
 	return []Finding{{"route-outcome-contract", Info, "route outcome review joins route evidence to receipt state delta before policy review"}}
+}
+
+// checkKnowledgePageContract keeps curated-source docs from drifting back to a
+// vague "knowledge pages become memory" promise. Page import must stay explicit,
+// evidence-backed, candidate-only, and non-promoting.
+func checkKnowledgePageContract(repoRoot string) []Finding {
+	hasImportPage := false
+	hasSchema := false
+	hasClaims := false
+	hasEvidence := false
+	hasNoPromotion := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "memory import-page") {
+			hasImportPage = true
+		}
+		if strings.Contains(low, "compound.knowledge_page.v0.1") {
+			hasSchema = true
+		}
+		if strings.Contains(low, "claims[]") {
+			hasClaims = true
+		}
+		if strings.Contains(low, "evidenceitem") {
+			hasEvidence = true
+		}
+		if strings.Contains(low, "no promoted claims") ||
+			strings.Contains(low, "creates no promoted claims") ||
+			strings.Contains(low, "does not promote") {
+			hasNoPromotion = true
+		}
+		return nil
+	})
+	if !hasImportPage || !hasSchema || !hasClaims || !hasEvidence || !hasNoPromotion {
+		return []Finding{{"knowledge-page-contract", Fail, "public docs do not describe memory import-page with compound.knowledge_page.v0.1 claims[] -> EvidenceItem/proposed candidates and no promoted claims"}}
+	}
+	return []Finding{{"knowledge-page-contract", Info, "knowledge-page import stays evidence-backed candidate-only no-promotion"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the

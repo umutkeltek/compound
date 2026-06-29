@@ -314,3 +314,39 @@ func TestRouteOutcomeContractRequiresStateDeltaAndNoPromote(t *testing.T) {
 		t.Fatalf("failure should name missing state/no-promote guard: %+v", findings)
 	}
 }
+func TestKnowledgePageContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "knowledge-page-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("knowledge-page contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected knowledge-page-contract finding")
+	}
+}
+
+func TestKnowledgePageContractFailsOnVagueDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "knowledge-base pages become Evidence / Claim / Position candidates.\n"
+	if err := os.WriteFile(filepath.Join(docs, "source-adapters.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkKnowledgePageContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "memory import-page") {
+		t.Fatalf("failure should name missing import-page contract: %+v", findings)
+	}
+}
