@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePacketMarkdownExtractsWorkFields(t *testing.T) {
@@ -97,5 +98,66 @@ func TestImportPacketCreatesIdempotentProposedWork(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("idempotent reimport should not append lifecycle events: %+v", events)
+	}
+}
+
+func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
+	home := t.TempDir()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	report, err := store.ImportPacket(packetPath, PacketImportOptions{
+		State:         "ready",
+		ContextPackID: "ctx_packet",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workID := report.Work.ID
+	if report.Work.State != "ready" {
+		t.Fatalf("state = %q, want ready", report.Work.State)
+	}
+	if !contains(report.Work.EvidenceRefs, report.EvidenceRef) {
+		t.Fatalf("packet evidence ref missing from work: %v", report.Work.EvidenceRefs)
+	}
+	if _, err := store.Claim(workID, "codex", fixedNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet work: %v", err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: "running", RunID: "run_packet", Note: "executing packet work"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: "verifying", ArtifactID: "artifact_packet_delta", VerificationID: "ver_packet"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	closed, err := store.Close(workID, CloseInput{
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		Summary:  "packet-sourced work closed through receipt and transition",
+		Changed:  true,
+	}, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("close packet work: %v", err)
+	}
+	if closed.Work.ID != workID || closed.Receipt.IDs.WorkID != workID || closed.Transition.IDs.WorkID != workID {
+		t.Fatalf("work id chain broken: work=%s receipt=%s transition=%s", closed.Work.ID, closed.Receipt.IDs.WorkID, closed.Transition.IDs.WorkID)
+	}
+	if closed.Work.IDs.TransitionID != closed.Transition.ID {
+		t.Fatalf("work transition id = %q, want %q", closed.Work.IDs.TransitionID, closed.Transition.ID)
+	}
+	if got := closed.Transition.BeforeRefs; len(got) != 1 || got[0] != "ctx_packet" {
+		t.Fatalf("transition before refs = %v, want ctx_packet", got)
+	}
+	if !contains(closed.Transition.ActionRefs, "run_packet") ||
+		!contains(closed.Transition.AfterRefs, "artifact_packet_delta") ||
+		!contains(closed.Transition.AfterRefs, closed.Receipt.ID) {
+		t.Fatalf("transition refs incomplete: action=%v after=%v receipt=%s", closed.Transition.ActionRefs, closed.Transition.AfterRefs, closed.Receipt.ID)
+	}
+	if closed.Receipt.StateDelta.Summary == "" || !closed.Receipt.StateDelta.Changed {
+		t.Fatalf("receipt state delta missing: %+v", closed.Receipt.StateDelta)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("closing packet work must not create claims ledger, stat err=%v", err)
 	}
 }

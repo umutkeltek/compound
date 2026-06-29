@@ -116,6 +116,64 @@ func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
 	}
 }
 
+func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	out := captureStdout(t, func() {
+		cmdWork([]string{"import-packet", packetPath, "--state", "ready", "--context-pack", "ctx_packet_cli"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("import-packet output missing JSON:\n%s", out)
+	}
+	var report work.PacketImportReport
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse import-packet report: %v\n%s", err, out)
+	}
+	workID := report.Work.ID
+	if report.Work.State != "ready" {
+		t.Fatalf("packet work state = %q, want ready", report.Work.State)
+	}
+	captureStdout(t, func() {
+		cmdWork([]string{"claim", workID, "--by", "codex"})
+	})
+	captureStdout(t, func() {
+		cmdWork([]string{"advance", workID, "--to", "running", "--run", "run_packet_cli"})
+	})
+	captureStdout(t, func() {
+		cmdWork([]string{"advance", workID, "--to", "verifying", "--artifact", "artifact_packet_cli", "--verification", "ver_packet_cli"})
+	})
+	out = captureStdout(t, func() {
+		cmdWork([]string{"close", workID, "--outcome", "completed", "--move-type", "control_plane_repair", "--summary", "packet CLI work closed through receipt and transition", "--changed"})
+	})
+	start = strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("close output missing JSON:\n%s", out)
+	}
+	var closed work.CloseResult
+	if err := json.Unmarshal([]byte(out[start:]), &closed); err != nil {
+		t.Fatalf("parse close result: %v\n%s", err, out)
+	}
+	if closed.Work.ID != workID || closed.Receipt.IDs.WorkID != workID || closed.Transition.IDs.WorkID != workID {
+		t.Fatalf("work id chain broken: work=%s receipt=%s transition=%s", closed.Work.ID, closed.Receipt.IDs.WorkID, closed.Transition.IDs.WorkID)
+	}
+	if closed.Work.IDs.TransitionID != closed.Transition.ID {
+		t.Fatalf("work transition id = %q, want %q", closed.Work.IDs.TransitionID, closed.Transition.ID)
+	}
+	if !stringSliceContains(closed.Transition.ActionRefs, "run_packet_cli") ||
+		!stringSliceContains(closed.Transition.AfterRefs, "artifact_packet_cli") ||
+		!stringSliceContains(closed.Transition.AfterRefs, closed.Receipt.ID) {
+		t.Fatalf("transition refs incomplete: action=%v after=%v receipt=%s", closed.Transition.ActionRefs, closed.Transition.AfterRefs, closed.Receipt.ID)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("packet CLI loop must not create claims ledger, stat err=%v", err)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
