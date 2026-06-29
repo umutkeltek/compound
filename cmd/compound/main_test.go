@@ -996,6 +996,51 @@ func TestProjectionRepairPlanCreatesGateSourceObservationAndReview(t *testing.T)
 	}
 }
 
+func TestProjectionDashboardReadModelSourceObserve(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "source.json"), []byte(`{"ok":true}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modelPath := filepath.Join(dir, "read-model.json")
+	body := `{
+  "version": 1,
+  "generated_at": "2000-01-01T00:00:00Z",
+  "source_paths": ["source.json"],
+  "cards": [
+    {
+      "id": "runtime-health",
+      "title": "Runtime health",
+      "lane": "control",
+      "status": "risk",
+      "owner": "system",
+      "source_paths": ["source.json"],
+      "next_action": "review runtime evidence",
+      "visibility": "operator"
+    }
+  ]
+}
+`
+	if err := os.WriteFile(modelPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdProjection([]string{"dashboard-read-model", modelPath, "--max-age-hours", "1", "--source-observe"})
+	})
+	for _, want := range []string{"# projection doctor", "- projection: projection:dashboard-read-model", "- status: stale", "- source_observation: srcobs_", "- source_candidate:", "- source_no_promote:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dashboard read-model output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("dashboard read-model source observe must not promote claims, stat err=%v", err)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{

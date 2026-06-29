@@ -1,6 +1,7 @@
 package projection
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,70 @@ func TestDoctorFreshFixture(t *testing.T) {
 	}
 	if report.OutputHash == "" || len(report.Sources) != 1 {
 		t.Fatalf("hashes not populated: %+v", report)
+	}
+}
+
+func TestDoctorDashboardReadModelFresh(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "source.json"), `{"ok":true}`+"\n")
+	modelPath := writeDashboardReadModel(t, dir, DashboardReadModel{
+		Version:     1,
+		GeneratedAt: "2026-06-29T10:00:00Z",
+		SourcePaths: []string{"source.json"},
+		Cards: []DashboardCard{{
+			ID:          "runtime-health",
+			Title:       "Runtime health",
+			Lane:        "control",
+			Status:      "ok",
+			Owner:       "system",
+			SourcePaths: []string{"source.json"},
+			NextAction:  "keep observing",
+			Visibility:  "operator",
+		}},
+	})
+	report, err := DoctorDashboardReadModel(modelPath, 24, time.Date(2026, 6, 29, 11, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != StatusFresh {
+		t.Fatalf("status = %q, report = %+v", report.Status, report)
+	}
+	if report.ProjectionID != "projection:dashboard-read-model" || report.OutputHash == "" || len(report.Sources) != 1 {
+		t.Fatalf("dashboard report missing identity/hash/sources: %+v", report)
+	}
+	if !hasCheck(report.Checks, "card_sources", "ok") || !hasCheck(report.Checks, "source_hashes", "ok") {
+		t.Fatalf("dashboard checks missing expected ok coverage: %+v", report.Checks)
+	}
+}
+
+func TestDoctorDashboardReadModelStaleAndPartial(t *testing.T) {
+	dir := t.TempDir()
+	modelPath := writeDashboardReadModel(t, dir, DashboardReadModel{
+		Version:     1,
+		GeneratedAt: "2026-06-27T10:00:00Z",
+		SourcePaths: []string{"missing.json"},
+		Cards: []DashboardCard{{
+			ID:         "runtime-health",
+			Title:      "Runtime health",
+			Lane:       "control",
+			Status:     "risk",
+			Owner:      "system",
+			NextAction: "review source",
+			Visibility: "alert",
+		}},
+	})
+	report, err := DoctorDashboardReadModel(modelPath, 1, time.Date(2026, 6, 29, 11, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != StatusDrifted {
+		t.Fatalf("status = %q, want drifted (%+v)", report.Status, report)
+	}
+	if report.CoverageVerdict != "partial" {
+		t.Fatalf("coverage = %q, want partial", report.CoverageVerdict)
+	}
+	if !hasCheck(report.Checks, "card_sources", "fail") || !hasCheck(report.Checks, "source_hashes", "fail") || !hasCheck(report.Checks, "age", "fail") {
+		t.Fatalf("dashboard checks missing failures: %+v", report.Checks)
 	}
 }
 
@@ -176,4 +241,26 @@ func writeFile(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeDashboardReadModel(t *testing.T, dir string, model DashboardReadModel) string {
+	t.Helper()
+	data, err := json.MarshalIndent(model, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "read-model.json")
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func hasCheck(checks []Check, name, status string) bool {
+	for _, check := range checks {
+		if check.Name == name && check.Status == status {
+			return true
+		}
+	}
+	return false
 }

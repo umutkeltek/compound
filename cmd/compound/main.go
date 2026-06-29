@@ -164,7 +164,7 @@ usage:
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
-compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
+compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
@@ -3561,17 +3561,121 @@ func cmdProjectionRepairPlan(args []string) {
 	fmt.Printf("- artifact: %s\n", paths.PlanPath)
 }
 
+func projectionUsage() string {
+	return "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>"
+}
+
+func cmdProjectionDashboardReadModel(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe]")
+		os.Exit(2)
+	}
+	maxAgeHours := projection.DefaultDashboardMaxAgeHours
+	if v := valueFlag(args[1:], "--max-age-hours"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			fmt.Fprintln(os.Stderr, "projection dashboard-read-model: --max-age-hours must be a positive integer")
+			os.Exit(2)
+		}
+		maxAgeHours = n
+	}
+	now := time.Now()
+	report, err := projection.DoctorDashboardReadModel(args[0], maxAgeHours, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection dashboard-read-model:", err)
+		os.Exit(1)
+	}
+	printProjectionDoctorReport(report)
+	finishProjectionDoctor(report, hasFlag(args[1:], "--writeback"), hasFlag(args[1:], "--source-observe"), now)
+}
+
+func printProjectionDoctorReport(report projection.Freshness) {
+	fmt.Printf("# projection doctor\n\n")
+	fmt.Printf("- projection: %s\n", report.ProjectionID)
+	fmt.Printf("- view: %s\n", report.ViewRef)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- source_ledger_seq: %d\n", report.SourceLedgerSeq)
+	if report.Staleness != "" {
+		fmt.Printf("- staleness: %s\n", report.Staleness)
+	}
+	fmt.Printf("- output_hash: %s\n", report.OutputHash)
+	maxPrintedSources := 20
+	if len(report.Sources) > maxPrintedSources {
+		fmt.Printf("- sources: %d total (showing first %d)\n", len(report.Sources), maxPrintedSources)
+	}
+	for i, source := range report.Sources {
+		if i >= maxPrintedSources {
+			fmt.Printf("- source: ... %d more\n", len(report.Sources)-maxPrintedSources)
+			break
+		}
+		fmt.Printf("- source: %s %s", source.SourceRef, source.Status)
+		if source.CurrentHash != "" {
+			fmt.Printf(" (%s)", source.CurrentHash)
+		}
+		fmt.Println()
+	}
+	for _, check := range report.Checks {
+		fmt.Printf("- check:%s %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
+	}
+}
+
+func finishProjectionDoctor(report projection.Freshness, writebackEnabled, sourceObserveEnabled bool, now time.Time) {
+	if report.Status != projection.StatusFresh {
+		if writebackEnabled {
+			result, err := runProjectionWriteback(report, now)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "projection doctor writeback:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- writeback_work: %s\n", result.WorkID)
+			fmt.Printf("- writeback_gate: %s %s\n", result.GateID, result.GateStatus)
+			if result.ReceiptID != "" {
+				fmt.Printf("- receipt: %s\n", result.ReceiptID)
+			}
+			if result.TransitionID != "" {
+				fmt.Printf("- transition: %s\n", result.TransitionID)
+			}
+		}
+		if sourceObserveEnabled {
+			sourceReport, err := runProjectionSourceObservation(report, now)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "projection doctor source-observe:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+			for _, id := range sourceReport.CandidateIDs {
+				fmt.Printf("- source_candidate: %s\n", id)
+			}
+			for _, id := range sourceReport.NoPromoteIDs {
+				fmt.Printf("- source_no_promote: %s\n", id)
+			}
+		}
+		if writebackEnabled || sourceObserveEnabled {
+			return
+		}
+		os.Exit(1)
+	}
+}
+
 func cmdProjection(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>")
+		fmt.Fprintln(os.Stderr, projectionUsage())
 		os.Exit(2)
 	}
 	if args[0] == "repair-plan" {
 		cmdProjectionRepairPlan(args[1:])
 		return
 	}
+	if args[0] == "dashboard-read-model" {
+		cmdProjectionDashboardReadModel(args[1:])
+		return
+	}
 	if args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>")
+		fmt.Fprintln(os.Stderr, projectionUsage())
 		os.Exit(2)
 	}
 	if len(args) < 2 {
