@@ -206,6 +206,68 @@ func TestAuthorityGitImportsSourceControlState(t *testing.T) {
 	}
 }
 
+func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	repo := initCompoundCommandGitRepo(t)
+	target := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixture := writeHookFixture(t, hook.Fixture{
+		Harness: "claude_code",
+		WorkID:  "work_dirty_cli",
+		Action: &envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            "act_dirty_cli",
+				CreatedAt:     cliTestNow.Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
+				IDs:           envelope.IDs{WorkID: "work_dirty_cli"},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier1",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         "claude_code",
+			Capability:    "filesystem.write",
+			Action:        "write_file",
+			Target:        envelope.ActionTarget{Kind: "file", Path: target},
+			MutationClass: "local_reversible",
+			Reversibility: "easy",
+			BlastRadius:   "repo",
+		},
+	})
+	out := captureStdout(t, func() {
+		cmdHook([]string{"pre-tool-use", fixture})
+	})
+	for _, want := range []string{`"status": "blocked"`, `"outcome": "hold"`, "source_control_status dirty", "source-control:repo:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("hook pre-tool-use output missing %q:\n%s", want, out)
+		}
+	}
+	for _, rel := range []string{filepath.Join("events", "act_dirty_cli.json"), filepath.Join("ledger", "claims.jsonl")} {
+		if _, err := os.Stat(filepath.Join(homePath, rel)); err != nil {
+			t.Fatalf("missing runtime artifact %s: %v", rel, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPolicy := false
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "pol_") && strings.HasSuffix(entry.Name(), ".json") {
+			foundPolicy = true
+			break
+		}
+	}
+	if !foundPolicy {
+		t.Fatalf("policy decision artifact missing in events dir")
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

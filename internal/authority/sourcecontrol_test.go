@@ -64,6 +64,48 @@ func TestImportGitSnapshotCapturesDirtyRepoState(t *testing.T) {
 	}
 }
 
+func TestImportGitSnapshotAcceptsFileAndFuturePath(t *testing.T) {
+	repo := initGitRepo(t)
+	canonicalRepo, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(repo, "docs", "new", "guide.md")
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filePath, "draft\n")
+
+	snap, entity, _, report, err := ImportGitSnapshot(filePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.GitRoot != canonicalRepo {
+		t.Fatalf("git_root = %q, want canonical %q", snap.GitRoot, canonicalRepo)
+	}
+	if snap.RequestedPath != filePath {
+		t.Fatalf("requested_path = %q, want file path %q", snap.RequestedPath, filePath)
+	}
+	if snap.Status != "dirty" || snap.Untracked != 1 {
+		t.Fatalf("snapshot = %+v, want dirty untracked file", snap)
+	}
+	if report.EvidenceRef == "" || report.EvidenceRef != snap.EvidenceReference() {
+		t.Fatalf("evidence ref report=%q snap=%q", report.EvidenceRef, snap.EvidenceReference())
+	}
+	if !hasString(entity.Identifiers, filePath) || !hasString(entity.Identifiers, canonicalRepo) {
+		t.Fatalf("identifiers = %+v, want file path and repo root", entity.Identifiers)
+	}
+
+	futurePath := filepath.Join(repo, "docs", "future", "later.md")
+	future, _, _, _, err := ImportGitSnapshot(futurePath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if future.GitRoot != canonicalRepo || future.RequestedPath != futurePath {
+		t.Fatalf("future snapshot = %+v", future)
+	}
+}
+
 func TestSourceControlEntityMergesExistingRemoteIdentity(t *testing.T) {
 	snap := SourceControlSnapshot{
 		SchemaVersion: SourceControlSchemaVersion,

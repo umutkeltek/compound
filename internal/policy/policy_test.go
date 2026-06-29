@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,42 @@ func TestBlastRadiusEscalation(t *testing.T) {
 	}
 }
 
+func TestSourceControlDirtyEscalatesMutation(t *testing.T) {
+	ctx := EvaluationContext{SourceControl: &SourceControlContext{
+		EntityRef:    "repo:demo",
+		Status:       "dirty",
+		ChangedPaths: 2,
+		EvidenceRefs: []string{"source-control:repo:demo:abc123"},
+	}}
+	pd := EvaluateWithContext(mkAction("local_reversible", "easy", "docs/x.md", "repo"), DefaultConfig(), ctx, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("dirty repo mutation should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if len(pd.Obligations) != 0 {
+		t.Fatalf("held decision should not keep allow obligations: %v", pd.Obligations)
+	}
+	if !testContains(pd.EvidenceRefs, "source-control:repo:demo:abc123") {
+		t.Fatalf("policy evidence refs = %v", pd.EvidenceRefs)
+	}
+	if !reasonContains(pd.Reasons, "source_control_status dirty") {
+		t.Fatalf("reasons missing source-control gate: %v", pd.Reasons)
+	}
+	if err := pd.Validate(); err != nil {
+		t.Fatalf("decision invalid: %v", err)
+	}
+}
+
+func TestSourceControlCleanOrReadDoesNotEscalate(t *testing.T) {
+	clean := EvaluationContext{SourceControl: &SourceControlContext{EntityRef: "repo:demo", Status: "clean", EvidenceRefs: []string{"source-control:repo:demo:abc123"}}}
+	if pd := EvaluateWithContext(mkAction("local_reversible", "easy", "docs/x.md", "repo"), DefaultConfig(), clean, fixedNow); pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("clean repo should keep baseline, got %q", pd.Outcome)
+	}
+	dirty := EvaluationContext{SourceControl: &SourceControlContext{EntityRef: "repo:demo", Status: "dirty", ChangedPaths: 3}}
+	if pd := EvaluateWithContext(mkAction("read", "easy", "docs/x.md", "repo"), DefaultConfig(), dirty, fixedNow); pd.Outcome != "allow" {
+		t.Fatalf("read action should not be blocked by dirty repo, got %q", pd.Outcome)
+	}
+}
+
 // An unknown mutation class fails closed.
 func TestUnknownClassFailsClosed(t *testing.T) {
 	cfg := DefaultConfig()
@@ -155,4 +192,22 @@ func TestGlobToRegexp(t *testing.T) {
 			t.Errorf("matchForbidden(%q, %q) = %v, want %v", c.pat, c.path, ok, c.match)
 		}
 	}
+}
+
+func testContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+func reasonContains(xs []string, want string) bool {
+	for _, x := range xs {
+		if strings.Contains(x, want) {
+			return true
+		}
+	}
+	return false
 }

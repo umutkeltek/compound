@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -32,6 +33,7 @@ type SourceControlSnapshot struct {
 	Unstaged      int    `json:"unstaged"`
 	Untracked     int    `json:"untracked"`
 	ChangedPaths  int    `json:"changed_paths"`
+	EvidenceRef   string `json:"evidence_ref"`
 }
 
 type SourceControlReport struct {
@@ -49,6 +51,7 @@ type SourceControlReport struct {
 	Untracked      int    `json:"untracked"`
 	ChangedPaths   int    `json:"changed_paths"`
 	CandidateCount int    `json:"candidate_count"`
+	EvidenceRef    string `json:"evidence_ref"`
 }
 
 // ImportGitSnapshot reads live git state with read-only git commands and turns
@@ -76,6 +79,7 @@ func ImportGitSnapshot(path string, existing []mem.Entity) (SourceControlSnapsho
 		Untracked:      snap.Untracked,
 		ChangedPaths:   snap.ChangedPaths,
 		CandidateCount: len(facts),
+		EvidenceRef:    snap.EvidenceReference(),
 	}
 	return snap, entity, facts, report, nil
 }
@@ -83,11 +87,11 @@ func ImportGitSnapshot(path string, existing []mem.Entity) (SourceControlSnapsho
 func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	requestedPath := strings.TrimSpace(path)
-	if abs, err := filepath.Abs(requestedPath); err == nil {
-		requestedPath = abs
+	requestedPath, inspectDir, err := gitInspectionPath(path)
+	if err != nil {
+		return SourceControlSnapshot{}, err
 	}
-	root, err := gitOutput(ctx, path, "rev-parse", "--show-toplevel")
+	root, err := gitOutput(ctx, inspectDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return SourceControlSnapshot{}, fmt.Errorf("git root: %w", err)
 	}
@@ -128,8 +132,67 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		Unstaged:      unstaged,
 		Untracked:     untracked,
 		ChangedPaths:  changed,
+		EvidenceRef:   sourceControlEvidenceRef(repoID(strings.TrimSpace(remote), root), strings.TrimSpace(head)),
 	}
 	return snap, nil
+}
+
+func (s SourceControlSnapshot) EvidenceReference() string {
+	if strings.TrimSpace(s.EvidenceRef) != "" {
+		return s.EvidenceRef
+	}
+	return sourceControlEvidenceRef(s.RepoID, s.Head)
+}
+
+func sourceControlEvidenceRef(repoID, head string) string {
+	head = strings.TrimSpace(head)
+	if head == "" {
+		head = "unknown-head"
+	}
+	return "source-control:" + repoID + ":" + head
+}
+
+func gitInspectionPath(path string) (requestedPath, inspectDir string, err error) {
+	requestedPath, err = filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return "", "", err
+	}
+	info, err := os.Stat(requestedPath)
+	if err == nil {
+		if info.IsDir() {
+			return requestedPath, requestedPath, nil
+		}
+		return requestedPath, filepath.Dir(requestedPath), nil
+	}
+	if !os.IsNotExist(err) {
+		return "", "", err
+	}
+	parent, err := nearestExistingParent(requestedPath)
+	if err != nil {
+		return "", "", err
+	}
+	return requestedPath, parent, nil
+}
+
+func nearestExistingParent(path string) (string, error) {
+	p := path
+	for {
+		info, err := os.Stat(p)
+		if err == nil {
+			if info.IsDir() {
+				return p, nil
+			}
+			return filepath.Dir(p), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		next := filepath.Dir(p)
+		if next == p {
+			return "", fmt.Errorf("no existing parent for %s", path)
+		}
+		p = next
+	}
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
@@ -240,7 +303,7 @@ func mergeSourceControlEntity(snap SourceControlSnapshot, existing []mem.Entity)
 }
 
 func sourceControlCandidates(snap SourceControlSnapshot) []mem.Candidate {
-	src := "source-control:" + snap.RepoID + ":" + snap.Head
+	src := snap.EvidenceReference()
 	add := func(out *[]mem.Candidate, pred, object string) {
 		object = strings.TrimSpace(object)
 		if object == "" {

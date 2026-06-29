@@ -3,6 +3,7 @@ package hook
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/harness"
+	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/work"
 )
@@ -390,6 +392,80 @@ func TestPreToolUseCapabilityAware(t *testing.T) {
 	}
 }
 
+func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
+	homePath := t.TempDir()
+	repo := initHookGitRepo(t)
+	target := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	ai := &envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            "act_dirty_write",
+			CreatedAt:     fixedNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: "work_dirty"},
+			Authority:     envelope.Authority{SourceClass: "runtime"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "claude_code",
+		Capability:    "filesystem.write",
+		Action:        "write_file",
+		Target:        envelope.ActionTarget{Kind: "file", Path: target},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "repo",
+	}
+	res, err := Run(Fixture{Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_dirty", Action: ai}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Event.Status != "blocked" {
+		t.Fatalf("event status = %q, want blocked", res.Event.Status)
+	}
+	if !containsString(res.Event.SideEffects, filepath.Join("ledger", "claims.jsonl")) {
+		t.Fatalf("side effects = %v, want claims ledger", res.Event.SideEffects)
+	}
+	if !containsString(res.Event.SideEffects, filepath.Join("events", "act_dirty_write.json")) {
+		t.Fatalf("side effects = %v, want action intent artifact", res.Event.SideEffects)
+	}
+	pd := res.Produced[1].(*envelope.PolicyDecision)
+	if pd.Outcome != "hold" {
+		t.Fatalf("policy outcome = %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !containsString(res.Event.SideEffects, filepath.Join("events", pd.ID+".json")) {
+		t.Fatalf("side effects = %v, want policy decision artifact %s", res.Event.SideEffects, pd.ID)
+	}
+	if len(pd.EvidenceRefs) == 0 || !strings.HasPrefix(pd.EvidenceRefs[0], "source-control:repo:") {
+		t.Fatalf("policy evidence refs = %v", pd.EvidenceRefs)
+	}
+	if !reasonHas(pd.Reasons, "source_control_status dirty") {
+		t.Fatalf("policy reasons = %v", pd.Reasons)
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := memStore.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasClaim(claims, "source_control_status", "dirty") {
+		t.Fatalf("source control claims = %+v, want dirty status", claims)
+	}
+	for _, ref := range []string{filepath.Join("events", "act_dirty_write.json"), filepath.Join("events", pd.ID+".json")} {
+		if _, err := os.Stat(filepath.Join(homePath, ref)); err != nil {
+			t.Fatalf("missing persisted gate artifact %s: %v", ref, err)
+		}
+	}
+}
+
 func TestSessionEndClosesWork(t *testing.T) {
 	store, err := work.Open(t.TempDir())
 	if err != nil {
@@ -439,6 +515,47 @@ func TestUnknownHookRejected(t *testing.T) {
 	if _, err := Run(Fixture{Hook: "frobnicate", Harness: "claude_code"}, baseDeps(), fixedNow); err == nil {
 		t.Error("unknown hook should be rejected")
 	}
+}
+
+func initHookGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runHookGit(t, repo, "init", "-b", "main")
+	runHookGit(t, repo, "config", "user.email", "test@example.invalid")
+	runHookGit(t, repo, "config", "user.name", "Compound Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runHookGit(t, repo, "add", "README.md")
+	runHookGit(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+func runHookGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
+}
+
+func reasonHas(xs []string, want string) bool {
+	for _, x := range xs {
+		if strings.Contains(x, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClaim(claims []mem.Claim, predicate, object string) bool {
+	for _, c := range claims {
+		if c.Predicate == predicate && c.Object == object {
+			return true
+		}
+	}
+	return false
 }
 
 func containsString(xs []string, want string) bool {

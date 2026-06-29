@@ -17,9 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority"
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/harness"
+	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/work"
 )
@@ -237,7 +239,26 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if fx.WorkID != "" {
 		ai.IDs.WorkID = fx.WorkID
 	}
-	pd := policy.Evaluate(ai, deps.Policy, now)
+	evalCtx := policy.EvaluationContext{}
+	sideEffects := []string(nil)
+	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
+		sourceControl, effects, err := sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
+		if err != nil {
+			return Result{}, err
+		}
+		if sourceControl != nil {
+			evalCtx.SourceControl = sourceControl
+			sideEffects = append(sideEffects, effects...)
+		}
+	}
+	pd := policy.EvaluateWithContext(ai, deps.Policy, evalCtx, now)
+	if deps.HomePath != "" {
+		effects, err := writeGateArtifacts(deps.HomePath, ai, pd)
+		if err != nil {
+			return Result{}, err
+		}
+		sideEffects = append(sideEffects, effects...)
+	}
 
 	// Capability-aware enforcement: a block only counts if the harness can actually block.
 	st, warn := "ok", ""
@@ -249,9 +270,58 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 			warn = fmt.Sprintf(" — WARNING: %s cannot block natively; enforce via wrapper/adapter", fx.Harness)
 		}
 	}
-	ev := newEvent(name, fx, st, hashStr(ai.ID), nil, now)
+	ev := newEvent(name, fx, st, hashStr(ai.ID), sideEffects, now)
 	ev.IDs.WorkID = ai.IDs.WorkID
 	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: fmt.Sprintf("policy %s for %s%s", pd.Outcome, ai.Action, warn)}, nil
+}
+
+func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.PolicyDecision) ([]string, error) {
+	actionRef := filepath.Join("events", ai.ID+".json")
+	policyRef := filepath.Join("events", pd.ID+".json")
+	if err := writeJSON(filepath.Join(homePath, actionRef), ai); err != nil {
+		return nil, err
+	}
+	if err := writeJSON(filepath.Join(homePath, policyRef), pd); err != nil {
+		return nil, err
+	}
+	return []string{actionRef, policyRef}, nil
+}
+
+func sourceControlContextForAction(homePath, targetPath string, now time.Time) (*policy.SourceControlContext, []string, error) {
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	existing, err := memStore.Entities()
+	if err != nil {
+		return nil, nil, err
+	}
+	_, entity, facts, report, err := authority.ImportGitSnapshot(targetPath, existing)
+	if err != nil {
+		return nil, nil, nil
+	}
+	if _, err := memStore.RegisterEntity(entity, now); err != nil {
+		return nil, nil, err
+	}
+	captured, err := memStore.Capture(facts, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, c := range captured {
+		if _, err := memStore.Adjudicate(c.ID, "promote", "source-control-pre-tool-use", now); err != nil {
+			return nil, nil, err
+		}
+	}
+	return &policy.SourceControlContext{
+			EntityRef:    report.EntityRef,
+			Status:       report.Status,
+			ChangedPaths: report.ChangedPaths,
+			EvidenceRefs: []string{report.EvidenceRef},
+		}, []string{
+			report.EvidenceRef,
+			filepath.Join("ledger", "entities.jsonl"),
+			filepath.Join("ledger", "claims.jsonl"),
+		}, nil
 }
 
 func postToolUse(name string, fx Fixture, now time.Time) (Result, error) {

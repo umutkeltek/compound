@@ -52,6 +52,21 @@ type Config struct {
 // DefaultConfig satisfies the three documented proof cases:
 // local_reversible -> allow_with_obligations; forbidden path -> deny;
 // public/financial/destructive/security -> hold. Unknown class fails closed to hold.
+// EvaluationContext carries live observations that can only raise caution.
+// The core policy stays declarative; runtime adapters provide current evidence.
+type EvaluationContext struct {
+	SourceControl *SourceControlContext `json:"source_control,omitempty"`
+}
+
+// SourceControlContext is a read-only git status observation for the action target.
+type SourceControlContext struct {
+	EntityRef    string   `json:"entity_ref,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	ChangedPaths int      `json:"changed_paths,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+// DefaultConfig returns the built-in conservative policy.
 func DefaultConfig() Config {
 	return Config{
 		ForbiddenPaths: []string{"**/.git/**", "**/.env", "**/.env.*", "**/*.key", "**/id_rsa*", "**/*secret*"},
@@ -88,6 +103,21 @@ func LoadConfig(homePath string) (Config, string, error) {
 // Evaluate decides an ActionIntent. Precedence: forbidden path (deny) > standing grant
 // (allow) > class baseline, then risk/blast escalation can only raise caution.
 func Evaluate(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.PolicyDecision {
+	return EvaluateWithContext(ai, cfg, EvaluationContext{}, now)
+}
+
+// EvaluateWithContext applies live runtime observations after the declarative
+// baseline. Context can only raise caution or add evidence; it never relaxes a
+// decision.
+func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationContext, now time.Time) envelope.PolicyDecision {
+	pd := evaluateBase(ai, cfg, now)
+	if ctx.SourceControl != nil {
+		pd = applySourceControlContext(pd, ai, *ctx.SourceControl, now)
+	}
+	return pd
+}
+
+func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.PolicyDecision {
 	// 1. forbidden path -> deny (hard safety; beats even a standing grant).
 	if p := ai.Target.Path; p != "" {
 		if pat, ok := matchForbidden(cfg.ForbiddenPaths, p); ok {
@@ -144,6 +174,29 @@ func Evaluate(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.Poli
 	}
 
 	return mkDecision(ai, outcome, reasons, obligations, "", "", now)
+}
+
+func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, sc SourceControlContext, now time.Time) envelope.PolicyDecision {
+	if len(sc.EvidenceRefs) > 0 {
+		pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, sc.EvidenceRefs...)
+	}
+	if ai.MutationClass == "read" || strings.TrimSpace(sc.Status) != "dirty" {
+		return pd
+	}
+	entity := strings.TrimSpace(sc.EntityRef)
+	if entity == "" {
+		entity = "target repo"
+	}
+	reason := fmt.Sprintf("source_control_status dirty for %s changed_paths=%d; target mutation requires clean or explicitly reviewed repo state", entity, sc.ChangedPaths)
+	pd.Reasons = append(pd.Reasons, reason)
+	if severity[pd.Outcome] < severity["hold"] {
+		pd.Outcome = "hold"
+		pd.Obligations = nil
+		pd.StandingGrantID = ""
+		pd.ExpiresAt = ""
+		pd.ID = idFor("pol_", ai.ID, "hold", "source-control-dirty", ts(now))
+	}
+	return pd
 }
 
 // Allowed reports whether a decision permits the action to proceed.
@@ -280,6 +333,28 @@ func idFor(prefix string, parts ...string) string {
 }
 
 func ts(now time.Time) string { return strconv.FormatInt(now.UTC().UnixNano(), 10) }
+
+func mergeStrings(base []string, extra ...string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(base)+len(extra))
+	for _, v := range base {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, v := range extra {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
 
 func contains(set []string, v string) bool {
 	for _, s := range set {
