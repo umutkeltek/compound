@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound capability skill-plan --candidate <id> [--target <file>]` now converts parked `skill` candidates into reviewed JSON/Markdown CapabilityGraph node drafts under `COMPOUND_HOME/reviews/capability-skills/`, preserving evidence refs and optional target hash without mutating CapabilityGraph, installing skill files, executing tools/MCPs, or promoting claims.
 - `compound route plan --candidate <id> [--target <file>]` now converts parked `route_observation` candidates into reviewed JSON/Markdown route-policy drafts under `COMPOUND_HOME/reviews/route-policy/`, preserving evidence refs and optional target hash without mutating gateway/provider/model-router config, claiming task success, or promoting claims.
 - `compound distiller taste-plan --candidate <id> [--target <file>]` now converts parked `taste` candidates into reviewed JSON/Markdown taste-standard drafts under `COMPOUND_HOME/reviews/taste-standards/`, preserving evidence and optional target hash without mutating doctrine/product files, installing prompts/skills, or promoting claims.
 - `compound distiller rule-plan --candidate <id> [--target <file>]` now converts parked `failure_pattern` candidates into reviewed JSON/Markdown rule drafts under `COMPOUND_HOME/reviews/failure-rules/`, preserving failure evidence and optional target hash without mutating doctrine/policy, installing hooks, or promoting claims.
@@ -70,6 +71,8 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 - Top-level Gen-1 verbs are tombstones only; do not import or route through retired packages.
 - Canonical surfaces are `compound memory ...` plus `compound distiller ...`.
 
+Capability status note: `capgraph` owns `compound capability skill-plan`; skill candidates now produce reviewed node drafts under `COMPOUND_HOME/reviews/capability-skills/` before any graph import or skill-file write.
+
 ## Packages (`internal/`)
 
 | Package | Status | Role |
@@ -110,6 +113,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 ## Commands
 
 Decision source hardening: `compound decisions import --policy <DEC.md>` and `--policy-dir <dir>` record policy markdown as evidence-backed `DecisionLifecycle`, preserve supersedes/replaced_by transitions, give each decision a stable `decision:<id>` entity, promote only accepted decisions with complete lifecycle proof, park incomplete or non-accepted lifecycle records, `decisions source-doctor --template <md> [--format-doc <md>]` catches templates/docs that would regenerate lifecycle debt, `decisions repair-plan --policy-dir <dir>` emits reviewable owner-source repair artifacts under `COMPOUND_HOME`, and `decisions repair-apply --plan <json> --write-reviewed` applies those fields only after review. The legacy policy directory env var routes through the same adapter, not the candidate-only parser.
+
+Capability command status note: `compound capability skill-plan --candidate <id> [--target <file>]` is the reviewed candidate-to-node-draft path; `import-skills` remains the explicit graph import path.
 
 | Family | Verbs | Status |
 |---|---|---|

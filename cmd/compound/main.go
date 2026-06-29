@@ -163,7 +163,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -186,7 +186,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -330,6 +330,34 @@ func cmdCapability(args []string) {
 		for _, id := range sourceReport.NoPromoteIDs {
 			fmt.Printf("- source_no_promote: %s\n", id)
 		}
+	case "skill-plan":
+		candidateID := flag("--candidate")
+		targetPath := flag("--target")
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound capability skill-plan --candidate <candidate_id> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := capgraph.BuildSkillPlan(homePath, candidateID, targetPath, time.Now())
+		die(err)
+		paths, err := capgraph.RecordSkillPlan(homePath, plan)
+		die(err)
+		fmt.Printf("# capability skill-plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- skill_key: %s\n", plan.SkillKey)
+		fmt.Printf("- node_id: %s\n", plan.NodeDraft.NodeID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target: %s\n", plan.TargetPath)
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- triggers: %d\n", len(plan.NodeDraft.Triggers))
+		fmt.Printf("- required_evidence: %d\n", len(plan.NodeDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
 	case "add":
 		p := posn(map[string]bool{"--triggers": true})
 		if len(p) < 3 {

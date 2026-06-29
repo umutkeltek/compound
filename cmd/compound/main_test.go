@@ -812,6 +812,82 @@ func TestRoutePlanUsesRouteObservationWithoutMutatingTarget(t *testing.T) {
 	}
 }
 
+func TestCapabilitySkillPlanUsesSkillCandidateWithoutMutatingGraphOrTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+ "trace_ref": "trace_skill_candidate",
+ "candidates": [{
+  "kind": "skill",
+  "subject": "frontend performance lens",
+  "statement": "review React component rendering paths before adding memoization",
+  "detail": "react_performance_review",
+  "confidence": 0.88,
+  "evidence_refs": ["trace:skill", "receipt:frontend"]
+ }]
+}`)
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	skillRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.Skill)))
+	if len(skillRows) != 1 || skillRows[0].Verdict != distiller.Park {
+		t.Fatalf("skill candidates = %+v", skillRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "SKILL.md")
+	original := "# Existing Skill\n\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"skill-plan", "--candidate", skillRows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# capability skill-plan skp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- skill_key: frontend-performance-lens") ||
+		!strings.Contains(out, "- node_id: skill:frontend-performance-lens") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_evidence: 4") ||
+		!strings.Contains(out, "- evidence_refs: 2") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("skill-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan capgraph.SkillPlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != capgraph.SkillPlanSchemaVersion ||
+		plan.CandidateID != skillRows[0].ID ||
+		plan.CandidateVerdict != distiller.Park ||
+		plan.NodeDraft.NodeID != "skill:frontend-performance-lens" ||
+		!strings.Contains(plan.NodeDraft.Implementation, "React component") {
+		t.Fatalf("bad skill plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate CapabilityGraph") ||
+		!strings.Contains(review, "Required Evidence Before Import") {
+		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("skill target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("skill-plan must not mutate capability graph, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("skill-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
