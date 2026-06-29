@@ -150,15 +150,15 @@ type AdjudicationDecision struct {
 	CreatedAt      string   `json:"created_at"`
 }
 
-// Trace is the structured input the reference extractor consumes (the LLM extractor produces this
-// shape from raw text — deferred). raw refs travel as evidence_refs on each candidate.
+// Trace is the normalized candidate payload every extractor must produce. Reference fixtures and
+// LLM-shaped responses share this shape so policy stamps, evidence refs, kind validation, and
+// deterministic IDs cannot drift.
 type Trace struct {
 	TraceRef   string      `json:"trace_ref"`
 	Candidates []Candidate `json:"candidates"`
 }
 
-// Extractor turns a raw trace into a Trace of candidates. Reference (deterministic) here; the LLM
-// extractor (free model via the gateway) is the documented swap.
+// Extractor turns raw input into normalized Trace candidates.
 type Extractor interface {
 	Extract(raw []byte, policy Policy) (Trace, error)
 }
@@ -170,6 +170,13 @@ func (ReferenceExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
 	var t Trace
 	if err := json.Unmarshal(raw, &t); err != nil {
 		return Trace{}, fmt.Errorf("parse trace: %w", err)
+	}
+	return normalizeTrace(t, policy)
+}
+
+func normalizeTrace(t Trace, policy Policy) (Trace, error) {
+	if strings.TrimSpace(t.TraceRef) == "" {
+		return Trace{}, fmt.Errorf("trace_ref is required")
 	}
 	for i := range t.Candidates {
 		c := &t.Candidates[i]

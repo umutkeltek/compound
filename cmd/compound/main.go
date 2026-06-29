@@ -145,7 +145,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
-  compound distiller run <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
+  compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
 compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
@@ -432,8 +432,18 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller run <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
+	}
+	extractor := distiller.Extractor(distiller.ReferenceExtractor{})
+	tracePath := args[1]
+	if args[1] == "--llm-response" {
+		if len(args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json>")
+			os.Exit(2)
+		}
+		extractor = distiller.LLMExtractor{}
+		tracePath = args[2]
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -445,12 +455,12 @@ func cmdDistiller(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	data, err := os.ReadFile(args[1])
+	data, err := os.ReadFile(tracePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	res, err := distiller.Run(homePath, store, data, distiller.DefaultPolicy(), distiller.ReferenceExtractor{}, time.Now())
+	res, err := distiller.Run(homePath, store, data, distiller.DefaultPolicy(), extractor, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

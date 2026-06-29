@@ -61,6 +61,12 @@ Defined here; implemented when a slice needs them (the candidate fan-out + as-of
 `internal/mem`). Invariant throughout: **model extracts, code decides; no candidate reaches ambient recall
 unadjudicated; distillation proposes candidates only.**
 
+`LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
+`schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.
+Unknown kind, missing confidence, malformed JSON, or model-supplied `promotion_basis` is invalid.
+Missing candidate evidence inherits `source_refs[]` or `trace_ref`; model output still cannot promote
+memory directly.
+
 | Contract | Purpose | Key fields / invariant |
 |---|---|---|
 | **TraceDistiller** | turns spine artifacts (TraceEnvelope + Receipt + ContextPack + HookEvents + ExecutionRouteEvidence + raw refs) into a CandidateSet — extraction only, never canon | loads RetrievedPriorState first; each output cites `evidence_refs[]` + `distillation_policy_version` + a stable deterministic id (replay ⇒ same ids) |
