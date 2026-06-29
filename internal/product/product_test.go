@@ -265,6 +265,50 @@ func TestValidateSignalExportRejectsUnsupportedSource(t *testing.T) {
 	}
 }
 
+func TestLoadASCDatapointsSignalAdaptsProviderSnapshot(t *testing.T) {
+	doc, err := LoadASCDatapointsSignal("../../fixtures/product/asc-datapoints.json", ASCDatapointsSignalOptions{
+		ProductID: "product:focus-notes",
+		AppID:     "123456789",
+		Metric:    "review_count",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSignalDocument(doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Source.Kind != "app_store_connect" || doc.Source.Ref != "asc:datapoints:123456789:2026-07-13" {
+		t.Fatalf("source = %+v", doc.Source)
+	}
+	s := doc.Signal
+	if s.ProductID != "product:focus-notes" || s.Surface != "app_store" || s.MetricName != "app_store_connect_review_count" {
+		t.Fatalf("signal identity = %+v", s)
+	}
+	if s.ChangeEvent != "Apple App Store Connect datapoints snapshot observed" || s.Before != 11 || s.After != 11 {
+		t.Fatalf("snapshot movement should be neutral, got %+v", s)
+	}
+	if s.Window != "snapshot 2026-07-13" || s.ObservedAt != "2026-07-13T12:00:00Z" {
+		t.Fatalf("snapshot time = %+v", s)
+	}
+	if !hasString(s.Confounders, "snapshot observation; no causal movement is implied") {
+		t.Fatalf("confounders = %+v", s.Confounders)
+	}
+	if !hasString(s.EvidenceRefs, "asc:datapoints:2026-07-13:123456789") || !hasString(s.EvidenceRefs, "asc:rating_counts:5:9") {
+		t.Fatalf("evidence refs = %+v", s.EvidenceRefs)
+	}
+}
+
+func TestLoadASCDatapointsSignalRejectsMissingApp(t *testing.T) {
+	_, err := LoadASCDatapointsSignal("../../fixtures/product/asc-datapoints.json", ASCDatapointsSignalOptions{
+		ProductID: "product:focus-notes",
+		AppID:     "missing",
+		Metric:    "review_count",
+	})
+	if err == nil {
+		t.Fatal("missing ASC app id should be rejected")
+	}
+}
+
 func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T) {
 	_, err := LoadSignal("../../fixtures/product/source-export.bad-extra.yaml")
 	if err == nil {

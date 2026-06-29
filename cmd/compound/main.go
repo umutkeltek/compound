@@ -166,7 +166,7 @@ usage:
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+  compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound event import-os <events.ndjson>                       OS-style append-only events -> TraceEnvelope evidence
@@ -2225,9 +2225,46 @@ func cmdAuthority(args []string) {
 	}
 }
 
+func productUsage() string {
+	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+}
+
+func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
+	if len(args) == 1 {
+		doc, err := product.LoadSignal(args[0])
+		return doc, args[0], err
+	}
+	var ascDatapoints string
+	opts := product.ASCDatapointsSignalOptions{Metric: "review_count"}
+	for i := 0; i < len(args); i++ {
+		if i+1 >= len(args) {
+			return product.SignalDocument{}, "", fmt.Errorf("usage: compound product signal <signal.yaml|source-export.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]")
+		}
+		value := args[i+1]
+		switch args[i] {
+		case "--asc-datapoints":
+			ascDatapoints = value
+		case "--product":
+			opts.ProductID = value
+		case "--app-id":
+			opts.AppID = value
+		case "--metric":
+			opts.Metric = value
+		default:
+			return product.SignalDocument{}, "", fmt.Errorf("usage: compound product signal <signal.yaml|source-export.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]")
+		}
+		i++
+	}
+	if ascDatapoints == "" || opts.ProductID == "" || opts.AppID == "" {
+		return product.SignalDocument{}, "", fmt.Errorf("usage: compound product signal <signal.yaml|source-export.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]")
+	}
+	doc, err := product.LoadASCDatapointsSignal(ascDatapoints, opts)
+	return doc, ascDatapoints, err
+}
+
 func cmdProduct(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
+		fmt.Fprintln(os.Stderr, productUsage())
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -2266,16 +2303,12 @@ func cmdProduct(args []string) {
 		fmt.Printf("- signals: %d\n", len(report.SignalIDs))
 		fmt.Printf("- hypotheses: %d\n", len(report.HypothesisIDs))
 	case "signal":
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound product signal <signal.yaml|source-export.yaml>")
-			os.Exit(2)
-		}
-		doc, err := product.LoadSignal(args[1])
+		doc, sourcePath, err := loadProductSignalArg(args[1:])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product signal:", err)
 			os.Exit(1)
 		}
-		report, err := product.ApplySignal(homePath, store, doc, args[1], time.Now())
+		report, err := product.ApplySignal(homePath, store, doc, sourcePath, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product signal:", err)
 			os.Exit(1)
@@ -2467,7 +2500,7 @@ func cmdProduct(args []string) {
 			}
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
+		fmt.Fprintln(os.Stderr, productUsage())
 		os.Exit(2)
 	}
 }

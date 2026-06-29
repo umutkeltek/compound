@@ -15,6 +15,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/product"
 	"compound/internal/projection"
 	"compound/internal/sourceobs"
 	"compound/internal/work"
@@ -462,6 +463,36 @@ func TestProductImportProjectContractPromotesSourceInPlaceIdentity(t *testing.T)
 	})
 	if !strings.Contains(resolved, "status: resolved") || !strings.Contains(resolved, "entity: product:source_contract_demo") {
 		t.Fatalf("app store identifier did not resolve to product entity:\n%s", resolved)
+	}
+}
+
+func TestProductSignalImportsASCDatapointsSourceInPlace(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{
+			"signal",
+			"--asc-datapoints", filepath.Join("..", "..", "fixtures", "product", "asc-datapoints.json"),
+			"--product", "product:focus-notes",
+			"--app-id", "123456789",
+			"--metric", "review_count",
+		})
+	})
+	if !strings.Contains(out, "# product signal sig_") || !strings.Contains(out, "- product: product:focus-notes") {
+		t.Fatalf("product signal output missing ASC import proof:\n%s", out)
+	}
+	tl, err := product.LoadTimeline(homePath, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Signals) != 1 || tl.Signals[0].MetricName != "app_store_connect_review_count" || tl.Signals[0].Before != tl.Signals[0].After {
+		t.Fatalf("ASC signal timeline = %+v", tl.Signals)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("ASC signal import should not create promoted claims ledger: %v", err)
 	}
 }
 

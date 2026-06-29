@@ -108,6 +108,36 @@ type SignalExportDocument struct {
 	ObservedAt      string           `json:"observed_at,omitempty" yaml:"observed_at,omitempty"`
 }
 
+type ASCDatapointsSignalOptions struct {
+	ProductID string
+	AppID     string
+	Metric    string
+}
+
+type ascDatapointsDocument struct {
+	OK         bool               `json:"ok"`
+	Date       string             `json:"date"`
+	CapturedAt string             `json:"captured_at"`
+	Rows       []ascDatapointsRow `json:"rows"`
+}
+
+type ascDatapointsRow struct {
+	Date                    string             `json:"date"`
+	CapturedAt              string             `json:"captured_at"`
+	Slug                    string             `json:"slug"`
+	Name                    string             `json:"name"`
+	ASCAppID                string             `json:"asc_app_id"`
+	BundleID                string             `json:"bundle_id"`
+	Released                bool               `json:"released"`
+	PublicAvailable         bool               `json:"public_available"`
+	CurrentAppStoreState    string             `json:"current_appstore_state"`
+	AnalyticsRequestPresent bool               `json:"analytics_request_present"`
+	AnalyticsRequestCount   float64            `json:"analytics_request_count"`
+	ReviewCount             float64            `json:"review_count"`
+	AverageRating           *float64           `json:"average_rating"`
+	RatingCounts            map[string]float64 `json:"rating_counts"`
+}
+
 type ExportMetric struct {
 	Name          string            `json:"name" yaml:"name"`
 	CanonicalName string            `json:"canonical_name,omitempty" yaml:"canonical_name,omitempty"`
@@ -297,6 +327,18 @@ func LoadSignal(path string) (SignalDocument, error) {
 		return SignalDocument{}, err
 	}
 	return loadSignalBytes(b)
+}
+
+func LoadASCDatapointsSignal(path string, opts ASCDatapointsSignalOptions) (SignalDocument, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	var doc ascDatapointsDocument
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return SignalDocument{}, fmt.Errorf("parse ASC datapoints %s: %w", path, err)
+	}
+	return adaptASCDatapointsSignal(doc, opts)
 }
 
 func loadSignalBytes(b []byte) (SignalDocument, error) {
@@ -799,6 +841,72 @@ func AdaptSignalExport(doc SignalExportDocument) (SignalDocument, error) {
 	}, nil
 }
 
+func adaptASCDatapointsSignal(doc ascDatapointsDocument, opts ASCDatapointsSignalOptions) (SignalDocument, error) {
+	productID := strings.TrimSpace(opts.ProductID)
+	appID := strings.TrimSpace(opts.AppID)
+	metric := strings.TrimSpace(opts.Metric)
+	if metric == "" {
+		metric = "review_count"
+	}
+	if productID == "" || appID == "" {
+		return SignalDocument{}, fmt.Errorf("ASC datapoints product_id and app_id required")
+	}
+	row, ok := findASCRow(doc.Rows, appID)
+	if !ok {
+		return SignalDocument{}, fmt.Errorf("ASC datapoints app_id %q not found", appID)
+	}
+	value, err := ascMetricValue(row, metric)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	date := firstNonEmpty(row.Date, doc.Date)
+	if date == "" {
+		return SignalDocument{}, fmt.Errorf("ASC datapoints date required")
+	}
+	observedAt := firstNonEmpty(row.CapturedAt, doc.CapturedAt)
+	metricName := canonicalMetricName("app_store_connect", metric)
+	sourceRef := "asc:datapoints:" + appID + ":" + date
+	evidenceRefs := compact([]string{
+		"asc:datapoints:" + date + ":" + appID,
+		"asc:app:" + appID,
+		"asc:bundle:" + strings.TrimSpace(row.BundleID),
+		"asc:state:" + normalizeIDPart(row.CurrentAppStoreState),
+		fmt.Sprintf("asc:%s:%.4g", normalizeIDPart(metric), value),
+	})
+	evidenceRefs = append(evidenceRefs, ascRatingCountRefs(row.RatingCounts)...)
+	evidenceRefs = compact(evidenceRefs)
+	return SignalDocument{
+		SchemaVersion: SignalSchemaVersion,
+		Source: SignalSource{
+			Kind: "app_store_connect",
+			Ref:  sourceRef,
+		},
+		Signal: Signal{
+			ID:          stableID("sig_", productID, "app_store_connect", appID, metricName, date),
+			ProductID:   productID,
+			Surface:     "app_store",
+			ChangeEvent: "Apple App Store Connect datapoints snapshot observed",
+			MetricName:  metricName,
+			Before:      value,
+			After:       value,
+			Window:      "snapshot " + date,
+			Confidence:  0.72,
+			Confounders: []string{
+				"snapshot observation; no causal movement is implied",
+				"provider state can lag App Store Connect",
+			},
+			Interpretations: []Interpretation{{
+				Lens:  "provider_snapshot",
+				Claim: "records observed App Store Connect metric without causal attribution",
+			}},
+			NextAction:   "Use as product feedback evidence; do not infer causality without a reviewed hypothesis.",
+			EvidenceRefs: evidenceRefs,
+			ObservedAt:   observedAt,
+		},
+		EvidenceRefs: evidenceRefs,
+	}, nil
+}
+
 func ValidateSignalExportDocument(doc SignalExportDocument) error {
 	if doc.SchemaVersion != SignalExportSchemaVersion {
 		return fmt.Errorf("schema_version must be %s, got %q", SignalExportSchemaVersion, doc.SchemaVersion)
@@ -828,6 +936,50 @@ func ValidateSignalExportDocument(doc SignalExportDocument) error {
 		return fmt.Errorf("signal export signal_id %q must not contain path separators", doc.SignalID)
 	}
 	return nil
+}
+
+func findASCRow(rows []ascDatapointsRow, appID string) (ascDatapointsRow, bool) {
+	appID = strings.TrimSpace(appID)
+	for _, row := range rows {
+		if strings.TrimSpace(row.ASCAppID) == appID {
+			return row, true
+		}
+	}
+	return ascDatapointsRow{}, false
+}
+
+func ascMetricValue(row ascDatapointsRow, metric string) (float64, error) {
+	switch normalizeIDPart(metric) {
+	case "review_count":
+		return row.ReviewCount, nil
+	case "average_rating":
+		if row.AverageRating == nil {
+			return 0, fmt.Errorf("ASC datapoints average_rating missing for app_id %q", row.ASCAppID)
+		}
+		return *row.AverageRating, nil
+	case "analytics_request_count":
+		return row.AnalyticsRequestCount, nil
+	case "rating_count_1", "rating_count_2", "rating_count_3", "rating_count_4", "rating_count_5":
+		key := strings.TrimPrefix(normalizeIDPart(metric), "rating_count_")
+		if row.RatingCounts == nil {
+			return 0, fmt.Errorf("ASC datapoints rating_counts missing for app_id %q", row.ASCAppID)
+		}
+		return row.RatingCounts[key], nil
+	default:
+		return 0, fmt.Errorf("ASC datapoints metric %q unsupported", metric)
+	}
+}
+
+func ascRatingCountRefs(counts map[string]float64) []string {
+	var refs []string
+	for _, key := range []string{"1", "2", "3", "4", "5"} {
+		value, ok := counts[key]
+		if !ok {
+			continue
+		}
+		refs = append(refs, fmt.Sprintf("asc:rating_counts:%s:%.4g", key, value))
+	}
+	return refs
 }
 
 func ValidateReview(review Review) error {
