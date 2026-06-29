@@ -408,7 +408,7 @@ func cmdMemory(args []string) {
 	case "relate":
 		args := positionals(map[string]bool{"--conf": true})
 		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: compound memory relate <from-entity> <relates|contradicts|depends_on> <to-entity> [--conf 0.8]")
+			fmt.Fprintln(os.Stderr, "usage: compound memory relate <from-entity> <relates|contradicts|depends_on|refines|supports|mentions|owns|part_of> <to-entity> [--conf 0.8]")
 			os.Exit(2)
 		}
 		conf := 0.8

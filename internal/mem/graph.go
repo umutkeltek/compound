@@ -15,8 +15,10 @@ import (
 )
 
 // RelationKinds are the entity-level edge kinds task-shaped recall traverses (claim-level
-// "supersedes" is the version chain and is NOT a relation).
-var RelationKinds = []string{"relates", "contradicts", "depends_on"}
+// "supersedes" is the version chain and is NOT a relation). The richer set (refines/supports/
+// mentions/owns/part_of) is schema parity with the Gen-1 memory.EdgeType — the last capability the
+// converging memory stack needed on the spine before the Gen-1 packages can retire.
+var RelationKinds = []string{"relates", "contradicts", "depends_on", "refines", "supports", "mentions", "owns", "part_of"}
 
 // RelationHint is an extracted relation between two entities (the LLM proposes these; the
 // reference extractor passes them through). Promoted into the ledger as a relate-edge.
@@ -97,7 +99,7 @@ func (s *Store) loadRelations(minConf float64) ([]Edge, error) {
 // Subgraph is the result of task-shaped recall: the seed-matched entities, the bounded set of
 // entities reached, their current claims, the relations among them, and a coverage verdict.
 type Subgraph struct {
-	Seed         string  `json:"seed"`
+	Seed         string   `json:"seed"`
 	SeedEntities []string `json:"seed_entities"`
 	Entities     []string `json:"entities"`
 	Claims       []Claim  `json:"claims"`

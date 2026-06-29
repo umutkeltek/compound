@@ -33,8 +33,8 @@ The rest hold object richness / ingestion / recall that `mem` must absorb first.
 
 | Package | Status | Capability `mem` still lacks (the retire-blocker) |
 |---|---|---|
-| `mem` | **canonical (target)** | the destination. ✓ landed: `PromotionBasis`, `Position`, `Entity` registry (path-independent identity), `Pattern` (recurrence), `ClaimType`+`Qualifiers` (domain-aware `Topic()`), stored `EvidenceItem` (content-addressed) |
-| `memory` | converge→retire | ~~`Entity` registry~~ ✓, ~~`Position`~~ ✓, ~~`Pattern`~~ ✓, ~~`ClaimType`~~ ✓, ~~`PromotionBasis`~~ ✓, ~~stored `EvidenceItem`~~ ✓ — **only `EdgeType` (refines/supports/mentions/owns/part_of) remains**, then re-point the CLI verbs |
+| `mem` | **canonical (target)** | the destination. ✓ landed: `PromotionBasis`, `Position`, `Entity` registry (path-independent identity), `Pattern` (recurrence), `ClaimType`+`Qualifiers` (domain-aware `Topic()`), stored `EvidenceItem` (content-addressed), richer `EdgeType` (refines/supports/mentions/owns/part_of) |
+| `memory` | converge→retire | ~~`Entity` registry~~ ✓, ~~`Position`~~ ✓, ~~`Pattern`~~ ✓, ~~`ClaimType`~~ ✓, ~~`PromotionBasis`~~ ✓, ~~stored `EvidenceItem`~~ ✓, ~~richer `EdgeType`~~ ✓ — **all capabilities landed; only the Replace (re-point CLI verbs, delete the stack) remains** |
 | `position` | converge→retire | ✓ **capability on the spine** (`mem.Positions`, topic-grouped current stance + supersession chain, parity-tested). Package retires with the Gen-1 stack (its sole consumer `cmdBuild` reads the Gen-1 ledger, so it retires *wholesale* when the spine reaches CLI parity — not in isolation) |
 | `pattern` | converge→retire | ✓ **on the spine** (`mem.Patterns` — recurrence hypothesis per (entity,topic) ≥2 claims/sessions, parity-tested). Retires with the Gen-1 stack |
 | `recall` | converge→retire | Position-aware + Pattern-surfacing recall; `PromotionBasis`-driven promote; scope alias resolution in query planning |
@@ -56,7 +56,7 @@ The rest hold object richness / ingestion / recall that `mem` must absorb first.
 > (the audit's unanimous `retire_safe=false`). This is a tracked debt, not a quick subtraction.
 >
 > **Convergence shape (verified by the entanglement audit):** capabilities land on the spine **one
-> at a time** (`PromotionBasis` ✓, `Position` ✓, `Entity` registry ✓, `Pattern` ✓, `ClaimType` ✓, `EvidenceItem` ✓ — each parity-tested), but the Gen-1 **packages**
+> at a time** (`PromotionBasis` ✓, `Position` ✓, `Entity` registry ✓, `Pattern` ✓, `ClaimType` ✓, `EvidenceItem` ✓, `EdgeType` ✓ — each parity-tested; **all capabilities now landed**), but the Gen-1 **packages**
 > retire **wholesale**: `position`/`pattern`/`scope`/`recall`/`reconcile` are imported only by
 > `main.go`'s Gen-1 verbs, which read the Gen-1 ledger and share `memory.Claim` + each other's
 > imports. So `ConvergePendingBudget` drops in a **step** when the spine reaches CLI parity, not by
