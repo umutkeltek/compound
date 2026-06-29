@@ -1228,18 +1228,23 @@ func cmdDecisions(args []string) {
 			os.Exit(1)
 		}
 		counts := map[string]int{}
-		missingReview := 0
+		statuses := map[string]int{}
+		missingLifecycle := 0
 		for _, c := range claims {
 			if c.ClaimType != "decision" {
 				continue
 			}
-			counts[decisions.Kind(c)]++
-			if c.Qualifiers["review_trigger"] == "" {
-				missingReview++
+			l := decisions.LifecycleFromClaim(c)
+			counts[l.Kind]++
+			statuses[l.Status]++
+			if len(decisions.MissingRequired(l)) > 0 {
+				missingLifecycle++
 			}
 		}
 		fmt.Printf("# decisions doctor\n\n")
-		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n- missing_review_trigger: %d\n", counts[decisions.KindPolicy], counts[decisions.KindDoctrine], counts[decisions.KindOperational], missingReview)
+		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n", counts[decisions.KindPolicy], counts[decisions.KindDoctrine], counts[decisions.KindOperational])
+		fmt.Printf("- proposed: %d\n- accepted: %d\n- superseded: %d\n- deprecated: %d\n- rejected: %d\n", statuses[decisions.StatusProposed], statuses[decisions.StatusAccepted], statuses[decisions.StatusSuperseded], statuses[decisions.StatusDeprecated], statuses[decisions.StatusRejected])
+		fmt.Printf("- missing_lifecycle_fields: %d\n", missingLifecycle)
 	default:
 		kindFilter := ""
 		for _, a := range args {
@@ -1261,7 +1266,8 @@ func cmdDecisions(args []string) {
 			if kindFilter != "" && k != kindFilter {
 				continue
 			}
-			fmt.Printf("- [%s] %s - %s\n", k, c.ID, c.Object)
+			l := decisions.LifecycleFromClaim(c)
+			fmt.Printf("- [%s/%s] %s - %s\n", l.Kind, l.Status, c.ID, c.Object)
 			any = true
 		}
 		if !any {

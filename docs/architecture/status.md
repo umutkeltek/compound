@@ -26,7 +26,7 @@ retired.
 | `capgraph` | canonical | capability graph: surface, observe, consume |
 | `arch` | canonical | architecture doctor |
 | `authority` | importer | external authority records imported through spine memory |
-| `decisions` | importer | decision records imported through spine memory |
+| `decisions` | importer | DecisionLifecycle records imported/projected through spine memory; doctor surfaces missing falsifier/review trigger |
 
 Retired Gen-1 packages:
 
@@ -77,7 +77,7 @@ operating-system functions into first-class Compound contracts without creating
 parallel owners:
 
 - runtime/service ownership -> `RuntimeBinding` / `ServiceContract`;
-- decisions -> `DecisionLifecycle` with falsifier and review trigger;
+- decisions -> `DecisionLifecycle` first slice landed; next hardening is source-specific adapters and lifecycle transitions beyond import;
 - source documents -> source adapters that emit evidence/candidates;
 - orientation scope -> project-aware context loading;
 - rented retrieval -> `MemoryEngine` adapter that leaves the ledger unchanged;

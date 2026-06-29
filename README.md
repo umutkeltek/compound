@@ -26,7 +26,7 @@ The current public surface is:
 | `compound memory candidate/adjudicate/recall/timeline/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall |
 | `compound distiller run <trace.json>` | trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
-| `compound authority import` / `compound decisions import` | import external authority and decisions through spine memory |
+| `compound authority import` / `compound decisions import` | import external authority and DecisionLifecycle records through spine memory |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
 
@@ -87,7 +87,7 @@ internal/capgraph/     capability graph
 internal/arch/         architecture doctor
 
 internal/authority/    importer into spine memory
-internal/decisions/    importer into spine memory
+internal/decisions/    DecisionLifecycle importer/projection into spine memory
 
 docs/                  public architecture and contracts
 fixtures/              public, leak-free fixtures

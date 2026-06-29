@@ -19,33 +19,67 @@ const (
 	KindPolicy      = "policy"
 	KindDoctrine    = "doctrine"
 	KindOperational = "operational"
+
+	StatusProposed   = "proposed"
+	StatusAccepted   = "accepted"
+	StatusSuperseded = "superseded"
+	StatusDeprecated = "deprecated"
+	StatusRejected   = "rejected"
 )
 
-var reReviewTrigger = regexp.MustCompile(`(?i)review[ \-]?trigger[:*\s]+\s*([^\n]+)`)
+var (
+	reReviewTrigger = regexp.MustCompile(`(?i)review[ \-]?trigger[:*\s]+\s*([^\n]+)`)
+	reFalsifier     = regexp.MustCompile(`(?i)falsifier[:*\s]+\s*([^\n]+)`)
+)
+
+// Lifecycle is the DecisionLifecycle contract projected onto spine memory.
+// The claim remains the durable ledger object; these fields make the decision
+// lifecycle typed and auditable instead of a loose prose qualifier.
+type Lifecycle struct {
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	Choice        string   `json:"choice"`
+	Status        string   `json:"status"`
+	Scope         string   `json:"scope,omitempty"`
+	Owner         string   `json:"owner,omitempty"`
+	Falsifier     string   `json:"falsifier,omitempty"`
+	ReviewTrigger string   `json:"review_trigger,omitempty"`
+	Supersedes    []string `json:"supersedes,omitempty"`
+	ReplacedBy    string   `json:"replaced_by,omitempty"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+}
 
 func promotionBasisForStatus(s string) string {
-	s = strings.ToLower(s)
-	switch {
-	case strings.Contains(s, "supersed"), strings.Contains(s, "deprecat"), strings.Contains(s, "retired"):
-		return ""
-	case strings.Contains(s, "propos"), strings.Contains(s, "open"):
-		return ""
-	default:
+	switch CanonicalStatus(s) {
+	case StatusAccepted:
 		return candidates.BasisDecisionRecord
+	default:
+		return ""
 	}
 }
 
-func legacyStatus(s string) string {
+func CanonicalStatus(s string) string {
 	s = strings.ToLower(s)
 	switch {
 	case strings.Contains(s, "supersed"):
-		return "superseded"
-	case strings.Contains(s, "propos"), strings.Contains(s, "open"):
-		return "candidate"
+		return StatusSuperseded
+	case strings.Contains(s, "propos"), strings.Contains(s, "open"), strings.Contains(s, "draft"):
+		return StatusProposed
 	case strings.Contains(s, "deprecat"), strings.Contains(s, "retired"):
-		return "retired"
+		return StatusDeprecated
+	case strings.Contains(s, "reject"):
+		return StatusRejected
 	default:
-		return "accepted"
+		return StatusAccepted
+	}
+}
+
+func lifecycleQualifiers(kind, source, id, status string) map[string]string {
+	return map[string]string{
+		"kind":             kind,
+		"source":           source,
+		"decision_id":      id,
+		"lifecycle_status": CanonicalStatus(status),
 	}
 }
 
@@ -62,11 +96,15 @@ func splitFrontmatter(s string) (fm, body string) {
 }
 
 type decFrontmatter struct {
-	ID         string   `yaml:"id"`
-	Title      string   `yaml:"title"`
-	Status     string   `yaml:"status"`
-	Domains    []string `yaml:"domains"`
-	Supersedes []string `yaml:"supersedes"`
+	ID            string   `yaml:"id"`
+	Title         string   `yaml:"title"`
+	Status        string   `yaml:"status"`
+	Domains       []string `yaml:"domains"`
+	Supersedes    []string `yaml:"supersedes"`
+	Falsifier     string   `yaml:"falsifier"`
+	ReviewTrigger string   `yaml:"review_trigger"`
+	Owner         string   `yaml:"owner"`
+	Scope         string   `yaml:"scope"`
 }
 
 // ImportDEC parses decisions/DEC markdown files into policy decision candidates.
@@ -95,12 +133,24 @@ func ImportDEC(root string) ([]mem.Candidate, error) {
 				}
 			}
 		}
-		q := map[string]string{"kind": KindPolicy, "source": "decisions-repo", "legacy_status": legacyStatus(f.Status)}
+		q := lifecycleQualifiers(KindPolicy, "decisions-repo", f.ID, f.Status)
 		if len(f.Domains) > 0 {
 			q["domain"] = strings.Join(f.Domains, ",")
 		}
 		if len(f.Supersedes) > 0 {
 			q["supersedes"] = strings.Join(f.Supersedes, ",")
+		}
+		if f.Falsifier != "" {
+			q["falsifier"] = strings.TrimSpace(f.Falsifier)
+		}
+		if f.ReviewTrigger != "" {
+			q["review_trigger"] = strings.TrimSpace(f.ReviewTrigger)
+		}
+		if f.Owner != "" {
+			q["owner"] = strings.TrimSpace(f.Owner)
+		}
+		if f.Scope != "" {
+			q["scope"] = strings.TrimSpace(f.Scope)
 		}
 		out = append(out, mem.Candidate{
 			Entity:         "decisions",
@@ -141,19 +191,20 @@ func ImportOperatorLedger(path string) ([]mem.Candidate, error) {
 		block := text[m[1]:end]
 		status := "accepted"
 		if strings.HasPrefix(id, "O") {
-			status = "candidate"
+			status = StatusProposed
 		}
 		if regexp.MustCompile(`(?i)superseded`).MatchString(block) {
 			status = "superseded"
 		}
-		q := map[string]string{"kind": KindDoctrine, "scope": "personal", "source": "operator-ledger", "legacy_status": status}
+		q := lifecycleQualifiers(KindDoctrine, "operator-ledger", id, status)
+		q["scope"] = "personal"
 		if mm := reReviewTrigger.FindStringSubmatch(block); mm != nil {
 			q["review_trigger"] = strings.TrimSpace(mm[1])
 		}
-		basis := candidates.BasisDecisionRecord
-		if status != "accepted" {
-			basis = ""
+		if mm := reFalsifier.FindStringSubmatch(block); mm != nil {
+			q["falsifier"] = strings.TrimSpace(mm[1])
 		}
+		basis := promotionBasisForStatus(status)
 		out = append(out, mem.Candidate{
 			Entity:         "decisions",
 			Predicate:      "decided",
@@ -180,4 +231,76 @@ func Kind(c mem.Claim) string {
 		return k
 	}
 	return KindOperational
+}
+
+// LifecycleFromClaim projects the typed DecisionLifecycle contract from a
+// promoted spine claim. It does not create a second source of truth.
+func LifecycleFromClaim(c mem.Claim) Lifecycle {
+	q := c.Qualifiers
+	return Lifecycle{
+		ID:            q["decision_id"],
+		Kind:          kindFromQualifiers(q),
+		Choice:        c.Object,
+		Status:        statusFromQualifiers(q),
+		Scope:         q["scope"],
+		Owner:         q["owner"],
+		Falsifier:     q["falsifier"],
+		ReviewTrigger: q["review_trigger"],
+		Supersedes:    splitCSV(q["supersedes"]),
+		ReplacedBy:    q["replaced_by"],
+		EvidenceRefs:  append([]string(nil), c.EvidenceRefs...),
+	}
+}
+
+// LifecycleFromCandidate exposes the same lifecycle before promotion.
+func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
+	q := c.Qualifiers
+	return Lifecycle{
+		ID:            q["decision_id"],
+		Kind:          kindFromQualifiers(q),
+		Choice:        c.Object,
+		Status:        statusFromQualifiers(q),
+		Scope:         q["scope"],
+		Owner:         q["owner"],
+		Falsifier:     q["falsifier"],
+		ReviewTrigger: q["review_trigger"],
+		Supersedes:    splitCSV(q["supersedes"]),
+		EvidenceRefs:  []string{c.ID},
+	}
+}
+
+// MissingRequired reports fields required for a durable decision artifact.
+func MissingRequired(l Lifecycle) []string {
+	var missing []string
+	if strings.TrimSpace(l.Falsifier) == "" {
+		missing = append(missing, "falsifier")
+	}
+	if strings.TrimSpace(l.ReviewTrigger) == "" {
+		missing = append(missing, "review_trigger")
+	}
+	return missing
+}
+
+func kindFromQualifiers(q map[string]string) string {
+	if q == nil || q["kind"] == "" {
+		return KindOperational
+	}
+	return q["kind"]
+}
+
+func statusFromQualifiers(q map[string]string) string {
+	if q == nil {
+		return StatusAccepted
+	}
+	return CanonicalStatus(q["lifecycle_status"])
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
