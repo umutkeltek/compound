@@ -974,6 +974,38 @@ func TestRoutePlanUsesRouteObservationWithoutMutatingTarget(t *testing.T) {
 	}
 }
 
+func TestRouteImportProviderLedgerWritesEvidenceWithoutClaims(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls.ndjson")
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"import-provider-ledger", fixture, "--tail", "1"})
+	})
+	if !strings.Contains(out, "- imported: 1") || !strings.Contains(out, "- verdict: metadata_only_not_task_success") {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	trID := outputValue(out, "- last_transition:")
+	if trID == "" {
+		t.Fatalf("missing transition in output:\n%s", out)
+	}
+	rowData := readFile(t, filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl"))
+	if strings.Count(string(rowData), "\n") != 1 ||
+		!strings.Contains(string(rowData), "req_fixture_provider_2") ||
+		strings.Contains(string(rowData), "req_fixture_provider_1") ||
+		strings.Contains(string(rowData), "ignored") {
+		t.Fatalf("bad imported route evidence:\n%s", rowData)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", trID+".json")); err != nil {
+		t.Fatalf("transition not recorded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("provider-ledger import must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestCapabilitySkillPlanUsesSkillCandidateWithoutMutatingGraphOrTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

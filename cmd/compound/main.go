@@ -151,6 +151,7 @@ usage:
   compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
+  compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
@@ -1551,7 +1552,7 @@ func cmdTransition(args []string) {
 
 func cmdRoute(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|plan --candidate C [--target file]>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -1594,8 +1595,45 @@ func cmdRoute(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		return
 	}
+	if args[0] == "import-provider-ledger" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]")
+			os.Exit(2)
+		}
+		limit, err := intFlag(args[2:], "--limit")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route import-provider-ledger:", err)
+			os.Exit(2)
+		}
+		tail, err := intFlag(args[2:], "--tail")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route import-provider-ledger:", err)
+			os.Exit(2)
+		}
+		summary, err := routeevidence.ImportProviderLedgerFile(homePath, args[1], routeevidence.ProviderLedgerImportOptions{Limit: limit, Tail: tail})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route import-provider-ledger:", err)
+			os.Exit(1)
+		}
+		fmt.Println("# route import-provider-ledger")
+		fmt.Printf("- rows_read: %d\n", summary.RowsRead)
+		fmt.Printf("- imported: %d\n", summary.Imported)
+		if summary.FirstID != "" {
+			fmt.Printf("- first_route_evidence: %s\n", summary.FirstID)
+			fmt.Printf("- last_route_evidence: %s\n", summary.LastID)
+		}
+		if len(summary.Results) > 0 {
+			last := summary.Results[len(summary.Results)-1]
+			target := last.Evidence.SelectedTarget
+			fmt.Printf("- last_request: %s\n", last.Evidence.RequestID)
+			fmt.Printf("- last_selected_target: %s/%s (%s)\n", target.Provider, target.Model, target.Protocol)
+			fmt.Printf("- last_transition: %s\n", last.Transition.ID)
+		}
+		fmt.Println("- verdict: metadata_only_not_task_success")
+		return
+	}
 	if len(args) != 2 || args[0] != "import" {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|plan --candidate C [--target file]>")
 		os.Exit(2)
 	}
 	result, err := routeevidence.ImportFile(homePath, args[1])
@@ -1902,6 +1940,21 @@ func flagValue(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func intFlag(args []string, name string) (int, error) {
+	raw := flagValue(args, name)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", name)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
+	}
+	return n, nil
 }
 
 func splitCSV(s string) []string {

@@ -114,6 +114,59 @@ func TestJoinTransitionRejectsMismatchedTransitionID(t *testing.T) {
 	}
 }
 
+func TestProviderLedgerRowToEvidenceDropsPrivateSourcePayload(t *testing.T) {
+	raw := `{"request_id":"req_provider_1","ts_start":"2026-06-29T10:00:00Z","caller":"codex","project":"product-x","purpose":"classification","route_alias":"cheap.classify","provider":"fixture-provider","model":"fixture-model","transport":"chat_completions","input_tokens":100,"output_tokens":20,"reasoning_tokens":5,"cache_read_tokens":10,"estimated_cost_usd":0.0025,"latency_ms":42,"status":"ok","source":{"private_path":"/Users/example/private/state.db","raw_prompt":"must not copy"}}`
+	ev, err := ProviderLedgerRowToEvidence(raw, 1)
+	if err != nil {
+		t.Fatalf("provider ledger row: %v", err)
+	}
+	if ev.SelectedTarget.Provider != "fixture-provider" || ev.SelectedTarget.Model != "fixture-model" || ev.Protocol != "chat_completions" {
+		t.Fatalf("target = %+v protocol=%q", ev.SelectedTarget, ev.Protocol)
+	}
+	if ev.Usage.PromptTokens != 110 || ev.Usage.CompletionTokens != 25 || ev.Usage.TotalTokens != 135 {
+		t.Fatalf("usage = %+v", ev.Usage)
+	}
+	if ev.CostMicros != 2500 || ev.LatencyMS != 42 {
+		t.Fatalf("cost/latency = %d/%d", ev.CostMicros, ev.LatencyMS)
+	}
+	joinedRefs := strings.Join(ev.EvidenceRefs, "\n")
+	if strings.Contains(joinedRefs, "/Users/example") || strings.Contains(joinedRefs, "raw_prompt") {
+		t.Fatalf("private source payload leaked into evidence refs: %s", joinedRefs)
+	}
+	if !strings.Contains(joinedRefs, "provider-ledger-request:req_provider_1") || !strings.Contains(joinedRefs, "provider-ledger-row:") {
+		t.Fatalf("missing provider ledger refs: %s", joinedRefs)
+	}
+}
+
+func TestImportProviderLedgerFileTailRecordsRouteEvidenceOnly(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(t.TempDir(), "provider-calls.ndjson")
+	rows := strings.Join([]string{
+		`{"request_id":"req_old","ts_start":"2026-06-29T09:00:00Z","caller":"codex","project":"product-x","purpose":"old","route_alias":"cheap.classify","provider":"fixture-provider","model":"fixture-small","transport":"chat_completions","input_tokens":1,"output_tokens":2,"status":"ok"}`,
+		`{"request_id":"req_new","run_id":"run_new","ts_start":"2026-06-29T10:00:00Z","caller":"codex","project":"product-x","purpose":"new","route_alias":"premium.reasoning","provider":"fixture-provider","model":"fixture-large","transport":"responses","input_tokens":100,"output_tokens":50,"estimated_cost_usd":0.01,"latency_ms":55,"status":"ok"}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(ledgerPath, []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := ImportProviderLedgerFile(home, ledgerPath, ProviderLedgerImportOptions{Tail: 1})
+	if err != nil {
+		t.Fatalf("import provider ledger: %v", err)
+	}
+	if summary.RowsRead != 2 || summary.Imported != 1 || summary.FirstID == "" || summary.LastID != summary.FirstID {
+		t.Fatalf("summary = %+v", summary)
+	}
+	rowData := readFile(t, filepath.Join(home, "ledger", "execution-route-evidence.jsonl"))
+	if strings.Count(string(rowData), "\n") != 1 || !strings.Contains(string(rowData), "req_new") || strings.Contains(string(rowData), "req_old") {
+		t.Fatalf("bad route evidence ledger:\n%s", rowData)
+	}
+	if _, err := os.Stat(filepath.Join(home, "events", summary.Results[0].Transition.ID+".json")); err != nil {
+		t.Fatalf("transition not recorded: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("provider-ledger import must not promote claims, stat err=%v", err)
+	}
+}
+
 func fixtureEvidence() Evidence {
 	ev, err := Build(BuildInput{
 		CreatedAt:     t0,

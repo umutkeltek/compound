@@ -41,9 +41,11 @@ target, rejected candidates + reasons, model/provider/account, cost, latency, st
 only, no prompt/response/secrets.** Task success still requires a state delta (tests passed, file
 changed, PR opened, product signal moved, or an explicit blocker).
 
-External gateways use `compound route import <execution-route-evidence.json>`; the command validates
-the metadata-only shape, rejects unknown fields, writes the evidence row, and emits the same audit-only
-Transition routing/cost projection.
+External gateways use `compound route import <execution-route-evidence.json>`; provider-call NDJSON
+ledgers use `compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]`.
+Both paths write metadata-only evidence rows and emit the same audit-only Transition routing/cost
+projection. The provider-ledger adapter copies route/cost fields and drops source-specific row payloads
+instead of importing prompts, responses, paths, or provider secrets.
 
 Local `compound distiller extract` follows the same rule: successful extraction writes metadata-only
 `ExecutionRouteEvidence` and an audit-only Transition whose routing/cost projections point at that
