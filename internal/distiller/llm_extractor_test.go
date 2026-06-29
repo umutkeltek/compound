@@ -164,9 +164,17 @@ func TestLLMExtractorRunParksLiveMemory(t *testing.T) {
 	}
 }
 
-func TestBuildLLMExtractionRequestCarriesPriorCoverage(t *testing.T) {
+func TestBuildLLMExtractionRequestCarriesPriorCoverageAndSignals(t *testing.T) {
 	home, store := setup(t)
-	run(t, home, store, `{"trace_ref":"seed","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.9,"claim_type":"decision"}]}`)
+	run(t, home, store, `{"trace_ref":"seed","candidates":[
+		{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.9,"claim_type":"decision"},
+		{"kind":"method_upgrade","subject":"distill.memory","statement":"resolve relative dates absolute at extraction","confidence":0.9},
+		{"kind":"policy_patch","subject":"distill.policy","statement":"require source refs for capability feedback","confidence":0.9},
+		{"kind":"eval_case","subject":"distill.skill","statement":"missed an obvious skill trigger","confidence":1.0}
+	]}`)
+	run(t, home, store, `{"trace_ref":"seed_duplicate","candidates":[
+		{"kind":"method_upgrade","subject":"distill.memory","statement":"resolve relative dates absolute at extraction","confidence":0.9}
+	]}`)
 
 	prior, err := LoadPriorStateFromHome(home, store, DefaultPolicy())
 	if err != nil {
@@ -179,8 +187,19 @@ func TestBuildLLMExtractionRequestCarriesPriorCoverage(t *testing.T) {
 	if req.PriorCoverage.CurrentClaims != 1 || req.PriorCoverage.Decisions != 1 {
 		t.Fatalf("prior coverage = %+v", req.PriorCoverage)
 	}
+	if req.PriorCoverage.MethodUpgrades != 1 || req.PriorCoverage.PolicyPatches != 1 || req.PriorCoverage.EvalCases != 1 || req.PriorCoverage.NoPromoteDecisions != 1 {
+		t.Fatalf("prior coverage missing distiller critique signals: %+v", req.PriorCoverage)
+	}
+	for _, want := range []string{KindMethodUpgrade, KindPolicyPatch, KindEvalCase, "no_promote_decision"} {
+		if !hasPriorSignalKind(req.PriorSignals, want) {
+			t.Fatalf("prior signals missing %q: %+v", want, req.PriorSignals)
+		}
+	}
 	if !strings.Contains(strings.Join(req.Instructions, "\n"), "cannot promote memory directly") {
 		t.Fatalf("request instructions do not preserve authority boundary: %v", req.Instructions)
+	}
+	if !strings.Contains(strings.Join(req.Instructions, "\n"), "prior_signals as bounded critique history") {
+		t.Fatalf("request instructions do not tell extractor how to use prior signals: %v", req.Instructions)
 	}
 }
 
@@ -381,6 +400,15 @@ func TestBuildLLMExtractionRequestRejectsInvalidSourceEnvelope(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "context pack invalid") {
 		t.Fatalf("err = %v, want context pack invalid", err)
 	}
+}
+
+func hasPriorSignalKind(signals []LLMPriorSignal, kind string) bool {
+	for _, signal := range signals {
+		if signal.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func llmTestHeader(schemaVersion, id, workID, contextPackID string) envelope.Header {

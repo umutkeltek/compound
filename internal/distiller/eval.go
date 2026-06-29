@@ -40,6 +40,7 @@ type EvalExpectations struct {
 	ClaimsLedger   *bool              `json:"claims_ledger_exists,omitempty"`
 	SourceRefs     []string           `json:"source_refs,omitempty"`
 	PriorCoverage  map[string]int     `json:"prior_coverage,omitempty"`
+	PriorSignals   map[string]int     `json:"prior_signals,omitempty"`
 	LiveModelCalls *int               `json:"live_model_calls,omitempty"`
 	ErrorContains  string             `json:"error_contains,omitempty"`
 }
@@ -75,8 +76,9 @@ type EvalCorpusReport struct {
 }
 
 type EvalReqReport struct {
-	PriorCoverage PriorCoverage `json:"prior_coverage"`
-	SourceRefs    []string      `json:"source_refs"`
+	PriorCoverage    PriorCoverage  `json:"prior_coverage"`
+	PriorSignalKinds map[string]int `json:"prior_signal_kinds,omitempty"`
+	SourceRefs       []string       `json:"source_refs"`
 }
 
 type EvalRunReport struct {
@@ -228,7 +230,7 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 		if currentErr != nil {
 			return report, currentErr
 		}
-		report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, SourceRefs: req.SourceRefs}
+		report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, PriorSignalKinds: priorSignalKinds(req.PriorSignals), SourceRefs: req.SourceRefs}
 		report.Run = EvalRunReport{
 			CurrentClaims:      len(current),
 			ClaimsLedgerExists: claimsLedgerExists(evalHome),
@@ -246,7 +248,7 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 	if err != nil {
 		return report, err
 	}
-	report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, SourceRefs: req.SourceRefs}
+	report.Request = EvalReqReport{PriorCoverage: req.PriorCoverage, PriorSignalKinds: priorSignalKinds(req.PriorSignals), SourceRefs: req.SourceRefs}
 	report.Run = EvalRunReport{
 		DecisionCount:      len(run.Decisions),
 		CurrentClaims:      len(current),
@@ -365,6 +367,7 @@ func evaluateExpectations(expect EvalExpectations, req LLMExtractionRequest, run
 	checks := []EvalCheck{}
 	checks = append(checks, checkSourceRefs(expect.SourceRefs, req.SourceRefs))
 	checks = append(checks, checkPriorCoverage(expect.PriorCoverage, req.PriorCoverage)...)
+	checks = append(checks, checkPriorSignalKinds(expect.PriorSignals, priorSignalKinds(req.PriorSignals))...)
 	checks = append(checks, checkDecisions(expect.Decisions, run.Decisions))
 	if expect.CurrentClaims != nil {
 		checks = append(checks, checkInt("current_claims", run.CurrentClaims, *expect.CurrentClaims))
@@ -430,6 +433,35 @@ func checkPriorCoverage(want map[string]int, got PriorCoverage) []EvalCheck {
 			continue
 		}
 		checks = append(checks, checkInt("prior_coverage."+field, actual, expected))
+	}
+	return checks
+}
+
+func priorSignalKinds(signals []LLMPriorSignal) map[string]int {
+	if len(signals) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, signal := range signals {
+		kind := strings.TrimSpace(signal.Kind)
+		if kind == "" {
+			continue
+		}
+		counts[kind]++
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	return counts
+}
+
+func checkPriorSignalKinds(want, got map[string]int) []EvalCheck {
+	if len(want) == 0 {
+		return nil
+	}
+	checks := make([]EvalCheck, 0, len(want))
+	for field, expected := range want {
+		checks = append(checks, checkInt("prior_signals."+field, got[field], expected))
 	}
 	return checks
 }

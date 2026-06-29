@@ -29,6 +29,10 @@
       "eval_cases": 1,
       "method_upgrades": 1
     },
+    "prior_signals": {
+      "eval_case": 1,
+      "method_upgrade": 1
+    },
     "decisions": [
       {
         "kind": "memory",

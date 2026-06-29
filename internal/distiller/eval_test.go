@@ -29,6 +29,9 @@ func TestEvaluateCaseFilePassesFixture(t *testing.T) {
 	if report.Request.PriorCoverage.MethodUpgrades != 1 || report.Request.PriorCoverage.CapabilityObs != 1 {
 		t.Fatalf("prior coverage = %+v", report.Request.PriorCoverage)
 	}
+	if report.Request.PriorSignalKinds[KindMethodUpgrade] != 1 || report.Request.PriorSignalKinds[KindEvalCase] != 1 {
+		t.Fatalf("prior signal kinds = %+v", report.Request.PriorSignalKinds)
+	}
 	for _, want := range []string{"work:work_distill_fixture", "context_pack:ctx_distill_fixture", "receipt:rec_distill_fixture", "raw_trace:trace_fixture"} {
 		if !hasString(report.Request.SourceRefs, want) {
 			t.Fatalf("source refs missing %q: %v", want, report.Request.SourceRefs)
