@@ -42,13 +42,19 @@
         "relation": "new",
         "basis_contains": "operator review"
       },
-      {
-        "kind": "capability_observation",
-        "verdict": "operationalize",
-        "relation": "new",
-        "basis_contains": "capability graph"
-      }
-    ],
+    {
+      "kind": "capability_observation",
+      "verdict": "operationalize",
+      "relation": "new",
+      "basis_contains": "capability graph"
+    },
+    {
+      "kind": "capability_observation",
+      "verdict": "operationalize",
+      "relation": "new",
+      "basis_contains": "capability graph"
+    }
+  ],
     "current_claims": 0,
     "live_model_calls": 0
   }

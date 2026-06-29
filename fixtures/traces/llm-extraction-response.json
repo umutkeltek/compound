@@ -26,6 +26,14 @@
       "detail": "adapter_ready",
       "confidence": 0.82,
       "evidence_refs": ["fixture:llm-extraction-response"]
+    },
+    {
+      "kind": "capability_observation",
+      "subject": "skill:generic-copy",
+      "statement": "distiller request packet generated bounded spine artifacts",
+      "detail": "false_triggered_by",
+      "confidence": 0.8,
+      "evidence_refs": ["receipt:rec_distill_fixture"]
     }
   ],
   "critique": [

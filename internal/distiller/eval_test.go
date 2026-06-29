@@ -17,8 +17,8 @@ func TestEvaluateCaseFilePassesFixture(t *testing.T) {
 	if report.Status != "pass" {
 		t.Fatalf("status = %q checks=%+v", report.Status, report.Checks)
 	}
-	if report.Run.DecisionCount != 3 {
-		t.Fatalf("decision_count = %d, want 3", report.Run.DecisionCount)
+	if report.Run.DecisionCount != 4 {
+		t.Fatalf("decision_count = %d, want 4", report.Run.DecisionCount)
 	}
 	if report.Run.CurrentClaims != 0 {
 		t.Fatalf("current_claims = %d, want 0", report.Run.CurrentClaims)
@@ -149,8 +149,8 @@ func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
 	if report.CaseCount != 6 || report.PassCount != 6 || report.FailCount != 0 {
 		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 6/6/0", report.CaseCount, report.PassCount, report.FailCount)
 	}
-	if report.DecisionCount != 3 {
-		t.Fatalf("decision_count = %d, want 3", report.DecisionCount)
+	if report.DecisionCount != 4 {
+		t.Fatalf("decision_count = %d, want 4", report.DecisionCount)
 	}
 	if report.CurrentClaims != 0 {
 		t.Fatalf("current_claims = %d, want 0", report.CurrentClaims)

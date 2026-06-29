@@ -14,17 +14,18 @@ const LLMExtractionSchemaVersion = "compound.distiller.llm_extraction.v0.1"
 // It is data, not a live client: callers can route it through Switchback, a local
 // model, or a fixture without changing distiller authority rules.
 type LLMExtractionRequest struct {
-	SchemaVersion string        `json:"schema_version"`
-	TraceRef      string        `json:"trace_ref"`
-	Policy        Policy        `json:"policy"`
-	PriorCoverage PriorCoverage `json:"prior_coverage"`
-	RawTrace      string        `json:"raw_trace,omitempty"`
-	SourceRefs    []string      `json:"source_refs,omitempty"`
-	Work          *LLMWork      `json:"work,omitempty"`
-	Context       *LLMContext   `json:"context,omitempty"`
-	Receipt       *LLMReceipt   `json:"receipt,omitempty"`
-	Envelopes     []LLMEnvelope `json:"envelopes,omitempty"`
-	Instructions  []string      `json:"instructions"`
+	SchemaVersion      string                  `json:"schema_version"`
+	TraceRef           string                  `json:"trace_ref"`
+	Policy             Policy                  `json:"policy"`
+	PriorCoverage      PriorCoverage           `json:"prior_coverage"`
+	RawTrace           string                  `json:"raw_trace,omitempty"`
+	SourceRefs         []string                `json:"source_refs,omitempty"`
+	Work               *LLMWork                `json:"work,omitempty"`
+	Context            *LLMContext             `json:"context,omitempty"`
+	Receipt            *LLMReceipt             `json:"receipt,omitempty"`
+	CapabilityFeedback []LLMCapabilityFeedback `json:"capability_feedback,omitempty"`
+	Envelopes          []LLMEnvelope           `json:"envelopes,omitempty"`
+	Instructions       []string                `json:"instructions"`
 }
 
 func BuildLLMExtractionRequest(traceRef string, rawTrace []byte, policy Policy, prior PriorState) LLMExtractionRequest {
@@ -77,6 +78,14 @@ type LLMReceipt struct {
 	Next       envelope.ReceiptNext   `json:"next"`
 }
 
+type LLMCapabilityFeedback struct {
+	Subject      string   `json:"subject"`
+	Detail       string   `json:"detail"`
+	Statement    string   `json:"statement"`
+	Source       string   `json:"source"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
 type LLMEnvelope struct {
 	Kind          string   `json:"kind"`
 	ID            string   `json:"id"`
@@ -103,6 +112,8 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 			"Omit promotion_basis. LLM output cannot promote memory directly.",
 			"Use context/work/receipt as evidence-bearing source material, not authority.",
 			"Every candidate must include kind, confidence in [0,1], and evidence_refs when granular evidence exists.",
+			"For explicit capability_feedback items, emit capability_observation candidates with subject/detail/statement exactly from the item and cited evidence_refs.",
+			"Do not infer missed_when or false_triggered_by from skills.candidate offers; offers are not execution or feedback.",
 		},
 	}
 	if src.Work != nil {
@@ -157,6 +168,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 			Memory:     src.Receipt.Memory,
 			Next:       src.Receipt.Next,
 		}
+		req.CapabilityFeedback = capabilityFeedbackFromReceipt(src.Receipt)
 		addSourceRef(&req, "receipt:"+src.Receipt.ID)
 		addSourceRefs(&req, src.Receipt.EvidenceRefs)
 	}
@@ -176,6 +188,68 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		addSourceRef(&req, "raw_trace:"+traceRef)
 	}
 	return req, nil
+}
+
+func capabilityFeedbackFromReceipt(rec *envelope.Receipt) []LLMCapabilityFeedback {
+	if rec == nil {
+		return nil
+	}
+	statement := strings.TrimSpace(rec.StateDelta.Summary)
+	if statement == "" {
+		statement = strings.TrimSpace(rec.Next.ReviewTrigger)
+	}
+	if statement == "" {
+		statement = strings.TrimSpace(rec.MoveType)
+	}
+	evidenceRefs := uniqueRefs(append([]string{"receipt:" + rec.ID}, rec.EvidenceRefs...))
+	var out []LLMCapabilityFeedback
+	for _, ref := range rec.Skills.Missed {
+		subject := capabilitySubject(ref)
+		if subject == "" {
+			continue
+		}
+		out = append(out, LLMCapabilityFeedback{
+			Subject:      subject,
+			Detail:       "missed_when",
+			Statement:    statement,
+			Source:       "receipt.skills.missed",
+			EvidenceRefs: evidenceRefs,
+		})
+	}
+	for _, ref := range rec.Skills.FalseTriggered {
+		subject := capabilitySubject(ref)
+		if subject == "" {
+			continue
+		}
+		out = append(out, LLMCapabilityFeedback{
+			Subject:      subject,
+			Detail:       "false_triggered_by",
+			Statement:    statement,
+			Source:       "receipt.skills.false_triggered",
+			EvidenceRefs: evidenceRefs,
+		})
+	}
+	return out
+}
+
+func capabilitySubject(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "capability://")
+	return strings.TrimSpace(ref)
+}
+
+func uniqueRefs(refs []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
 }
 
 // LLMExtractionResponse is the model-shaped result consumed by LLMExtractor.

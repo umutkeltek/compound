@@ -44,12 +44,17 @@
   },
   "skills": {
     "used": [
-      "golang-testing"
+      "capability://skill:golang-testing"
     ],
     "missed": [
-      "distiller-request-packet"
+      "capability://skill:distiller-request-packet"
     ],
-    "candidate": []
+    "false_triggered": [
+      "capability://skill:generic-copy"
+    ],
+    "candidate": [
+      "capability://skill:offered-only"
+    ]
   },
   "memory": {
     "candidates": [

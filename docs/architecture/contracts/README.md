@@ -63,8 +63,9 @@ Defined here; implemented when a slice needs them (the candidate fan-out + as-of
 unadjudicated; distillation proposes candidates only.**
 
 `LLMExtractionRequest` is the provider-neutral request packet. It carries bounded raw trace text,
-prior-state coverage, source refs, and typed summaries of ContextPack, WorkEnvelope, Receipt, and
-extra spine envelopes. It can be assembled from explicit typed files or from a closed
+prior-state coverage, source refs, typed summaries of ContextPack, WorkEnvelope, Receipt, explicit
+`capability_feedback[]` derived from `Receipt.skills.missed` / `Receipt.skills.false_triggered`
+(never `skills.candidate` offers), and extra spine envelopes. It can be assembled from explicit typed files or from a closed
 `COMPOUND_HOME` work chain via `distiller request --work-id <work_id>`, including matching
 HookEvents from `events/hook-events.ndjson`; it is prompt material only, not a model call and not
 authority.

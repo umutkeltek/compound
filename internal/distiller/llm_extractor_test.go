@@ -16,7 +16,8 @@ func TestLLMExtractorNormalizesProviderResponse(t *testing.T) {
 		"source_refs":["raw:turn_7"],
 		"candidates":[
 			{"kind":"memory","entity":"project:api","predicate":"backend_language","object":"go","confidence":0.91},
-			{"kind":"capability_observation","subject":"skill:paywall-cro","statement":"paywall","detail":"missed_when","confidence":0.74,"evidence_refs":["msg_9"]}
+			{"kind":"capability_observation","subject":"skill:paywall-cro","statement":"paywall","detail":"missed_when","confidence":0.74,"evidence_refs":["msg_9"]},
+			{"kind":"capability_observation","subject":"skill:noisy-copy","statement":"paywall","detail":"false_triggered_by","confidence":0.8,"evidence_refs":["msg_10"]}
 		]
 	}`)
 
@@ -28,7 +29,7 @@ func TestLLMExtractorNormalizesProviderResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("extract replay: %v", err)
 	}
-	if a.TraceRef != "llm_trace_1" || len(a.Candidates) != 2 {
+	if a.TraceRef != "llm_trace_1" || len(a.Candidates) != 3 {
 		t.Fatalf("unexpected trace shape: %+v", a)
 	}
 	if a.Candidates[0].ID == "" || a.Candidates[0].ID != b.Candidates[0].ID {
@@ -45,6 +46,9 @@ func TestLLMExtractorNormalizesProviderResponse(t *testing.T) {
 	}
 	if got := strings.Join(a.Candidates[1].EvidenceRefs, ","); got != "msg_9" {
 		t.Fatalf("candidate evidence refs should win over response source_refs; got %q", got)
+	}
+	if a.Candidates[2].Detail != "false_triggered_by" {
+		t.Fatalf("false-trigger capability observation detail = %q", a.Candidates[2].Detail)
 	}
 	if a.Candidates[0].PromotionBasis != "" {
 		t.Fatalf("LLM extractor must not accept promotion basis, got %q", a.Candidates[0].PromotionBasis)
@@ -188,8 +192,13 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 			Artifacts:    []string{"artifact_request_packet"},
 			Verification: []string{"go test ./internal/distiller"},
 		},
-		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: []string{"golang-testing"}, Missed: []string{"distiller-request-packet"}, Candidate: []string{}},
+		Cost: envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills: envelope.ReceiptSkills{
+			Used:           []string{"capability://skill:golang-testing"},
+			Missed:         []string{"capability://skill:distiller-request-packet"},
+			FalseTriggered: []string{"capability://skill:generic-copy"},
+			Candidate:      []string{"capability://skill:offered-only"},
+		},
 		Memory: envelope.ReceiptMemory{Candidates: []string{"cand_method"}, Promoted: []string{}, Parked: []string{"cand_method"}},
 		Next:   envelope.ReceiptNext{SuggestedWork: []string{"add offline eval runner"}, ReviewTrigger: "method debt > 0"},
 	}
@@ -226,6 +235,23 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	if req.Receipt.Cost.ModelCalls == nil {
 		t.Fatalf("receipt cost metadata missing: %+v", req.Receipt.Cost)
 	}
+	if len(req.CapabilityFeedback) != 2 {
+		t.Fatalf("capability feedback = %+v, want 2 explicit items", req.CapabilityFeedback)
+	}
+	if req.CapabilityFeedback[0].Subject != "skill:distiller-request-packet" || req.CapabilityFeedback[0].Detail != "missed_when" {
+		t.Fatalf("missed feedback not normalized: %+v", req.CapabilityFeedback[0])
+	}
+	if req.CapabilityFeedback[1].Subject != "skill:generic-copy" || req.CapabilityFeedback[1].Detail != "false_triggered_by" {
+		t.Fatalf("false-trigger feedback not normalized: %+v", req.CapabilityFeedback[1])
+	}
+	for _, feedback := range req.CapabilityFeedback {
+		if feedback.Statement != receipt.StateDelta.Summary {
+			t.Fatalf("feedback context = %q, want receipt summary %q", feedback.Statement, receipt.StateDelta.Summary)
+		}
+		if hasString(feedback.EvidenceRefs, "capability://skill:offered-only") {
+			t.Fatalf("candidate offers must stay inert, got evidence refs %+v", feedback.EvidenceRefs)
+		}
+	}
 	if len(req.Envelopes) != 1 || req.Envelopes[0].Kind != "hook_event" || !strings.Contains(req.Envelopes[0].Summary, "PostToolUse") {
 		t.Fatalf("extra envelope summary = %+v", req.Envelopes)
 	}
@@ -239,6 +265,9 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(req.Instructions, "\n"), "Use context/work/receipt as evidence-bearing source material") {
 		t.Fatalf("instructions missing source-boundary rule: %v", req.Instructions)
+	}
+	if !strings.Contains(strings.Join(req.Instructions, "\n"), "Do not infer missed_when or false_triggered_by from skills.candidate offers") {
+		t.Fatalf("instructions missing candidate-offer no-inference rule: %v", req.Instructions)
 	}
 }
 
