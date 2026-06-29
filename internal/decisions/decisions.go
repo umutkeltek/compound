@@ -57,10 +57,12 @@ type Lifecycle struct {
 
 // LifecycleGap identifies a promoted decision claim missing lifecycle proof.
 type LifecycleGap struct {
-	ClaimID      string   `json:"claim_id"`
+	ClaimID      string   `json:"claim_id,omitempty"`
+	CandidateID  string   `json:"candidate_id,omitempty"`
 	DecisionID   string   `json:"decision_id,omitempty"`
 	Kind         string   `json:"kind"`
 	Status       string   `json:"status"`
+	State        string   `json:"state,omitempty"`
 	Missing      []string `json:"missing"`
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 }
@@ -68,6 +70,8 @@ type LifecycleGap struct {
 // DoctorReport is the typed report behind `compound decisions doctor`.
 type DoctorReport struct {
 	Total                  int            `json:"total"`
+	Current                int            `json:"current"`
+	Parked                 int            `json:"parked"`
 	Counts                 map[string]int `json:"counts"`
 	Statuses               map[string]int `json:"statuses"`
 	MissingLifecycleFields int            `json:"missing_lifecycle_fields"`
@@ -106,6 +110,14 @@ func lifecycleQualifiers(kind, source, id, status string) map[string]string {
 		"decision_id":      id,
 		"lifecycle_status": CanonicalStatus(status),
 	}
+}
+
+func decisionEntity(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "decision:unknown"
+	}
+	return "decision:" + id
 }
 
 func splitFrontmatter(s string) (fm, body string) {
@@ -212,7 +224,7 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 		q["scope"] = strings.TrimSpace(f.Scope)
 	}
 	cands, err := store.Capture([]mem.Candidate{{
-		Entity:         "decisions",
+		Entity:         decisionEntity(f.ID),
 		Predicate:      "decided",
 		Object:         f.Title,
 		Confidence:     1.0,
@@ -227,10 +239,7 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 	if err != nil {
 		return report, err
 	}
-	verdict := candidates.Park
-	if cands[0].PromotionBasis != "" {
-		verdict = candidates.Promote
-	}
+	verdict := VerdictForCandidate(cands[0])
 	res, err := store.Adjudicate(cands[0].ID, verdict, "policy-decision-import", now)
 	if err != nil {
 		return report, err
@@ -355,7 +364,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 		q["scope"] = strings.TrimSpace(f.Scope)
 	}
 	cands, err := store.Capture([]mem.Candidate{{
-		Entity:         "decisions",
+		Entity:         decisionEntity(f.ID),
 		Predicate:      "decided",
 		Object:         f.Title,
 		Confidence:     1.0,
@@ -370,10 +379,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	if err != nil {
 		return report, err
 	}
-	verdict := candidates.Park
-	if cands[0].PromotionBasis != "" {
-		verdict = candidates.Promote
-	}
+	verdict := VerdictForCandidate(cands[0])
 	res, err := store.Adjudicate(cands[0].ID, verdict, "brain-decision-import", now)
 	if err != nil {
 		return report, err
@@ -429,7 +435,7 @@ func ImportOperatorLedger(path string) ([]mem.Candidate, error) {
 		}
 		basis := promotionBasisForStatus(status)
 		out = append(out, mem.Candidate{
-			Entity:         "decisions",
+			Entity:         decisionEntity(id),
 			Predicate:      "decided",
 			Object:         title,
 			Confidence:     0.9,
@@ -478,6 +484,10 @@ func LifecycleFromClaim(c mem.Claim) Lifecycle {
 // LifecycleFromCandidate exposes the same lifecycle before promotion.
 func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
 	q := c.Qualifiers
+	refs := []string{c.ID}
+	if strings.TrimSpace(c.SourceTraceRef) != "" {
+		refs = append(refs, c.SourceTraceRef)
+	}
 	return Lifecycle{
 		ID:            q["decision_id"],
 		Kind:          kindFromQualifiers(q),
@@ -489,7 +499,7 @@ func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
 		ReviewTrigger: q["review_trigger"],
 		Supersedes:    splitCSV(q["supersedes"]),
 		ReplacedBy:    q["replaced_by"],
-		EvidenceRefs:  []string{c.ID},
+		EvidenceRefs:  refs,
 	}
 }
 
@@ -505,6 +515,19 @@ func MissingRequired(l Lifecycle) []string {
 	return missing
 }
 
+// VerdictForCandidate promotes only accepted decisions with complete lifecycle
+// proof. Accepted-but-incomplete decisions stay parked until the source owner is
+// updated; status alone is not enough to become ambient truth.
+func VerdictForCandidate(c mem.Candidate) string {
+	if c.PromotionBasis == "" {
+		return candidates.Park
+	}
+	if c.ClaimType == "decision" && len(MissingRequired(LifecycleFromCandidate(c))) > 0 {
+		return candidates.Park
+	}
+	return candidates.Promote
+}
+
 // DoctorReportFromClaims projects current decision claims into a lifecycle audit.
 func DoctorReportFromClaims(claims []mem.Claim) DoctorReport {
 	report := DoctorReport{
@@ -517,6 +540,7 @@ func DoctorReportFromClaims(claims []mem.Claim) DoctorReport {
 		}
 		l := LifecycleFromClaim(c)
 		report.Total++
+		report.Current++
 		report.Counts[l.Kind]++
 		report.Statuses[l.Status]++
 		missing := MissingRequired(l)
@@ -529,6 +553,38 @@ func DoctorReportFromClaims(claims []mem.Claim) DoctorReport {
 			DecisionID:   l.ID,
 			Kind:         l.Kind,
 			Status:       l.Status,
+			Missing:      append([]string(nil), missing...),
+			EvidenceRefs: append([]string(nil), l.EvidenceRefs...),
+		})
+	}
+	return report
+}
+
+// DoctorReportFromClaimsAndCandidates includes parked decision candidates, so
+// source records that are accepted but missing lifecycle proof remain visible as
+// owner writeback debt without becoming current claims.
+func DoctorReportFromClaimsAndCandidates(claims []mem.Claim, cands []mem.Candidate) DoctorReport {
+	report := DoctorReportFromClaims(claims)
+	for _, c := range cands {
+		if c.ClaimType != "decision" || c.State == "promoted" {
+			continue
+		}
+		l := LifecycleFromCandidate(c)
+		report.Total++
+		report.Parked++
+		report.Counts[l.Kind]++
+		report.Statuses[l.Status]++
+		missing := MissingRequired(l)
+		if len(missing) == 0 {
+			continue
+		}
+		report.MissingLifecycleFields++
+		report.LifecycleGaps = append(report.LifecycleGaps, LifecycleGap{
+			CandidateID:  c.ID,
+			DecisionID:   l.ID,
+			Kind:         l.Kind,
+			Status:       l.Status,
+			State:        c.State,
 			Missing:      append([]string(nil), missing...),
 			EvidenceRefs: append([]string(nil), l.EvidenceRefs...),
 		})
@@ -567,6 +623,9 @@ func EvidenceRefs(report DoctorReport) []string {
 		id := gap.DecisionID
 		if strings.TrimSpace(id) == "" {
 			id = gap.ClaimID
+		}
+		if strings.TrimSpace(id) == "" {
+			id = gap.CandidateID
 		}
 		refs = append(refs, "decision_gap:"+id+":"+strings.Join(gap.Missing, ","))
 	}

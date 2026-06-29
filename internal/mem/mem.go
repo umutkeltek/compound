@@ -180,6 +180,27 @@ func (s *Store) getCandidate(id string) (Candidate, error) {
 	return c, err
 }
 
+// AllCandidates returns inbox candidates in deterministic id order.
+func (s *Store) AllCandidates() ([]Candidate, error) {
+	entries, err := os.ReadDir(s.candDir())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var c Candidate
+		if err := readJSON(filepath.Join(s.candDir(), entry.Name()), &c); err != nil {
+			return out, err
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 // --- adjudicate (code decides) ---
 
 type AdjudicateResult struct {

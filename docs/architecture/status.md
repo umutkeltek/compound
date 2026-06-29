@@ -49,7 +49,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
-Decision source import hardening: `compound decisions import --policy <DEC.md>` and `--policy-dir <dir>` now record policy markdown as evidence-backed `DecisionLifecycle`, preserve supersedes/replaced_by transitions, promote only accepted decisions, and park non-accepted lifecycle records. The legacy policy directory env var routes through the same adapter, not a candidate-only parser.
+Decision source import hardening: `compound decisions import --policy <DEC.md>` and `--policy-dir <dir>` now record policy markdown as evidence-backed `DecisionLifecycle`, preserve supersedes/replaced_by transitions, give each decision a stable `decision:<id>` entity, promote only accepted decisions with complete lifecycle proof, and park incomplete or non-accepted lifecycle records. The legacy policy directory env var routes through the same adapter, not a candidate-only parser.
 
 | Family | Verbs | Status |
 |---|---|---|
@@ -75,12 +75,12 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 
 ## Next Coverage Moves
 
-Recently closed: source-specific policy markdown decisions can now enter through the `DecisionLifecycle` owner without flattening lifecycle transitions into loose claims; batch policy imports use the same evidence-backed adapter. Next decision hardening is private parity against a real decision-source page, not a new public decision registry.
+Recently closed: source-specific policy markdown decisions can now enter through the `DecisionLifecycle` owner without flattening lifecycle transitions into loose claims; batch policy imports use the same evidence-backed adapter; incomplete accepted source records park and surface as writeback debt instead of becoming ambient truth. Next decision hardening is owner-source writeback repair of real lifecycle gaps, not a new public decision registry.
 
 Next work is no longer memory-stack convergence. It is adapting existing operating-system functions into first-class Compound contracts without creating parallel owners:
 
 - runtime/service ownership -> `RuntimeBinding` / `ServiceContract` first slice + infra-os project-contract adapter landed opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; next hardening broader private parity fixtures owner-regeneration adapter;
-- decisions -> `DecisionLifecycle` first slice landed; `decisions import --brain <markdown>` imports curated markdown decision pages as EvidenceItem + DecisionLifecycle; `decisions import --policy <DEC.md>` and `--policy-dir <dir>` import policy markdown through the same evidence-backed lifecycle adapter; `decisions doctor --writeback` routes lifecycle gaps through `OwnerWritebackGate`, receipt, transition; next hardening is private parity against a real decision-source page;
+- decisions -> `DecisionLifecycle` first slice landed; `decisions import --brain <markdown>` imports curated markdown decision pages as EvidenceItem + DecisionLifecycle; `decisions import --policy <DEC.md>` and `--policy-dir <dir>` import policy markdown through the same evidence-backed lifecycle adapter; accepted decisions require falsifier + review trigger before promotion; incomplete accepted records park and `decisions doctor --writeback` routes lifecycle gaps through `OwnerWritebackGate`, receipt, transition; next hardening is owner-source writeback repair of real lifecycle gaps;
 - generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed hash-based doctor opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; source observations now map generated/source views into candidate inbox + `NoPromoteDecision`; distiller duplicate memory outputs route to `NoPromoteDecision`; next hardening tool/MCP topology observations;
 - source documents -> source adapters emit evidence/candidates/no-promote without direct promotion;
 - source-map / path-authority -> `authority path` imports `PathAuthority` into entity identifiers + authority claims; `authority resolve` proves old path/new path/source remote map to one entity;

@@ -71,6 +71,57 @@ scope: public-core
 	}
 }
 
+func TestImportPolicyDecisionDirKeepsDecisionEntitiesSeparate(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "decisions", "DEC-0100.md"), `---
+id: DEC-0100
+title: First accepted decision
+status: accepted
+falsifier: First decision can be lost after importing another decision.
+review_trigger: Re-check after importing more than one decision.
+---
+
+# First accepted decision
+`)
+	writeFile(t, filepath.Join(dir, "decisions", "DEC-0101.md"), `---
+id: DEC-0101
+title: Second accepted decision
+status: accepted
+falsifier: Second decision supersedes unrelated accepted decisions.
+review_trigger: Re-check after importing more than one decision.
+---
+
+# Second accepted decision
+`)
+
+	reports, err := ImportPolicyDecisionDir(store, dir, time.Date(2026, 6, 29, 21, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 2 {
+		t.Fatalf("reports = %+v", reports)
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 2 {
+		t.Fatalf("claims = %+v", claims)
+	}
+	got := map[string]bool{}
+	for _, claim := range claims {
+		got[claim.Entity] = true
+	}
+	if !got["decision:DEC-0100"] || !got["decision:DEC-0101"] {
+		t.Fatalf("decision entities = %v", got)
+	}
+}
+
 func TestImportBrainDecisionRecordsEvidenceAndDecision(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -171,6 +222,53 @@ Source-specific adapters must enter through evidence and policy gates.
 	}
 	if missing := MissingRequired(l); len(missing) != 0 {
 		t.Fatalf("MissingRequired = %v", missing)
+	}
+}
+
+func TestImportPolicyDecisionParksAcceptedDecisionMissingLifecycleProof(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decisions", "DEC-0007.md")
+	writeFile(t, path, `---
+id: DEC-0007
+title: Older accepted source shape
+status: accepted
+domains: [agents]
+supersedes: []
+---
+
+# DEC-0007: Older accepted source shape
+
+The source says accepted, but lacks falsifier and review trigger.
+`)
+
+	report, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 29, 21, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Verdict != candidates.Park || report.ClaimID != "" || report.EvidenceID == "" {
+		t.Fatalf("report = %+v", report)
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doctor := DoctorReportFromClaimsAndCandidates(claims, cands)
+	if doctor.Current != 0 || doctor.Parked != 1 || doctor.MissingLifecycleFields != 1 || !NeedsWriteback(doctor) {
+		t.Fatalf("doctor = %+v", doctor)
+	}
+	if len(doctor.LifecycleGaps) != 1 || doctor.LifecycleGaps[0].CandidateID != report.CandidateID {
+		t.Fatalf("gaps = %+v", doctor.LifecycleGaps)
+	}
+	if len(doctor.LifecycleGaps[0].EvidenceRefs) < 2 || doctor.LifecycleGaps[0].EvidenceRefs[1] != report.EvidenceID {
+		t.Fatalf("gap evidence refs = %+v", doctor.LifecycleGaps[0].EvidenceRefs)
 	}
 }
 

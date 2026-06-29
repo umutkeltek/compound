@@ -2340,10 +2340,7 @@ func cmdDecisions(args []string) {
 		}
 		promoted, parked := 0, 0
 		for _, c := range captured {
-			verdict := "park"
-			if c.PromotionBasis != "" {
-				verdict = "promote"
-			}
+			verdict := decisions.VerdictForCandidate(c)
 			if _, err := store.Adjudicate(c.ID, verdict, "decisions-import", time.Now()); err != nil {
 				fmt.Fprintln(os.Stderr, "decisions adjudicate:", err)
 				os.Exit(1)
@@ -2382,10 +2379,16 @@ func cmdDecisions(args []string) {
 			fmt.Fprintln(os.Stderr, "decisions doctor:", err)
 			os.Exit(1)
 		}
-		report := decisions.DoctorReportFromClaims(claims)
+		cands, err := store.AllCandidates()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions doctor:", err)
+			os.Exit(1)
+		}
+		report := decisions.DoctorReportFromClaimsAndCandidates(claims, cands)
 		fmt.Printf("# decisions doctor\n\n")
 		fmt.Printf("- policy: %d\n- doctrine: %d\n- operational: %d\n", report.Counts[decisions.KindPolicy], report.Counts[decisions.KindDoctrine], report.Counts[decisions.KindOperational])
 		fmt.Printf("- proposed: %d\n- accepted: %d\n- superseded: %d\n- deprecated: %d\n- rejected: %d\n", report.Statuses[decisions.StatusProposed], report.Statuses[decisions.StatusAccepted], report.Statuses[decisions.StatusSuperseded], report.Statuses[decisions.StatusDeprecated], report.Statuses[decisions.StatusRejected])
+		fmt.Printf("- current: %d\n- parked: %d\n", report.Current, report.Parked)
 		fmt.Printf("- missing_lifecycle_fields: %d\n", report.MissingLifecycleFields)
 		if writebackEnabled && decisions.NeedsWriteback(report) {
 			result, err := runDecisionWriteback(report, time.Now())
