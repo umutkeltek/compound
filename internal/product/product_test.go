@@ -309,6 +309,64 @@ func TestLoadASCDatapointsSignalRejectsMissingApp(t *testing.T) {
 	}
 }
 
+func TestLoadASCSalesSeriesSignalAggregatesExplicitWindows(t *testing.T) {
+	doc, err := LoadASCSalesSeriesSignal("../../fixtures/product/asc-sales-series.jsonl", ASCSalesSeriesSignalOptions{
+		ProductID:    "product:focus-notes",
+		AppID:        "123456789",
+		Metric:       "units",
+		BeforeWindow: "2026-07-01/2026-07-03",
+		AfterWindow:  "2026-07-08/2026-07-10",
+		ChangeEvent:  "Changed App Store screenshot order.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSignalDocument(doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Source.Kind != "app_store_connect" || doc.Source.Ref != "asc:sales_series:123456789:2026-07-01/2026-07-03:2026-07-08/2026-07-10" {
+		t.Fatalf("source = %+v", doc.Source)
+	}
+	s := doc.Signal
+	if s.ProductID != "product:focus-notes" || s.Surface != "app_store" || s.MetricName != "app_store_connect_units" {
+		t.Fatalf("signal identity = %+v", s)
+	}
+	if s.ChangeEvent != "Changed App Store screenshot order." || s.Before != 9 || s.After != 18 {
+		t.Fatalf("window aggregate = %+v", s)
+	}
+	if s.Window != "before 2026-07-01/2026-07-03; after 2026-07-08/2026-07-10" {
+		t.Fatalf("window = %q", s.Window)
+	}
+	for _, ref := range []string{
+		"asc:sales_series:before_rows:3",
+		"asc:sales_series:after_rows:3",
+		"asc:sales_series:metric:units",
+		"asc:sales_series:before_sum:9",
+		"asc:sales_series:after_sum:18",
+	} {
+		if !hasString(s.EvidenceRefs, ref) {
+			t.Fatalf("missing evidence ref %q in %+v", ref, s.EvidenceRefs)
+		}
+	}
+	if !hasString(s.Confounders, "explicit window comparison; causality is not implied") {
+		t.Fatalf("confounders = %+v", s.Confounders)
+	}
+}
+
+func TestLoadASCSalesSeriesSignalRejectsEmptyWindow(t *testing.T) {
+	_, err := LoadASCSalesSeriesSignal("../../fixtures/product/asc-sales-series.jsonl", ASCSalesSeriesSignalOptions{
+		ProductID:    "product:focus-notes",
+		AppID:        "123456789",
+		Metric:       "units",
+		BeforeWindow: "2026-07-01/2026-07-03",
+		AfterWindow:  "2026-08-01/2026-08-03",
+		ChangeEvent:  "Changed App Store screenshot order.",
+	})
+	if err == nil {
+		t.Fatal("empty after window should be rejected")
+	}
+}
+
 func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T) {
 	_, err := LoadSignal("../../fixtures/product/source-export.bad-extra.yaml")
 	if err == nil {

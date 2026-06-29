@@ -496,6 +496,42 @@ func TestProductSignalImportsASCDatapointsSourceInPlace(t *testing.T) {
 	}
 }
 
+func TestProductSignalImportsASCSalesSeriesWindows(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{
+			"signal",
+			"--asc-sales-series", filepath.Join("..", "..", "fixtures", "product", "asc-sales-series.jsonl"),
+			"--product", "product:focus-notes",
+			"--app-id", "123456789",
+			"--metric", "units",
+			"--before", "2026-07-01/2026-07-03",
+			"--after", "2026-07-08/2026-07-10",
+			"--change-event", "Changed App Store screenshot order.",
+		})
+	})
+	if !strings.Contains(out, "# product signal sig_") || !strings.Contains(out, "- product: product:focus-notes") {
+		t.Fatalf("product signal output missing ASC sales import proof:\n%s", out)
+	}
+	tl, err := product.LoadTimeline(homePath, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Signals) != 1 || tl.Signals[0].MetricName != "app_store_connect_units" || tl.Signals[0].Before != 9 || tl.Signals[0].After != 18 {
+		t.Fatalf("ASC sales signal timeline = %+v", tl.Signals)
+	}
+	if len(tl.Hypotheses) != 0 {
+		t.Fatalf("ASC sales signal should not create hypotheses: %+v", tl.Hypotheses)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("ASC sales signal import should not create promoted claims ledger: %v", err)
+	}
+}
+
 func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

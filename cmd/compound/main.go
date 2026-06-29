@@ -166,7 +166,7 @@ usage:
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-  compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound event import-os <events.ndjson>                       OS-style append-only events -> TraceEnvelope evidence
@@ -2226,7 +2226,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -2235,31 +2235,57 @@ func loadProductSignalArg(args []string) (product.SignalDocument, string, error)
 		return doc, args[0], err
 	}
 	var ascDatapoints string
-	opts := product.ASCDatapointsSignalOptions{Metric: "review_count"}
+	var ascSalesSeries string
+	datapointsOpts := product.ASCDatapointsSignalOptions{Metric: "review_count"}
+	salesOpts := product.ASCSalesSeriesSignalOptions{Metric: "units"}
 	for i := 0; i < len(args); i++ {
 		if i+1 >= len(args) {
-			return product.SignalDocument{}, "", fmt.Errorf("usage: compound product signal <signal.yaml|source-export.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]")
+			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
 		}
 		value := args[i+1]
 		switch args[i] {
 		case "--asc-datapoints":
 			ascDatapoints = value
+		case "--asc-sales-series":
+			ascSalesSeries = value
 		case "--product":
-			opts.ProductID = value
+			datapointsOpts.ProductID = value
+			salesOpts.ProductID = value
 		case "--app-id":
-			opts.AppID = value
+			datapointsOpts.AppID = value
+			salesOpts.AppID = value
 		case "--metric":
-			opts.Metric = value
+			datapointsOpts.Metric = value
+			salesOpts.Metric = value
+		case "--before":
+			salesOpts.BeforeWindow = value
+		case "--after":
+			salesOpts.AfterWindow = value
+		case "--change-event":
+			salesOpts.ChangeEvent = value
 		default:
-			return product.SignalDocument{}, "", fmt.Errorf("usage: compound product signal <signal.yaml|source-export.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]")
+			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
 		}
 		i++
 	}
-	if ascDatapoints == "" || opts.ProductID == "" || opts.AppID == "" {
-		return product.SignalDocument{}, "", fmt.Errorf("usage: compound product signal <signal.yaml|source-export.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]")
+	if ascDatapoints != "" && ascSalesSeries != "" {
+		return product.SignalDocument{}, "", fmt.Errorf("choose one product signal source")
 	}
-	doc, err := product.LoadASCDatapointsSignal(ascDatapoints, opts)
-	return doc, ascDatapoints, err
+	if ascDatapoints != "" {
+		if datapointsOpts.ProductID == "" || datapointsOpts.AppID == "" {
+			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
+		}
+		doc, err := product.LoadASCDatapointsSignal(ascDatapoints, datapointsOpts)
+		return doc, ascDatapoints, err
+	}
+	if ascSalesSeries != "" {
+		if salesOpts.ProductID == "" || salesOpts.AppID == "" || salesOpts.BeforeWindow == "" || salesOpts.AfterWindow == "" || salesOpts.ChangeEvent == "" {
+			return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
+		}
+		doc, err := product.LoadASCSalesSeriesSignal(ascSalesSeries, salesOpts)
+		return doc, ascSalesSeries, err
+	}
+	return product.SignalDocument{}, "", fmt.Errorf("%s", productUsage())
 }
 
 func cmdProduct(args []string) {

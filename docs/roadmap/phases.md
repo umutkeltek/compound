@@ -119,8 +119,9 @@ pending hypothesis review or open product source issues into WorkEnvelope → Ac
 Transition before any product surface or external account changes; `compound product review <review.yaml>`
 records evidence, updates the same ProductHypothesis result without promotion, and emits a product Transition; `compound product source-issue-review <review.yaml>` records closure evidence, preserves the original `NoPromoteDecision`, and stops the issue recurring as open feedback debt.
 
-Current P9 source-in-place proof also includes `compound product signal --asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]`,
-which maps App Store Connect datapoints snapshots into neutral before=after ProductSignals without claims, hypotheses, or causal attribution.
+Current P9 source-in-place proof also includes `compound product signal --asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]`
+and `compound product signal --asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]`,
+which map App Store Connect provider outputs into ProductSignal evidence without promoted claims, hypotheses, or causal attribution.
 
 ## P10 — execution route evidence (model gateway)
 Import `ExecutionRouteEvidence` (`../architecture/execution-plane.md`), read-only first → ingress → relay

@@ -114,6 +114,15 @@ type ASCDatapointsSignalOptions struct {
 	Metric    string
 }
 
+type ASCSalesSeriesSignalOptions struct {
+	ProductID    string
+	AppID        string
+	Metric       string
+	BeforeWindow string
+	AfterWindow  string
+	ChangeEvent  string
+}
+
 type ascDatapointsDocument struct {
 	OK         bool               `json:"ok"`
 	Date       string             `json:"date"`
@@ -136,6 +145,30 @@ type ascDatapointsRow struct {
 	ReviewCount             float64            `json:"review_count"`
 	AverageRating           *float64           `json:"average_rating"`
 	RatingCounts            map[string]float64 `json:"rating_counts"`
+}
+
+type ascSalesSeriesRow struct {
+	Date                 string  `json:"date"`
+	AppleIdentifier      string  `json:"apple_identifier"`
+	Title                string  `json:"title"`
+	Units                float64 `json:"units"`
+	AppUnits             float64 `json:"app_units"`
+	IAPUnits             float64 `json:"iap_units"`
+	CustomerSalesUSDEst  float64 `json:"customer_sales_usd_est"`
+	DeveloperProceedsUSD float64 `json:"developer_proceeds_usd"`
+}
+
+type dateRange struct {
+	Raw   string
+	Start time.Time
+	End   time.Time
+}
+
+type salesWindowAggregate struct {
+	Sum   float64
+	Rows  int
+	Start string
+	End   string
 }
 
 type ExportMetric struct {
@@ -339,6 +372,18 @@ func LoadASCDatapointsSignal(path string, opts ASCDatapointsSignalOptions) (Sign
 		return SignalDocument{}, fmt.Errorf("parse ASC datapoints %s: %w", path, err)
 	}
 	return adaptASCDatapointsSignal(doc, opts)
+}
+
+func LoadASCSalesSeriesSignal(path string, opts ASCSalesSeriesSignalOptions) (SignalDocument, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	rows, err := parseASCSalesSeriesRows(b, path)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	return adaptASCSalesSeriesSignal(rows, opts)
 }
 
 func loadSignalBytes(b []byte) (SignalDocument, error) {
@@ -907,6 +952,77 @@ func adaptASCDatapointsSignal(doc ascDatapointsDocument, opts ASCDatapointsSigna
 	}, nil
 }
 
+func adaptASCSalesSeriesSignal(rows []ascSalesSeriesRow, opts ASCSalesSeriesSignalOptions) (SignalDocument, error) {
+	productID := strings.TrimSpace(opts.ProductID)
+	appID := strings.TrimSpace(opts.AppID)
+	metric := strings.TrimSpace(opts.Metric)
+	if metric == "" {
+		metric = "units"
+	}
+	changeEvent := strings.TrimSpace(opts.ChangeEvent)
+	if productID == "" || appID == "" || changeEvent == "" {
+		return SignalDocument{}, fmt.Errorf("ASC sales series product_id app_id and change_event required")
+	}
+	beforeRange, err := parseDateRange(opts.BeforeWindow)
+	if err != nil {
+		return SignalDocument{}, fmt.Errorf("ASC sales series before window: %w", err)
+	}
+	afterRange, err := parseDateRange(opts.AfterWindow)
+	if err != nil {
+		return SignalDocument{}, fmt.Errorf("ASC sales series after window: %w", err)
+	}
+	before, err := aggregateSalesWindow(rows, appID, metric, beforeRange)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	after, err := aggregateSalesWindow(rows, appID, metric, afterRange)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	metricName := canonicalMetricName("app_store_connect", metric)
+	sourceRef := "asc:sales_series:" + appID + ":" + beforeRange.Raw + ":" + afterRange.Raw
+	evidenceRefs := compact([]string{
+		"asc:sales_series:" + appID,
+		"asc:sales_series:metric:" + normalizeIDPart(metric),
+		"asc:sales_series:before:" + beforeRange.Raw,
+		"asc:sales_series:after:" + afterRange.Raw,
+		fmt.Sprintf("asc:sales_series:before_rows:%d", before.Rows),
+		fmt.Sprintf("asc:sales_series:after_rows:%d", after.Rows),
+		"asc:sales_series:before_sum:" + shortFloat(before.Sum),
+		"asc:sales_series:after_sum:" + shortFloat(after.Sum),
+	})
+	return SignalDocument{
+		SchemaVersion: SignalSchemaVersion,
+		Source: SignalSource{
+			Kind: "app_store_connect",
+			Ref:  sourceRef,
+		},
+		Signal: Signal{
+			ID:          stableID("sig_", productID, "app_store_connect", appID, metricName, beforeRange.Raw, afterRange.Raw, changeEvent),
+			ProductID:   productID,
+			Surface:     "app_store",
+			ChangeEvent: changeEvent,
+			MetricName:  metricName,
+			Before:      before.Sum,
+			After:       after.Sum,
+			Window:      "before " + beforeRange.Raw + "; after " + afterRange.Raw,
+			Confidence:  0.64,
+			Confounders: []string{
+				"explicit window comparison; causality is not implied",
+				"seasonality, channel mix, price, reviews, and release timing may confound movement",
+			},
+			Interpretations: []Interpretation{{
+				Lens:  "window_comparison",
+				Claim: "records before/after App Store Connect metric movement for review, not proof of causality",
+			}},
+			NextAction:   "Review against the experiment ledger and confounders before promoting any product hypothesis.",
+			EvidenceRefs: evidenceRefs,
+			ObservedAt:   afterRange.End.Format("2006-01-02") + "T00:00:00Z",
+		},
+		EvidenceRefs: evidenceRefs,
+	}, nil
+}
+
 func ValidateSignalExportDocument(doc SignalExportDocument) error {
 	if doc.SchemaVersion != SignalExportSchemaVersion {
 		return fmt.Errorf("schema_version must be %s, got %q", SignalExportSchemaVersion, doc.SchemaVersion)
@@ -980,6 +1096,101 @@ func ascRatingCountRefs(counts map[string]float64) []string {
 		refs = append(refs, fmt.Sprintf("asc:rating_counts:%s:%.4g", key, value))
 	}
 	return refs
+}
+
+func parseASCSalesSeriesRows(b []byte, source string) ([]ascSalesSeriesRow, error) {
+	var rows []ascSalesSeriesRow
+	for i, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row ascSalesSeriesRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return nil, fmt.Errorf("parse ASC sales series %s line %d: %w", source, i+1, err)
+		}
+		if strings.TrimSpace(row.AppleIdentifier) == "" || strings.TrimSpace(row.Date) == "" {
+			return nil, fmt.Errorf("ASC sales series %s line %d missing apple_identifier/date", source, i+1)
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("ASC sales series %s has no rows", source)
+	}
+	return rows, nil
+}
+
+func parseDateRange(raw string) (dateRange, error) {
+	raw = strings.TrimSpace(raw)
+	parts := strings.Split(raw, "/")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return dateRange{}, fmt.Errorf("must be YYYY-MM-DD/YYYY-MM-DD")
+	}
+	start, err := time.Parse("2006-01-02", strings.TrimSpace(parts[0]))
+	if err != nil {
+		return dateRange{}, err
+	}
+	end, err := time.Parse("2006-01-02", strings.TrimSpace(parts[1]))
+	if err != nil {
+		return dateRange{}, err
+	}
+	if end.Before(start) {
+		return dateRange{}, fmt.Errorf("end before start")
+	}
+	return dateRange{Raw: start.Format("2006-01-02") + "/" + end.Format("2006-01-02"), Start: start, End: end}, nil
+}
+
+func aggregateSalesWindow(rows []ascSalesSeriesRow, appID, metric string, window dateRange) (salesWindowAggregate, error) {
+	var out salesWindowAggregate
+	for _, row := range rows {
+		if strings.TrimSpace(row.AppleIdentifier) != strings.TrimSpace(appID) {
+			continue
+		}
+		day, err := time.Parse("2006-01-02", strings.TrimSpace(row.Date))
+		if err != nil {
+			return salesWindowAggregate{}, fmt.Errorf("ASC sales series row date %q: %w", row.Date, err)
+		}
+		if day.Before(window.Start) || day.After(window.End) {
+			continue
+		}
+		value, err := ascSalesMetricValue(row, metric)
+		if err != nil {
+			return salesWindowAggregate{}, err
+		}
+		out.Sum += value
+		out.Rows++
+		if out.Start == "" || row.Date < out.Start {
+			out.Start = row.Date
+		}
+		if row.Date > out.End {
+			out.End = row.Date
+		}
+	}
+	if out.Rows == 0 {
+		return salesWindowAggregate{}, fmt.Errorf("ASC sales series app_id %q has no rows in %s", appID, window.Raw)
+	}
+	return out, nil
+}
+
+func ascSalesMetricValue(row ascSalesSeriesRow, metric string) (float64, error) {
+	switch normalizeIDPart(metric) {
+	case "units":
+		return row.Units, nil
+	case "app_units":
+		return row.AppUnits, nil
+	case "iap_units":
+		return row.IAPUnits, nil
+	case "customer_sales_usd_est":
+		return row.CustomerSalesUSDEst, nil
+	case "developer_proceeds_usd":
+		return row.DeveloperProceedsUSD, nil
+	default:
+		return 0, fmt.Errorf("ASC sales series metric %q unsupported", metric)
+	}
+}
+
+func shortFloat(v float64) string {
+	return fmt.Sprintf("%.4g", v)
 }
 
 func ValidateReview(review Review) error {
