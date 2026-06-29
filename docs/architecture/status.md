@@ -58,7 +58,7 @@ when it represents a new object family or adapter seam.
 | Distillation | `distiller run` | canonical |
 | Capability | `capability add/surface/observe/consume/list` | canonical |
 | Runtime | `runtime doctor <runtime-binding.yaml>`; `runtime doctor --project-contract <project.yaml>` | canonical first slice + infra-os project-contract adapter |
-| Projection | `projection doctor <freshness.yaml>` | canonical first slice |
+| Projection | `projection doctor <freshness.yaml> [--writeback]` | canonical first slice; stale/drifted observations can enter work -> gate -> receipt/transition |
 | Writeback | `writeback gate <gate.json> --policy <policy-decision.json> [--record]`; `writeback no-promote --candidate C --basis B --evidence E1[,E2]` | canonical first slice |
 | Importers | `authority`, `decisions` | canonical import surfaces |
 | Gen-1 tombstones | `distill`, `scope`, `promote`, `build`, `reconcile`, top-level `timeline`, top-level `recall`, `pack`, `ledger` | retired; exit `2` with replacement hint |
@@ -84,7 +84,7 @@ parallel owners:
 
 - runtime/service ownership -> `RuntimeBinding` / `ServiceContract` first slice + infra-os project-contract adapter landed; next hardening is broader private parity fixtures via `OwnerWritebackGate`;
 - decisions -> `DecisionLifecycle` first slice landed; next hardening is source-specific adapters and lifecycle transitions beyond import;
-- generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed with hash-based doctor; next hardening is feeding drift observations through `OwnerWritebackGate` or `NoPromoteDecision`;
+- generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed with hash-based doctor and opt-in `--writeback` route through `OwnerWritebackGate`, receipt, and transition; next hardening is runtime/decision producers using the same gate;
 - source documents -> source adapters that emit evidence/candidates;
 - orientation scope -> project-aware context loading;
 - rented retrieval -> `MemoryEngine` adapter that leaves the ledger unchanged;

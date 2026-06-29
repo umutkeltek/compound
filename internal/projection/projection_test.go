@@ -67,6 +67,30 @@ func TestDoctorStaleCoverage(t *testing.T) {
 	}
 }
 
+func TestWritebackGateForStaleProjection(t *testing.T) {
+	f := Freshness{
+		ProjectionID:    "projection:test",
+		ViewRef:         "view.md",
+		SourceLedgerSeq: 2,
+		Status:          StatusStale,
+		Sources:         []SourceObservation{{SourceRef: "source.jsonl", CurrentHash: "sha256:abc", Status: "ok"}},
+		CoverageVerdict: "partial",
+	}
+	if !NeedsWriteback(f) {
+		t.Fatalf("stale projection should need writeback")
+	}
+	gate := WritebackGate(f, "act_projection", "pol_projection", time.Date(2026, 6, 29, 1, 0, 0, 0, time.UTC))
+	if gate.OwnerTarget.Kind != "generated_view" || gate.OwnerTarget.Ref != "view.md" {
+		t.Fatalf("wrong owner target: %+v", gate.OwnerTarget)
+	}
+	if gate.PolicyDecisionRef != "pol_projection" || gate.ActionIntentRef != "act_projection" {
+		t.Fatalf("wrong gate refs: %+v", gate)
+	}
+	if len(gate.EvidenceRefs) < 4 {
+		t.Fatalf("expected projection evidence refs, got %+v", gate.EvidenceRefs)
+	}
+}
+
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

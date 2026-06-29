@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/writeback"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -57,6 +59,43 @@ type Check struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Detail string `json:"detail"`
+}
+
+// NeedsWriteback reports whether the projection observation should enter the
+// owner writeback gate. Fresh projections are proof; stale/drifted projections
+// are evidence that an owner surface may need regeneration or review.
+func NeedsWriteback(f Freshness) bool {
+	return f.Status == StatusStale || f.Status == StatusDrifted
+}
+
+// WritebackGate converts a stale/drifted projection observation into the
+// generic owner writeback contract. It only describes the proposed writeback;
+// policy and receipts stay with the spine caller.
+func WritebackGate(f Freshness, actionIntentRef, policyDecisionRef string, now time.Time) writeback.OwnerWritebackGate {
+	return writeback.OwnerWritebackGate{
+		SchemaVersion:     writeback.GateSchemaVersion,
+		CreatedAt:         now.UTC().Format(time.RFC3339),
+		CandidateRef:      "projection:" + f.ProjectionID + ":" + f.Status,
+		OwnerTarget:       writeback.OwnerTarget{Kind: "generated_view", Ref: f.ViewRef},
+		GateBasis:         fmt.Sprintf("projection %s is %s; generated view may need owner writeback", f.ProjectionID, f.Status),
+		ActionIntentRef:   actionIntentRef,
+		MutationClass:     "local_reversible",
+		PolicyDecisionRef: policyDecisionRef,
+		EvidenceRefs:      EvidenceRefs(f),
+	}
+}
+
+// EvidenceRefs returns bounded metadata refs for a projection observation.
+func EvidenceRefs(f Freshness) []string {
+	refs := []string{
+		"projection:" + f.ProjectionID,
+		"generated_view:" + f.ViewRef,
+		fmt.Sprintf("source_ledger_seq:%d", f.SourceLedgerSeq),
+	}
+	for _, source := range f.Sources {
+		refs = append(refs, "source:"+source.SourceRef+"#"+source.CurrentHash)
+	}
+	return refs
 }
 
 func LoadManifest(path string) (Manifest, string, error) {
