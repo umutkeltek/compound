@@ -974,6 +974,98 @@ func TestRoutePlanUsesRouteObservationWithoutMutatingTarget(t *testing.T) {
 	}
 }
 
+func TestRouteOutcomeReviewUsesLedgerEvidenceAndReceiptWithoutMutatingTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls.ndjson")
+	importOut := captureStdout(t, func() {
+		cmdRoute([]string{"import-provider-ledger", fixture, "--tail", "1"})
+	})
+	routeID := outputValue(importOut, "- last_route_evidence:")
+	if routeID == "" {
+		t.Fatalf("import output missing route evidence id:\n%s", importOut)
+	}
+	receiptPath := writeJSONFile(t, `{
+ "schema_version": "compound.receipt.v0.1",
+ "id": "rec_route_outcome_cli",
+ "created_at": "2026-06-29T12:00:00Z",
+ "producer": {"kind": "fixture", "name": "compound"},
+ "ids": {"work_id": "run_fixture_provider_2"},
+ "scope": {"entity_id": "system:compound", "surface": "route"},
+ "authority": {"source_class": "runtime", "status": "current"},
+ "privacy": "private",
+ "risk": "tier1",
+ "evidence_refs": ["receipt:evidence"],
+ "uncertainty": {"level": "known"},
+ "outcome": "failed",
+ "move_type": "outward_delta",
+ "state_delta": {
+  "changed": false,
+  "summary": "cheap route failed quality gate",
+  "verification": ["fixture quality review failed"]
+ },
+ "cost": {"model_calls": ["route_fixture"]},
+ "skills": {"used": [], "missed": [], "candidate": []},
+ "memory": {"candidates": [], "promoted": [], "parked": []},
+ "next": {"suggested_work": [], "review_trigger": "review route quality before cheap-lane reuse"}
+}`)
+	targetPath := filepath.Join(t.TempDir(), "route-policy.json")
+	original := `{"routes":[]}` + "\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"outcome-review", "--route-id", routeID, "--receipt", receiptPath, "--target", targetPath, "--record"})
+	})
+	for _, want := range []string{
+		"# route outcome-review ror_",
+		"- receipt_outcome: failed",
+		"- assessment_class: route_remorse",
+		"- should_review_policy: true",
+		"- candidate: route_outcome_",
+		"- no_promote: nop_",
+		"- verdict: route_outcome_review_not_policy",
+		"- plan:",
+		"- review:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("outcome-review output missing %q:\n%s", want, out)
+		}
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var review routeevidence.RouteOutcomeReview
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &review); err != nil {
+		t.Fatal(err)
+	}
+	if review.SchemaVersion != routeevidence.RouteOutcomeReviewSchemaVersion ||
+		review.RouteEvidenceID != routeID ||
+		review.ReceiptID != "rec_route_outcome_cli" ||
+		review.CandidateID == "" ||
+		review.NoPromoteID == "" {
+		t.Fatalf("bad route outcome review: %+v", review)
+	}
+	text := readFile(t, reviewPath)
+	if !strings.Contains(text, "does not mutate gateway/provider config") ||
+		!strings.Contains(text, "Required Evidence Before Policy Change") ||
+		!strings.Contains(text, "not billing truth") {
+		t.Fatalf("review missing no-mutation/non-claim text:\n%s", text)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("route target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("route outcome-review must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRouteImportProviderLedgerWritesEvidenceWithoutClaims(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

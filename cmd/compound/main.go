@@ -153,6 +153,7 @@ usage:
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
+  compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
@@ -1553,7 +1554,7 @@ func cmdTransition(args []string) {
 
 func cmdRoute(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan --candidate C [--target file]>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -1594,6 +1595,75 @@ func cmdRoute(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
+	if args[0] == "outcome-review" {
+		routeID := flagValue(args[1:], "--route-id")
+		routePath := flagValue(args[1:], "--route-evidence")
+		receiptPath := flagValue(args[1:], "--receipt")
+		targetPath := flagValue(args[1:], "--target")
+		if receiptPath == "" || (routeID == "" && routePath == "") || (routeID != "" && routePath != "") {
+			fmt.Fprintln(os.Stderr, "usage: compound route outcome-review (--route-id <id>|--route-evidence <file>) --receipt <file> [--target <file>] [--record]")
+			os.Exit(2)
+		}
+		var ev routeevidence.Evidence
+		if routeID != "" {
+			ev, err = routeevidence.LoadEvidenceByID(homePath, routeID)
+		} else {
+			ev, err = routeevidence.LoadEvidenceFile(routePath)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route outcome-review:", err)
+			os.Exit(1)
+		}
+		rec, err := routeevidence.LoadReceiptFile(receiptPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route outcome-review:", err)
+			os.Exit(1)
+		}
+		review, err := routeevidence.BuildRouteOutcomeReview(ev, rec, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route outcome-review:", err)
+			os.Exit(1)
+		}
+		if hasFlag(args[1:], "--record") {
+			review, err = routeevidence.RecordRouteOutcomeObservation(homePath, review, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "route outcome-review:", err)
+				os.Exit(1)
+			}
+		}
+		paths, err := routeevidence.RecordRouteOutcomeReview(homePath, review)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route outcome-review:", err)
+			os.Exit(1)
+		}
+		target := review.SelectedTarget
+		fmt.Printf("# route outcome-review %s\n", review.ID)
+		fmt.Printf("- status: %s\n", review.Status)
+		fmt.Printf("- route_evidence: %s\n", review.RouteEvidenceID)
+		fmt.Printf("- receipt: %s\n", review.ReceiptID)
+		fmt.Printf("- selected_target: %s/%s (%s)\n", target.Provider, target.Model, target.Protocol)
+		fmt.Printf("- receipt_outcome: %s\n", review.ReceiptOutcome)
+		fmt.Printf("- state_changed: %t\n", review.ReceiptStateChanged)
+		fmt.Printf("- assessment_class: %s\n", review.Assessment.Class)
+		fmt.Printf("- should_review_policy: %t\n", review.Assessment.ShouldReviewPolicy)
+		if review.CandidateID != "" {
+			fmt.Printf("- candidate: %s\n", review.CandidateID)
+			fmt.Printf("- no_promote: %s\n", review.NoPromoteID)
+		}
+		if review.TargetPath != "" {
+			fmt.Printf("- target: %s\n", review.TargetPath)
+			fmt.Printf("- target_exists: %t\n", review.TargetExists)
+		}
+		if review.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", review.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(review.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(review.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Println("- verdict: route_outcome_review_not_policy")
 		return
 	}
 	if args[0] == "import-provider-ledger" {
