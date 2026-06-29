@@ -24,6 +24,7 @@ import (
 const (
 	SchemaVersion              = "compound.product_registry.v0.1"
 	ProductHypothesisCandidate = "compound.product_hypothesis_candidate.v0.1"
+	ReviewSchemaVersion        = "compound.product_review.v0.1"
 )
 
 type Bundle struct {
@@ -90,6 +91,22 @@ type Hypothesis struct {
 	EvidenceRefs      []string `json:"evidence_refs" yaml:"evidence_refs"`
 }
 
+type Review struct {
+	SchemaVersion string   `json:"schema_version" yaml:"schema_version"`
+	ID            string   `json:"id" yaml:"id"`
+	ProductID     string   `json:"product_id" yaml:"product_id"`
+	HypothesisID  string   `json:"hypothesis_id" yaml:"hypothesis_id"`
+	Result        string   `json:"result" yaml:"result"`
+	Rationale     string   `json:"rationale" yaml:"rationale"`
+	Confidence    float64  `json:"confidence" yaml:"confidence"`
+	NextAction    string   `json:"next_action,omitempty" yaml:"next_action,omitempty"`
+	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
+	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
+	AppliedAt     string   `json:"applied_at,omitempty" yaml:"applied_at,omitempty"`
+	EvidenceID    string   `json:"evidence_id,omitempty" yaml:"evidence_id,omitempty"`
+	SourceRef     string   `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
+}
+
 type HypothesisCandidate struct {
 	SchemaVersion     string   `json:"schema_version"`
 	ID                string   `json:"id"`
@@ -114,6 +131,16 @@ type Report struct {
 	ClaimIDs      []string `json:"claim_ids"`
 	SignalIDs     []string `json:"signal_ids"`
 	HypothesisIDs []string `json:"hypothesis_ids"`
+}
+
+type ReviewReport struct {
+	Status       string   `json:"status"`
+	ProductID    string   `json:"product_id"`
+	HypothesisID string   `json:"hypothesis_id"`
+	ReviewID     string   `json:"review_id"`
+	Result       string   `json:"result"`
+	EvidenceID   string   `json:"evidence_id"`
+	EvidenceRefs []string `json:"evidence_refs"`
 }
 
 type Timeline struct {
@@ -142,6 +169,18 @@ func Load(path string) (Bundle, error) {
 		return Bundle{}, err
 	}
 	return bundle, nil
+}
+
+func LoadReview(path string) (Review, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Review{}, err
+	}
+	var review Review
+	if err := yaml.Unmarshal(b, &review); err != nil {
+		return Review{}, err
+	}
+	return review, nil
 }
 
 func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, now time.Time) (Report, error) {
@@ -205,6 +244,52 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 	return report, nil
 }
 
+func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath string, now time.Time) (ReviewReport, error) {
+	if err := ValidateReview(review); err != nil {
+		return ReviewReport{ProductID: review.ProductID, HypothesisID: review.HypothesisID, ReviewID: review.ID, Status: "fail"}, err
+	}
+	candidate, err := loadHypothesisCandidate(homePath, review.HypothesisID)
+	if err != nil {
+		return ReviewReport{}, err
+	}
+	if candidate.ProductID != review.ProductID {
+		return ReviewReport{}, fmt.Errorf("review product_id %q does not match hypothesis product_id %q", review.ProductID, candidate.ProductID)
+	}
+	if review.ReviewedAt == "" {
+		review.ReviewedAt = now.UTC().Format(time.RFC3339)
+	}
+	review.AppliedAt = now.UTC().Format(time.RFC3339)
+	review.SourceRef = "product-review:" + filepath.Base(sourcePath)
+	evidence, err := store.RecordEvidence(mem.EvidenceItem{
+		SourceKind: "repo",
+		SourceID:   review.SourceRef,
+		QuoteText:  review.Rationale,
+		Actor:      "tool",
+	}, now)
+	if err != nil {
+		return ReviewReport{}, err
+	}
+	review.EvidenceID = evidence.ID
+	if err := appendUniqueReview(homePath, review); err != nil {
+		return ReviewReport{}, err
+	}
+	candidate.Result = review.Result
+	candidate.NextAction = review.NextAction
+	candidate.EvidenceRefs = compact(append(append(candidate.EvidenceRefs, evidence.ID, "product_review:"+review.ID), review.EvidenceRefs...))
+	if err := writeHypothesisCandidate(homePath, candidate); err != nil {
+		return ReviewReport{}, err
+	}
+	return ReviewReport{
+		Status:       "updated",
+		ProductID:    review.ProductID,
+		HypothesisID: review.HypothesisID,
+		ReviewID:     review.ID,
+		Result:       review.Result,
+		EvidenceID:   evidence.ID,
+		EvidenceRefs: candidate.EvidenceRefs,
+	}, nil
+}
+
 func Validate(bundle Bundle) error {
 	if bundle.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema_version must be %s, got %q", SchemaVersion, bundle.SchemaVersion)
@@ -234,6 +319,31 @@ func Validate(bundle Bundle) error {
 		if h.Result != "" && !oneOf(h.Result, []string{"unknown", "supported", "refuted", "inconclusive"}) {
 			return fmt.Errorf("hypothesis %q bad result %q", h.ID, h.Result)
 		}
+	}
+	return nil
+}
+
+func ValidateReview(review Review) error {
+	if review.SchemaVersion != ReviewSchemaVersion {
+		return fmt.Errorf("schema_version must be %s, got %q", ReviewSchemaVersion, review.SchemaVersion)
+	}
+	if strings.TrimSpace(review.ID) == "" || strings.TrimSpace(review.ProductID) == "" || strings.TrimSpace(review.HypothesisID) == "" {
+		return fmt.Errorf("review id product_id hypothesis_id required")
+	}
+	if strings.ContainsAny(review.HypothesisID, `/\`) {
+		return fmt.Errorf("review hypothesis_id %q must not contain path separators", review.HypothesisID)
+	}
+	if !oneOf(review.Result, []string{"supported", "refuted", "inconclusive"}) {
+		return fmt.Errorf("review result must be supported|refuted|inconclusive, got %q", review.Result)
+	}
+	if strings.TrimSpace(review.Rationale) == "" {
+		return fmt.Errorf("review rationale required")
+	}
+	if review.Confidence < 0 || review.Confidence > 1 {
+		return fmt.Errorf("review confidence must be between 0 and 1")
+	}
+	if len(review.EvidenceRefs) == 0 {
+		return fmt.Errorf("review evidence_refs required")
 	}
 	return nil
 }
@@ -424,6 +534,45 @@ func writeHypothesisCandidate(homePath string, c HypothesisCandidate) error {
 	return os.WriteFile(filepath.Join(dir, c.ID+".json"), append(b, '\n'), 0o644)
 }
 
+func loadHypothesisCandidate(homePath, id string) (HypothesisCandidate, error) {
+	path := filepath.Join(homePath, candidates.InboxDir(candidates.ProductHypothesis), id+".json")
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return HypothesisCandidate{}, fmt.Errorf("product hypothesis %q not found", id)
+	}
+	if err != nil {
+		return HypothesisCandidate{}, err
+	}
+	var h HypothesisCandidate
+	if err := json.Unmarshal(b, &h); err != nil {
+		return HypothesisCandidate{}, fmt.Errorf("parse product hypothesis %q: %w", id, err)
+	}
+	if h.ID == "" {
+		return HypothesisCandidate{}, fmt.Errorf("product hypothesis %q is missing id", id)
+	}
+	return h, nil
+}
+
+func appendUniqueReview(homePath string, review Review) error {
+	path := reviewsLog(homePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	reviews, err := loadReviews(homePath)
+	if err != nil {
+		return err
+	}
+	for _, existing := range reviews {
+		if existing.ID == review.ID {
+			if !sameReview(existing, review) {
+				return fmt.Errorf("product review %q already exists with different content", review.ID)
+			}
+			return nil
+		}
+	}
+	return appendJSONL(path, &review)
+}
+
 func loadSignals(homePath string) ([]Signal, error) {
 	var out []Signal
 	err := readJSONL(signalsLog(homePath), func(line []byte) error {
@@ -463,8 +612,25 @@ func loadHypotheses(homePath string) ([]HypothesisCandidate, error) {
 	return out, nil
 }
 
+func loadReviews(homePath string) ([]Review, error) {
+	var out []Review
+	err := readJSONL(reviewsLog(homePath), func(line []byte) error {
+		var r Review
+		if err := json.Unmarshal(line, &r); err != nil || r.ID == "" {
+			return nil
+		}
+		out = append(out, r)
+		return nil
+	})
+	return out, err
+}
+
 func signalsLog(homePath string) string {
 	return filepath.Join(homePath, "ledger", "product-signals.jsonl")
+}
+
+func reviewsLog(homePath string) string {
+	return filepath.Join(homePath, "ledger", "product-reviews.jsonl")
 }
 
 func appendJSONL(path string, v any) error {
@@ -523,6 +689,16 @@ func compact(values []string) []string {
 		out = append(out, v)
 	}
 	return out
+}
+
+func sameReview(a, b Review) bool {
+	return a.ProductID == b.ProductID &&
+		a.HypothesisID == b.HypothesisID &&
+		a.Result == b.Result &&
+		a.Rationale == b.Rationale &&
+		a.Confidence == b.Confidence &&
+		a.NextAction == b.NextAction &&
+		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00")
 }
 
 func oneOf(v string, allowed []string) bool {

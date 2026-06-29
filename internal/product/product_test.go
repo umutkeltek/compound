@@ -76,6 +76,35 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if checked.Status != writeback.GateNoPolicy {
 		t.Fatalf("gate status = %q, want %q", checked.Status, writeback.GateNoPolicy)
 	}
+
+	review, err := LoadReview("../../fixtures/product/review.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewReport, err := ApplyReview(home, store, review, "fixtures/product/review.yaml", tProduct.Add(14*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewReport.Status != "updated" || reviewReport.Result != "inconclusive" || reviewReport.EvidenceID == "" {
+		t.Fatalf("review report = %+v", reviewReport)
+	}
+	reviewed, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewed.Hypotheses) != 1 || reviewed.Hypotheses[0].Result != "inconclusive" {
+		t.Fatalf("reviewed hypotheses = %+v", reviewed.Hypotheses)
+	}
+	if !hasString(reviewed.Hypotheses[0].EvidenceRefs, reviewReport.EvidenceID) || !hasString(reviewed.Hypotheses[0].EvidenceRefs, "product_review:review_focus_visuals_20260713") {
+		t.Fatalf("review evidence refs = %+v", reviewed.Hypotheses[0].EvidenceRefs)
+	}
+	postReview, err := Doctor(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if postReview.Status != "ok" || postReview.PendingReviewCount != 0 {
+		t.Fatalf("post-review doctor = %+v", postReview)
+	}
 }
 
 func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
@@ -83,6 +112,14 @@ func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
 	b.Signals[0].ProductID = "product:other"
 	if err := Validate(b); err == nil {
 		t.Fatal("signal for another product should be rejected")
+	}
+}
+
+func TestValidateReviewRejectsUnknownResult(t *testing.T) {
+	review := validReview()
+	review.Result = "unknown"
+	if err := ValidateReview(review); err == nil {
+		t.Fatal("review with unknown result should be rejected")
 	}
 }
 
@@ -123,4 +160,26 @@ func validBundle() Bundle {
 		}},
 		EvidenceRefs: []string{"fixture"},
 	}
+}
+
+func validReview() Review {
+	return Review{
+		SchemaVersion: ReviewSchemaVersion,
+		ID:            "review_x",
+		ProductID:     "product:x",
+		HypothesisID:  "hyp_x",
+		Result:        "inconclusive",
+		Rationale:     "movement exists but evidence is not causal",
+		Confidence:    0.5,
+		EvidenceRefs:  []string{"fixture"},
+	}
+}
+
+func hasString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
