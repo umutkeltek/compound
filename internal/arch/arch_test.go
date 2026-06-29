@@ -1,6 +1,8 @@
 package arch
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -72,5 +74,38 @@ func TestConvergenceRatchetHoldsAtBudget(t *testing.T) {
 		if f.Check == "convergence" && f.Severity == Fail {
 			t.Errorf("strict convergence FAIL (debt grew past budget %d): %s", ConvergePendingBudget, f.Message)
 		}
+	}
+}
+
+func TestRetiredSurfaceReferencesResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "retired-surface" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("retired surface check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected retired-surface finding")
+	}
+}
+
+func TestRetiredSurfaceReferencesFailOnPendingSkillMatrix(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docs, "roadmap.md"), []byte("pending old skill matrix\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkRetiredSurfaceReferences(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
 	}
 }

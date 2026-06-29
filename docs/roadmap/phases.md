@@ -131,8 +131,10 @@ and budget enforcement.
 
 ## P11 — retirement (the step that gets skipped — don't)
 Every migrated surface gets a **retirement condition**: old brain write path retired when the compound
-writer is proven; old receipt path; old hook renderer; old skill matrix; old dashboard; legacy recall
-demoted when compound recall quality is proven. **Without retirement, compound becomes one more layer.**
+writer is proven; old receipt path; old hook renderer; old dashboard; legacy recall demoted when
+compound recall quality is proven. The flat skill/capability matrix is already retired: generated
+manifests import into `CapabilityGraph`, harness-filtered offers reach `ContextPack`, and receipts
+validate used capabilities back into the graph. **Without retirement, compound becomes one more layer.**
 Hardening (Law 7/8: repeated success → infrastructure; repeated failure → rule; OS-tax receipt) runs
 continuously alongside.
 

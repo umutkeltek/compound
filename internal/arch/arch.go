@@ -101,6 +101,7 @@ func Doctor(repoRoot string, strict bool) Report {
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
+		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -209,6 +210,40 @@ func checkDocLeak(repoRoot string, strict bool) []Finding {
 		f = append(f, Finding{"doc-leak", Info, "public docs clean (generic shapes + private list)"})
 	}
 	return f
+}
+
+// checkRetiredSurfaceReferences keeps proven-retired public surfaces from
+// reappearing as pending roadmap debt after their replacement loop is proven.
+func checkRetiredSurfaceReferences(repoRoot string) []Finding {
+	phrases := []string{
+		"old flat skill matrix",
+		"old skill matrix",
+	}
+	var hits []string
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(repoRoot, path)
+		for i, line := range strings.Split(string(b), "\n") {
+			low := strings.ToLower(line)
+			for _, phrase := range phrases {
+				if strings.Contains(low, phrase) {
+					hits = append(hits, rel+":"+itoa(i+1)+" references "+strconv(phrase))
+				}
+			}
+		}
+		return nil
+	})
+	if len(hits) > 0 {
+		return []Finding{{"retired-surface", Fail, "retired capability-matrix surface still listed in public docs: " + strings.Join(hits, "; ")}}
+	}
+	return []Finding{{"retired-surface", Info, "capability graph replaced public old-skill-matrix debt"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the

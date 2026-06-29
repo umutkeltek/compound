@@ -27,6 +27,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 - Imported skill-manifest feedback is now proven across a second harness/product loop: a `claude_code` product work loop consumed a generated-manifest offer, recorded allowed use of `capability://skill:browser`, and `hook session-end` wrote `validated_by skill:browser -> rec_a0fc169b3598` while no promoted claims ledger appeared.
 
+- `compound architecture doctor --strict` now has a `retired-surface` check that fails if public docs re-list the retired flat skill/capability matrix as pending debt. Public capability docs now name `CapabilityGraph` as the surface.
+
 - `compound-memory-cli-engine` now rejects mutating external-memory command templates before the CLI process is invoked; unsafe templates return protocol `bad_request`, not a degradable backend outage.
 
 - `compound-memory-cli-engine` now has an expansion-only regression: a query that does not lexically match indexed claims can still return the correct allowlisted claim through external memory CLI output, while empty allowlists fail closed before the CLI is called.
