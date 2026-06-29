@@ -209,6 +209,66 @@ func TestAuthorityGitImportsSourceControlState(t *testing.T) {
 	}
 }
 
+func TestAuthorityDirtyPlanWritesReviewWithoutMutatingRepo(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	repo := initCompoundCommandGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scratch.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := compoundCommandGitStatus(t, repo)
+	out := captureStdout(t, func() {
+		cmdAuthority([]string{"dirty-plan", repo, "--work-id", "work_dirty_gate"})
+	})
+	for _, want := range []string{
+		"# source-control dirty-plan scr_",
+		"- status: review_required",
+		"- work: work_dirty_gate",
+		"- source_status: dirty",
+		"- changed_paths: 2",
+		"- required_evidence: 4",
+		"- evidence_refs: 1",
+		"- plan:",
+		"- review:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dirty-plan output missing %q:\n%s", want, out)
+		}
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan struct {
+		SchemaVersion string `json:"schema_version"`
+		Status        string `json:"status"`
+		WorkID        string `json:"work_id"`
+		ChangedPaths  int    `json:"changed_paths"`
+	}
+	data, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != "compound.source_control_review_plan.v0.1" || plan.Status != "review_required" || plan.WorkID != "work_dirty_gate" || plan.ChangedPaths != 2 {
+		t.Fatalf("bad dirty plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not stage") || !strings.Contains(review, "Required Evidence") {
+		t.Fatalf("dirty-plan review missing no-mutation/procedure text:\n%s", review)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("dirty-plan must not promote claims, stat err=%v", err)
+	}
+	after := compoundCommandGitStatus(t, repo)
+	if before != after {
+		t.Fatalf("dirty-plan mutated repo\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -2312,4 +2372,14 @@ func runCommandGit(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
 	}
+}
+
+func compoundCommandGitStatus(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "status", "--porcelain=v1", "-b")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status failed: %v\n%s", err, string(out))
+	}
+	return string(out)
 }

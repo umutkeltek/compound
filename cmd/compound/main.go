@@ -165,7 +165,7 @@ usage:
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
-  compound authority import [f] | path <f> | path-registry <f> | git <repo> | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] | runtime repair-plan [--project-contract] <yaml> RuntimeBinding health + gated writeback/review artifacts
@@ -2368,10 +2368,10 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
-	store, _ := openMemStore()
+	store, homePath := openMemStore()
 	if args[0] == "resolve" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound authority resolve <token>")
@@ -2517,6 +2517,44 @@ func cmdAuthority(args []string) {
 		fmt.Printf("- untracked: %d\n", report.Untracked)
 		fmt.Printf("- changed_paths: %d\n", report.ChangedPaths)
 		fmt.Printf("- authority_claims: %d\n", promoted)
+		return
+	}
+	if args[0] == "dirty-plan" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id]")
+			os.Exit(2)
+		}
+		workID := flagValue(args[2:], "--work-id")
+		snap, _, _, _, err := authority.ImportGitSnapshot(args[1], nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
+			os.Exit(1)
+		}
+		plan, err := authority.BuildSourceControlReviewPlan(snap, workID, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := authority.RecordSourceControlReviewPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# source-control dirty-plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- repo: %s\n", plan.RepoID)
+		if plan.WorkID != "" {
+			fmt.Printf("- work: %s\n", plan.WorkID)
+		}
+		fmt.Printf("- source_status: %s\n", plan.SourceStatus)
+		fmt.Printf("- changed_paths: %d\n", plan.ChangedPaths)
+		fmt.Printf("- staged: %d\n", plan.Staged)
+		fmt.Printf("- unstaged: %d\n", plan.Unstaged)
+		fmt.Printf("- untracked: %d\n", plan.Untracked)
+		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		return
 	}
 	if args[0] == "import" {
