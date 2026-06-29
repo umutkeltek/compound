@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 )
 
 // NodeKinds — skills are one kind, not the whole graph.
@@ -295,6 +296,115 @@ func (s *Store) Consume(homePath string, now time.Time) (int, error) {
 	return applied, nil
 }
 
+// ReceiptConsumeReport summarizes how runtime receipts affected the graph.
+type ReceiptConsumeReport struct {
+	ReceiptsScanned      int      `json:"receipts_scanned"`
+	UsedCapabilitiesSeen int      `json:"used_capabilities_seen"`
+	AppliedEdges         int      `json:"applied_edges"`
+	SkippedNonCompleted  int      `json:"skipped_non_completed"`
+	SkippedUnchanged     int      `json:"skipped_unchanged"`
+	SkippedUnknown       []string `json:"skipped_unknown"`
+}
+
+// ConsumeReceipts turns proven capability usage into validated_by graph edges.
+// Only completed receipts with a real state delta can validate a capability.
+// ContextPack offers in skills.candidate are intentionally ignored: offer is not use.
+func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeReport, error) {
+	var report ReceiptConsumeReport
+	dir := filepath.Join(homePath, "events")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return report, nil
+		}
+		return report, err
+	}
+
+	nodes, err := s.loadNodes()
+	if err != nil {
+		return report, err
+	}
+	nodeIDs := map[string]bool{}
+	for _, n := range nodes {
+		if !n.Retired {
+			nodeIDs[n.ID] = true
+		}
+	}
+
+	edges, err := s.loadEdges()
+	if err != nil {
+		return report, err
+	}
+	existingEdges := map[string]bool{}
+	for _, e := range edges {
+		existingEdges[edgeKey(e)] = true
+	}
+	unknown := map[string]bool{}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return report, err
+		}
+		var head struct {
+			SchemaVersion string `json:"schema_version"`
+		}
+		if err := json.Unmarshal(data, &head); err != nil {
+			return report, fmt.Errorf("parse event envelope %s: %w", entry.Name(), err)
+		}
+		if head.SchemaVersion != envelope.SVReceipt {
+			continue
+		}
+
+		var rec envelope.Receipt
+		if err := json.Unmarshal(data, &rec); err != nil {
+			return report, fmt.Errorf("parse receipt %s: %w", entry.Name(), err)
+		}
+		if err := rec.Validate(); err != nil {
+			return report, fmt.Errorf("receipt %s invalid: %w", entry.Name(), err)
+		}
+		report.ReceiptsScanned++
+		if rec.Outcome != "completed" {
+			report.SkippedNonCompleted++
+			continue
+		}
+		if !rec.StateDelta.Changed {
+			report.SkippedUnchanged++
+			continue
+		}
+
+		for _, raw := range rec.Skills.Used {
+			nodeID := capabilityNodeID(raw)
+			if nodeID == "" {
+				continue
+			}
+			report.UsedCapabilitiesSeen++
+			if !nodeIDs[nodeID] {
+				if !unknown[nodeID] {
+					report.SkippedUnknown = append(report.SkippedUnknown, nodeID)
+					unknown[nodeID] = true
+				}
+				continue
+			}
+			edge := Edge{Kind: EdValidatedBy, From: nodeID, To: rec.ID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+			key := edgeKey(edge)
+			if existingEdges[key] {
+				continue
+			}
+			if err := s.AddEdge(edge, now); err != nil {
+				return report, err
+			}
+			existingEdges[key] = true
+			report.AppliedEdges++
+		}
+	}
+	sort.Strings(report.SkippedUnknown)
+	return report, nil
+}
+
 func (s *Store) List() ([]Node, error) { return s.loadNodes() }
 
 // --- load (append-only, last-wins by id) ---
@@ -407,4 +517,14 @@ func contains(set []string, v string) bool {
 		}
 	}
 	return false
+}
+
+func capabilityNodeID(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "capability://")
+	return strings.TrimSpace(ref)
+}
+
+func edgeKey(e Edge) string {
+	return e.Kind + "|" + e.From + "|" + e.To
 }

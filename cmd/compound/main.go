@@ -343,6 +343,18 @@ func cmdCapability(args []string) {
 		n, err := store.Consume(homePath, time.Now())
 		die(err)
 		fmt.Printf("applied %d capability observation(s) from the distiller inbox\n", n)
+	case "consume-receipts":
+		report, err := store.ConsumeReceipts(homePath, time.Now())
+		die(err)
+		fmt.Println("# capability consume-receipts")
+		fmt.Printf("- receipts_scanned: %d\n", report.ReceiptsScanned)
+		fmt.Printf("- used_capabilities_seen: %d\n", report.UsedCapabilitiesSeen)
+		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
+		fmt.Printf("- skipped_non_completed: %d\n", report.SkippedNonCompleted)
+		fmt.Printf("- skipped_unchanged: %d\n", report.SkippedUnchanged)
+		for _, id := range report.SkippedUnknown {
+			fmt.Printf("- skipped_unknown: %s\n", id)
+		}
 	case "list":
 		nodes, err := store.List()
 		die(err)
@@ -354,7 +366,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|import-topology|import-skills> ...")
 		os.Exit(2)
 	}
 }

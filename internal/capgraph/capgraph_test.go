@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 )
 
 var t0 = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -21,6 +22,60 @@ func newStore(t *testing.T) (string, *Store) {
 		t.Fatal(err)
 	}
 	return home, s
+}
+
+func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
+	home, s := newStore(t)
+	if err := s.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{ID: "skill:offered-only", Kind: "skill", Name: "Offered", Triggers: []string{"pricing"}}); err != nil {
+		t.Fatal(err)
+	}
+	writeReceipt(t, home, testReceipt("rec_used", "completed", true,
+		[]string{"capability://skill:pricing", "capability://skill:missing"},
+		[]string{"capability://skill:offered-only"}))
+	writeReceipt(t, home, testReceipt("rec_failed", "failed", true,
+		[]string{"capability://skill:offered-only"}, nil))
+	writeReceipt(t, home, testReceipt("rec_unchanged", "completed", false,
+		[]string{"capability://skill:offered-only"}, nil))
+	writeFile(t, filepath.Join(home, "events", "tr_not_receipt.json"), `{
+  "schema_version": "compound.transition.v0.1"
+}`)
+
+	report, err := s.ConsumeReceipts(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 2 || report.AppliedEdges != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 1 {
+		t.Fatalf("skip counts = %+v", report)
+	}
+	if len(report.SkippedUnknown) != 1 || report.SkippedUnknown[0] != "skill:missing" {
+		t.Fatalf("skipped unknown = %v", report.SkippedUnknown)
+	}
+	edges := readCapEdges(t, home)
+	if !hasEdge(edges, EdValidatedBy, "skill:pricing", "rec_used") {
+		t.Fatalf("edges = %+v, want used skill validated by receipt", edges)
+	}
+	if hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_used") ||
+		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_failed") ||
+		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_unchanged") {
+		t.Fatalf("offered/failed/unchanged capability should not validate: %+v", edges)
+	}
+
+	replay, err := s.ConsumeReceipts(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.AppliedEdges != 0 {
+		t.Fatalf("replay should be idempotent, got %+v", replay)
+	}
+	if got := len(readCapEdges(t, home)); got != len(edges) {
+		t.Fatalf("replay appended duplicate edges: before %d after %d", len(edges), got)
+	}
 }
 
 func TestApplySkillManifestImportsSkillsAndEdges(t *testing.T) {
@@ -313,6 +368,48 @@ func readCapEdges(t *testing.T, home string) []Edge {
 		edges = append(edges, edge)
 	}
 	return edges
+}
+
+func testReceipt(id, outcome string, changed bool, used, candidate []string) envelope.Receipt {
+	return envelope.Receipt{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVReceipt,
+			ID:            id,
+			CreatedAt:     t0.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: "work_" + id},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Outcome:  outcome,
+		MoveType: "outward_delta",
+		StateDelta: envelope.StateDelta{
+			Changed:      changed,
+			Summary:      "receipt test",
+			FilesChanged: []string{},
+			Artifacts:    []string{},
+			Verification: []string{},
+		},
+		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills: envelope.ReceiptSkills{Used: used, Missed: []string{}, Candidate: candidate},
+		Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
+		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
+	}
+}
+
+func writeReceipt(t *testing.T, home string, rec envelope.Receipt) {
+	t.Helper()
+	if err := rec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(rec, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(home, "events", rec.ID+".json"), string(b))
 }
 
 func hasEdge(edges []Edge, kind, from, to string) bool {
