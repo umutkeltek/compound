@@ -13,7 +13,7 @@ var EntityKinds = []string{"project", "product", "repo", "server", "person", "co
 
 // Entity is a canonical identity that survives path / host / name moves — the routing backbone the
 // audit found missing in mem (where Claim.Entity was a bare string with no catalog/aliasing). All
-// of an entity's aliases and identifiers resolve to ONE Slug, so "ExampleApp", a moved folder, and
+// of an entity's aliases and identifiers resolve to ONE Slug, so a display name, a moved folder, and
 // a repo URL all map to the same entity. This is the spine-native convergence of the Gen-1
 // memory.Entity + scope's alias/identifier resolution (the session-content SCORING in scope.Resolve
 // converges later on top of this registry).
