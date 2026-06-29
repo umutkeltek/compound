@@ -1295,6 +1295,7 @@ func cmdHook(args []string) {
 		os.Exit(2)
 	}
 	hookName, fixturePath := args[0], args[1]
+	homePath := ""
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -1308,7 +1309,8 @@ func cmdHook(args []string) {
 	fx.Hook = hookName // the CLI verb is authoritative
 
 	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientPolicy(), Policy: policyConfig()}
-	if homePath, err := home.Resolve(""); err == nil {
+	if resolvedHome, err := home.Resolve(""); err == nil {
+		homePath = resolvedHome
 		deps.HomePath = homePath
 		if store, err := work.Open(homePath); err == nil {
 			deps.Store = store // session-end needs it; others tolerate nil
@@ -1321,6 +1323,9 @@ func cmdHook(args []string) {
 		os.Exit(1)
 	}
 	printJSON(res)
+	if hookName == "session-end" {
+		autoConsumeCapabilityFeedback(homePath)
+	}
 	fmt.Fprintf(os.Stderr, "[%s/%s] %s — %s\n", fx.Harness, res.Event.Status, res.Event.HookName, res.Summary)
 }
 
@@ -1660,6 +1665,7 @@ func cmdWork(args []string) {
 		fmt.Printf("%s closed: %s  move_type=%s  receipt=%s  transition=%s\n",
 			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Receipt.ID, res.Transition.ID)
 		printJSON(res)
+		autoConsumeCapabilityFeedback(homePath)
 	default:
 		fmt.Fprintln(os.Stderr, "usage: compound work <create|show|list|claim|advance|close> ...")
 		os.Exit(2)
@@ -1737,6 +1743,19 @@ func die(err error) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+func autoConsumeCapabilityFeedback(homePath string) {
+	report, ok, err := capgraph.ConsumeReceiptsIfGraphExists(homePath, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "capability feedback:", err)
+		os.Exit(1)
+	}
+	if !ok || report.AppliedEdges == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[capability-feedback] applied_edges=%d validated=%d missed=%d\n",
+		report.AppliedEdges, report.AppliedValidatedEdges, report.AppliedMissedEdges)
 }
 
 func cliHeader(schemaVersion, id, workID string, now time.Time, evidenceRefs []string) envelope.Header {

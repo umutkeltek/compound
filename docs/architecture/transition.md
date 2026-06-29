@@ -47,7 +47,7 @@ This is the canonical `Transition` shape (`runtime.md` and `contracts/README.md`
 It forces three questions on every run: **What changed? Across which spaces? What future
 behavior should this affect?**
 
-`projections.skill` may include capability refs from two sources: used capabilities from allowed recorded ActionIntents, and `capability://...` offers from the ContextPack. Offers alone are not proof the skill executed; actual mutation still needs ActionIntent, PolicyDecision, run/artifact refs, and Receipt state delta. `capability consume-receipts` validates used nodes only from completed changed receipts; explicit `skills.missed` refs can still add `missed_when` graph context from failed receipts.
+`projections.skill` may include capability refs from two sources: used capabilities from allowed recorded ActionIntents, and `capability://...` offers from the ContextPack. Offers alone are not proof the skill executed; actual mutation still needs ActionIntent, PolicyDecision, run/artifact refs, and Receipt state delta. Close/session-end automatically feeds the emitted receipt into CapabilityGraph when graph state exists; used nodes validate only from completed changed receipts, while explicit `skills.missed` refs can add `missed_when` graph context from failed receipts.
 
 ## The medium spaces (projections)
 

@@ -91,6 +91,43 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 }
 
+func TestConsumeReceiptsIfGraphExistsNoopsWithoutGraph(t *testing.T) {
+	home := t.TempDir()
+	writeReceipt(t, home, testReceipt("rec_no_graph", "completed", true,
+		[]string{"capability://skill:missing"}, nil, nil))
+
+	report, ok, err := ConsumeReceiptsIfGraphExists(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatalf("expected no graph state, got ok with report %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(home, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("no-op must not create graph state, stat err=%v", err)
+	}
+}
+
+func TestConsumeReceiptsIfGraphExistsConsumes(t *testing.T) {
+	home, s := newStore(t)
+	if err := s.Add(Node{ID: "skill:auto", Kind: "skill", Name: "Auto", Triggers: []string{"auto"}}); err != nil {
+		t.Fatal(err)
+	}
+	writeReceipt(t, home, testReceipt("rec_auto", "completed", true,
+		[]string{"capability://skill:auto"}, nil, nil))
+
+	report, ok, err := ConsumeReceiptsIfGraphExists(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || report.AppliedValidatedEdges != 1 {
+		t.Fatalf("report = %+v ok=%v", report, ok)
+	}
+	if !hasEdge(readCapEdges(t, home), EdValidatedBy, "skill:auto", "rec_auto") {
+		t.Fatal("expected automatic receipt consumption to validate graph node")
+	}
+}
+
 func TestApplySkillManifestImportsSkillsAndEdges(t *testing.T) {
 	home, s := newStore(t)
 	manifest := SkillManifest{

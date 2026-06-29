@@ -439,6 +439,20 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 	return report, nil
 }
 
+// ConsumeReceiptsIfGraphExists is the automatic feedback hook used by closure
+// clients. It avoids creating graph state just because work closed.
+func ConsumeReceiptsIfGraphExists(homePath string, now time.Time) (ReceiptConsumeReport, bool, error) {
+	if !Exists(homePath) {
+		return ReceiptConsumeReport{}, false, nil
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		return ReceiptConsumeReport{}, true, err
+	}
+	report, err := store.ConsumeReceipts(homePath, now)
+	return report, true, err
+}
+
 func (s *Store) addEdgeOnce(edge Edge, existing map[string]bool, now time.Time) (bool, error) {
 	key := edgeKey(edge)
 	if existing[key] {
