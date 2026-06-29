@@ -145,6 +145,8 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
+  compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...
+                                                                 TraceDistiller LLM request packet, no model call
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
@@ -431,8 +433,12 @@ func cmdDistiller(args []string) {
 		}
 		return
 	}
+	if len(args) >= 1 && args[0] == "request" {
+		cmdDistillerRequest(args[1:])
+		return
+	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 	extractor := distiller.Extractor(distiller.ReferenceExtractor{})
@@ -475,6 +481,107 @@ func cmdDistiller(args []string) {
 		}
 		fmt.Printf("%-22s %-14s %s%s\n", d.Kind, d.Verdict, d.Basis, extra)
 	}
+}
+
+func cmdDistillerRequest(args []string) {
+	traceRef := valueFlag(args, "--trace-ref")
+	if traceRef == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	prior, err := distiller.LoadPriorStateFromHome(homePath, store, distiller.DefaultPolicy())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller request prior-state:", err)
+		os.Exit(1)
+	}
+	src := distiller.LLMExtractionSources{}
+	if rawPath := valueFlag(args, "--raw"); rawPath != "" {
+		src.RawTrace, err = os.ReadFile(rawPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read raw trace:", err)
+			os.Exit(1)
+		}
+	}
+	if path := valueFlag(args, "--context-pack"); path != "" {
+		env := readTypedEnvelopeOrDie(path)
+		ctx, ok := env.(*envelope.ContextPack)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "%s is %s, want context_pack\n", path, env.Kind())
+			os.Exit(1)
+		}
+		src.ContextPack = ctx
+	}
+	if path := valueFlag(args, "--work"); path != "" {
+		env := readTypedEnvelopeOrDie(path)
+		w, ok := env.(*envelope.WorkEnvelope)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "%s is %s, want work\n", path, env.Kind())
+			os.Exit(1)
+		}
+		src.Work = w
+	}
+	if path := valueFlag(args, "--receipt"); path != "" {
+		env := readTypedEnvelopeOrDie(path)
+		rec, ok := env.(*envelope.Receipt)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "%s is %s, want receipt\n", path, env.Kind())
+			os.Exit(1)
+		}
+		src.Receipt = rec
+	}
+	for _, path := range valuesFlag(args, "--envelope") {
+		src.Extra = append(src.Extra, readTypedEnvelopeOrDie(path))
+	}
+	req, err := distiller.BuildLLMExtractionRequestFromSources(traceRef, src, distiller.DefaultPolicy(), prior)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller request:", err)
+		os.Exit(1)
+	}
+	out, err := json.MarshalIndent(req, "", "  ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller request encode:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func readTypedEnvelopeOrDie(path string) envelope.Envelope {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "read envelope %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	var probe struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		fmt.Fprintf(os.Stderr, "decode envelope %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	env := envelope.New(probe.SchemaVersion)
+	if env == nil {
+		fmt.Fprintf(os.Stderr, "decode envelope %s: unknown schema_version %q\n", path, probe.SchemaVersion)
+		os.Exit(1)
+	}
+	if err := json.Unmarshal(data, env); err != nil {
+		fmt.Fprintf(os.Stderr, "decode envelope %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	if err := env.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid envelope %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	return env
 }
 
 // cmdMemory is P6: the owned memory ledger re-bound through the spine. candidate-first
@@ -1083,6 +1190,17 @@ func valueFlag(args []string, name string) string {
 		}
 	}
 	return ""
+}
+
+func valuesFlag(args []string, name string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == name && i+1 < len(args) {
+			out = append(out, args[i+1])
+			i++
+		}
+	}
+	return out
 }
 
 func hasFlag(args []string, name string) bool {

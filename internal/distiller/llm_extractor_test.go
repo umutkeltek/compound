@@ -3,6 +3,8 @@ package distiller
 import (
 	"strings"
 	"testing"
+
+	"compound/internal/envelope"
 )
 
 func TestLLMExtractorNormalizesProviderResponse(t *testing.T) {
@@ -137,5 +139,132 @@ func TestBuildLLMExtractionRequestCarriesPriorCoverage(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(req.Instructions, "\n"), "cannot promote memory directly") {
 		t.Fatalf("request instructions do not preserve authority boundary: %v", req.Instructions)
+	}
+}
+
+func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
+	home, store := setup(t)
+	run(t, home, store, `{"trace_ref":"seed","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.9,"claim_type":"decision"}]}`)
+	prior, err := LoadPriorStateFromHome(home, store, DefaultPolicy())
+	if err != nil {
+		t.Fatalf("prior: %v", err)
+	}
+
+	ctx := &envelope.ContextPack{
+		Header:    llmTestHeader(envelope.SVContextPack, "ctx_distill", "work_distill", ""),
+		SummaryMD: "Use product context; governance excluded.",
+		Included: []envelope.IncludedRef{{
+			Ref:         "repo://docs",
+			SourceClass: "source",
+			Reason:      "product task",
+			Confidence:  0.9,
+			Status:      "current",
+		}},
+		Excluded: []envelope.ExcludedRef{{
+			Ref:    "control-plane://workflow-contract",
+			Reason: "not ambient for product repo",
+		}},
+		ActiveInstructions: []string{"keep context scoped"},
+		RequiredChecks:     []string{"memory doctor"},
+		Avoid:              []string{"full OS governance dump"},
+	}
+	work := &envelope.WorkEnvelope{
+		Header:           llmTestHeader(envelope.SVWork, "work_distill", "work_distill", "ctx_distill"),
+		Owner:            "distiller:llm",
+		State:            "running",
+		DesiredOutcome:   "extract useful candidates from a bounded run",
+		SuccessPredicate: "LLM request packet contains context, work, receipt, and prior coverage",
+		NonGoals:         []string{"call a live model", "promote memory"},
+		RunIDs:           []string{"act_distill"},
+	}
+	receipt := &envelope.Receipt{
+		Header:   llmTestHeader(envelope.SVReceipt, "rec_distill", "work_distill", "ctx_distill"),
+		Outcome:  "completed",
+		MoveType: "memory_delta",
+		StateDelta: envelope.StateDelta{
+			Changed:      true,
+			Summary:      "distiller found a reusable extraction gap",
+			FilesChanged: []string{"internal/distiller/llm_extractor.go"},
+			Artifacts:    []string{"artifact_request_packet"},
+			Verification: []string{"go test ./internal/distiller"},
+		},
+		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills: envelope.ReceiptSkills{Used: []string{"golang-testing"}, Missed: []string{"distiller-request-packet"}, Candidate: []string{}},
+		Memory: envelope.ReceiptMemory{Candidates: []string{"cand_method"}, Promoted: []string{}, Parked: []string{"cand_method"}},
+		Next:   envelope.ReceiptNext{SuggestedWork: []string{"add offline eval runner"}, ReviewTrigger: "method debt > 0"},
+	}
+	hook := &envelope.HookEvent{
+		Header:      llmTestHeader(envelope.SVHookEvent, "hook_distill", "work_distill", "ctx_distill"),
+		Harness:     "codex",
+		HookName:    "PostToolUse",
+		InputHash:   "sha256:abc",
+		SideEffects: []string{"wrote_candidate"},
+		OutputRef:   "artifact_request_packet",
+		DurationMS:  42,
+		Status:      "ok",
+	}
+
+	req, err := BuildLLMExtractionRequestFromSources("trace_spine", LLMExtractionSources{
+		RawTrace:    []byte("operator said this should become reusable"),
+		ContextPack: ctx,
+		Work:        work,
+		Receipt:     receipt,
+		Extra:       []envelope.Envelope{hook},
+	}, DefaultPolicy(), prior)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if req.Context == nil || req.Context.ID != "ctx_distill" || len(req.Context.Excluded) != 1 {
+		t.Fatalf("context summary missing excluded refs: %+v", req.Context)
+	}
+	if req.Work == nil || req.Work.SuccessPredicate == "" || len(req.Work.NonGoals) != 2 {
+		t.Fatalf("work summary incomplete: %+v", req.Work)
+	}
+	if req.Receipt == nil || req.Receipt.StateDelta.Summary == "" || req.Receipt.Next.ReviewTrigger == "" {
+		t.Fatalf("receipt summary incomplete: %+v", req.Receipt)
+	}
+	if req.Receipt.Cost.ModelCalls == nil {
+		t.Fatalf("receipt cost metadata missing: %+v", req.Receipt.Cost)
+	}
+	if len(req.Envelopes) != 1 || req.Envelopes[0].Kind != "hook_event" || !strings.Contains(req.Envelopes[0].Summary, "PostToolUse") {
+		t.Fatalf("extra envelope summary = %+v", req.Envelopes)
+	}
+	for _, want := range []string{"raw_trace:trace_spine", "context_pack:ctx_distill", "work:work_distill", "receipt:rec_distill", "hook_event:hook_distill"} {
+		if !hasString(req.SourceRefs, want) {
+			t.Fatalf("source refs missing %q: %v", want, req.SourceRefs)
+		}
+	}
+	if req.PriorCoverage.CurrentClaims != 1 || req.PriorCoverage.Decisions != 1 {
+		t.Fatalf("prior coverage = %+v", req.PriorCoverage)
+	}
+	if !strings.Contains(strings.Join(req.Instructions, "\n"), "Use context/work/receipt as evidence-bearing source material") {
+		t.Fatalf("instructions missing source-boundary rule: %v", req.Instructions)
+	}
+}
+
+func TestBuildLLMExtractionRequestRejectsInvalidSourceEnvelope(t *testing.T) {
+	badContext := &envelope.ContextPack{
+		Header:   llmTestHeader(envelope.SVContextPack, "ctx_bad", "", ""),
+		Included: []envelope.IncludedRef{},
+		// Excluded must be present by envelope contract.
+	}
+	_, err := BuildLLMExtractionRequestFromSources("trace_bad", LLMExtractionSources{ContextPack: badContext}, DefaultPolicy(), PriorState{})
+	if err == nil || !strings.Contains(err.Error(), "context pack invalid") {
+		t.Fatalf("err = %v, want context pack invalid", err)
+	}
+}
+
+func llmTestHeader(schemaVersion, id, workID, contextPackID string) envelope.Header {
+	return envelope.Header{
+		SchemaVersion: schemaVersion,
+		ID:            id,
+		CreatedAt:     "2026-06-29T12:00:00Z",
+		Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+		IDs:           envelope.IDs{WorkID: workID, ContextPackID: contextPackID},
+		Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+		Privacy:       "private",
+		Risk:          "tier1",
+		EvidenceRefs:  []string{},
+		Uncertainty:   envelope.Uncertainty{Level: "known"},
 	}
 }
