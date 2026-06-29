@@ -142,7 +142,7 @@ usage:
 compound authority import [f] | authority <entity>             import/query authority through spine memory
 compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
-compound runtime doctor [--project-contract] <yaml>            RuntimeBinding + ServiceContract health
+compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
@@ -1471,20 +1471,125 @@ func cmdDecisions(args []string) {
 	}
 }
 
+func runRuntimeWriteback(report runtimebinding.DoctorReport, now time.Time) (writebackWorkResult, error) {
+	var result writebackWorkResult
+	if !runtimebinding.NeedsWriteback(report) {
+		return result, nil
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return result, err
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	writebackStore, err := writeback.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	w, err := workStore.Create(work.CreateInput{
+		Owner:            "runtime:" + report.ServiceID,
+		DesiredOutcome:   "Route failing runtime doctor report through governed owner writeback",
+		SuccessPredicate: "runtime writeback gate recorded with receipt/transition refs",
+		NonGoals:         []string{"mutate runtime owner files", "promote runtime truth"},
+		State:            "ready",
+		Risk:             "tier1",
+		Privacy:          "private",
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	if _, err := workStore.Claim(w.ID, "compound runtime doctor", now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:   "running",
+		Note: "runtime doctor running writeback",
+	}, now); err != nil {
+		return result, err
+	}
+	evidenceRefs := runtimebinding.EvidenceRefs(report)
+	ai := envelope.ActionIntent{
+		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "runtime-writeback", report.ServiceID, report.Status, cliTS(now)), w.ID, now, evidenceRefs),
+		Actor:         "compound runtime doctor",
+		Capability:    "runtime.writeback",
+		Action:        "record_runtime_writeback_gate",
+		Target:        envelope.ActionTarget{Kind: "runtime_binding", ID: report.ServiceID},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("runtime doctor for %s is %s; record owner writeback gate", report.ServiceID, report.Status),
+		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any owner file is changed",
+	}
+	pd := policy.Evaluate(ai, policyConfig(), now)
+	gate := runtimebinding.WritebackGate(report, ai.ID, pd.ID, now)
+	checked, err := writeback.EvaluateGate(gate, &pd, now)
+	if err != nil {
+		return result, err
+	}
+	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
+	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
+		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
+			Outcome:  "failed",
+			MoveType: "audit_only",
+			Summary:  fmt.Sprintf("runtime writeback blocked for %s: gate %s", report.ServiceID, checked.Status),
+			Changed:  true,
+		}, now)
+		if closeErr == nil {
+			checked.ReceiptRef = closeRes.Receipt.ID
+			result.ReceiptID = closeRes.Receipt.ID
+			result.TransitionID = closeRes.Transition.ID
+		}
+		if err := writebackStore.RecordGate(checked); err != nil {
+			return result, err
+		}
+		return result, closeErr
+	}
+	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:             "running",
+		ArtifactID:     checked.ID,
+		VerificationID: "runtime:" + report.ServiceID + ":" + report.Status,
+		Note:           "runtime writeback gate checked",
+	}, now); err != nil {
+		return result, err
+	}
+	closeRes, err := workStore.Close(w.ID, work.CloseInput{
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		Summary:  fmt.Sprintf("runtime %s %s routed through owner writeback gate %s", report.ServiceID, report.Status, checked.ID),
+		Changed:  true,
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	checked.ReceiptRef = closeRes.Receipt.ID
+	if err := writebackStore.RecordGate(checked); err != nil {
+		return result, err
+	}
+	result.ReceiptID = closeRes.Receipt.ID
+	result.TransitionID = closeRes.Transition.ID
+	return result, nil
+}
+
 func cmdRuntime(args []string) {
 	if len(args) < 1 || args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml>")
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml> [--writeback]")
 		os.Exit(2)
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml>")
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml> [--writeback]")
 		os.Exit(2)
 	}
 	path := args[1]
 	load := runtimebinding.Load
+	writebackEnabled := hasFlag(args[1:], "--writeback")
 	if args[1] == "--project-contract" {
 		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: compound runtime doctor --project-contract <project.yaml>")
+			fmt.Fprintln(os.Stderr, "usage: compound runtime doctor --project-contract <project.yaml> [--writeback]")
 			os.Exit(2)
 		}
 		path = args[2]
@@ -1508,11 +1613,27 @@ func cmdRuntime(args []string) {
 		fmt.Println()
 	}
 	if report.Status != "ok" {
+		if writebackEnabled {
+			result, err := runRuntimeWriteback(report, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "runtime writeback:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- writeback_gate: %s %s\n", result.GateID, result.GateStatus)
+			fmt.Printf("- work: %s\n", result.WorkID)
+			if result.ReceiptID != "" {
+				fmt.Printf("- receipt: %s\n", result.ReceiptID)
+			}
+			if result.TransitionID != "" {
+				fmt.Printf("- transition: %s\n", result.TransitionID)
+			}
+			return
+		}
 		os.Exit(1)
 	}
 }
 
-type projectionWritebackResult struct {
+type writebackWorkResult struct {
 	WorkID           string `json:"work_id"`
 	ActionIntentID   string `json:"action_intent_id"`
 	PolicyDecisionID string `json:"policy_decision_id"`
@@ -1522,8 +1643,8 @@ type projectionWritebackResult struct {
 	TransitionID     string `json:"transition_id,omitempty"`
 }
 
-func runProjectionWriteback(report projection.Freshness, now time.Time) (projectionWritebackResult, error) {
-	var result projectionWritebackResult
+func runProjectionWriteback(report projection.Freshness, now time.Time) (writebackWorkResult, error) {
+	var result writebackWorkResult
 	if !projection.NeedsWriteback(report) {
 		return result, nil
 	}
@@ -1579,7 +1700,7 @@ func runProjectionWriteback(report projection.Freshness, now time.Time) (project
 	if err != nil {
 		return result, err
 	}
-	result = projectionWritebackResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
+	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
 	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
 		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
 			Outcome:  "failed",

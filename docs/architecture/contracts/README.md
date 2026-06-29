@@ -101,7 +101,7 @@ views. It records `view_ref`, `source_refs[]`, `output_hash`, `source_hashes[]`,
 to. It may create `ProjectionFreshness`, evidence, or a parked/no_promote candidate.
 It cannot promote truth by itself.
 
-Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback` now consumes it for stale/drifted generated views. Next risk is wiring runtime/decision/distiller observations through it instead of bypassing owner gates.
+Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback` and `runtime doctor --writeback` now consume it for stale/drifted generated views and failing runtime reports. Next risk is wiring decision/distiller observations through it instead of bypassing owner gates.
 Each is **defined here before implementation** so agents stop re-deriving them; each is built
 only when a vertical slice needs it (`../../roadmap/phases.md`).
 

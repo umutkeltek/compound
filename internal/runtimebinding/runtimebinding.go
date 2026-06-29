@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
+
+	"compound/internal/writeback"
 
 	"gopkg.in/yaml.v3"
 )
@@ -59,6 +62,43 @@ type DoctorReport struct {
 	Owner     string  `json:"owner"`
 	Status    string  `json:"status"`
 	Checks    []Check `json:"checks"`
+}
+
+// NeedsWriteback reports whether a runtime observation should enter the owner
+// writeback gate. OK reports are proof; failed reports are evidence that a
+// runtime binding/service contract owner may need review or regeneration.
+func NeedsWriteback(r DoctorReport) bool {
+	return r.Status != "ok"
+}
+
+// WritebackGate converts a failing runtime doctor report into the generic owner
+// writeback contract. It is evidence and gate input, never owner mutation by
+// itself.
+func WritebackGate(r DoctorReport, actionIntentRef, policyDecisionRef string, now time.Time) writeback.OwnerWritebackGate {
+	return writeback.OwnerWritebackGate{
+		SchemaVersion:     writeback.GateSchemaVersion,
+		CreatedAt:         now.UTC().Format(time.RFC3339),
+		CandidateRef:      "runtime:" + r.ServiceID + ":" + r.Status,
+		OwnerTarget:       writeback.OwnerTarget{Kind: "runtime_binding", Ref: r.ServiceID},
+		GateBasis:         fmt.Sprintf("runtime doctor for %s is %s; owner binding may need writeback", r.ServiceID, r.Status),
+		ActionIntentRef:   actionIntentRef,
+		MutationClass:     "local_reversible",
+		PolicyDecisionRef: policyDecisionRef,
+		EvidenceRefs:      EvidenceRefs(r),
+	}
+}
+
+// EvidenceRefs returns bounded metadata refs for a runtime doctor report.
+func EvidenceRefs(r DoctorReport) []string {
+	refs := []string{
+		"runtime:" + r.ServiceID,
+		"owner:" + r.Owner,
+		"status:" + r.Status,
+	}
+	for _, check := range r.Checks {
+		refs = append(refs, "check:"+check.Name+":"+check.Status+":"+check.Detail)
+	}
+	return refs
 }
 
 func Load(path string) (Bundle, error) {

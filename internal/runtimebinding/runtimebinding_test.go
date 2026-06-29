@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDoctorValidSyntheticService(t *testing.T) {
@@ -29,6 +30,25 @@ func TestDoctorFailsMissingHost(t *testing.T) {
 	}
 	if got := checkStatus(report, "host"); got != "fail" {
 		t.Fatalf("host check = %q, want fail", got)
+	}
+}
+
+func TestWritebackGateForFailedRuntime(t *testing.T) {
+	b := validBundle()
+	b.RuntimeBinding.HostBinding = ""
+	report := Doctor(b)
+	if !NeedsWriteback(report) {
+		t.Fatalf("failed runtime doctor should need writeback")
+	}
+	gate := WritebackGate(report, "act_runtime", "pol_runtime", time.Date(2026, 6, 29, 1, 0, 0, 0, time.UTC))
+	if gate.OwnerTarget.Kind != "runtime_binding" || gate.OwnerTarget.Ref != "service:synthetic-api" {
+		t.Fatalf("wrong owner target: %+v", gate.OwnerTarget)
+	}
+	if gate.PolicyDecisionRef != "pol_runtime" || gate.ActionIntentRef != "act_runtime" {
+		t.Fatalf("wrong gate refs: %+v", gate)
+	}
+	if len(gate.EvidenceRefs) < len(report.Checks)+3 {
+		t.Fatalf("expected runtime evidence refs, got %+v", gate.EvidenceRefs)
 	}
 }
 
