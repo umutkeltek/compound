@@ -177,6 +177,12 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if !hasString(exportedSignal.EvidenceRefs, "fixture:asc:conversion:before") || !hasString(exportedSignal.EvidenceRefs, "fixture:asc:conversion:after") || !hasString(exportedSignal.EvidenceRefs, exportReport.EvidenceIDs[0]) {
 		t.Fatalf("exported evidence refs = %+v", exportedSignal.EvidenceRefs)
 	}
+	if len(withExport.Transitions) != 3 {
+		t.Fatalf("timeline transitions = %+v", withExport.Transitions)
+	}
+	if !hasTimelineObject(withExport.Transitions, "product_signal:sig_focus_asc_export_conversion_20260713") || !hasTimelineObject(withExport.Transitions, "product_review:review_focus_visuals_20260713") {
+		t.Fatalf("timeline transitions missing product refs: %+v", withExport.Transitions)
+	}
 }
 
 func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
@@ -220,12 +226,15 @@ func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T)
 	if report.Status != "fail" || report.SourceHash == "" || !checkStatus(report.Checks, "strict_contract", "fail") {
 		t.Fatalf("signal doctor report = %+v", report)
 	}
+	if report.ProductID != "product:focus-notes" || report.SourceKind != "app_store_connect" {
+		t.Fatalf("signal doctor hints = %+v", report)
+	}
 	home := t.TempDir()
 	nop, appended, err := RecordSignalDoctorNoPromote(home, report, tProduct)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !appended || nop.ID == "" || nop.OwnerTarget.Kind != "product_signal_source" || !hasString(nop.EvidenceRefs, report.SourceHash) {
+	if !appended || nop.ID == "" || nop.OwnerTarget.Kind != "product_signal_source" || !hasString(nop.EvidenceRefs, report.SourceHash) || !hasString(nop.EvidenceRefs, "product_id:product:focus-notes") {
 		t.Fatalf("no-promote = %+v appended=%v", nop, appended)
 	}
 	replayed, appended, err := RecordSignalDoctorNoPromote(home, report, tProduct.Add(time.Minute))
@@ -234,6 +243,13 @@ func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T)
 	}
 	if appended || replayed.ID != nop.ID {
 		t.Fatalf("replay no-promote = %+v appended=%v, want existing %s", replayed, appended, nop.ID)
+	}
+	tl, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.SourceIssues) != 1 || tl.SourceIssues[0].ID != nop.ID {
+		t.Fatalf("timeline source issues = %+v", tl.SourceIssues)
 	}
 }
 
@@ -328,6 +344,15 @@ func hasString(values []string, want string) bool {
 func checkStatus(checks []SignalCheck, name, status string) bool {
 	for _, c := range checks {
 		if c.Name == name && c.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTimelineObject(transitions []TimelineTransition, objectRef string) bool {
+	for _, tr := range transitions {
+		if tr.ObjectRef == objectRef {
 			return true
 		}
 	}

@@ -2127,8 +2127,8 @@ func cmdProduct(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("# Product timeline - %s\n\n", args[1])
-		if len(tl.Signals) == 0 && len(tl.Hypotheses) == 0 {
-			fmt.Println("(no product signals or hypotheses)")
+		if len(tl.Signals) == 0 && len(tl.Hypotheses) == 0 && len(tl.Transitions) == 0 && len(tl.SourceIssues) == 0 {
+			fmt.Println("(no product loop records)")
 			return
 		}
 		for _, s := range tl.Signals {
@@ -2144,6 +2144,22 @@ func cmdProduct(args []string) {
 			fmt.Printf("- hypothesis %s: %s [%s]\n", h.ID, h.ExpectedEffect, h.Result)
 			if h.NextAction != "" {
 				fmt.Printf("  next: %s\n", h.NextAction)
+			}
+		}
+		for _, tr := range tl.Transitions {
+			fmt.Printf("- transition %s", tr.ID)
+			if tr.Kind != "" {
+				fmt.Printf(" [%s]", tr.Kind)
+			}
+			if tr.ObjectRef != "" {
+				fmt.Printf(" %s", tr.ObjectRef)
+			}
+			fmt.Printf(": %s\n", tr.StateDelta)
+		}
+		for _, issue := range tl.SourceIssues {
+			fmt.Printf("- source_issue %s: %s\n", issue.ID, issue.SourceRef)
+			if issue.Basis != "" {
+				fmt.Printf("  basis: %s\n", issue.Basis)
 			}
 		}
 	case "doctor":

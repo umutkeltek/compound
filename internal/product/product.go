@@ -192,9 +192,29 @@ type ReviewReport struct {
 }
 
 type Timeline struct {
-	ProductID  string
-	Signals    []Signal
-	Hypotheses []HypothesisCandidate
+	ProductID    string
+	Signals      []Signal
+	Hypotheses   []HypothesisCandidate
+	Transitions  []TimelineTransition
+	SourceIssues []ProductSourceIssue
+}
+
+type TimelineTransition struct {
+	ID                    string   `json:"id"`
+	CreatedAt             string   `json:"created_at"`
+	Kind                  string   `json:"kind,omitempty"`
+	ObjectRef             string   `json:"object_ref,omitempty"`
+	StateDelta            string   `json:"state_delta"`
+	EvidenceRefs          []string `json:"evidence_refs,omitempty"`
+	FutureBehaviorChanged bool     `json:"future_behavior_changed"`
+}
+
+type ProductSourceIssue struct {
+	ID           string   `json:"id"`
+	CreatedAt    string   `json:"created_at"`
+	SourceRef    string   `json:"source_ref"`
+	Basis        string   `json:"basis"`
+	EvidenceRefs []string `json:"evidence_refs"`
 }
 
 type DoctorReport struct {
@@ -303,6 +323,7 @@ func SignalDoctor(path string) SignalDoctorReport {
 	}
 	report.SchemaVersion = header.SchemaVersion
 	add("schema", oneOf(header.SchemaVersion, []string{SignalSchemaVersion, SignalExportSchemaVersion}), header.SchemaVersion)
+	applySignalHints(b, &report)
 	doc, err := loadSignalBytes(b)
 	if err != nil {
 		add("strict_contract", false, err.Error())
@@ -338,7 +359,13 @@ func SignalDoctorNoPromote(report SignalDoctorReport) writeback.NoPromoteDecisio
 	if ref == "" {
 		ref = report.SourceRef
 	}
-	evidenceRefs := compact([]string{report.SourceRef, report.SourceHash, "schema:" + report.SchemaVersion})
+	evidenceRefs := compact([]string{
+		report.SourceRef,
+		report.SourceHash,
+		"schema:" + report.SchemaVersion,
+		productRef(report.ProductID),
+		sourceKindRef(report.SourceKind),
+	})
 	return writeback.NoPromoteDecision{
 		SchemaVersion: writeback.NoPromoteSchemaVersion,
 		CandidateRef:  "product_signal_source:" + ref,
@@ -346,6 +373,37 @@ func SignalDoctorNoPromote(report SignalDoctorReport) writeback.NoPromoteDecisio
 		Basis:         "product signal source failed strict contract: " + signalDoctorFailure(report),
 		EvidenceRefs:  evidenceRefs,
 		Status:        writeback.NoPromoteActive,
+	}
+}
+
+func applySignalHints(b []byte, report *SignalDoctorReport) {
+	var hints struct {
+		Source    SignalSource `yaml:"source"`
+		SignalID  string       `yaml:"signal_id"`
+		ProductID string       `yaml:"product_id"`
+		Metric    ExportMetric `yaml:"metric"`
+		Signal    Signal       `yaml:"signal"`
+	}
+	if err := yaml.Unmarshal(b, &hints); err != nil {
+		return
+	}
+	if report.SourceKind == "" {
+		report.SourceKind = hints.Source.Kind
+	}
+	if report.SourceID == "" {
+		report.SourceID = hints.Source.Ref
+	}
+	if report.SignalID == "" {
+		report.SignalID = firstNonEmpty(hints.SignalID, hints.Signal.ID)
+	}
+	if report.ProductID == "" {
+		report.ProductID = firstNonEmpty(hints.ProductID, hints.Signal.ProductID)
+	}
+	if report.MetricName == "" {
+		report.MetricName = firstNonEmpty(hints.Signal.MetricName, strings.TrimSpace(hints.Metric.CanonicalName))
+		if report.MetricName == "" && strings.TrimSpace(hints.Metric.Name) != "" {
+			report.MetricName = canonicalMetricName(hints.Source.Kind, hints.Metric.Name)
+		}
 	}
 }
 
@@ -695,6 +753,14 @@ func LoadTimeline(homePath, productID string) (Timeline, error) {
 	if err != nil {
 		return Timeline{}, err
 	}
+	transitions, err := loadProductTransitions(homePath, productID)
+	if err != nil {
+		return Timeline{}, err
+	}
+	sourceIssues, err := loadProductSourceIssues(homePath, productID)
+	if err != nil {
+		return Timeline{}, err
+	}
 	tl := Timeline{ProductID: productID}
 	for _, s := range signals {
 		if s.ProductID == productID {
@@ -706,6 +772,8 @@ func LoadTimeline(homePath, productID string) (Timeline, error) {
 			tl.Hypotheses = append(tl.Hypotheses, h)
 		}
 	}
+	tl.Transitions = transitions
+	tl.SourceIssues = sourceIssues
 	sort.Slice(tl.Signals, func(i, j int) bool { return tl.Signals[i].ID < tl.Signals[j].ID })
 	sort.Slice(tl.Hypotheses, func(i, j int) bool { return tl.Hypotheses[i].ID < tl.Hypotheses[j].ID })
 	return tl, nil
@@ -1038,12 +1106,108 @@ func loadReviews(homePath string) ([]Review, error) {
 	return out, err
 }
 
+func loadProductTransitions(homePath, productID string) ([]TimelineTransition, error) {
+	dir := filepath.Join(homePath, "events")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []TimelineTransition
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var header struct {
+			SchemaVersion string `json:"schema_version"`
+		}
+		if err := json.Unmarshal(b, &header); err != nil || header.SchemaVersion != envelope.SVTransition {
+			continue
+		}
+		var tr envelope.Transition
+		if err := json.Unmarshal(b, &tr); err != nil {
+			return nil, err
+		}
+		if err := tr.Validate(); err != nil {
+			return nil, fmt.Errorf("product transition %s: %w", entry.Name(), err)
+		}
+		if tr.Scope.ProductID != productID && !containsValue(tr.Projections.Product, productID) {
+			continue
+		}
+		kind, objectRef := productProjectionObject(tr.Projections.Product)
+		out = append(out, TimelineTransition{
+			ID:                    tr.ID,
+			CreatedAt:             tr.CreatedAt,
+			Kind:                  kind,
+			ObjectRef:             objectRef,
+			StateDelta:            tr.StateDelta,
+			EvidenceRefs:          tr.EvidenceRefs,
+			FutureBehaviorChanged: tr.SecondOrder.FutureBehaviorChanged,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt < out[j].CreatedAt
+	})
+	return out, nil
+}
+
+func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, error) {
+	var out []ProductSourceIssue
+	err := readJSONL(noPromoteLog(homePath), func(line []byte) error {
+		var d writeback.NoPromoteDecision
+		if err := json.Unmarshal(line, &d); err != nil || d.ID == "" {
+			return nil
+		}
+		if d.OwnerTarget.Kind != "product_signal_source" {
+			return nil
+		}
+		if !containsValue(d.EvidenceRefs, productRef(productID)) {
+			return nil
+		}
+		sourceRef := d.OwnerTarget.Ref
+		if sourceRef == "" {
+			sourceRef = d.CandidateRef
+		}
+		out = append(out, ProductSourceIssue{
+			ID:           d.ID,
+			CreatedAt:    d.CreatedAt,
+			SourceRef:    sourceRef,
+			Basis:        d.Basis,
+			EvidenceRefs: d.EvidenceRefs,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt < out[j].CreatedAt
+	})
+	return out, nil
+}
+
 func signalsLog(homePath string) string {
 	return filepath.Join(homePath, "ledger", "product-signals.jsonl")
 }
 
 func reviewsLog(homePath string) string {
 	return filepath.Join(homePath, "ledger", "product-reviews.jsonl")
+}
+
+func noPromoteLog(homePath string) string {
+	return filepath.Join(homePath, "ledger", "no-promote-decisions.jsonl")
 }
 
 func appendJSONL(path string, v any) error {
@@ -1100,6 +1264,52 @@ func signalDoctorFailure(report SignalDoctorReport) string {
 		}
 	}
 	return "unknown failure"
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func containsValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func productProjectionObject(refs []string) (string, string) {
+	for _, ref := range refs {
+		switch {
+		case strings.HasPrefix(ref, "product_signal:"):
+			return "product_signal", ref
+		case strings.HasPrefix(ref, "product_review:"):
+			return "product_review", ref
+		case strings.HasPrefix(ref, "product_hypothesis:"):
+			return "product_hypothesis", ref
+		}
+	}
+	return "", ""
+}
+
+func productRef(productID string) string {
+	if strings.TrimSpace(productID) == "" {
+		return ""
+	}
+	return "product_id:" + strings.TrimSpace(productID)
+}
+
+func sourceKindRef(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return ""
+	}
+	return "source_kind:" + strings.TrimSpace(kind)
 }
 
 func canonicalMetricName(sourceKind, metricName string) string {
