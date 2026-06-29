@@ -29,6 +29,7 @@ The current public surface is:
 | `compound authority import` / `compound decisions import` | import external authority and DecisionLifecycle records through spine memory |
 | `compound runtime doctor <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle |
 | `compound runtime doctor --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor |
+| `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
 
@@ -87,6 +88,7 @@ internal/mem/          canonical memory object family
 internal/distiller/    trace -> candidate fan-out + critique
 internal/capgraph/     capability graph
 internal/runtimebinding/ RuntimeBinding + ServiceContract doctor
+internal/projection/   GeneratedViewObservation + ProjectionFreshness doctor
 internal/arch/         architecture doctor
 
 internal/authority/    importer into spine memory

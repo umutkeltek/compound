@@ -28,6 +28,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/projection"
 	"compound/internal/runtimebinding"
 	"compound/internal/work"
 )
@@ -50,6 +51,8 @@ func main() {
 		cmdDecisions(os.Args[2:])
 	case "runtime":
 		cmdRuntime(os.Args[2:])
+	case "projection":
+		cmdProjection(os.Args[2:])
 	case "home":
 		cmdHome(os.Args[2:])
 	case "envelope":
@@ -135,6 +138,7 @@ compound authority import [f] | authority <entity>             import/query auth
 compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml>            RuntimeBinding + ServiceContract health
+compound projection doctor <freshness.yaml>                    GeneratedViewObservation + ProjectionFreshness
 
 retired Gen-1 tombstones:
   compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
@@ -1317,6 +1321,48 @@ func cmdRuntime(args []string) {
 		fmt.Println()
 	}
 	if report.Status != "ok" {
+		os.Exit(1)
+	}
+}
+
+func cmdProjection(args []string) {
+	if len(args) < 1 || args[0] != "doctor" {
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml>")
+		os.Exit(2)
+	}
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml>")
+		os.Exit(2)
+	}
+	report, err := projection.DoctorFile(args[1], time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection doctor:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# projection doctor\n\n")
+	fmt.Printf("- projection: %s\n", report.ProjectionID)
+	fmt.Printf("- view: %s\n", report.ViewRef)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- source_ledger_seq: %d\n", report.SourceLedgerSeq)
+	if report.Staleness != "" {
+		fmt.Printf("- staleness: %s\n", report.Staleness)
+	}
+	fmt.Printf("- output_hash: %s\n", report.OutputHash)
+	for _, source := range report.Sources {
+		fmt.Printf("- source: %s %s", source.SourceRef, source.Status)
+		if source.CurrentHash != "" {
+			fmt.Printf(" (%s)", source.CurrentHash)
+		}
+		fmt.Println()
+	}
+	for _, check := range report.Checks {
+		fmt.Printf("- check:%s %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
+	}
+	if report.Status != projection.StatusFresh {
 		os.Exit(1)
 	}
 }
