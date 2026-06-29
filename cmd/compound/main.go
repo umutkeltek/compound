@@ -33,6 +33,7 @@ import (
 	"compound/internal/projection"
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
+	"compound/internal/tooltopology"
 	"compound/internal/work"
 	"compound/internal/writeback"
 )
@@ -141,7 +142,7 @@ usage:
   compound memory <candidate|adjudicate|recall|timeline|query|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
-  compound capability <add|surface|observe|consume|list>         capability graph: auto-surface, never auto-execute
+  compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
 compound authority import [f] | authority <entity>             import/query authority through spine memory
 compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
@@ -160,7 +161,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -204,6 +205,41 @@ func cmdCapability(args []string) {
 	}
 
 	switch sub {
+	case "import-topology":
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-topology <tool-topology.yaml>")
+			os.Exit(2)
+		}
+		topo, err := tooltopology.Load(p[0])
+		die(err)
+		report, err := tooltopology.Apply(homePath, topo, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			for _, check := range report.Checks {
+				fmt.Fprintf(os.Stderr, "- %s: %s", check.Name, check.Status)
+				if check.Detail != "" {
+					fmt.Fprintf(os.Stderr, " (%s)", check.Detail)
+				}
+				fmt.Fprintln(os.Stderr)
+			}
+			os.Exit(1)
+		}
+		fmt.Printf("# tool topology %s\n\n", report.TopologyID)
+		fmt.Printf("- status: %s\n", report.Status)
+		for _, check := range report.Checks {
+			fmt.Printf("- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		for _, id := range report.NodeIDs {
+			fmt.Printf("- node: %s\n", id)
+		}
+		for _, id := range report.EdgeIDs {
+			fmt.Printf("- edge: %s\n", id)
+		}
 	case "add":
 		p := posn(map[string]bool{"--triggers": true})
 		if len(p) < 3 {
@@ -263,7 +299,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology> ...")
 		os.Exit(2)
 	}
 }

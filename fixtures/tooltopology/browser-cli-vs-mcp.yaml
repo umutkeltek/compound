@@ -1,0 +1,43 @@
+schema_version: compound.tool_topology.v0.1
+id: topo_fixture_browser
+adapter_id: fixture.tool-topology
+source_system: fixture-os
+observed_at: "2026-06-29T00:00:00Z"
+source_ref:
+  path: fixtures/generated/tool-resolver.md
+  kind: generated_view
+  owner: fixture-spine
+  source_class: generated
+  revision: sha256:def456
+entries:
+  - id: tool:browser-cli
+    kind: tool
+    name: Browser CLI
+    interface: cli
+    status: active
+    weight: 2
+    triggers:
+      - browser
+      - screenshots
+    capabilities:
+      - web automation
+    evidence_refs:
+      - artifact_sha256:def456
+  - id: mcp:browser
+    kind: mcp
+    name: Browser MCP
+    interface: mcp
+    status: fallback
+    triggers:
+      - browser
+    capabilities:
+      - web automation
+    evidence_refs:
+      - artifact_sha256:def456
+recommendations:
+  - primary: tool:browser-cli
+    fallback: mcp:browser
+    reason: prefer CLI for low-context browser work
+    confidence: 0.9
+evidence_refs:
+  - artifact_sha256:def456

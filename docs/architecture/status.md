@@ -27,6 +27,7 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 | `authority` | importer | external authority records imported through spine memory |
 | `decisions` | importer | DecisionLifecycle records imported/projected through spine memory; doctor surfaces missing falsifier/review trigger and can route gaps through owner writeback |
 | `sourceobs` | importer | SourceObservation records map generated/source views into candidate inboxes plus no-promote decisions; observation only, never promotion |
+| `tooltopology` | importer | Tool/MCP topology observations import CLI/MCP/adapter nodes and fallback recommendations into CapabilityGraph; offers only, never executes |
 
 Retired Gen-1 packages:
 
@@ -51,7 +52,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 | Spine | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition` | canonical |
 | Memory | `memory candidate/adjudicate/recall/timeline/query/doctor` | canonical |
 | Distillation | `distiller run` | canonical; duplicate memory outputs create idempotent `NoPromoteDecision` rows |
-| Capability | `capability add/surface/observe/consume/list` | canonical |
+| Capability | `capability add/surface/observe/consume/list/import-topology` | canonical; topology import maps tools/MCPs into CapabilityGraph nodes + fallback edges |
 | Runtime | `runtime doctor <runtime-binding.yaml> [--writeback]`; `runtime doctor --project-contract <project.yaml> [--writeback]` | canonical first slice + infra-os project-contract adapter; failing reports can enter work -> gate -> receipt/transition |
 | Projection | `projection doctor <freshness.yaml> [--writeback]` | canonical first slice; stale/drifted observations can enter work -> gate -> receipt/transition |
 | Writeback | `writeback gate <gate.json> --policy <policy-decision.json> [--record]`; `writeback no-promote --candidate C --basis B --evidence E1[,E2]` | canonical first slice |
@@ -77,4 +78,4 @@ Next work is no longer memory-stack convergence. It is adapting existing operati
 - source documents -> source adapters emit evidence/candidates/no-promote without direct promotion;
 - orientation scope -> project-aware context loading;
 - rented retrieval -> `MemoryEngine` adapter leaves ledger unchanged;
-- skills/tools/MCPs/hooks -> `CapabilityGraph` imports observations.
+- skills/tools/MCPs/hooks -> `CapabilityGraph` imports observations; `compound capability import-topology` imports tool/MCP topology and CLI-vs-MCP fallback recommendation.

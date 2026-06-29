@@ -43,7 +43,7 @@ Minimum shape:
   "source_system": "operator-os",
   "observed_at": "2026-06-29T00:00:00Z",
   "source_ref": {
-    "path": "umut-os/spine/views/skill-manifest.json",
+    "path": "operator-os/spine/views/skill-manifest.json",
     "kind": "generated_view",
     "owner": "spine",
     "source_class": "generated",
@@ -54,11 +54,11 @@ Minimum shape:
     "consumer": "agent harnesses",
     "generated_from": [
       {
-        "path": "umut-os/spine/skill-manifest.ts",
+        "path": "operator-os/spine/skill-manifest.ts",
         "revision": "sha256:..."
       }
     ],
-    "generator": "bun umut-os/spine/generate.ts",
+    "generator": "bun operator-os/spine/generate.ts",
     "marker": "generated",
     "freshness": "fresh",
     "drift_reason": null
@@ -114,22 +114,27 @@ must use synthetic fixtures and relative paths.
 
 ## Operating-System Dogfood Mapping
 
-The current operating system should enter Compound through observations, not file
-copies:
+An existing operating system should enter Compound through observations, not file
+copies. The mapping is by surface *kind*, not by any specific repo layout:
 
 | Operating-system surface | Compound interpretation |
 |---|---|
-| `umut-os/spine/views/*` | `GeneratedViewObservation` + `ProjectionFreshness` |
-| `umut-os/dashboard/*` | projection evidence, never authority |
-| `umut-os/events/*.ndjson` | `TraceEnvelope` / event evidence |
-| `umut-os/ledger/*.ndjson` | receipt / route / cost evidence |
-| `umut-os/contracts/*` | source material for contract candidates |
-| `umut-os/registry/*` | `RegistryEntry` candidates |
-| `umut-os/packets/*` | WorkEnvelope / Receipt / Transition evidence |
-| `infra-os` runtime contracts | `RuntimeBinding` / `ServiceContract` candidates |
-| `decisions` | `DecisionLifecycle` candidates |
-| `brain` pages | Evidence / Claim / Position candidates |
-| `gbrain` | retrieval engine or source index, never authority |
+| generated spine views (`spine/views/*`) | `GeneratedViewObservation` + `ProjectionFreshness` |
+| dashboards | projection evidence, never authority |
+| event streams (`events/*.ndjson`) | `TraceEnvelope` / event evidence |
+| append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence |
+| contract files | source material for contract candidates |
+| registries | `RegistryEntry` candidates |
+| tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges |
+| work packets | WorkEnvelope / Receipt / Transition evidence |
+| runtime / service contracts | `RuntimeBinding` / `ServiceContract` candidates |
+| decision records | `DecisionLifecycle` candidates |
+| knowledge-base pages | Evidence / Claim / Position candidates |
+| a retrieval / embedding store | retrieval engine or source index, never authority |
+
+A concrete mapping for a specific operating system — real repo paths and named
+tools — belongs in that operator's private overlay (`docs_private/`), never in
+this public doc. Public adapters use synthetic fixtures and relative paths.
 
 ## First Acceptance Test
 

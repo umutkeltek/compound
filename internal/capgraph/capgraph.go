@@ -91,6 +91,27 @@ func (s *Store) Add(n Node) error {
 	return appendJSONL(s.nodesLog(), &n)
 }
 
+// AddEdge appends a typed graph edge. It is for deterministic importers such as
+// tool topology; feedback learning still goes through Observe.
+func (s *Store) AddEdge(e Edge, now time.Time) error {
+	if !contains(EdgeKinds, e.Kind) {
+		return fmt.Errorf("edge kind must be one of %v, got %q", EdgeKinds, e.Kind)
+	}
+	if strings.TrimSpace(e.From) == "" || strings.TrimSpace(e.To) == "" {
+		return fmt.Errorf("edge needs from and to")
+	}
+	if e.Confidence == 0 {
+		e.Confidence = 1.0
+	}
+	if e.Confidence < 0 {
+		return fmt.Errorf("edge confidence must be >= 0, got %.2f", e.Confidence)
+	}
+	if strings.TrimSpace(e.CreatedAt) == "" {
+		e.CreatedAt = now.UTC().Format(time.RFC3339)
+	}
+	return appendJSONL(s.edgesLog(), &e)
+}
+
 // Observe records evolution-feedback edges from a capability observation: missed_when (the node
 // was relevant to a context but not surfaced) raises its future surfacing for that context;
 // false_triggered_by lowers it. A multi-word context is tokenized into ONE edge per token (so a
