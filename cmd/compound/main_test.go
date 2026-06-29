@@ -54,7 +54,12 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
-	if _, err := store.RecordAction(w.ID, testActionIntent(w.ID), testPolicyDecision(w.ID), cliTestNow); err != nil {
+	if _, err := store.RecordAction(
+		w.ID,
+		testActionIntent(w.ID, "act_session_end_used", "capability://skill:session-end-proof"),
+		testPolicyDecision(w.ID, "pol_session_end_used", "act_session_end_used"),
+		cliTestNow,
+	); err != nil {
 		t.Fatalf("record action: %v", err)
 	}
 	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, cliTestNow); err != nil {
@@ -78,11 +83,75 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	}
 }
 
-func testActionIntent(workID string) envelope.ActionIntent {
+func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	cmdHook([]string{"user-prompt-submit", writeHookFixture(t, hook.Fixture{
+		Harness:  "codex",
+		Cwd:      "/repo/product",
+		RepoKind: "product",
+		Task:     "pricing paywall",
+		Prompt:   "prepare pricing paywall review",
+	})})
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	w := onlyWork(t, store)
+	if w.IDs.ContextPackID == "" {
+		t.Fatal("user-prompt work did not preserve context_pack_id")
+	}
+	pack := readContextPack(t, homePath, w.IDs.ContextPackID)
+	if !contextPackIncludes(pack, "capability://skill:pricing") {
+		t.Fatalf("context pack did not include imported pricing capability; included=%+v", pack.Included)
+	}
+
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "ready"}, cliTestNow); err != nil {
+		t.Fatalf("advance ready: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.RecordAction(
+		w.ID,
+		testActionIntent(w.ID, "act_imported_skill_used", "capability://skill:pricing"),
+		testPolicyDecision(w.ID, "pol_imported_skill_used", "act_imported_skill_used"),
+		cliTestNow,
+	); err != nil {
+		t.Fatalf("record action: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, cliTestNow); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+
+	cmdHook([]string{"session-end", writeHookFixture(t, hook.Fixture{
+		Harness:  "codex",
+		WorkID:   w.ID,
+		MoveType: "outward_delta",
+		Outcome:  "completed",
+		Summary:  "pricing paywall review used imported skill",
+	})})
+
+	edges := readCapabilityEdges(t, homePath)
+	if !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:pricing") {
+		t.Fatalf("session-end did not validate imported used skill; edges=%+v", edges)
+	}
+}
+
+func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
-			ID:            "act_session_end_used",
+			ID:            id,
 			CreatedAt:     cliTestNow.Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
 			IDs:           envelope.IDs{WorkID: workID},
@@ -93,7 +162,7 @@ func testActionIntent(workID string) envelope.ActionIntent {
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
 		Actor:         "codex",
-		Capability:    "capability://skill:session-end-proof",
+		Capability:    capability,
 		Action:        "write_receipt",
 		Target:        envelope.ActionTarget{Kind: "path", Path: "events"},
 		MutationClass: "local_reversible",
@@ -101,11 +170,11 @@ func testActionIntent(workID string) envelope.ActionIntent {
 	}
 }
 
-func testPolicyDecision(workID string) envelope.PolicyDecision {
+func testPolicyDecision(workID, id, actionID string) envelope.PolicyDecision {
 	return envelope.PolicyDecision{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVPolicyDecision,
-			ID:            "pol_session_end_used",
+			ID:            id,
 			CreatedAt:     cliTestNow.Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "policy", Name: "compound-test"},
 			IDs:           envelope.IDs{WorkID: workID},
@@ -115,11 +184,55 @@ func testPolicyDecision(workID string) envelope.PolicyDecision {
 			EvidenceRefs:  []string{},
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		ActionIntentID: "act_session_end_used",
+		ActionIntentID: actionID,
 		Outcome:        "allow_with_obligations",
 		Reasons:        []string{"test action is local and reversible"},
 		Obligations:    []string{"emit receipt"},
 	}
+}
+
+func writeHookFixture(t *testing.T, fixture hook.Fixture) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "hook.json")
+	writeJSONFixture(t, path, fixture)
+	return path
+}
+
+func onlyWork(t *testing.T, store *work.Store) envelope.WorkEnvelope {
+	t.Helper()
+	works, err := store.List()
+	if err != nil {
+		t.Fatalf("list work: %v", err)
+	}
+	if len(works) != 1 {
+		t.Fatalf("work count = %d, want 1: %+v", len(works), works)
+	}
+	return works[0]
+}
+
+func readContextPack(t *testing.T, homePath, id string) envelope.ContextPack {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(homePath, "context", "packs", id+".json"))
+	if err != nil {
+		t.Fatalf("read context pack %s: %v", id, err)
+	}
+	var pack envelope.ContextPack
+	if err := json.Unmarshal(b, &pack); err != nil {
+		t.Fatalf("parse context pack %s: %v", id, err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("context pack %s invalid: %v", id, err)
+	}
+	return pack
+}
+
+func contextPackIncludes(pack envelope.ContextPack, ref string) bool {
+	for _, included := range pack.Included {
+		if included.Ref == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSONFixture(t *testing.T, path string, v any) {

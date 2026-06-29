@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 - Work closure also records used capability provenance: allowed recorded ActionIntent envelopes contribute their `capability` to Receipt `skills.used` and Transition `projections.skill`; denied or held actions never enter used skills because `RecordAction` refuses them.
 - Capability feedback now feeds the graph explicitly: `work close` and `hook session-end` auto-run receipt consumption when graph state exists; `capability consume-receipts` remains the manual/replay command. Completed changed `skills.used` becomes `validated_by`; explicit `skills.missed` becomes `missed_when`; `skills.candidate` offers stay inert.
 
+- Imported skill-manifest offers now have executable full-loop proof: `capability import-skills` can seed graph, `hook user-prompt-submit` persists an offered capability in ContextPack, an allowed action records that capability as used, and `hook session-end` validates it back into the same CapabilityGraph.
+
 ## Current Verdict
 
 Gen-1 memory stack migrated into the spine memory family and retired.
