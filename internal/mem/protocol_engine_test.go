@@ -141,6 +141,9 @@ func TestWireErrMapping(t *testing.T) {
 			t.Errorf("%s should map to ErrEmbedderMismatch", code)
 		}
 	}
+	if !errors.Is(wireErr(Response{Error: &WireError{Code: CodeEngineUnavailable, Message: "x"}}), ErrEngineUnavailable) {
+		t.Errorf("%s should map to ErrEngineUnavailable", CodeEngineUnavailable)
+	}
 }
 
 // A non-responding sidecar must TIME OUT (and get killed), not hang forever holding the lock.

@@ -54,6 +54,8 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 | **AutonomyEnvelope** | a trust gradient, not a boolean | allowed_without_approval[], requires_approval[], max_cost_usd, max_runtime, required_receipts, **branch_sandbox** |
 | **MemoryEngine** | rented breadth index — **bridge/index, never authority** | protocol lives with spine memory (`internal/mem/protocol.go`); target port: `Query/Recall/PutProjection/Build/Health/ExplainResult`. A vector/fact store is one implementation; arrow is **compound → materialized objects → engine index**, never engine → truth → compound reads. Engine never owns promotion/visibility/supersession/source-class/privacy. First proof: `memory engine-doctor` hashes `COMPOUND_HOME/ledger` before/after a breadth query and fails if a rented engine mutates it. Swap proof: `memory engine-compare` compares a configured sidecar against the owned lexical reference on hydrated claim ids while keeping ledger bytes unchanged. When an adapter wraps an existing store, distinguish its **durable** parts (facts, source-metadata, page-versions — preserve) from **rebuildable** parts (chunks, embeddings, search — regenerate). |
 
+`compound-memory-cli-engine` is the first read-only existing-store sidecar on this port. It calls a configured external memory CLI only as rented expansion context, returns only claim ids from the current Compound index allowlist, maps broken backend calls to `ErrEngineUnavailable`, and does not run mutating sync/embed/import commands.
+
 ## Distillation & capability-growth contracts (the compounding layer — P6 continuation + P8)
 
 These turn traces into *adjudicated, versioned* knowledge and grow capability from evidence. They **extend**

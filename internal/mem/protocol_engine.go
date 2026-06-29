@@ -267,6 +267,8 @@ func wireErr(resp Response) error {
 	case CodeEmbedderMismatch, CodeDimMismatch:
 		// both are identity-class: wrong vectors → HARD refuse, never a silent degrade.
 		return fmt.Errorf("%w: [%s] %s", ErrEmbedderMismatch, resp.Error.Code, resp.Error.Message)
+	case CodeEngineUnavailable:
+		return fmt.Errorf("%w: [%s] %s", ErrEngineUnavailable, resp.Error.Code, resp.Error.Message)
 	default:
 		// index_missing / stale_generation / bad_request: surfaced with their code (callers can branch).
 		return fmt.Errorf("engine error [%s]: %s", resp.Error.Code, resp.Error.Message)

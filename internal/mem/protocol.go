@@ -18,11 +18,12 @@ const (
 
 // Error codes (typed so a caller maps them to refuse-vs-degrade).
 const (
-	CodeEmbedderMismatch = "embedder_mismatch"
-	CodeDimMismatch      = "dim_mismatch"
-	CodeIndexMissing     = "index_missing"
-	CodeStaleGeneration  = "stale_generation"
-	CodeBadRequest       = "bad_request"
+	CodeEmbedderMismatch  = "embedder_mismatch"
+	CodeDimMismatch       = "dim_mismatch"
+	CodeEngineUnavailable = "engine_unavailable"
+	CodeIndexMissing      = "index_missing"
+	CodeStaleGeneration   = "stale_generation"
+	CodeBadRequest        = "bad_request"
 )
 
 // ClaimText is a claim reduced to its indexable text — the only thing about a claim the engine
