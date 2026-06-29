@@ -1230,6 +1230,7 @@ func cmdHook(args []string) {
 
 	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientPolicy(), Policy: policyConfig()}
 	if homePath, err := home.Resolve(""); err == nil {
+		deps.HomePath = homePath
 		if store, err := work.Open(homePath); err == nil {
 			deps.Store = store // session-end needs it; others tolerate nil
 		}

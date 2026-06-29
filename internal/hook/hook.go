@@ -9,7 +9,10 @@ package hook
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -48,9 +51,9 @@ type Fixture struct {
 	Cwd      string                 `json:"cwd,omitempty"`
 	Task     string                 `json:"task,omitempty"`
 	RepoKind string                 `json:"repo_kind,omitempty"`
-	Prompt   string                 `json:"prompt,omitempty"`   // user-prompt-submit; only hashed, never stored raw
-	Action   *envelope.ActionIntent `json:"action,omitempty"`   // pre-tool-use
-	WorkID   string                 `json:"work_id,omitempty"`  // session-end
+	Prompt   string                 `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
+	Action   *envelope.ActionIntent `json:"action,omitempty"`  // pre-tool-use
+	WorkID   string                 `json:"work_id,omitempty"` // session-end
 	MoveType string                 `json:"move_type,omitempty"`
 	Outcome  string                 `json:"outcome,omitempty"`
 	Summary  string                 `json:"summary,omitempty"`
@@ -63,14 +66,27 @@ type Deps struct {
 	Orient   contract.OrientationPolicy
 	Policy   policy.Config
 	Store    *work.Store // required only for session-end; may be nil otherwise
+	HomePath string      // optional; when present session-start persists context artifacts
+}
+
+// InjectionArtifact records the exact harness-facing context text written under
+// COMPOUND_HOME. The markdown is the consumed artifact; the pack JSON is the
+// typed source it was rendered from.
+type InjectionArtifact struct {
+	Ref             string `json:"ref"`
+	Path            string `json:"path"`
+	ContextPackID   string `json:"context_pack_id"`
+	ContextPackRef  string `json:"context_pack_ref"`
+	ContextPackPath string `json:"context_pack_path"`
 }
 
 // Result is what a hook produces: the normalized event, the typed objects, and the small
 // harness-facing output line.
 type Result struct {
-	Event    envelope.HookEvent  `json:"event"`
-	Produced []envelope.Envelope `json:"produced"`
-	Summary  string              `json:"summary"`
+	Event     envelope.HookEvent  `json:"event"`
+	Produced  []envelope.Envelope `json:"produced"`
+	Summary   string              `json:"summary"`
+	Injection *InjectionArtifact  `json:"injection,omitempty"`
 }
 
 // Run dispatches a hook fixture, validating everything it produces through the spine.
@@ -119,8 +135,24 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 	in := contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}
 	ec := contract.Compile(in, deps.Orient, now)
 	pack := contract.Pack(in, deps.Orient, now)
+	if strings.TrimSpace(deps.HomePath) != "" {
+		var err error
+		pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
+		if err != nil {
+			return Result{}, err
+		}
+	}
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Task), nil, now)
-	return Result{Event: ev, Produced: []envelope.Envelope{&ec, &pack}, Summary: pack.SummaryMD}, nil
+	var injection *InjectionArtifact
+	if strings.TrimSpace(deps.HomePath) != "" {
+		var err error
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, pack)
+		if err != nil {
+			return Result{}, err
+		}
+		ev.SideEffects = append(ev.SideEffects, injection.Ref, injection.ContextPackRef)
+	}
+	return Result{Event: ev, Produced: []envelope.Envelope{&ec, &pack}, Summary: pack.SummaryMD, Injection: injection}, nil
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
@@ -218,6 +250,98 @@ func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []strin
 		SideEffects:    orEmptySlice(sideEffects),
 		Status:         st,
 	}
+}
+
+func writeContextArtifacts(homePath, hookID string, pack envelope.ContextPack) (*InjectionArtifact, error) {
+	packRef := filepath.Join("context", "packs", pack.Header.ID+".json")
+	packPath := filepath.Join(homePath, packRef)
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		return nil, err
+	}
+	packBytes, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	packBytes = append(packBytes, '\n')
+	if err := os.WriteFile(packPath, packBytes, 0o644); err != nil {
+		return nil, err
+	}
+
+	injectionRef := filepath.Join("context", "injections", hookID+".md")
+	injectionPath := filepath.Join(homePath, injectionRef)
+	if err := os.MkdirAll(filepath.Dir(injectionPath), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(injectionPath, []byte(renderInjection(hookID, pack)), 0o644); err != nil {
+		return nil, err
+	}
+	return &InjectionArtifact{
+		Ref:             injectionRef,
+		Path:            injectionPath,
+		ContextPackID:   pack.Header.ID,
+		ContextPackRef:  packRef,
+		ContextPackPath: packPath,
+	}, nil
+}
+
+func renderInjection(hookID string, pack envelope.ContextPack) string {
+	var b strings.Builder
+	b.WriteString("# Compound Context Injection\n\n")
+	fmt.Fprintf(&b, "- Hook event: `%s`\n", safeMD(hookID))
+	fmt.Fprintf(&b, "- Context pack: `%s`\n", safeMD(pack.Header.ID))
+	if strings.TrimSpace(pack.Header.Scope.Surface) != "" {
+		fmt.Fprintf(&b, "- Scope: `%s`\n", safeMD(pack.Header.Scope.Surface))
+	}
+	b.WriteString("- Capability refs are offers only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision.\n\n")
+
+	b.WriteString("## Summary\n")
+	b.WriteString(safeMD(pack.SummaryMD))
+	b.WriteString("\n\n")
+
+	b.WriteString("## Included\n")
+	if len(pack.Included) == 0 {
+		b.WriteString("- none\n")
+	} else {
+		for _, ref := range pack.Included {
+			fmt.Fprintf(&b, "- `%s` source=%s status=%s confidence=%.2f reason=%s",
+				safeMD(ref.Ref), safeMD(ref.SourceClass), safeMD(ref.Status), ref.Confidence, safeMD(ref.Reason))
+			if strings.HasPrefix(ref.Ref, "capability://") {
+				b.WriteString(" [offer, not execution]")
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n## Excluded\n")
+	if len(pack.Excluded) == 0 {
+		b.WriteString("- none\n")
+	} else {
+		for _, ref := range pack.Excluded {
+			fmt.Fprintf(&b, "- `%s` reason=%s\n", safeMD(ref.Ref), safeMD(ref.Reason))
+		}
+	}
+	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
+	writeStringList(&b, "Active Decisions", pack.ActiveDecisions)
+	writeStringList(&b, "Required Checks", pack.RequiredChecks)
+	writeStringList(&b, "Avoid", pack.Avoid)
+	return b.String()
+}
+
+func writeStringList(b *strings.Builder, title string, xs []string) {
+	fmt.Fprintf(b, "\n## %s\n", title)
+	if len(xs) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	for _, x := range xs {
+		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
+	}
+}
+
+func safeMD(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "`", "'")
+	return strings.TrimSpace(s)
 }
 
 func idFor(prefix string, parts ...string) string {

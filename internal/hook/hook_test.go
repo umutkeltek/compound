@@ -2,10 +2,13 @@ package hook
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/envelope"
 	"compound/internal/harness"
@@ -46,6 +49,70 @@ func TestSessionStartProducesContract(t *testing.T) {
 	if res.Summary == "" {
 		t.Error("session-start should return an orientation summary")
 	}
+	if res.Injection != nil {
+		t.Fatalf("session-start without HomePath should not write runtime injection, got %+v", res.Injection)
+	}
+}
+
+func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
+	homePath := t.TempDir()
+	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
+	if err != nil {
+		t.Fatalf("load skill manifest: %v", err)
+	}
+	if _, err := capgraph.ApplySkillManifest(homePath, manifest, fixedNow); err != nil {
+		t.Fatalf("apply skill manifest: %v", err)
+	}
+
+	deps := baseDeps()
+	deps.HomePath = homePath
+	fx := Fixture{
+		Hook:     "session-start",
+		Harness:  "codex",
+		Cwd:      "/repo/productX",
+		Task:     "improve pricing",
+		RepoKind: "product",
+		Prompt:   "DO NOT LEAK RAW PROMPT BODY",
+	}
+	res, err := Run(fx, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Injection == nil {
+		t.Fatal("session-start should record an injection artifact when HomePath is set")
+	}
+	if filepath.Base(res.Injection.Path) != res.Event.Header.ID+".md" {
+		t.Fatalf("injection path = %q, want hook event id filename", res.Injection.Path)
+	}
+	if _, err := os.Stat(res.Injection.ContextPackPath); err != nil {
+		t.Fatalf("context pack json missing: %v", err)
+	}
+	b, err := os.ReadFile(res.Injection.Path)
+	if err != nil {
+		t.Fatalf("read injection: %v", err)
+	}
+	text := string(b)
+	for _, want := range []string{
+		"capability://skill:codex-pricing",
+		"capability://skill:generic-pricing",
+		"[offer, not execution]",
+		"Capability refs are offers only",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("injection missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{
+		"capability://skill:claude-pricing",
+		"DO NOT LEAK RAW PROMPT BODY",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("injection leaked forbidden content %q:\n%s", forbidden, text)
+		}
+	}
+	if got := res.Event.SideEffects; len(got) != 2 || got[0] != res.Injection.Ref || got[1] != res.Injection.ContextPackRef {
+		t.Fatalf("side effects = %v, want injection and context pack refs", got)
+	}
 }
 
 func TestUserPromptProducesCandidateAndHidesPrompt(t *testing.T) {
@@ -84,7 +151,7 @@ func TestPreToolUseCapabilityAware(t *testing.T) {
 				EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
 			},
 			Capability: "filesystem.delete", Action: "delete_tree",
-			Target: envelope.ActionTarget{Kind: "path", Path: "build/cache"},
+			Target:        envelope.ActionTarget{Kind: "path", Path: "build/cache"},
 			MutationClass: "destructive", Reversibility: "hard",
 		}
 		return Fixture{Hook: "pre-tool-use", Harness: h, WorkID: "work_demo", Action: ai}
