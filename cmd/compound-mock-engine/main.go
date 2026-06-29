@@ -3,8 +3,8 @@
 // using lexical matching. It is the conformance baseline the real turbovec sidecar must match, and
 // it lets `compound memory query` + the adapter tests run end-to-end with zero Rust.
 //
-// Point compound at it with: COMPOUND_ENGINE_BIN=compound-mock-engine. The sidecar advertises its
-// OWN embedder stamp from MOCK_ENGINE_EMBEDDER (NOT compound's COMPOUND_ENGINE_EMBEDDER, which is
+// Point compound at it with: COMPOUND_MEM_ENGINE_BIN=compound-mock-engine. The sidecar advertises its
+// OWN embedder stamp from MOCK_ENGINE_EMBEDDER (NOT compound's COMPOUND_MEM_ENGINE_EMBEDDER, which is
 // compound's record of what it INDEXED with) — so a mismatch between the two exercises the guard.
 package main
 

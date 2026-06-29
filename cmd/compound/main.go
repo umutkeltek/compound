@@ -142,7 +142,7 @@ usage:
   compound hook <name> <fixture.json>                           run lifecycle hook over fixture
   compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
   compound transition show <id>                                 inspect a Transition or envelope
-  compound memory <candidate|adjudicate|recall|timeline|query|doctor>
+  compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
@@ -398,7 +398,7 @@ func cmdDistiller(args []string) {
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
 func cmdMemory(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|doctor>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|query <text>|engine-doctor <text>|doctor>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -627,7 +627,7 @@ func cmdMemory(args []string) {
 			os.Exit(2)
 		}
 	case "query":
-		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_ENGINE_BIN
+		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_MEM_ENGINE_BIN
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
 		// otherwise the in-process lexical engine. A model swap is a HARD refuse, not a degrade.
 		eng, closeEng := memBreadthEngine()
@@ -646,6 +646,35 @@ func cmdMemory(args []string) {
 		for _, c := range claims {
 			fmt.Printf("%s.%s = %s  (seq %d, %s)\n", c.Entity, c.Predicate, c.Object, c.Seq, c.Visibility)
 		}
+	case "engine-doctor":
+		k := 10
+		if v := flag("--k"); v != "" {
+			n, err := strconv.Atoi(v)
+			die(err)
+			k = n
+		}
+		eng, closeEng := memBreadthEngine()
+		report, err := store.EngineDoctor(firstPos(map[string]bool{"--k": true}), k, eng)
+		closeEng()
+		fmt.Println("# memory engine-doctor")
+		fmt.Printf("- query: %s\n", report.Query)
+		fmt.Printf("- engine: %s\n", report.Engine.Name)
+		fmt.Printf("- ledger_gen: %d\n", report.LedgerGen)
+		fmt.Printf("- engine_gen: %d\n", report.Engine.CorpusGen)
+		fmt.Printf("- ledger_before: %s\n", report.LedgerHashBefore)
+		fmt.Printf("- ledger_after: %s\n", report.LedgerHashAfter)
+		fmt.Printf("- ledger_unchanged: %t\n", report.LedgerUnchanged)
+		if report.Degraded {
+			fmt.Printf("- degraded: %s\n", report.Error)
+		}
+		fmt.Printf("- hits: %d\n", len(report.Hits))
+		for _, h := range report.Hits {
+			fmt.Printf("  - %s: %s.%s = %s (seq %d)\n", h.ClaimID, h.Entity, h.Predicate, h.Object, h.Seq)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory engine-doctor:", err)
+			os.Exit(1)
+		}
 	case "doctor":
 		r := store.Doctor()
 		for _, h := range r.Hops {
@@ -656,7 +685,7 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|doctor> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor> ...")
 		os.Exit(2)
 	}
 }

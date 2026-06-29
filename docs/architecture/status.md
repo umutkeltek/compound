@@ -51,7 +51,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 | Family | Verbs | Status |
 |---|---|---|
 | Spine | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition` | canonical |
-| Memory | `memory candidate/adjudicate/recall/timeline/query/doctor` | canonical |
+| Memory | `memory candidate/adjudicate/recall/timeline/query/engine-doctor/doctor` | canonical; `engine-doctor` proves rented breadth engines leave owned ledger bytes unchanged |
 | Distillation | `distiller run` | canonical; duplicate memory outputs create idempotent `NoPromoteDecision` rows |
 | Capability | `capability add/surface/observe/consume/list/import-topology` | canonical; topology import maps tools/MCPs into CapabilityGraph nodes + fallback edges |
 | Runtime | `runtime doctor <runtime-binding.yaml> [--writeback]`; `runtime doctor --project-contract <project.yaml> [--writeback]` | canonical first slice + infra-os project-contract adapter; failing reports can enter work -> gate -> receipt/transition |
@@ -81,5 +81,5 @@ Next work is no longer memory-stack convergence. It is adapting existing operati
 - source-map / path-authority -> `authority path` imports `PathAuthority` into entity identifiers + authority claims; `authority resolve` proves old path/new path/source remote map to one entity;
 - orientation scope -> project-aware context loading bridged with fixture repo markers; `compound orient` excludes governance context in product repos and includes it in control-plane repos, recording exclusions;
 - product feedback -> `product import` registers product identity, promoted deterministic product claims, `ProductSignal` evidence rows, and parked `ProductHypothesis` candidates; `product timeline` reads the loop without declaring causality;
-- rented retrieval -> `MemoryEngine` adapter leaves ledger unchanged;
+- rented retrieval -> `MemoryEngine` protocol + `memory engine-doctor` prove lexical/reference-sidecar breadth engines leave ledger bytes unchanged; next hardening real legacy index/turbovec sidecar parity;
 - skills/tools/MCPs/hooks -> `CapabilityGraph` imports observations; `compound capability import-topology` imports tool/MCP topology and CLI-vs-MCP fallback recommendation.

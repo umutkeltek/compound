@@ -214,6 +214,9 @@ core a single pure-Go binary and the engine genuinely swappable.
   superseded claims). `gate:all` is admin-only and the core never emits it.
 - **Index is idempotent on the corpus generation** (= ledger max seq), so the engine never
   re-embeds the whole corpus per query.
+- **Engine ownership is mechanically checked.** `compound memory engine-doctor <query>` hashes
+  `COMPOUND_HOME/ledger` before/after a breadth query, reports engine/ledger generation, and fails if
+  a rented engine mutates owned ledger bytes.
 - **Identity guard, fail-closed.** compound records the embedder it indexed with; if the sidecar
   reports a different one, breadth is **refused** (`ErrEmbedderMismatch`), never silently degraded —
   a silent model swap would wreck recall invisibly. A down sidecar degrades to `ErrEngineUnavailable`
