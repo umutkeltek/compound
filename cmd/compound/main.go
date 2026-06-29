@@ -156,6 +156,7 @@ usage:
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
+  compound distiller improvement-plan --candidate C [--target file] method_upgrade/policy_patch -> reviewed distiller improvement draft
   compound distiller rule-plan --candidate C [--target file]  failure_pattern candidate -> reviewed rule draft, no doctrine mutation
   compound distiller taste-plan --candidate C [--target file] taste candidate -> reviewed taste standard draft, no doctrine mutation
   compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...
@@ -650,6 +651,48 @@ func cmdDistiller(args []string) {
 			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
 		}
 		fmt.Printf("- required_artifacts: %d\n", len(plan.FixtureDraft.RequiredArtifacts))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
+	if len(args) >= 1 && args[0] == "improvement-plan" {
+		candidateID := flagValue(args[1:], "--candidate")
+		targetPath := flagValue(args[1:], "--target")
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller improvement-plan --candidate <candidate_id> [--target <file>]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		plan, err := distiller.BuildImprovementPlan(homePath, candidateID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller improvement-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := distiller.RecordImprovementPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller improvement-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller improvement-plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- candidate_kind: %s\n", plan.CandidateKind)
+		fmt.Printf("- improvement_key: %s\n", plan.ImprovementKey)
+		fmt.Printf("- improvement_id: %s\n", plan.Draft.ImprovementID)
+		fmt.Printf("- area: %s\n", plan.Draft.Area)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target: %s\n", plan.TargetPath)
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.Draft.RequiredEvidence))
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)

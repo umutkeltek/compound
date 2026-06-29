@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound distiller improvement-plan --candidate <id> [--target <file>]` now converts parked or operationalized `method_upgrade` and `policy_patch` candidates into reviewed JSON/Markdown distiller improvement drafts under `COMPOUND_HOME/reviews/distiller-improvements/`, preserving evidence refs, method/policy area, eval requirement, rollback plan, and optional target hash without mutating distiller policy, editing prompts/code, updating eval corpus, calling models, or promoting claims.
 - `compound capability skill-plan --candidate <id> [--target <file>]` now converts parked `skill` candidates into reviewed JSON/Markdown CapabilityGraph node drafts under `COMPOUND_HOME/reviews/capability-skills/`, preserving evidence refs and optional target hash without mutating CapabilityGraph, installing skill files, executing tools/MCPs, or promoting claims.
 - `compound route plan --candidate <id> [--target <file>]` now converts parked `route_observation` candidates into reviewed JSON/Markdown route-policy drafts under `COMPOUND_HOME/reviews/route-policy/`, preserving evidence refs and optional target hash without mutating gateway/provider/model-router config, claiming task success, or promoting claims.
 - `compound distiller taste-plan --candidate <id> [--target <file>]` now converts parked `taste` candidates into reviewed JSON/Markdown taste-standard drafts under `COMPOUND_HOME/reviews/taste-standards/`, preserving evidence and optional target hash without mutating doctrine/product files, installing prompts/skills, or promoting claims.
@@ -80,7 +81,7 @@ Capability status note: `capgraph` owns `compound capability skill-plan`; skill 
 | `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
 | `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
 | `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans |
-| `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt, routes method/policy debt through writeback gate, and turns eval/failure/taste candidates into reviewed eval-plan/rule-plan/taste-plan artifacts |
+| `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and turns eval/method/policy/failure/taste candidates into reviewed eval-plan/improvement-plan/rule-plan/taste-plan artifacts |
 | `capgraph` | canonical | capability graph: surface, observe, consume; normalized skill manifests and generated skill-manifest JSON land here as graph nodes/edges, never a parallel skill registry |
 | `runtimebinding` | canonical | RuntimeBinding + ServiceContract bundle, doctor, project-contract adapter, and gated repair-plan review artifacts |
 | `projection` | canonical | GeneratedViewObservation + ProjectionFreshness doctor + ProjectionRegenerationPlan review artifacts |

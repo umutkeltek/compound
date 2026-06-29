@@ -87,9 +87,9 @@ var specs = map[Kind]Spec{
 	ProductHypothesis: {ProductHypothesis, "inbox/product-hypotheses", []string{Park, Operationalize, Reject}, "compound product (P9)"},
 	RouteObservation:  {RouteObservation, "inbox/route-observations", []string{Park, Operationalize}, "compound route plan"},
 	CapabilityObs:     {CapabilityObs, "inbox/capability-observations", []string{Operationalize, Park}, "capgraph.Consume"},
-	MethodUpgrade:     {MethodUpgrade, "inbox/method-upgrades", []string{Park, Operationalize}, "distillation-policy review"},
+	MethodUpgrade:     {MethodUpgrade, "inbox/method-upgrades", []string{Park, Operationalize}, "compound distiller improvement-plan"},
 	EvalCase:          {EvalCase, "inbox/eval-cases", []string{Operationalize, Park}, "distiller regression corpus"},
-	PolicyPatch:       {PolicyPatch, "inbox/policy-patches", []string{Park, Operationalize}, "distillation-policy review"},
+	PolicyPatch:       {PolicyPatch, "inbox/policy-patches", []string{Park, Operationalize}, "compound distiller improvement-plan"},
 	Relation:          {Relation, "inbox/relation-candidates", []string{Park, Promote, Reject}, "compound memory relate (adjudicated)"},
 }
 

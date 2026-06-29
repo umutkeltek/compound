@@ -596,6 +596,108 @@ func TestDistillerEvalPlanUsesOperationalizedEvalCandidateWithoutMutatingCorpus(
 	}
 }
 
+func TestDistillerImprovementPlanUsesMethodAndPolicyCandidatesWithoutMutatingTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+ "trace_ref": "trace_improvement_plan_candidates",
+ "candidates": [
+  {
+   "kind": "method_upgrade",
+   "subject": "distill.memory.dates",
+   "statement": "ground relative dates against trace timestamp before emitting memory candidates",
+   "detail": "date_grounding",
+   "confidence": 0.91,
+   "evidence_refs": ["trace:dates", "eval:before"]
+  },
+  {
+   "kind": "policy_patch",
+   "subject": "distill.promotion.policy",
+   "statement": "reject model-supplied promotion_basis unless source adapter already proved basis",
+   "detail": "promotion_basis_guard",
+   "confidence": 0.93,
+   "evidence_refs": ["trace:policy", "eval:adversarial"]
+  }
+ ]
+}`)
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	methodRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade)))
+	policyRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.PolicyPatch)))
+	if len(methodRows) != 1 || methodRows[0].Verdict != distiller.Park {
+		t.Fatalf("method candidates = %+v", methodRows)
+	}
+	if len(policyRows) != 1 || policyRows[0].Verdict != distiller.Park {
+		t.Fatalf("policy candidates = %+v", policyRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "distiller-policy.md")
+	original := "# Distiller Policy\n\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		row      distiller.Candidate
+		wantKind string
+		wantArea string
+		wantKey  string
+		wantText string
+	}{
+		{"method", methodRows[0], distiller.KindMethodUpgrade, "method", "distill-memory-dates", "trace timestamp"},
+		{"policy", policyRows[0], distiller.KindPolicyPatch, "policy", "distill-promotion-policy", "promotion_basis"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				cmdDistiller([]string{"improvement-plan", "--candidate", tc.row.ID, "--target", targetPath})
+			})
+			if !strings.Contains(out, "# distiller improvement-plan imp_") ||
+				!strings.Contains(out, "- status: review_required") ||
+				!strings.Contains(out, "- candidate_kind: "+tc.wantKind) ||
+				!strings.Contains(out, "- area: "+tc.wantArea) ||
+				!strings.Contains(out, "- improvement_key: "+tc.wantKey) ||
+				!strings.Contains(out, "- target_exists: true") ||
+				!strings.Contains(out, "- required_evidence: 4") ||
+				!strings.Contains(out, "- evidence_refs: 2") ||
+				!strings.Contains(out, "- plan:") ||
+				!strings.Contains(out, "- review:") {
+				t.Fatalf("improvement-plan output missing proof lines:\n%s", out)
+			}
+			planPath := outputValue(out, "- plan:")
+			reviewPath := outputValue(out, "- review:")
+			var plan distiller.ImprovementPlan
+			planData, err := os.ReadFile(planPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(planData, &plan); err != nil {
+				t.Fatal(err)
+			}
+			if plan.SchemaVersion != distiller.ImprovementPlanSchemaVersion ||
+				plan.CandidateID != tc.row.ID ||
+				plan.CandidateKind != tc.wantKind ||
+				plan.Draft.Area != tc.wantArea ||
+				!strings.Contains(plan.Draft.ProposedChange, tc.wantText) {
+				t.Fatalf("bad improvement plan: %+v", plan)
+			}
+			review := readFile(t, reviewPath)
+			if !strings.Contains(review, "does not mutate distiller policy") ||
+				!strings.Contains(review, "Required Evidence Before Apply") {
+				t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+			}
+		})
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("distiller target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("improvement-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestDistillerRulePlanUsesFailureCandidateWithoutMutatingRuleTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -25,7 +25,7 @@ The current public surface is:
 | `compound hook <name>` / `compound harness list` | capability-aware hook fixtures and HarnessRegistry |
 | `compound route import` / `compound route plan --candidate <id>` | route metadata and route_observation candidates become evidence/review artifacts; no gateway or provider config mutation |
 | `compound memory candidate/adjudicate/recall/timeline/write-plan/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall, reviewed curated-source write plans |
-| `compound distiller request/run/eval/eval-plan/rule-plan/taste-plan` | typed trace/runtime/event source material -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator; eval_case, failure_pattern, and taste candidates become reviewed drafts before corpus, doctrine, or product mutation |
+| `compound distiller request/run/eval/eval-plan/improvement-plan/rule-plan/taste-plan` | typed trace/runtime/event source material -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator; eval_case, method_upgrade, policy_patch, failure_pattern, and taste candidates become reviewed drafts before corpus, prompt, policy, code, doctrine, or product mutation |
 | `compound capability <add/surface/observe/consume/list/skill-plan>` | capability graph: auto-surface, never auto-execute; skill candidates become reviewed graph-node drafts before import |
 | `compound authority import/path/path-registry/git` / `compound decisions import` | import external authority, OS-style path authority, source-control snapshots, and DecisionLifecycle records through spine memory |
 | `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |
