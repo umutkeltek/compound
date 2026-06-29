@@ -91,7 +91,7 @@ names (the named OS→contract mapping lives in `docs_private/plan/os-coverage-m
 | **OwnerWritebackGate** | candidate → owner target → gate → policy → receipt → transition (writeback is command-shaped, not doctrine) | candidate_ref, owner_target, gate_basis, policy_decision_ref, receipt_ref; a mutating writeback requires a valid `PolicyDecision` |
 | **NoPromoteDecision** | an explicit lifecycle state — "seen, deliberately not promoted" — distinct from park/reject | candidate_ref, basis, expiry, evidence_refs[]; prevents the same candidate re-entering the loop as "new" |
 | **ProjectionFreshness** | a read model/dashboard cannot silently drift from the ledger | projection_id, source_ledger_seq, built_at, staleness, coverage_verdict, status: fresh\|stale\|drifted. First slice: `compound projection doctor <freshness.yaml>` |
-| **SourceAuthority / PathAuthority** | which source owns a fact, and identity that survives path/host moves | entity_ref, authoritative_source, path_bindings[], host_bindings[], precedence_rank, evidence_refs[] |
+| **SourceAuthority / PathAuthority** | which source owns a fact, and identity that survives path/host moves | entity_ref, authoritative_source, path_bindings[], host_bindings[], precedence_rank, evidence_refs[]. First slice: `compound authority path <path-authority.yaml>` merges source/path bindings into the canonical entity registry and emits deterministic authority claims; `compound authority resolve <token>` proves old/new paths and source remotes resolve to one entity. |
 
 ### Generated views
 

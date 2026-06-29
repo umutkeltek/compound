@@ -143,7 +143,7 @@ usage:
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
-compound authority import [f] | authority <entity>             import/query authority through spine memory
+  compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
 compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
@@ -1395,10 +1395,67 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | authority <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, _ := openMemStore()
+	if args[0] == "resolve" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority resolve <token>")
+			os.Exit(2)
+		}
+		res, err := store.ResolveEntity(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority resolve:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("status: %s\n", res.Status)
+		if res.Slug != "" {
+			fmt.Printf("entity: %s\n", res.Slug)
+		}
+		if res.Via != "" {
+			fmt.Printf("via: %s\n", res.Via)
+		}
+		return
+	}
+	if args[0] == "path" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority path <path-authority.yaml>")
+			os.Exit(2)
+		}
+		existing, err := store.Entities()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority path:", err)
+			os.Exit(1)
+		}
+		_, entity, facts, report, err := authority.ImportPathAuthority(args[1], existing)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority path:", err)
+			os.Exit(1)
+		}
+		if _, err := store.RegisterEntity(entity, time.Now()); err != nil {
+			fmt.Fprintln(os.Stderr, "authority entity:", err)
+			os.Exit(1)
+		}
+		captured, err := store.Capture(facts, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority capture:", err)
+			os.Exit(1)
+		}
+		promoted := 0
+		for _, c := range captured {
+			if _, err := store.Adjudicate(c.ID, "promote", "path-authority-import", time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "authority promote:", err)
+				os.Exit(1)
+			}
+			promoted++
+		}
+		fmt.Printf("# path authority %s\n\n", report.EntityRef)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- identifiers: %d\n", len(report.Identifiers))
+		fmt.Printf("- authority_claims: %d\n", promoted)
+		return
+	}
 	if args[0] == "import" {
 		path := authority.DefaultRegistry()
 		if len(args) > 1 {
