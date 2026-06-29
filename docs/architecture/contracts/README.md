@@ -85,7 +85,7 @@ names (the named OS→contract mapping lives in `docs_private/plan/os-coverage-m
 
 | Contract | Purpose | Key fields / lifecycle |
 |---|---|---|
-| **RuntimeBinding** | where thing actually runs (so autonomy knows what is real/production/reversible) | service_id, owner_entity, host_binding, deployment_binding, data_bindings[], credential_refs[] (private), health_check_refs[], risk_tier, evidence_refs[], status: candidate\|active\|stale\|retired. First slice: `compound runtime doctor <bundle>` |
+| **RuntimeBinding** | where thing actually runs (so autonomy knows what is real/production/reversible) | service_id, owner_entity, host_binding, deployment_binding, data_bindings[], credential_refs[] (private), health_check_refs[], risk_tier, evidence_refs[], status: candidate\|active\|stale\|retired. First slice: `compound runtime doctor <bundle>`; infra-os adapter: `compound runtime doctor --project-contract <project.yaml>` |
 | **ServiceContract** | promised interface/SLA of running service | service_id, interface_refs[], dependencies[], owner_entity, risk_tier, evidence_refs[], status. First slice pairs with RuntimeBinding in one checked bundle |
 | **DecisionLifecycle** | makes `Decision` lifecycle typed and auditable instead of loose prose on a claim | choice, rationale, **falsifier**, **review_trigger**, scope, owner, effective_from, **status: proposed\|accepted\|superseded\|deprecated\|rejected**, replaced_by, evidence_refs[] |
 | **OwnerWritebackGate** | candidate → owner target → gate → policy → receipt → transition (writeback is command-shaped, not doctrine) | candidate_ref, owner_target, gate_basis, policy_decision_ref, receipt_ref; a mutating writeback requires a valid `PolicyDecision` |

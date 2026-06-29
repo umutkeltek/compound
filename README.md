@@ -28,6 +28,7 @@ The current public surface is:
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
 | `compound authority import` / `compound decisions import` | import external authority and DecisionLifecycle records through spine memory |
 | `compound runtime doctor <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle |
+| `compound runtime doctor --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
 

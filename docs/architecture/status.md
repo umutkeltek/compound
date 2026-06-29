@@ -55,7 +55,7 @@ when it represents a new object family or adapter seam.
 | Memory | `memory candidate/adjudicate/recall/timeline/query/doctor` | canonical |
 | Distillation | `distiller run` | canonical |
 | Capability | `capability add/surface/observe/consume/list` | canonical |
-| Runtime | `runtime doctor <runtime-binding.yaml>` | canonical first slice |
+| Runtime | `runtime doctor <runtime-binding.yaml>`; `runtime doctor --project-contract <project.yaml>` | canonical first slice + infra-os project-contract adapter |
 | Importers | `authority`, `decisions` | canonical import surfaces |
 | Gen-1 tombstones | `distill`, `scope`, `promote`, `build`, `reconcile`, top-level `timeline`, top-level `recall`, `pack`, `ledger` | retired; exit `2` with replacement hint |
 
@@ -78,7 +78,7 @@ The next work is no longer memory-stack convergence. It is adapting existing
 operating-system functions into first-class Compound contracts without creating
 parallel owners:
 
-- runtime/service ownership -> `RuntimeBinding` / `ServiceContract` first slice landed with synthetic doctor; next hardening is infra-os source adapter;
+- runtime/service ownership -> `RuntimeBinding` / `ServiceContract` first slice + infra-os project-contract adapter landed; next hardening is broader private parity fixtures or transition writeback;
 - decisions -> `DecisionLifecycle` first slice landed; next hardening is source-specific adapters and lifecycle transitions beyond import;
 - source documents -> source adapters that emit evidence/candidates;
 - orientation scope -> project-aware context loading;

@@ -134,7 +134,7 @@ usage:
 compound authority import [f] | authority <entity>             import/query authority through spine memory
 compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
-compound runtime doctor <runtime-binding.yaml>                 RuntimeBinding + ServiceContract health
+compound runtime doctor [--project-contract] <yaml>            RuntimeBinding + ServiceContract health
 
 retired Gen-1 tombstones:
   compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
@@ -1282,14 +1282,24 @@ func cmdDecisions(args []string) {
 
 func cmdRuntime(args []string) {
 	if len(args) < 1 || args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor <runtime-binding.yaml>")
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml>")
 		os.Exit(2)
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor <runtime-binding.yaml>")
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml>")
 		os.Exit(2)
 	}
-	bundle, err := runtimebinding.Load(args[1])
+	path := args[1]
+	load := runtimebinding.Load
+	if args[1] == "--project-contract" {
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: compound runtime doctor --project-contract <project.yaml>")
+			os.Exit(2)
+		}
+		path = args[2]
+		load = runtimebinding.LoadProjectContract
+	}
+	bundle, err := load(path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "runtime doctor:", err)
 		os.Exit(1)
