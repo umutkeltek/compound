@@ -67,6 +67,37 @@ func TestMemoryCLIEngineUsesQueryOutputToRankIndexedClaims(t *testing.T) {
 	}
 }
 
+func TestMemoryCLIEngineCanMatchExpansionOnlyTerms(t *testing.T) {
+	fake := &fakeMemoryCLI{output: "Stored context names golangx."}
+	responses := exchange(t, fake, []mem.Request{
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r1",
+			Op:            mem.OpIndex,
+			CorpusGen:     3,
+			Claims: []mem.ClaimText{
+				{ClaimID: "claim_go", Text: "project api langmarker golangx"},
+				{ClaimID: "claim_swift", Text: "project api swiftmarker swift"},
+			},
+		},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r2",
+			Op:            mem.OpQuery,
+			Text:          "runtime choice",
+			Gate:          mem.GateList,
+			Allowlist:     []string{"claim_go", "claim_swift"},
+			K:             10,
+		},
+	})
+	if len(responses[1].Hits) != 1 || responses[1].Hits[0].ClaimID != "claim_go" {
+		t.Fatalf("expansion-only hit = %+v, want claim_go", responses[1].Hits)
+	}
+	if fake.calls != 1 {
+		t.Fatalf("memory CLI calls = %d, want 1", fake.calls)
+	}
+}
+
 func TestMemoryCLIEngineGateListEmptyAllowlistFailsClosed(t *testing.T) {
 	fake := &fakeMemoryCLI{output: "Go backend"}
 	responses := exchange(t, fake, []mem.Request{

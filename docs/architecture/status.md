@@ -4,6 +4,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound-memory-cli-engine` now has an expansion-only regression: a query that does not lexically match indexed claims can still return the correct allowlisted claim through external memory CLI output, while empty allowlists fail closed before the CLI is called.
+
 - LLM extraction requests now expose explicit `capability_feedback[]` from `Receipt.skills.missed` / `Receipt.skills.false_triggered`, with instructions forbidding inference from inert `skills.candidate` offers.
 
 - Command-level runtime proof now covers `import-skills -> hook user-prompt-submit -> hook session-end explicit feedback -> distiller request capability_feedback -> distiller run capability_observation -> CapabilityGraph` for missed and false-triggered capability feedback.
