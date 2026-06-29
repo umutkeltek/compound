@@ -156,7 +156,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute; import-topology accepts normalized YAML or --os-resolver-json
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -222,12 +222,19 @@ func cmdCapability(args []string) {
 
 	switch sub {
 	case "import-topology":
-		p := posn(nil)
-		if len(p) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-topology <tool-topology.yaml>")
+		osResolverPath := flag("--os-resolver-json")
+		p := posn(map[string]bool{"--os-resolver-json": true})
+		var topo tooltopology.Topology
+		var err error
+		switch {
+		case osResolverPath != "" && len(p) == 0:
+			topo, err = tooltopology.LoadOSResolver(osResolverPath, time.Now())
+		case osResolverPath == "" && len(p) == 1:
+			topo, err = tooltopology.Load(p[0])
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-topology <tool-topology.yaml> | --os-resolver-json <tool-resolver.json>")
 			os.Exit(2)
 		}
-		topo, err := tooltopology.Load(p[0])
 		die(err)
 		report, err := tooltopology.Apply(homePath, topo, time.Now())
 		if err != nil {
