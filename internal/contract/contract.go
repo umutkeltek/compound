@@ -220,7 +220,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if err != nil {
 		return pack, err
 	}
-	surfaced, err := store.Surface(in.Task)
+	surfaced, err := store.SurfaceForHarness(in.Task, in.Harness)
 	if err != nil {
 		return pack, err
 	}

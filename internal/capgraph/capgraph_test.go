@@ -245,6 +245,15 @@ func surfaced(s *Store, task string) map[string]float64 {
 	return m
 }
 
+func hasSurfaced(hits []Surfaced, id string) bool {
+	for _, hit := range hits {
+		if hit.Node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSurfaceByTrigger(t *testing.T) {
 	_, s := newStore(t)
 	s.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "pricing", Triggers: []string{"pricing", "paywall"}})
@@ -255,6 +264,55 @@ func TestSurfaceByTrigger(t *testing.T) {
 	}
 	if _, ok := got["skill:onboarding"]; ok {
 		t.Error("a node with no matching trigger should NOT surface")
+	}
+}
+
+func TestSurfaceForHarnessFiltersExplicitHarnessEdges(t *testing.T) {
+	_, s := newStore(t)
+	mustAdd := func(n Node) {
+		t.Helper()
+		if err := s.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustEdge := func(e Edge) {
+		t.Helper()
+		if err := s.AddEdge(e, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustAdd(Node{ID: "skill:generic", Kind: "skill", Name: "generic", Triggers: []string{"paywall"}})
+	mustAdd(Node{ID: "skill:codex", Kind: "skill", Name: "codex", Triggers: []string{"paywall"}})
+	mustAdd(Node{ID: "skill:claude", Kind: "skill", Name: "claude", Triggers: []string{"paywall"}})
+	mustEdge(Edge{Kind: EdSurfacesWith, From: "skill:codex", To: "harness:codex"})
+	mustEdge(Edge{Kind: EdSurfacesWith, From: "skill:claude", To: "harness:claude_code"})
+
+	genericHits, err := s.Surface("fix paywall")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasSurfaced(genericHits, "skill:codex") || !hasSurfaced(genericHits, "skill:claude") || !hasSurfaced(genericHits, "skill:generic") {
+		t.Fatalf("generic surface should include all task-relevant nodes, got %+v", genericHits)
+	}
+	codexHits, err := s.SurfaceForHarness("fix paywall", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasSurfaced(codexHits, "skill:codex") || !hasSurfaced(codexHits, "skill:generic") {
+		t.Fatalf("codex should get codex-specific plus generic hits, got %+v", codexHits)
+	}
+	if hasSurfaced(codexHits, "skill:claude") {
+		t.Fatalf("codex must not get claude-only capability, got %+v", codexHits)
+	}
+	claudeHits, err := s.SurfaceForHarness("fix paywall", "claude_code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasSurfaced(claudeHits, "skill:claude") || !hasSurfaced(claudeHits, "skill:generic") {
+		t.Fatalf("claude should get claude-specific plus generic hits, got %+v", claudeHits)
+	}
+	if hasSurfaced(claudeHits, "skill:codex") {
+		t.Fatalf("claude must not get codex-only capability, got %+v", claudeHits)
 	}
 }
 

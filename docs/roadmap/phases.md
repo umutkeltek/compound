@@ -26,8 +26,9 @@ Go structs + JSON validation + round-trip tests for every envelope in `../archit
 instructions (generated vs manual), active hooks, memory-class eligibility, capability availability,
 conflicts/unknowns, and source revisions; the **same task in a product repo vs the control-plane repo yields
 different ContextPacks** (product repo omits OS-governance context + "all skills/all MCP by default"). The
-ContextPack records what was **excluded** and why → enables replacement. Capability availability is now graph-backed:
-surfaced `CapabilityGraph` nodes enter `compound orient` as generated `capability://...` offers, never execution.
+ContextPack records what was **excluded** and why → enables replacement. Capability availability is graph-backed:
+surfaced `CapabilityGraph` nodes enter `compound orient` as generated `capability://...` offers, filtered by
+harness compatibility edges when present, never execution.
 
 ## P3 — WorkEnvelope lifecycle  (one root identity)
 `compound work create/show/claim/advance/close`; `compound transition show`. **Proof:** one stable `work_id`

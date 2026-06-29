@@ -251,6 +251,76 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesFiltersByHarnessCompatibility(t *testing.T) {
+	home := t.TempDir()
+	manifest := capgraph.SkillManifest{
+		SchemaVersion: capgraph.SkillManifestSchemaVersion,
+		ID:            "skill_manifest_fixture",
+		AdapterID:     "fixture.skill-manifest",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: capgraph.SkillSourceRef{
+			Path:        "fixtures/skills/skill-manifest.yaml",
+			Kind:        "generated_view",
+			Owner:       "capability-fixture",
+			SourceClass: "generated",
+			Revision:    "rev_fixture",
+		},
+		EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
+		Skills: []capgraph.SkillManifestEntry{
+			{
+				ID:                  "skill:codex-pricing",
+				Name:                "Codex Pricing",
+				Status:              "active",
+				Triggers:            []string{"pricing"},
+				CompatibleHarnesses: []string{"codex"},
+			},
+			{
+				ID:                  "skill:claude-pricing",
+				Name:                "Claude Pricing",
+				Status:              "active",
+				Triggers:            []string{"pricing"},
+				CompatibleHarnesses: []string{"claude_code"},
+			},
+			{
+				ID:       "skill:generic-pricing",
+				Name:     "Generic Pricing",
+				Status:   "active",
+				Triggers: []string{"pricing"},
+			},
+		},
+	}
+	if _, err := capgraph.ApplySkillManifest(home, manifest, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	codexIn := mkInput("product")
+	codexIn.Harness = "codex"
+	codexIn.Task = "improve pricing"
+	codexPack, err := PackWithCapabilities(codexIn, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasIncluded(codexPack, "capability://skill:codex-pricing") || !hasIncluded(codexPack, "capability://skill:generic-pricing") {
+		t.Fatalf("codex pack missing codex/generic offers: %+v", codexPack.Included)
+	}
+	if hasIncluded(codexPack, "capability://skill:claude-pricing") {
+		t.Fatalf("codex pack must not include claude-only offer: %+v", codexPack.Included)
+	}
+	claudeIn := mkInput("product")
+	claudeIn.Harness = "claude_code"
+	claudeIn.Task = "improve pricing"
+	claudePack, err := PackWithCapabilities(claudeIn, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasIncluded(claudePack, "capability://skill:claude-pricing") || !hasIncluded(claudePack, "capability://skill:generic-pricing") {
+		t.Fatalf("claude pack missing claude/generic offers: %+v", claudePack.Included)
+	}
+	if hasIncluded(claudePack, "capability://skill:codex-pricing") {
+		t.Fatalf("claude pack must not include codex-only offer: %+v", claudePack.Included)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()

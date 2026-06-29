@@ -164,6 +164,17 @@ type Surfaced struct {
 // is trigger overlap × weight; a missed_when edge for a present context token ADDS to the score
 // (learned surfacing); a false_triggered_by edge SUBTRACTS. Retired nodes never surface.
 func (s *Store) Surface(task string) ([]Surfaced, error) {
+	return s.surface(task, "")
+}
+
+// SurfaceForHarness returns task-relevant offers allowed for a harness. Nodes
+// without harness edges are generic; nodes with surfaces_with -> harness:* edges
+// surface only for listed harnesses.
+func (s *Store) SurfaceForHarness(task, harness string) ([]Surfaced, error) {
+	return s.surface(task, harnessID(harness))
+}
+
+func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 	nodes, err := s.loadNodes()
 	if err != nil {
 		return nil, err
@@ -177,7 +188,15 @@ func (s *Store) Surface(task string) ([]Surfaced, error) {
 	// learned context → node adjustments
 	add := map[string]float64{}
 	sub := map[string]float64{}
+	harnesses := map[string]map[string]bool{}
 	for _, e := range edges {
+		if e.Kind == EdSurfacesWith && strings.HasPrefix(e.To, "harness:") {
+			if harnesses[e.From] == nil {
+				harnesses[e.From] = map[string]bool{}
+			}
+			harnesses[e.From][e.To] = true
+			continue
+		}
 		ctx := strings.TrimPrefix(e.From, "context:")
 		if e.From == ctx || !tokens[ctx] { // not a context edge, or its token isn't in the task
 			continue
@@ -193,6 +212,9 @@ func (s *Store) Surface(task string) ([]Surfaced, error) {
 	var out []Surfaced
 	for _, n := range nodes {
 		if n.Retired {
+			continue
+		}
+		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
 		base := 0.0
@@ -221,6 +243,14 @@ func (s *Store) Surface(task string) ([]Surfaced, error) {
 		return out[i].Node.ID < out[j].Node.ID
 	})
 	return out, nil
+}
+
+func harnessID(harness string) string {
+	harness = strings.TrimSpace(strings.ToLower(harness))
+	if harness == "" || strings.HasPrefix(harness, "harness:") {
+		return harness
+	}
+	return "harness:" + harness
 }
 
 // Consume reads the distiller's operationalized CapabilityObservations from the inbox and applies
