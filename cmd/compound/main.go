@@ -145,7 +145,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
-  compound distiller run <trace.json> | doctor                  Trace -> candidate fan-out, adjudication, self-improvement debt
+  compound distiller run <trace.json> | doctor [--writeback]    Trace -> candidate fan-out, adjudication, self-improvement debt
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
 compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
@@ -359,7 +359,8 @@ func cmdSource(args []string) {
 // adjudicator. Memory candidates flow through the mem ledger; everything else is candidate-first
 // and never becomes canon here; self-improvement signals (eval/method/capability) never auto-apply.
 func cmdDistiller(args []string) {
-	if len(args) == 1 && args[0] == "doctor" {
+	if len(args) >= 1 && args[0] == "doctor" {
+		writebackEnabled := hasFlag(args[1:], "--writeback")
 		homePath, err := home.Resolve("")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
@@ -388,6 +389,17 @@ func cmdDistiller(args []string) {
 				fmt.Printf(" (%s)", check.Detail)
 			}
 			fmt.Println()
+		}
+		if writebackEnabled && distiller.NeedsWriteback(report) {
+			result, err := runDistillerWriteback(report, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "distiller writeback:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- writeback_gate: %s %s\n", result.GateID, result.GateStatus)
+			fmt.Printf("- work: %s\n", result.WorkID)
+			fmt.Printf("- receipt: %s\n", result.ReceiptID)
+			fmt.Printf("- transition: %s\n", result.TransitionID)
 		}
 		return
 	}
@@ -1978,6 +1990,111 @@ func runRuntimeWriteback(report runtimebinding.DoctorReport, now time.Time) (wri
 		Outcome:  "completed",
 		MoveType: "control_plane_repair",
 		Summary:  fmt.Sprintf("runtime %s %s routed through owner writeback gate %s", report.ServiceID, report.Status, checked.ID),
+		Changed:  true,
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	checked.ReceiptRef = closeRes.Receipt.ID
+	if err := writebackStore.RecordGate(checked); err != nil {
+		return result, err
+	}
+	result.ReceiptID = closeRes.Receipt.ID
+	result.TransitionID = closeRes.Transition.ID
+	return result, nil
+}
+
+func runDistillerWriteback(report distiller.DoctorReport, now time.Time) (writebackWorkResult, error) {
+	var result writebackWorkResult
+	if !distiller.NeedsWriteback(report) {
+		return result, nil
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return result, err
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	writebackStore, err := writeback.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	debtCount := report.SelfImprovementDebt
+	w, err := workStore.Create(work.CreateInput{
+		Owner:            "distiller:policy",
+		DesiredOutcome:   "Route distiller method/policy debt through governed owner writeback",
+		SuccessPredicate: "distiller writeback gate recorded with receipt/transition refs",
+		NonGoals:         []string{"mutate distillation policy", "call model extractor", "promote memory truth"},
+		State:            "ready",
+		Risk:             "tier1",
+		Privacy:          "private",
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	if _, err := workStore.Claim(w.ID, "compound distiller doctor", now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:   "running",
+		Note: "distiller doctor running writeback",
+	}, now); err != nil {
+		return result, err
+	}
+	evidenceRefs := distiller.EvidenceRefs(report)
+	ai := envelope.ActionIntent{
+		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "distiller-writeback", strconv.Itoa(report.MethodUpgradeDebt), strconv.Itoa(report.PolicyPatchDebt), cliTS(now)), w.ID, now, evidenceRefs),
+		Actor:         "compound distiller doctor",
+		Capability:    "distiller.writeback",
+		Action:        "record_distillation_policy_writeback_gate",
+		Target:        envelope.ActionTarget{Kind: "distillation_policy", ID: distiller.DefaultPolicy().Stamp()},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("distiller doctor found %d method/policy debt item(s); record owner writeback gate", debtCount),
+		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any distillation policy is changed",
+	}
+	pd := policy.Evaluate(ai, policyConfig(), now)
+	gate := distiller.WritebackGate(report, ai.ID, pd.ID, now)
+	checked, err := writeback.EvaluateGate(gate, &pd, now)
+	if err != nil {
+		return result, err
+	}
+	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
+	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
+		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
+			Outcome:  "failed",
+			MoveType: "audit_only",
+			Summary:  fmt.Sprintf("distiller method/policy writeback blocked for %d debt item(s): gate %s", debtCount, checked.Status),
+			Changed:  true,
+		}, now)
+		if closeErr == nil {
+			checked.ReceiptRef = closeRes.Receipt.ID
+			result.ReceiptID = closeRes.Receipt.ID
+			result.TransitionID = closeRes.Transition.ID
+		}
+		if err := writebackStore.RecordGate(checked); err != nil {
+			return result, err
+		}
+		return result, closeErr
+	}
+	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:             "running",
+		ArtifactID:     checked.ID,
+		VerificationID: checked.CandidateRef,
+		Note:           "distiller writeback gate checked",
+	}, now); err != nil {
+		return result, err
+	}
+	closeRes, err := workStore.Close(w.ID, work.CloseInput{
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		Summary:  fmt.Sprintf("%d distiller method/policy debt item(s) routed through owner writeback gate %s", debtCount, checked.ID),
 		Changed:  true,
 	}, now)
 	if err != nil {

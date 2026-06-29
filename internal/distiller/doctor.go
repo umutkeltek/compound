@@ -2,12 +2,16 @@ package distiller
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/writeback"
@@ -226,4 +230,58 @@ func statusForDebt(n int) string {
 		return "attention"
 	}
 	return "ok"
+}
+
+// NeedsWriteback reports whether distiller method/policy debt should enter the
+// governed owner writeback path. Duplicate churn is handled by NoPromoteDecision,
+// not by rewriting distillation policy.
+func NeedsWriteback(report DoctorReport) bool {
+	return report.MethodUpgradeDebt > 0 || report.PolicyPatchDebt > 0
+}
+
+// EvidenceRefs returns bounded metadata refs for a distiller doctor report.
+func EvidenceRefs(report DoctorReport) []string {
+	refs := []string{
+		fmt.Sprintf("distiller:adjudications:%d", report.TotalDecisions),
+		fmt.Sprintf("distiller:method_upgrades:%d", report.MethodUpgradeDebt),
+		fmt.Sprintf("distiller:policy_patches:%d", report.PolicyPatchDebt),
+		fmt.Sprintf("distiller:eval_cases:%d", report.EvalCases),
+		fmt.Sprintf("distiller:capability_observations:%d", report.CapabilityObservations),
+		fmt.Sprintf("distiller:duplicate_memory_rejections:%d", report.DuplicateMemoryRejections),
+	}
+	if report.MethodUpgradeDebt > 0 {
+		refs = append(refs, "candidate_kind:"+KindMethodUpgrade)
+	}
+	if report.PolicyPatchDebt > 0 {
+		refs = append(refs, "candidate_kind:"+KindPolicyPatch)
+	}
+	return refs
+}
+
+// WritebackGate converts distillation method/policy debt into the generic owner
+// writeback contract. It never applies a new distillation method.
+func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef string, now time.Time) writeback.OwnerWritebackGate {
+	kind := KindMethodUpgrade
+	if report.PolicyPatchDebt > 0 {
+		kind = KindPolicyPatch
+	}
+	return writeback.OwnerWritebackGate{
+		SchemaVersion:     writeback.GateSchemaVersion,
+		CreatedAt:         now.UTC().Format(time.RFC3339),
+		CandidateRef:      fmt.Sprintf("distiller:method_policy_debt:%d:%d:%s", report.MethodUpgradeDebt, report.PolicyPatchDebt, methodPolicyDigest(report)),
+		CandidateKind:     kind,
+		OwnerTarget:       writeback.OwnerTarget{Kind: "distillation_policy", Ref: "distillation_policy:" + DefaultPolicy().Stamp()},
+		GateBasis:         fmt.Sprintf("distiller doctor found %d method upgrade(s) and %d policy patch(es); distillation policy may need governed update", report.MethodUpgradeDebt, report.PolicyPatchDebt),
+		ActionIntentRef:   actionIntentRef,
+		MutationClass:     "local_reversible",
+		PolicyDecisionRef: policyDecisionRef,
+		EvidenceRefs:      EvidenceRefs(report),
+	}
+}
+
+func methodPolicyDigest(report DoctorReport) string {
+	refs := EvidenceRefs(report)
+	sort.Strings(refs)
+	sum := sha256.Sum256([]byte(strings.Join(refs, "\n")))
+	return hex.EncodeToString(sum[:])[:12]
 }

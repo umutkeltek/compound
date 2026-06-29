@@ -77,6 +77,58 @@ func TestDoctorReportsDuplicateNoPromoteChurn(t *testing.T) {
 	}
 }
 
+func TestDoctorWritebackGateForMethodPolicyDebt(t *testing.T) {
+	home, store := setup(t)
+	raw := readTraceFixture(t, "distill-session.json")
+
+	if _, err := Run(home, store, raw, DefaultPolicy(), ReferenceExtractor{}, t0); err != nil {
+		t.Fatalf("run trace fixture: %v", err)
+	}
+	report, err := Doctor(home)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if !NeedsWriteback(report) {
+		t.Fatal("NeedsWriteback = false, want true")
+	}
+
+	gate := WritebackGate(report, "act_distiller", "pol_distiller", t0)
+	if gate.CandidateKind != KindMethodUpgrade {
+		t.Fatalf("candidate_kind = %q, want %q", gate.CandidateKind, KindMethodUpgrade)
+	}
+	if gate.OwnerTarget.Kind != "distillation_policy" || gate.OwnerTarget.Ref != "distillation_policy:default.v1" {
+		t.Fatalf("owner target = %+v", gate.OwnerTarget)
+	}
+	if gate.ActionIntentRef != "act_distiller" || gate.PolicyDecisionRef != "pol_distiller" {
+		t.Fatalf("gate action/policy refs = %q/%q", gate.ActionIntentRef, gate.PolicyDecisionRef)
+	}
+	if !hasString(gate.EvidenceRefs, "distiller:method_upgrades:1") || !hasString(gate.EvidenceRefs, "candidate_kind:"+KindMethodUpgrade) {
+		t.Fatalf("evidence refs missing method upgrade markers: %v", gate.EvidenceRefs)
+	}
+	if gate.CandidateRef == "" || gate.GateBasis == "" {
+		t.Fatalf("gate missing candidate ref or basis: %+v", gate)
+	}
+}
+
+func TestDuplicateChurnDoesNotNeedWriteback(t *testing.T) {
+	home, store := setup(t)
+	raw := readTraceFixture(t, "distill-duplicate-memory.json")
+
+	if _, err := Run(home, store, raw, DefaultPolicy(), ReferenceExtractor{}, t0); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if _, err := Run(home, store, raw, DefaultPolicy(), ReferenceExtractor{}, t0); err != nil {
+		t.Fatalf("duplicate run: %v", err)
+	}
+	report, err := Doctor(home)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if NeedsWriteback(report) {
+		t.Fatal("duplicate churn should be handled by no-promote, not policy writeback")
+	}
+}
+
 func readTraceFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "traces", name))
