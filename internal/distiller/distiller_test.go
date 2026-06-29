@@ -183,6 +183,75 @@ func TestDuplicateMemoryRecordsNoPromote(t *testing.T) {
 	}
 }
 
+// Duplicate non-memory candidate families use prior inbox coverage as an anti-churn
+// gate; the no-promote row is the durable record, not another candidate file.
+func TestDuplicateNonMemoryCandidateRecordsNoPromote(t *testing.T) {
+	home, store := setup(t)
+	first := run(t, home, store, `{"trace_ref":"t1","candidates":[{"kind":"skill","subject":"paywall-cro","statement":"use this lens","confidence":0.9}]}`)
+	if first.Decisions[0].Verdict != Park {
+		t.Fatalf("setup skill verdict = %q, want park", first.Decisions[0].Verdict)
+	}
+
+	dup := run(t, home, store, `{"trace_ref":"t2","candidates":[{"kind":"skill","subject":" Paywall-CRO ","statement":"USE THIS LENS","confidence":0.2}]}`)
+	rejected := firstDecisionWithVerdict(t, dup, Reject)
+	if rejected.PriorCandidateID != first.Decisions[0].CandidateID {
+		t.Fatalf("prior candidate = %q, want %q", rejected.PriorCandidateID, first.Decisions[0].CandidateID)
+	}
+	if rejected.PriorClaimID != "" {
+		t.Fatalf("non-memory duplicate must not point at prior claim: %+v", rejected)
+	}
+	if rejected.NoPromoteID == "" {
+		t.Fatalf("duplicate non-memory candidate missing no_promote_id: %+v", rejected)
+	}
+
+	skillDir := candidates.InboxDir(candidates.Skill)
+	files, _ := filepath.Glob(filepath.Join(home, skillDir, "*.json"))
+	if len(files) != 1 {
+		t.Fatalf("duplicate skill should not create another inbox row; found %d", len(files))
+	}
+
+	rows := readNoPromoteRows(t, home)
+	if len(rows) != 1 {
+		t.Fatalf("no-promote rows = %d, want 1", len(rows))
+	}
+	nop := rows[0]
+	if nop.OwnerTarget.Kind != "candidate" || nop.OwnerTarget.Ref != first.Decisions[0].CandidateID {
+		t.Fatalf("owner target = %+v, want candidate %q", nop.OwnerTarget, first.Decisions[0].CandidateID)
+	}
+	if !hasString(nop.EvidenceRefs, "prior_candidate:"+first.Decisions[0].CandidateID) {
+		t.Fatalf("evidence refs missing prior candidate: %v", nop.EvidenceRefs)
+	}
+}
+
+func TestSameTraceDuplicateNonMemoryCandidateUsesNoPromote(t *testing.T) {
+	home, store := setup(t)
+	res := run(t, home, store, `{"trace_ref":"t_same","candidates":[
+		{"kind":"taste","subject":"product:visuals","statement":"avoid generic gradients","confidence":0.9},
+		{"kind":"taste","subject":" PRODUCT:VISUALS ","statement":"Avoid Generic Gradients","confidence":0.9}
+	]}`)
+	if len(res.Decisions) != 2 {
+		t.Fatalf("decisions = %d, want 2", len(res.Decisions))
+	}
+	if res.Decisions[0].Verdict != Park {
+		t.Fatalf("first duplicate-family candidate verdict = %q, want park", res.Decisions[0].Verdict)
+	}
+	rejected := res.Decisions[1]
+	if rejected.Verdict != Reject || rejected.Relation != "duplicate" {
+		t.Fatalf("second duplicate-family candidate = %q/%q, want reject/duplicate", rejected.Verdict, rejected.Relation)
+	}
+	if rejected.PriorCandidateID != res.Decisions[0].CandidateID {
+		t.Fatalf("prior candidate = %q, want first candidate %q", rejected.PriorCandidateID, res.Decisions[0].CandidateID)
+	}
+	if rejected.NoPromoteID == "" {
+		t.Fatalf("same-trace duplicate missing no_promote_id: %+v", rejected)
+	}
+	tasteDir := candidates.InboxDir(candidates.Taste)
+	files, _ := filepath.Glob(filepath.Join(home, tasteDir, "*.json"))
+	if len(files) != 1 {
+		t.Fatalf("same-trace duplicate should write one inbox row; found %d", len(files))
+	}
+}
+
 // No candidate enters ambient recall without adjudication: a parked skill candidate is a file in
 // the inbox, NOT a claim — recall/AllCurrent never surfaces it.
 func TestNoCandidateToAmbientWithoutAdjudication(t *testing.T) {

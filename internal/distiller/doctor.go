@@ -35,8 +35,10 @@ type DoctorReport struct {
 	MemoryParked                          int            `json:"memory_parked"`
 	MemoryRejected                        int            `json:"memory_rejected"`
 	DuplicateMemoryRejections             int            `json:"duplicate_memory_rejections"`
+	DuplicateCandidateRejections          int            `json:"duplicate_candidate_rejections"`
 	NoPromoteRows                         int            `json:"no_promote_rows"`
 	DuplicateMemoryNoPromoteRows          int            `json:"duplicate_memory_no_promote_rows"`
+	DuplicateCandidateNoPromoteRows       int            `json:"duplicate_candidate_no_promote_rows"`
 	EvalCases                             int            `json:"eval_cases"`
 	MethodUpgradeDebt                     int            `json:"method_upgrade_debt"`
 	PolicyPatchDebt                       int            `json:"policy_patch_debt"`
@@ -77,6 +79,8 @@ func Doctor(homePath string) (DoctorReport, error) {
 			if d.Verdict == Reject && d.Relation == "duplicate" {
 				report.DuplicateMemoryRejections++
 			}
+		} else if d.Verdict == Reject && d.Relation == "duplicate" {
+			report.DuplicateCandidateRejections++
 		}
 		if d.Kind == KindCapabilityObs && d.Verdict == Operationalize {
 			report.OperationalizedCapabilityObservations++
@@ -117,6 +121,8 @@ func Doctor(homePath string) (DoctorReport, error) {
 	for _, d := range noPromotes {
 		if d.CandidateKind == KindMemory && d.OwnerTarget.Kind == "memory_claim" {
 			report.DuplicateMemoryNoPromoteRows++
+		} else if d.OwnerTarget.Kind == "candidate" {
+			report.DuplicateCandidateNoPromoteRows++
 		}
 	}
 
@@ -138,11 +144,11 @@ func Doctor(homePath string) (DoctorReport, error) {
 		},
 		DoctorCheck{
 			Name:   "duplicate_churn",
-			Status: statusForDebt(report.DuplicateMemoryRejections),
-			Detail: fmt.Sprintf("%d duplicate memory rejection(s), %d no-promote row(s)", report.DuplicateMemoryRejections, report.DuplicateMemoryNoPromoteRows),
+			Status: statusForDebt(report.DuplicateMemoryRejections + report.DuplicateCandidateRejections),
+			Detail: fmt.Sprintf("%d duplicate memory rejection(s), %d duplicate candidate rejection(s), %d memory no-promote row(s), %d candidate no-promote row(s)", report.DuplicateMemoryRejections, report.DuplicateCandidateRejections, report.DuplicateMemoryNoPromoteRows, report.DuplicateCandidateNoPromoteRows),
 		},
 	)
-	if report.SelfImprovementDebt > 0 || report.DuplicateMemoryRejections > 0 {
+	if report.SelfImprovementDebt > 0 || report.DuplicateMemoryRejections > 0 || report.DuplicateCandidateRejections > 0 {
 		report.Status = "attention"
 	}
 	return report, nil

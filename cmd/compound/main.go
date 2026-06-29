@@ -589,8 +589,9 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- adjudications: %d\n", report.TotalDecisions)
 		fmt.Printf("- memory: promoted=%d parked=%d rejected=%d duplicate_rejected=%d\n",
 			report.MemoryPromoted, report.MemoryParked, report.MemoryRejected, report.DuplicateMemoryRejections)
-		fmt.Printf("- no_promote: total=%d duplicate_memory=%d\n",
-			report.NoPromoteRows, report.DuplicateMemoryNoPromoteRows)
+		fmt.Printf("- duplicate_candidates: rejected=%d\n", report.DuplicateCandidateRejections)
+		fmt.Printf("- no_promote: total=%d duplicate_memory=%d duplicate_candidates=%d\n",
+			report.NoPromoteRows, report.DuplicateMemoryNoPromoteRows, report.DuplicateCandidateNoPromoteRows)
 		fmt.Printf("- eval_cases: %d\n", report.EvalCases)
 		fmt.Printf("- method_policy_debt: method_upgrades=%d policy_patches=%d total=%d\n",
 			report.MethodUpgradeDebt, report.PolicyPatchDebt, report.SelfImprovementDebt)

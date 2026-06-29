@@ -129,6 +129,32 @@ func TestDuplicateChurnDoesNotNeedWriteback(t *testing.T) {
 	}
 }
 
+func TestDoctorReportsDuplicateCandidateChurn(t *testing.T) {
+	home, store := setup(t)
+	first := `{"trace_ref":"t1","candidates":[{"kind":"skill","subject":"paywall-cro","statement":"use this lens","confidence":0.9}]}`
+	dupe := `{"trace_ref":"t2","candidates":[{"kind":"skill","subject":"paywall-cro","statement":"use this lens","confidence":0.9}]}`
+	if _, err := Run(home, store, []byte(first), DefaultPolicy(), ReferenceExtractor{}, t0); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if _, err := Run(home, store, []byte(dupe), DefaultPolicy(), ReferenceExtractor{}, t0); err != nil {
+		t.Fatalf("duplicate run: %v", err)
+	}
+
+	report, err := Doctor(home)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.DuplicateCandidateRejections != 1 {
+		t.Fatalf("duplicate candidate rejections = %d, want 1", report.DuplicateCandidateRejections)
+	}
+	if report.DuplicateCandidateNoPromoteRows != 1 {
+		t.Fatalf("duplicate candidate no-promote rows = %d, want 1", report.DuplicateCandidateNoPromoteRows)
+	}
+	if NeedsWriteback(report) {
+		t.Fatal("duplicate candidate churn should be handled by no-promote, not policy writeback")
+	}
+}
+
 func readTraceFixture(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "traces", name))

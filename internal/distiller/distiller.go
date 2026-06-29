@@ -128,6 +128,7 @@ type Critique struct {
 	IsNew                bool   `json:"is_new"`
 	Duplicate            bool   `json:"duplicate"`
 	DuplicateClaimID     string `json:"duplicate_claim_id,omitempty"`
+	DuplicateCandidateID string `json:"duplicate_candidate_id,omitempty"`
 	Supersedes           string `json:"supersedes,omitempty"` // current claim id, for memory kind
 	Contradicts          string `json:"contradicts,omitempty"`
 	ExposesMethodFailure bool   `json:"exposes_method_failure"`
@@ -136,18 +137,19 @@ type Critique struct {
 
 // AdjudicationDecision is the durable verdict a candidate receives.
 type AdjudicationDecision struct {
-	CandidateID    string   `json:"candidate_id"`
-	Kind           string   `json:"kind"`
-	Verdict        string   `json:"verdict"`
-	Relation       string   `json:"relation,omitempty"`        // vs prior canon: new|duplicate|supersedes|contradicts
-	PriorClaimID   string   `json:"prior_claim_id,omitempty"`  // the canon claim the relation points at
-	Basis          string   `json:"basis"`                     // the reason text for the verdict
-	PromotionBasis string   `json:"promotion_basis,omitempty"` // the structured basis that allowed a memory promote
-	EvidenceRefs   []string `json:"evidence_refs"`
-	PolicyVersion  string   `json:"policy_version"`
-	ClaimID        string   `json:"claim_id,omitempty"` // set when a memory candidate promotes to a claim
-	NoPromoteID    string   `json:"no_promote_id,omitempty"`
-	CreatedAt      string   `json:"created_at"`
+	CandidateID      string   `json:"candidate_id"`
+	Kind             string   `json:"kind"`
+	Verdict          string   `json:"verdict"`
+	Relation         string   `json:"relation,omitempty"`           // vs prior canon: new|duplicate|supersedes|contradicts
+	PriorClaimID     string   `json:"prior_claim_id,omitempty"`     // the canon claim the relation points at
+	PriorCandidateID string   `json:"prior_candidate_id,omitempty"` // the candidate inbox row the relation points at
+	Basis            string   `json:"basis"`                        // the reason text for the verdict
+	PromotionBasis   string   `json:"promotion_basis,omitempty"`    // the structured basis that allowed a memory promote
+	EvidenceRefs     []string `json:"evidence_refs"`
+	PolicyVersion    string   `json:"policy_version"`
+	ClaimID          string   `json:"claim_id,omitempty"` // set when a memory candidate promotes to a claim
+	NoPromoteID      string   `json:"no_promote_id,omitempty"`
+	CreatedAt        string   `json:"created_at"`
 }
 
 // Trace is the normalized candidate payload every extractor must produce. Reference fixtures and
@@ -198,9 +200,20 @@ func normalizeTrace(t Trace, policy Policy) (Trace, error) {
 	return t, nil
 }
 
-// Critique grades a candidate against prior canon. For memory kind it detects duplicate vs
-// supersession vs new; for other kinds it is new (slice-1 non-memory dedup is by id only).
+// Critique grades candidate against prior canon and candidate inboxes.
+// Memory compares against current claims; every other typed family compares against
+// the same family's prior inbox rows so a following/critic agent cannot keep
+// reintroducing the same parked insight as new just because the trace changed.
 func critique(c Candidate, prior PriorState) Critique {
+	if c.Kind != KindMemory {
+		if dup, ok := duplicatePriorCandidate(c, prior.CandidatesByKind[c.Kind]); ok {
+			return Critique{
+				Duplicate:            true,
+				DuplicateCandidateID: dup.ID,
+				Notes:                "matches prior " + c.Kind + " candidate " + dup.ID,
+			}
+		}
+	}
 	if c.Kind == KindEvalCase {
 		return Critique{IsNew: true, ExposesMethodFailure: true, Notes: "distiller mistake → eval corpus"}
 	}
@@ -228,14 +241,17 @@ func critique(c Candidate, prior PriorState) Critique {
 // OPERATIONALIZES (into its corpus/graph); a method upgrade or policy patch PARKS (an operator
 // reviews — a method change is never auto-applied); other kinds park as candidates.
 func adjudicate(c Candidate, crit Critique, mode string) (string, string) {
+	if crit.Duplicate {
+		if crit.DuplicateCandidateID != "" {
+			return Reject, "duplicate prior " + c.Kind + " candidate " + crit.DuplicateCandidateID
+		}
+		return Reject, "duplicate of current canon"
+	}
 	if c.Confidence < confidenceFloor {
 		return Park, fmt.Sprintf("confidence %.2f below floor %.2f", c.Confidence, confidenceFloor)
 	}
 	switch c.Kind {
 	case KindMemory:
-		if crit.Duplicate {
-			return Reject, "duplicate of current canon"
-		}
 		if crit.Contradicts != "" {
 			return Park, "contradicts higher-confidence canon " + crit.Contradicts + " — operator review"
 		}
@@ -281,11 +297,14 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 
 	var writebackStore *writeback.Store
 	for _, c := range t.Candidates {
+		wroteCandidate := false
 		crit := critique(c, prior)
 		verdict, basis := adjudicate(c, crit, policy.PromotionMode)
 		c.Verdict = verdict // stamp onto the written record so a consumer respects adjudication
-		rel, priorClaim := "new", ""
+		rel, priorClaim, priorCandidate := "new", "", ""
 		switch {
+		case crit.Duplicate && crit.DuplicateCandidateID != "":
+			rel, priorCandidate = "duplicate", crit.DuplicateCandidateID
 		case crit.Duplicate:
 			rel, priorClaim = "duplicate", crit.DuplicateClaimID
 		case crit.Contradicts != "":
@@ -294,7 +313,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 			rel, priorClaim = "supersedes", crit.Supersedes
 		}
 		dec := AdjudicationDecision{
-			CandidateID: c.ID, Kind: c.Kind, Verdict: verdict, Relation: rel, PriorClaimID: priorClaim,
+			CandidateID: c.ID, Kind: c.Kind, Verdict: verdict, Relation: rel, PriorClaimID: priorClaim, PriorCandidateID: priorCandidate,
 			Basis: basis, PromotionBasis: c.PromotionBasis, EvidenceRefs: c.EvidenceRefs,
 			PolicyVersion: c.PolicyVersion, CreatedAt: rfc3339(now),
 		}
@@ -322,11 +341,19 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 				// mem detected a duplicate the prior-state critic missed (race / same-trace dup).
 				dec.Verdict, dec.Relation, dec.Basis = Reject, "duplicate", "duplicate per mem ledger"
 			}
+		case c.Kind != KindMemory && verdict == Reject && crit.Duplicate:
+			// Anti-churn: the adjudication and no-promote row are the durable
+			// record. Do not write another candidate inbox file for the same
+			// prior meaning.
 		default:
 			// candidate-first: write the record to its inbox; it never becomes a claim here.
 			if err := writeCandidate(homePath, c); err != nil {
 				return res, err
 			}
+			wroteCandidate = true
+		}
+		if wroteCandidate && c.Kind != KindMemory {
+			prior.CandidatesByKind[c.Kind] = append(prior.CandidatesByKind[c.Kind], priorCandidateFromCandidate(c))
 		}
 		if needsNoPromote(dec) {
 			if writebackStore == nil {
@@ -354,25 +381,97 @@ func needsNoPromote(d AdjudicationDecision) bool {
 }
 
 func noPromoteDecision(c Candidate, d AdjudicationDecision, now time.Time) writeback.NoPromoteDecision {
-	ownerRef := "distiller:" + c.Kind
+	ownerTarget := writeback.OwnerTarget{Kind: "candidate_family", Ref: "distiller:" + c.Kind}
 	if d.PriorClaimID != "" {
-		ownerRef = d.PriorClaimID
+		ownerTarget = writeback.OwnerTarget{Kind: "memory_claim", Ref: d.PriorClaimID}
+	} else if d.PriorCandidateID != "" {
+		ownerTarget = writeback.OwnerTarget{Kind: "candidate", Ref: d.PriorCandidateID}
 	}
 	evidenceRefs := append([]string(nil), d.EvidenceRefs...)
 	if d.PriorClaimID != "" {
 		evidenceRefs = append(evidenceRefs, "prior_claim:"+d.PriorClaimID)
+	}
+	if d.PriorCandidateID != "" {
+		evidenceRefs = append(evidenceRefs, "prior_candidate:"+d.PriorCandidateID)
 	}
 	return writeback.NoPromoteDecision{
 		SchemaVersion: writeback.NoPromoteSchemaVersion,
 		CreatedAt:     rfc3339(now),
 		CandidateRef:  c.ID,
 		CandidateKind: c.Kind,
-		OwnerTarget:   writeback.OwnerTarget{Kind: "memory_claim", Ref: ownerRef},
+		OwnerTarget:   ownerTarget,
 		Basis:         d.Basis,
 		EvidenceRefs:  evidenceRefs,
 		PolicyVersion: d.PolicyVersion,
 		Status:        writeback.NoPromoteActive,
 	}
+}
+
+func duplicatePriorCandidate(c Candidate, priors []PriorCandidate) (PriorCandidate, bool) {
+	key := candidateMeaningKey(c)
+	if key == "" {
+		return PriorCandidate{}, false
+	}
+	for _, prior := range priors {
+		if prior.ID == c.ID {
+			return prior, true
+		}
+		if priorCandidateMeaningKey(prior) == key {
+			return prior, true
+		}
+	}
+	return PriorCandidate{}, false
+}
+
+func candidateMeaningKey(c Candidate) string {
+	return meaningKey(c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail)
+}
+
+func priorCandidateMeaningKey(c PriorCandidate) string {
+	return meaningKey(c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail)
+}
+
+func priorCandidateFromCandidate(c Candidate) PriorCandidate {
+	return PriorCandidate{
+		ID:           c.ID,
+		Kind:         c.Kind,
+		Subject:      c.Subject,
+		Statement:    c.Statement,
+		Detail:       c.Detail,
+		Entity:       c.Entity,
+		Predicate:    c.Predicate,
+		Object:       c.Object,
+		Verdict:      c.Verdict,
+		Confidence:   c.Confidence,
+		EvidenceRefs: append([]string(nil), c.EvidenceRefs...),
+	}
+}
+
+func meaningKey(kind, entity, predicate, object, subject, statement, detail string) string {
+	parts := []string{
+		norm(kind),
+		norm(entity),
+		norm(predicate),
+		norm(object),
+		norm(subject),
+		norm(statement),
+		norm(detail),
+	}
+	hasPayload := false
+	for _, part := range parts[1:] {
+		if part != "" {
+			hasPayload = true
+			break
+		}
+	}
+	if !hasPayload {
+		return ""
+	}
+	return strings.Join(parts, "\x00")
+}
+
+func norm(v string) string {
+	return strings.ToLower(strings.TrimSpace(v))
 }
 
 // --- persistence (under COMPOUND_HOME) ---
