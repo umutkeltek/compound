@@ -231,6 +231,89 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 	}
 }
 
+func TestPromptWorkClosesWithContextTransition(t *testing.T) {
+	homePath := t.TempDir()
+	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
+	if err != nil {
+		t.Fatalf("load skill manifest: %v", err)
+	}
+	if _, err := capgraph.ApplySkillManifest(homePath, manifest, fixedNow); err != nil {
+		t.Fatalf("apply skill manifest: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+
+	start, err := Run(Fixture{
+		Hook:     "user-prompt-submit",
+		Harness:  "codex",
+		Cwd:      "/repo/productX",
+		Task:     "improve pricing",
+		RepoKind: "product",
+		Prompt:   "prepare a pricing test",
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("user prompt: %v", err)
+	}
+	pack := start.Produced[2].(*envelope.ContextPack)
+	w := start.Produced[3].(*envelope.WorkEnvelope)
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "ready", Note: "admit prompt work"}, fixedNow); err != nil {
+		t.Fatalf("advance ready: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", RunID: "run_pricing_test"}, fixedNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", ArtifactID: "artifact_pricing_plan", VerificationID: "ver_pricing_plan"}, fixedNow); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+
+	closed, err := Run(Fixture{
+		Hook:     "session-end",
+		Harness:  "codex",
+		WorkID:   w.ID,
+		MoveType: "outward_delta",
+		Outcome:  "completed",
+		Summary:  "pricing test prepared",
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("session end: %v", err)
+	}
+	if got := kinds(closed.Produced); len(got) != 2 || got[0] != "receipt" || got[1] != "transition" {
+		t.Fatalf("closed produced = %v, want [receipt transition]", got)
+	}
+	rec := closed.Produced[0].(*envelope.Receipt)
+	tr := closed.Produced[1].(*envelope.Transition)
+	if rec.IDs.WorkID != w.ID || tr.IDs.WorkID != w.ID {
+		t.Fatalf("work id chain broken: receipt=%q transition=%q work=%q", rec.IDs.WorkID, tr.IDs.WorkID, w.ID)
+	}
+	if rec.IDs.ContextPackID != pack.Header.ID || tr.IDs.ContextPackID != pack.Header.ID {
+		t.Fatalf("context pack chain broken: receipt=%q transition=%q pack=%q", rec.IDs.ContextPackID, tr.IDs.ContextPackID, pack.Header.ID)
+	}
+	if len(tr.BeforeRefs) != 1 || tr.BeforeRefs[0] != pack.Header.ID {
+		t.Fatalf("transition before_refs = %v, want [%s]", tr.BeforeRefs, pack.Header.ID)
+	}
+	if !containsString(tr.ActionRefs, "run_pricing_test") {
+		t.Fatalf("transition action_refs = %v, want run_pricing_test", tr.ActionRefs)
+	}
+	if !containsString(tr.AfterRefs, "artifact_pricing_plan") || !containsString(tr.AfterRefs, rec.ID) {
+		t.Fatalf("transition after_refs = %v, want artifact and receipt", tr.AfterRefs)
+	}
+	final, _, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatalf("show final work: %v", err)
+	}
+	if final.State != "completed" || final.IDs.TransitionID != tr.ID {
+		t.Fatalf("final work state/transition = %q/%q, want completed/%q", final.State, final.IDs.TransitionID, tr.ID)
+	}
+}
+
 // The headline P5 proof: the SAME held action is enforced differently by harness
 // capability — claude_code blocks; codex fails open (must be enforced via a wrapper).
 func TestPreToolUseCapabilityAware(t *testing.T) {
