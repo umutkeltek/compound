@@ -298,17 +298,23 @@ func (s *Store) Consume(homePath string, now time.Time) (int, error) {
 
 // ReceiptConsumeReport summarizes how runtime receipts affected the graph.
 type ReceiptConsumeReport struct {
-	ReceiptsScanned      int      `json:"receipts_scanned"`
-	UsedCapabilitiesSeen int      `json:"used_capabilities_seen"`
-	AppliedEdges         int      `json:"applied_edges"`
-	SkippedNonCompleted  int      `json:"skipped_non_completed"`
-	SkippedUnchanged     int      `json:"skipped_unchanged"`
-	SkippedUnknown       []string `json:"skipped_unknown"`
+	ReceiptsScanned        int      `json:"receipts_scanned"`
+	UsedCapabilitiesSeen   int      `json:"used_capabilities_seen"`
+	MissedCapabilitiesSeen int      `json:"missed_capabilities_seen"`
+	AppliedEdges           int      `json:"applied_edges"`
+	AppliedValidatedEdges  int      `json:"applied_validated_edges"`
+	AppliedMissedEdges     int      `json:"applied_missed_edges"`
+	SkippedNonCompleted    int      `json:"skipped_non_completed"`
+	SkippedUnchanged       int      `json:"skipped_unchanged"`
+	SkippedMissingContext  int      `json:"skipped_missing_context"`
+	SkippedUnknown         []string `json:"skipped_unknown"`
 }
 
-// ConsumeReceipts turns proven capability usage into validated_by graph edges.
-// Only completed receipts with a real state delta can validate a capability.
-// ContextPack offers in skills.candidate are intentionally ignored: offer is not use.
+// ConsumeReceipts turns receipt feedback into graph edges. Used capabilities
+// validate only when a completed receipt changed state. Explicit missed
+// capabilities add missed_when context edges from the receipt summary; failed
+// receipts can still teach misses. ContextPack offers in skills.candidate are
+// intentionally ignored: offer is not use.
 func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeReport, error) {
 	var report ReceiptConsumeReport
 	dir := filepath.Join(homePath, "events")
@@ -367,21 +373,46 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 			return report, fmt.Errorf("receipt %s invalid: %w", entry.Name(), err)
 		}
 		report.ReceiptsScanned++
+
+		canValidateUse := rec.Outcome == "completed" && rec.StateDelta.Changed
 		if rec.Outcome != "completed" {
 			report.SkippedNonCompleted++
-			continue
 		}
 		if !rec.StateDelta.Changed {
 			report.SkippedUnchanged++
-			continue
 		}
 
-		for _, raw := range rec.Skills.Used {
+		if canValidateUse {
+			for _, raw := range rec.Skills.Used {
+				nodeID := capabilityNodeID(raw)
+				if nodeID == "" {
+					continue
+				}
+				report.UsedCapabilitiesSeen++
+				if !nodeIDs[nodeID] {
+					if !unknown[nodeID] {
+						report.SkippedUnknown = append(report.SkippedUnknown, nodeID)
+						unknown[nodeID] = true
+					}
+					continue
+				}
+				edge := Edge{Kind: EdValidatedBy, From: nodeID, To: rec.ID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
+					return report, err
+				} else if added {
+					report.AppliedEdges++
+					report.AppliedValidatedEdges++
+				}
+			}
+		}
+
+		contextTokens := tokenList(rec.StateDelta.Summary)
+		for _, raw := range rec.Skills.Missed {
 			nodeID := capabilityNodeID(raw)
 			if nodeID == "" {
 				continue
 			}
-			report.UsedCapabilitiesSeen++
+			report.MissedCapabilitiesSeen++
 			if !nodeIDs[nodeID] {
 				if !unknown[nodeID] {
 					report.SkippedUnknown = append(report.SkippedUnknown, nodeID)
@@ -389,20 +420,35 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 				}
 				continue
 			}
-			edge := Edge{Kind: EdValidatedBy, From: nodeID, To: rec.ID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
-			key := edgeKey(edge)
-			if existingEdges[key] {
+			if len(contextTokens) == 0 {
+				report.SkippedMissingContext++
 				continue
 			}
-			if err := s.AddEdge(edge, now); err != nil {
-				return report, err
+			for _, tok := range contextTokens {
+				edge := Edge{Kind: EdMissedWhen, From: "context:" + tok, To: nodeID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
+					return report, err
+				} else if added {
+					report.AppliedEdges++
+					report.AppliedMissedEdges++
+				}
 			}
-			existingEdges[key] = true
-			report.AppliedEdges++
 		}
 	}
 	sort.Strings(report.SkippedUnknown)
 	return report, nil
+}
+
+func (s *Store) addEdgeOnce(edge Edge, existing map[string]bool, now time.Time) (bool, error) {
+	key := edgeKey(edge)
+	if existing[key] {
+		return false, nil
+	}
+	if err := s.AddEdge(edge, now); err != nil {
+		return false, err
+	}
+	existing[key] = true
+	return true, nil
 }
 
 func (s *Store) List() ([]Node, error) { return s.loadNodes() }

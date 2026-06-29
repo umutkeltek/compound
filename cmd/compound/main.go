@@ -349,9 +349,13 @@ func cmdCapability(args []string) {
 		fmt.Println("# capability consume-receipts")
 		fmt.Printf("- receipts_scanned: %d\n", report.ReceiptsScanned)
 		fmt.Printf("- used_capabilities_seen: %d\n", report.UsedCapabilitiesSeen)
+		fmt.Printf("- missed_capabilities_seen: %d\n", report.MissedCapabilitiesSeen)
 		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
+		fmt.Printf("- applied_validated_edges: %d\n", report.AppliedValidatedEdges)
+		fmt.Printf("- applied_missed_edges: %d\n", report.AppliedMissedEdges)
 		fmt.Printf("- skipped_non_completed: %d\n", report.SkippedNonCompleted)
 		fmt.Printf("- skipped_unchanged: %d\n", report.SkippedUnchanged)
+		fmt.Printf("- skipped_missing_context: %d\n", report.SkippedMissingContext)
 		for _, id := range report.SkippedUnknown {
 			fmt.Printf("- skipped_unknown: %s\n", id)
 		}

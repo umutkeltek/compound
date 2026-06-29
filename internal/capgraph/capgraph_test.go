@@ -32,13 +32,19 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	if err := s.Add(Node{ID: "skill:offered-only", Kind: "skill", Name: "Offered", Triggers: []string{"pricing"}}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.Add(Node{ID: "skill:missed", Kind: "skill", Name: "Missed", Triggers: []string{"other"}}); err != nil {
+		t.Fatal(err)
+	}
 	writeReceipt(t, home, testReceipt("rec_used", "completed", true,
 		[]string{"capability://skill:pricing", "capability://skill:missing"},
+		nil,
 		[]string{"capability://skill:offered-only"}))
 	writeReceipt(t, home, testReceipt("rec_failed", "failed", true,
-		[]string{"capability://skill:offered-only"}, nil))
+		[]string{"capability://skill:offered-only"},
+		[]string{"capability://skill:missed"},
+		nil))
 	writeReceipt(t, home, testReceipt("rec_unchanged", "completed", false,
-		[]string{"capability://skill:offered-only"}, nil))
+		[]string{"capability://skill:offered-only"}, nil, nil))
 	writeFile(t, filepath.Join(home, "events", "tr_not_receipt.json"), `{
   "schema_version": "compound.transition.v0.1"
 }`)
@@ -47,7 +53,10 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 2 || report.AppliedEdges != 1 {
+	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 2 || report.MissedCapabilitiesSeen != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.AppliedValidatedEdges != 1 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 3 {
 		t.Fatalf("report = %+v", report)
 	}
 	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 1 {
@@ -59,6 +68,10 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	edges := readCapEdges(t, home)
 	if !hasEdge(edges, EdValidatedBy, "skill:pricing", "rec_used") {
 		t.Fatalf("edges = %+v, want used skill validated by receipt", edges)
+	}
+	if !hasEdge(edges, EdMissedWhen, "context:receipt", "skill:missed") ||
+		!hasEdge(edges, EdMissedWhen, "context:test", "skill:missed") {
+		t.Fatalf("edges = %+v, want missed skill context edges from failed receipt summary", edges)
 	}
 	if hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_used") ||
 		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_failed") ||
@@ -370,7 +383,7 @@ func readCapEdges(t *testing.T, home string) []Edge {
 	return edges
 }
 
-func testReceipt(id, outcome string, changed bool, used, candidate []string) envelope.Receipt {
+func testReceipt(id, outcome string, changed bool, used, missed, candidate []string) envelope.Receipt {
 	return envelope.Receipt{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVReceipt,
@@ -394,7 +407,7 @@ func testReceipt(id, outcome string, changed bool, used, candidate []string) env
 			Verification: []string{},
 		},
 		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: used, Missed: []string{}, Candidate: candidate},
+		Skills: envelope.ReceiptSkills{Used: used, Missed: missed, Candidate: candidate},
 		Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
 		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
 	}
