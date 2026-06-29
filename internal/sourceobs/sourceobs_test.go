@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/projection"
 	"compound/internal/tooltopology"
 )
@@ -172,6 +173,60 @@ func TestToolTopologyObservationWritesCapabilityNoPromote(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("tool topology source observation should not promote claims, stat err=%v", err)
+	}
+}
+
+func TestSkillManifestObservationWritesCapabilityNoPromote(t *testing.T) {
+	home := t.TempDir()
+	manifest := capgraph.SkillManifest{
+		SchemaVersion: capgraph.SkillManifestSchemaVersion,
+		ID:            "skill_manifest_fixture",
+		AdapterID:     "fixture.skill-manifest",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: capgraph.SkillSourceRef{
+			Path:        "fixtures/skills/skill-manifest.yaml",
+			Kind:        "generated_view",
+			Owner:       "capability-fixture",
+			SourceClass: "generated",
+			Revision:    "rev_fixture",
+		},
+		Skills: []capgraph.SkillManifestEntry{
+			{
+				ID:           "skill:pricing",
+				Name:         "Pricing",
+				Status:       "active",
+				Triggers:     []string{"pricing"},
+				EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
+			},
+		},
+		EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
+	}
+	obs := FromSkillManifest(manifest, tSource)
+	if obs.GeneratedView.ViewKind != "skill_manifest" || obs.MapsTo[0].CandidateKind != string(candidates.CapabilityObs) {
+		t.Fatalf("observation = %+v", obs)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.CapabilityObs), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Verdict != candidates.NoPromote || c.Subject != manifest.ID || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("skill manifest source observation should not promote claims, stat err=%v", err)
 	}
 }
 

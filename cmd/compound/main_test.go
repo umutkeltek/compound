@@ -722,6 +722,42 @@ func TestCapabilityImportTopologyRecordsSourceObservationNoPromote(t *testing.T)
 	}
 }
 
+func TestCapabilityImportSkillsRecordsSourceObservationNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	})
+	for _, want := range []string{"# capability import-skills skill_manifest_fixture", "- node: skill:pricing", "- edge: requires:skill:pricing->tool:analytics", "- source_observation:", "- source_candidate:", "- source_no_promote:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-skills output missing %q:\n%s", want, out)
+		}
+	}
+	edges := readCapabilityEdges(t, homePath)
+	if !hasCapabilityEdge(edges, capgraph.EdRequires, "skill:pricing") {
+		t.Fatalf("requires edge not imported: %+v", edges)
+	}
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read capability observations: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("capability observation entries = %d, want 1", len(entries))
+	}
+	noPromoteRows := readNoPromoteDecisionRows(t, homePath)
+	if len(noPromoteRows) != 1 || noPromoteRows[0].OwnerTarget.Kind != "source_observation" {
+		t.Fatalf("no-promote rows = %+v", noPromoteRows)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("skill import should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

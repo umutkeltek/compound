@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/projection"
 	"compound/internal/tooltopology"
 	"compound/internal/writeback"
@@ -239,6 +240,52 @@ func FromToolTopology(topo tooltopology.Topology, now time.Time) SourceObservati
 				ObjectFamily:   "capability",
 				CandidateKind:  string(candidates.CapabilityObs),
 				EntityHint:     topo.ID,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
+// FromSkillManifest converts an imported skill manifest source into the generic
+// SourceObservation contract. Skill imports can seed CapabilityGraph offers, but
+// the manifest source itself remains no-promote evidence until validated by
+// receipts, decisions, or explicit review.
+func FromSkillManifest(manifest capgraph.SkillManifest, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(manifest.SourceRef.Revision)
+	if revision == "" {
+		revision = "skill_manifest:" + manifest.ID
+	}
+	evidenceRefs := append([]string{}, manifest.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"skill_manifest:" + revision}
+	}
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "skill_manifest", manifest.ID, manifest.SourceRef.Path, revision),
+		AdapterID:     "compound.skill-manifest",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        manifest.SourceRef.Path,
+			Kind:        manifest.SourceRef.Kind,
+			Owner:       firstNonEmpty(manifest.SourceRef.Owner, manifest.ID),
+			SourceClass: manifest.SourceRef.SourceClass,
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "skill_manifest",
+			Consumer:    "compound capability import-skills",
+			Generator:   firstNonEmpty(manifest.AdapterID, "compound skill manifest adapter"),
+			Marker:      capgraph.SkillManifestSchemaVersion,
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("skills=%d", len(manifest.Skills)),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "capability",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     manifest.ID,
 				PromoteAllowed: false,
 			},
 		},

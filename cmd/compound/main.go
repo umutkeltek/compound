@@ -282,13 +282,14 @@ func cmdCapability(args []string) {
 			fmt.Printf("- source_no_promote: %s\n", id)
 		}
 	case "import-skills":
+		now := time.Now()
 		osSkillPath := flag("--os-skill-json")
 		p := posn(map[string]bool{"--os-skill-json": true})
 		var manifest capgraph.SkillManifest
 		var err error
 		switch {
 		case osSkillPath != "" && len(p) == 0:
-			manifest, err = capgraph.LoadOSSkillManifest(osSkillPath, time.Now())
+			manifest, err = capgraph.LoadOSSkillManifest(osSkillPath, now)
 		case osSkillPath == "" && len(p) == 1:
 			manifest, err = capgraph.LoadSkillManifest(p[0])
 		default:
@@ -296,8 +297,13 @@ func cmdCapability(args []string) {
 			os.Exit(2)
 		}
 		die(err)
-		report, err := capgraph.ApplySkillManifest(homePath, manifest, time.Now())
+		report, err := capgraph.ApplySkillManifest(homePath, manifest, now)
 		die(err)
+		sourceReport, err := sourceobs.Apply(homePath, sourceobs.FromSkillManifest(manifest, now), now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source observe:", err)
+			os.Exit(1)
+		}
 		fmt.Printf("# capability import-skills %s\n", report.ManifestID)
 		fmt.Printf("- status: %s\n", report.Status)
 		for _, check := range report.Checks {
@@ -312,6 +318,13 @@ func cmdCapability(args []string) {
 		}
 		for _, id := range report.EdgeIDs {
 			fmt.Printf("- edge: %s\n", id)
+		}
+		fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+		for _, id := range sourceReport.CandidateIDs {
+			fmt.Printf("- source_candidate: %s\n", id)
+		}
+		for _, id := range sourceReport.NoPromoteIDs {
+			fmt.Printf("- source_no_promote: %s\n", id)
 		}
 	case "add":
 		p := posn(map[string]bool{"--triggers": true})
