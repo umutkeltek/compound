@@ -438,6 +438,33 @@ func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	}
 }
 
+func TestProductImportProjectContractPromotesSourceInPlaceIdentity(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{
+			"import",
+			"--project-contract", filepath.Join("..", "..", "fixtures", "product", "project-contract.yaml"),
+			"--release", filepath.Join("..", "..", "fixtures", "product", "release-contract.yaml"),
+		})
+	})
+	if !strings.Contains(out, "# product import product:source_contract_demo") ||
+		!strings.Contains(out, "- claims: 4") ||
+		!strings.Contains(out, "- signals: 0") ||
+		!strings.Contains(out, "- hypotheses: 0") {
+		t.Fatalf("product import output missing source-contract proof:\n%s", out)
+	}
+	resolved := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", "appstore:9876543210"})
+	})
+	if !strings.Contains(resolved, "status: resolved") || !strings.Contains(resolved, "entity: product:source_contract_demo") {
+		t.Fatalf("app store identifier did not resolve to product entity:\n%s", resolved)
+	}
+}
+
 func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

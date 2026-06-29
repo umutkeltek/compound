@@ -34,6 +34,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 - `compound distiller run --llm-response` now has command-level proof that model-shaped candidates citing imported trace evidence park under live policy, write memory candidate/adjudication records, and create no claims ledger.
 
+- `compound product import --project-contract <project.yaml> [--release <release.yaml>]` now adapts source-in-place product contracts into the existing product registry path, promoting deterministic identity/surface/channel/privacy claims without inventing signals or hypotheses.
+
 ## Current Verdict
 
 Gen-1 memory stack migrated into the spine memory family and retired.

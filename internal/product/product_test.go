@@ -185,6 +185,54 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	}
 }
 
+func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
+	bundle, err := LoadProjectContractBundle("../../fixtures/product/project-contract.yaml", "../../fixtures/product/release-contract.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.SchemaVersion != SchemaVersion || bundle.Product.ID != "product:source_contract_demo" {
+		t.Fatalf("bundle identity = %+v", bundle)
+	}
+	if !hasString(bundle.Product.Channels, "app_store") || !hasString(bundle.Product.Channels, "web") || !hasString(bundle.Product.Channels, "api") {
+		t.Fatalf("channels = %+v", bundle.Product.Channels)
+	}
+	for _, ref := range []string{
+		"https://example.invalid/source-contract-demo.git",
+		"bundle:com.example.sourcecontractdemo",
+		"appstore:9876543210",
+		"https://source-contract-demo.example.invalid/health",
+	} {
+		if !hasSurfaceRef(bundle.Product.Surfaces, ref) {
+			t.Fatalf("surfaces missing %q: %+v", ref, bundle.Product.Surfaces)
+		}
+	}
+	if !hasString(bundle.EvidenceRefs, "project-contract:project-contract.yaml") || !hasString(bundle.EvidenceRefs, "release-contract:release-contract.yaml") {
+		t.Fatalf("evidence refs = %+v", bundle.EvidenceRefs)
+	}
+
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := Apply(home, store, bundle, "fixtures/product/project-contract.yaml", tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || report.EntityID != "product:source_contract_demo" || len(report.ClaimIDs) != 4 || len(report.SignalIDs) != 0 || len(report.HypothesisIDs) != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, token := range []string{"appstore:9876543210", "bundle:com.example.sourcecontractdemo"} {
+		res, err := store.ResolveEntity(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Status != "resolved" || res.Slug != "product:source_contract_demo" {
+			t.Fatalf("resolve %s = %+v", token, res)
+		}
+	}
+}
+
 func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
 	b := validBundle()
 	b.Signals[0].ProductID = "product:other"
@@ -391,6 +439,15 @@ func validSignalExportDocument() SignalExportDocument {
 func hasString(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSurfaceRef(values []Surface, want string) bool {
+	for _, value := range values {
+		if value.Ref == want {
 			return true
 		}
 	}

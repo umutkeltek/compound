@@ -166,7 +166,7 @@ usage:
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound event import-os <events.ndjson>                       OS-style append-only events -> TraceEnvelope evidence
@@ -2227,22 +2227,33 @@ func cmdAuthority(args []string) {
 
 func cmdProduct(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
 	switch args[0] {
 	case "import":
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml>")
+		var bundle product.Bundle
+		sourcePath := ""
+		var err error
+		if len(args) == 2 {
+			sourcePath = args[1]
+			bundle, err = product.Load(args[1])
+		} else if len(args) == 3 && args[1] == "--project-contract" {
+			sourcePath = args[2]
+			bundle, err = product.LoadProjectContractBundle(args[2], "")
+		} else if len(args) == 5 && args[1] == "--project-contract" && args[3] == "--release" {
+			sourcePath = args[2]
+			bundle, err = product.LoadProjectContractBundle(args[2], args[4])
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>]")
 			os.Exit(2)
 		}
-		bundle, err := product.Load(args[1])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product import:", err)
 			os.Exit(1)
 		}
-		report, err := product.Apply(homePath, store, bundle, args[1], time.Now())
+		report, err := product.Apply(homePath, store, bundle, sourcePath, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product import:", err)
 			os.Exit(1)
