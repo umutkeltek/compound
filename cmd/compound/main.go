@@ -158,8 +158,8 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
-                                                                  import/query decisions through spine memory; emit/apply lifecycle repair artifacts
+  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
+                                                                  import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
 compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
@@ -2270,7 +2270,6 @@ func cmdProduct(args []string) {
 }
 
 func cmdDecisions(args []string) {
-	store, _ := openMemStore()
 	values := func(name string) []string {
 		var out []string
 		for i := 0; i < len(args); i++ {
@@ -2285,10 +2284,54 @@ func cmdDecisions(args []string) {
 		}
 		return out
 	}
+	value := func(name string) string {
+		got := values(name)
+		if len(got) == 0 {
+			return ""
+		}
+		return got[0]
+	}
 	sub := ""
 	if len(args) > 0 {
 		sub = args[0]
 	}
+	if sub == "source-doctor" {
+		templatePath := value("--template")
+		formatDocPath := value("--format-doc")
+		if strings.TrimSpace(templatePath) == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound decisions source-doctor --template <decision-template.md> [--format-doc <README.md>]")
+			os.Exit(2)
+		}
+		report, err := decisions.DoctorSourceFormat(templatePath, formatDocPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions source-doctor:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# decisions source-doctor\n\n")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- template: %s\n", report.TemplatePath)
+		if report.FormatDocPath != "" {
+			fmt.Printf("- format_doc: %s\n", report.FormatDocPath)
+		}
+		fmt.Printf("- required_lifecycle_fields: %s\n", strings.Join(report.RequiredLifecycleFields, ","))
+		fmt.Printf("- missing_template_frontmatter: %d\n", len(report.MissingTemplateFrontmatter))
+		for _, field := range report.MissingTemplateFrontmatter {
+			fmt.Printf("  - %s\n", field)
+		}
+		fmt.Printf("- missing_template_guidance: %d\n", len(report.MissingTemplateGuidance))
+		for _, field := range report.MissingTemplateGuidance {
+			fmt.Printf("  - %s\n", field)
+		}
+		fmt.Printf("- missing_format_documentation: %d\n", len(report.MissingFormatDocumentation))
+		for _, field := range report.MissingFormatDocumentation {
+			fmt.Printf("  - %s\n", field)
+		}
+		if report.Status != decisions.SourceFormatDoctorOK {
+			os.Exit(1)
+		}
+		return
+	}
+	store, _ := openMemStore()
 	switch sub {
 	case "import":
 		var brainReports []decisions.BrainDecisionReport

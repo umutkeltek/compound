@@ -530,6 +530,88 @@ func TestRecordLifecycleRepairPlanWritesReviewArtifacts(t *testing.T) {
 	}
 }
 
+func TestDoctorSourceFormatDetectsTemplateLifecycleDebt(t *testing.T) {
+	dir := t.TempDir()
+	template := filepath.Join(dir, "decision.md")
+	formatDoc := filepath.Join(dir, "README.md")
+	writeFile(t, template, `---
+id: DEC-0000
+title: Short Decision Title
+status: proposed
+---
+
+# DEC-0000: Short Decision Title
+
+## Decision State
+
+decision in one two direct paragraphs.
+`)
+	writeFile(t, formatDoc, `# Decisions
+
+Required front matter:
+
+- id
+- title
+- status
+`)
+
+	report, err := DoctorSourceFormat(template, formatDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != SourceFormatDoctorNeedsRepair {
+		t.Fatalf("status = %q", report.Status)
+	}
+	if !hasString(report.MissingTemplateFrontmatter, "falsifier") ||
+		!hasString(report.MissingTemplateFrontmatter, "review_trigger") {
+		t.Fatalf("missing frontmatter = %v", report.MissingTemplateFrontmatter)
+	}
+	if !hasString(report.MissingTemplateGuidance, "falsifier") ||
+		!hasString(report.MissingTemplateGuidance, "review_trigger") {
+		t.Fatalf("missing guidance = %v", report.MissingTemplateGuidance)
+	}
+	if !hasString(report.MissingFormatDocumentation, "falsifier") ||
+		!hasString(report.MissingFormatDocumentation, "review_trigger") {
+		t.Fatalf("missing format documentation = %v", report.MissingFormatDocumentation)
+	}
+}
+
+func TestDoctorSourceFormatAcceptsLifecycleTemplateAndFormatDoc(t *testing.T) {
+	dir := t.TempDir()
+	template := filepath.Join(dir, "decision.md")
+	formatDoc := filepath.Join(dir, "README.md")
+	writeFile(t, template, `---
+id: DEC-0000
+title: Short Decision Title
+status: proposed
+falsifier:
+review_trigger:
+---
+
+# DEC-0000: Short Decision Title
+
+## Lifecycle Proof
+
+- Falsifier: describe what evidence would prove the decision wrong.
+- Review trigger: describe when humans or agents should re-check the decision.
+`)
+	writeFile(t, formatDoc, `# Decisions
+
+Required front matter:
+
+- falsifier: evidence that would prove the decision wrong.
+- review_trigger: condition that should force review.
+`)
+
+	report, err := DoctorSourceFormat(template, formatDoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != SourceFormatDoctorOK {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func TestApplyLifecycleRepairPlanWritesReviewedFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "decisions", "DEC-0300.md")
@@ -629,4 +711,13 @@ func writeFile(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func hasString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
