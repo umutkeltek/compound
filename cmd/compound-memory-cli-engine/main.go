@@ -24,6 +24,8 @@ import (
 	"compound/internal/mem"
 )
 
+var errUnsafeQueryTemplate = errors.New("memory CLI query template must start with a read-only verb")
+
 type cliRunner func(context.Context, string, []string) (string, error)
 
 type sidecar struct {
@@ -111,8 +113,12 @@ func (s *sidecar) handle(req mem.Request) mem.Response {
 		}
 		output, err := s.queryMemoryCLI(req.Text)
 		if err != nil {
+			code := mem.CodeEngineUnavailable
+			if errors.Is(err, errUnsafeQueryTemplate) {
+				code = mem.CodeBadRequest
+			}
 			resp.OK = false
-			resp.Error = &mem.WireError{Code: mem.CodeEngineUnavailable, Message: err.Error()}
+			resp.Error = &mem.WireError{Code: code, Message: err.Error()}
 			return resp
 		}
 		resp.OK = true
@@ -129,11 +135,14 @@ func (s *sidecar) queryMemoryCLI(text string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout())
 	defer cancel()
 	bin := envDefault("COMPOUND_MEMORY_CLI_BIN", "memory-cli")
-	args := buildQueryArgs(text)
+	args, err := buildQueryArgs(text)
+	if err != nil {
+		return "", err
+	}
 	return s.runner(ctx, bin, args)
 }
 
-func buildQueryArgs(text string) []string {
+func buildQueryArgs(text string) ([]string, error) {
 	limit := envDefault("COMPOUND_MEMORY_CLI_LIMIT", "8")
 	detail := envDefault("COMPOUND_MEMORY_CLI_DETAIL", "low")
 	template := envDefault("COMPOUND_MEMORY_CLI_QUERY_ARGS", "query {query} --limit {limit} --detail {detail}")
@@ -151,7 +160,22 @@ func buildQueryArgs(text string) []string {
 			args = append(args, part)
 		}
 	}
-	return args
+	if !isReadOnlyQueryVerb(args) {
+		return nil, fmt.Errorf("%w: %q", errUnsafeQueryTemplate, template)
+	}
+	return args, nil
+}
+
+func isReadOnlyQueryVerb(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "query", "search", "recall", "get":
+		return true
+	default:
+		return false
+	}
 }
 
 func execMemoryCLI(ctx context.Context, bin string, args []string) (string, error) {

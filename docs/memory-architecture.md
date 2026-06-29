@@ -232,8 +232,9 @@ adapters speak a different protocol and are not part of the spine memory engine 
 `compound-memory-cli-engine` is a read-only external memory CLI sidecar: it uses a
 configured query command as expansion context over claim text that compound just
 indexed, returns only allowed claim ids, maps a broken backend to `ErrEngineUnavailable`,
-and never runs mutating sync/embed/import commands. The real vector sidecar (Rust, +
-its embedder) is an **external artifact**, never vendored into the public core.
+and rejects mutating command templates before the external CLI is invoked. The real
+vector sidecar (Rust, + its embedder) is an **external artifact**, never vendored
+into the public core.
 
 ## Language And Runtime
 

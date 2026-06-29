@@ -154,6 +154,38 @@ func TestMemoryCLIEngineReportsUnavailableBackend(t *testing.T) {
 	}
 }
 
+func TestMemoryCLIEngineRejectsMutatingTemplateBeforeExternalCall(t *testing.T) {
+	t.Setenv("COMPOUND_MEMORY_CLI_QUERY_ARGS", "sync --repo {query}")
+	fake := &fakeMemoryCLI{output: "should not be called"}
+	responses := exchange(t, fake, []mem.Request{
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r1",
+			Op:            mem.OpIndex,
+			CorpusGen:     1,
+			Claims:        []mem.ClaimText{{ClaimID: "claim_go", Text: "backend go"}},
+		},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r2",
+			Op:            mem.OpQuery,
+			Text:          "backend",
+			Gate:          mem.GateList,
+			Allowlist:     []string{"claim_go"},
+			K:             10,
+		},
+	})
+	if responses[1].OK {
+		t.Fatalf("mutating template should not be OK: %+v", responses[1])
+	}
+	if responses[1].Error == nil || responses[1].Error.Code != mem.CodeBadRequest {
+		t.Fatalf("error = %+v, want %s", responses[1].Error, mem.CodeBadRequest)
+	}
+	if fake.calls != 0 {
+		t.Fatalf("mutating template should be rejected before external call, calls=%d", fake.calls)
+	}
+}
+
 func exchange(t *testing.T, fake *fakeMemoryCLI, requests []mem.Request) []mem.Response {
 	t.Helper()
 	var in bytes.Buffer
