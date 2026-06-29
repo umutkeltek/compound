@@ -10,6 +10,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/projection"
+	"compound/internal/tooltopology"
 )
 
 var tSource = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -115,6 +116,62 @@ func TestProjectionFreshnessObservationWritesMethodUpgradeNoPromote(t *testing.T
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("projection source observation should not promote claims, stat err=%v", err)
+	}
+}
+
+func TestToolTopologyObservationWritesCapabilityNoPromote(t *testing.T) {
+	home := t.TempDir()
+	topo := tooltopology.Topology{
+		SchemaVersion: tooltopology.SchemaVersion,
+		ID:            "topo_fixture_resolver",
+		AdapterID:     "fixture.tool-topology",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: tooltopology.SourceRef{
+			Path:        "fixtures/generated/tool-resolver.json",
+			Kind:        "generated_view",
+			Owner:       "fixture-spine",
+			SourceClass: "os-tool-resolver-json",
+			Revision:    "sha256:def456",
+		},
+		Entries: []tooltopology.Entry{
+			{
+				ID:           "mcp:context7",
+				Kind:         "mcp",
+				Name:         "context7",
+				Interface:    "mcp",
+				Status:       "on_demand",
+				Triggers:     []string{"docs"},
+				EvidenceRefs: []string{"tool_resolver_json:sha256:def456"},
+			},
+		},
+		EvidenceRefs: []string{"tool_resolver_json:sha256:def456"},
+	}
+	obs := FromToolTopology(topo, tSource)
+	if obs.GeneratedView.ViewKind != "tool_topology" || obs.MapsTo[0].CandidateKind != string(candidates.CapabilityObs) {
+		t.Fatalf("observation = %+v", obs)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.CapabilityObs), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Verdict != candidates.NoPromote || c.Subject != topo.ID || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("tool topology source observation should not promote claims, stat err=%v", err)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/projection"
+	"compound/internal/tooltopology"
 	"compound/internal/writeback"
 	"gopkg.in/yaml.v3"
 )
@@ -199,6 +200,52 @@ func FromProjectionFreshness(f projection.Freshness, now time.Time) SourceObserv
 	}
 }
 
+// FromToolTopology converts a generated/imported tool topology source into the
+// generic SourceObservation contract. The topology may update CapabilityGraph
+// offers, but the source view itself stays no-promote evidence rather than
+// promoted memory or source-owner truth.
+func FromToolTopology(topo tooltopology.Topology, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(topo.SourceRef.Revision)
+	if revision == "" {
+		revision = "topology:" + topo.ID
+	}
+	evidenceRefs := append([]string{}, topo.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"tool_topology:" + revision}
+	}
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "tool_topology", topo.ID, topo.SourceRef.Path, revision),
+		AdapterID:     "compound.tool-topology",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        topo.SourceRef.Path,
+			Kind:        topo.SourceRef.Kind,
+			Owner:       firstNonEmpty(topo.SourceRef.Owner, topo.ID),
+			SourceClass: topo.SourceRef.SourceClass,
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "tool_topology",
+			Consumer:    "compound capability import-topology",
+			Generator:   firstNonEmpty(topo.AdapterID, "compound tool topology adapter"),
+			Marker:      tooltopology.SchemaVersion,
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("entries=%d recommendations=%d", len(topo.Entries), len(topo.Recommendations)),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "capability",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     topo.ID,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
 func CandidateFromMap(obs SourceObservation, m MapTarget, now time.Time) CandidateRecord {
 	verdict := candidates.Park
 	if !m.PromoteAllowed {
@@ -312,4 +359,13 @@ func idFor(prefix string, parts ...string) string {
 
 func rfc3339(now time.Time) string {
 	return now.UTC().Format(time.RFC3339)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

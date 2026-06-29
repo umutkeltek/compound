@@ -126,7 +126,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | contract files | source material for contract candidates |
 | source-control snapshots | `SourceAuthority` status claims via read-only git inspection; branch/head/ahead/behind/dirty counts only, no cleanup/staging/push authority; `PreToolUse` may consume the same observation to hold dirty-repo mutations |
 | registries | `RegistryEntry` candidates |
-| tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges from normalized topology YAML or generated resolver JSON |
+| tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges from normalized topology YAML or generated resolver JSON; imported topology source also records `SourceObservation -> capability_observation candidate -> NoPromoteDecision` |
 | skill manifests / external skill catalogs | `SkillManifestAdapter` -> `CapabilityGraph` skill/lens/procedure nodes + graph edges from normalized manifests or generated skill-manifest JSON; offers only, never execution |
 | work packets | WorkEnvelope / Receipt / Transition evidence |
 | runtime / service contracts | `RuntimeBinding` / `ServiceContract` candidates |
@@ -146,11 +146,17 @@ The first implementation should be deliberately narrow:
 
 ```text
 one generated operating-system view
-  -> ProjectionFreshness
-  -> SourceObservation
-  -> method_upgrade candidate no_promote
-  -> ProjectionRegenerationPlan review artifact
-  -> source doctor reports fresh/stale/drifted
+ -> ProjectionFreshness
+ -> SourceObservation
+ -> method_upgrade candidate no_promote
+ -> ProjectionRegenerationPlan review artifact
+ -> source doctor reports fresh/stale/drifted
+
+one tool resolver view
+ -> ToolTopologyAdapter
+ -> CapabilityGraph offers
+ -> SourceObservation
+ -> capability_observation candidate no_promote
 ```
 
 This proves Compound can learn from generated files without making them new truth
