@@ -297,6 +297,8 @@ func cmdDistiller(args []string) {
 		extra := ""
 		if d.ClaimID != "" {
 			extra = " → claim " + d.ClaimID
+		} else if d.NoPromoteID != "" {
+			extra = " → no_promote " + d.NoPromoteID
 		}
 		fmt.Printf("%-22s %-14s %s%s\n", d.Kind, d.Verdict, d.Basis, extra)
 	}

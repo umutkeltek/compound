@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/writeback"
 )
 
 var t0 = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -136,6 +138,51 @@ func TestDuplicateAndSupersession(t *testing.T) {
 	}
 }
 
+func TestDuplicateMemoryRecordsNoPromote(t *testing.T) {
+	home, store := setup(t)
+	first := run(t, home, store, `{"trace_ref":"t1","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"node","confidence":0.9}]}`)
+	claimID := first.Decisions[0].ClaimID
+	if claimID == "" {
+		t.Fatal("setup claim was not promoted")
+	}
+
+	dup := run(t, home, store, `{"trace_ref":"t2","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"node","confidence":0.9}]}`)
+	rejected := firstDecisionWithVerdict(t, dup, Reject)
+	if rejected.NoPromoteID == "" {
+		t.Fatalf("duplicate decision missing no_promote_id: %+v", rejected)
+	}
+	if rejected.PriorClaimID != claimID {
+		t.Fatalf("prior claim = %q, want %q", rejected.PriorClaimID, claimID)
+	}
+
+	nopRows := readNoPromoteRows(t, home)
+	if len(nopRows) != 1 {
+		t.Fatalf("no-promote rows = %d, want 1", len(nopRows))
+	}
+	nop := nopRows[0]
+	if nop.ID != rejected.NoPromoteID {
+		t.Fatalf("no-promote id = %q, want %q", nop.ID, rejected.NoPromoteID)
+	}
+	if nop.CandidateRef != rejected.CandidateID || nop.CandidateKind != KindMemory {
+		t.Fatalf("candidate ref/kind = %q/%q, want %q/%q", nop.CandidateRef, nop.CandidateKind, rejected.CandidateID, KindMemory)
+	}
+	if nop.OwnerTarget.Kind != "memory_claim" || nop.OwnerTarget.Ref != claimID {
+		t.Fatalf("owner target = %+v, want memory_claim %q", nop.OwnerTarget, claimID)
+	}
+	if !hasString(nop.EvidenceRefs, "prior_claim:"+claimID) {
+		t.Fatalf("evidence refs missing prior claim: %v", nop.EvidenceRefs)
+	}
+
+	replayed := run(t, home, store, `{"trace_ref":"t2","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"node","confidence":0.9}]}`)
+	replayedReject := firstDecisionWithVerdict(t, replayed, Reject)
+	if replayedReject.NoPromoteID != rejected.NoPromoteID {
+		t.Fatalf("replay no_promote_id = %q, want %q", replayedReject.NoPromoteID, rejected.NoPromoteID)
+	}
+	if rows := readNoPromoteRows(t, home); len(rows) != 1 {
+		t.Fatalf("replay appended duplicate no-promote rows: %d", len(rows))
+	}
+}
+
 // No candidate enters ambient recall without adjudication: a parked skill candidate is a file in
 // the inbox, NOT a claim — recall/AllCurrent never surfaces it.
 func TestNoCandidateToAmbientWithoutAdjudication(t *testing.T) {
@@ -213,6 +260,12 @@ func TestLiveModeParksMemoryWithoutBasis(t *testing.T) {
 	if cur, _ := store.AllCurrent(); len(cur) != 0 {
 		t.Errorf("nothing should be canon without a basis; got %d claims", len(cur))
 	}
+	if res.Decisions[0].NoPromoteID != "" {
+		t.Fatalf("parked review candidate should not get no-promote id: %+v", res.Decisions[0])
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "no-promote-decisions.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("parked review candidate should not write no-promote ledger, err=%v", err)
+	}
 }
 
 // With a valid promotion basis, the same candidate PROMOTES and the basis is persisted on the claim
@@ -252,4 +305,45 @@ func firstLine(b []byte) string {
 		}
 	}
 	return string(b)
+}
+
+func firstDecisionWithVerdict(t *testing.T, res RunResult, verdict string) AdjudicationDecision {
+	t.Helper()
+	for _, d := range res.Decisions {
+		if d.Verdict == verdict {
+			return d
+		}
+	}
+	t.Fatalf("no decision with verdict %q in %+v", verdict, res.Decisions)
+	return AdjudicationDecision{}
+}
+
+func readNoPromoteRows(t *testing.T, home string) []writeback.NoPromoteDecision {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, "ledger", "no-promote-decisions.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	rows := make([]writeback.NoPromoteDecision, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var d writeback.NoPromoteDecision
+		if err := json.Unmarshal([]byte(line), &d); err != nil {
+			t.Fatalf("parse no-promote row %q: %v", line, err)
+		}
+		rows = append(rows, d)
+	}
+	return rows
+}
+
+func hasString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }

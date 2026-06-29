@@ -49,7 +49,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 |---|---|---|
 | Spine | `home`, `envelope`, `contract`, `orient`, `work`, `policy`, `hook`, `harness`, `transition` | canonical |
 | Memory | `memory candidate/adjudicate/recall/timeline/query/doctor` | canonical |
-| Distillation | `distiller run` | canonical |
+| Distillation | `distiller run` | canonical; duplicate memory outputs create idempotent `NoPromoteDecision` rows |
 | Capability | `capability add/surface/observe/consume/list` | canonical |
 | Runtime | `runtime doctor <runtime-binding.yaml> [--writeback]`; `runtime doctor --project-contract <project.yaml> [--writeback]` | canonical first slice + infra-os project-contract adapter; failing reports can enter work -> gate -> receipt/transition |
 | Projection | `projection doctor <freshness.yaml> [--writeback]` | canonical first slice; stale/drifted observations can enter work -> gate -> receipt/transition |
@@ -72,7 +72,7 @@ Next work is no longer memory-stack convergence. It is adapting existing operati
 
 - runtime/service ownership -> `RuntimeBinding` / `ServiceContract` first slice + infra-os project-contract adapter landed opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; next hardening broader private parity fixtures owner-regeneration adapter;
 - decisions -> `DecisionLifecycle` first slice landed; `decisions doctor --writeback` routes lifecycle gaps through `OwnerWritebackGate`, receipt, transition; next hardening source-specific adapters and lifecycle transitions beyond import;
-- generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed hash-based doctor opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; next hardening distiller producer writeback/no-promote using same gate;
+- generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed hash-based doctor opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; distiller duplicate memory outputs now route to `NoPromoteDecision`; next hardening source adapters and tool/MCP topology observations;
 - source documents -> source adapters emit evidence/candidates;
 - orientation scope -> project-aware context loading;
 - rented retrieval -> `MemoryEngine` adapter leaves ledger unchanged;

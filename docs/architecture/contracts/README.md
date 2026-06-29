@@ -69,7 +69,7 @@ unadjudicated; distillation proposes candidates only.**
 | **DistillationPolicy** | the *versioned* method that produced a candidate — so a method change is legible, not silent prompt drift | id, version, lenses[], thresholds, prompt_refs; changed only via an adjudicated DistillationPolicyPatchCandidate |
 | **DistillationCritique** | the critic verdict per candidate, before adjudication | new? · supersedes? · contradicts? · duplicate? · lower_quality_than_canon? · better_procedure? · become_skill_rule_eval? · park? · **exposes_method_failure?** |
 | **EvalCase** | a frozen distiller input→expected-output, born from a distiller mistake — the distiller's own regression corpus | id, trace_ref, expected, actual, regression_for_policy_version |
-| **AdjudicationDecision** | the durable verdict a candidate receives | candidate_ref, verdict (reject \| park \| promote \| operationalize \| retire), basis, evidence_refs[], policy_version |
+| **AdjudicationDecision** | the durable verdict a candidate receives | candidate_ref, verdict (reject \| park \| promote \| operationalize \| retire), basis, evidence_refs[], policy_version, optional no_promote_id for duplicate anti-churn |
 | **CapabilityGraph** | the typed graph over `Capability` / `RegistryEntry` nodes (P8) | node kinds (lens/procedure/script/tool/mcp/model_profile/harness/eval/workflow/adapter/doctrine/taste_standard) + edges (surfaces_with/requires/conflicts_with/specializes/fallback_for/validated_by/**missed_when**/**false_triggered_by**/retired_by); **auto-surface, never auto-execute** |
 
 The self-improving loop is what makes this *compound*: the distiller's own misses/false-triggers and a
@@ -101,7 +101,7 @@ views. It records `view_ref`, `source_refs[]`, `output_hash`, `source_hashes[]`,
 to. It may create `ProjectionFreshness`, evidence, or a parked/no_promote candidate.
 It cannot promote truth by itself.
 
-Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback`, `runtime doctor --writeback`, and `decisions doctor --writeback` now consume it for stale/drifted generated views, failing runtime reports, and decision lifecycle gaps. Next risk is wiring distiller observations through the same gate instead of bypassing owner gates.
+Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback`, `runtime doctor --writeback`, and `decisions doctor --writeback` consume it for stale/drifted generated views, failing runtime reports, and decision lifecycle gaps. `distiller run` now records duplicate memory outputs as idempotent `NoPromoteDecision` rows instead of letting them re-enter as new work. Next risk is source adapters and tool/MCP topology observations bypassing owner gates.
 Each is **defined here before implementation** so agents stop re-deriving them; each is built
 only when a vertical slice needs it (`../../roadmap/phases.md`).
 

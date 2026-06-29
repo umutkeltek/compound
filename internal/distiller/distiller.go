@@ -21,6 +21,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/writeback"
 )
 
 // Candidate kinds — the typed fan-out. memory routes through the ledger; the rest are candidate
@@ -122,6 +123,7 @@ func LoadPriorState(store *mem.Store) (PriorState, error) {
 type Critique struct {
 	IsNew                bool   `json:"is_new"`
 	Duplicate            bool   `json:"duplicate"`
+	DuplicateClaimID     string `json:"duplicate_claim_id,omitempty"`
 	Supersedes           string `json:"supersedes,omitempty"` // current claim id, for memory kind
 	Contradicts          string `json:"contradicts,omitempty"`
 	ExposesMethodFailure bool   `json:"exposes_method_failure"`
@@ -140,6 +142,7 @@ type AdjudicationDecision struct {
 	EvidenceRefs   []string `json:"evidence_refs"`
 	PolicyVersion  string   `json:"policy_version"`
 	ClaimID        string   `json:"claim_id,omitempty"` // set when a memory candidate promotes to a claim
+	NoPromoteID    string   `json:"no_promote_id,omitempty"`
 	CreatedAt      string   `json:"created_at"`
 }
 
@@ -196,7 +199,7 @@ func critique(c Candidate, prior PriorState) Critique {
 	for _, cl := range prior.Current {
 		if cl.Entity == c.Entity && cl.Predicate == c.Predicate {
 			if cl.Object == c.Object {
-				return Critique{Duplicate: true, Notes: "matches current claim " + cl.ID}
+				return Critique{Duplicate: true, DuplicateClaimID: cl.ID, Notes: "matches current claim " + cl.ID}
 			}
 			if c.Confidence < cl.Confidence {
 				// a weaker candidate conflicting with stronger canon is a CONTRADICTION, not a
@@ -265,6 +268,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 	}
 	res.TraceRef = t.TraceRef
 
+	var writebackStore *writeback.Store
 	for _, c := range t.Candidates {
 		crit := critique(c, prior)
 		verdict, basis := adjudicate(c, crit, policy.PromotionMode)
@@ -272,7 +276,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 		rel, priorClaim := "new", ""
 		switch {
 		case crit.Duplicate:
-			rel = "duplicate"
+			rel, priorClaim = "duplicate", crit.DuplicateClaimID
 		case crit.Contradicts != "":
 			rel, priorClaim = "contradicts", crit.Contradicts
 		case crit.Supersedes != "":
@@ -305,7 +309,7 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 				dec.ClaimID = ar.Claim.ID
 			} else {
 				// mem detected a duplicate the prior-state critic missed (race / same-trace dup).
-				dec.Verdict, dec.Basis = Reject, "duplicate per mem ledger"
+				dec.Verdict, dec.Relation, dec.Basis = Reject, "duplicate", "duplicate per mem ledger"
 			}
 		default:
 			// candidate-first: write the record to its inbox; it never becomes a claim here.
@@ -313,12 +317,51 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 				return res, err
 			}
 		}
+		if needsNoPromote(dec) {
+			if writebackStore == nil {
+				writebackStore, err = writeback.Open(homePath)
+				if err != nil {
+					return res, err
+				}
+			}
+			nop, _, err := writebackStore.RecordNoPromote(noPromoteDecision(c, dec, now), now)
+			if err != nil {
+				return res, err
+			}
+			dec.NoPromoteID = nop.ID
+		}
 		if err := appendDecision(homePath, dec); err != nil {
 			return res, err
 		}
 		res.Decisions = append(res.Decisions, dec)
 	}
 	return res, nil
+}
+
+func needsNoPromote(d AdjudicationDecision) bool {
+	return d.Verdict == Reject && d.Relation == "duplicate"
+}
+
+func noPromoteDecision(c Candidate, d AdjudicationDecision, now time.Time) writeback.NoPromoteDecision {
+	ownerRef := "distiller:" + c.Kind
+	if d.PriorClaimID != "" {
+		ownerRef = d.PriorClaimID
+	}
+	evidenceRefs := append([]string(nil), d.EvidenceRefs...)
+	if d.PriorClaimID != "" {
+		evidenceRefs = append(evidenceRefs, "prior_claim:"+d.PriorClaimID)
+	}
+	return writeback.NoPromoteDecision{
+		SchemaVersion: writeback.NoPromoteSchemaVersion,
+		CreatedAt:     rfc3339(now),
+		CandidateRef:  c.ID,
+		CandidateKind: c.Kind,
+		OwnerTarget:   writeback.OwnerTarget{Kind: "memory_claim", Ref: ownerRef},
+		Basis:         d.Basis,
+		EvidenceRefs:  evidenceRefs,
+		PolicyVersion: d.PolicyVersion,
+		Status:        writeback.NoPromoteActive,
+	}
 }
 
 // --- persistence (under COMPOUND_HOME) ---
