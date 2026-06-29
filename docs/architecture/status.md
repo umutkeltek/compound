@@ -2,6 +2,10 @@
 
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
+## Recent Runtime Proof
+
+- Hook/session closure preserves capability-offer provenance: `work close` and `hook session-end` hydrate the persisted ContextPack and copy `capability://...` offers into Receipt `skills.candidate` plus Transition `projections.skill`. This records what the agent was offered without claiming any skill was executed.
+
 ## Current Verdict
 
 Gen-1 memory stack migrated into the spine memory family and retired.

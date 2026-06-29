@@ -319,6 +319,17 @@ func TestPromptWorkClosesWithContextTransition(t *testing.T) {
 	if rec.IDs.ContextPackID != pack.Header.ID || tr.IDs.ContextPackID != pack.Header.ID {
 		t.Fatalf("context pack chain broken: receipt=%q transition=%q pack=%q", rec.IDs.ContextPackID, tr.IDs.ContextPackID, pack.Header.ID)
 	}
+	for _, want := range []string{"capability://skill:codex-pricing", "capability://skill:generic-pricing"} {
+		if !containsString(rec.Skills.Candidate, want) {
+			t.Fatalf("receipt candidate skills = %v, missing %s", rec.Skills.Candidate, want)
+		}
+		if !containsString(tr.Projections.Skill, want) {
+			t.Fatalf("transition skill projections = %v, missing %s", tr.Projections.Skill, want)
+		}
+	}
+	if containsString(rec.Skills.Candidate, "capability://skill:claude-pricing") || containsString(tr.Projections.Skill, "capability://skill:claude-pricing") {
+		t.Fatalf("closed chain leaked claude-only offer: receipt=%v transition=%v", rec.Skills.Candidate, tr.Projections.Skill)
+	}
 	if len(tr.BeforeRefs) != 1 || tr.BeforeRefs[0] != pack.Header.ID {
 		t.Fatalf("transition before_refs = %v, want [%s]", tr.BeforeRefs, pack.Header.ID)
 	}

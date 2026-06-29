@@ -29,7 +29,7 @@ A `Transition` is a state change plus its **projections** into multiple represen
   "after":  { "state_delta": "...", "evidence_refs": ["ev_..."], "artifact_refs": ["..."] },
   "projections": {
     "memory":  ["claim_candidate_..."],
-    "skill":   ["skill_usage_...", "missed_skill_signal_..."],
+    "skill":   ["capability://skill_or_procedure_offered", "missed_skill_signal_..."],
     "product": ["hypothesis_...", "metric_watch_..."],
     "cost":    ["cost_record_..."],
     "risk":    ["tier_..."],
@@ -46,6 +46,8 @@ This is the canonical `Transition` shape (`runtime.md` and `contracts/README.md`
 
 It forces three questions on every run: **What changed? Across which spaces? What future
 behavior should this affect?**
+
+`projections.skill` may include `capability://...` refs from the ContextPack. Those are capability offers the agent saw, not proof the skill executed; actual mutation still needs ActionIntent, PolicyDecision, run/artifact refs, and Receipt state delta.
 
 ## The medium spaces (projections)
 

@@ -206,12 +206,12 @@ func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, 
 // --- advance ---
 
 type AdvanceInput struct {
-	To            string
-	RunID         string
-	ArtifactID    string
+	To             string
+	RunID          string
+	ArtifactID     string
 	VerificationID string
-	ContextPackID string
-	Note          string
+	ContextPackID  string
+	Note           string
 }
 
 // Advance moves a work along a legal edge of the state machine, optionally attaching
@@ -336,6 +336,10 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
 		return res, fmt.Errorf("close --move-type must be one of %v, got %q", envelope.MoveTypes, in.MoveType)
 	}
+	capabilityRefs, err := s.capabilityRefsForContextPack(w.IDs.ContextPackID)
+	if err != nil {
+		return res, err
+	}
 
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
@@ -351,7 +355,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			Verification: orEmpty(w.VerificationIDs),
 		},
 		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: []string{}, Missed: []string{}, Candidate: []string{}},
+		Skills: envelope.ReceiptSkills{Used: []string{}, Missed: []string{}, Candidate: capabilityRefs},
 		Memory: envelope.ReceiptMemory{Candidates: orEmpty(w.MemoryCandidateIDs), Promoted: []string{}, Parked: []string{}},
 		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
 	}
@@ -372,7 +376,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		AfterRefs:  after,
 		StateDelta: in.Summary,
 		Projections: envelope.Projections{
-			Memory: []string{}, Skill: []string{}, Product: []string{}, Cost: []string{},
+			Memory: []string{}, Skill: capabilityRefs, Product: []string{}, Cost: []string{},
 			Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{},
 		},
 		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: in.MoveType != "audit_only"},
@@ -408,6 +412,33 @@ func (s *Store) writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func (s *Store) capabilityRefsForContextPack(contextPackID string) ([]string, error) {
+	if strings.TrimSpace(contextPackID) == "" {
+		return []string{}, nil
+	}
+	path := filepath.Join(s.home, "context", "packs", contextPackID+".json")
+	var pack envelope.ContextPack
+	if err := s.readJSON(path, &pack); err != nil {
+		if strings.HasPrefix(err.Error(), "not found:") {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("read context pack %s for capability refs: %w", contextPackID, err)
+	}
+	if err := pack.Validate(); err != nil {
+		return nil, fmt.Errorf("context pack %s invalid: %w", contextPackID, err)
+	}
+	seen := map[string]bool{}
+	refs := []string{}
+	for _, included := range pack.Included {
+		if !strings.HasPrefix(included.Ref, "capability://") || seen[included.Ref] {
+			continue
+		}
+		seen[included.Ref] = true
+		refs = append(refs, included.Ref)
+	}
+	return refs, nil
 }
 
 func (s *Store) readJSON(path string, v any) error {
