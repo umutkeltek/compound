@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound decisions import --brain <markdown>` adapts real brain narrative decision pages into existing `DecisionLifecycle` candidates with path-independent generated ids from page metadata/heading, extracts explicit verdict/review-trigger text when present, and still parks accepted records missing falsifier proof instead of promoting them.
 - `compound product signal --asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]` aggregates App Store Connect daily sales rows into explicit before/after ProductSignal evidence, emits product Transition projections, and does not create promoted claims or hypotheses.
 - `compound product signal --asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]` adapts App Store Connect datapoints provider snapshots into the existing `ProductSignal` ledger path as neutral before=after observations, emits product Transition projections, and does not create promoted claims or hypotheses.
 

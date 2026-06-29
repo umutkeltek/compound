@@ -34,8 +34,12 @@ const (
 )
 
 var (
-	reReviewTrigger = regexp.MustCompile(`(?i)review[ \-]?trigger[:*\s]+\s*([^\n]+)`)
-	reFalsifier     = regexp.MustCompile(`(?i)falsifier[:*\s]+\s*([^\n]+)`)
+	reReviewTrigger   = regexp.MustCompile(`(?i)review[ \-]?trigger[:*\s]+\s*([^\n]+)`)
+	reFalsifier       = regexp.MustCompile(`(?i)falsifier[:*\s]+\s*([^\n]+)`)
+	reDatedBrainTitle = regexp.MustCompile(`^20\d\d\s+\d{1,2}\s+\d{1,2}\s+`)
+	reNarrativeReview = regexp.MustCompile(`(?i)\b(?:I should revisit|Revisit before|Promote this decision|Promote decision|When [^\n]*(?:ships|blocked|release|review|R[0-9]+))[^\n.]*[.!]?`)
+	reInlineHeading   = regexp.MustCompile(`\s+(#{2,6}\s+)`)
+	reVerdictQuote    = regexp.MustCompile(`(?is)\bverdict:\s*(?:>\s*)?(?:\*\*)?\s*["“]([^"”]+)["”]`)
 )
 
 // Lifecycle is the DecisionLifecycle contract projected onto spine memory.
@@ -137,6 +141,8 @@ type decFrontmatter struct {
 	Title         string   `yaml:"title"`
 	Kind          string   `yaml:"kind"`
 	Status        string   `yaml:"status"`
+	Date          string   `yaml:"date"`
+	EffectiveDate string   `yaml:"effective_date"`
 	Domains       []string `yaml:"domains"`
 	Supersedes    []string `yaml:"supersedes"`
 	ReplacedBy    string   `yaml:"replaced_by"`
@@ -309,14 +315,18 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	fm, body := splitFrontmatter(string(b))
 	var f decFrontmatter
 	_ = yaml.Unmarshal([]byte(fm), &f)
-	if f.Title == "" {
-		f.Title = firstHeading(body)
+	heading := firstHeading(body)
+	if f.ID == "" {
+		f.ID = stableBrainDecisionID(f, heading, path)
+	}
+	if f.Title == "" || preferBrainHeading(f.Title, heading) {
+		f.Title = heading
+	}
+	if choice := brainDecisionChoice(f.Title, body); choice != "" {
+		f.Title = choice
 	}
 	if strings.TrimSpace(f.Title) == "" {
 		return report, fmt.Errorf("brain decision %s: title required", path)
-	}
-	if f.ID == "" {
-		f.ID = "brain-" + digest12(path+"\n"+f.Title)
 	}
 	if f.Kind == "" {
 		f.Kind = KindDoctrine
@@ -330,6 +340,9 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 		if mm := reReviewTrigger.FindStringSubmatch(body); mm != nil {
 			f.ReviewTrigger = strings.TrimSpace(mm[1])
 		}
+	}
+	if f.ReviewTrigger == "" {
+		f.ReviewTrigger = extractNarrativeReviewTrigger(body)
 	}
 	evidence, err := store.RecordEvidence(mem.EvidenceItem{
 		SourceKind: "note",
@@ -671,6 +684,154 @@ func firstHeading(body string) string {
 		}
 	}
 	return ""
+}
+
+func stableBrainDecisionID(f decFrontmatter, heading, path string) string {
+	parts := []string{
+		strings.TrimSpace(f.Title),
+		strings.TrimSpace(f.Date),
+		strings.TrimSpace(f.EffectiveDate),
+		strings.TrimSpace(heading),
+	}
+	var stable []string
+	for _, part := range parts {
+		if part != "" {
+			stable = append(stable, part)
+		}
+	}
+	if len(stable) == 0 {
+		stable = append(stable, filepath.Base(path))
+	}
+	return "brain-" + digest12(strings.Join(stable, "\n"))
+}
+
+func preferBrainHeading(frontmatterTitle, heading string) bool {
+	frontmatterTitle = strings.TrimSpace(frontmatterTitle)
+	heading = strings.TrimSpace(heading)
+	if heading == "" {
+		return false
+	}
+	if frontmatterTitle == "" {
+		return true
+	}
+	if reDatedBrainTitle.MatchString(frontmatterTitle) {
+		return true
+	}
+	return false
+}
+
+func brainDecisionChoice(pageTitle, body string) string {
+	if quoted := labeledVerdictQuote(body); quoted != "" {
+		return truncateText(quoted, 280)
+	}
+	for _, name := range []string{"decision", "core thesis", "what i actually shipped"} {
+		section := markdownSection(body, name)
+		if section == "" {
+			continue
+		}
+		if quoted := firstQuotedOrBold(section); quoted != "" {
+			return truncateText(quoted, 280)
+		}
+		if line := firstContentLine(section); line != "" {
+			return truncateText(line, 280)
+		}
+	}
+	return strings.TrimSpace(pageTitle)
+}
+
+func labeledVerdictQuote(body string) string {
+	if mm := reVerdictQuote.FindStringSubmatch(body); len(mm) > 1 {
+		return strings.TrimSpace(mm[1])
+	}
+	return ""
+}
+
+func markdownSection(body, name string) string {
+	body = normalizeInlineHeadings(body)
+	name = strings.ToLower(strings.TrimSpace(name))
+	lines := strings.Split(body, "\n")
+	start := -1
+	level := 0
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		hashes := len(trimmed) - len(strings.TrimLeft(trimmed, "#"))
+		title := strings.ToLower(strings.TrimSpace(strings.TrimLeft(trimmed, "#")))
+		if start == -1 {
+			if markdownHeadingMatches(title, name) {
+				start = i
+				level = hashes
+			}
+			continue
+		}
+		if hashes <= level {
+			return strings.Join(lines[start:i], "\n")
+		}
+	}
+	if start == -1 {
+		return ""
+	}
+	return strings.Join(lines[start:], "\n")
+}
+
+func normalizeInlineHeadings(body string) string {
+	return reInlineHeading.ReplaceAllString(body, "\n$1")
+}
+
+func markdownHeadingMatches(title, want string) bool {
+	title = strings.TrimSpace(strings.ToLower(title))
+	want = strings.TrimSpace(strings.ToLower(want))
+	return title == want || strings.HasPrefix(title, want+" ") || strings.HasPrefix(title, want+" -") || strings.HasPrefix(title, want+" --")
+}
+
+func firstQuotedOrBold(section string) string {
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ">"))
+		if line == "" {
+			continue
+		}
+		if idx := strings.Index(line, "**"); idx >= 0 {
+			rest := line[idx+2:]
+			if end := strings.Index(rest, "**"); end >= 0 {
+				return strings.Trim(strings.TrimSpace(rest[:end]), `"'`)
+			}
+		}
+		if idx := strings.Index(line, `"`); idx >= 0 {
+			rest := line[idx+1:]
+			if end := strings.Index(rest, `"`); end >= 0 {
+				return strings.TrimSpace(rest[:end])
+			}
+		}
+	}
+	return ""
+}
+
+func firstContentLine(section string) string {
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), ">"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return strings.Trim(line, "* ")
+	}
+	return ""
+}
+
+func extractNarrativeReviewTrigger(body string) string {
+	if mm := reNarrativeReview.FindStringSubmatch(body); mm != nil {
+		return truncateText(strings.TrimSpace(mm[0]), 240)
+	}
+	return ""
+}
+
+func truncateText(s string, max int) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if max > 0 && len(s) > max {
+		return strings.TrimSpace(s[:max])
+	}
+	return s
 }
 
 func decisionQuote(title, body string) string {

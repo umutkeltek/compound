@@ -176,6 +176,68 @@ Every non-trivial run leaves evidence before it can be treated as done.
 	}
 }
 
+func TestImportBrainDecisionAdaptsNarrativeBrainPageConservatively(t *testing.T) {
+	body := `---
+type: reflection
+title: 2026 06 11 Memory Engine Ownership Decision 537a02
+date: '2026-06-11T00:00:00.000Z'
+dream_generated: true
+tags:
+  - brain-ownership
+---
+
+# memory engine ownership decision - own contract, rent engine
+
+## decision Oracle review
+
+Oracle consulted, operator accepted as-is. The verdict:
+
+> **"Keep the rented memory engine continuously updated. Don't rebuild. Don't freeze. Own the contract seam."**
+
+## How apply
+
+When ReleaseX ships or is externally blocked, execute the parked spec. Promote this decision to canon when out of the coordination-sensitive window.
+`
+	pathA := filepath.Join(t.TempDir(), "brain", "reflections", "decision.md")
+	pathB := filepath.Join(t.TempDir(), "moved", "brain", "renamed.md")
+	writeFile(t, pathA, body)
+	writeFile(t, pathB, body)
+
+	storeA, err := mem.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportA, err := ImportBrainDecision(storeA, pathA, time.Date(2026, 6, 29, 22, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeB, err := mem.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportB, err := ImportBrainDecision(storeB, pathB, time.Date(2026, 6, 29, 22, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if reportA.Lifecycle.ID != reportB.Lifecycle.ID {
+		t.Fatalf("stable brain decision id changed across paths: %q != %q", reportA.Lifecycle.ID, reportB.Lifecycle.ID)
+	}
+	if reportA.Verdict != candidates.Park || reportA.ClaimID != "" {
+		t.Fatalf("narrative decision should park until lifecycle proof exists: %+v", reportA)
+	}
+	if !strings.Contains(reportA.Lifecycle.Choice, "Keep the rented memory engine continuously updated") {
+		t.Fatalf("choice did not come from narrative decision section: %+v", reportA.Lifecycle)
+	}
+	if !strings.Contains(reportA.Lifecycle.ReviewTrigger, "When ReleaseX ships") {
+		t.Fatalf("review trigger was not extracted from narrative section: %+v", reportA.Lifecycle)
+	}
+	missing := MissingRequired(reportA.Lifecycle)
+	if len(missing) != 1 || missing[0] != "falsifier" {
+		t.Fatalf("missing lifecycle proof = %v", missing)
+	}
+}
+
 func TestImportPolicyDecisionRecordsEvidenceAndAcceptedLifecycle(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
