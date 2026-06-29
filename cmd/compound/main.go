@@ -7,6 +7,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -148,6 +149,8 @@ usage:
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...
                                                                  TraceDistiller LLM request packet, no model call
+  compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
+                                                                 gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
@@ -476,8 +479,12 @@ func cmdDistiller(args []string) {
 		cmdDistillerRequest(args[1:])
 		return
 	}
+	if len(args) >= 1 && args[0] == "extract" {
+		cmdDistillerExtract(args[1:])
+		return
+	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | request --trace-ref T [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
@@ -637,6 +644,71 @@ func cmdDistillerRequest(args []string) {
 	out, err := json.MarshalIndent(req, "", "  ")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller request encode:", err)
+		os.Exit(1)
+	}
+	fmt.Println(string(out))
+}
+
+func cmdDistillerExtract(args []string) {
+	requestPath := valueFlag(args, "--request")
+	evalCorpus := valueFlag(args, "--eval-corpus")
+	baseURL := valueFlag(args, "--openai-compatible-url")
+	if baseURL == "" {
+		baseURL = valueFlag(args, "--base-url")
+	}
+	model := valueFlag(args, "--model")
+	if requestPath == "" || evalCorpus == "" || baseURL == "" || model == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound distiller extract --request <request.json> --eval-corpus <cases-dir> --openai-compatible-url <url> --model <model> [--api-key-env ENV]")
+		os.Exit(2)
+	}
+	apiKey := ""
+	if env := valueFlag(args, "--api-key-env"); env != "" {
+		apiKey = os.Getenv(env)
+		if apiKey == "" {
+			fmt.Fprintf(os.Stderr, "distiller extract: --api-key-env %s is empty\n", env)
+			os.Exit(1)
+		}
+	}
+	data, err := os.ReadFile(requestPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract request:", err)
+		os.Exit(1)
+	}
+	var req distiller.LLMExtractionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract request:", err)
+		os.Exit(1)
+	}
+	if req.SchemaVersion != distiller.LLMExtractionSchemaVersion {
+		fmt.Fprintf(os.Stderr, "distiller extract request: schema_version=%q, want %q\n", req.SchemaVersion, distiller.LLMExtractionSchemaVersion)
+		os.Exit(1)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := distiller.ExtractWithOpenAICompatible(context.Background(), req, distiller.OpenAICompatibleOptions{
+		BaseURL:       baseURL,
+		APIKey:        apiKey,
+		Model:         model,
+		EvalCorpusDir: evalCorpus,
+		EvalRoot:      homePath,
+		Now:           time.Now(),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# distiller extract %s\n", report.Model)
+	fmt.Printf("- provider: %s\n", report.Provider)
+	fmt.Printf("- eval_status: %s\n", report.Eval.Status)
+	fmt.Printf("- eval_cases: %d\n", report.Eval.CaseCount)
+	fmt.Printf("- live_model_calls: %d\n", report.LiveModelCalls)
+	fmt.Printf("- candidates: %d\n", len(report.Response.Candidates))
+	out, err := json.MarshalIndent(report.Response, "", " ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract encode:", err)
 		os.Exit(1)
 	}
 	fmt.Println(string(out))
