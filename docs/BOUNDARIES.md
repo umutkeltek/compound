@@ -67,7 +67,7 @@ external source -> Evidence / Entity / Claim / Edge
 Generated-file adapters translate generated views into observations first:
 
 ```text
-generated view -> SourceObservation -> ProjectionFreshness / parked candidate
+generated view -> ProjectionFreshness -> SourceObservation / NoPromoteDecision -> ProjectionRegenerationPlan
 ```
 
 A generated view can prove freshness or drift. It cannot prove truth by itself.

@@ -3,6 +3,7 @@ package projection
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -88,6 +89,85 @@ func TestWritebackGateForStaleProjection(t *testing.T) {
 	}
 	if len(gate.EvidenceRefs) < 4 {
 		t.Fatalf("expected projection evidence refs, got %+v", gate.EvidenceRefs)
+	}
+}
+
+func TestBuildRegenerationPlanRecordsGateAndSourceObservationRefs(t *testing.T) {
+	f := Freshness{
+		ProjectionID:    "projection:test",
+		ViewRef:         "view.md",
+		SourceLedgerSeq: 2,
+		Status:          StatusStale,
+		Staleness:       "25h0m0s",
+		CoverageVerdict: "partial",
+		OutputHash:      "sha256:view",
+		Sources:         []SourceObservation{{SourceRef: "source.jsonl", CurrentHash: "sha256:source", Status: "ok"}},
+		Checks:          []Check{{Name: "coverage", Status: "fail", Detail: "partial"}},
+	}
+	refs := RegenerationRefs{
+		WritebackGateID:     "owg_projection",
+		WorkID:              "work_projection",
+		ReceiptID:           "rec_projection",
+		TransitionID:        "tr_projection",
+		SourceObservationID: "srcobs_projection",
+		CandidateIDs:        []string{"src_cand_projection"},
+		NoPromoteIDs:        []string{"nop_projection"},
+	}
+
+	plan, err := BuildRegenerationPlan(f, refs, time.Date(2026, 6, 29, 23, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != RegenerationPlanSchemaVersion || plan.Status != "review_required" {
+		t.Fatalf("bad plan header: %+v", plan)
+	}
+	if plan.WritebackGateID != refs.WritebackGateID || plan.SourceObservationID != refs.SourceObservationID {
+		t.Fatalf("plan did not keep refs: %+v", plan)
+	}
+	if len(plan.FailedChecks) != 1 || plan.FailedChecks[0].Name != "coverage" {
+		t.Fatalf("failed checks = %+v", plan.FailedChecks)
+	}
+	if len(plan.ProposedActions) == 0 || len(plan.EvidenceRefs) < 4 {
+		t.Fatalf("plan missing actions/evidence: %+v", plan)
+	}
+}
+
+func TestBuildRegenerationPlanRejectsFreshProjection(t *testing.T) {
+	_, err := BuildRegenerationPlan(Freshness{ProjectionID: "projection:fresh", Status: StatusFresh}, RegenerationRefs{}, time.Date(2026, 6, 29, 23, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("expected fresh projection to reject regeneration plan")
+	}
+}
+
+func TestRecordRegenerationPlanWritesReviewArtifacts(t *testing.T) {
+	home := t.TempDir()
+	plan, err := BuildRegenerationPlan(Freshness{
+		ProjectionID:    "projection:test",
+		ViewRef:         "view.md",
+		SourceLedgerSeq: 2,
+		Status:          StatusStale,
+		OutputHash:      "sha256:view",
+		Checks:          []Check{{Name: "age", Status: "fail", Detail: "25h0m0s"}},
+	}, RegenerationRefs{WritebackGateID: "owg_projection", SourceObservationID: "srcobs_projection"}, time.Date(2026, 6, 29, 23, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := RecordRegenerationPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.PlanPath, paths.ReviewPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("artifact %s missing: %v", path, err)
+		}
+	}
+	review, err := os.ReadFile(paths.ReviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(review), "owner-review artifact") || !strings.Contains(string(review), "does not regenerate or edit") {
+		t.Fatalf("review artifact missing non-write warning:\n%s", review)
 	}
 }
 

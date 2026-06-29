@@ -147,6 +147,7 @@ one generated operating-system view
   -> ProjectionFreshness
   -> SourceObservation
   -> method_upgrade candidate no_promote
+  -> ProjectionRegenerationPlan review artifact
   -> source doctor reports fresh/stale/drifted
 ```
 

@@ -161,7 +161,8 @@ usage:
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
-compound projection doctor <freshness.yaml> [--writeback] [--source-observe] ProjectionFreshness + gated writeback/source observation
+compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
+                                                               ProjectionFreshness + gated writeback/source observation/regeneration review
 compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
@@ -3229,9 +3230,82 @@ func runProjectionSourceObservation(report projection.Freshness, now time.Time) 
 	return sourceobs.Apply(homePath, obs, now)
 }
 
+func cmdProjectionRepairPlan(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound projection repair-plan <freshness.yaml>")
+		os.Exit(2)
+	}
+	now := time.Now()
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-plan:", err)
+		os.Exit(1)
+	}
+	report, err := projection.DoctorFile(args[0], now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-plan:", err)
+		os.Exit(1)
+	}
+	if !projection.NeedsWriteback(report) {
+		fmt.Fprintf(os.Stderr, "projection repair-plan: projection %s is fresh; no repair plan needed\n", report.ProjectionID)
+		os.Exit(1)
+	}
+	writebackResult, err := runProjectionWriteback(report, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-plan:", err)
+		os.Exit(1)
+	}
+	sourceReport, err := runProjectionSourceObservation(report, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-plan:", err)
+		os.Exit(1)
+	}
+	plan, err := projection.BuildRegenerationPlan(report, projection.RegenerationRefs{
+		WritebackGateID:     writebackResult.GateID,
+		WorkID:              writebackResult.WorkID,
+		ReceiptID:           writebackResult.ReceiptID,
+		TransitionID:        writebackResult.TransitionID,
+		SourceObservationID: sourceReport.ObservationID,
+		CandidateIDs:        sourceReport.CandidateIDs,
+		NoPromoteIDs:        sourceReport.NoPromoteIDs,
+	}, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-plan:", err)
+		os.Exit(1)
+	}
+	paths, err := projection.RecordRegenerationPlan(homePath, plan)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-plan:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# projection repair-plan\n\n")
+	fmt.Printf("- plan: %s\n", plan.ID)
+	fmt.Printf("- projection: %s\n", plan.ProjectionID)
+	fmt.Printf("- status: %s\n", plan.Status)
+	fmt.Printf("- freshness: %s\n", plan.FreshnessStatus)
+	fmt.Printf("- writeback_gate: %s %s\n", writebackResult.GateID, writebackResult.GateStatus)
+	fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+	for _, id := range sourceReport.CandidateIDs {
+		fmt.Printf("- source_candidate: %s\n", id)
+	}
+	for _, id := range sourceReport.NoPromoteIDs {
+		fmt.Printf("- source_no_promote: %s\n", id)
+	}
+	fmt.Printf("- review: %s\n", paths.ReviewPath)
+	fmt.Printf("- artifact: %s\n", paths.PlanPath)
+}
+
 func cmdProjection(args []string) {
-	if len(args) < 1 || args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe]")
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>")
+		os.Exit(2)
+	}
+	if args[0] == "repair-plan" {
+		cmdProjectionRepairPlan(args[1:])
+		return
+	}
+	if args[0] != "doctor" {
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>")
 		os.Exit(2)
 	}
 	if len(args) < 2 {

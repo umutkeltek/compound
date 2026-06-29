@@ -15,6 +15,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/projection"
 	"compound/internal/sourceobs"
 	"compound/internal/work"
 )
@@ -455,6 +456,74 @@ func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("projection source-observe should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
+func TestProjectionRepairPlanCreatesGateSourceObservationAndReview(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdProjection([]string{"repair-plan", filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml")})
+	})
+	if !strings.Contains(out, "# projection repair-plan") ||
+		!strings.Contains(out, "- writeback_gate: owg_") ||
+		!strings.Contains(out, "- source_observation: srcobs_") ||
+		!strings.Contains(out, "- source_candidate:") ||
+		!strings.Contains(out, "- source_no_promote:") ||
+		!strings.Contains(out, "- review:") ||
+		!strings.Contains(out, "- artifact:") {
+		t.Fatalf("repair-plan output missing proof lines:\n%s", out)
+	}
+
+	planDir := filepath.Join(homePath, "reviews", "projection-regeneration")
+	planFiles, err := filepath.Glob(filepath.Join(planDir, "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewFiles, err := filepath.Glob(filepath.Join(planDir, "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planFiles) != 1 || len(reviewFiles) != 1 {
+		t.Fatalf("plan/review files = %d/%d", len(planFiles), len(reviewFiles))
+	}
+	var plan struct {
+		SchemaVersion       string   `json:"schema_version"`
+		Status              string   `json:"status"`
+		WritebackGateID     string   `json:"writeback_gate_id"`
+		SourceObservationID string   `json:"source_observation_id"`
+		CandidateIDs        []string `json:"candidate_ids"`
+		NoPromoteIDs        []string `json:"no_promote_ids"`
+	}
+	data, err := os.ReadFile(planFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != projection.RegenerationPlanSchemaVersion || plan.Status != "review_required" ||
+		!strings.HasPrefix(plan.WritebackGateID, "owg_") || !strings.HasPrefix(plan.SourceObservationID, "srcobs_") ||
+		len(plan.CandidateIDs) != 1 || len(plan.NoPromoteIDs) != 1 {
+		t.Fatalf("bad regeneration plan: %+v", plan)
+	}
+	review, err := os.ReadFile(reviewFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(review), "does not regenerate or edit the generated view") {
+		t.Fatalf("review did not preserve no-direct-write warning:\n%s", review)
+	}
+	rows := readNoPromoteDecisionRows(t, homePath)
+	if len(rows) != 1 || rows[0].CandidateRef != plan.CandidateIDs[0] {
+		t.Fatalf("no-promote rows = %+v plan=%+v", rows, plan)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("projection repair-plan should not promote claims, claims ledger stat err=%v", err)
 	}
 }
 
