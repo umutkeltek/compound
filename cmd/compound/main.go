@@ -167,7 +167,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files, OS generated JSON, or mcporter JSON
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -237,16 +237,19 @@ func cmdCapability(args []string) {
 	case "import-topology":
 		now := time.Now()
 		osResolverPath := flag("--os-resolver-json")
-		p := posn(map[string]bool{"--os-resolver-json": true})
+		mcporterPath := flag("--mcporter-json")
+		p := posn(map[string]bool{"--os-resolver-json": true, "--mcporter-json": true})
 		var topo tooltopology.Topology
 		var err error
 		switch {
 		case osResolverPath != "" && len(p) == 0:
 			topo, err = tooltopology.LoadOSResolver(osResolverPath, now)
-		case osResolverPath == "" && len(p) == 1:
+		case mcporterPath != "" && len(p) == 0:
+			topo, err = tooltopology.LoadMCPorterCatalog(mcporterPath, now)
+		case osResolverPath == "" && mcporterPath == "" && len(p) == 1:
 			topo, err = tooltopology.Load(p[0])
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-topology <tool-topology.yaml> | --os-resolver-json <tool-resolver.json>")
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-topology <tool-topology.yaml> | --os-resolver-json <tool-resolver.json> | --mcporter-json <mcporter-list.json>")
 			os.Exit(2)
 		}
 		die(err)

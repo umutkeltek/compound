@@ -1570,6 +1570,51 @@ func TestCapabilityImportTopologyRecordsSourceObservationNoPromote(t *testing.T)
 	}
 }
 
+func TestCapabilityImportMCPorterCatalogRecordsSourceObservationNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-topology", "--mcporter-json", filepath.Join("..", "..", "fixtures", "tooltopology", "mcporter-list.json")})
+	})
+	for _, want := range []string{
+		"# tool topology topo_mcporter_",
+		"- node: mcp:context7",
+		"- node: tool:context7.get-library-docs",
+		"- node: mcp:cloudflare-api",
+		"- source_observation:",
+		"- source_candidate:",
+		"- source_no_promote:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("mcporter import output missing %q:\n%s", want, out)
+		}
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, err := store.Surface("current library docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Node.ID != "tool:context7.get-library-docs" {
+		t.Fatalf("mcporter docs tool did not surface: %+v", hits)
+	}
+	authHits, err := store.Surface("cloudflare api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authHits) != 0 {
+		t.Fatalf("auth-blocked mcporter server should not surface: %+v", authHits)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("mcporter source import should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func TestCapabilityImportSkillsRecordsSourceObservationNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

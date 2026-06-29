@@ -152,6 +152,64 @@ func TestLoadOSResolverAdaptsGeneratedToolResolver(t *testing.T) {
 	}
 }
 
+func TestLoadMCPorterCatalogMapsServersAndToolsWithoutExecuting(t *testing.T) {
+	topo, err := LoadMCPorterCatalog(filepath.Join("..", "..", "fixtures", "tooltopology", "mcporter-list.json"), tTopo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if topo.AdapterID != "mcporter.list-json" || topo.SourceSystem != "mcporter" || topo.SourceRef.SourceClass != "mcporter-json" {
+		t.Fatalf("topology source = %+v", topo)
+	}
+	byID := map[string]Entry{}
+	for _, entry := range topo.Entries {
+		byID[entry.ID] = entry
+	}
+	for _, id := range []string{
+		"mcp:context7",
+		"tool:context7.get-library-docs",
+		"tool:context7.resolve-library-id",
+		"mcp:cloudflare-api",
+	} {
+		if byID[id].ID == "" {
+			t.Fatalf("missing entry %s in %+v", id, byID)
+		}
+	}
+	if byID["mcp:cloudflare-api"].Retired != true || byID["mcp:cloudflare-api"].Status != "auth_required" {
+		t.Fatalf("auth-blocked server must not surface as available: %+v", byID["mcp:cloudflare-api"])
+	}
+	if byID["tool:context7.get-library-docs"].Interface != "mcp_tool" ||
+		!containsString(byID["tool:context7.get-library-docs"].Capabilities, "documentation") {
+		t.Fatalf("tool entry did not preserve tool capability: %+v", byID["tool:context7.get-library-docs"])
+	}
+
+	home := t.TempDir()
+	report, err := Apply(home, topo, tTopo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.NodeIDs) != 4 {
+		t.Fatalf("report = %+v", report)
+	}
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, err := store.Surface("current library docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Node.ID != "tool:context7.get-library-docs" {
+		t.Fatalf("library docs surface hits = %+v", hits)
+	}
+	authHits, err := store.Surface("cloudflare api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authHits) != 0 {
+		t.Fatalf("auth-blocked server should stay out of offers: %+v", authHits)
+	}
+}
+
 func validTopology() Topology {
 	return Topology{
 		SchemaVersion: SchemaVersion,
@@ -221,4 +279,13 @@ func readEdges(t *testing.T, home string) []capgraph.Edge {
 		edges = append(edges, edge)
 	}
 	return edges
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
