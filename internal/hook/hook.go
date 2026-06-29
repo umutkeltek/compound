@@ -164,13 +164,46 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if fx.Task != "" {
 		pred = "address: " + fx.Task
 	}
-	cand := work.BuildWork(work.CreateInput{Owner: fx.Harness, SuccessPredicate: pred, DesiredOutcome: fx.Task, State: "proposed"}, now)
 	kind, via := contract.ResolveRepoKind(fx.RepoKind, fx.Cwd)
-	pack := contract.Pack(contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}, deps.Orient, now)
+	in := contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}
+	ec := contract.Compile(in, deps.Orient, now)
+	pack := contract.Pack(in, deps.Orient, now)
+	if strings.TrimSpace(deps.HomePath) != "" {
+		var err error
+		pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	req := buildContextRequest(name, fx, ec, pack, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Prompt), nil, now)
+	var injection *InjectionArtifact
+	if strings.TrimSpace(deps.HomePath) != "" {
+		var err error
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, pack)
+		if err != nil {
+			return Result{}, err
+		}
+		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContextPackRef, injection.Ref)
+	}
+	create := work.CreateInput{Owner: fx.Harness, SuccessPredicate: pred, DesiredOutcome: fx.Task, State: "proposed"}
+	if injection != nil {
+		create.ContextPackID = pack.Header.ID
+	}
+	cand := work.BuildWork(create, now)
+	produced := []envelope.Envelope{&cand}
+	if deps.Store != nil && injection != nil {
+		var err error
+		cand, err = deps.Store.Create(create, now)
+		if err != nil {
+			return Result{}, err
+		}
+		ev.SideEffects = append(ev.SideEffects, filepath.Join("work", "work", cand.ID+".json"))
+		produced = []envelope.Envelope{&req, &ec, &pack, &cand}
+	}
 	summary := fmt.Sprintf("candidate work %s (proposed); scope=%q repo=%s; %d ctx in / %d excluded; mutations need ActionIntent+PolicyDecision",
 		cand.ID, orDash(fx.Task), kind, len(pack.Included), len(pack.Excluded))
-	return Result{Event: ev, Produced: []envelope.Envelope{&cand}, Summary: summary}, nil
+	return Result{Event: ev, Produced: produced, Summary: summary, Injection: injection}, nil
 }
 
 func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {

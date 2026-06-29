@@ -166,6 +166,71 @@ func TestUserPromptProducesCandidateAndHidesPrompt(t *testing.T) {
 	}
 }
 
+func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
+	homePath := t.TempDir()
+	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
+	if err != nil {
+		t.Fatalf("load skill manifest: %v", err)
+	}
+	if _, err := capgraph.ApplySkillManifest(homePath, manifest, fixedNow); err != nil {
+		t.Fatalf("apply skill manifest: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+	raw := "DO NOT LEAK RAW PROMPT BODY"
+	fx := Fixture{
+		Hook:     "user-prompt-submit",
+		Harness:  "codex",
+		Cwd:      "/repo/productX",
+		Task:     "improve pricing",
+		RepoKind: "product",
+		Prompt:   raw,
+	}
+	res, err := Run(fx, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := kinds(res.Produced); len(got) != 4 || got[0] != "context_request" || got[1] != "effective_contract" || got[2] != "context_pack" || got[3] != "work" {
+		t.Fatalf("produced = %v, want [context_request effective_contract context_pack work]", got)
+	}
+	req := res.Produced[0].(*envelope.ContextRequest)
+	pack := res.Produced[2].(*envelope.ContextPack)
+	cand := res.Produced[3].(*envelope.WorkEnvelope)
+	if req.IntentTextRef != "sha256:"+hashStr(raw) {
+		t.Fatalf("intent_text_ref = %q, want prompt hash", req.IntentTextRef)
+	}
+	if cand.State != "proposed" || cand.IDs.ContextPackID != pack.Header.ID {
+		t.Fatalf("work state/context = %q/%q, want proposed/%q", cand.State, cand.IDs.ContextPackID, pack.Header.ID)
+	}
+	stored, events, err := store.Show(cand.ID)
+	if err != nil {
+		t.Fatalf("show stored work: %v", err)
+	}
+	if stored.IDs.ContextPackID != pack.Header.ID {
+		t.Fatalf("stored context_pack_id = %q, want %q", stored.IDs.ContextPackID, pack.Header.ID)
+	}
+	if len(events) != 1 || events[0].To != "proposed" || !containsString(events[0].Attached, pack.Header.ID) {
+		t.Fatalf("lifecycle events = %+v, want proposed attached to context pack", events)
+	}
+	for _, path := range []string{res.Injection.ContextRequestPath, res.Injection.ContextPackPath, res.Injection.Path, filepath.Join(homePath, "work", "work", cand.ID+".json")} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected persisted artifact %s: %v", path, err)
+		}
+	}
+	blob, _ := json.Marshal(res)
+	if strings.Contains(string(blob), raw) {
+		t.Fatalf("raw prompt leaked into result:\n%s", string(blob))
+	}
+	if !containsString(res.Event.SideEffects, filepath.Join("work", "work", cand.ID+".json")) {
+		t.Fatalf("side effects = %v, want persisted work ref", res.Event.SideEffects)
+	}
+}
+
 // The headline P5 proof: the SAME held action is enforced differently by harness
 // capability — claude_code blocks; codex fails open (must be enforced via a wrapper).
 func TestPreToolUseCapabilityAware(t *testing.T) {
@@ -242,4 +307,13 @@ func TestUnknownHookRejected(t *testing.T) {
 	if _, err := Run(Fixture{Hook: "frobnicate", Harness: "claude_code"}, baseDeps(), fixedNow); err == nil {
 		t.Error("unknown hook should be rejected")
 	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }

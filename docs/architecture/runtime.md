@@ -100,7 +100,7 @@ harness-compatible output`. The lessons from a mature hook system map cleanly:
 
 ```text
 SessionStart   → ContextRequest + EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text, NOT a universe dump)
-UserPromptSubmit → Intent + WorkEnvelope candidate + CapabilityNudge (returns detected scope / suggested work_id / what's excluded / what needs approval)
+UserPromptSubmit → ContextRequest + ContextPack + proposed WorkEnvelope (persists proposed work tied to context_pack_id when COMPOUND_HOME is available)
 PreToolUse     → ActionIntent + PolicyDecision                       (returns allow | allow_with_obligations | hold | deny)
 PostToolUse    → ToolEvent + ArtifactRef + VerificationCandidate
 SessionEnd/Stop → Receipt + Transition + MemoryCandidate/SkillCandidate/FailurePattern/RouteObservation
