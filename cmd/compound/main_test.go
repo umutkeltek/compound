@@ -591,6 +591,96 @@ func TestDistillerRequestLoadsImportedEventTraces(t *testing.T) {
 	}
 }
 
+func TestDistillerRunLLMEventResponseParksMemoryWithoutPromotion(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	captureStdout(t, func() {
+		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
+	})
+
+	lines := splitJSONLines(readFile(t, filepath.Join(homePath, "events", "traces.ndjson")))
+	if len(lines) == 0 {
+		t.Fatal("expected imported trace envelopes")
+	}
+	var trace envelope.TraceEnvelope
+	if err := json.Unmarshal([]byte(lines[0]), &trace); err != nil {
+		t.Fatalf("parse trace line: %v", err)
+	}
+	traceRef := "trace_envelope:" + trace.ID
+	confidence := 0.88
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "trace_event_runtime_candidate",
+		SourceRefs:    []string{traceRef},
+		Candidates: []distiller.LLMCandidate{{
+			Kind:         distiller.KindMemory,
+			Entity:       "project:" + trace.Scope.ProjectID,
+			Predicate:    "event_observed",
+			Object:       trace.Source.SourceID,
+			Confidence:   &confidence,
+			Derivation:   "llm_extracted_from_imported_trace",
+			EvidenceRefs: []string{traceRef},
+		}},
+	}
+	responseData, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	responsePath := filepath.Join(t.TempDir(), "event-response.json")
+	if err := os.WriteFile(responsePath, append(responseData, '\n'), 0o644); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"run", "--llm-response", responsePath})
+	})
+	if !strings.Contains(out, "# distilled trace_event_runtime_candidate") ||
+		!strings.Contains(out, "memory") ||
+		!strings.Contains(out, "park") ||
+		!strings.Contains(out, "no promotion basis") {
+		t.Fatalf("distiller run output missing parked memory proof:\n%s", out)
+	}
+
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.Memory))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read memory candidate dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("memory candidate entries = %d, want 1", len(entries))
+	}
+	candidateData, err := os.ReadFile(filepath.Join(candidateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read memory candidate: %v", err)
+	}
+	var candidate distiller.Candidate
+	if err := json.Unmarshal(candidateData, &candidate); err != nil {
+		t.Fatalf("parse memory candidate: %v", err)
+	}
+	if candidate.Verdict != distiller.Park || !stringSliceContains(candidate.EvidenceRefs, traceRef) {
+		t.Fatalf("candidate did not preserve parked trace evidence: %+v", candidate)
+	}
+
+	decisionLines := splitJSONLines(readFile(t, filepath.Join(homePath, "ledger", "adjudications.jsonl")))
+	if len(decisionLines) != 1 {
+		t.Fatalf("adjudication rows = %d, want 1", len(decisionLines))
+	}
+	var decision distiller.AdjudicationDecision
+	if err := json.Unmarshal([]byte(decisionLines[0]), &decision); err != nil {
+		t.Fatalf("parse adjudication: %v", err)
+	}
+	if decision.Kind != distiller.KindMemory || decision.Verdict != distiller.Park || !stringSliceContains(decision.EvidenceRefs, traceRef) {
+		t.Fatalf("adjudication did not preserve parked trace evidence: %+v", decision)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("event-derived llm response must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -32,6 +32,8 @@ This file is the current package/command map. `compound architecture doctor --st
 - `compound distiller request --event-trace <trace_id>` now consumes those imported `TraceEnvelope` files as provider-neutral extraction source material with prior-state coverage, still without model calls or memory promotion.
 - `compound distiller eval` now asserts event-trace memory candidates stay unpromoted under live policy and create no claims ledger.
 
+- `compound distiller run --llm-response` now has command-level proof that model-shaped candidates citing imported trace evidence park under live policy, write memory candidate/adjudication records, and create no claims ledger.
+
 ## Current Verdict
 
 Gen-1 memory stack migrated into the spine memory family and retired.
