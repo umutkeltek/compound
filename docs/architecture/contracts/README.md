@@ -63,7 +63,9 @@ unadjudicated; distillation proposes candidates only.**
 
 `LLMExtractionRequest` is the provider-neutral request packet. It carries bounded raw trace text,
 prior-state coverage, source refs, and typed summaries of ContextPack, WorkEnvelope, Receipt, and
-extra spine envelopes; it is prompt material only, not a model call and not authority.
+extra spine envelopes. It can be assembled from explicit typed files or from a closed
+`COMPOUND_HOME` work chain via `distiller request --work-id <work_id>`; it is prompt material only,
+not a model call and not authority.
 
 `LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
 `schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.
