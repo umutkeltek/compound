@@ -20,6 +20,7 @@ import (
 
 	"compound/internal/arch"
 	"compound/internal/authority"
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/decisions"
@@ -147,7 +148,7 @@ usage:
   compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
-compound decisions import | decisions [--kind=K] | decisions doctor
+compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
@@ -1611,12 +1612,35 @@ func cmdProduct(args []string) {
 
 func cmdDecisions(args []string) {
 	store, _ := openMemStore()
+	values := func(name string) []string {
+		var out []string
+		for i := 0; i < len(args); i++ {
+			a := args[i]
+			switch {
+			case a == name && i+1 < len(args):
+				out = append(out, args[i+1])
+				i++
+			case strings.HasPrefix(a, name+"="):
+				out = append(out, strings.TrimPrefix(a, name+"="))
+			}
+		}
+		return out
+	}
 	sub := ""
 	if len(args) > 0 {
 		sub = args[0]
 	}
 	switch sub {
 	case "import":
+		var brainReports []decisions.BrainDecisionReport
+		for _, path := range values("--brain") {
+			report, err := decisions.ImportBrainDecision(store, path, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "brain decision import:", err)
+				os.Exit(1)
+			}
+			brainReports = append(brainReports, report)
+		}
 		var facts []mem.Candidate
 		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
 			got, err := decisions.ImportDEC(root)
@@ -1658,7 +1682,17 @@ func cmdDecisions(args []string) {
 				parked++
 			}
 		}
-		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured), promoted, parked)
+		for _, report := range brainReports {
+			if report.Verdict == candidates.Promote {
+				promoted++
+			} else {
+				parked++
+			}
+		}
+		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured)+len(brainReports), promoted, parked)
+		for _, report := range brainReports {
+			fmt.Printf("- brain %s: %s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.CandidateID, report.EvidenceID, report.ClaimID)
+		}
 	case "doctor":
 		writebackEnabled := hasFlag(args[1:], "--writeback")
 		claims, err := store.AllCurrent()

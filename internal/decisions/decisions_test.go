@@ -59,6 +59,59 @@ scope: public-core
 	}
 }
 
+func TestImportBrainDecisionRecordsEvidenceAndDecision(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "brain", "operating-system", "decision.md")
+	writeFile(t, path, `---
+id: brain-dec-0001
+title: Receipts are proof
+kind: doctrine
+status: accepted
+domains: [governance]
+falsifier: Agents can claim success without a state delta.
+review_trigger: Revisit when receipts stop changing future runs.
+owner: compound
+scope: public-core
+---
+
+# Receipts are proof
+
+Every non-trivial run leaves evidence before it can be treated as done.
+`)
+	report, err := ImportBrainDecision(store, path, time.Date(2026, 6, 29, 18, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.EvidenceID == "" || report.CandidateID == "" || report.ClaimID == "" || report.Verdict != candidates.Promote {
+		t.Fatalf("report = %+v", report)
+	}
+	ev, ok, err := store.GetEvidence(report.EvidenceID)
+	if err != nil || !ok {
+		t.Fatalf("evidence lookup ok=%v err=%v", ok, err)
+	}
+	if ev.SourceKind != "note" || ev.SourceID == "" || ev.QuoteText == "" {
+		t.Fatalf("evidence = %+v", ev)
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("claims = %+v", claims)
+	}
+	l := LifecycleFromClaim(claims[0])
+	if l.ID != "brain-dec-0001" || l.Kind != KindDoctrine || l.Status != StatusAccepted {
+		t.Fatalf("lifecycle = %+v", l)
+	}
+	if l.Falsifier == "" || l.ReviewTrigger == "" || len(l.EvidenceRefs) < 2 || l.EvidenceRefs[1] != report.EvidenceID {
+		t.Fatalf("lifecycle evidence/proof fields = %+v", l)
+	}
+}
+
 func TestImportOperatorLedgerLifecycle(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operator.md")
 	writeFile(t, path, `### O2 — Flip PlacementGuard

@@ -123,6 +123,7 @@ func splitFrontmatter(s string) (fm, body string) {
 type decFrontmatter struct {
 	ID            string   `yaml:"id"`
 	Title         string   `yaml:"title"`
+	Kind          string   `yaml:"kind"`
 	Status        string   `yaml:"status"`
 	Domains       []string `yaml:"domains"`
 	Supersedes    []string `yaml:"supersedes"`
@@ -130,6 +131,15 @@ type decFrontmatter struct {
 	ReviewTrigger string   `yaml:"review_trigger"`
 	Owner         string   `yaml:"owner"`
 	Scope         string   `yaml:"scope"`
+}
+
+type BrainDecisionReport struct {
+	SourcePath  string    `json:"source_path"`
+	EvidenceID  string    `json:"evidence_id"`
+	CandidateID string    `json:"candidate_id"`
+	ClaimID     string    `json:"claim_id,omitempty"`
+	Verdict     string    `json:"verdict"`
+	Lifecycle   Lifecycle `json:"lifecycle"`
 }
 
 // ImportDEC parses decisions/DEC markdown files into policy decision candidates.
@@ -193,6 +203,107 @@ func ImportDEC(root string) ([]mem.Candidate, error) {
 		return nil
 	})
 	return out, err
+}
+
+// ImportBrainDecision imports one curated knowledge-base decision page into the
+// owned decision lifecycle path. The markdown page is evidence; deterministic
+// frontmatter/body parsing proposes the decision, and code adjudicates it.
+func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDecisionReport, error) {
+	var report BrainDecisionReport
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return report, err
+	}
+	fm, body := splitFrontmatter(string(b))
+	var f decFrontmatter
+	_ = yaml.Unmarshal([]byte(fm), &f)
+	if f.Title == "" {
+		f.Title = firstHeading(body)
+	}
+	if strings.TrimSpace(f.Title) == "" {
+		return report, fmt.Errorf("brain decision %s: title required", path)
+	}
+	if f.ID == "" {
+		f.ID = "brain-" + digest12(path+"\n"+f.Title)
+	}
+	if f.Kind == "" {
+		f.Kind = KindDoctrine
+	}
+	if f.Falsifier == "" {
+		if mm := reFalsifier.FindStringSubmatch(body); mm != nil {
+			f.Falsifier = strings.TrimSpace(mm[1])
+		}
+	}
+	if f.ReviewTrigger == "" {
+		if mm := reReviewTrigger.FindStringSubmatch(body); mm != nil {
+			f.ReviewTrigger = strings.TrimSpace(mm[1])
+		}
+	}
+	evidence, err := store.RecordEvidence(mem.EvidenceItem{
+		SourceKind: "note",
+		SourceID:   "brain:" + filepath.ToSlash(path),
+		QuoteText:  decisionQuote(f.Title, body),
+		Actor:      "tool",
+		Visibility: "private",
+	}, now)
+	if err != nil {
+		return report, err
+	}
+	q := lifecycleQualifiers(f.Kind, "brain", f.ID, f.Status)
+	if len(f.Domains) > 0 {
+		q["domain"] = strings.Join(f.Domains, ",")
+	}
+	if len(f.Supersedes) > 0 {
+		q["supersedes"] = strings.Join(f.Supersedes, ",")
+	}
+	if f.Falsifier != "" {
+		q["falsifier"] = strings.TrimSpace(f.Falsifier)
+	}
+	if f.ReviewTrigger != "" {
+		q["review_trigger"] = strings.TrimSpace(f.ReviewTrigger)
+	}
+	if f.Owner != "" {
+		q["owner"] = strings.TrimSpace(f.Owner)
+	}
+	if f.Scope != "" {
+		q["scope"] = strings.TrimSpace(f.Scope)
+	}
+	cands, err := store.Capture([]mem.Candidate{{
+		Entity:         "decisions",
+		Predicate:      "decided",
+		Object:         f.Title,
+		Confidence:     1.0,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     q,
+		PromotionBasis: promotionBasisForStatus(f.Status),
+		SourceTraceRef: evidence.ID,
+		SnippetHash:    digest12(f.ID + "\n" + f.Title),
+		Visibility:     "operational",
+	}}, now)
+	if err != nil {
+		return report, err
+	}
+	verdict := candidates.Park
+	if cands[0].PromotionBasis != "" {
+		verdict = candidates.Promote
+	}
+	res, err := store.Adjudicate(cands[0].ID, verdict, "brain-decision-import", now)
+	if err != nil {
+		return report, err
+	}
+	report = BrainDecisionReport{
+		SourcePath:  path,
+		EvidenceID:  evidence.ID,
+		CandidateID: cands[0].ID,
+		Verdict:     verdict,
+		Lifecycle:   LifecycleFromCandidate(cands[0]),
+	}
+	if res.Claim != nil {
+		report.ClaimID = res.Claim.ID
+		report.Lifecycle = LifecycleFromClaim(*res.Claim)
+	}
+	return report, nil
 }
 
 var reDecHeader = regexp.MustCompile(`(?m)^###\s+([DO]\d+)\b[^\n]*?—\s*(.+)$`)
@@ -403,4 +514,41 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func firstHeading(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			return strings.TrimSpace(strings.TrimLeft(line, "#"))
+		}
+	}
+	return ""
+}
+
+func decisionQuote(title, body string) string {
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lines = append(lines, line)
+		if len(strings.Join(lines, " ")) >= 240 {
+			break
+		}
+	}
+	quote := strings.TrimSpace(strings.Join(lines, " "))
+	if len(quote) > 320 {
+		quote = quote[:320]
+	}
+	if quote == "" {
+		return title
+	}
+	return title + "\n" + quote
+}
+
+func digest12(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])[:12]
 }
