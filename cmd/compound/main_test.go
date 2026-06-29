@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/sourceobs"
 	"compound/internal/work"
 )
 
@@ -347,6 +349,61 @@ func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	}
 }
 
+func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe", filepath.Join("..", "..", "fixtures", "sourceobs", "generated-skill-manifest.yaml")})
+	})
+	if !strings.Contains(out, "# source observation srcobs_fixture_skill_manifest") ||
+		!strings.Contains(out, "- candidate:") ||
+		!strings.Contains(out, "- no_promote:") {
+		t.Fatalf("source observe output missing proof lines:\n%s", out)
+	}
+
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read candidate dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("candidate entries = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(candidateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	var candidate sourceobs.CandidateRecord
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		t.Fatalf("parse candidate: %v", err)
+	}
+	if candidate.Kind != string(candidates.CapabilityObs) ||
+		candidate.Verdict != candidates.NoPromote ||
+		candidate.PromoteAllowed {
+		t.Fatalf("candidate promotion state = kind %q verdict %q allowed %v", candidate.Kind, candidate.Verdict, candidate.PromoteAllowed)
+	}
+	if candidate.SourceObservationID != "srcobs_fixture_skill_manifest" {
+		t.Fatalf("candidate source observation = %q", candidate.SourceObservationID)
+	}
+
+	noPromoteRows := readNoPromoteDecisionRows(t, homePath)
+	if len(noPromoteRows) != 1 {
+		t.Fatalf("no-promote rows = %d, want 1", len(noPromoteRows))
+	}
+	if noPromoteRows[0].CandidateRef != candidate.ID ||
+		noPromoteRows[0].OwnerTarget.Kind != "source_observation" ||
+		noPromoteRows[0].OwnerTarget.Ref != "srcobs_fixture_skill_manifest" {
+		t.Fatalf("no-promote row not tied to source observation candidate: %+v candidate=%s", noPromoteRows[0], candidate.ID)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source observe should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
@@ -490,6 +547,31 @@ func readCapabilityEdges(t *testing.T, homePath string) []capgraph.Edge {
 		edges = append(edges, edge)
 	}
 	return edges
+}
+
+type noPromoteDecisionRow struct {
+	CandidateRef string `json:"candidate_ref"`
+	OwnerTarget  struct {
+		Kind string `json:"kind"`
+		Ref  string `json:"ref"`
+	} `json:"owner_target"`
+}
+
+func readNoPromoteDecisionRows(t *testing.T, homePath string) []noPromoteDecisionRow {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(homePath, "ledger", "no-promote-decisions.jsonl"))
+	if err != nil {
+		t.Fatalf("read no-promote rows: %v", err)
+	}
+	var rows []noPromoteDecisionRow
+	for _, line := range splitJSONLines(string(data)) {
+		var row noPromoteDecisionRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("parse no-promote row %q: %v", line, err)
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func splitJSONLines(s string) []string {

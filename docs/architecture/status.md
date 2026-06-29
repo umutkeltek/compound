@@ -4,6 +4,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound source observe` is now command-boundary proven to turn a generated-view `SourceObservation` into a candidate inbox record plus `NoPromoteDecision` without writing a promoted claim.
+
 - `compound-memory-cli-engine` now rejects mutating external-memory command templates before the CLI process is invoked; unsafe templates return protocol `bad_request`, not a degradable backend outage.
 
 - `compound-memory-cli-engine` now has an expansion-only regression: a query that does not lexically match indexed claims can still return the correct allowlisted claim through external memory CLI output, while empty allowlists fail closed before the CLI is called.
