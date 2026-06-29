@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,6 +176,33 @@ func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.
 	}
 	if !strings.Contains(oldAuthority, "**known_path_retired**: /home/tester/Projects/old-control-spine") {
 		t.Fatalf("retired authority output missing known retired path:\n%s", oldAuthority)
+	}
+}
+
+func TestAuthorityGitImportsSourceControlState(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	repo := initCompoundCommandGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scratch.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdAuthority([]string{"git", repo})
+	})
+	for _, want := range []string{"# source control", "- status: dirty", "- branch: main", "- unstaged: 1", "- untracked: 1", "- changed_paths: 2"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("authority git output missing %q:\n%s", want, out)
+		}
+	}
+	resolved := captureStdout(t, func() {
+		cmdAuthority([]string{"resolve", repo})
+	})
+	if !strings.Contains(resolved, "status: resolved") || !strings.Contains(resolved, "entity: repo:") {
+		t.Fatalf("git root did not resolve source-control entity:\n%s", resolved)
 	}
 }
 
@@ -1270,4 +1298,27 @@ func countCapabilityEdgeTo(edges []capgraph.Edge, kind, to string) int {
 		}
 	}
 	return count
+}
+
+func initCompoundCommandGitRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runCommandGit(t, repo, "init", "-b", "main")
+	runCommandGit(t, repo, "config", "user.email", "test@example.invalid")
+	runCommandGit(t, repo, "config", "user.name", "Compound Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("initial\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", "README.md")
+	runCommandGit(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+func runCommandGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+	}
 }

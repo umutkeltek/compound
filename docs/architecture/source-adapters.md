@@ -124,6 +124,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | event streams (`events/*.ndjson`) | `TraceEnvelope` / event evidence |
 | append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence |
 | contract files | source material for contract candidates |
+| source-control snapshots | `SourceAuthority` status claims via read-only git inspection; branch/head/ahead/behind/dirty counts only, no cleanup/staging/push authority |
 | registries | `RegistryEntry` candidates |
 | tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges from normalized topology YAML or generated resolver JSON |
 | skill manifests / external skill catalogs | `SkillManifestAdapter` -> `CapabilityGraph` skill/lens/procedure nodes + graph edges from normalized manifests or generated skill-manifest JSON; offers only, never execution |
