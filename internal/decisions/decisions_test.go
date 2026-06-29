@@ -550,6 +550,65 @@ Review trigger: Re-check after decision parsing changes.
 	}
 }
 
+func TestBuildBrainLifecycleRepairPlanFindsNarrativeDecisionDebt(t *testing.T) {
+	dir := t.TempDir()
+	pathA := filepath.Join(dir, "wiki", "reflections", "decision.md")
+	pathB := filepath.Join(dir, "wiki", "ideas", "complete.md")
+	writeFile(t, pathA, `---
+type: reflection
+title: 2026 06 11 Memory Engine Ownership Decision 537a02
+date: '2026-06-11T00:00:00.000Z'
+dream_generated: true
+---
+
+# memory engine ownership decision - own contract, rent engine
+
+## decision Oracle review
+
+The verdict:
+
+> **"Keep the rented memory engine continuously updated. Don't rebuild. Own the contract seam."**
+
+## How apply
+
+When ReleaseX ships or is externally blocked, execute the parked spec.
+`)
+	writeFile(t, pathB, `---
+type: original
+title: Complete narrative decision
+date: '2026-06-12T00:00:00.000Z'
+falsifier: Complete record still creates duplicate owners.
+review_trigger: Re-check after owner changes.
+---
+
+# complete narrative decision
+`)
+
+	plan, err := BuildBrainLifecycleRepairPlan([]string{pathA, pathB}, time.Date(2026, 6, 29, 23, 10, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SourceKind != "brain" || plan.Status != "review_required" || plan.RepairCount != 1 {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if plan.MissingFieldCounts["falsifier"] != 1 || plan.MissingFieldCounts["review_trigger"] != 0 {
+		t.Fatalf("missing counts = %+v", plan.MissingFieldCounts)
+	}
+	repair := plan.Repairs[0]
+	if !strings.HasPrefix(repair.DecisionID, "brain-") {
+		t.Fatalf("decision id = %q", repair.DecisionID)
+	}
+	if !strings.Contains(repair.Title, "Keep the rented memory engine continuously updated") {
+		t.Fatalf("title = %q", repair.Title)
+	}
+	if repair.EvidenceRef == "" || !strings.HasPrefix(repair.EvidenceRef, "brain_source:") {
+		t.Fatalf("evidence ref = %q", repair.EvidenceRef)
+	}
+	if !pathWithin(plan.SourceRoot, pathA) || !pathWithin(plan.SourceRoot, pathB) {
+		t.Fatalf("source root %q does not contain brain paths", plan.SourceRoot)
+	}
+}
+
 func TestRecordLifecycleRepairPlanWritesReviewArtifacts(t *testing.T) {
 	plan := LifecycleRepairPlan{
 		SchemaVersion:      RepairPlanSchemaVersion,

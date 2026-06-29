@@ -11,6 +11,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/home"
@@ -941,6 +942,63 @@ func testPolicyDecision(workID, id, actionID string) envelope.PolicyDecision {
 	}
 }
 
+func TestDecisionsRepairPlanBrainWritesReviewArtifactWithoutPromotion(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	brainPath := filepath.Join(t.TempDir(), "brain", "wiki", "reflections", "decision.md")
+	if err := os.MkdirAll(filepath.Dir(brainPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(brainPath, []byte(`---
+type: reflection
+title: 2026 06 11 Memory Engine Ownership Decision 537a02
+date: '2026-06-11T00:00:00.000Z'
+---
+
+# memory engine ownership decision - own contract, rent engine
+
+## decision
+
+The verdict:
+
+> **"Keep the rented memory engine continuously updated. Own the contract seam."**
+
+## How apply
+
+When ReleaseX ships or is externally blocked, execute the parked spec.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDecisions([]string{"repair-plan", "--brain", brainPath})
+	})
+	if !strings.Contains(out, "# decisions repair-plan") ||
+		!strings.Contains(out, "source_kind: brain") ||
+		!strings.Contains(out, "repairs: 1") ||
+		!strings.Contains(out, "missing_falsifier: 1") ||
+		!strings.Contains(out, "missing_review_trigger: 0") {
+		t.Fatalf("repair-plan output =\n%s", out)
+	}
+	planPath := outputValue(out, "plan:")
+	if planPath == "" {
+		t.Fatalf("missing plan path in output:\n%s", out)
+	}
+	plan, err := decisions.LoadLifecycleRepairPlan(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SourceKind != "brain" || plan.RepairCount != 1 || len(plan.Repairs) != 1 {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if !strings.HasPrefix(plan.Repairs[0].EvidenceRef, "brain_source:") {
+		t.Fatalf("evidence ref = %q", plan.Repairs[0].EvidenceRef)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("repair-plan should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func writeHookFixture(t *testing.T, fixture hook.Fixture) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hook.json")
@@ -1041,6 +1099,16 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+func outputValue(out, key string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, key) {
+			return strings.TrimSpace(strings.TrimPrefix(line, key))
+		}
+	}
+	return ""
 }
 
 func readCapabilityEdges(t *testing.T, homePath string) []capgraph.Edge {

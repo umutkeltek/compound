@@ -22,6 +22,7 @@ type LifecycleRepairPlan struct {
 	ID                 string            `json:"id"`
 	CreatedAt          string            `json:"created_at"`
 	SourceRoot         string            `json:"source_root"`
+	SourceKind         string            `json:"source_kind,omitempty"`
 	Status             string            `json:"status"`
 	RepairCount        int               `json:"repair_count"`
 	MissingFieldCounts map[string]int    `json:"missing_field_counts"`
@@ -82,15 +83,35 @@ func BuildLifecycleRepairPlan(root string, now time.Time) (LifecycleRepairPlan, 
 	if err != nil {
 		return LifecycleRepairPlan{}, err
 	}
+	return buildLifecycleRepairPlan(root, "policy", files, now)
+}
+
+func BuildBrainLifecycleRepairPlan(paths []string, now time.Time) (LifecycleRepairPlan, error) {
+	if len(paths) == 0 {
+		return LifecycleRepairPlan{}, fmt.Errorf("brain markdown path required")
+	}
+	abs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		got, err := filepath.Abs(path)
+		if err != nil {
+			return LifecycleRepairPlan{}, err
+		}
+		abs = append(abs, got)
+	}
+	return buildLifecycleRepairPlan(commonSourceRoot(abs), "brain", abs, now)
+}
+
+func buildLifecycleRepairPlan(root, sourceKind string, files []string, now time.Time) (LifecycleRepairPlan, error) {
 	plan := LifecycleRepairPlan{
 		SchemaVersion:      RepairPlanSchemaVersion,
 		CreatedAt:          now.UTC().Format(time.RFC3339),
 		SourceRoot:         root,
+		SourceKind:         sourceKind,
 		Status:             "ok",
 		MissingFieldCounts: map[string]int{},
 	}
 	for _, path := range files {
-		repair, ok, err := lifecycleRepairForFile(path)
+		repair, ok, err := lifecycleRepairForFile(path, sourceKind)
 		if err != nil {
 			return LifecycleRepairPlan{}, err
 		}
@@ -107,7 +128,7 @@ func BuildLifecycleRepairPlan(root string, now time.Time) (LifecycleRepairPlan, 
 	if plan.RepairCount > 0 {
 		plan.Status = "review_required"
 	}
-	plan.ID = "dlrp_" + digest12(root+"\n"+repairDigest(plan))
+	plan.ID = "dlrp_" + digest12(sourceKind+"\n"+root+"\n"+repairDigest(plan))
 	return plan, nil
 }
 
@@ -247,6 +268,9 @@ func RenderLifecycleRepairReview(plan LifecycleRepairPlan) string {
 	fmt.Fprintf(&b, "- status: `%s`\n", plan.Status)
 	fmt.Fprintf(&b, "- repairs: %d\n", plan.RepairCount)
 	fmt.Fprintf(&b, "- source_root: `%s`\n", plan.SourceRoot)
+	if plan.SourceKind != "" {
+		fmt.Fprintf(&b, "- source_kind: `%s`\n", plan.SourceKind)
+	}
 	if len(plan.MissingFieldCounts) > 0 {
 		keys := make([]string, 0, len(plan.MissingFieldCounts))
 		for k := range plan.MissingFieldCounts {
@@ -281,7 +305,7 @@ func RenderLifecycleRepairReview(plan LifecycleRepairPlan) string {
 	return b.String()
 }
 
-func lifecycleRepairForFile(path string) (LifecycleRepair, bool, error) {
+func lifecycleRepairForFile(path, sourceKind string) (LifecycleRepair, bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return LifecycleRepair{}, false, err
@@ -292,12 +316,7 @@ func lifecycleRepairForFile(path string) (LifecycleRepair, bool, error) {
 	}
 	var f decFrontmatter
 	_ = yaml.Unmarshal([]byte(fm), &f)
-	if f.ID == "" {
-		f.ID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	}
-	if f.Title == "" {
-		f.Title = firstHeading(body)
-	}
+	prepareLifecycleRepairFrontmatter(&f, body, path, sourceKind)
 	if f.Falsifier == "" {
 		if mm := reFalsifier.FindStringSubmatch(body); mm != nil {
 			f.Falsifier = strings.TrimSpace(mm[1])
@@ -307,6 +326,9 @@ func lifecycleRepairForFile(path string) (LifecycleRepair, bool, error) {
 		if mm := reReviewTrigger.FindStringSubmatch(body); mm != nil {
 			f.ReviewTrigger = strings.TrimSpace(mm[1])
 		}
+	}
+	if f.ReviewTrigger == "" && sourceKind == "brain" {
+		f.ReviewTrigger = extractNarrativeReviewTrigger(body)
 	}
 	if CanonicalStatus(f.Status) != StatusAccepted {
 		return LifecycleRepair{}, false, nil
@@ -331,12 +353,46 @@ func lifecycleRepairForFile(path string) (LifecycleRepair, bool, error) {
 		SourcePath:  path,
 		Missing:     missing,
 		BodySignals: signals,
-		EvidenceRef: "decision_source:" + filepath.ToSlash(path),
+		EvidenceRef: repairEvidenceRef(sourceKind, path),
 	}
 	for _, field := range missing {
 		repair.Fields = append(repair.Fields, suggestedLifecycleField(field, f, signals))
 	}
 	return repair, true, nil
+}
+
+func prepareLifecycleRepairFrontmatter(f *decFrontmatter, body, path, sourceKind string) {
+	heading := firstHeading(body)
+	if sourceKind == "brain" {
+		if f.ID == "" {
+			f.ID = stableBrainDecisionID(*f, heading, path)
+		}
+		if f.Title == "" || preferBrainHeading(f.Title, heading) {
+			f.Title = heading
+		}
+		if choice := brainDecisionChoice(f.Title, body); choice != "" {
+			f.Title = choice
+		}
+		if f.Kind == "" {
+			f.Kind = KindDoctrine
+		}
+		return
+	}
+	if f.ID == "" {
+		f.ID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	if f.Title == "" {
+		f.Title = heading
+	}
+}
+
+func repairEvidenceRef(sourceKind, path string) string {
+	switch sourceKind {
+	case "brain":
+		return "brain_source:" + filepath.ToSlash(path)
+	default:
+		return "decision_source:" + filepath.ToSlash(path)
+	}
 }
 
 func suggestedLifecycleField(field string, f decFrontmatter, signals []string) LifecycleRepairField {
@@ -465,6 +521,24 @@ func pathWithin(root, path string) bool {
 		return false
 	}
 	return rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".."
+}
+
+func commonSourceRoot(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	root := filepath.Dir(paths[0])
+	for _, path := range paths[1:] {
+		dir := filepath.Dir(path)
+		for root != dir && !pathWithin(root, dir) {
+			parent := filepath.Dir(root)
+			if parent == root {
+				return root
+			}
+			root = parent
+		}
+	}
+	return root
 }
 
 func lifecycleBodySignals(body string) []string {
