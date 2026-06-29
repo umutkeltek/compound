@@ -103,6 +103,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkDocLeak(repoRoot, strict)...)
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
 		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
+		f = append(f, checkLLMExtractionGroundingContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -275,6 +276,40 @@ func checkDistillerDuplicateContract(repoRoot string) []Finding {
 		return []Finding{{"distiller-contract", Fail, "public docs do not describe non-memory duplicate candidate anti-churn (prior_candidate_id/no-promote)"}}
 	}
 	return []Finding{{"distiller-contract", Info, "distiller duplicate anti-churn covers memory claims and candidate inboxes"}}
+}
+
+// checkLLMExtractionGroundingContract keeps the live/eval extractor contract
+// from drifting back to generic model-output parsing. Request-aware extraction
+// must require candidate evidence refs grounded in LLMExtractionRequest.source_refs.
+func checkLLMExtractionGroundingContract(repoRoot string) []Finding {
+	hasRequestGrounded := false
+	hasEvidenceRefs := false
+	hasSourceRefs := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "request-grounded") {
+			hasRequestGrounded = true
+		}
+		if strings.Contains(low, "evidence_refs") {
+			hasEvidenceRefs = true
+		}
+		if strings.Contains(low, "llmextractionrequest.source_refs") || strings.Contains(low, "source_refs[]") {
+			hasSourceRefs = true
+		}
+		return nil
+	})
+	if !hasRequestGrounded || !hasEvidenceRefs || !hasSourceRefs {
+		return []Finding{{"llm-grounding-contract", Fail, "public docs do not describe request-grounded LLM extraction evidence_refs/source_refs gate"}}
+	}
+	return []Finding{{"llm-grounding-contract", Info, "LLM extraction contract requires request-grounded evidence refs"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the

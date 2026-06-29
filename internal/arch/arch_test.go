@@ -165,3 +165,60 @@ func TestDistillerDuplicateContractRequiresCandidateCoverage(t *testing.T) {
 		t.Fatalf("failure should name missing candidate coverage: %+v", findings)
 	}
 }
+
+func TestLLMExtractionGroundingContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "llm-grounding-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("llm grounding contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected llm-grounding-contract finding")
+	}
+}
+
+func TestLLMExtractionGroundingContractFailsOnGenericExtractorDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "OpenAICompatibleExtraction validates returned LLMExtractionResponse through LLMExtractor.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkLLMExtractionGroundingContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "request-grounded LLM extraction") {
+		t.Fatalf("failure should name missing request grounding: %+v", findings)
+	}
+}
+
+func TestLLMExtractionGroundingContractRequiresEvidenceAndSourceRefs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "Eval/live extraction is request-grounded, but this stale doc omits the evidence gate.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkLLMExtractionGroundingContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "evidence_refs/source_refs") {
+		t.Fatalf("failure should name missing refs: %+v", findings)
+	}
+}

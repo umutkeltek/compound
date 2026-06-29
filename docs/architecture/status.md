@@ -4,6 +4,7 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 - Eval/live LLM extraction is now request-grounded: `NewGroundedLLMExtractor` requires each model candidate to carry `evidence_refs[]` and rejects candidate evidence refs absent from the originating `LLMExtractionRequest.source_refs[]`. The eval corpus includes an ungrounded-evidence rejection case, so invented citations fail before candidate inbox writes, claims, or provider-route success.
+- `compound architecture doctor --strict` now includes `llm-grounding-contract`, failing if public docs stop describing request-grounded LLM extraction through candidate `evidence_refs[]` and originating request `source_refs[]`.
 - Distiller duplicate critique now uses `RetrievedPriorState` for non-memory candidate families, not only current memory claims: repeated skill/decision/failure/taste/product/route/capability/eval/method/policy candidate meanings reject as duplicates with `prior_candidate_id`, write a `NoPromoteDecision` targeting the prior candidate, and do not create another candidate inbox file. `compound distiller doctor` now reports duplicate candidate rejection/no-promote counts separately from duplicate memory churn.
 - `compound architecture doctor --strict` now includes `distiller-contract`, failing if public docs stop describing non-memory duplicate candidate anti-churn through `prior_candidate_id`/no-promote. This keeps the distiller contract from drifting back to a memory-only story.
 - `RetrievedPriorState` / `compound distiller prior-state` now exposes all typed candidate inbox families before extraction: skill, decision, failure, taste, product hypothesis, route observation, capability observation, eval case, method upgrade, and policy patch. Eval prior-coverage assertions accept the same fields, so critic regressions can prove no candidate family is hidden.
@@ -150,6 +151,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - public-doc leak gate: generic path/email leaks plus private leak-token list;
 - retired-surface guard: old skill-matrix debt cannot reappear in public docs;
 - distiller-contract guard: duplicate candidate anti-churn must remain documented beyond memory-only duplicates;
+- llm-grounding-contract guard: request-grounded candidate `evidence_refs[]` / request `source_refs[]` gating must remain documented for eval/live extraction;
 - convergence ratchet: `converge-pending` packages must not exceed budget, now fixed at `0`.
 
 ## Next Coverage Moves
