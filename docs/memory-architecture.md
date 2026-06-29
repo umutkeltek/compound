@@ -217,6 +217,10 @@ core a single pure-Go binary and the engine genuinely swappable.
 - **Engine ownership is mechanically checked.** `compound memory engine-doctor <query>` hashes
   `COMPOUND_HOME/ledger` before/after a breadth query, reports engine/ledger generation, and fails if
   a rented engine mutates owned ledger bytes.
+- **Engine swap parity mechanically checked.** `compound memory engine-compare <query>` requires
+`COMPOUND_MEM_ENGINE_BIN`, runs the owned lexical reference and configured sidecar over the same
+ledger-gated query, and fails if hydrated claim ids diverge or ledger bytes change. This is the
+acceptance gate for legacy/vector sidecar adapters before they are trusted as rented breadth.
 - **Identity guard, fail-closed.** compound records the embedder it indexed with; if the sidecar
   reports a different one, breadth is **refused** (`ErrEmbedderMismatch`), never silently degraded —
   a silent model swap would wreck recall invisibly. A down sidecar degrades to `ErrEngineUnavailable`

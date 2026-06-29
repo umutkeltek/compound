@@ -148,7 +148,7 @@ usage:
   compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
-  compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
+  compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...
@@ -809,7 +809,7 @@ func readTypedEnvelopeOrDie(path string) envelope.Envelope {
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
 func cmdMemory(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|query <text>|engine-doctor <text>|doctor>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|query <text>|engine-doctor <text>|engine-compare <text>|doctor>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -1086,6 +1086,43 @@ func cmdMemory(args []string) {
 			fmt.Fprintln(os.Stderr, "memory engine-doctor:", err)
 			os.Exit(1)
 		}
+	case "engine-compare":
+		if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
+			fmt.Fprintln(os.Stderr, "memory engine-compare requires COMPOUND_MEM_ENGINE_BIN (a rented sidecar command)")
+			os.Exit(2)
+		}
+		k := 10
+		if v := flag("--k"); v != "" {
+			n, err := strconv.Atoi(v)
+			die(err)
+			k = n
+		}
+		eng, closeEng := memBreadthEngine()
+		report, err := store.EngineCompare(firstPos(map[string]bool{"--k": true}), k, eng)
+		closeEng()
+		fmt.Println("# memory engine-compare")
+		fmt.Printf("- query: %s\n", report.Query)
+		fmt.Printf("- reference_engine: %s\n", report.Reference.Engine.Name)
+		fmt.Printf("- candidate_engine: %s\n", report.Candidate.Engine.Name)
+		fmt.Printf("- ledger_unchanged: %t\n", report.LedgerUnchanged)
+		fmt.Printf("- reference_hits: %d\n", len(report.ReferenceClaimIDs))
+		fmt.Printf("- candidate_hits: %d\n", len(report.CandidateClaimIDs))
+		fmt.Printf("- missing: %d\n", len(report.MissingClaimIDs))
+		for _, id := range report.MissingClaimIDs {
+			fmt.Printf(" - missing %s\n", id)
+		}
+		fmt.Printf("- extra: %d\n", len(report.ExtraClaimIDs))
+		for _, id := range report.ExtraClaimIDs {
+			fmt.Printf(" - extra %s\n", id)
+		}
+		fmt.Printf("- match: %t\n", report.Match)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory engine-compare:", err)
+			os.Exit(1)
+		}
+		if !report.Match {
+			os.Exit(1)
+		}
 	case "doctor":
 		r := store.Doctor()
 		for _, h := range r.Hops {
@@ -1096,7 +1133,7 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare|doctor> ...")
 		os.Exit(2)
 	}
 }
