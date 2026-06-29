@@ -144,10 +144,9 @@ The first implementation should be deliberately narrow:
 
 ```text
 one generated operating-system view
-  -> SourceObservation
-  -> artifact hash
   -> ProjectionFreshness
-  -> capability or authority candidate parked/no_promote
+  -> SourceObservation
+  -> method_upgrade candidate no_promote
   -> source doctor reports fresh/stale/drifted
 ```
 

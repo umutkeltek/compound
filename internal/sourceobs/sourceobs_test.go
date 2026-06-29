@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/projection"
 )
 
 var tSource = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -64,6 +65,56 @@ func TestApplyGeneratedViewObservationWritesCandidateAndNoPromote(t *testing.T) 
 	}
 	if rows := readNoPromoteRows(t, home); len(rows) != 1 {
 		t.Fatalf("replay appended duplicate no-promote rows: %d", len(rows))
+	}
+}
+
+func TestProjectionFreshnessObservationWritesMethodUpgradeNoPromote(t *testing.T) {
+	home := t.TempDir()
+	freshness := projection.Freshness{
+		ProjectionID:    "projection:test-dashboard",
+		ViewRef:         "generated-dashboard.md",
+		SourceLedgerSeq: 8,
+		BuiltAt:         "2026-06-29T00:00:00Z",
+		CoverageVerdict: "partial",
+		Status:          projection.StatusStale,
+		OutputHash:      "sha256:view",
+		Staleness:       "241h0m0s",
+		Sources:         []projection.SourceObservation{{SourceRef: "source-ledger.jsonl", CurrentHash: "sha256:source", Status: "ok"}},
+		Checks:          []projection.Check{{Name: "coverage", Status: "fail", Detail: "partial"}},
+	}
+
+	obs := FromProjectionFreshness(freshness, tSource)
+	if obs.AdapterID != "compound.projection" || obs.GeneratedView.Freshness != projection.StatusStale {
+		t.Fatalf("unexpected projection observation: %+v", obs)
+	}
+	if len(obs.MapsTo) != 1 || obs.MapsTo[0].CandidateKind != string(candidates.MethodUpgrade) || obs.MapsTo[0].PromoteAllowed {
+		t.Fatalf("unexpected map target: %+v", obs.MapsTo)
+	}
+	if !strings.Contains(obs.GeneratedView.DriftReason, "coverage:partial") {
+		t.Fatalf("missing drift reason: %q", obs.GeneratedView.DriftReason)
+	}
+
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.MethodUpgrade), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != string(candidates.MethodUpgrade) || c.Verdict != candidates.NoPromote || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("projection source observation should not promote claims, stat err=%v", err)
 	}
 }
 

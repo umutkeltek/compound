@@ -161,7 +161,7 @@ usage:
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
-compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
+compound projection doctor <freshness.yaml> [--writeback] [--source-observe] ProjectionFreshness + gated writeback/source observation
 compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
@@ -3216,17 +3216,31 @@ func runProjectionWriteback(report projection.Freshness, now time.Time) (writeba
 	return result, nil
 }
 
+func runProjectionSourceObservation(report projection.Freshness, now time.Time) (sourceobs.Report, error) {
+	var result sourceobs.Report
+	if !projection.NeedsWriteback(report) {
+		return result, nil
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return result, err
+	}
+	obs := sourceobs.FromProjectionFreshness(report, now)
+	return sourceobs.Apply(homePath, obs, now)
+}
+
 func cmdProjection(args []string) {
 	if len(args) < 1 || args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe]")
 		os.Exit(2)
 	}
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe]")
 		os.Exit(2)
 	}
 	now := time.Now()
 	writebackEnabled := hasFlag(args[2:], "--writeback")
+	sourceObserveEnabled := hasFlag(args[2:], "--source-observe")
 	report, err := projection.DoctorFile(args[1], now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "projection doctor:", err)
@@ -3270,6 +3284,22 @@ func cmdProjection(args []string) {
 			if result.TransitionID != "" {
 				fmt.Printf("- transition: %s\n", result.TransitionID)
 			}
+		}
+		if sourceObserveEnabled {
+			sourceReport, err := runProjectionSourceObservation(report, now)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "projection source observe:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+			for _, id := range sourceReport.CandidateIDs {
+				fmt.Printf("- source_candidate: %s\n", id)
+			}
+			for _, id := range sourceReport.NoPromoteIDs {
+				fmt.Printf("- source_no_promote: %s\n", id)
+			}
+		}
+		if writebackEnabled || sourceObserveEnabled {
 			return
 		}
 		os.Exit(1)

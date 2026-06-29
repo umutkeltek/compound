@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/projection"
 	"compound/internal/writeback"
 	"gopkg.in/yaml.v3"
 )
@@ -156,6 +157,48 @@ func Apply(homePath string, obs SourceObservation, now time.Time) (Report, error
 	return report, nil
 }
 
+// FromProjectionFreshness converts a generated-view freshness report into the
+// generic source observation contract. Projection drift stays candidate/no-promote
+// evidence; this adapter never promotes generated-view truth.
+func FromProjectionFreshness(f projection.Freshness, now time.Time) SourceObservation {
+	revision := f.OutputHash
+	if revision == "" {
+		revision = "status:" + f.Status
+	}
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "projection", f.ProjectionID, f.ViewRef, f.Status, revision),
+		AdapterID:     "compound.projection",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        f.ViewRef,
+			Kind:        "generated_view",
+			Owner:       f.ProjectionID,
+			SourceClass: "generated",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:      "projection_freshness",
+			Consumer:      "compound projection doctor",
+			GeneratedFrom: projectionSourceRefs(f),
+			Generator:     "compound projection doctor",
+			Marker:        "projection_freshness",
+			Freshness:     f.Status,
+			DriftReason:   projectionDriftReason(f),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "projection",
+				CandidateKind:  string(candidates.MethodUpgrade),
+				EntityHint:     f.ProjectionID,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: projection.EvidenceRefs(f),
+	}
+}
+
 func CandidateFromMap(obs SourceObservation, m MapTarget, now time.Time) CandidateRecord {
 	verdict := candidates.Park
 	if !m.PromoteAllowed {
@@ -220,6 +263,46 @@ func evidenceRefs(obs SourceObservation) []string {
 	refs := append([]string(nil), obs.EvidenceRefs...)
 	refs = append(refs, "source:"+obs.SourceRef.Path+"#"+obs.SourceRef.Revision)
 	return refs
+}
+
+func projectionSourceRefs(f projection.Freshness) []SourceRef {
+	refs := make([]SourceRef, 0, len(f.Sources))
+	for _, source := range f.Sources {
+		revision := source.CurrentHash
+		if revision == "" {
+			revision = "unknown"
+		}
+		refs = append(refs, SourceRef{
+			Path:        source.SourceRef,
+			Kind:        "source",
+			Owner:       f.ProjectionID,
+			SourceClass: "projection_source",
+			Revision:    revision,
+		})
+	}
+	return refs
+}
+
+func projectionDriftReason(f projection.Freshness) string {
+	var reasons []string
+	if f.Status != "" {
+		reasons = append(reasons, "status="+f.Status)
+	}
+	for _, check := range f.Checks {
+		if check.Status != "ok" {
+			reason := check.Name
+			if check.Detail != "" {
+				reason += ":" + check.Detail
+			}
+			reasons = append(reasons, reason)
+		}
+	}
+	for _, source := range f.Sources {
+		if source.Status != "ok" {
+			reasons = append(reasons, "source:"+source.SourceRef+"="+source.Status)
+		}
+	}
+	return strings.Join(reasons, "; ")
 }
 
 func idFor(prefix string, parts ...string) string {

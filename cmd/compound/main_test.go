@@ -404,6 +404,60 @@ func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) 
 	}
 }
 
+func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdProjection([]string{"doctor", filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml"), "--source-observe"})
+	})
+	if !strings.Contains(out, "- status: stale") ||
+		!strings.Contains(out, "- source_observation: srcobs_") ||
+		!strings.Contains(out, "- source_candidate:") ||
+		!strings.Contains(out, "- source_no_promote:") {
+		t.Fatalf("projection source-observe output missing proof lines:\n%s", out)
+	}
+
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read method-upgrade dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("method-upgrade entries = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(candidateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read method-upgrade candidate: %v", err)
+	}
+	var candidate sourceobs.CandidateRecord
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		t.Fatalf("parse method-upgrade candidate: %v", err)
+	}
+	if candidate.Kind != string(candidates.MethodUpgrade) || candidate.Verdict != candidates.NoPromote || candidate.PromoteAllowed {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	if candidate.Subject != "projection:synthetic-runtime-dashboard" ||
+		!strings.HasPrefix(candidate.SourceObservationID, "srcobs_") ||
+		candidate.SourceRef != "generated-dashboard.md" {
+		t.Fatalf("candidate did not keep projection source identity: %+v", candidate)
+	}
+
+	rows := readNoPromoteDecisionRows(t, homePath)
+	if len(rows) != 1 {
+		t.Fatalf("no-promote rows = %d, want 1", len(rows))
+	}
+	if rows[0].CandidateRef != candidate.ID || rows[0].OwnerTarget.Kind != "source_observation" || !strings.HasPrefix(rows[0].OwnerTarget.Ref, "srcobs_") {
+		t.Fatalf("no-promote row not tied to projection source observation: %+v", rows[0])
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("projection source-observe should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
