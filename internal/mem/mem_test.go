@@ -75,6 +75,48 @@ func TestDeltaLoop(t *testing.T) {
 	}
 }
 
+// Positions folds the ledger into the current durable stance per (entity, topic), carrying the
+// supersession chain old→new — the spine-native convergence of the Gen-1 position.Build. Proven
+// here as the first capability landed on the spine toward the wholesale Gen-1 retirement.
+func TestPositionsFoldTopicAndChain(t *testing.T) {
+	s := newStore(t)
+	e := "project:api"
+	// topic "lang": node → go (a supersession)
+	c1, _ := s.Capture([]Candidate{cand(e, "lang", "node", "2026-01-01T00:00:00Z")}, t0)
+	r1, _ := s.Adjudicate(c1[0].ID, "promote", "", t0)
+	c2, _ := s.Capture([]Candidate{cand(e, "lang", "go", "2026-06-01T00:00:00Z")}, t0)
+	r2, _ := s.Adjudicate(c2[0].ID, "promote", "", t0)
+	// topic "db": a single version
+	c3, _ := s.Capture([]Candidate{cand(e, "db", "postgres", "2026-01-01T00:00:00Z")}, t0)
+	s.Adjudicate(c3[0].ID, "promote", "", t0)
+
+	pos, err := s.Positions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pos) != 2 {
+		t.Fatalf("expected 2 topic-grouped positions; got %d (%+v)", len(pos), pos)
+	}
+	by := map[string]Position{}
+	for _, p := range pos {
+		by[p.Topic] = p
+	}
+	lang := by["lang"]
+	if lang.ID != "project:api::lang" || lang.ActiveObject != "go" || lang.ActiveClaimID != r2.Claim.ID {
+		t.Errorf("lang position should be active 'go' (id project:api::lang, claim %s); got %+v", r2.Claim.ID, lang)
+	}
+	// the chain carries the FULL history oldest→newest, not just the latest value.
+	if len(lang.ClaimChain) != 2 || lang.ClaimChain[0] != r1.Claim.ID || lang.ClaimChain[1] != r2.Claim.ID {
+		t.Errorf("lang chain should be [node-claim, go-claim] oldest→newest; got %v", lang.ClaimChain)
+	}
+	if lang.Status != "active" {
+		t.Errorf("lang status should be active; got %q", lang.Status)
+	}
+	if by["db"].ActiveObject != "postgres" || len(by["db"].ClaimChain) != 1 {
+		t.Errorf("db position should be single-version postgres; got %+v", by["db"])
+	}
+}
+
 func TestCandidateFirstNoCanonWithoutPromote(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)

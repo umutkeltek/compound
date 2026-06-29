@@ -87,6 +87,22 @@ type Edge struct {
 	CreatedAt  string  `json:"created_at"`
 }
 
+// Position is the CURRENT durable stance per (entity, topic) — the topic-grouped view of the
+// ledger the audit named as missing in mem. The active claim is the current (non-superseded)
+// version; the chain is the FULL supersession history (MVCC-by-fold), so a Position carries
+// old→new, not just the latest value. This is the spine-native convergence of internal/position
+// (Gen-1 grouped by (entity, topic) over a candidate/promoted status model; here topic = predicate
+// and "current" is derived by folding supersession, never by mutation).
+type Position struct {
+	ID            string   `json:"id"` // entity::topic
+	Entity        string   `json:"entity"`
+	Topic         string   `json:"topic"` // mem's topic axis = predicate
+	ActiveClaimID string   `json:"active_claim_id"`
+	ActiveObject  string   `json:"active_object"` // the current value (convenience)
+	Status        string   `json:"status"`        // active | retired
+	ClaimChain    []string `json:"claim_chain"`   // all versions oldest→newest (the supersession history)
+}
+
 // Store is the memory ledger rooted at a COMPOUND_HOME.
 type Store struct{ home string }
 
@@ -409,6 +425,58 @@ func (s *Store) currentClaim(entity, predicate string, asOf int64) (Claim, bool,
 		}
 	}
 	return best, found, nil
+}
+
+// Positions folds the whole ledger into the current durable stance per (entity, topic), each with
+// its supersession chain (oldest→newest). Topic = predicate. The active claim is the current
+// (non-superseded) version; a group whose current claim is retired-visibility is "retired", else
+// "active". This is the spine-native Position the audit found missing in mem — additive, derived
+// (rebuildable), and mutation-free.
+func (s *Store) Positions() ([]Position, error) {
+	claims, err := s.loadClaims()
+	if err != nil {
+		return nil, err
+	}
+	superseded, err := s.supersededAsOf(s.maxSeq(claims))
+	if err != nil {
+		return nil, err
+	}
+	type key struct{ entity, topic string }
+	groups := map[key][]Claim{}
+	var order []key
+	for _, c := range claims {
+		k := key{c.Entity, c.Predicate}
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], c)
+	}
+	out := make([]Position, 0, len(order))
+	for _, k := range order {
+		cs := groups[k]
+		sort.Slice(cs, func(i, j int) bool { return cs[i].Seq < cs[j].Seq }) // oldest→newest
+		chain := make([]string, len(cs))
+		var active Claim
+		found := false
+		for i, c := range cs {
+			chain[i] = c.ID
+			if !superseded[c.ID] {
+				active, found = c, true // the single current version of this topic
+			}
+		}
+		if !found {
+			continue // defensive: every group has a current claim by MVCC construction
+		}
+		status := "active"
+		if active.Visibility == "retired" {
+			status = "retired"
+		}
+		out = append(out, Position{
+			ID: k.entity + "::" + k.topic, Entity: k.entity, Topic: k.topic,
+			ActiveClaimID: active.ID, ActiveObject: active.Object, Status: status, ClaimChain: chain,
+		})
+	}
+	return out, nil
 }
 
 // --- doctor (which hop) ---

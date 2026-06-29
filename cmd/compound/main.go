@@ -478,6 +478,14 @@ func cmdMemory(args []string) {
 			}
 			fmt.Printf("%s seq %-3d %s.%s = %s\n", arrow, c.Seq, c.Entity, c.Predicate, c.Object)
 		}
+	case "positions":
+		// the spine-native Position: current durable stance per (entity, topic) WITH the
+		// supersession chain (old→new) — the convergence of Gen-1 internal/position onto the spine.
+		ps, err := store.Positions()
+		die(err)
+		for _, p := range ps {
+			fmt.Printf("%-28s = %-12s [%s]  chain:%d\n", p.ID, p.ActiveObject, p.Status, len(p.ClaimChain))
+		}
 	case "query":
 		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_ENGINE_BIN
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
