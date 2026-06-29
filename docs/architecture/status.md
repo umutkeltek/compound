@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound distiller eval-plan --candidate <id> [--corpus <dir>]` now converts operationalized `eval_case` candidates into reviewed JSON/Markdown eval fixture drafts under `COMPOUND_HOME/reviews/distiller-eval/`, hashing the target corpus for review context while not mutating the corpus, calling a model, or promoting claims.
 - `compound memory write-plan --candidate <id> --target <markdown>` now converts parked memory candidates into reviewed curated-source JSON/Markdown artifacts under `COMPOUND_HOME/reviews/meaning-write/`, preserving evidence refs and target hash without mutating the target markdown or promoting claims.
 - `LLMExtractionRequest` TraceEnvelope summaries now carry structured source/scope/mutation/files/tools/output metadata; command proof derives a parked memory candidate from that event request summary through `distiller run --llm-response`, preserving trace evidence and creating no claims ledger.
 - `compound projection dashboard-read-model <read-model.json>` now adapts dashboard read models into `ProjectionFreshness`: generated-at age, source coverage, source path digests, and card evidence are checked; stale/drifted dashboards can route through existing writeback or `SourceObservation -> method_upgrade candidate -> NoPromoteDecision`, never promoted claims.

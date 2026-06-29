@@ -520,6 +520,81 @@ func TestDistillerRunDoesNotCreateCapabilityGraph(t *testing.T) {
 	}
 }
 
+func TestDistillerEvalPlanUsesOperationalizedEvalCandidateWithoutMutatingCorpus(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+ "trace_ref": "trace_eval_plan_candidate",
+ "candidates": [{
+  "kind": "eval_case",
+  "subject": "distill.capability_feedback",
+  "statement": "distiller should preserve missed capability feedback as regression coverage",
+  "confidence": 0.93,
+  "evidence_refs": ["trace:trace_eval_plan_candidate", "receipt:rec_eval_plan"]
+ }]
+}`)
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	evalRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.EvalCase)))
+	if len(evalRows) != 1 || evalRows[0].Verdict != distiller.Operationalize {
+		t.Fatalf("eval candidates = %+v", evalRows)
+	}
+	corpusDir := filepath.Join(t.TempDir(), "distiller-evals")
+	if err := os.MkdirAll(corpusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corpusFile := filepath.Join(corpusDir, "existing-eval.json")
+	original := `{"existing":true}` + "\n"
+	if err := os.WriteFile(corpusFile, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"eval-plan", "--candidate", evalRows[0].ID, "--corpus", corpusDir})
+	})
+	if !strings.Contains(out, "# distiller eval-plan evp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_artifacts: 3") ||
+		!strings.Contains(out, "- evidence_refs: 2") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("eval-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan distiller.EvalPlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != distiller.EvalPlanSchemaVersion ||
+		plan.CandidateID != evalRows[0].ID ||
+		plan.CandidateVerdict != distiller.Operationalize ||
+		plan.FixtureDraft.SchemaVersion != distiller.EvalCaseSchemaVersion ||
+		plan.FixtureDraft.ProposedCaseID == "" ||
+		plan.FixtureDraft.RequestTraceRef != "trace:trace_eval_plan_candidate" {
+		t.Fatalf("bad eval plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate the eval corpus") ||
+		!strings.Contains(review, "Required Before Corpus Apply") {
+		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	if got := readFile(t, corpusFile); got != original {
+		t.Fatalf("corpus mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("eval-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

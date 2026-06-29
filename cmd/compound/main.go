@@ -154,6 +154,7 @@ usage:
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
+  compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
@@ -583,6 +584,46 @@ func cmdDistiller(args []string) {
 		}
 		return
 	}
+	if len(args) >= 1 && args[0] == "eval-plan" {
+		candidateID := flagValue(args[1:], "--candidate")
+		corpusDir := flagValue(args[1:], "--corpus")
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller eval-plan --candidate <candidate_id> [--corpus <dir>]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		plan, err := distiller.BuildEvalPlan(homePath, candidateID, corpusDir, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller eval-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := distiller.RecordEvalPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller eval-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller eval-plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- proposed_case: %s\n", plan.FixtureDraft.ProposedCaseID)
+		fmt.Printf("- request_trace_ref: %s\n", plan.FixtureDraft.RequestTraceRef)
+		if plan.TargetCorpusDir != "" {
+			fmt.Printf("- target_corpus: %s\n", plan.TargetCorpusDir)
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_artifacts: %d\n", len(plan.FixtureDraft.RequiredArtifacts))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
 	if len(args) >= 1 && args[0] == "eval" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir>")
@@ -630,7 +671,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | eval-plan --candidate C [--corpus dir] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
@@ -1654,6 +1695,15 @@ func hasFlag(args []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func flagValue(args []string, name string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func splitCSV(s string) []string {
