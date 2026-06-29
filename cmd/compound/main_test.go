@@ -1792,6 +1792,30 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 	}
 }
 
+func TestMemoryCandidateRelationsRemainStructuralEdges(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"candidate", filepath.Join("..", "..", "fixtures", "traces", "microservice-graph.json")})
+	})
+	if !strings.Contains(out, "service:gateway -depends_on-> service:auth") ||
+		!strings.Contains(out, "service:auth -depends_on-> lib:jwt") {
+		t.Fatalf("memory candidate did not persist structural relations:\n%s", out)
+	}
+	edges := readFile(t, filepath.Join(homePath, "ledger", "edges.jsonl"))
+	if !strings.Contains(edges, `"kind":"depends_on"`) ||
+		!strings.Contains(edges, `"from":"service:gateway"`) ||
+		!strings.Contains(edges, `"to":"lib:jwt"`) {
+		t.Fatalf("relation edges not recorded structurally:\n%s", edges)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "inbox", "relation-candidates")); !os.IsNotExist(err) {
+		t.Fatalf("relation must not create candidate inbox, stat err=%v", err)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

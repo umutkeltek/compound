@@ -35,6 +35,12 @@ func TestCapabilityDirIsSingleSourced(t *testing.T) {
 
 // An unknown / path-bearing kind has no dir — a Kind keys a filesystem path, so this is the
 // path-traversal guard the producers rely on.
+func TestRelationIsStructuralNotCandidateKind(t *testing.T) {
+	if InboxDir(Kind("relation")) != "" || Known(Kind("relation")) {
+		t.Fatal("relation is structural memory edge data; it must not create a candidate inbox")
+	}
+}
+
 func TestUnknownKindHasNoDir(t *testing.T) {
 	for _, k := range []Kind{"bogus", "../../evil", ""} {
 		if InboxDir(k) != "" || Known(k) {

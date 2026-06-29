@@ -33,7 +33,8 @@ smallest promotable durable memory object.
   Current truth is a position, not the newest note or highest-ranked search hit.
 - **Pattern**: repeated through-line across claims or positions.
 - **Edge**: relation such as supersedes, contradicts, refines, supports, mentions,
-  owns, or part_of.
+  owns, or part_of. Relation hints are structural ledger edges, not a `relation`
+  candidate kind or inbox.
 
 ## Ledger Is Authority; Engine Is View
 
