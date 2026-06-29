@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/distiller"
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
@@ -258,6 +260,93 @@ func TestDistillerRunDoesNotCreateCapabilityGraph(t *testing.T) {
 	}
 }
 
+func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	cmdHook([]string{"user-prompt-submit", writeHookFixture(t, hook.Fixture{
+		Harness:  "codex",
+		Cwd:      "/repo/product",
+		RepoKind: "product",
+		Task:     "pricing paywall",
+		Prompt:   "prepare pricing paywall review",
+	})})
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	w := onlyWork(t, store)
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "ready"}, cliTestNow); err != nil {
+		t.Fatalf("advance ready: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, cliTestNow); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+
+	cmdHook([]string{"session-end", writeHookFixture(t, hook.Fixture{
+		Harness:        "codex",
+		WorkID:         w.ID,
+		MoveType:       "outward_delta",
+		Outcome:        "failed",
+		Summary:        "pricing paywall feedback",
+		Missed:         []string{"capability://skill:pricing"},
+		FalseTriggered: []string{"capability://skill:pricing"},
+	})})
+
+	reqJSON := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--trace-ref", "trace_runtime_feedback", "--work-id", w.ID})
+	})
+	var req distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		t.Fatalf("parse distiller request: %v\n%s", err, reqJSON)
+	}
+	if len(req.CapabilityFeedback) != 2 {
+		t.Fatalf("capability_feedback = %+v, want missed + false-trigger", req.CapabilityFeedback)
+	}
+	if req.CapabilityFeedback[0].Subject != "skill:pricing" || req.CapabilityFeedback[0].Detail != "missed_when" {
+		t.Fatalf("missed feedback not preserved: %+v", req.CapabilityFeedback[0])
+	}
+	if req.CapabilityFeedback[1].Subject != "skill:pricing" || req.CapabilityFeedback[1].Detail != "false_triggered_by" {
+		t.Fatalf("false-trigger feedback not preserved: %+v", req.CapabilityFeedback[1])
+	}
+	if !strings.Contains(strings.Join(req.Instructions, "\n"), "Do not infer missed_when or false_triggered_by from skills.candidate offers") {
+		t.Fatalf("request missing no-inference instruction: %v", req.Instructions)
+	}
+
+	before := len(readCapabilityEdges(t, homePath))
+	responsePath := writeJSONFile(t, `{
+		"schema_version":"compound.distiller.llm_extraction.v0.1",
+		"trace_ref":"trace_runtime_feedback_response",
+		"source_refs":["receipt:runtime_feedback"],
+		"candidates":[
+			{"kind":"capability_observation","subject":"skill:pricing","statement":"pricing paywall feedback","detail":"missed_when","confidence":0.9,"evidence_refs":["receipt:runtime_feedback"]},
+			{"kind":"capability_observation","subject":"skill:pricing","statement":"pricing paywall feedback","detail":"false_triggered_by","confidence":0.9,"evidence_refs":["receipt:runtime_feedback"]}
+		]
+	}`)
+	cmdDistiller([]string{"run", "--llm-response", responsePath})
+	after := readCapabilityEdges(t, homePath)
+	if len(after) <= before {
+		t.Fatalf("distiller feedback did not add graph edges; before=%d after=%d edges=%+v", before, len(after), after)
+	}
+	if countCapabilityEdgeTo(after, capgraph.EdMissedWhen, "skill:pricing") < 2 {
+		t.Fatalf("missed feedback did not flow through receipt and distiller paths; edges=%+v", after)
+	}
+	if countCapabilityEdgeTo(after, capgraph.EdFalseTriggeredBy, "skill:pricing") < 2 {
+		t.Fatalf("false-trigger feedback did not flow through receipt and distiller paths; edges=%+v", after)
+	}
+}
+
 func testActionIntent(workID, id, capability string) envelope.ActionIntent {
 	return envelope.ActionIntent{
 		Header: envelope.Header{
@@ -366,6 +455,26 @@ func writeJSONFile(t *testing.T, body string) string {
 	return path
 }
 
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
 func readCapabilityEdges(t *testing.T, homePath string) []capgraph.Edge {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(homePath, "registries", "capability-edges.jsonl"))
@@ -409,4 +518,14 @@ func hasCapabilityEdgeTo(edges []capgraph.Edge, kind, to string) bool {
 		}
 	}
 	return false
+}
+
+func countCapabilityEdgeTo(edges []capgraph.Edge, kind, to string) int {
+	count := 0
+	for _, edge := range edges {
+		if edge.Kind == kind && edge.To == to {
+			count++
+		}
+	}
+	return count
 }

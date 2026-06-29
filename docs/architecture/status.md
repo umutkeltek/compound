@@ -6,6 +6,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 - LLM extraction requests now expose explicit `capability_feedback[]` from `Receipt.skills.missed` / `Receipt.skills.false_triggered`, with instructions forbidding inference from inert `skills.candidate` offers.
 
+- Command-level runtime proof now covers `import-skills -> hook user-prompt-submit -> hook session-end explicit feedback -> distiller request capability_feedback -> distiller run capability_observation -> CapabilityGraph` for missed and false-triggered capability feedback.
+
 - Distiller/critic capability observations now feed the same graph path: `distiller run` auto-consumes operationalized `capability_observation` candidates when graph state already exists, while preserving no-graph no-op behavior.
 
 - Hook/session closure preserves capability-offer provenance: `work close` and `hook session-end` hydrate the persisted ContextPack and copy `capability://...` offers into Receipt `skills.candidate` plus Transition `projections.skill`. This records what the agent was offered without claiming any skill was executed.
