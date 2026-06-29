@@ -104,6 +104,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
 		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
 		f = append(f, checkLLMExtractionGroundingContract(repoRoot)...)
+		f = append(f, checkDistillerCandidateShapeContract(repoRoot)...)
 		f = append(f, checkRouteOutcomeContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
@@ -311,6 +312,40 @@ func checkLLMExtractionGroundingContract(repoRoot string) []Finding {
 		return []Finding{{"llm-grounding-contract", Fail, "public docs do not describe request-grounded LLM extraction evidence_refs/source_refs gate"}}
 	}
 	return []Finding{{"llm-grounding-contract", Info, "LLM extraction contract requires request-grounded evidence refs"}}
+}
+
+// checkDistillerCandidateShapeContract keeps candidate extraction from drifting
+// back to "kind + confidence" only. A candidate must carry enough typed content
+// to be reviewed before it can enter an inbox.
+func checkDistillerCandidateShapeContract(repoRoot string) []Finding {
+	hasShapeContract := false
+	hasMemoryShape := false
+	hasNonMemoryShape := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "candidate shape") || strings.Contains(low, "thin candidate") {
+			hasShapeContract = true
+		}
+		if strings.Contains(low, "entity") && strings.Contains(low, "predicate") && strings.Contains(low, "object") {
+			hasMemoryShape = true
+		}
+		if strings.Contains(low, "subject") && strings.Contains(low, "statement") {
+			hasNonMemoryShape = true
+		}
+		return nil
+	})
+	if !hasShapeContract || !hasMemoryShape || !hasNonMemoryShape {
+		return []Finding{{"distiller-shape-contract", Fail, "public docs do not describe candidate shape guard (memory entity/predicate/object; non-memory subject/statement)"}}
+	}
+	return []Finding{{"distiller-shape-contract", Info, "distiller candidate shape guard covers memory and non-memory candidates"}}
 }
 
 // checkRouteOutcomeContract keeps route/cost docs from drifting back to

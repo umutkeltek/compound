@@ -223,6 +223,43 @@ func TestLLMExtractionGroundingContractRequiresEvidenceAndSourceRefs(t *testing.
 	}
 }
 
+func TestDistillerCandidateShapeContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "distiller-shape-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("distiller shape contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected distiller-shape-contract finding")
+	}
+}
+
+func TestDistillerCandidateShapeContractFailsOnThinDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "LLMExtractionResponse carries candidates with kind and confidence.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkDistillerCandidateShapeContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "candidate shape guard") {
+		t.Fatalf("failure should name missing shape guard: %+v", findings)
+	}
+}
+
 func TestRouteOutcomeContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool

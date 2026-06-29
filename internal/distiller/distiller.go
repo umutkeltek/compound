@@ -185,6 +185,9 @@ func normalizeTrace(t Trace, policy Policy) (Trace, error) {
 		if !contains(Kinds, c.Kind) {
 			return Trace{}, fmt.Errorf("candidate %d has unknown kind %q (allowed: %v)", i, c.Kind, Kinds)
 		}
+		if err := validateCandidateShape(i, *c); err != nil {
+			return Trace{}, err
+		}
 		if c.Derivation == "" {
 			c.Derivation = "extracted"
 		}
@@ -198,6 +201,39 @@ func normalizeTrace(t Trace, policy Policy) (Trace, error) {
 		}
 	}
 	return t, nil
+}
+
+func validateCandidateShape(index int, c Candidate) error {
+	if c.Confidence < 0 || c.Confidence > 1 {
+		return fmt.Errorf("candidate %d confidence %.2f outside [0,1]", index, c.Confidence)
+	}
+	if c.Kind == KindMemory {
+		var missing []string
+		if strings.TrimSpace(c.Entity) == "" {
+			missing = append(missing, "entity")
+		}
+		if strings.TrimSpace(c.Predicate) == "" {
+			missing = append(missing, "predicate")
+		}
+		if strings.TrimSpace(c.Object) == "" {
+			missing = append(missing, "object")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("candidate %d memory requires %s", index, strings.Join(missing, ", "))
+		}
+		return nil
+	}
+	var missing []string
+	if strings.TrimSpace(c.Subject) == "" {
+		missing = append(missing, "subject")
+	}
+	if strings.TrimSpace(c.Statement) == "" {
+		missing = append(missing, "statement")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("candidate %d %s requires %s", index, c.Kind, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // Critique grades candidate against prior canon and candidate inboxes.

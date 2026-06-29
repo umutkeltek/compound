@@ -88,6 +88,8 @@ It is prompt material only, not a model call and not authority.
 Unknown kind, missing confidence, malformed JSON, or model-supplied `promotion_basis` is invalid.
 Eval/live extraction is request-grounded: every candidate must include `evidence_refs[]`,
 and each candidate evidence ref must exist in the originating `LLMExtractionRequest.source_refs[]`.
+Candidate shape is also guarded before inbox write: memory candidates require `entity`,
+`predicate`, and `object`; non-memory candidates require `subject` and `statement`.
 Ungrounded model citations fail before candidate inbox write; model output still cannot promote memory directly.
 
 | Contract | Purpose | Key fields / invariant |

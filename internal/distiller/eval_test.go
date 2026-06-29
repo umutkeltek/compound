@@ -82,6 +82,11 @@ func TestEvaluateCaseExpectedExtractorErrors(t *testing.T) {
 			want: "outside [0,1]",
 		},
 		{
+			name: "thin candidate",
+			file: "llm-bad-thin-candidate-eval.json",
+			want: "skill requires statement",
+		},
+		{
 			name: "malformed json",
 			file: "llm-bad-malformed-eval.json",
 			want: "parse llm extraction response",
@@ -146,8 +151,8 @@ func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
 	if report.Status != "pass" {
 		t.Fatalf("status = %q", report.Status)
 	}
-	if report.CaseCount != 8 || report.PassCount != 8 || report.FailCount != 0 {
-		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 8/8/0", report.CaseCount, report.PassCount, report.FailCount)
+	if report.CaseCount != 9 || report.PassCount != 9 || report.FailCount != 0 {
+		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 9/9/0", report.CaseCount, report.PassCount, report.FailCount)
 	}
 	if report.DecisionCount != 5 {
 		t.Fatalf("decision_count = %d, want 5", report.DecisionCount)

@@ -107,6 +107,41 @@ func TestReplayStableIDs(t *testing.T) {
 	}
 }
 
+func TestNormalizeTraceRejectsThinCandidates(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "memory missing object",
+			raw:  `{"trace_ref":"trace_shape","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","confidence":0.9}]}`,
+			want: "memory requires object",
+		},
+		{
+			name: "skill missing statement",
+			raw:  `{"trace_ref":"trace_shape","candidates":[{"kind":"skill","subject":"skill:pricing","confidence":0.82}]}`,
+			want: "skill requires statement",
+		},
+		{
+			name: "confidence outside range",
+			raw:  `{"trace_ref":"trace_shape","candidates":[{"kind":"decision","subject":"decision:router","statement":"prefer cheap sufficient lane","confidence":1.2}]}`,
+			want: "outside [0,1]",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReferenceExtractor{}.Extract([]byte(tt.raw), DefaultPolicy())
+			if err == nil {
+				t.Fatal("expected shape validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("err = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
 // Distill against canon: a duplicate memory is rejected; a changed value supersedes the prior claim.
 func TestDuplicateAndSupersession(t *testing.T) {
 	home, store := setup(t)
