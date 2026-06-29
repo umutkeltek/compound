@@ -73,11 +73,14 @@ type Deps struct {
 // COMPOUND_HOME. The markdown is the consumed artifact; the pack JSON is the
 // typed source it was rendered from.
 type InjectionArtifact struct {
-	Ref             string `json:"ref"`
-	Path            string `json:"path"`
-	ContextPackID   string `json:"context_pack_id"`
-	ContextPackRef  string `json:"context_pack_ref"`
-	ContextPackPath string `json:"context_pack_path"`
+	Ref                string `json:"ref"`
+	Path               string `json:"path"`
+	ContextRequestID   string `json:"context_request_id"`
+	ContextRequestRef  string `json:"context_request_ref"`
+	ContextRequestPath string `json:"context_request_path"`
+	ContextPackID      string `json:"context_pack_id"`
+	ContextPackRef     string `json:"context_pack_ref"`
+	ContextPackPath    string `json:"context_pack_path"`
 }
 
 // Result is what a hook produces: the normalized event, the typed objects, and the small
@@ -142,17 +145,18 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 			return Result{}, err
 		}
 	}
+	req := buildContextRequest(name, fx, ec, pack, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Task), nil, now)
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, pack)
 		if err != nil {
 			return Result{}, err
 		}
-		ev.SideEffects = append(ev.SideEffects, injection.Ref, injection.ContextPackRef)
+		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContextPackRef, injection.Ref)
 	}
-	return Result{Event: ev, Produced: []envelope.Envelope{&ec, &pack}, Summary: pack.SummaryMD, Injection: injection}, nil
+	return Result{Event: ev, Produced: []envelope.Envelope{&req, &ec, &pack}, Summary: pack.SummaryMD, Injection: injection}, nil
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
@@ -252,18 +256,55 @@ func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []strin
 	}
 }
 
-func writeContextArtifacts(homePath, hookID string, pack envelope.ContextPack) (*InjectionArtifact, error) {
+func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract, pack envelope.ContextPack, now time.Time) envelope.ContextRequest {
+	intentRef := ""
+	if strings.TrimSpace(fx.Prompt) != "" {
+		intentRef = "sha256:" + hashStr(fx.Prompt)
+	} else if strings.TrimSpace(fx.Task) != "" {
+		intentRef = "sha256:" + hashStr(fx.Task)
+	}
+	mode := "execute"
+	if strings.TrimSpace(fx.Task) == "" {
+		mode = "observe"
+	}
+	return envelope.ContextRequest{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextRequest,
+			ID:            idFor("ctxreq_", fx.Harness, name, fx.Cwd, fx.Task, intentRef, ts(now)),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
+			IDs:           envelope.IDs{ContextPackID: pack.Header.ID, ContractID: ec.Header.ID},
+			Scope:         envelope.Scope{Surface: fx.Cwd},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		IntentTextRef: intentRef,
+		Harness:       fx.Harness,
+		Cwd:           fx.Cwd,
+		TaskGuess:     fx.Task,
+		RequestedMode: mode,
+		Constraints: envelope.CtxConstraints{
+			MaxContextChars:         6000,
+			AllowPrivateMemory:      false,
+			AllowRawCorpus:          false,
+			AllowProvisionalReviews: false,
+		},
+	}
+}
+
+func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest, pack envelope.ContextPack) (*InjectionArtifact, error) {
+	requestRef := filepath.Join("context", "requests", req.Header.ID+".json")
+	requestPath := filepath.Join(homePath, requestRef)
+	if err := writeJSON(requestPath, req); err != nil {
+		return nil, err
+	}
+
 	packRef := filepath.Join("context", "packs", pack.Header.ID+".json")
 	packPath := filepath.Join(homePath, packRef)
-	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
-		return nil, err
-	}
-	packBytes, err := json.MarshalIndent(pack, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	packBytes = append(packBytes, '\n')
-	if err := os.WriteFile(packPath, packBytes, 0o644); err != nil {
+	if err := writeJSON(packPath, pack); err != nil {
 		return nil, err
 	}
 
@@ -276,12 +317,27 @@ func writeContextArtifacts(homePath, hookID string, pack envelope.ContextPack) (
 		return nil, err
 	}
 	return &InjectionArtifact{
-		Ref:             injectionRef,
-		Path:            injectionPath,
-		ContextPackID:   pack.Header.ID,
-		ContextPackRef:  packRef,
-		ContextPackPath: packPath,
+		Ref:                injectionRef,
+		Path:               injectionPath,
+		ContextRequestID:   req.Header.ID,
+		ContextRequestRef:  requestRef,
+		ContextRequestPath: requestPath,
+		ContextPackID:      pack.Header.ID,
+		ContextPackRef:     packRef,
+		ContextPackPath:    packPath,
 	}, nil
+}
+
+func writeJSON(path string, v any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0o644)
 }
 
 func renderInjection(hookID string, pack envelope.ContextPack) string {

@@ -43,11 +43,18 @@ func TestSessionStartProducesContract(t *testing.T) {
 	if res.Event.Status != "ok" {
 		t.Errorf("status = %q, want ok", res.Event.Status)
 	}
-	if got := kinds(res.Produced); len(got) != 2 || got[0] != "effective_contract" || got[1] != "context_pack" {
-		t.Errorf("produced = %v, want [effective_contract context_pack]", got)
+	if got := kinds(res.Produced); len(got) != 3 || got[0] != "context_request" || got[1] != "effective_contract" || got[2] != "context_pack" {
+		t.Errorf("produced = %v, want [context_request effective_contract context_pack]", got)
 	}
 	if res.Summary == "" {
 		t.Error("session-start should return an orientation summary")
+	}
+	req := res.Produced[0].(*envelope.ContextRequest)
+	if req.IntentTextRef != "sha256:"+hashStr("audit") {
+		t.Fatalf("intent_text_ref = %q, want task hash", req.IntentTextRef)
+	}
+	if req.RequestedMode != "execute" || req.Constraints.AllowRawCorpus || req.Constraints.AllowPrivateMemory || req.Constraints.AllowProvisionalReviews {
+		t.Fatalf("unexpected context request constraints: %+v mode=%q", req.Constraints, req.RequestedMode)
 	}
 	if res.Injection != nil {
 		t.Fatalf("session-start without HomePath should not write runtime injection, got %+v", res.Injection)
@@ -84,8 +91,28 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if filepath.Base(res.Injection.Path) != res.Event.Header.ID+".md" {
 		t.Fatalf("injection path = %q, want hook event id filename", res.Injection.Path)
 	}
+	if _, err := os.Stat(res.Injection.ContextRequestPath); err != nil {
+		t.Fatalf("context request json missing: %v", err)
+	}
 	if _, err := os.Stat(res.Injection.ContextPackPath); err != nil {
 		t.Fatalf("context pack json missing: %v", err)
+	}
+	reqBytes, err := os.ReadFile(res.Injection.ContextRequestPath)
+	if err != nil {
+		t.Fatalf("read context request: %v", err)
+	}
+	var req envelope.ContextRequest
+	if err := json.Unmarshal(reqBytes, &req); err != nil {
+		t.Fatalf("parse context request: %v", err)
+	}
+	if req.IntentTextRef != "sha256:"+hashStr("DO NOT LEAK RAW PROMPT BODY") {
+		t.Fatalf("intent_text_ref = %q, want prompt hash", req.IntentTextRef)
+	}
+	if req.TaskGuess != "improve pricing" || req.Harness != "codex" {
+		t.Fatalf("unexpected request body: %+v", req)
+	}
+	if strings.Contains(string(reqBytes), "DO NOT LEAK RAW PROMPT BODY") {
+		t.Fatalf("context request leaked raw prompt:\n%s", string(reqBytes))
 	}
 	b, err := os.ReadFile(res.Injection.Path)
 	if err != nil {
@@ -110,8 +137,8 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 			t.Fatalf("injection leaked forbidden content %q:\n%s", forbidden, text)
 		}
 	}
-	if got := res.Event.SideEffects; len(got) != 2 || got[0] != res.Injection.Ref || got[1] != res.Injection.ContextPackRef {
-		t.Fatalf("side effects = %v, want injection and context pack refs", got)
+	if got := res.Event.SideEffects; len(got) != 3 || got[0] != res.Injection.ContextRequestRef || got[1] != res.Injection.ContextPackRef || got[2] != res.Injection.Ref {
+		t.Fatalf("side effects = %v, want request, context pack, injection refs", got)
 	}
 }
 

@@ -17,7 +17,7 @@ schemas: `../runtime.md`.
 | Contract | Purpose | Lifecycle |
 |---|---|---|
 | **EffectiveContract** | the compiled "what applies right now" artifact every run references by `contract_version = sha256(...)`; kills global instruction bloat | compiled-per (harness, cwd, task) |
-| **ContextRequest** | what a hook asks compound for | per hook event |
+| **ContextRequest** | what a hook asks compound for | per hook event; `hook session-start` persists a redacted request under `COMPOUND_HOME/context/requests` with `intent_text_ref` as hash-only, never raw prompt |
 | **ContextPack** | frozen context an agent consumes; records included AND **excluded** refs + reasons → enables replacement | immutable per work/session. `compound orient` appends surfaced `CapabilityGraph` offers as generated included refs when graph state exists, filtered by `surfaces_with -> harness:*` compatibility when present; offers are not execution. `hook session-start` persists the pack and exact markdown injection under `COMPOUND_HOME/context`. Fixture product repo excludes control-plane governance refs, fixture control-plane repo includes them. |
 | **WorkEnvelope** | the one root identity for a unit of work (carries the JobUnit fields: desired_outcome, success_predicate, non_goals, risk + the id chain) | proposed → admitted → ready → claimed → running → verifying → completed \| held \| blocked \| failed \| cancelled |
 | **ActionIntent** | a proposed mutation, pre-policy (capability, target, mutation_class, reversibility, blast_radius, rollback_plan) | per proposed action |

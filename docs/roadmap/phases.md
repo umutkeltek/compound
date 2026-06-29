@@ -42,7 +42,7 @@ obedience; a mutating adapter requires the `PolicyDecision`.
 
 ## P5 — hook fixture loop  (no live install yet)
 `compound hook {session-start,user-prompt-submit,pre-tool-use,post-tool-use,session-end}` over fixtures.
-**Proof:** SessionStart fixture → HookEvent + EffectiveContract + ContextPack + exact context injection artifact;
+**Proof:** SessionStart fixture → HookEvent + redacted ContextRequest + EffectiveContract + ContextPack + exact context injection artifact;
 UserPromptSubmit → WorkEnvelope candidate + CapabilityNudge; PreToolUse → ActionIntent + PolicyDecision; SessionEnd → Receipt + Transition.
 Capability-aware per harness (a `HarnessRegistry` records what each actually supports).
 

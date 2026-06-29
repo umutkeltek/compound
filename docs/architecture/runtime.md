@@ -99,7 +99,7 @@ Each: `stdin JSON → normalized HookEvent → compound service → typed object
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 
 ```text
-SessionStart   → EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text, NOT a universe dump)
+SessionStart   → ContextRequest + EffectiveContract + ContextPack + context/injections/<hook_event_id>.md   (returns a compact orientation summary and persists exact injected text, NOT a universe dump)
 UserPromptSubmit → Intent + WorkEnvelope candidate + CapabilityNudge (returns detected scope / suggested work_id / what's excluded / what needs approval)
 PreToolUse     → ActionIntent + PolicyDecision                       (returns allow | allow_with_obligations | hold | deny)
 PostToolUse    → ToolEvent + ArtifactRef + VerificationCandidate
