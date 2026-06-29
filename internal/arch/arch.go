@@ -104,6 +104,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
 		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
 		f = append(f, checkLLMExtractionGroundingContract(repoRoot)...)
+		f = append(f, checkRouteOutcomeContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -310,6 +311,51 @@ func checkLLMExtractionGroundingContract(repoRoot string) []Finding {
 		return []Finding{{"llm-grounding-contract", Fail, "public docs do not describe request-grounded LLM extraction evidence_refs/source_refs gate"}}
 	}
 	return []Finding{{"llm-grounding-contract", Info, "LLM extraction contract requires request-grounded evidence refs"}}
+}
+
+// checkRouteOutcomeContract keeps route/cost docs from drifting back to
+// metadata-only routing. Route evidence is useful only when joined to Receipt
+// outcome/state delta, and failed/unproven outcomes must remain review/no-promote
+// material rather than direct router/provider mutations.
+func checkRouteOutcomeContract(repoRoot string) []Finding {
+	hasOutcomeReview := false
+	hasReceipt := false
+	hasStateDelta := false
+	hasNoPromote := false
+	hasNoConfigMutation := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "route outcome-review") || strings.Contains(low, "routeoutcomereview") {
+			hasOutcomeReview = true
+		}
+		if strings.Contains(low, "receipt") {
+			hasReceipt = true
+		}
+		if strings.Contains(low, "state delta") || strings.Contains(low, "state_delta") {
+			hasStateDelta = true
+		}
+		if strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote") {
+			hasNoPromote = true
+		}
+		if strings.Contains(low, "does not mutate provider/gateway/model-router config") ||
+			strings.Contains(low, "does not mutate gateway/provider/model-router config") ||
+			strings.Contains(low, "no gateway or provider config mutation") {
+			hasNoConfigMutation = true
+		}
+		return nil
+	})
+	if !hasOutcomeReview || !hasReceipt || !hasStateDelta || !hasNoPromote || !hasNoConfigMutation {
+		return []Finding{{"route-outcome-contract", Fail, "public docs do not describe receipt-linked route outcome review with state_delta/no-promote and no provider/gateway/model-router mutation"}}
+	}
+	return []Finding{{"route-outcome-contract", Info, "route outcome review joins route evidence to receipt state delta before policy review"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding — the

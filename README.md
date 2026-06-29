@@ -128,7 +128,8 @@ The ledger is authority. Engines are rebuildable views.
 - Gen-1 top-level verbs are tombstones, not compatibility aliases.
 - `compound architecture doctor --strict` enforces package classification, public
   doc leak checks, candidate-map integrity, retired-surface/distiller-contract/
-  llm-grounding-contract guards, and a convergence budget of `0`.
+  llm-grounding-contract/route-outcome-contract guards, and a convergence budget
+  of `0`.
 - `compound memory doctor` verifies the memory hop: capture, promotion,
   retrieval, authority, and optional engine sync.
 

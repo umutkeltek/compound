@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound architecture doctor --strict` now includes `route-outcome-contract`, failing if public docs stop describing route outcome review as receipt-linked route evidence with `state_delta`/no-promote before any routing-policy review. This keeps route/cost metadata from drifting into fake task-success or provider-ranking truth.
 - `compound route outcome-review (--route-id <id>|--route-evidence <file>) --receipt <file> [--target <file>] [--record]` now joins `ExecutionRouteEvidence` to actual work `Receipt` outcome/state delta and writes reviewed JSON/Markdown artifacts under `COMPOUND_HOME/reviews/route-remorse/`. Failed/blocked/unproven outcomes can explicitly record a parked `route_observation` candidate plus `NoPromoteDecision`; supported routes remain evidence only. It does not mutate provider/gateway/model-router config, rank providers/models, calculate billing truth, claim task success, or promote memory claims.
 - `compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]` now checks provider-call ledger cost coverage and can record missing cost/metadata coverage as a parked `route_observation` candidate plus `NoPromoteDecision`. The recorded observation can flow into existing `compound route plan --candidate <id>` review artifacts; it does not install pricing policy, impute subscription costs, mutate provider/gateway config, claim task success, or promote memory claims.
 - `compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]` now adapts generic provider-call NDJSON rows into metadata-only `ExecutionRouteEvidence` plus audit-only Transition routing/cost projections. It preserves request/profile, selected target, token usage, cost, latency, and status while dropping source-specific row payloads; it does not import prompts/responses/paths/secrets, mutate provider or gateway config, claim task success, or promote memory claims.
@@ -155,6 +156,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - retired-surface guard: old skill-matrix debt cannot reappear in public docs;
 - distiller-contract guard: duplicate candidate anti-churn must remain documented beyond memory-only duplicates;
 - llm-grounding-contract guard: request-grounded candidate `evidence_refs[]` / request `source_refs[]` gating must remain documented for eval/live extraction;
+- route-outcome-contract guard: receipt-linked route outcome review with `state_delta`/no-promote must remain documented before routing-policy review;
 - convergence ratchet: `converge-pending` packages must not exceed budget, now fixed at `0`.
 
 ## Next Coverage Moves

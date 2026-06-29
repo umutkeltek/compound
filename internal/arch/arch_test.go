@@ -222,3 +222,58 @@ func TestLLMExtractionGroundingContractRequiresEvidenceAndSourceRefs(t *testing.
 		t.Fatalf("failure should name missing refs: %+v", findings)
 	}
 }
+
+func TestRouteOutcomeContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "route-outcome-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("route outcome contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected route-outcome-contract finding")
+	}
+}
+
+func TestRouteOutcomeContractFailsOnMetadataOnlyDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound route import` records ExecutionRouteEvidence cost and selected target metadata.\n"
+	if err := os.WriteFile(filepath.Join(docs, "status.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkRouteOutcomeContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "receipt-linked route outcome review") {
+		t.Fatalf("failure should name missing outcome review: %+v", findings)
+	}
+}
+
+func TestRouteOutcomeContractRequiresStateDeltaAndNoPromote(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound route outcome-review` joins route evidence to a Receipt and does not mutate gateway/provider/model-router config.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkRouteOutcomeContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "state_delta/no-promote") {
+		t.Fatalf("failure should name missing state/no-promote guard: %+v", findings)
+	}
+}
