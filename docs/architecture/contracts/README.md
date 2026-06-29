@@ -58,6 +58,8 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 
 `compound-memory-cli-engine` is the first read-only existing-store sidecar on this port. It calls a configured external memory CLI only as rented expansion context, returns only claim ids from the current Compound index allowlist, maps broken backend calls to `ErrEngineUnavailable`, and rejects mutating command templates before the external CLI is invoked.
 
+`memory engine-compare` is exact by default. Use `--allow-expansion` for semantic or legacy-memory sidecars: reference hits must remain covered, degraded sidecars still fail, ledger bytes must stay unchanged, and extra allowlisted current claims are reported as `expansion`, not authority.
+
 ## Distillation & capability-growth contracts (the compounding layer — P6 continuation + P8)
 
 These turn traces into *adjudicated, versioned* knowledge and grow capability from evidence. They **extend**
