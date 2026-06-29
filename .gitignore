@@ -2,6 +2,7 @@ node_modules/
 .DS_Store
 *.log
 bin/
+/compound
 
 # private overlay — never shipped (compound is destined to be a public repo)
 docs_private/

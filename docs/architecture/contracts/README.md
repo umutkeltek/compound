@@ -101,7 +101,7 @@ views. It records `view_ref`, `source_refs[]`, `output_hash`, `source_hashes[]`,
 to. It may create `ProjectionFreshness`, evidence, or a parked/no_promote candidate.
 It cannot promote truth by itself.
 
-Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback`, `runtime doctor --writeback`, and `decisions doctor --writeback` consume it for stale/drifted generated views, failing runtime reports, and decision lifecycle gaps. `distiller run` now records duplicate memory outputs as idempotent `NoPromoteDecision` rows instead of letting them re-enter as new work. Next risk is source adapters and tool/MCP topology observations bypassing owner gates.
+Build order (most likely to let fragmentation back in first): **OwnerWritebackGate/NoPromoteDecision** first slice landed; `projection doctor --writeback`, `runtime doctor --writeback`, and `decisions doctor --writeback` consume it for stale/drifted generated views, failing runtime reports, and decision lifecycle gaps. `distiller run` now records duplicate memory outputs as idempotent `NoPromoteDecision` rows instead of letting them re-enter as new work. `source observe` now maps generated/source observations into candidate inboxes plus explicit no-promote rows; it observes existing owners and cannot promote truth. Next risk is tool/MCP topology observations bypassing owner gates.
 Each is **defined here before implementation** so agents stop re-deriving them; each is built
 only when a vertical slice needs it (`../../roadmap/phases.md`).
 

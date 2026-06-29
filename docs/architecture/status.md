@@ -26,6 +26,7 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 | `arch` | canonical | architecture doctor |
 | `authority` | importer | external authority records imported through spine memory |
 | `decisions` | importer | DecisionLifecycle records imported/projected through spine memory; doctor surfaces missing falsifier/review trigger and can route gaps through owner writeback |
+| `sourceobs` | importer | SourceObservation records map generated/source views into candidate inboxes plus no-promote decisions; observation only, never promotion |
 
 Retired Gen-1 packages:
 
@@ -54,7 +55,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 | Runtime | `runtime doctor <runtime-binding.yaml> [--writeback]`; `runtime doctor --project-contract <project.yaml> [--writeback]` | canonical first slice + infra-os project-contract adapter; failing reports can enter work -> gate -> receipt/transition |
 | Projection | `projection doctor <freshness.yaml> [--writeback]` | canonical first slice; stale/drifted observations can enter work -> gate -> receipt/transition |
 | Writeback | `writeback gate <gate.json> --policy <policy-decision.json> [--record]`; `writeback no-promote --candidate C --basis B --evidence E1[,E2]` | canonical first slice |
-| Importers | `authority`; `decisions doctor [--writeback]` | canonical import/report surfaces; decision lifecycle gaps can enter work -> gate -> receipt/transition |
+| Importers | `authority`; `decisions doctor [--writeback]`; `source observe <source-observation.yaml>` | canonical import/report surfaces; decision lifecycle gaps can enter work -> gate -> receipt/transition; source observations enter inbox/no-promote without direct promotion |
 | Gen-1 tombstones | `distill`, `scope`, `promote`, `build`, `reconcile`, top-level `timeline`, top-level `recall`, `pack`, `ledger` | retired; exit `2` replacement hint |
 
 Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recreate fragmentation.
@@ -72,8 +73,8 @@ Next work is no longer memory-stack convergence. It is adapting existing operati
 
 - runtime/service ownership -> `RuntimeBinding` / `ServiceContract` first slice + infra-os project-contract adapter landed opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; next hardening broader private parity fixtures owner-regeneration adapter;
 - decisions -> `DecisionLifecycle` first slice landed; `decisions doctor --writeback` routes lifecycle gaps through `OwnerWritebackGate`, receipt, transition; next hardening source-specific adapters and lifecycle transitions beyond import;
-- generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed hash-based doctor opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; distiller duplicate memory outputs now route to `NoPromoteDecision`; next hardening source adapters and tool/MCP topology observations;
-- source documents -> source adapters emit evidence/candidates;
+- generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed hash-based doctor opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; source observations now map generated/source views into candidate inbox + `NoPromoteDecision`; distiller duplicate memory outputs route to `NoPromoteDecision`; next hardening tool/MCP topology observations;
+- source documents -> source adapters emit evidence/candidates/no-promote without direct promotion;
 - orientation scope -> project-aware context loading;
 - rented retrieval -> `MemoryEngine` adapter leaves ledger unchanged;
 - skills/tools/MCPs/hooks -> `CapabilityGraph` imports observations.

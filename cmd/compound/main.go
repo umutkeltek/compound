@@ -32,6 +32,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/projection"
 	"compound/internal/runtimebinding"
+	"compound/internal/sourceobs"
 	"compound/internal/work"
 	"compound/internal/writeback"
 )
@@ -56,6 +57,8 @@ func main() {
 		cmdRuntime(os.Args[2:])
 	case "projection":
 		cmdProjection(os.Args[2:])
+	case "source":
+		cmdSource(os.Args[2:])
 	case "writeback":
 		cmdWriteback(os.Args[2:])
 	case "home":
@@ -144,6 +147,7 @@ compound decisions import | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
+compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
@@ -261,6 +265,52 @@ func cmdCapability(args []string) {
 	default:
 		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list> ...")
 		os.Exit(2)
+	}
+}
+
+// cmdSource imports existing-system SourceObservation records into Compound-owned
+// candidate/no-promote state. It observes; it never promotes source truth.
+func cmdSource(args []string) {
+	if len(args) != 2 || args[0] != "observe" {
+		fmt.Fprintln(os.Stderr, "usage: compound source observe <source-observation.yaml>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	obs, err := sourceobs.Load(args[1])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observe:", err)
+		os.Exit(1)
+	}
+	report, err := sourceobs.Apply(homePath, obs, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observe:", err)
+		for _, check := range report.Checks {
+			fmt.Fprintf(os.Stderr, "- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Fprintf(os.Stderr, " (%s)", check.Detail)
+			}
+			fmt.Fprintln(os.Stderr)
+		}
+		os.Exit(1)
+	}
+	fmt.Printf("# source observation %s\n\n", report.ObservationID)
+	fmt.Printf("- status: %s\n", report.Status)
+	for _, check := range report.Checks {
+		fmt.Printf("- %s: %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
+	}
+	for _, id := range report.CandidateIDs {
+		fmt.Printf("- candidate: %s\n", id)
+	}
+	for _, id := range report.NoPromoteIDs {
+		fmt.Printf("- no_promote: %s\n", id)
 	}
 }
 

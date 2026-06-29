@@ -38,7 +38,7 @@ var Classification = map[string]Class{
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
 	// importers — keep, upgrade in place
-	"authority": Importer, "decisions": Importer,
+	"authority": Importer, "decisions": Importer, "sourceobs": Importer,
 }
 
 // Severity of a finding. fail = the doctor is not OK; warn/info are reported, not fatal.
