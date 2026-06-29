@@ -999,6 +999,78 @@ When ReleaseX ships or is externally blocked, execute the parked spec.
 	}
 }
 
+func TestDecisionsRepairApplyBrainReviewedCopyClosesDebt(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	brainPath := filepath.Join(t.TempDir(), "brain", "wiki", "reflections", "decision.md")
+	if err := os.MkdirAll(filepath.Dir(brainPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(brainPath, []byte(`---
+type: reflection
+title: 2026 06 11 Memory Engine Ownership Decision 537a02
+date: '2026-06-11T00:00:00.000Z'
+---
+
+# memory engine ownership decision - own contract, rent engine
+
+## decision
+
+The verdict:
+
+> **"Keep the rented memory engine continuously updated. Own the contract seam."**
+
+## How apply
+
+When ReleaseX ships or is externally blocked, execute the parked spec.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	planOut := captureStdout(t, func() {
+		cmdDecisions([]string{"repair-plan", "--brain", brainPath})
+	})
+	planPath := outputValue(planOut, "plan:")
+	if planPath == "" {
+		t.Fatalf("missing plan path:\n%s", planOut)
+	}
+	applyOut := captureStdout(t, func() {
+		cmdDecisions([]string{"repair-apply", "--plan", planPath, "--write-reviewed"})
+	})
+	if !strings.Contains(applyOut, "dry_run: false") ||
+		!strings.Contains(applyOut, "applied_fields: 1") ||
+		!strings.Contains(applyOut, "changed_files: 1") {
+		t.Fatalf("repair-apply output =\n%s", applyOut)
+	}
+	body := readFile(t, brainPath)
+	if !strings.Contains(body, "falsifier:") {
+		t.Fatalf("reviewed brain copy missing applied falsifier:\n%s", body)
+	}
+
+	afterOut := captureStdout(t, func() {
+		cmdDecisions([]string{"repair-plan", "--brain", brainPath})
+	})
+	afterPlanPath := outputValue(afterOut, "plan:")
+	if afterPlanPath == "" {
+		t.Fatalf("missing after plan path:\n%s", afterOut)
+	}
+	afterPlan, err := decisions.LoadLifecycleRepairPlan(afterPlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterPlan.RepairCount != 0 || afterPlan.Status != "ok" {
+		t.Fatalf("after plan = %+v", afterPlan)
+	}
+
+	captureStdout(t, func() {
+		cmdDecisions([]string{"import", "--brain", brainPath})
+	})
+	claims := splitJSONLines(readFile(t, filepath.Join(homePath, "ledger", "claims.jsonl")))
+	if len(claims) != 1 {
+		t.Fatalf("claims = %v", claims)
+	}
+}
+
 func writeHookFixture(t *testing.T, fixture hook.Fixture) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hook.json")

@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound decisions repair-apply --plan <json> --write-reviewed` now has command-level proof on a brain narrative copy: reviewed lifecycle fields close repair debt, a second brain repair-plan reports zero repairs, and import then promotes only after lifecycle proof exists.
 - `compound decisions repair-plan --brain <markdown>` converts real brain narrative DecisionLifecycle gaps into the same reviewable lifecycle repair JSON/Markdown artifacts under `COMPOUND_HOME`, carrying brain source evidence refs and creating no promoted claims.
 - `compound decisions import --brain <markdown>` adapts real brain narrative decision pages into existing `DecisionLifecycle` candidates with path-independent generated ids from page metadata/heading, extracts explicit verdict/review-trigger text when present, and still parks accepted records missing falsifier proof instead of promoting them.
 - `compound product signal --asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]` aggregates App Store Connect daily sales rows into explicit before/after ProductSignal evidence, emits product Transition projections, and does not create promoted claims or hypotheses.
