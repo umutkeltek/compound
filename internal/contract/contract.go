@@ -17,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 )
 
@@ -203,6 +204,39 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		RequiredChecks:     []string{},
 		Avoid:              orEmpty(mem.Forbidden),
 	}
+}
+
+// PackWithCapabilities appends CapabilityGraph offers to the ContextPack. It is
+// still orientation-only: surfaced capabilities are included refs, not execution.
+func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now time.Time) (envelope.ContextPack, error) {
+	pack := Pack(in, pol, now)
+	if strings.TrimSpace(homePath) == "" {
+		return pack, nil
+	}
+	if !capgraph.Exists(homePath) {
+		return pack, nil
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		return pack, err
+	}
+	surfaced, err := store.Surface(in.Task)
+	if err != nil {
+		return pack, err
+	}
+	for _, hit := range surfaced {
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref:         "capability://" + hit.Node.ID,
+			SourceClass: "generated",
+			Reason:      fmt.Sprintf("capability_graph surface score=%.1f kind=%s why=%s", hit.Score, hit.Node.Kind, hit.Why),
+			Confidence:  hit.Score,
+			Status:      "current",
+		})
+	}
+	if len(surfaced) > 0 {
+		pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
+	}
+	return pack, nil
 }
 
 // partition splits the policy's sources into included (ambient for this repo kind) and

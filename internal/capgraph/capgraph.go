@@ -80,6 +80,16 @@ func (s *Store) edgesLog() string {
 	return filepath.Join(s.home, "registries", "capability-edges.jsonl")
 }
 
+// Exists reports whether a home already has capability graph node state. It is
+// used by read-only consumers so orientation does not create runtime dirs.
+func Exists(homePath string) bool {
+	if strings.TrimSpace(homePath) == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
+	return err == nil
+}
+
 // Add upserts a node (append-only; last write wins on load).
 func (s *Store) Add(n Node) error {
 	if !contains(NodeKinds, n.Kind) {

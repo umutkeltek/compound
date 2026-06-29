@@ -3,9 +3,11 @@ package contract
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 )
 
@@ -178,6 +180,77 @@ func TestFixtureReposProveOrientationScope(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesDoesNotCreateStateWhenGraphMissing(t *testing.T) {
+	home := t.TempDir()
+	pack, err := PackWithCapabilities(mkInput("product"), DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if hasIncluded(pack, "capability://skill:pricing") {
+		t.Fatal("missing graph should not surface capability refs")
+	}
+	if _, err := os.Stat(filepath.Join(home, "registries")); !os.IsNotExist(err) {
+		t.Fatalf("read-only orientation should not create registries dir, err=%v", err)
+	}
+}
+
+func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
+	home := t.TempDir()
+	manifest := capgraph.SkillManifest{
+		SchemaVersion: capgraph.SkillManifestSchemaVersion,
+		ID:            "skill_manifest_fixture",
+		AdapterID:     "fixture.skill-manifest",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: capgraph.SkillSourceRef{
+			Path:        "fixtures/skills/skill-manifest.yaml",
+			Kind:        "generated_view",
+			Owner:       "capability-fixture",
+			SourceClass: "generated",
+			Revision:    "rev_fixture",
+		},
+		EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
+		Skills: []capgraph.SkillManifestEntry{
+			{
+				ID:           "skill:pricing",
+				Name:         "Pricing",
+				Status:       "active",
+				Triggers:     []string{"pricing", "paywall"},
+				Capabilities: []string{"monetization"},
+				Weight:       2,
+			},
+			{
+				ID:       "skill:old-paywall",
+				Name:     "Old Paywall",
+				Status:   "retired",
+				Triggers: []string{"paywall"},
+			},
+		},
+	}
+	if _, err := capgraph.ApplySkillManifest(home, manifest, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	pack, err := PackWithCapabilities(mkInput("product"), DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !hasIncluded(pack, "capability://skill:pricing") {
+		t.Fatalf("context pack should include surfaced skill offer; included=%v", pack.Included)
+	}
+	if hasIncluded(pack, "capability://skill:old-paywall") {
+		t.Fatalf("retired capability must not be included; included=%v", pack.Included)
+	}
+	if pack.SummaryMD == "" || !containsText(pack.SummaryMD, "capability offer(s) surfaced") {
+		t.Fatalf("summary should report surfaced offers, got %q", pack.SummaryMD)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -212,4 +285,8 @@ func hasExcluded(pack envelope.ContextPack, ref string) bool {
 		}
 	}
 	return false
+}
+
+func containsText(s, needle string) bool {
+	return strings.Contains(s, needle)
 }

@@ -1707,7 +1707,11 @@ func cmdOrient(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>]")
 		os.Exit(2)
 	}
-	printJSON(contract.Pack(in, orientPolicy(), time.Now()))
+	homePath, err := home.Resolve("")
+	die(err)
+	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, time.Now())
+	die(err)
+	printJSON(pack)
 }
 
 // cmdHome manages COMPOUND_HOME — the runtime body (docs/architecture/runtime.md).
