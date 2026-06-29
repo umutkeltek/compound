@@ -158,8 +158,8 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor
-                                                                 import/query decisions through spine memory
+  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions repair-plan --policy-dir <dir>
+                                                                  import/query decisions through spine memory; emit lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
 compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
@@ -2404,6 +2404,40 @@ func cmdDecisions(args []string) {
 			if result.TransitionID != "" {
 				fmt.Printf("- transition: %s\n", result.TransitionID)
 			}
+		}
+	case "repair-plan":
+		policyDirs := values("--policy-dir")
+		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
+			policyDirs = append(policyDirs, root)
+		}
+		if len(policyDirs) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound decisions repair-plan --policy-dir <dir>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions repair-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# decisions repair-plan\n\n")
+		for _, root := range policyDirs {
+			plan, err := decisions.BuildLifecycleRepairPlan(root, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions repair-plan:", err)
+				os.Exit(1)
+			}
+			paths, err := decisions.RecordLifecycleRepairPlan(homePath, plan)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions repair-plan:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- source_root: %s\n", root)
+			fmt.Printf("  status: %s\n", plan.Status)
+			fmt.Printf("  repairs: %d\n", plan.RepairCount)
+			fmt.Printf("  missing_falsifier: %d\n", plan.MissingFieldCounts["falsifier"])
+			fmt.Printf("  missing_review_trigger: %d\n", plan.MissingFieldCounts["review_trigger"])
+			fmt.Printf("  plan: %s\n", paths.PlanPath)
+			fmt.Printf("  review: %s\n", paths.ReviewPath)
 		}
 	default:
 		kindFilter := ""

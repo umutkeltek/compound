@@ -3,6 +3,7 @@ package decisions
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -420,6 +421,112 @@ func TestDecisionWritebackGate(t *testing.T) {
 	}
 	if len(gate.EvidenceRefs) < 3 {
 		t.Fatalf("evidence refs = %v", gate.EvidenceRefs)
+	}
+}
+
+func TestBuildLifecycleRepairPlanFindsAcceptedMissingFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "decisions", "DEC-0200.md"), `---
+id: DEC-0200
+title: Accepted without lifecycle proof
+status: accepted
+domains: [agents]
+---
+
+# DEC-0200: Accepted without lifecycle proof
+
+## Requirements
+
+- Agents must not treat accepted status alone as proof.
+`)
+	writeFile(t, filepath.Join(dir, "decisions", "DEC-0201.md"), `---
+id: DEC-0201
+title: Complete accepted decision
+status: accepted
+falsifier: Complete decision still lacks a review trigger.
+review_trigger: Re-check after importer changes.
+---
+
+# DEC-0201: Complete accepted decision
+`)
+	writeFile(t, filepath.Join(dir, "decisions", "DEC-0202.md"), `---
+id: DEC-0202
+title: Proposed missing lifecycle proof
+status: proposed
+---
+
+# DEC-0202: Proposed missing lifecycle proof
+`)
+	writeFile(t, filepath.Join(dir, "decisions", "DEC-0203.md"), `---
+id: DEC-0203
+title: Body carries lifecycle proof
+status: accepted
+---
+
+# DEC-0203: Body carries lifecycle proof
+
+Falsifier: The importer stops recognizing body lifecycle fields.
+Review trigger: Re-check after decision parsing changes.
+`)
+
+	plan, err := BuildLifecycleRepairPlan(dir, time.Date(2026, 6, 29, 22, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != RepairPlanSchemaVersion || plan.Status != "review_required" || plan.RepairCount != 1 {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if plan.MissingFieldCounts["falsifier"] != 1 || plan.MissingFieldCounts["review_trigger"] != 1 {
+		t.Fatalf("missing counts = %+v", plan.MissingFieldCounts)
+	}
+	repair := plan.Repairs[0]
+	if repair.DecisionID != "DEC-0200" || len(repair.Fields) != 2 || len(repair.BodySignals) != 1 || repair.BodySignals[0] != "Requirements" {
+		t.Fatalf("repair = %+v", repair)
+	}
+	if repair.EvidenceRef == "" || !strings.Contains(repair.EvidenceRef, "DEC-0200") {
+		t.Fatalf("evidence ref = %q", repair.EvidenceRef)
+	}
+}
+
+func TestRecordLifecycleRepairPlanWritesReviewArtifacts(t *testing.T) {
+	plan := LifecycleRepairPlan{
+		SchemaVersion:      RepairPlanSchemaVersion,
+		ID:                 "dlrp_test",
+		CreatedAt:          "2026-06-29T22:00:00Z",
+		SourceRoot:         "/tmp/source",
+		Status:             "review_required",
+		RepairCount:        1,
+		MissingFieldCounts: map[string]int{"falsifier": 1},
+		Repairs: []LifecycleRepair{{
+			DecisionID: "DEC-0200",
+			Title:      "Accepted without lifecycle proof",
+			Status:     StatusAccepted,
+			SourcePath: "/tmp/source/DEC-0200.md",
+			Missing:    []string{"falsifier"},
+			Fields: []LifecycleRepairField{{
+				Name:           "falsifier",
+				SuggestedValue: "Evidence proves the decision wrong.",
+				Basis:          "test",
+				ReviewNote:     "review",
+			}},
+			EvidenceRef: "decision_source:/tmp/source/DEC-0200.md",
+		}},
+		EvidenceRefs: []string{"decision_source:/tmp/source/DEC-0200.md"},
+	}
+
+	paths, err := RecordLifecycleRepairPlan(t.TempDir(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths.PlanPath); err != nil {
+		t.Fatalf("plan artifact missing: %v", err)
+	}
+	review, err := os.ReadFile(paths.ReviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(review), "Suggested frontmatter additions") || !strings.Contains(string(review), "DEC-0200") {
+		t.Fatalf("review artifact = %s", review)
 	}
 }
 
