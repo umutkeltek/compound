@@ -32,7 +32,10 @@ type sidecar struct {
 	claims   []mem.ClaimText
 	gen      int64
 	ready    bool
+	name     string
 	embedder string
+	bin      string
+	template string
 	runner   cliRunner
 }
 
@@ -47,8 +50,15 @@ func run(in io.Reader, out io.Writer, runner cliRunner) error {
 	if runner == nil {
 		runner = execMemoryCLI
 	}
+	cfg, err := configFromEnv()
+	if err != nil {
+		return err
+	}
 	s := &sidecar{
-		embedder: envDefault("COMPOUND_MEMORY_CLI_ENGINE_EMBEDDER", "memory-cli"),
+		name:     cfg.Name,
+		embedder: cfg.Embedder,
+		bin:      cfg.Bin,
+		template: cfg.QueryTemplate,
 		runner:   runner,
 	}
 	dec := json.NewDecoder(in)
@@ -81,7 +91,7 @@ func (s *sidecar) handle(req mem.Request) mem.Response {
 	switch req.Op {
 	case mem.OpCapabilities:
 		resp.OK = true
-		resp.Name = "memory-cli"
+		resp.Name = s.name
 		resp.Breadth = true
 		resp.Embedder = s.embedder
 		resp.Ready = s.ready
@@ -134,18 +144,16 @@ func (s *sidecar) handle(req mem.Request) mem.Response {
 func (s *sidecar) queryMemoryCLI(text string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout())
 	defer cancel()
-	bin := envDefault("COMPOUND_MEMORY_CLI_BIN", "memory-cli")
-	args, err := buildQueryArgs(text)
+	args, err := buildQueryArgs(s.template, text)
 	if err != nil {
 		return "", err
 	}
-	return s.runner(ctx, bin, args)
+	return s.runner(ctx, s.bin, args)
 }
 
-func buildQueryArgs(text string) ([]string, error) {
+func buildQueryArgs(template, text string) ([]string, error) {
 	limit := envDefault("COMPOUND_MEMORY_CLI_LIMIT", "8")
 	detail := envDefault("COMPOUND_MEMORY_CLI_DETAIL", "low")
-	template := envDefault("COMPOUND_MEMORY_CLI_QUERY_ARGS", "query {query} --limit {limit} --detail {detail}")
 	parts := strings.Fields(template)
 	args := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -164,6 +172,40 @@ func buildQueryArgs(text string) ([]string, error) {
 		return nil, fmt.Errorf("%w: %q", errUnsafeQueryTemplate, template)
 	}
 	return args, nil
+}
+
+type cliConfig struct {
+	Name          string
+	Bin           string
+	QueryTemplate string
+	Embedder      string
+}
+
+func configFromEnv() (cliConfig, error) {
+	profile := strings.ToLower(envDefault("COMPOUND_MEMORY_CLI_PROFILE", "generic"))
+	var cfg cliConfig
+	switch profile {
+	case "generic", "memory-cli":
+		cfg = cliConfig{
+			Name:          "memory-cli",
+			Bin:           "memory-cli",
+			QueryTemplate: "query {query} --limit {limit} --detail {detail}",
+			Embedder:      "memory-cli",
+		}
+	case "gbrain":
+		cfg = cliConfig{
+			Name:          "gbrain",
+			Bin:           "gbrain",
+			QueryTemplate: "query {query} --limit {limit} --detail {detail} --autocut false",
+			Embedder:      "gbrain-cli",
+		}
+	default:
+		return cliConfig{}, fmt.Errorf("unknown COMPOUND_MEMORY_CLI_PROFILE %q", profile)
+	}
+	cfg.Bin = envDefault("COMPOUND_MEMORY_CLI_BIN", cfg.Bin)
+	cfg.QueryTemplate = envDefault("COMPOUND_MEMORY_CLI_QUERY_ARGS", cfg.QueryTemplate)
+	cfg.Embedder = envDefault("COMPOUND_MEMORY_CLI_ENGINE_EMBEDDER", cfg.Embedder)
+	return cfg, nil
 }
 
 func isReadOnlyQueryVerb(args []string) bool {

@@ -241,7 +241,11 @@ adapters speak a different protocol and are not part of the spine memory engine 
 configured query command as expansion context over claim text that compound just
 indexed, returns only allowed claim ids, maps a broken backend to `ErrEngineUnavailable`,
 and rejects mutating command templates before the external CLI is invoked. The real
-vector sidecar (Rust, + its embedder) is an **external artifact**, never vendored
+`COMPOUND_MEMORY_CLI_PROFILE` is an opt-in profile selector for built-in
+read-only local memory CLI presets. Bin, template, and embedder remain explicit
+environment overrides, so these profiles are adapter convenience rather than spine
+dependencies. A real vector sidecar
+(Rust plus its embedder) is an **external artifact**, never vendored
 into the public core.
 
 ## Language And Runtime

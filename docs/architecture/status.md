@@ -64,6 +64,7 @@ This file is the current package/command map. `compound architecture doctor --st
 - `compound-memory-cli-engine` now rejects mutating external-memory command templates before the CLI process is invoked; unsafe templates return protocol `bad_request`, not a degradable backend outage.
 
 - `compound-memory-cli-engine` now has an expansion-only regression: a query that does not lexically match indexed claims can still return the correct allowlisted claim through external memory CLI output, while empty allowlists fail closed before the CLI is called.
+- `compound-memory-cli-engine` now supports explicit profiles for known local memory CLIs. Profiles select read-only query presets and advertised embedder names, while bin/template/embedder env overrides remain available; profile output is rented expansion context only and never writes memory or owns recall authority.
 
 - LLM extraction requests now expose explicit `capability_feedback[]` from `Receipt.skills.missed` / `Receipt.skills.false_triggered`, with instructions forbidding inference from inert `skills.candidate` offers.
 

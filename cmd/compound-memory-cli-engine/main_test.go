@@ -16,11 +16,13 @@ type fakeMemoryCLI struct {
 	output string
 	err    error
 	calls  int
+	bins   []string
 	args   [][]string
 }
 
-func (f *fakeMemoryCLI) run(_ context.Context, _ string, args []string) (string, error) {
+func (f *fakeMemoryCLI) run(_ context.Context, bin string, args []string) (string, error) {
 	f.calls++
+	f.bins = append(f.bins, bin)
 	f.args = append(f.args, append([]string(nil), args...))
 	return f.output, f.err
 }
@@ -64,6 +66,91 @@ func TestMemoryCLIEngineUsesQueryOutputToRankIndexedClaims(t *testing.T) {
 	joined := strings.Join(fake.args[0], " ")
 	if !strings.Contains(joined, "query") || !strings.Contains(joined, "--limit 8") {
 		t.Fatalf("memory CLI args should use read-only query template: %v", fake.args[0])
+	}
+}
+
+func TestMemoryCLIEngineGBrainProfileUsesReadOnlyQueryTemplate(t *testing.T) {
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
+	fake := &fakeMemoryCLI{output: "Compound engine profile should use Go."}
+	responses := exchange(t, fake, []mem.Request{
+		{SchemaVersion: mem.ProtocolVersion, RequestID: "r1", Op: mem.OpCapabilities},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r2",
+			Op:            mem.OpIndex,
+			CorpusGen:     1,
+			Claims:        []mem.ClaimText{{ClaimID: "claim_go", Text: "compound memory engine go"}},
+		},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r3",
+			Op:            mem.OpQuery,
+			Text:          "compound memory engine",
+			Gate:          mem.GateList,
+			Allowlist:     []string{"claim_go"},
+			K:             1,
+		},
+	})
+	if responses[0].Name != "gbrain" || responses[0].Embedder != "gbrain-cli" {
+		t.Fatalf("capabilities = %+v, want gbrain/gbrain-cli", responses[0])
+	}
+	if fake.calls != 1 || fake.bins[0] != "gbrain" {
+		t.Fatalf("gbrain profile should call gbrain once, bins=%v calls=%d", fake.bins, fake.calls)
+	}
+	joined := strings.Join(fake.args[0], " ")
+	for _, want := range []string{"query", "--limit 8", "--detail low", "--autocut false"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("gbrain args %q missing %q", joined, want)
+		}
+	}
+	if len(responses[2].Hits) != 1 || responses[2].Hits[0].ClaimID != "claim_go" {
+		t.Fatalf("gbrain profile hits = %+v", responses[2].Hits)
+	}
+}
+
+func TestMemoryCLIEngineProfileAllowsExplicitOverrides(t *testing.T) {
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
+	t.Setenv("COMPOUND_MEMORY_CLI_BIN", "custom-brain")
+	t.Setenv("COMPOUND_MEMORY_CLI_QUERY_ARGS", "search {query} --limit {limit}")
+	t.Setenv("COMPOUND_MEMORY_CLI_ENGINE_EMBEDDER", "custom-embedder")
+	fake := &fakeMemoryCLI{output: "Go backend"}
+	responses := exchange(t, fake, []mem.Request{
+		{SchemaVersion: mem.ProtocolVersion, RequestID: "r1", Op: mem.OpCapabilities},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r2",
+			Op:            mem.OpIndex,
+			CorpusGen:     1,
+			Claims:        []mem.ClaimText{{ClaimID: "claim_go", Text: "backend go"}},
+		},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r3",
+			Op:            mem.OpQuery,
+			Text:          "backend",
+			Gate:          mem.GateList,
+			Allowlist:     []string{"claim_go"},
+			K:             1,
+		},
+	})
+	if responses[0].Embedder != "custom-embedder" {
+		t.Fatalf("embedder override = %q", responses[0].Embedder)
+	}
+	if fake.bins[0] != "custom-brain" {
+		t.Fatalf("bin override = %v", fake.bins)
+	}
+	joined := strings.Join(fake.args[0], " ")
+	if strings.Contains(joined, "autocut") || !strings.HasPrefix(joined, "search ") {
+		t.Fatalf("query template override not honored: %q", joined)
+	}
+}
+
+func TestMemoryCLIEngineRejectsUnknownProfile(t *testing.T) {
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "sync")
+	var out bytes.Buffer
+	err := run(strings.NewReader("{}\n"), &out, (&fakeMemoryCLI{}).run)
+	if err == nil || !strings.Contains(err.Error(), "unknown COMPOUND_MEMORY_CLI_PROFILE") {
+		t.Fatalf("unknown profile error = %v", err)
 	}
 }
 
