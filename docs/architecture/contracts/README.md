@@ -112,7 +112,7 @@ names (the named OS→contract mapping lives in `docs_private/plan/os-coverage-m
 | **ProjectionFreshness** | a read model/dashboard cannot silently drift from the ledger | projection_id, source_ledger_seq, built_at, staleness, coverage_verdict, status: fresh\|stale\|drifted. First slice: `compound projection doctor <freshness.yaml>` |
 | **SourceAuthority / PathAuthority** | which source owns a fact, and identity that survives path/host moves | entity_ref, authoritative_source, path_bindings[], host_bindings[], precedence_rank, evidence_refs[]. First slice: `compound authority path <path-authority.yaml>` merges source/path bindings into the canonical entity registry and emits deterministic authority claims; `compound authority resolve <token>` proves old/new paths and source remotes resolve to one entity. |
 
-DecisionLifecycle adapter note: `decisions import --policy <DEC.md>` records policy markdown as source evidence, preserves `supersedes` / `replaced_by` lifecycle transitions, promotes only accepted decisions, and parks proposed/superseded/deprecated/rejected decisions so they cannot become ambient truth by accident.
+DecisionLifecycle adapter note: `decisions import --policy <DEC.md>` and `decisions import --policy-dir <dir>` record policy markdown as source evidence, preserve `supersedes` / `replaced_by` lifecycle transitions, promote only accepted decisions, and park proposed/superseded/deprecated/rejected decisions so they cannot become ambient truth by accident. Compatibility directory inputs must route through this same adapter, not a candidate-only parser.
 
 ### Generated views
 

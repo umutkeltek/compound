@@ -11,7 +11,12 @@ import (
 	"compound/internal/writeback"
 )
 
-func TestImportDECLifecycle(t *testing.T) {
+func TestImportPolicyDecisionDirRecordsEvidenceLifecycle(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "decisions", "DEC-0001.md")
 	writeFile(t, path, `---
@@ -29,16 +34,26 @@ scope: public-core
 # Use spine memory for decisions
 `)
 
-	got, err := ImportDEC(dir)
+	got, err := ImportPolicyDecisionDir(store, dir, time.Date(2026, 6, 29, 20, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("ImportDEC got %d candidate(s), want 1", len(got))
+		t.Fatalf("ImportPolicyDecisionDir got %d report(s), want 1", len(got))
 	}
 
-	c := got[0]
-	l := LifecycleFromCandidate(c)
+	report := got[0]
+	if report.EvidenceID == "" || report.CandidateID == "" || report.ClaimID == "" || report.Verdict != candidates.Promote {
+		t.Fatalf("report = %+v", report)
+	}
+	ev, ok, err := store.GetEvidence(report.EvidenceID)
+	if err != nil || !ok {
+		t.Fatalf("evidence lookup ok=%v err=%v", ok, err)
+	}
+	if ev.SourceKind != "repo" || ev.SourceID == "" {
+		t.Fatalf("evidence = %+v", ev)
+	}
+	l := report.Lifecycle
 	if l.ID != "DEC-0001" || l.Kind != KindPolicy || l.Status != StatusAccepted {
 		t.Fatalf("lifecycle = %+v", l)
 	}
@@ -50,9 +65,6 @@ scope: public-core
 	}
 	if len(l.Supersedes) != 1 || l.Supersedes[0] != "DEC-0000" {
 		t.Fatalf("supersedes = %v", l.Supersedes)
-	}
-	if c.PromotionBasis != candidates.BasisDecisionRecord {
-		t.Fatalf("promotion basis = %q", c.PromotionBasis)
 	}
 	if missing := MissingRequired(l); len(missing) != 0 {
 		t.Fatalf("MissingRequired = %v", missing)

@@ -129,7 +129,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | skill manifests / external skill catalogs | `SkillManifestAdapter` -> strict `CapabilityGraph` skill/lens/procedure nodes + graph edges |
 | work packets | WorkEnvelope / Receipt / Transition evidence |
 | runtime / service contracts | `RuntimeBinding` / `ServiceContract` candidates |
-| decision records | `DecisionLifecycle` candidates; policy markdown source import records source evidence, preserves supersedes/replaced_by lifecycle transitions, and parks non-accepted decisions |
+| decision records | `DecisionLifecycle` candidates; policy markdown source import records source evidence, supports single-file and directory batch import through the same adapter, preserves supersedes/replaced_by lifecycle transitions, and parks non-accepted decisions |
 | knowledge-base pages | Evidence / Claim / Position candidates |
 | product analytics exports | `ProductSignalExport` -> `ProductSignal` evidence + product `Transition` projection, never causality; unknown/unsupported source fields fail strict doctor and may record `NoPromoteDecision`; source-issue review records closure evidence while preserving the original no-promote row; product timeline reads valid signals plus open/closed product-scoped source issues together |
 | a retrieval / embedding store | retrieval engine or source index, never authority |

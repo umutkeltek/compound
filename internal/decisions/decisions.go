@@ -250,70 +250,42 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 	return report, nil
 }
 
-// ImportDEC parses decisions/DEC markdown files into policy decision candidates.
-func ImportDEC(root string) ([]mem.Candidate, error) {
-	base := filepath.Join(root, "decisions")
-	var out []mem.Candidate
-	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
-			return err
+// ImportPolicyDecisionDir imports policy markdown files through the same
+// evidence-backed lifecycle path as ImportPolicyDecision.
+func ImportPolicyDecisionDir(store *mem.Store, root string, now time.Time) ([]DecisionImportReport, error) {
+	files, err := policyDecisionFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	reports := make([]DecisionImportReport, 0, len(files))
+	for _, path := range files {
+		report, err := ImportPolicyDecision(store, path, now)
+		if err != nil {
+			return reports, err
 		}
-		b, err := os.ReadFile(path)
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
+func policyDecisionFiles(root string) ([]string, error) {
+	base := filepath.Join(root, "decisions")
+	if st, err := os.Stat(base); err != nil || !st.IsDir() {
+		base = root
+	}
+	var files []string
+	err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		fm, body := splitFrontmatter(string(b))
-		var f decFrontmatter
-		_ = yaml.Unmarshal([]byte(fm), &f)
-		if f.ID == "" {
-			f.ID = strings.TrimSuffix(filepath.Base(path), ".md")
+		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
 		}
-		if f.Title == "" {
-			for _, line := range strings.Split(body, "\n") {
-				if strings.HasPrefix(line, "#") {
-					f.Title = strings.Trim(strings.TrimLeft(line, "#"), " ")
-					break
-				}
-			}
-		}
-		q := lifecycleQualifiers(KindPolicy, "decisions-repo", f.ID, f.Status)
-		if len(f.Domains) > 0 {
-			q["domain"] = strings.Join(f.Domains, ",")
-		}
-		if len(f.Supersedes) > 0 {
-			q["supersedes"] = strings.Join(f.Supersedes, ",")
-		}
-		if f.ReplacedBy != "" {
-			q["replaced_by"] = strings.TrimSpace(f.ReplacedBy)
-		}
-		if f.Falsifier != "" {
-			q["falsifier"] = strings.TrimSpace(f.Falsifier)
-		}
-		if f.ReviewTrigger != "" {
-			q["review_trigger"] = strings.TrimSpace(f.ReviewTrigger)
-		}
-		if f.Owner != "" {
-			q["owner"] = strings.TrimSpace(f.Owner)
-		}
-		if f.Scope != "" {
-			q["scope"] = strings.TrimSpace(f.Scope)
-		}
-		out = append(out, mem.Candidate{
-			Entity:         "decisions",
-			Predicate:      "decided",
-			Object:         f.Title,
-			Confidence:     1.0,
-			Derivation:     "deterministic",
-			ClaimType:      "decision",
-			Qualifiers:     q,
-			PromotionBasis: promotionBasisForStatus(f.Status),
-			SourceTraceRef: path,
-			SnippetHash:    f.ID,
-			Visibility:     "operational",
-		})
+		files = append(files, path)
 		return nil
 	})
-	return out, err
+	sort.Strings(files)
+	return files, err
 }
 
 // ImportBrainDecision imports one curated knowledge-base decision page into the

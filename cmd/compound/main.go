@@ -158,7 +158,7 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--brain <md>] [--policy <DEC.md>] | decisions [--kind=K] | decisions doctor
+  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
@@ -2309,15 +2309,19 @@ func cmdDecisions(args []string) {
 			}
 			policyReports = append(policyReports, report)
 		}
-		var facts []mem.Candidate
+		policyDirs := values("--policy-dir")
 		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
-			got, err := decisions.ImportDEC(root)
+			policyDirs = append(policyDirs, root)
+		}
+		for _, root := range policyDirs {
+			reports, err := decisions.ImportPolicyDecisionDir(store, root, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "policy decisions import:", err)
 				os.Exit(1)
 			}
-			facts = append(facts, got...)
+			policyReports = append(policyReports, reports...)
 		}
+		var facts []mem.Candidate
 		if pattern := strings.TrimSpace(os.Getenv("COMPOUND_OPERATOR_DECISIONS_GLOB")); pattern != "" {
 			matches, _ := filepath.Glob(pattern)
 			for _, m := range matches {
