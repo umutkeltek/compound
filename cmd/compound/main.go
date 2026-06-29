@@ -158,8 +158,8 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions repair-plan --policy-dir <dir>
-                                                                  import/query decisions through spine memory; emit lifecycle repair artifacts
+  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
+                                                                  import/query decisions through spine memory; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
 compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
@@ -2439,6 +2439,41 @@ func cmdDecisions(args []string) {
 			fmt.Printf("  plan: %s\n", paths.PlanPath)
 			fmt.Printf("  review: %s\n", paths.ReviewPath)
 		}
+	case "repair-apply":
+		plans := values("--plan")
+		if len(plans) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound decisions repair-apply --plan <repair-plan.json> [--write-reviewed]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
+			os.Exit(1)
+		}
+		plan, err := decisions.LoadLifecycleRepairPlan(plans[0])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
+			os.Exit(1)
+		}
+		dryRun := !hasFlag(args[1:], "--write-reviewed")
+		report, err := decisions.ApplyLifecycleRepairPlan(plan, decisions.RepairApplyOptions{DryRun: dryRun}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
+			os.Exit(1)
+		}
+		reportPath, err := decisions.RecordLifecycleRepairApplyReport(homePath, report)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# decisions repair-apply\n\n")
+		fmt.Printf("- plan: %s\n", report.PlanID)
+		fmt.Printf("- dry_run: %v\n", report.DryRun)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- applied_fields: %d\n", report.AppliedFields)
+		fmt.Printf("- changed_files: %d\n", len(report.ChangedFiles))
+		fmt.Printf("- skipped: %d\n", len(report.Skipped))
+		fmt.Printf("- report: %s\n", reportPath)
 	default:
 		kindFilter := ""
 		for _, a := range args {

@@ -52,6 +52,31 @@ type RepairArtifactPaths struct {
 	ReviewPath string
 }
 
+type LifecycleRepairApplyReport struct {
+	SchemaVersion string            `json:"schema_version"`
+	ID            string            `json:"id"`
+	CreatedAt     string            `json:"created_at"`
+	PlanID        string            `json:"plan_id"`
+	SourceRoot    string            `json:"source_root"`
+	DryRun        bool              `json:"dry_run"`
+	Status        string            `json:"status"`
+	AppliedFields int               `json:"applied_fields"`
+	ChangedFiles  []string          `json:"changed_files"`
+	Skipped       []RepairApplySkip `json:"skipped,omitempty"`
+	EvidenceRefs  []string          `json:"evidence_refs"`
+}
+
+type RepairApplySkip struct {
+	DecisionID string `json:"decision_id"`
+	SourcePath string `json:"source_path"`
+	Field      string `json:"field,omitempty"`
+	Reason     string `json:"reason"`
+}
+
+type RepairApplyOptions struct {
+	DryRun bool
+}
+
 func BuildLifecycleRepairPlan(root string, now time.Time) (LifecycleRepairPlan, error) {
 	files, err := policyDecisionFiles(root)
 	if err != nil {
@@ -109,6 +134,110 @@ func RecordLifecycleRepairPlan(homePath string, plan LifecycleRepairPlan) (Repai
 		return paths, err
 	}
 	return paths, nil
+}
+
+func LoadLifecycleRepairPlan(path string) (LifecycleRepairPlan, error) {
+	var plan LifecycleRepairPlan
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return plan, err
+	}
+	if err := json.Unmarshal(b, &plan); err != nil {
+		return plan, fmt.Errorf("parse lifecycle repair plan %s: %w", path, err)
+	}
+	if plan.SchemaVersion != RepairPlanSchemaVersion {
+		return plan, fmt.Errorf("repair plan schema_version=%q, want %q", plan.SchemaVersion, RepairPlanSchemaVersion)
+	}
+	if strings.TrimSpace(plan.ID) == "" {
+		return plan, fmt.Errorf("repair plan id required")
+	}
+	if strings.TrimSpace(plan.SourceRoot) == "" {
+		return plan, fmt.Errorf("repair plan source_root required")
+	}
+	return plan, nil
+}
+
+func ApplyLifecycleRepairPlan(plan LifecycleRepairPlan, opts RepairApplyOptions, now time.Time) (LifecycleRepairApplyReport, error) {
+	createdAt := now.UTC().Format(time.RFC3339Nano)
+	mode := "write"
+	if opts.DryRun {
+		mode = "dry-run"
+	}
+	report := LifecycleRepairApplyReport{
+		SchemaVersion: "compound.decision_lifecycle_repair_apply.v0.1",
+		ID:            "dlra_" + digest12(plan.ID+"\n"+mode+"\n"+createdAt),
+		CreatedAt:     createdAt,
+		PlanID:        plan.ID,
+		SourceRoot:    plan.SourceRoot,
+		DryRun:        opts.DryRun,
+		Status:        "ok",
+		EvidenceRefs:  append([]string(nil), plan.EvidenceRefs...),
+	}
+	rootClean, err := filepath.Abs(plan.SourceRoot)
+	if err != nil {
+		return report, err
+	}
+	changed := map[string]bool{}
+	for _, repair := range plan.Repairs {
+		path, err := filepath.Abs(repair.SourcePath)
+		if err != nil {
+			return report, err
+		}
+		if !pathWithin(rootClean, path) {
+			report.Skipped = append(report.Skipped, RepairApplySkip{
+				DecisionID: repair.DecisionID,
+				SourcePath: repair.SourcePath,
+				Reason:     "source path outside repair plan source_root",
+			})
+			continue
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return report, err
+		}
+		next, applied, skips, err := applyLifecycleRepairToContent(string(content), repair)
+		if err != nil {
+			return report, fmt.Errorf("apply lifecycle repair %s: %w", repair.DecisionID, err)
+		}
+		report.Skipped = append(report.Skipped, skips...)
+		if len(applied) == 0 {
+			continue
+		}
+		report.AppliedFields += len(applied)
+		changed[path] = true
+		if !opts.DryRun {
+			if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
+				return report, err
+			}
+		}
+	}
+	for path := range changed {
+		report.ChangedFiles = append(report.ChangedFiles, path)
+	}
+	sort.Strings(report.ChangedFiles)
+	if report.AppliedFields == 0 && len(report.Skipped) > 0 {
+		report.Status = "no_changes"
+	}
+	return report, nil
+}
+
+func RecordLifecycleRepairApplyReport(homePath string, report LifecycleRepairApplyReport) (string, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return "", fmt.Errorf("COMPOUND_HOME required")
+	}
+	dir := filepath.Join(homePath, "reviews", "decision-lifecycle-repairs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, report.ID+".apply.json")
+	b, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func RenderLifecycleRepairReview(plan LifecycleRepairPlan) string {
@@ -242,6 +371,100 @@ func suggestedLifecycleField(field string, f decFrontmatter, signals []string) L
 			ReviewNote:     "Unknown lifecycle field; source owner must fill this manually.",
 		}
 	}
+}
+
+func applyLifecycleRepairToContent(content string, repair LifecycleRepair) (string, []string, []RepairApplySkip, error) {
+	if !strings.HasPrefix(content, "---") {
+		return content, nil, []RepairApplySkip{{
+			DecisionID: repair.DecisionID,
+			SourcePath: repair.SourcePath,
+			Reason:     "frontmatter missing",
+		}}, nil
+	}
+	rest := content[3:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return content, nil, nil, fmt.Errorf("closing frontmatter delimiter missing")
+	}
+	fm := rest[:end]
+	var current decFrontmatter
+	_ = yaml.Unmarshal([]byte(fm), &current)
+	fieldSet := map[string]LifecycleRepairField{}
+	for _, field := range repair.Fields {
+		fieldSet[field.Name] = field
+	}
+	var additions []LifecycleRepairField
+	var applied []string
+	var skipped []RepairApplySkip
+	for _, name := range repair.Missing {
+		field, ok := fieldSet[name]
+		if !ok {
+			skipped = append(skipped, RepairApplySkip{
+				DecisionID: repair.DecisionID,
+				SourcePath: repair.SourcePath,
+				Field:      name,
+				Reason:     "repair field missing from plan",
+			})
+			continue
+		}
+		if lifecycleFrontmatterFieldPresent(current, name) {
+			skipped = append(skipped, RepairApplySkip{
+				DecisionID: repair.DecisionID,
+				SourcePath: repair.SourcePath,
+				Field:      name,
+				Reason:     "frontmatter field already present",
+			})
+			continue
+		}
+		additions = append(additions, field)
+		applied = append(applied, name)
+	}
+	if len(additions) == 0 {
+		return content, nil, skipped, nil
+	}
+	var b strings.Builder
+	b.WriteString(content[:3+end])
+	if !strings.HasSuffix(fm, "\n") {
+		b.WriteString("\n")
+	}
+	for _, field := range additions {
+		b.WriteString(field.Name)
+		b.WriteString(": ")
+		b.WriteString(yamlQuote(field.SuggestedValue))
+		b.WriteString("\n")
+	}
+	b.WriteString(content[3+end:])
+	return b.String(), applied, skipped, nil
+}
+
+func lifecycleFrontmatterFieldPresent(f decFrontmatter, name string) bool {
+	switch name {
+	case "falsifier":
+		return strings.TrimSpace(f.Falsifier) != ""
+	case "review_trigger":
+		return strings.TrimSpace(f.ReviewTrigger) != ""
+	default:
+		return false
+	}
+}
+
+func yamlQuote(s string) string {
+	b, err := yaml.Marshal(s)
+	if err != nil {
+		return fmt.Sprintf("%q", s)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func pathWithin(root, path string) bool {
+	if root == path {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".."
 }
 
 func lifecycleBodySignals(body string) []string {

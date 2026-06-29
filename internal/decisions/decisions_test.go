@@ -530,6 +530,97 @@ func TestRecordLifecycleRepairPlanWritesReviewArtifacts(t *testing.T) {
 	}
 }
 
+func TestApplyLifecycleRepairPlanWritesReviewedFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions", "DEC-0300.md")
+	writeFile(t, path, `---
+id: DEC-0300
+title: Needs lifecycle proof
+status: accepted
+---
+
+# DEC-0300: Needs lifecycle proof
+`)
+	plan, err := BuildLifecycleRepairPlan(dir, time.Date(2026, 6, 29, 23, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RepairCount != 1 {
+		t.Fatalf("repair count = %d", plan.RepairCount)
+	}
+
+	dry, err := ApplyLifecycleRepairPlan(plan, RepairApplyOptions{DryRun: true}, time.Date(2026, 6, 29, 23, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.AppliedFields != 2 || len(dry.ChangedFiles) != 1 || strings.Contains(string(body), "falsifier:") {
+		t.Fatalf("dry run report=%+v body=%s", dry, body)
+	}
+
+	written, err := ApplyLifecycleRepairPlan(plan, RepairApplyOptions{DryRun: false}, time.Date(2026, 6, 29, 23, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written.AppliedFields != 2 || len(written.ChangedFiles) != 1 {
+		t.Fatalf("write report=%+v", written)
+	}
+	if dry.ID == written.ID {
+		t.Fatalf("dry-run and write reports should have distinct ids: %s", dry.ID)
+	}
+	if !strings.Contains(string(body), "falsifier:") || !strings.Contains(string(body), "review_trigger:") {
+		t.Fatalf("body missing lifecycle fields:\n%s", body)
+	}
+	after, err := BuildLifecycleRepairPlan(dir, time.Date(2026, 6, 29, 23, 3, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.RepairCount != 0 || after.Status != "ok" {
+		t.Fatalf("after repair plan = %+v", after)
+	}
+}
+
+func TestApplyLifecycleRepairPlanRejectsPathsOutsideSourceRoot(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "DEC-0400.md")
+	writeFile(t, outside, `---
+id: DEC-0400
+title: Outside root
+status: accepted
+---
+
+# DEC-0400: Outside root
+`)
+	plan := LifecycleRepairPlan{
+		SchemaVersion: RepairPlanSchemaVersion,
+		ID:            "dlrp_outside",
+		SourceRoot:    dir,
+		Repairs: []LifecycleRepair{{
+			DecisionID: "DEC-0400",
+			SourcePath: outside,
+			Missing:    []string{"falsifier"},
+			Fields: []LifecycleRepairField{{
+				Name:           "falsifier",
+				SuggestedValue: "outside root",
+			}},
+		}},
+	}
+	report, err := ApplyLifecycleRepairPlan(plan, RepairApplyOptions{}, time.Date(2026, 6, 29, 23, 4, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.AppliedFields != 0 || len(report.Skipped) != 1 || report.Skipped[0].Reason != "source path outside repair plan source_root" {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
