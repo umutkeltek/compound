@@ -147,6 +147,36 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if !hasString(importedSignal.EvidenceRefs, signalReport.EvidenceIDs[0]) || !hasString(importedSignal.EvidenceRefs, "fixture:asc-export") {
 		t.Fatalf("signal evidence refs = %+v", importedSignal.EvidenceRefs)
 	}
+
+	exportDoc, err := LoadSignal("../../fixtures/product/source-export.asc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exportDoc.SchemaVersion != SignalSchemaVersion || exportDoc.Signal.ID != "sig_focus_asc_export_conversion_20260713" || exportDoc.Signal.MetricName != "app_store_product_page_conversion" {
+		t.Fatalf("export adapter = %+v", exportDoc)
+	}
+	exportReport, err := ApplySignal(home, store, exportDoc, "fixtures/product/source-export.asc.yaml", tProduct.Add(14*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exportReport.Status != "ok" || len(exportReport.SignalIDs) != 1 || len(exportReport.EvidenceIDs) != 1 || len(exportReport.TransitionIDs) != 1 {
+		t.Fatalf("export report = %+v", exportReport)
+	}
+	exportTransition := readTransition(t, home, exportReport.TransitionIDs[0])
+	if exportTransition.Scope.ProductID != "product:focus-notes" || !hasString(exportTransition.Projections.Product, "product_signal:sig_focus_asc_export_conversion_20260713") {
+		t.Fatalf("export transition = %+v", exportTransition)
+	}
+	withExport, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportedSignal := findSignal(withExport.Signals, "sig_focus_asc_export_conversion_20260713")
+	if exportedSignal.ID == "" || exportedSignal.MetricName != "app_store_product_page_conversion" {
+		t.Fatalf("exported signal = %+v", exportedSignal)
+	}
+	if !hasString(exportedSignal.EvidenceRefs, "fixture:asc:conversion:before") || !hasString(exportedSignal.EvidenceRefs, "fixture:asc:conversion:after") || !hasString(exportedSignal.EvidenceRefs, exportReport.EvidenceIDs[0]) {
+		t.Fatalf("exported evidence refs = %+v", exportedSignal.EvidenceRefs)
+	}
 }
 
 func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
@@ -170,6 +200,14 @@ func TestValidateSignalDocumentRejectsMissingSource(t *testing.T) {
 	doc.Source.Kind = ""
 	if err := ValidateSignalDocument(doc); err == nil {
 		t.Fatal("signal document without source should be rejected")
+	}
+}
+
+func TestValidateSignalExportRejectsUnsupportedSource(t *testing.T) {
+	doc := validSignalExportDocument()
+	doc.Source.Kind = "spreadsheet"
+	if _, err := AdaptSignalExport(doc); err == nil {
+		t.Fatal("unsupported signal export source should be rejected")
 	}
 }
 
@@ -231,6 +269,24 @@ func validSignalDocument() SignalDocument {
 		SchemaVersion: SignalSchemaVersion,
 		Source:        SignalSource{Kind: "app_store_connect", Ref: "fixture"},
 		Signal:        b.Signals[0],
+	}
+}
+
+func validSignalExportDocument() SignalExportDocument {
+	return SignalExportDocument{
+		SchemaVersion: SignalExportSchemaVersion,
+		Source:        SignalSource{Kind: "app_store_connect", Ref: "fixture"},
+		ProductID:     "product:x",
+		Surface:       "store",
+		ChangeEvent:   "changed screenshots",
+		Metric: ExportMetric{
+			Name:   "product_page_conversion_rate",
+			Before: ExportMetricPoint{Value: 0.1, Ref: "fixture:before"},
+			After:  ExportMetricPoint{Value: 0.12, Ref: "fixture:after"},
+		},
+		Window:       "14d",
+		Confidence:   0.5,
+		EvidenceRefs: []string{"fixture:export"},
 	}
 }
 

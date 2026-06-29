@@ -2027,7 +2027,7 @@ func cmdProduct(args []string) {
 		fmt.Printf("- hypotheses: %d\n", len(report.HypothesisIDs))
 	case "signal":
 		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound product signal <signal.yaml>")
+			fmt.Fprintln(os.Stderr, "usage: compound product signal <signal.yaml|source-export.yaml>")
 			os.Exit(2)
 		}
 		doc, err := product.LoadSignal(args[1])

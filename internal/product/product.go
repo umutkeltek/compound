@@ -25,6 +25,7 @@ import (
 const (
 	SchemaVersion              = "compound.product_registry.v0.1"
 	SignalSchemaVersion        = "compound.product_signal.v0.1"
+	SignalExportSchemaVersion  = "compound.product_signal_export.v0.1"
 	ProductHypothesisCandidate = "compound.product_hypothesis_candidate.v0.1"
 	ReviewSchemaVersion        = "compound.product_review.v0.1"
 )
@@ -86,6 +87,36 @@ type SignalDocument struct {
 	Source        SignalSource `json:"source" yaml:"source"`
 	Signal        Signal       `json:"signal" yaml:"signal"`
 	EvidenceRefs  []string     `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
+}
+
+type SignalExportDocument struct {
+	SchemaVersion   string           `json:"schema_version" yaml:"schema_version"`
+	Source          SignalSource     `json:"source" yaml:"source"`
+	SignalID        string           `json:"signal_id,omitempty" yaml:"signal_id,omitempty"`
+	ProductID       string           `json:"product_id" yaml:"product_id"`
+	Surface         string           `json:"surface" yaml:"surface"`
+	ChangeEvent     string           `json:"change_event" yaml:"change_event"`
+	Metric          ExportMetric     `json:"metric" yaml:"metric"`
+	Window          string           `json:"window" yaml:"window"`
+	Confidence      float64          `json:"confidence" yaml:"confidence"`
+	Confounders     []string         `json:"confounders,omitempty" yaml:"confounders,omitempty"`
+	Interpretations []Interpretation `json:"interpretations,omitempty" yaml:"interpretations,omitempty"`
+	NextAction      string           `json:"next_action,omitempty" yaml:"next_action,omitempty"`
+	EvidenceRefs    []string         `json:"evidence_refs" yaml:"evidence_refs"`
+	ObservedAt      string           `json:"observed_at,omitempty" yaml:"observed_at,omitempty"`
+}
+
+type ExportMetric struct {
+	Name          string            `json:"name" yaml:"name"`
+	CanonicalName string            `json:"canonical_name,omitempty" yaml:"canonical_name,omitempty"`
+	Before        ExportMetricPoint `json:"before" yaml:"before"`
+	After         ExportMetricPoint `json:"after" yaml:"after"`
+}
+
+type ExportMetricPoint struct {
+	Value  float64 `json:"value" yaml:"value"`
+	Period string  `json:"period,omitempty" yaml:"period,omitempty"`
+	Ref    string  `json:"ref,omitempty" yaml:"ref,omitempty"`
 }
 
 type SignalSource struct {
@@ -192,11 +223,28 @@ func LoadSignal(path string) (SignalDocument, error) {
 	if err != nil {
 		return SignalDocument{}, err
 	}
-	var doc SignalDocument
-	if err := yaml.Unmarshal(b, &doc); err != nil {
+	var header struct {
+		SchemaVersion string `yaml:"schema_version"`
+	}
+	if err := yaml.Unmarshal(b, &header); err != nil {
 		return SignalDocument{}, err
 	}
-	return doc, nil
+	switch header.SchemaVersion {
+	case SignalSchemaVersion:
+		var doc SignalDocument
+		if err := yaml.Unmarshal(b, &doc); err != nil {
+			return SignalDocument{}, err
+		}
+		return doc, nil
+	case SignalExportSchemaVersion:
+		var doc SignalExportDocument
+		if err := yaml.Unmarshal(b, &doc); err != nil {
+			return SignalDocument{}, err
+		}
+		return AdaptSignalExport(doc)
+	default:
+		return SignalDocument{}, fmt.Errorf("schema_version must be %s or %s, got %q", SignalSchemaVersion, SignalExportSchemaVersion, header.SchemaVersion)
+	}
 }
 
 func LoadReview(path string) (Review, error) {
@@ -439,6 +487,74 @@ func ValidateSignalDocument(doc SignalDocument) error {
 	}
 	if err := validateSignal(doc.Signal); err != nil {
 		return err
+	}
+	return nil
+}
+
+func AdaptSignalExport(doc SignalExportDocument) (SignalDocument, error) {
+	if err := ValidateSignalExportDocument(doc); err != nil {
+		return SignalDocument{}, err
+	}
+	metricName := strings.TrimSpace(doc.Metric.CanonicalName)
+	if metricName == "" {
+		metricName = canonicalMetricName(doc.Source.Kind, doc.Metric.Name)
+	}
+	id := strings.TrimSpace(doc.SignalID)
+	if id == "" {
+		id = stableID("sig_", doc.ProductID, doc.Source.Kind, doc.Source.Ref, metricName, doc.ChangeEvent, doc.Window)
+	}
+	evidenceRefs := compact(append([]string{}, doc.EvidenceRefs...))
+	evidenceRefs = compact(append(evidenceRefs, doc.Metric.Before.Ref, doc.Metric.After.Ref))
+	return SignalDocument{
+		SchemaVersion: SignalSchemaVersion,
+		Source:        doc.Source,
+		Signal: Signal{
+			ID:              id,
+			ProductID:       doc.ProductID,
+			Surface:         doc.Surface,
+			ChangeEvent:     doc.ChangeEvent,
+			MetricName:      metricName,
+			Before:          doc.Metric.Before.Value,
+			After:           doc.Metric.After.Value,
+			Window:          doc.Window,
+			Confidence:      doc.Confidence,
+			Confounders:     doc.Confounders,
+			Interpretations: doc.Interpretations,
+			NextAction:      doc.NextAction,
+			EvidenceRefs:    evidenceRefs,
+			ObservedAt:      doc.ObservedAt,
+		},
+		EvidenceRefs: evidenceRefs,
+	}, nil
+}
+
+func ValidateSignalExportDocument(doc SignalExportDocument) error {
+	if doc.SchemaVersion != SignalExportSchemaVersion {
+		return fmt.Errorf("schema_version must be %s, got %q", SignalExportSchemaVersion, doc.SchemaVersion)
+	}
+	if strings.TrimSpace(doc.Source.Kind) == "" || strings.TrimSpace(doc.Source.Ref) == "" {
+		return fmt.Errorf("signal export source kind ref required")
+	}
+	if !oneOf(doc.Source.Kind, []string{"app_store_connect", "revenuecat", "posthog"}) {
+		return fmt.Errorf("signal export source kind %q unsupported", doc.Source.Kind)
+	}
+	if strings.TrimSpace(doc.ProductID) == "" || strings.TrimSpace(doc.Surface) == "" || strings.TrimSpace(doc.ChangeEvent) == "" {
+		return fmt.Errorf("signal export product_id surface change_event required")
+	}
+	if strings.TrimSpace(doc.Metric.Name) == "" {
+		return fmt.Errorf("signal export metric name required")
+	}
+	if strings.TrimSpace(doc.Window) == "" {
+		return fmt.Errorf("signal export window required")
+	}
+	if doc.Confidence < 0 || doc.Confidence > 1 {
+		return fmt.Errorf("signal export confidence must be between 0 and 1")
+	}
+	if len(doc.EvidenceRefs) == 0 {
+		return fmt.Errorf("signal export evidence_refs required")
+	}
+	if strings.TrimSpace(doc.SignalID) != "" && strings.ContainsAny(doc.SignalID, `/\`) {
+		return fmt.Errorf("signal export signal_id %q must not contain path separators", doc.SignalID)
 	}
 	return nil
 }
@@ -859,6 +975,46 @@ func readJSONL(path string, fn func([]byte) error) error {
 		}
 	}
 	return nil
+}
+
+func canonicalMetricName(sourceKind, metricName string) string {
+	sourceKind = normalizeIDPart(sourceKind)
+	metricName = normalizeIDPart(metricName)
+	switch sourceKind + ":" + metricName {
+	case "app_store_connect:product_page_conversion_rate", "app_store_connect:conversion_rate":
+		return "app_store_product_page_conversion"
+	case "revenuecat:active_subscriptions", "revenuecat:active_subscribers":
+		return "revenuecat_active_subscriptions"
+	case "revenuecat:mrr":
+		return "revenuecat_mrr"
+	case "posthog:activation_rate":
+		return "posthog_activation_rate"
+	}
+	if sourceKind == "" {
+		return metricName
+	}
+	if metricName == "" {
+		return sourceKind
+	}
+	return sourceKind + "_" + metricName
+}
+
+func normalizeIDPart(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevUnderscore = false
+			continue
+		}
+		if !prevUnderscore {
+			b.WriteByte('_')
+			prevUnderscore = true
+		}
+	}
+	return strings.Trim(b.String(), "_")
 }
 
 func stableID(prefix string, parts ...string) string {
