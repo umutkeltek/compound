@@ -163,7 +163,7 @@ usage:
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
-compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
+compound runtime doctor [--project-contract] <yaml> [--writeback] | runtime repair-plan [--project-contract] <yaml> RuntimeBinding health + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
@@ -3230,44 +3230,34 @@ func runDistillerWriteback(report distiller.DoctorReport, now time.Time) (writeb
 }
 
 func cmdRuntime(args []string) {
-	if len(args) < 1 || args[0] != "doctor" {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, runtimeUsage())
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "doctor":
+		cmdRuntimeDoctor(args[1:])
+	case "repair-plan":
+		cmdRuntimeRepairPlan(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, runtimeUsage())
+		os.Exit(2)
+	}
+}
+
+func runtimeUsage() string {
+	return "usage: compound runtime doctor [--project-contract] <yaml> [--writeback] | runtime repair-plan [--project-contract] <yaml>"
+}
+
+func cmdRuntimeDoctor(args []string) {
+	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml> [--writeback]")
 		os.Exit(2)
 	}
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml> [--writeback]")
-		os.Exit(2)
-	}
-	path := args[1]
-	load := runtimebinding.Load
-	writebackEnabled := hasFlag(args[1:], "--writeback")
-	if args[1] == "--project-contract" {
-		if len(args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: compound runtime doctor --project-contract <project.yaml> [--writeback]")
-			os.Exit(2)
-		}
-		path = args[2]
-		load = runtimebinding.LoadProjectContract
-	}
-	bundle, err := load(path)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "runtime doctor:", err)
-		os.Exit(1)
-	}
-	report := runtimebinding.Doctor(bundle)
-	fmt.Printf("# runtime doctor\n\n")
-	fmt.Printf("- service: %s\n", report.ServiceID)
-	fmt.Printf("- owner: %s\n", report.Owner)
-	fmt.Printf("- status: %s\n", report.Status)
-	for _, check := range report.Checks {
-		fmt.Printf("- %s: %s", check.Name, check.Status)
-		if check.Detail != "" {
-			fmt.Printf(" (%s)", check.Detail)
-		}
-		fmt.Println()
-	}
+	report := loadRuntimeReportOrExit(args, "runtime doctor")
+	printRuntimeDoctorReport(report)
 	if report.Status != "ok" {
-		if writebackEnabled {
+		if hasFlag(args, "--writeback") {
 			result, err := runRuntimeWriteback(report, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "runtime writeback:", err)
@@ -3284,6 +3274,87 @@ func cmdRuntime(args []string) {
 			return
 		}
 		os.Exit(1)
+	}
+}
+
+func cmdRuntimeRepairPlan(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound runtime repair-plan [--project-contract] <yaml>")
+		os.Exit(2)
+	}
+	now := time.Now()
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-plan:", err)
+		os.Exit(1)
+	}
+	report := loadRuntimeReportOrExit(args, "runtime repair-plan")
+	if !runtimebinding.NeedsWriteback(report) {
+		fmt.Fprintf(os.Stderr, "runtime repair-plan: runtime %s ok; no repair plan needed\n", report.ServiceID)
+		os.Exit(1)
+	}
+	writebackResult, err := runRuntimeWriteback(report, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-plan:", err)
+		os.Exit(1)
+	}
+	plan, err := runtimebinding.BuildRepairPlan(report, runtimebinding.RepairRefs{
+		WritebackGateID: writebackResult.GateID,
+		WorkID:          writebackResult.WorkID,
+		ReceiptID:       writebackResult.ReceiptID,
+		TransitionID:    writebackResult.TransitionID,
+	}, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-plan:", err)
+		os.Exit(1)
+	}
+	paths, err := runtimebinding.RecordRepairPlan(homePath, plan)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-plan:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# runtime repair-plan %s\n", plan.ID)
+	fmt.Printf("- service: %s\n", plan.ServiceID)
+	fmt.Printf("- status: %s\n", plan.Status)
+	fmt.Printf("- failed_checks: %d\n", plan.FailedCount)
+	fmt.Printf("- writeback_gate: %s\n", plan.WritebackGateID)
+	fmt.Printf("- work: %s\n", plan.WorkID)
+	fmt.Printf("- receipt: %s\n", plan.ReceiptID)
+	fmt.Printf("- transition: %s\n", plan.TransitionID)
+	fmt.Printf("- plan: %s\n", paths.PlanPath)
+	fmt.Printf("- review: %s\n", paths.ReviewPath)
+}
+
+func loadRuntimeReportOrExit(args []string, label string) runtimebinding.DoctorReport {
+	path := args[0]
+	load := runtimebinding.Load
+	if args[0] == "--project-contract" {
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "usage: compound %s --project-contract <project.yaml>\n", label)
+			os.Exit(2)
+		}
+		path = args[1]
+		load = runtimebinding.LoadProjectContract
+	}
+	bundle, err := load(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, label+":", err)
+		os.Exit(1)
+	}
+	return runtimebinding.Doctor(bundle)
+}
+
+func printRuntimeDoctorReport(report runtimebinding.DoctorReport) {
+	fmt.Printf("# runtime doctor\n\n")
+	fmt.Printf("- service: %s\n", report.ServiceID)
+	fmt.Printf("- owner: %s\n", report.Owner)
+	fmt.Printf("- status: %s\n", report.Status)
+	for _, check := range report.Checks {
+		fmt.Printf("- %s: %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
 	}
 }
 

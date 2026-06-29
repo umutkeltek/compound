@@ -3,6 +3,7 @@ package runtimebinding
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,6 +50,54 @@ func TestWritebackGateForFailedRuntime(t *testing.T) {
 	}
 	if len(gate.EvidenceRefs) < len(report.Checks)+3 {
 		t.Fatalf("expected runtime evidence refs, got %+v", gate.EvidenceRefs)
+	}
+}
+
+func TestBuildRuntimeRepairPlan(t *testing.T) {
+	b := validBundle()
+	b.RuntimeBinding.HostBinding = ""
+	report := Doctor(b)
+	plan, err := BuildRepairPlan(report, RepairRefs{
+		WritebackGateID: "owg_runtime",
+		WorkID:          "work_runtime",
+		ReceiptID:       "rec_runtime",
+		TransitionID:    "tr_runtime",
+	}, time.Date(2026, 6, 29, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != RepairPlanSchemaVersion || plan.Status != "review_required" || plan.FailedCount != 1 {
+		t.Fatalf("bad plan: %+v", plan)
+	}
+	if plan.WritebackGateID != "owg_runtime" || plan.OwnerTarget != "runtime_binding:service:synthetic-api" {
+		t.Fatalf("bad refs: %+v", plan)
+	}
+	if len(plan.ReviewActions) != 1 || plan.ReviewActions[0].Check != "host" {
+		t.Fatalf("review actions = %+v", plan.ReviewActions)
+	}
+	review := RenderRepairReview(plan)
+	if !strings.Contains(review, "does not mutate runtime owner files") || !strings.Contains(review, "declare the host") {
+		t.Fatalf("review did not preserve gate warning/action:\n%s", review)
+	}
+}
+
+func TestRecordRuntimeRepairPlan(t *testing.T) {
+	b := validBundle()
+	b.RuntimeBinding.HostBinding = ""
+	report := Doctor(b)
+	plan, err := BuildRepairPlan(report, RepairRefs{WritebackGateID: "owg_runtime"}, time.Date(2026, 6, 29, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordRepairPlan(t.TempDir(), plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths.PlanPath); err != nil {
+		t.Fatalf("plan missing: %v", err)
+	}
+	if _, err := os.Stat(paths.ReviewPath); err != nil {
+		t.Fatalf("review missing: %v", err)
 	}
 }
 

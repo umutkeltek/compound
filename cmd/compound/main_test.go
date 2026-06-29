@@ -19,6 +19,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/product"
 	"compound/internal/projection"
+	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
 	"compound/internal/work"
 )
@@ -1132,6 +1133,76 @@ func TestProjectionRepairPlanCreatesGateSourceObservationAndReview(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("projection repair-plan should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
+func TestRuntimeRepairPlanCreatesGateAndReview(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdRuntime([]string{"repair-plan", filepath.Join("..", "..", "fixtures", "runtime", "broken-service.yaml")})
+	})
+	for _, want := range []string{
+		"# runtime repair-plan rrp_",
+		"- failed_checks: 1",
+		"- writeback_gate: owg_",
+		"- work: work_",
+		"- receipt: rec_",
+		"- transition: tr_",
+		"- plan:",
+		"- review:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("runtime repair-plan output missing %q:\n%s", want, out)
+		}
+	}
+	planDir := filepath.Join(homePath, "reviews", "runtime-repair")
+	planFiles, err := filepath.Glob(filepath.Join(planDir, "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewFiles, err := filepath.Glob(filepath.Join(planDir, "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planFiles) != 1 || len(reviewFiles) != 1 {
+		t.Fatalf("plan/review files = %d/%d", len(planFiles), len(reviewFiles))
+	}
+	var plan struct {
+		SchemaVersion   string `json:"schema_version"`
+		Status          string `json:"status"`
+		FailedCount     int    `json:"failed_count"`
+		WritebackGateID string `json:"writeback_gate_id"`
+		ReceiptID       string `json:"receipt_id"`
+		TransitionID    string `json:"transition_id"`
+	}
+	data, err := os.ReadFile(planFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != runtimebinding.RepairPlanSchemaVersion ||
+		plan.Status != "review_required" ||
+		plan.FailedCount != 1 ||
+		!strings.HasPrefix(plan.WritebackGateID, "owg_") ||
+		!strings.HasPrefix(plan.ReceiptID, "rec_") ||
+		!strings.HasPrefix(plan.TransitionID, "tr_") {
+		t.Fatalf("bad runtime repair plan: %+v", plan)
+	}
+	review, err := os.ReadFile(reviewFiles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(review), "does not mutate runtime owner files") {
+		t.Fatalf("review did not preserve no-direct-write warning:\n%s", review)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("runtime repair-plan should not promote claims, claims ledger stat err=%v", err)
 	}
 }
 

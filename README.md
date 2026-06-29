@@ -28,8 +28,8 @@ The current public surface is:
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
 | `compound authority import/path/path-registry/git` / `compound decisions import` | import external authority, OS-style path authority, source-control snapshots, and DecisionLifecycle records through spine memory |
 | `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |
-| `compound runtime doctor <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle |
-| `compound runtime doctor --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor |
+| `compound runtime doctor <runtime-binding.yaml>` / `runtime repair-plan <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle; failing reports can emit gated review artifacts |
+| `compound runtime doctor --project-contract <project.yaml>` / `runtime repair-plan --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor/repair path |
 | `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
@@ -88,7 +88,7 @@ internal/candidates/   candidate kind -> inbox dir + verdicts
 internal/mem/          canonical memory object family
 internal/distiller/    trace -> candidate fan-out + critique
 internal/capgraph/     capability graph
-internal/runtimebinding/ RuntimeBinding + ServiceContract doctor
+internal/runtimebinding/ RuntimeBinding + ServiceContract doctor + gated repair-plan artifacts
 internal/projection/   GeneratedViewObservation + ProjectionFreshness doctor
 internal/arch/         architecture doctor
 
