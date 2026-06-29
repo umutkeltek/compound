@@ -111,12 +111,13 @@ not all-by-default) — **without executing them**; and a missed/false trigger r
 changes future surfacing probability.
 
 ## P9 — product loop
-`compound product import/review/timeline/doctor --writeback`. **Proof:** `compound product timeline <product>`
-shows change → metric signal → *competing* interpretations (no causal over-claim) → confidence; `compound
-product doctor <product> --writeback` turns pending hypothesis review into WorkEnvelope → ActionIntent →
-PolicyDecision → OwnerWritebackGate → Receipt → Transition before any product surface or external account
-changes; `compound product review <review.yaml>` records evidence and updates the same ProductHypothesis result
-without promotion.
+`compound product import/signal/review/timeline/doctor --writeback`. **Proof:** `compound product signal
+<signal.yaml>` maps standalone analytics source data into the same ProductSignal ledger; `compound product
+timeline <product>` shows change → metric signal → *competing* interpretations (no causal over-claim) →
+confidence; `compound product doctor <product> --writeback` turns pending hypothesis review into WorkEnvelope
+→ ActionIntent → PolicyDecision → OwnerWritebackGate → Receipt → Transition before any product surface or
+external account changes; `compound product review <review.yaml>` records evidence and updates the same
+ProductHypothesis result without promotion.
 
 ## P10 — execution route evidence (model gateway)
 Import `ExecutionRouteEvidence` (`../architecture/execution-plane.md`), read-only first → ingress → relay

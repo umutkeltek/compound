@@ -105,6 +105,32 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if postReview.Status != "ok" || postReview.PendingReviewCount != 0 {
 		t.Fatalf("post-review doctor = %+v", postReview)
 	}
+
+	signalDoc, err := LoadSignal("../../fixtures/product/signal.asc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signalReport, err := ApplySignal(home, store, signalDoc, "fixtures/product/signal.asc.yaml", tProduct.Add(14*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signalReport.Status != "ok" || len(signalReport.SignalIDs) != 1 || len(signalReport.EvidenceIDs) != 1 {
+		t.Fatalf("signal report = %+v", signalReport)
+	}
+	withSignal, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withSignal.Signals) != 2 {
+		t.Fatalf("signals after standalone import = %+v", withSignal.Signals)
+	}
+	importedSignal := findSignal(withSignal.Signals, "sig_focus_conversion_14d_20260713")
+	if importedSignal.ID == "" {
+		t.Fatalf("standalone signal missing: %+v", withSignal.Signals)
+	}
+	if !hasString(importedSignal.EvidenceRefs, signalReport.EvidenceIDs[0]) || !hasString(importedSignal.EvidenceRefs, "fixture:asc-export") {
+		t.Fatalf("signal evidence refs = %+v", importedSignal.EvidenceRefs)
+	}
 }
 
 func TestValidateRejectsSignalForOtherProduct(t *testing.T) {
@@ -120,6 +146,14 @@ func TestValidateReviewRejectsUnknownResult(t *testing.T) {
 	review.Result = "unknown"
 	if err := ValidateReview(review); err == nil {
 		t.Fatal("review with unknown result should be rejected")
+	}
+}
+
+func TestValidateSignalDocumentRejectsMissingSource(t *testing.T) {
+	doc := validSignalDocument()
+	doc.Source.Kind = ""
+	if err := ValidateSignalDocument(doc); err == nil {
+		t.Fatal("signal document without source should be rejected")
 	}
 }
 
@@ -175,6 +209,15 @@ func validReview() Review {
 	}
 }
 
+func validSignalDocument() SignalDocument {
+	b := validBundle()
+	return SignalDocument{
+		SchemaVersion: SignalSchemaVersion,
+		Source:        SignalSource{Kind: "app_store_connect", Ref: "fixture"},
+		Signal:        b.Signals[0],
+	}
+}
+
 func hasString(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {
@@ -182,4 +225,13 @@ func hasString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func findSignal(signals []Signal, id string) Signal {
+	for _, s := range signals {
+		if s.ID == id {
+			return s
+		}
+	}
+	return Signal{}
 }

@@ -23,6 +23,7 @@ import (
 
 const (
 	SchemaVersion              = "compound.product_registry.v0.1"
+	SignalSchemaVersion        = "compound.product_signal.v0.1"
 	ProductHypothesisCandidate = "compound.product_hypothesis_candidate.v0.1"
 	ReviewSchemaVersion        = "compound.product_review.v0.1"
 )
@@ -77,6 +78,18 @@ type Signal struct {
 type Interpretation struct {
 	Lens  string `json:"lens" yaml:"lens"`
 	Claim string `json:"claim" yaml:"claim"`
+}
+
+type SignalDocument struct {
+	SchemaVersion string       `json:"schema_version" yaml:"schema_version"`
+	Source        SignalSource `json:"source" yaml:"source"`
+	Signal        Signal       `json:"signal" yaml:"signal"`
+	EvidenceRefs  []string     `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
+}
+
+type SignalSource struct {
+	Kind string `json:"kind" yaml:"kind"`
+	Ref  string `json:"ref" yaml:"ref"`
 }
 
 type Hypothesis struct {
@@ -171,6 +184,18 @@ func Load(path string) (Bundle, error) {
 	return bundle, nil
 }
 
+func LoadSignal(path string) (SignalDocument, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return SignalDocument{}, err
+	}
+	var doc SignalDocument
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return SignalDocument{}, err
+	}
+	return doc, nil
+}
+
 func LoadReview(path string) (Review, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -244,6 +269,35 @@ func Apply(homePath string, store *mem.Store, bundle Bundle, sourcePath string, 
 	return report, nil
 }
 
+func ApplySignal(homePath string, store *mem.Store, doc SignalDocument, sourcePath string, now time.Time) (Report, error) {
+	if err := ValidateSignalDocument(doc); err != nil {
+		return Report{ProductID: doc.Signal.ProductID, Status: "fail"}, err
+	}
+	signal := doc.Signal
+	if signal.ObservedAt == "" {
+		signal.ObservedAt = now.UTC().Format(time.RFC3339)
+	}
+	evidence, err := store.RecordEvidence(mem.EvidenceItem{
+		SourceKind: "repo",
+		SourceID:   "product-signal:" + filepath.Base(sourcePath) + ":" + doc.Source.Kind + ":" + doc.Source.Ref,
+		QuoteText:  fmt.Sprintf("%s %s %.4g -> %.4g (%s)", signal.ProductID, signal.MetricName, signal.Before, signal.After, signal.Window),
+		Actor:      "tool",
+	}, now)
+	if err != nil {
+		return Report{}, err
+	}
+	signal.EvidenceRefs = compact(append(append(signal.EvidenceRefs, evidence.ID), doc.EvidenceRefs...))
+	if err := appendUniqueSignal(homePath, signal); err != nil {
+		return Report{}, err
+	}
+	return Report{
+		ProductID:   signal.ProductID,
+		Status:      "ok",
+		EvidenceIDs: []string{evidence.ID},
+		SignalIDs:   []string{signal.ID},
+	}, nil
+}
+
 func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath string, now time.Time) (ReviewReport, error) {
 	if err := ValidateReview(review); err != nil {
 		return ReviewReport{ProductID: review.ProductID, HypothesisID: review.HypothesisID, ReviewID: review.ID, Status: "fail"}, err
@@ -308,7 +362,10 @@ func Validate(bundle Bundle) error {
 		return fmt.Errorf("evidence_refs required")
 	}
 	for _, s := range bundle.Signals {
-		if s.ProductID != p.ID || strings.TrimSpace(s.ID) == "" || strings.TrimSpace(s.MetricName) == "" || len(s.EvidenceRefs) == 0 {
+		if err := validateSignal(s); err != nil || s.ProductID != p.ID {
+			if err != nil {
+				return err
+			}
 			return fmt.Errorf("invalid signal %q", s.ID)
 		}
 	}
@@ -319,6 +376,32 @@ func Validate(bundle Bundle) error {
 		if h.Result != "" && !oneOf(h.Result, []string{"unknown", "supported", "refuted", "inconclusive"}) {
 			return fmt.Errorf("hypothesis %q bad result %q", h.ID, h.Result)
 		}
+	}
+	return nil
+}
+
+func validateSignal(s Signal) error {
+	if strings.TrimSpace(s.ID) == "" || strings.TrimSpace(s.ProductID) == "" || strings.TrimSpace(s.MetricName) == "" {
+		return fmt.Errorf("invalid signal %q", s.ID)
+	}
+	if len(s.EvidenceRefs) == 0 {
+		return fmt.Errorf("signal %q evidence_refs required", s.ID)
+	}
+	if s.Confidence < 0 || s.Confidence > 1 {
+		return fmt.Errorf("signal %q confidence must be between 0 and 1", s.ID)
+	}
+	return nil
+}
+
+func ValidateSignalDocument(doc SignalDocument) error {
+	if doc.SchemaVersion != SignalSchemaVersion {
+		return fmt.Errorf("schema_version must be %s, got %q", SignalSchemaVersion, doc.SchemaVersion)
+	}
+	if strings.TrimSpace(doc.Source.Kind) == "" || strings.TrimSpace(doc.Source.Ref) == "" {
+		return fmt.Errorf("signal source kind ref required")
+	}
+	if err := validateSignal(doc.Signal); err != nil {
+		return err
 	}
 	return nil
 }
@@ -516,6 +599,9 @@ func appendUniqueSignal(homePath string, signal Signal) error {
 	}
 	for _, existing := range signals {
 		if existing.ID == signal.ID {
+			if !sameSignal(existing, signal) {
+				return fmt.Errorf("product signal %q already exists with different content", signal.ID)
+			}
 			return nil
 		}
 	}
@@ -699,6 +785,36 @@ func sameReview(a, b Review) bool {
 		a.Confidence == b.Confidence &&
 		a.NextAction == b.NextAction &&
 		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00")
+}
+
+func sameSignal(a, b Signal) bool {
+	a.ObservedAt = ""
+	b.ObservedAt = ""
+	return a.ID == b.ID &&
+		a.ProductID == b.ProductID &&
+		a.Surface == b.Surface &&
+		a.ChangeEvent == b.ChangeEvent &&
+		a.MetricName == b.MetricName &&
+		a.Before == b.Before &&
+		a.After == b.After &&
+		a.Window == b.Window &&
+		a.Confidence == b.Confidence &&
+		a.NextAction == b.NextAction &&
+		strings.Join(a.Confounders, "\x00") == strings.Join(b.Confounders, "\x00") &&
+		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00") &&
+		sameInterpretations(a.Interpretations, b.Interpretations)
+}
+
+func sameInterpretations(a, b []Interpretation) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func oneOf(v string, allowed []string) bool {

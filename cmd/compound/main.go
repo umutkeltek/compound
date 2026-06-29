@@ -162,7 +162,7 @@ compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doct
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
-compound product import <product.yaml> | review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
@@ -1998,7 +1998,7 @@ func cmdAuthority(args []string) {
 
 func cmdProduct(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -2025,6 +2025,25 @@ func cmdProduct(args []string) {
 		fmt.Printf("- claims: %d\n", len(report.ClaimIDs))
 		fmt.Printf("- signals: %d\n", len(report.SignalIDs))
 		fmt.Printf("- hypotheses: %d\n", len(report.HypothesisIDs))
+	case "signal":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product signal <signal.yaml>")
+			os.Exit(2)
+		}
+		doc, err := product.LoadSignal(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product signal:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplySignal(homePath, store, doc, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product signal:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product signal %s\n\n", report.SignalIDs[0])
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- evidence: %s\n", report.EvidenceIDs[0])
 	case "review":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml>")
@@ -2109,7 +2128,7 @@ func cmdProduct(args []string) {
 			}
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | signal <signal.yaml> | review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
 		os.Exit(2)
 	}
 }
