@@ -16,6 +16,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/writeback"
 
 	"gopkg.in/yaml.v3"
 )
@@ -119,6 +120,16 @@ type Timeline struct {
 	ProductID  string
 	Signals    []Signal
 	Hypotheses []HypothesisCandidate
+}
+
+type DoctorReport struct {
+	ProductID           string                `json:"product_id"`
+	Status              string                `json:"status"`
+	SignalCount         int                   `json:"signal_count"`
+	HypothesisCount     int                   `json:"hypothesis_count"`
+	PendingReviewCount  int                   `json:"pending_review_count"`
+	PendingReview       []HypothesisCandidate `json:"pending_review,omitempty"`
+	MissingEvidenceRefs []string              `json:"missing_evidence_refs,omitempty"`
 }
 
 func Load(path string) (Bundle, error) {
@@ -250,6 +261,69 @@ func LoadTimeline(homePath, productID string) (Timeline, error) {
 	sort.Slice(tl.Signals, func(i, j int) bool { return tl.Signals[i].ID < tl.Signals[j].ID })
 	sort.Slice(tl.Hypotheses, func(i, j int) bool { return tl.Hypotheses[i].ID < tl.Hypotheses[j].ID })
 	return tl, nil
+}
+
+func Doctor(homePath, productID string) (DoctorReport, error) {
+	tl, err := LoadTimeline(homePath, productID)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	report := DoctorReport{
+		ProductID:       productID,
+		Status:          "ok",
+		SignalCount:     len(tl.Signals),
+		HypothesisCount: len(tl.Hypotheses),
+	}
+	for _, h := range tl.Hypotheses {
+		if len(h.EvidenceRefs) == 0 {
+			report.MissingEvidenceRefs = append(report.MissingEvidenceRefs, h.ID)
+			report.Status = "needs_review"
+		}
+		if h.Verdict == candidates.Park && h.Result == "unknown" && strings.TrimSpace(h.NextAction) != "" {
+			report.PendingReview = append(report.PendingReview, h)
+		}
+	}
+	report.PendingReviewCount = len(report.PendingReview)
+	if report.PendingReviewCount > 0 {
+		report.Status = "needs_review"
+	}
+	return report, nil
+}
+
+func NeedsWriteback(report DoctorReport) bool {
+	return report.PendingReviewCount > 0 || len(report.MissingEvidenceRefs) > 0
+}
+
+func EvidenceRefs(report DoctorReport) []string {
+	refs := []string{
+		"product_id:" + report.ProductID,
+		fmt.Sprintf("product:signals:%d", report.SignalCount),
+		fmt.Sprintf("product:hypotheses:%d", report.HypothesisCount),
+		fmt.Sprintf("product:pending_review:%d", report.PendingReviewCount),
+	}
+	for _, h := range report.PendingReview {
+		refs = append(refs, "product_hypothesis:"+h.ID+":"+h.Result)
+		refs = append(refs, h.EvidenceRefs...)
+	}
+	for _, id := range report.MissingEvidenceRefs {
+		refs = append(refs, "product_hypothesis_missing_evidence:"+id)
+	}
+	return compact(refs)
+}
+
+func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef string, now time.Time) writeback.OwnerWritebackGate {
+	return writeback.OwnerWritebackGate{
+		SchemaVersion:     writeback.GateSchemaVersion,
+		CreatedAt:         now.UTC().Format(time.RFC3339),
+		CandidateRef:      fmt.Sprintf("product:hypothesis_review:%s:%s", report.ProductID, productDoctorDigest(report)),
+		CandidateKind:     string(candidates.ProductHypothesis),
+		OwnerTarget:       writeback.OwnerTarget{Kind: "product_strategy", Ref: report.ProductID},
+		GateBasis:         fmt.Sprintf("product doctor found %d pending hypothesis review(s) and %d missing-evidence hypothesis record(s)", report.PendingReviewCount, len(report.MissingEvidenceRefs)),
+		ActionIntentRef:   actionIntentRef,
+		MutationClass:     "local_reversible",
+		PolicyDecisionRef: policyDecisionRef,
+		EvidenceRefs:      EvidenceRefs(report),
+	}
 }
 
 func productClaims(bundle Bundle, evidenceID, sourcePath string) []mem.Candidate {
@@ -429,6 +503,12 @@ func readJSONL(path string, fn func([]byte) error) error {
 func stableID(prefix string, parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return prefix + hex.EncodeToString(sum[:])[:12]
+}
+
+func productDoctorDigest(report DoctorReport) string {
+	refs := EvidenceRefs(report)
+	sort.Strings(refs)
+	return stableID("", refs...)
 }
 
 func compact(values []string) []string {

@@ -162,7 +162,8 @@ compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doct
                                                                  import/query decisions through spine memory
 compound runtime doctor [--project-contract] <yaml> [--writeback] RuntimeBinding health + gated writeback
 compound projection doctor <freshness.yaml> [--writeback]      ProjectionFreshness + gated writeback
-compound product import <product.yaml> | timeline <product>    Product registry + signal/hypothesis loop
+compound product import <product.yaml> | timeline <product> | doctor <product> [--writeback]
+                                                               Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
@@ -1997,7 +1998,7 @@ func cmdAuthority(args []string) {
 
 func cmdProduct(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | timeline <product_id>")
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -2054,8 +2055,39 @@ func cmdProduct(args []string) {
 				fmt.Printf("  next: %s\n", h.NextAction)
 			}
 		}
+	case "doctor":
+		if len(args) < 2 || len(args) > 3 || (len(args) == 3 && args[2] != "--writeback") {
+			fmt.Fprintln(os.Stderr, "usage: compound product doctor <product_id> [--writeback]")
+			os.Exit(2)
+		}
+		report, err := product.Doctor(homePath, args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product doctor:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product doctor - %s\n\n", report.ProductID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- signals: %d\n", report.SignalCount)
+		fmt.Printf("- hypotheses: %d\n", report.HypothesisCount)
+		fmt.Printf("- pending_review: %d\n", report.PendingReviewCount)
+		fmt.Printf("- missing_evidence_refs: %d\n", len(report.MissingEvidenceRefs))
+		if len(args) == 3 && args[2] == "--writeback" && product.NeedsWriteback(report) {
+			result, err := runProductWriteback(report, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "product writeback:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- writeback_gate: %s %s\n", result.GateID, result.GateStatus)
+			fmt.Printf("- work: %s\n", result.WorkID)
+			if result.ReceiptID != "" {
+				fmt.Printf("- receipt: %s\n", result.ReceiptID)
+			}
+			if result.TransitionID != "" {
+				fmt.Printf("- transition: %s\n", result.TransitionID)
+			}
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | timeline <product_id>")
+		fmt.Fprintln(os.Stderr, "usage: compound product import <product.yaml> | timeline <product_id> | doctor <product_id> [--writeback]")
 		os.Exit(2)
 	}
 }
@@ -2581,6 +2613,114 @@ type writebackWorkResult struct {
 	GateStatus       string `json:"gate_status"`
 	ReceiptID        string `json:"receipt_id,omitempty"`
 	TransitionID     string `json:"transition_id,omitempty"`
+}
+
+func runProductWriteback(report product.DoctorReport, now time.Time) (writebackWorkResult, error) {
+	var result writebackWorkResult
+	if !product.NeedsWriteback(report) {
+		return result, nil
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return result, err
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	writebackStore, err := writeback.Open(homePath)
+	if err != nil {
+		return result, err
+	}
+	w, err := workStore.Create(work.CreateInput{
+		Owner:            "product_strategy:" + report.ProductID,
+		DesiredOutcome:   "Route product hypothesis review through governed owner writeback",
+		SuccessPredicate: "product hypothesis writeback gate recorded with receipt/transition refs",
+		NonGoals: []string{
+			"mutate product pages",
+			"declare product causality",
+			"execute next product action",
+		},
+		State:   "ready",
+		Risk:    "tier1",
+		Privacy: "private",
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	if _, err := workStore.Claim(w.ID, "compound product doctor", now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:   "running",
+		Note: "product doctor running writeback",
+	}, now); err != nil {
+		return result, err
+	}
+	evidenceRefs := product.EvidenceRefs(report)
+	ai := envelope.ActionIntent{
+		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "product-writeback", report.ProductID, strconv.Itoa(report.PendingReviewCount), cliTS(now)), w.ID, now, evidenceRefs),
+		Actor:         "compound product doctor",
+		Capability:    "product.writeback",
+		Action:        "record_product_hypothesis_writeback_gate",
+		Target:        envelope.ActionTarget{Kind: "product_strategy", ID: report.ProductID},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("product doctor found %d pending hypothesis review(s); record owner writeback gate", report.PendingReviewCount),
+		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any product owner file or external surface is changed",
+	}
+	pd := policy.Evaluate(ai, policyConfig(), now)
+	gate := product.WritebackGate(report, ai.ID, pd.ID, now)
+	checked, err := writeback.EvaluateGate(gate, &pd, now)
+	if err != nil {
+		return result, err
+	}
+	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
+	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
+		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
+			Outcome:  "failed",
+			MoveType: "audit_only",
+			Summary:  fmt.Sprintf("product hypothesis review writeback blocked for %s: gate %s", report.ProductID, checked.ID),
+			Changed:  true,
+		}, now)
+		if closeErr == nil {
+			checked.ReceiptRef = closeRes.Receipt.ID
+			result.ReceiptID = closeRes.Receipt.ID
+			result.TransitionID = closeRes.Transition.ID
+		}
+		if err := writebackStore.RecordGate(checked); err != nil {
+			return result, err
+		}
+		return result, closeErr
+	}
+	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:             "running",
+		ArtifactID:     checked.ID,
+		VerificationID: checked.CandidateRef,
+		Note:           "product hypothesis writeback gate checked",
+	}, now); err != nil {
+		return result, err
+	}
+	closeRes, err := workStore.Close(w.ID, work.CloseInput{
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+		Summary:  fmt.Sprintf("product %s hypothesis review routed through owner writeback gate %s", report.ProductID, checked.ID),
+		Changed:  true,
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	checked.ReceiptRef = closeRes.Receipt.ID
+	if err := writebackStore.RecordGate(checked); err != nil {
+		return result, err
+	}
+	result.ReceiptID = closeRes.Receipt.ID
+	result.TransitionID = closeRes.Transition.ID
+	return result, nil
 }
 
 func runProjectionWriteback(report projection.Freshness, now time.Time) (writebackWorkResult, error) {

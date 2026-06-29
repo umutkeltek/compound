@@ -111,9 +111,11 @@ not all-by-default) — **without executing them**; and a missed/false trigger r
 changes future surfacing probability.
 
 ## P9 — product loop
-`compound product ingest-signal/record-change/hypothesis/timeline`. **Proof:** `compound product timeline
-<product>` shows change → metric signal → *competing* interpretations (no causal over-claim) → confidence →
-next **gated** action.
+`compound product import/timeline/doctor --writeback`. **Proof:** `compound product timeline <product>` shows
+change → metric signal → *competing* interpretations (no causal over-claim) → confidence; `compound product
+doctor <product> --writeback` turns pending hypothesis review into WorkEnvelope → ActionIntent →
+PolicyDecision → OwnerWritebackGate → Receipt → Transition before any product surface or external account
+changes.
 
 ## P10 — execution route evidence (model gateway)
 Import `ExecutionRouteEvidence` (`../architecture/execution-plane.md`), read-only first → ingress → relay

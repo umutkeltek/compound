@@ -8,6 +8,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/writeback"
 )
 
 var tProduct = time.Date(2026, 6, 29, 14, 0, 0, 0, time.UTC)
@@ -52,6 +53,28 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(home, candidates.InboxDir(candidates.ProductHypothesis), "hyp_focus_visuals_conversion.json")); err != nil {
 		t.Fatal(err)
+	}
+
+	doctor, err := Doctor(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.SignalCount != 1 || doctor.HypothesisCount != 1 || doctor.PendingReviewCount != 1 {
+		t.Fatalf("doctor = %+v", doctor)
+	}
+	if !NeedsWriteback(doctor) {
+		t.Fatal("NeedsWriteback = false, want true")
+	}
+	gate := WritebackGate(doctor, "act_product_review", "pol_product_review", tProduct)
+	if gate.CandidateKind != string(candidates.ProductHypothesis) || gate.OwnerTarget.Kind != "product_strategy" || gate.OwnerTarget.Ref != "product:focus-notes" {
+		t.Fatalf("gate = %+v", gate)
+	}
+	checked, err := writeback.EvaluateGate(gate, nil, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checked.Status != writeback.GateNoPolicy {
+		t.Fatalf("gate status = %q, want %q", checked.Status, writeback.GateNoPolicy)
 	}
 }
 
