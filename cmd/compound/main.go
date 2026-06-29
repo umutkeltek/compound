@@ -145,7 +145,7 @@ usage:
   compound transition show <id>                                 inspect a Transition or envelope
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
-  compound distiller run <trace.json>                           Trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator
+  compound distiller run <trace.json> | doctor                  Trace -> candidate fan-out, adjudication, self-improvement debt
   compound capability <add|surface|observe|consume|list|import-topology> capability graph: auto-surface, never auto-execute
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
 compound decisions import [--brain <md>] | decisions [--kind=K] | decisions doctor
@@ -359,8 +359,40 @@ func cmdSource(args []string) {
 // adjudicator. Memory candidates flow through the mem ledger; everything else is candidate-first
 // and never becomes canon here; self-improvement signals (eval/method/capability) never auto-apply.
 func cmdDistiller(args []string) {
+	if len(args) == 1 && args[0] == "doctor" {
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		report, err := distiller.Doctor(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("# distiller doctor")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- adjudications: %d\n", report.TotalDecisions)
+		fmt.Printf("- memory: promoted=%d parked=%d rejected=%d duplicate_rejected=%d\n",
+			report.MemoryPromoted, report.MemoryParked, report.MemoryRejected, report.DuplicateMemoryRejections)
+		fmt.Printf("- no_promote: total=%d duplicate_memory=%d\n",
+			report.NoPromoteRows, report.DuplicateMemoryNoPromoteRows)
+		fmt.Printf("- eval_cases: %d\n", report.EvalCases)
+		fmt.Printf("- method_policy_debt: method_upgrades=%d policy_patches=%d total=%d\n",
+			report.MethodUpgradeDebt, report.PolicyPatchDebt, report.SelfImprovementDebt)
+		fmt.Printf("- capability_observations: candidates=%d operationalized=%d\n",
+			report.CapabilityObservations, report.OperationalizedCapabilityObservations)
+		for _, check := range report.Checks {
+			fmt.Printf("- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		return
+	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller run <trace.json>")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller run <trace.json> | doctor")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
