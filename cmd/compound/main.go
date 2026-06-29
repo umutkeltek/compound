@@ -486,6 +486,14 @@ func cmdMemory(args []string) {
 		for _, p := range ps {
 			fmt.Printf("%-28s = %-12s [%s]  chain:%d\n", p.ID, p.ActiveObject, p.Status, len(p.ClaimChain))
 		}
+	case "patterns":
+		// recurrence hypotheses: (entity, topic) the ledger returns to across ≥2 claims/sessions.
+		// Convergence of Gen-1 internal/pattern onto the spine.
+		pats, err := store.Patterns()
+		die(err)
+		for _, p := range pats {
+			fmt.Printf("%-22s sessions:%d claims:%d  %s\n", p.ID, p.Sessions, len(p.SupportClaims), p.Status)
+		}
 	case "entity":
 		// the routing backbone: a canonical identity resolvable by slug/identifier/alias/path, so
 		// project identity survives a folder move. Convergence of Gen-1 memory.Entity + scope onto the spine.
