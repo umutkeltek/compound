@@ -126,7 +126,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | contract files | source material for contract candidates |
 | registries | `RegistryEntry` candidates |
 | tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges from normalized topology YAML or generated resolver JSON |
-| skill manifests / external skill catalogs | `SkillManifestAdapter` -> strict `CapabilityGraph` skill/lens/procedure nodes + graph edges |
+| skill manifests / external skill catalogs | `SkillManifestAdapter` -> `CapabilityGraph` skill/lens/procedure nodes + graph edges from normalized manifests or generated skill-manifest JSON; offers only, never execution |
 | work packets | WorkEnvelope / Receipt / Transition evidence |
 | runtime / service contracts | `RuntimeBinding` / `ServiceContract` candidates |
 | decision records | `DecisionLifecycle` candidates; policy markdown source import records source evidence, supports single-file and directory batch import through the same adapter, preserves supersedes/replaced_by lifecycle transitions, gives each decision a stable entity, parks incomplete or non-accepted decisions, verifies source templates/docs contain lifecycle fields, emits reviewable lifecycle repair artifacts, and applies reviewed lifecycle fields only on explicit write |

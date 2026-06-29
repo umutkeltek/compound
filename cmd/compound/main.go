@@ -156,7 +156,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute; import-topology accepts normalized YAML or --os-resolver-json
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
   compound authority import [f] | path <f> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan --policy-dir <dir> | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -264,12 +264,19 @@ func cmdCapability(args []string) {
 			fmt.Printf("- edge: %s\n", id)
 		}
 	case "import-skills":
-		p := posn(nil)
-		if len(p) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml>")
+		osSkillPath := flag("--os-skill-json")
+		p := posn(map[string]bool{"--os-skill-json": true})
+		var manifest capgraph.SkillManifest
+		var err error
+		switch {
+		case osSkillPath != "" && len(p) == 0:
+			manifest, err = capgraph.LoadOSSkillManifest(osSkillPath, time.Now())
+		case osSkillPath == "" && len(p) == 1:
+			manifest, err = capgraph.LoadSkillManifest(p[0])
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml> | --os-skill-json <skill-manifest.json>")
 			os.Exit(2)
 		}
-		manifest, err := capgraph.LoadSkillManifest(p[0])
 		die(err)
 		report, err := capgraph.ApplySkillManifest(homePath, manifest, time.Now())
 		die(err)

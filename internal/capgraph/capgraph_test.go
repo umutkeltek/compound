@@ -156,6 +156,94 @@ skills:
 	}
 }
 
+func TestLoadOSSkillManifestAdaptsGeneratedManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skill-manifest.json")
+	writeFile(t, path, `{
+  "_generated": "test",
+  "counts": {"skills": 4, "recipes": 1},
+  "duplicate_names": [{"name": "skill-creator", "count": 2}],
+  "entries": [
+    {
+      "name": "ai-seo",
+      "kind": "skill",
+      "trigger": "Optimize content for AI search engines and SEO.",
+      "path": "/private/skills/ai-seo",
+      "home": "agents"
+    },
+    {
+      "name": "app-store-screenshots",
+      "kind": "skill",
+      "trigger": "Use when building App Store or Google Play screenshot pages, generating exportable marketing screenshots.",
+      "path": "/private/skills/app-store-screenshots",
+      "home": "agents"
+    },
+    {
+      "name": "pricing",
+      "kind": "skill",
+      "trigger": "When the user wants help with pricing decisions, packaging, or monetization strategy.",
+      "path": "/private/skills/pricing",
+      "home": "codex"
+    },
+    {
+      "name": "skill-creator",
+      "kind": "skill",
+      "trigger": "Create new skills, modify existing skills, and measure skill performance.",
+      "path": "/private/skills/skill-creator-a",
+      "home": "agents"
+    },
+    {
+      "name": "skill-creator",
+      "kind": "skill",
+      "trigger": "Create new skills for Codex.",
+      "path": "/private/skills/skill-creator-b",
+      "home": "codex"
+    },
+    {
+      "name": "audit",
+      "kind": "recipe",
+      "trigger": "TRIGGER: audit code, system, or strategy.",
+      "path": "/private/brain/recipes/audit.md",
+      "home": "brain-recipes"
+    }
+  ]
+}`)
+	manifest, err := LoadOSSkillManifest(path, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != SkillManifestSchemaVersion || manifest.AdapterID != "os.skill-manifest-json" || len(manifest.EvidenceRefs) != 1 {
+		t.Fatalf("manifest = %+v", manifest)
+	}
+	if len(manifest.Skills) != 6 {
+		t.Fatalf("skills = %d", len(manifest.Skills))
+	}
+	byID := map[string]SkillManifestEntry{}
+	for _, skill := range manifest.Skills {
+		byID[skill.ID] = skill
+	}
+	if byID["skill:ai-seo"].Kind != "skill" ||
+		byID["skill:app-store-screenshots"].Kind != "skill" ||
+		byID["procedure:audit"].Kind != "procedure" ||
+		byID["skill:agents:skill-creator"].ID == "" ||
+		byID["skill:codex:skill-creator"].ID == "" {
+		t.Fatalf("ids = %+v", byID)
+	}
+	if len(byID["skill:pricing"].CompatibleHarnesses) != 1 || byID["skill:pricing"].CompatibleHarnesses[0] != "codex" {
+		t.Fatalf("pricing harnesses = %+v", byID["skill:pricing"].CompatibleHarnesses)
+	}
+	home, store := newStore(t)
+	report, err := ApplySkillManifest(home, manifest, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.NodeIDs) != 6 {
+		t.Fatalf("report = %+v", report)
+	}
+	if !hasSurfaced(mustSurface(t, store, "app store screenshots"), "skill:app-store-screenshots") {
+		t.Fatal("app store screenshots should surface imported OS skill")
+	}
+}
+
 func TestApplySkillManifestDoesNotSurfaceNeedsReviewSkill(t *testing.T) {
 	home, s := newStore(t)
 	manifest := validSkillManifestForTest()
@@ -252,6 +340,25 @@ func hasSurfaced(hits []Surfaced, id string) bool {
 		}
 	}
 	return false
+}
+
+func mustSurface(t *testing.T, store *Store, task string) []Surfaced {
+	t.Helper()
+	hits, err := store.Surface(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hits
+}
+
+func writeFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSurfaceByTrigger(t *testing.T) {
