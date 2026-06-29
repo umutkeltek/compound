@@ -2055,6 +2055,41 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 	}
 }
 
+func TestMemoryImportPageCreatesEvidenceAndCandidatesWithoutClaims(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	pagePath := filepath.Join("..", "..", "fixtures", "brain", "knowledge-page.md")
+
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"import-page", pagePath})
+	})
+	if !strings.Contains(out, "# memory import-page kg-synthetic-visual-standard") ||
+		!strings.Contains(out, "- candidates: 2") ||
+		!strings.Contains(out, "- created: 2") {
+		t.Fatalf("import-page output =\n%s", out)
+	}
+	cands, err := os.ReadDir(filepath.Join(homePath, candidates.InboxDir(candidates.Memory)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("candidate files = %d, want 2", len(cands))
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("import-page must not promote claims, stat err=%v", err)
+	}
+
+	out = captureStdout(t, func() {
+		cmdMemory([]string{"import-page", pagePath})
+	})
+	if !strings.Contains(out, "- created: 0") || !strings.Contains(out, "- reused: 2") {
+		t.Fatalf("second import should be idempotent:\n%s", out)
+	}
+}
+
 func TestMemoryCandidateRelationsRemainStructuralEdges(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

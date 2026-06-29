@@ -155,7 +155,7 @@ usage:
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
-  compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
+  compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
@@ -1137,7 +1137,7 @@ func readTypedEnvelopeOrDie(path string) envelope.Envelope {
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
 func cmdMemory(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -1220,6 +1220,22 @@ func cmdMemory(args []string) {
 			e, err := store.Relate(r.From, r.Kind, r.To, r.Confidence, time.Now())
 			die(err)
 			fmt.Printf("related  %s -%s-> %s  (seq %d, conf %.2f)\n", e.From, e.Kind, e.To, e.Seq, e.Confidence)
+		}
+	case "import-page":
+		pagePath := pos()
+		if pagePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound memory import-page <markdown>")
+			os.Exit(2)
+		}
+		report, err := store.ImportKnowledgePage(pagePath, time.Now())
+		die(err)
+		fmt.Printf("# memory import-page %s\n", report.PageID)
+		fmt.Printf("- evidence: %s\n", report.EvidenceID)
+		fmt.Printf("- candidates: %d\n", len(report.CandidateIDs))
+		fmt.Printf("- created: %d\n", report.Created)
+		fmt.Printf("- reused: %d\n", report.Reused)
+		for _, id := range report.CandidateIDs {
+			fmt.Printf(" - candidate %s\n", id)
 		}
 	case "relate":
 		args := positionals(map[string]bool{"--conf": true})
@@ -1491,7 +1507,7 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor> ...")
 		os.Exit(2)
 	}
 }
