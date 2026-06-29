@@ -340,6 +340,73 @@ func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	}
 }
 
+func TestImportedSkillOfferCanBecomeValidatedSecondHarnessProductLoop(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml")})
+	cmdHook([]string{"user-prompt-submit", writeHookFixture(t, hook.Fixture{
+		Harness:  "claude_code",
+		Cwd:      "/repo/product",
+		RepoKind: "product",
+		Task:     "pricing paywall",
+		Prompt:   "prepare pricing paywall review",
+	})})
+
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	w := onlyWork(t, store)
+	pack := readContextPack(t, homePath, w.IDs.ContextPackID)
+	if !contextPackIncludes(pack, "capability://skill:claude-pricing") {
+		t.Fatalf("claude context pack did not include claude-compatible pricing skill; included=%+v", pack.Included)
+	}
+	if contextPackIncludes(pack, "capability://skill:codex-pricing") {
+		t.Fatalf("claude context pack included codex-only skill; included=%+v", pack.Included)
+	}
+
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "ready"}, cliTestNow); err != nil {
+		t.Fatalf("advance ready: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "claude_code", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.RecordAction(
+		w.ID,
+		testActionIntent(w.ID, "act_imported_claude_skill_used", "capability://skill:claude-pricing"),
+		testPolicyDecision(w.ID, "pol_imported_claude_skill_used", "act_imported_claude_skill_used"),
+		cliTestNow,
+	); err != nil {
+		t.Fatalf("record action: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, cliTestNow); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+
+	cmdHook([]string{"session-end", writeHookFixture(t, hook.Fixture{
+		Harness:  "claude_code",
+		WorkID:   w.ID,
+		MoveType: "outward_delta",
+		Outcome:  "completed",
+		Summary:  "pricing paywall review used imported claude skill",
+	})})
+
+	edges := readCapabilityEdges(t, homePath)
+	if !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:claude-pricing") {
+		t.Fatalf("session-end did not validate imported claude skill; edges=%+v", edges)
+	}
+	if hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:codex-pricing") {
+		t.Fatalf("claude loop validated codex-only skill; edges=%+v", edges)
+	}
+}
+
 func TestWorkCloseExplicitFeedbackAutoConsumes(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

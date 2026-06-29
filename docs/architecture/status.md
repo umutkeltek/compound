@@ -25,6 +25,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 - `compound capability import-skills` now records imported skill manifest sources through the same `SourceObservation -> capability_observation candidate -> NoPromoteDecision` path while still populating CapabilityGraph offers. Real generated skill-manifest parity imported 119 nodes and 37 edges, wrote 1 capability observation and 1 no-promote row, and did not create a claims ledger.
 
+- Imported skill-manifest feedback is now proven across a second harness/product loop: a `claude_code` product work loop consumed a generated-manifest offer, recorded allowed use of `capability://skill:browser`, and `hook session-end` wrote `validated_by skill:browser -> rec_a0fc169b3598` while no promoted claims ledger appeared.
+
 - `compound-memory-cli-engine` now rejects mutating external-memory command templates before the CLI process is invoked; unsafe templates return protocol `bad_request`, not a degradable backend outage.
 
 - `compound-memory-cli-engine` now has an expansion-only regression: a query that does not lexically match indexed claims can still return the correct allowlisted claim through external memory CLI output, while empty allowlists fail closed before the CLI is called.
