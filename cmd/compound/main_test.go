@@ -595,6 +595,78 @@ func TestDistillerEvalPlanUsesOperationalizedEvalCandidateWithoutMutatingCorpus(
 	}
 }
 
+func TestDistillerRulePlanUsesFailureCandidateWithoutMutatingRuleTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	tracePath := writeJSONFile(t, `{
+ "trace_ref": "trace_failure_rule_candidate",
+ "candidates": [{
+  "kind": "failure_pattern",
+  "subject": "dirty-source-control-hold",
+  "statement": "agent repeatedly tries mutating a dirty repo without cleanup review",
+  "detail": "repeated_policy_hold",
+  "confidence": 0.91,
+  "evidence_refs": ["trace:dirty-hold", "policy:hold"]
+ }]
+}`)
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", tracePath})
+	})
+	failureRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.FailurePattern)))
+	if len(failureRows) != 1 || failureRows[0].Verdict != distiller.Park {
+		t.Fatalf("failure candidates = %+v", failureRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "rules.md")
+	original := "# Rules\n\nExisting rule source.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"rule-plan", "--candidate", failureRows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# distiller rule-plan frp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- failure_key: dirty-source-control-hold") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_evidence: 4") ||
+		!strings.Contains(out, "- evidence_refs: 2") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("rule-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan distiller.FailureRulePlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != distiller.FailureRulePlanSchemaVersion ||
+		plan.CandidateID != failureRows[0].ID ||
+		plan.CandidateVerdict != distiller.Park ||
+		plan.RuleDraft.RuleID == "" ||
+		!strings.Contains(plan.RuleDraft.Trigger, "agent repeatedly tries") {
+		t.Fatalf("bad failure rule plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate doctrine or policy") ||
+		!strings.Contains(review, "Required Evidence Before Apply") {
+		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("rule target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("rule-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

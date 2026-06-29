@@ -3,6 +3,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- `compound distiller rule-plan --candidate <id> [--target <file>]` now converts parked `failure_pattern` candidates into reviewed JSON/Markdown rule drafts under `COMPOUND_HOME/reviews/failure-rules/`, preserving failure evidence and optional target hash without mutating doctrine/policy, installing hooks, or promoting claims.
 - `compound distiller eval-plan --candidate <id> [--corpus <dir>]` now converts operationalized `eval_case` candidates into reviewed JSON/Markdown eval fixture drafts under `COMPOUND_HOME/reviews/distiller-eval/`, hashing the target corpus for review context while not mutating the corpus, calling a model, or promoting claims.
 - `compound memory write-plan --candidate <id> --target <markdown>` now converts parked memory candidates into reviewed curated-source JSON/Markdown artifacts under `COMPOUND_HOME/reviews/meaning-write/`, preserving evidence refs and target hash without mutating the target markdown or promoting claims.
 - `LLMExtractionRequest` TraceEnvelope summaries now carry structured source/scope/mutation/files/tools/output metadata; command proof derives a parked memory candidate from that event request summary through `distiller run --llm-response`, preserving trace evidence and creating no claims ledger.
@@ -74,7 +75,7 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 | `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
 | `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
 | `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans |
-| `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and can route method/policy debt through writeback gate |
+| `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt, routes method/policy debt through writeback gate, and turns eval/failure candidates into reviewed eval-plan/rule-plan artifacts |
 | `capgraph` | canonical | capability graph: surface, observe, consume; normalized skill manifests and generated skill-manifest JSON land here as graph nodes/edges, never a parallel skill registry |
 | `runtimebinding` | canonical | RuntimeBinding + ServiceContract bundle, doctor, project-contract adapter, and gated repair-plan review artifacts |
 | `projection` | canonical | GeneratedViewObservation + ProjectionFreshness doctor + ProjectionRegenerationPlan review artifacts |
