@@ -70,20 +70,21 @@ type Report struct {
 // public core stays clean while a private overlay can enforce its own vocabulary.
 var genericLeak = regexp.MustCompile(`(?i)(/Users/[a-z]|/home/[a-z]|[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})`)
 
-// loadPrivateLeakTokens reads optional operator-specific forbidden tokens from
-// docs_private/leak-tokens.txt (gitignored). Absent file → no extra tokens (public core default).
-func loadPrivateLeakTokens(repoRoot string) []string {
+// loadPrivateLeakTokens reads operator-specific forbidden tokens from docs_private/leak-tokens.txt
+// (gitignored). It also reports whether the file was PRESENT, so the caller can fail CLOSED: an
+// absent list leaves the gate blind to operator tool/product names (it can still catch generic
+// path/email shapes), and a public release must not pass with the gate silently disarmed.
+func loadPrivateLeakTokens(repoRoot string) (toks []string, present bool) {
 	b, err := os.ReadFile(filepath.Join(repoRoot, "docs_private", "leak-tokens.txt"))
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	var toks []string
 	for _, line := range strings.Split(string(b), "\n") {
 		if t := strings.TrimSpace(line); t != "" && !strings.HasPrefix(t, "#") {
 			toks = append(toks, strings.ToLower(t))
 		}
 	}
-	return toks
+	return toks, true
 }
 
 // ConvergePendingBudget is the RATCHET: the count of converge→retire packages must never exceed
@@ -99,7 +100,7 @@ func Doctor(repoRoot string, strict bool) Report {
 	f = append(f, checkCandidateMap()...)
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
-		f = append(f, checkDocLeak(repoRoot)...)
+		f = append(f, checkDocLeak(repoRoot, strict)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -166,9 +167,18 @@ func checkClassificationTotal(repoRoot string) []Finding {
 }
 
 // checkDocLeak: no operator-private token in any tracked doc under docs/ (docs_private is gitignored).
-func checkDocLeak(repoRoot string) []Finding {
+// It fails CLOSED on a missing private token list: without it the gate is blind to operator
+// tool/product names, so --strict (the public-release gate) makes the absent list fatal.
+func checkDocLeak(repoRoot string, strict bool) []Finding {
 	var f []Finding
-	privateToks := loadPrivateLeakTokens(repoRoot)
+	privateToks, present := loadPrivateLeakTokens(repoRoot)
+	if !present {
+		sev := Warn
+		if strict {
+			sev = Fail
+		}
+		f = append(f, Finding{"doc-leak", sev, "private leak-token list docs_private/leak-tokens.txt is MISSING — the operator-token gate is DISARMED (only generic path/email shapes are caught); create it (gitignored, one token per line) before any public release"})
+	}
 	docs := filepath.Join(repoRoot, "docs")
 	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
