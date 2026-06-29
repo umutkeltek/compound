@@ -2255,6 +2255,46 @@ func TestMemoryCandidateRelationsRemainStructuralEdges(t *testing.T) {
 	}
 }
 
+func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{{
+		Entity:         "project:api",
+		Predicate:      "language",
+		Object:         "go",
+		Confidence:     0.9,
+		Derivation:     "extracted",
+		SourceTraceRef: "trace_cli_memory_doctor",
+		SnippetHash:    "sha256:test",
+	}}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_memory_doctor", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := filepath.Join(t.TempDir(), "compound-mock-engine")
+	cmd := exec.Command("go", "build", "-o", bin, "../compound-mock-engine")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build mock engine: %v\n%s", err, out)
+	}
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", bin)
+	t.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", "reference:lexical:0:0")
+
+	out := captureStdout(t, func() { cmdMemory([]string{"doctor"}) })
+	if !strings.Contains(out, "sync/embedding") || !strings.Contains(out, "ok       reference") || !strings.Contains(out, "ledger_unchanged=true") {
+		t.Fatalf("memory doctor should prove configured engine hop:\n%s", out)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -218,6 +218,10 @@ core a single pure-Go binary and the engine genuinely swappable.
 - **Engine ownership is mechanically checked.** `compound memory engine-doctor <query>` hashes
   `COMPOUND_HOME/ledger` before/after a breadth query, reports engine/ledger generation, and fails if
   a rented engine mutates owned ledger bytes.
+- **Configured engine health is part of the normal memory chain.** `compound memory doctor` leaves
+  `sync/embedding` skipped when no sidecar is configured; when `COMPOUND_MEM_ENGINE_BIN` is set, the
+  same hop probes the configured sidecar, reports engine generation/hits and ledger immutability, and
+  fails degraded/unhealthy configured engines instead of treating them as absent.
 - **Engine swap parity mechanically checked.** `compound memory engine-compare <query>` requires
 `COMPOUND_MEM_ENGINE_BIN`, runs the owned lexical reference and configured sidecar over the same
 ledger-gated query, and fails if ledger bytes change. Exact mode fails if hydrated claim ids diverge.

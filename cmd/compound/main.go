@@ -1501,7 +1501,14 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	case "doctor":
-		r := store.Doctor()
+		var r mem.Report
+		if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
+			eng, closeEng := memBreadthEngine()
+			r = store.DoctorWithEngine(eng)
+			closeEng()
+		} else {
+			r = store.Doctor()
+		}
 		for _, h := range r.Hops {
 			fmt.Printf("%-15s %-8s %s\n", h.Name, h.Status, h.Detail)
 		}

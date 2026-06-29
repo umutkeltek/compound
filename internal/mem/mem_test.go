@@ -3,6 +3,7 @@ package mem
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -196,6 +197,46 @@ func TestDoctorReportsHops(t *testing.T) {
 
 // The rented-engine seam: NoEngine raises ErrUnsupported EXPLICITLY (never a silent empty),
 // and a real engine answers breadth gated by the ledger's allowlist.
+func TestDoctorWithConfiguredEngineReportsHealthyHop(t *testing.T) {
+	s := storeWith(t, "project:api", "language", "go")
+
+	r := s.DoctorWithEngine(&LexicalEngine{})
+	if !r.OK {
+		t.Fatalf("doctor with lexical engine should pass: %+v", r)
+	}
+	h := hopByName(t, r, "sync/embedding")
+	if h.Status != "ok" {
+		t.Fatalf("configured engine hop status=%q detail=%q", h.Status, h.Detail)
+	}
+	if !strings.Contains(h.Detail, "lexical") || !strings.Contains(h.Detail, "ledger_unchanged=true") {
+		t.Fatalf("configured engine hop should report rented engine and ledger immutability, got %q", h.Detail)
+	}
+}
+
+func TestDoctorWithConfiguredEngineFailsDegradedHop(t *testing.T) {
+	s := storeWith(t, "project:api", "language", "go")
+
+	r := s.DoctorWithEngine(unavailableEngine{})
+	if r.OK {
+		t.Fatalf("doctor should fail when configured engine is degraded: %+v", r)
+	}
+	h := hopByName(t, r, "sync/embedding")
+	if h.Status != "fail" || !strings.Contains(h.Detail, "degraded") {
+		t.Fatalf("configured engine degradation should be explicit fail, got status=%q detail=%q", h.Status, h.Detail)
+	}
+}
+
+func hopByName(t *testing.T, r Report, name string) Hop {
+	t.Helper()
+	for _, h := range r.Hops {
+		if h.Name == name {
+			return h
+		}
+	}
+	t.Fatalf("missing hop %q in %+v", name, r.Hops)
+	return Hop{}
+}
+
 func TestEngineSeam(t *testing.T) {
 	s := newStore(t)
 	for _, o := range []string{"node", "go"} { // node first, then go supersedes it → go is current

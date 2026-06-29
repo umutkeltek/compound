@@ -538,6 +538,13 @@ type Report struct {
 
 // Doctor reports WHICH hop is healthy or failed, not just "missing" — the fix differs per hop.
 func (s *Store) Doctor() Report {
+	return s.DoctorWithEngine(nil)
+}
+
+// DoctorWithEngine reports the normal memory chain plus an optional configured
+// rented breadth engine. The ledger still owns truth; the engine hop only proves
+// the configured index can serve a current claim without mutating ledger bytes.
+func (s *Store) DoctorWithEngine(eng Engine) Report {
 	r := Report{OK: true}
 	add := func(name, status, detail string) {
 		r.Hops = append(r.Hops, Hop{name, status, detail})
@@ -555,7 +562,11 @@ func (s *Store) Doctor() Report {
 	} else {
 		add("promotion", statusOf(len(claims) > 0), fmt.Sprintf("%d claim(s) promoted to ledger", len(claims)))
 	}
-	add("sync/embedding", "skipped", "no engine wired (ledger answers exact/as-of without one)")
+	if eng == nil {
+		add("sync/embedding", "skipped", "no engine wired (ledger answers exact/as-of without one)")
+	} else {
+		s.doctorEngineHop(eng, add)
+	}
 
 	// retrieval: do a recall on an arbitrary recorded entity and confirm it returns.
 	if len(claims) > 0 {
@@ -588,6 +599,42 @@ func (s *Store) Doctor() Report {
 		r.Note = "a memory hop FAILED — fix at that hop, not 'memory missing'"
 	}
 	return r
+}
+
+func (s *Store) doctorEngineHop(eng Engine, add func(name, status, detail string)) {
+	caps := eng.Capabilities()
+	cur, err := s.currentVisible()
+	if err != nil {
+		add("sync/embedding", "fail", "cannot read current claims: "+err.Error())
+		return
+	}
+	if len(cur) == 0 {
+		add("sync/embedding", "empty", fmt.Sprintf("%s configured; no current visible claims to index", doctorEngineName(caps)))
+		return
+	}
+
+	report, err := s.EngineDoctor(ClaimIndexText(cur[0]), 1, eng)
+	detail := fmt.Sprintf("%s ledger_unchanged=%t hits=%d ledger_gen=%d engine_gen=%d", doctorEngineName(report.Engine), report.LedgerUnchanged, len(report.Hits), report.LedgerGen, report.Engine.CorpusGen)
+	if err != nil {
+		add("sync/embedding", "fail", detail+": "+err.Error())
+		return
+	}
+	if report.Degraded {
+		add("sync/embedding", "fail", detail+": degraded "+report.Error)
+		return
+	}
+	if len(report.Hits) == 0 {
+		add("sync/embedding", "fail", detail+": configured engine returned no hit for a current claim")
+		return
+	}
+	add("sync/embedding", "ok", detail)
+}
+
+func doctorEngineName(caps EngineCapabilities) string {
+	if strings.TrimSpace(caps.Name) != "" {
+		return caps.Name
+	}
+	return "configured-engine"
 }
 
 // --- ledger internals (MVCC-by-fold) ---
