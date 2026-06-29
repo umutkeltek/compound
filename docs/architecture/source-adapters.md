@@ -122,6 +122,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | generated spine views (`spine/views/*`) | `GeneratedViewObservation` + `ProjectionFreshness` |
 | dashboards / read models | `ProjectionFreshness` through dashboard read-model adapter; card/source coverage evidence, never authority |
 | event streams (`events/*.ndjson`) | `TraceEnvelope` / event evidence |
+| parked memory candidates -> curated knowledge markdown | `MeaningWritePlan` review artifacts under `COMPOUND_HOME`; no direct source mutation or memory promotion |
 | append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence |
 | contract files | source material for contract candidates |
 | source-control snapshots | `SourceAuthority` status claims via read-only git inspection; branch/head/ahead/behind/dirty counts only, no cleanup/staging/push authority; `PreToolUse` may consume the same observation to hold dirty-repo mutations |

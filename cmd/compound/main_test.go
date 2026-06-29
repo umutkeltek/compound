@@ -17,6 +17,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/mem"
 	"compound/internal/product"
 	"compound/internal/projection"
 	"compound/internal/runtimebinding"
@@ -1094,6 +1095,94 @@ func TestDistillerEventRequestSummaryCanDriveParkedMemoryCandidate(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("event request summary candidate must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	confidence := 0.86
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "trace_brain_write_candidate",
+		SourceRefs:    []string{"trace_envelope:trace_brain_write_candidate"},
+		Candidates: []distiller.LLMCandidate{{
+			Kind:         distiller.KindMemory,
+			Entity:       "project:exampleapp",
+			Predicate:    "release_gate",
+			Object:       "review App Store screenshots before release",
+			Confidence:   &confidence,
+			Derivation:   "llm_extracted_from_session",
+			ClaimType:    "constraint",
+			EvidenceRefs: []string{"trace_envelope:trace_brain_write_candidate"},
+		}},
+	}
+	responseData, err := json.MarshalIndent(response, "", " ")
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	responsePath := filepath.Join(t.TempDir(), "brain-write-response.json")
+	if err := os.WriteFile(responsePath, append(responseData, '\n'), 0o644); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", "--llm-response", responsePath})
+	})
+	candidateRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.Memory)))
+	if len(candidateRows) != 1 || candidateRows[0].Verdict != distiller.Park {
+		t.Fatalf("parked candidates = %+v", candidateRows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "brain", "products", "exampleapp.md")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := "# ExampleApp\n\nExisting curated product memory.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"write-plan", "--candidate", candidateRows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# memory write-plan mwp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- evidence_refs: 1") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("write-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	if planPath == "" || reviewPath == "" {
+		t.Fatalf("missing artifact paths:\n%s", out)
+	}
+	var plan mem.MeaningWritePlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != mem.MeaningWritePlanSchemaVersion ||
+		plan.CandidateID != candidateRows[0].ID ||
+		plan.Entity != "project:exampleapp" ||
+		plan.TargetHash == "" ||
+		!strings.Contains(plan.ProposedMarkdown, "review App Store screenshots before release") {
+		t.Fatalf("bad meaning write plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate curated memory source files") {
+		t.Fatalf("review missing no-mutation warning:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("brain target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("write-plan must not promote claims, stat err=%v", err)
 	}
 }
 

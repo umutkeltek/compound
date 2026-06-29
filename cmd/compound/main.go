@@ -934,7 +934,7 @@ func readTypedEnvelopeOrDie(path string) envelope.Envelope {
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
 func cmdMemory(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -1162,6 +1162,28 @@ func cmdMemory(args []string) {
 			fmt.Fprintln(os.Stderr, `usage: compound memory evidence <record --source-kind k --quote "..." [--source-id id] [--actor user]|list>`)
 			os.Exit(2)
 		}
+	case "write-plan":
+		candidateID := flag("--candidate")
+		targetPath := flag("--target")
+		if candidateID == "" || targetPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound memory write-plan --candidate <candidate_id> --target <markdown>")
+			os.Exit(2)
+		}
+		plan, err := store.BuildMeaningWritePlan(candidateID, targetPath, time.Now())
+		die(err)
+		paths, err := mem.RecordMeaningWritePlan(homePath, plan)
+		die(err)
+		fmt.Printf("# memory write-plan %s\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- target: %s\n", plan.TargetPath)
+		fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
 	case "query":
 		// breadth via the RENTED engine, relevance-gated by the ledger. With COMPOUND_MEM_ENGINE_BIN
 		// set, drive the sidecar (e.g. turbovec) over the protocol via a warm held coprocess;
