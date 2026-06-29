@@ -166,7 +166,7 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files or OS generated JSON
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
+  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--writeback] | runtime repair-plan [--project-contract] <yaml> RuntimeBinding health + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
@@ -3015,6 +3015,44 @@ func cmdDecisions(args []string) {
 	}
 	store, _ := openMemStore()
 	switch sub {
+	case "candidate-plan":
+		candidateID := flagValue(args[1:], "--candidate")
+		targetPath := flagValue(args[1:], "--target")
+		if candidateID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound decisions candidate-plan --candidate <candidate_id> [--target <file>]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions candidate-plan:", err)
+			os.Exit(1)
+		}
+		plan, err := decisions.BuildDecisionCandidatePlan(homePath, candidateID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions candidate-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := decisions.RecordDecisionCandidatePlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions candidate-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# decisions candidate-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- candidate: %s\n", plan.CandidateID)
+		fmt.Printf("- decision_key: %s\n", plan.DecisionKey)
+		fmt.Printf("- decision_id: %s\n", plan.LifecycleDraft.DecisionID)
+		fmt.Printf("- entity: %s\n", plan.LifecycleDraft.EntityID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.LifecycleDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
 	case "import":
 		var brainReports []decisions.BrainDecisionReport
 		for _, path := range values("--brain") {

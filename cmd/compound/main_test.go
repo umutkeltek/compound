@@ -1704,6 +1704,96 @@ func TestDistillerEventRequestSummaryCanDriveParkedMemoryCandidate(t *testing.T)
 	}
 }
 
+func TestDecisionCandidatePlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	confidence := 0.88
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "trace_decision_candidate",
+		SourceRefs:    []string{"trace_envelope:trace_decision_candidate"},
+		Candidates: []distiller.LLMCandidate{{
+			Kind:       distiller.KindDecision,
+			Subject:    "decision:route-free-model-judging",
+			Statement:  "Use paid frontier lanes for final judgment only after cheap lanes produce evidence.",
+			Detail:     "Keeps routing cost controlled while preserving quality gates.",
+			Confidence: &confidence,
+			Derivation: "llm_extracted_from_session",
+			Qualifiers: map[string]string{
+				"kind":           decisions.KindOperational,
+				"owner":          "compound",
+				"scope":          "routing",
+				"falsifier":      "cheap lanes repeatedly miss material defects",
+				"review_trigger": "after three route-evidence regressions",
+			},
+			EvidenceRefs: []string{"trace_envelope:trace_decision_candidate", "receipt:routing"},
+		}},
+	}
+	responseData, err := json.MarshalIndent(response, "", " ")
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	responsePath := filepath.Join(t.TempDir(), "decision-response.json")
+	if err := os.WriteFile(responsePath, append(responseData, '\n'), 0o644); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdDistiller([]string{"run", "--llm-response", responsePath})
+	})
+	rows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.Decision)))
+	if len(rows) != 1 || rows[0].Verdict != distiller.Park || rows[0].Kind != distiller.KindDecision {
+		t.Fatalf("decision candidates = %+v", rows)
+	}
+	targetPath := filepath.Join(t.TempDir(), "DEC-routing.md")
+	original := "# Existing Decision\n\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdDecisions([]string{"candidate-plan", "--candidate", rows[0].ID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# decisions candidate-plan dcp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- decision_key: route-free-model-judging") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("candidate-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	if planPath == "" || reviewPath == "" {
+		t.Fatalf("missing artifact paths:\n%s", out)
+	}
+	var plan decisions.DecisionCandidatePlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != decisions.DecisionCandidatePlanSchemaVersion ||
+		plan.CandidateID != rows[0].ID ||
+		plan.LifecycleDraft.EntityID != "decision:route-free-model-judging" ||
+		plan.TargetHash == "" {
+		t.Fatalf("bad decision candidate plan: %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate decision source files") ||
+		!strings.Contains(review, "## Draft DecisionLifecycle") {
+		t.Fatalf("review missing no-mutation warning:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("decision target mutated:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("candidate-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

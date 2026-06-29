@@ -80,7 +80,7 @@ type Spec struct {
 var specs = map[Kind]Spec{
 	Memory:            {Memory, "inbox/memory-candidates", []string{Park, Promote, Reject, NoPromote}, "compound memory adjudicate"},
 	Skill:             {Skill, "inbox/skill-candidates", []string{Park, Operationalize, Reject, NoPromote}, "compound capability skill-plan"},
-	Decision:          {Decision, "inbox/decision-candidates", []string{Park, Promote, Reject, NoPromote}, "compound decision (DecisionLifecycle)"},
+	Decision:          {Decision, "inbox/decision-candidates", []string{Park, Promote, Reject, NoPromote}, "compound decisions candidate-plan"},
 	FailurePattern:    {FailurePattern, "inbox/failure-patterns", []string{Park, Operationalize, Reject}, "compound distiller rule-plan"},
 	Taste:             {Taste, "inbox/taste-observations", []string{Park, Operationalize, Reject}, "compound distiller taste-plan"},
 	ProductHypothesis: {ProductHypothesis, "inbox/product-hypotheses", []string{Park, Operationalize, Reject}, "compound product hypothesis-plan"},
