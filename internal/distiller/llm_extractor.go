@@ -87,13 +87,24 @@ type LLMCapabilityFeedback struct {
 }
 
 type LLMEnvelope struct {
-	Kind          string   `json:"kind"`
-	ID            string   `json:"id"`
-	SchemaVersion string   `json:"schema_version"`
-	WorkID        string   `json:"work_id,omitempty"`
-	ContextPackID string   `json:"context_pack_id,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
-	Summary       string   `json:"summary,omitempty"`
+	Kind          string    `json:"kind"`
+	ID            string    `json:"id"`
+	SchemaVersion string    `json:"schema_version"`
+	WorkID        string    `json:"work_id,omitempty"`
+	ContextPackID string    `json:"context_pack_id,omitempty"`
+	EvidenceRefs  []string  `json:"evidence_refs,omitempty"`
+	Summary       string    `json:"summary,omitempty"`
+	Trace         *LLMTrace `json:"trace,omitempty"`
+}
+
+type LLMTrace struct {
+	Source          envelope.TraceSource `json:"source"`
+	Scope           envelope.Scope       `json:"scope"`
+	Actor           string               `json:"actor,omitempty"`
+	MutationClass   string               `json:"mutation_class"`
+	FilesTouched    []string             `json:"files_touched,omitempty"`
+	ToolsModelsUsed []string             `json:"tools_models_used,omitempty"`
+	Outputs         []string             `json:"outputs,omitempty"`
 }
 
 func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSources, policy Policy, prior PriorState) (LLMExtractionRequest, error) {
@@ -382,6 +393,15 @@ func summarizeEnvelope(e envelope.Envelope) LLMEnvelope {
 				v.MutationClass,
 				v.Summary,
 			}, " ")),
+			Trace: &LLMTrace{
+				Source:          v.Source,
+				Scope:           v.Scope,
+				Actor:           v.Actor,
+				MutationClass:   v.MutationClass,
+				FilesTouched:    append([]string(nil), v.FilesTouched...),
+				ToolsModelsUsed: append([]string(nil), v.ToolsModelsUsed...),
+				Outputs:         append([]string(nil), v.Outputs...),
+			},
 		}
 	case *envelope.ContextRequest:
 		return LLMEnvelope{

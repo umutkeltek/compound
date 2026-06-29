@@ -72,6 +72,7 @@ unadjudicated; distillation proposes candidates only.**
 prior-state coverage, source refs, typed summaries of ContextPack, WorkEnvelope, Receipt, explicit
 `capability_feedback[]` derived from `Receipt.skills.missed` / `Receipt.skills.false_triggered`
 (never `skills.candidate` offers), and extra spine envelopes including `TraceEnvelope` event evidence.
+TraceEnvelope summaries preserve structured source/scope/mutation/files/tools/output metadata so a rented extractor can use event evidence without raw event-body access or promotion authority.
 It can be assembled from explicit typed files, from a closed `COMPOUND_HOME` work chain via
 `distiller request --work-id <work_id>` including matching HookEvents from
 `events/hook-events.ndjson`, or from imported event traces via `distiller request --event-trace <trace_id>`.

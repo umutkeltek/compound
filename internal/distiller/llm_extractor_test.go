@@ -307,6 +307,22 @@ func TestBuildLLMExtractionRequestSummarizesTraceEnvelopeSources(t *testing.T) {
 	if !strings.Contains(env.Summary, "control-events") || !strings.Contains(env.Summary, "Generated deterministic event snapshot.") {
 		t.Fatalf("trace summary does not preserve source context: %+v", env)
 	}
+	if env.Trace == nil {
+		t.Fatalf("trace summary missing structured trace context: %+v", env)
+	}
+	if env.Trace.Source.System != "os-event" ||
+		env.Trace.Source.Stream != "control-events" ||
+		env.Trace.Source.SourceID != "evt_batch" ||
+		env.Trace.Source.EventClass != "snapshot" ||
+		env.Trace.Source.MutationRaw != "read_only" ||
+		env.Trace.MutationClass != "read" {
+		t.Fatalf("trace metadata not preserved: %+v", env.Trace)
+	}
+	if !hasString(env.Trace.FilesTouched, "/workspace/snapshots/daily.json") ||
+		!hasString(env.Trace.ToolsModelsUsed, "caller:scheduler") ||
+		!hasString(env.Trace.Outputs, "path:/workspace/snapshots/daily.json") {
+		t.Fatalf("trace operational refs not preserved: %+v", env.Trace)
+	}
 	for _, want := range []string{"trace_envelope:" + trace.ID, "path:/workspace/snapshots/daily.json"} {
 		if !hasString(req.SourceRefs, want) {
 			t.Fatalf("source refs missing %q: %v", want, req.SourceRefs)

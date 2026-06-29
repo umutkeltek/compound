@@ -1014,6 +1014,89 @@ func TestDistillerRunLLMEventResponseParksMemoryWithoutPromotion(t *testing.T) {
 	}
 }
 
+func TestDistillerEventRequestSummaryCanDriveParkedMemoryCandidate(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	captureStdout(t, func() {
+		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
+	})
+	lines := splitJSONLines(readFile(t, filepath.Join(homePath, "events", "traces.ndjson")))
+	if len(lines) == 0 {
+		t.Fatal("expected imported trace envelopes")
+	}
+	var imported envelope.TraceEnvelope
+	if err := json.Unmarshal([]byte(lines[0]), &imported); err != nil {
+		t.Fatalf("parse imported trace: %v", err)
+	}
+	requestOut := captureStdout(t, func() {
+		cmdDistiller([]string{
+			"request",
+			"--trace-ref", "event-batch:control-events",
+			"--event-trace", imported.ID,
+		})
+	})
+	var req distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(requestOut), &req); err != nil {
+		t.Fatalf("parse request: %v\n%s", err, requestOut)
+	}
+	if len(req.Envelopes) != 1 || req.Envelopes[0].Trace == nil {
+		t.Fatalf("request missing structured trace envelope: %+v", req.Envelopes)
+	}
+	eventEnv := req.Envelopes[0]
+	if eventEnv.Trace.Source.SourceID == "" ||
+		eventEnv.Trace.Scope.ProjectID == "" ||
+		!stringSliceContains(eventEnv.Trace.FilesTouched, "/workspace/snapshots/daily.json") {
+		t.Fatalf("request trace summary is not useful source material: %+v", eventEnv.Trace)
+	}
+	traceRef := "trace_envelope:" + eventEnv.ID
+	confidence := 0.91
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "trace_event_request_summary_candidate",
+		SourceRefs:    []string{traceRef},
+		Candidates: []distiller.LLMCandidate{{
+			Kind:         distiller.KindMemory,
+			Entity:       "project:" + eventEnv.Trace.Scope.ProjectID,
+			Predicate:    "event_observed",
+			Object:       eventEnv.Trace.Source.SourceID,
+			Confidence:   &confidence,
+			Derivation:   "llm_extracted_from_trace_envelope_summary",
+			EvidenceRefs: []string{traceRef},
+		}},
+	}
+	responseData, err := json.MarshalIndent(response, "", " ")
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	responsePath := filepath.Join(t.TempDir(), "event-request-summary-response.json")
+	if err := os.WriteFile(responsePath, append(responseData, '\n'), 0o644); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"run", "--llm-response", responsePath})
+	})
+	if !strings.Contains(out, "# distilled trace_event_request_summary_candidate") ||
+		!strings.Contains(out, "park") ||
+		!strings.Contains(out, "no promotion basis") {
+		t.Fatalf("distiller run output missing parked proof:\n%s", out)
+	}
+	candidateRows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.Memory)))
+	if len(candidateRows) != 1 ||
+		candidateRows[0].Entity != "project:control" ||
+		candidateRows[0].Object != eventEnv.Trace.Source.SourceID ||
+		candidateRows[0].Verdict != distiller.Park ||
+		!stringSliceContains(candidateRows[0].EvidenceRefs, traceRef) {
+		t.Fatalf("event request summary candidate not parked with trace evidence: %+v", candidateRows)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("event request summary candidate must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -1551,6 +1634,30 @@ func readCapabilityEdges(t *testing.T, homePath string) []capgraph.Edge {
 		edges = append(edges, edge)
 	}
 	return edges
+}
+
+func readCandidateRows(t *testing.T, dir string) []distiller.Candidate {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read candidate dir: %v", err)
+	}
+	var out []distiller.Candidate
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read candidate %s: %v", entry.Name(), err)
+		}
+		var c distiller.Candidate
+		if err := json.Unmarshal(data, &c); err != nil {
+			t.Fatalf("parse candidate %s: %v", entry.Name(), err)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 type noPromoteDecisionRow struct {
