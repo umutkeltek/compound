@@ -121,6 +121,11 @@ becomes a rule, **only after evidence** (Laws 7/8).
 
 Operationalized `capability_observation` candidates are the distiller/critic feedback seam into CapabilityGraph. `distiller run` consumes them automatically only when graph state already exists; `capability consume` remains the manual replay/repair command. A distiller run never creates graph state by itself and never executes capabilities.
 
+`compound harness observe` records HarnessRegistry support/limitations as
+`SourceObservation -> capability_observation candidate -> NoPromoteDecision`. It
+does not install hooks, mutate CapabilityGraph nodes, or treat harness defaults as
+authority.
+
 ## Authority & governance contracts (the under-modeled organs — Axis B)
 
 These are the **inside-world registry and governance** seams that plain `Claim`s under-model

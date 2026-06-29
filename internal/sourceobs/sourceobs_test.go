@@ -10,6 +10,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/harness"
 	"compound/internal/projection"
 	"compound/internal/tooltopology"
 )
@@ -227,6 +228,39 @@ func TestSkillManifestObservationWritesCapabilityNoPromote(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("skill manifest source observation should not promote claims, stat err=%v", err)
+	}
+}
+
+func TestHarnessRegistryObservationWritesCapabilityNoPromote(t *testing.T) {
+	home := t.TempDir()
+	obs := FromHarnessRegistry(harness.DefaultRegistry(), tSource)
+	if obs.GeneratedView.ViewKind != "harness_registry" || obs.MapsTo[0].CandidateKind != string(candidates.CapabilityObs) {
+		t.Fatalf("observation = %+v", obs)
+	}
+	if obs.SourceRef.Kind != "registry" || obs.SourceRef.Revision == "" || len(obs.EvidenceRefs) == 0 {
+		t.Fatalf("source ref/evidence = %+v refs=%v", obs.SourceRef, obs.EvidenceRefs)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.CapabilityObs), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Verdict != candidates.NoPromote || c.Subject != "harness_registry:default" || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("harness registry source observation should not promote claims, stat err=%v", err)
 	}
 }
 

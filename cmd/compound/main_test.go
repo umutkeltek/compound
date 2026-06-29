@@ -2349,6 +2349,53 @@ func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T)
 	}
 }
 
+func TestHarnessObserveWritesCapabilityNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() { cmdHarness([]string{"observe"}) })
+	for _, want := range []string{"# harness observe", "- source_observation: srcobs_", "- source_candidate:", "- source_no_promote:", "- verdict: capability_evidence_only_not_authority"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("harness observe output missing %q:\n%s", want, out)
+		}
+	}
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read capability observation dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("capability observation entries = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(candidateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read capability observation: %v", err)
+	}
+	var candidate struct {
+		ID                  string `json:"id"`
+		Kind                string `json:"kind"`
+		Subject             string `json:"subject"`
+		Verdict             string `json:"verdict"`
+		SourceObservationID string `json:"source_observation_id"`
+		PromoteAllowed      bool   `json:"promote_allowed"`
+	}
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		t.Fatalf("parse capability observation: %v", err)
+	}
+	if candidate.Kind != string(candidates.CapabilityObs) || candidate.Subject != "harness_registry:default" || candidate.Verdict != candidates.NoPromote || candidate.PromoteAllowed || candidate.SourceObservationID == "" {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	rows := readNoPromoteDecisionRows(t, homePath)
+	if len(rows) != 1 || rows[0].CandidateRef != candidate.ID || rows[0].OwnerTarget.Kind != "source_observation" || rows[0].OwnerTarget.Ref != candidate.SourceObservationID {
+		t.Fatalf("no-promote rows = %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("harness observation should not promote claims, stat err=%v", err)
+	}
+}
+
 func TestProjectionRepairPlanCreatesGateSourceObservationAndReview(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

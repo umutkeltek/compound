@@ -148,7 +148,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound policy evaluate <action-intent.json>                 ActionIntent -> PolicyDecision
   compound hook <name> <fixture.json>                           run lifecycle hook over fixture
-  compound harness <list|NAME>                                  HarnessRegistry capabilities + limits
+  compound harness <list|NAME|observe>                          HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
@@ -1798,6 +1798,26 @@ func cmdHarness(args []string) {
 	target := "list"
 	if len(args) > 0 {
 		target = args[0]
+	}
+	if target == "observe" {
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		report, err := sourceobs.Apply(homePath, sourceobs.FromHarnessRegistry(reg, time.Now()), time.Now())
+		die(err)
+		fmt.Println("# harness observe")
+		fmt.Printf("- source_observation: %s\n", report.ObservationID)
+		fmt.Printf("- status: %s\n", report.Status)
+		for _, id := range report.CandidateIDs {
+			fmt.Printf("- source_candidate: %s\n", id)
+		}
+		for _, id := range report.NoPromoteIDs {
+			fmt.Printf("- source_no_promote: %s\n", id)
+		}
+		fmt.Println("- verdict: capability_evidence_only_not_authority")
+		return
 	}
 	print1 := func(h harness.Harness) {
 		c := h.Capabilities

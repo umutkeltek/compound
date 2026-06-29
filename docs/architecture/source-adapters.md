@@ -145,6 +145,11 @@ A concrete mapping for a specific operating system — real repo paths and named
 tools — belongs in that operator's private overlay (`docs_private/`), never in
 this public doc. Public adapters use synthetic fixtures and relative paths.
 
+Harness capability registries follow the same source-observation rule:
+`compound harness observe` records hook/context/skill/MCP support and limitations as
+`SourceObservation -> capability_observation candidate -> NoPromoteDecision`. It does
+not install hooks, mutate CapabilityGraph nodes, or make harness defaults authority.
+
 ## First Acceptance Test
 
 The first implementation should be deliberately narrow:

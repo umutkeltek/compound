@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/harness"
 	"compound/internal/projection"
 	"compound/internal/tooltopology"
 	"compound/internal/writeback"
@@ -293,6 +295,50 @@ func FromSkillManifest(manifest capgraph.SkillManifest, now time.Time) SourceObs
 	}
 }
 
+// FromHarnessRegistry converts harness capability reality into generic
+// SourceObservation evidence. Harness observations are capability evidence only:
+// they do not install hooks, mutate capability graph nodes, or grant authority.
+func FromHarnessRegistry(reg harness.Registry, now time.Time) SourceObservation {
+	revision := harnessRegistryRevision(reg)
+	names := reg.Names()
+	limitations := 0
+	for _, name := range names {
+		h, _ := reg.Get(name)
+		limitations += len(h.Limitations)
+	}
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "harness_registry", strings.Join(names, ","), revision),
+		AdapterID:     "compound.harness-registry",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        "compound://harness/default-registry",
+			Kind:        "registry",
+			Owner:       "harness_registry",
+			SourceClass: "generated",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "harness_registry",
+			Consumer:    "compound harness observe",
+			Generator:   "compound harness default registry",
+			Marker:      "compound.harness_registry.v0.1",
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("harnesses=%d limitations=%d", len(names), limitations),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "capability",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     "harness_registry:default",
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: []string{"harness_registry:" + revision},
+	}
+}
+
 func CandidateFromMap(obs SourceObservation, m MapTarget, now time.Time) CandidateRecord {
 	verdict := candidates.Park
 	if !m.PromoteAllowed {
@@ -402,6 +448,33 @@ func projectionDriftReason(f projection.Freshness) string {
 func idFor(prefix string, parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return prefix + hex.EncodeToString(sum[:])[:12]
+}
+
+func harnessRegistryRevision(reg harness.Registry) string {
+	type harnessSnapshot struct {
+		Name                 string               `json:"name"`
+		InstructionMechanism string               `json:"instruction_mechanism"`
+		Capabilities         harness.Capabilities `json:"capabilities"`
+		Limitations          []string             `json:"limitations"`
+		Fallback             bool                 `json:"fallback,omitempty"`
+	}
+	names := reg.Names()
+	snapshot := make([]harnessSnapshot, 0, len(names))
+	for _, name := range names {
+		h, _ := reg.Get(name)
+		limitations := append([]string(nil), h.Limitations...)
+		sort.Strings(limitations)
+		snapshot = append(snapshot, harnessSnapshot{
+			Name:                 h.Name,
+			InstructionMechanism: h.InstructionMechanism,
+			Capabilities:         h.Capabilities,
+			Limitations:          limitations,
+			Fallback:             h.Fallback,
+		})
+	}
+	data, _ := json.Marshal(snapshot)
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func rfc3339(now time.Time) string {
