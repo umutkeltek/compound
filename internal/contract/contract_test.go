@@ -145,3 +145,71 @@ func TestDefaultedRepoKindRecorded(t *testing.T) {
 		t.Errorf("defaulted repo kind should set uncertainty=inferred, got %q", ec.Uncertainty.Level)
 	}
 }
+
+func TestFixtureReposProveOrientationScope(t *testing.T) {
+	root := repoRoot(t)
+	productCwd := filepath.Join(root, "fixtures", "orientation", "product-repo", "app")
+	controlCwd := filepath.Join(root, "fixtures", "orientation", "control-plane-repo", "ops")
+
+	productKind, productVia := ResolveRepoKind("", productCwd)
+	controlKind, controlVia := ResolveRepoKind("", controlCwd)
+	if productKind != "product" || controlKind != "control-plane" {
+		t.Fatalf("fixture kinds product=%q control=%q", productKind, controlKind)
+	}
+	if productVia == "default" || controlVia == "default" {
+		t.Fatalf("fixture markers should be discovered, product via=%q control via=%q", productVia, controlVia)
+	}
+
+	pol := DefaultPolicy()
+	product := Pack(Input{Harness: "codex", Cwd: productCwd, Task: "ship onboarding copy", RepoKind: productKind, RepoKindVia: productVia, Mode: "execute"}, pol, fixedNow)
+	control := Pack(Input{Harness: "codex", Cwd: controlCwd, Task: "audit hooks", RepoKind: controlKind, RepoKindVia: controlVia, Mode: "execute"}, pol, fixedNow)
+
+	if hasIncluded(product, "control-plane://workflow-contract") {
+		t.Fatal("product repo must not include control-plane workflow contract ambiently")
+	}
+	if !hasExcluded(product, "control-plane://workflow-contract") {
+		t.Fatal("product repo must record control-plane workflow contract as excluded")
+	}
+	if !hasIncluded(control, "control-plane://workflow-contract") {
+		t.Fatal("control-plane repo must include workflow contract")
+	}
+	if hasExcluded(control, "control-plane://workflow-contract") {
+		t.Fatal("control-plane repo should not exclude its workflow contract")
+	}
+}
+
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repo root")
+		}
+		dir = parent
+	}
+}
+
+func hasIncluded(pack envelope.ContextPack, ref string) bool {
+	for _, inc := range pack.Included {
+		if inc.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExcluded(pack envelope.ContextPack, ref string) bool {
+	for _, exc := range pack.Excluded {
+		if exc.Ref == ref && exc.Reason != "" {
+			return true
+		}
+	}
+	return false
+}

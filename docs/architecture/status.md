@@ -77,6 +77,6 @@ Next work is no longer memory-stack convergence. It is adapting existing operati
 - generated views -> `GeneratedViewObservation` / `ProjectionFreshness` first slice landed hash-based doctor opt-in `--writeback` route through `OwnerWritebackGate`, receipt, transition; source observations now map generated/source views into candidate inbox + `NoPromoteDecision`; distiller duplicate memory outputs route to `NoPromoteDecision`; next hardening tool/MCP topology observations;
 - source documents -> source adapters emit evidence/candidates/no-promote without direct promotion;
 - source-map / path-authority -> `authority path` imports `PathAuthority` into entity identifiers + authority claims; `authority resolve` proves old path/new path/source remote map to one entity;
-- orientation scope -> project-aware context loading;
+- orientation scope -> project-aware context loading bridged with fixture repo markers; `compound orient` excludes governance context in product repos and includes it in control-plane repos, recording exclusions;
 - rented retrieval -> `MemoryEngine` adapter leaves ledger unchanged;
 - skills/tools/MCPs/hooks -> `CapabilityGraph` imports observations; `compound capability import-topology` imports tool/MCP topology and CLI-vs-MCP fallback recommendation.
