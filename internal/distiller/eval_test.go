@@ -146,8 +146,8 @@ func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
 	if report.Status != "pass" {
 		t.Fatalf("status = %q", report.Status)
 	}
-	if report.CaseCount != 7 || report.PassCount != 7 || report.FailCount != 0 {
-		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 7/7/0", report.CaseCount, report.PassCount, report.FailCount)
+	if report.CaseCount != 8 || report.PassCount != 8 || report.FailCount != 0 {
+		t.Fatalf("counts = cases:%d pass:%d fail:%d, want 8/8/0", report.CaseCount, report.PassCount, report.FailCount)
 	}
 	if report.DecisionCount != 5 {
 		t.Fatalf("decision_count = %d, want 5", report.DecisionCount)
@@ -165,7 +165,7 @@ func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
 
 func TestEvaluateCorpusDirReportsFailingCase(t *testing.T) {
 	dir := t.TempDir()
-	response := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_fail","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91}]}`
+	response := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_fail","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"evidence_refs":["manual:test"]}]}`
 	if err := os.WriteFile(filepath.Join(dir, "response.json"), []byte(response), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -295,9 +295,24 @@ type LLMCandidate struct {
 }
 
 // LLMExtractor consumes an already-produced model response. It does not call a model.
-type LLMExtractor struct{}
+// When bound to an extraction request, it also gates candidate evidence refs against
+// the request source refs so a model cannot invent citations that enter review queues.
+type LLMExtractor struct {
+	AllowedEvidenceRefs []string
+	RequireEvidenceRefs bool
+}
 
-func (LLMExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
+// NewGroundedLLMExtractor returns a request-bound extractor for eval/live extraction.
+// Standalone `distiller run --llm-response` intentionally uses the zero-value extractor
+// because it has no request packet to define the evidence allowlist.
+func NewGroundedLLMExtractor(req LLMExtractionRequest) LLMExtractor {
+	return LLMExtractor{
+		AllowedEvidenceRefs: append([]string(nil), req.SourceRefs...),
+		RequireEvidenceRefs: true,
+	}
+}
+
+func (e LLMExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
 	var response LLMExtractionResponse
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return Trace{}, fmt.Errorf("parse llm extraction response: %w", err)
@@ -311,7 +326,7 @@ func (LLMExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
 		Candidates: make([]Candidate, 0, len(response.Candidates)),
 	}
 	for i, lc := range response.Candidates {
-		c, err := lc.toCandidate(i, response)
+		c, err := e.toCandidate(i, lc, response)
 		if err != nil {
 			return Trace{}, err
 		}
@@ -320,7 +335,7 @@ func (LLMExtractor) Extract(raw []byte, policy Policy) (Trace, error) {
 	return normalizeTrace(trace, policy)
 }
 
-func (lc LLMCandidate) toCandidate(index int, response LLMExtractionResponse) (Candidate, error) {
+func (e LLMExtractor) toCandidate(index int, lc LLMCandidate, response LLMExtractionResponse) (Candidate, error) {
 	if strings.TrimSpace(lc.PromotionBasis) != "" {
 		return Candidate{}, fmt.Errorf("llm candidate %d attempted promotion_basis %q; model output cannot promote memory", index, lc.PromotionBasis)
 	}
@@ -335,9 +350,15 @@ func (lc LLMCandidate) toCandidate(index int, response LLMExtractionResponse) (C
 	if derivation == "" {
 		derivation = "llm_extracted"
 	}
-	evidenceRefs := append([]string(nil), lc.EvidenceRefs...)
+	evidenceRefs := cleanRefs(lc.EvidenceRefs)
+	if len(evidenceRefs) == 0 && e.RequireEvidenceRefs {
+		return Candidate{}, fmt.Errorf("llm candidate %d missing evidence_refs; request-grounded extraction requires candidate-specific source refs", index)
+	}
 	if len(evidenceRefs) == 0 && len(response.SourceRefs) > 0 {
 		evidenceRefs = append(evidenceRefs, response.SourceRefs...)
+	}
+	if err := e.validateEvidenceRefs(index, evidenceRefs); err != nil {
+		return Candidate{}, err
 	}
 
 	return Candidate{
@@ -354,6 +375,36 @@ func (lc LLMCandidate) toCandidate(index int, response LLMExtractionResponse) (C
 		Qualifiers:   lc.Qualifiers,
 		EvidenceRefs: evidenceRefs,
 	}, nil
+}
+
+func (e LLMExtractor) validateEvidenceRefs(index int, refs []string) error {
+	if len(e.AllowedEvidenceRefs) == 0 {
+		return nil
+	}
+	allowed := map[string]bool{}
+	for _, ref := range e.AllowedEvidenceRefs {
+		ref = strings.TrimSpace(ref)
+		if ref != "" {
+			allowed[ref] = true
+		}
+	}
+	for _, ref := range refs {
+		if !allowed[ref] {
+			return fmt.Errorf("llm candidate %d evidence_ref %q not present in request source_refs", index, ref)
+		}
+	}
+	return nil
+}
+
+func cleanRefs(refs []string) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref != "" {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 func summarizeEnvelope(e envelope.Envelope) LLMEnvelope {

@@ -55,6 +55,44 @@ func TestLLMExtractorNormalizesProviderResponse(t *testing.T) {
 	}
 }
 
+func TestGroundedLLMExtractorRequiresCandidateEvidenceRefs(t *testing.T) {
+	req := LLMExtractionRequest{
+		TraceRef:   "trace_grounded",
+		SourceRefs: []string{"raw_trace:trace_grounded"},
+	}
+	raw := []byte(`{
+		"schema_version":"compound.distiller.llm_extraction.v0.1",
+		"trace_ref":"trace_grounded",
+		"source_refs":["raw_trace:trace_grounded"],
+		"candidates":[
+			{"kind":"skill","subject":"skill:missing-evidence","statement":"missing citation","confidence":0.82}
+		]
+	}`)
+	_, err := NewGroundedLLMExtractor(req).Extract(raw, DefaultPolicy())
+	if err == nil || !strings.Contains(err.Error(), "missing evidence_refs") {
+		t.Fatalf("err = %v, want missing evidence_refs", err)
+	}
+}
+
+func TestGroundedLLMExtractorRejectsUngroundedEvidenceRefs(t *testing.T) {
+	req := LLMExtractionRequest{
+		TraceRef:   "trace_grounded",
+		SourceRefs: []string{"raw_trace:trace_grounded", "receipt:rec_grounded"},
+	}
+	raw := []byte(`{
+		"schema_version":"compound.distiller.llm_extraction.v0.1",
+		"trace_ref":"trace_grounded",
+		"source_refs":["raw_trace:trace_grounded"],
+		"candidates":[
+			{"kind":"skill","subject":"skill:made-up","statement":"invented citation","confidence":0.82,"evidence_refs":["made_up:source"]}
+		]
+	}`)
+	_, err := NewGroundedLLMExtractor(req).Extract(raw, DefaultPolicy())
+	if err == nil || !strings.Contains(err.Error(), "not present in request source_refs") {
+		t.Fatalf("err = %v, want ungrounded evidence ref rejection", err)
+	}
+}
+
 func TestLLMExtractorRejectsMalformedAuthorityAndKind(t *testing.T) {
 	tests := []struct {
 		name string

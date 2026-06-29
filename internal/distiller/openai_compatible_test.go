@@ -53,7 +53,7 @@ func TestOpenAICompatibleExtractionCallsProviderAfterCorpusPasses(t *testing.T) 
 		if len(body.Messages) != 2 || !strings.Contains(body.Messages[1].Content, "trace_live") {
 			t.Fatalf("unexpected messages: %+v", body.Messages)
 		}
-		extraction := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_live","extractor":"httptest","model":"fixture-model","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91}]}`
+		extraction := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_live","extractor":"httptest","model":"fixture-model","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"evidence_refs":["server:test"]}]}`
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
 				"message": map[string]string{"role": "assistant", "content": extraction},
@@ -81,7 +81,7 @@ func TestOpenAICompatibleExtractionCallsProviderAfterCorpusPasses(t *testing.T) 
 	if calls != 1 {
 		t.Fatalf("provider calls = %d, want 1", calls)
 	}
-	if report.Eval.Status != "pass" || report.Eval.CaseCount != 7 || report.Eval.LiveModelCalls != 0 {
+	if report.Eval.Status != "pass" || report.Eval.CaseCount != 8 || report.Eval.LiveModelCalls != 0 {
 		t.Fatalf("eval report = %+v", report.Eval)
 	}
 	if !report.Called || report.LiveModelCalls != 1 {
@@ -145,7 +145,7 @@ func TestChatCompletionsURL(t *testing.T) {
 
 func TestOpenAICompatibleExtractionBlocksFailingCorpus(t *testing.T) {
 	dir := t.TempDir()
-	response := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_fail","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91}]}`
+	response := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_fail","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"evidence_refs":["manual:test"]}]}`
 	if err := os.WriteFile(filepath.Join(dir, "response.json"), []byte(response), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -171,7 +171,7 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 	if extraction.SchemaVersion != LLMExtractionSchemaVersion {
 		return LLMExtractionResponse{}, chat.Usage, fmt.Errorf("llm extraction schema_version=%q, want %q", extraction.SchemaVersion, LLMExtractionSchemaVersion)
 	}
-	if _, err := (LLMExtractor{}).Extract(content, DefaultPolicy()); err != nil {
+	if _, err := NewGroundedLLMExtractor(req).Extract(content, DefaultPolicy()); err != nil {
 		return LLMExtractionResponse{}, chat.Usage, err
 	}
 	return extraction, chat.Usage, nil

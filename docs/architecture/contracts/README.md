@@ -84,8 +84,9 @@ It is prompt material only, not a model call and not authority.
 `LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
 `schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.
 Unknown kind, missing confidence, malformed JSON, or model-supplied `promotion_basis` is invalid.
-Missing candidate evidence inherits `source_refs[]` or `trace_ref`; model output still cannot promote
-memory directly.
+Eval/live extraction is request-grounded: every candidate must include `evidence_refs[]`,
+and each candidate evidence ref must exist in the originating `LLMExtractionRequest.source_refs[]`.
+Ungrounded model citations fail before candidate inbox write; model output still cannot promote memory directly.
 
 | Contract | Purpose | Key fields / invariant |
 |---|---|---|

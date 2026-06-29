@@ -222,7 +222,7 @@ func EvaluateCaseInRoot(base string, ec EvalCase, evalRoot string, now time.Time
 	if err != nil {
 		return report, fmt.Errorf("read response %s: %w", ec.Response, err)
 	}
-	run, err := Run(evalHome, store, response, DefaultPolicy(), LLMExtractor{}, now)
+	run, err := Run(evalHome, store, response, DefaultPolicy(), NewGroundedLLMExtractor(req), now)
 	if err != nil {
 		current, currentErr := store.AllCurrent()
 		if currentErr != nil {
