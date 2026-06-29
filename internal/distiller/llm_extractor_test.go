@@ -271,6 +271,52 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	}
 }
 
+func TestBuildLLMExtractionRequestSummarizesTraceEnvelopeSources(t *testing.T) {
+	trace := &envelope.TraceEnvelope{
+		Header: llmTestHeader(envelope.SVTraceEnvelope, "trace_event_batch", "", ""),
+		Source: envelope.TraceSource{
+			System:      "os-event",
+			Stream:      "control-events",
+			SourceID:    "evt_batch",
+			SourceKind:  "snapshot.generated",
+			EventClass:  "snapshot",
+			MutationRaw: "read_only",
+		},
+		MutationClass:   "read",
+		Summary:         "Generated deterministic event snapshot.",
+		ToolsModelsUsed: []string{"caller:scheduler"},
+		FilesTouched:    []string{"/workspace/snapshots/daily.json"},
+		Outputs:         []string{"path:/workspace/snapshots/daily.json"},
+		Cost:            envelope.ReceiptCost{ModelCalls: []string{}},
+	}
+	trace.EvidenceRefs = []string{"path:/workspace/snapshots/daily.json"}
+
+	req, err := BuildLLMExtractionRequestFromSources("event-batch:control-events", LLMExtractionSources{
+		Extra: []envelope.Envelope{trace},
+	}, DefaultPolicy(), PriorState{})
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if countLLMKind(req.Envelopes, "trace_envelope") != 1 {
+		t.Fatalf("request envelopes = %+v, want trace envelope", req.Envelopes)
+	}
+	env := req.Envelopes[0]
+	if env.ID != trace.ID || env.SchemaVersion != envelope.SVTraceEnvelope {
+		t.Fatalf("trace summary identity = %+v", env)
+	}
+	if !strings.Contains(env.Summary, "control-events") || !strings.Contains(env.Summary, "Generated deterministic event snapshot.") {
+		t.Fatalf("trace summary does not preserve source context: %+v", env)
+	}
+	for _, want := range []string{"trace_envelope:" + trace.ID, "path:/workspace/snapshots/daily.json"} {
+		if !hasString(req.SourceRefs, want) {
+			t.Fatalf("source refs missing %q: %v", want, req.SourceRefs)
+		}
+	}
+	if !strings.Contains(strings.Join(req.Instructions, "\n"), "TraceEnvelope") {
+		t.Fatalf("instructions missing trace envelope boundary: %v", req.Instructions)
+	}
+}
+
 func TestBuildLLMExtractionRequestRejectsInvalidSourceEnvelope(t *testing.T) {
 	badContext := &envelope.ContextPack{
 		Header:   llmTestHeader(envelope.SVContextPack, "ctx_bad", "", ""),

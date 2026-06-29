@@ -1,6 +1,9 @@
 package distiller
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -141,6 +144,75 @@ func TestLoadRuntimeSourcesRejectsBrokenClosedWork(t *testing.T) {
 	_, err = LoadRuntimeSources(homePath, w.ID)
 	if err == nil || !strings.Contains(err.Error(), "missing transition_id") {
 		t.Fatalf("err = %v, want missing transition_id", err)
+	}
+}
+
+func TestLoadTraceEnvelopesFromRuntimeEvents(t *testing.T) {
+	homePath := t.TempDir()
+	first := testTraceEnvelope("trace_runtime_a", "evt_a", "Generated first snapshot.")
+	second := testTraceEnvelope("trace_runtime_b", "evt_b", "Generated second snapshot.")
+	writeRuntimeEnvelope(t, filepath.Join(homePath, "events", first.ID+".json"), first)
+	writeRuntimeEnvelope(t, filepath.Join(homePath, "events", second.ID+".json"), second)
+
+	loaded, err := LoadTraceEnvelopes(homePath, []string{first.ID, first.ID, " " + second.ID + " "})
+	if err != nil {
+		t.Fatalf("load trace envelopes: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Fatalf("loaded traces = %d, want 2", len(loaded))
+	}
+	if loaded[0].Kind() != "trace_envelope" || loaded[1].Kind() != "trace_envelope" {
+		t.Fatalf("loaded kinds = %s/%s", loaded[0].Kind(), loaded[1].Kind())
+	}
+
+	_, err = LoadTraceEnvelopes(homePath, []string{"trace_missing"})
+	if err == nil || !strings.Contains(err.Error(), "load trace trace_missing") {
+		t.Fatalf("err = %v, want missing trace error", err)
+	}
+}
+
+func testTraceEnvelope(id, sourceID, summary string) *envelope.TraceEnvelope {
+	return &envelope.TraceEnvelope{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTraceEnvelope,
+			ID:            id,
+			CreatedAt:     "2026-06-29T12:00:00Z",
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{"path:/workspace/events.json"},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Source: envelope.TraceSource{
+			System:     "os-event",
+			Stream:     "control-events",
+			SourceID:   sourceID,
+			SourceKind: "snapshot.generated",
+		},
+		MutationClass:   "read",
+		Summary:         summary,
+		ToolsModelsUsed: []string{"caller:scheduler"},
+		FilesTouched:    []string{"/workspace/events.json"},
+		Outputs:         []string{"path:/workspace/events.json"},
+		Cost:            envelope.ReceiptCost{ModelCalls: []string{}},
+	}
+}
+
+func writeRuntimeEnvelope(t *testing.T, path string, env envelope.Envelope) {
+	t.Helper()
+	if err := env.Validate(); err != nil {
+		t.Fatalf("invalid test envelope: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(env, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -94,6 +94,35 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 	return src, nil
 }
 
+// LoadTraceEnvelopes loads already-imported TraceEnvelope runtime events from
+// COMPOUND_HOME/events. It is read-only: event streams remain evidence sources,
+// and distiller callers may only turn them into extraction input.
+func LoadTraceEnvelopes(homePath string, traceIDs []string) ([]envelope.Envelope, error) {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return nil, fmt.Errorf("home path is required")
+	}
+	var out []envelope.Envelope
+	seen := map[string]bool{}
+	for _, rawID := range traceIDs {
+		traceID := strings.TrimSpace(rawID)
+		if traceID == "" || seen[traceID] {
+			continue
+		}
+		seen[traceID] = true
+		tracePath := filepath.Join(homePath, "events", traceID+".json")
+		env, err := readRuntimeEnvelope(tracePath)
+		if err != nil {
+			return nil, fmt.Errorf("load trace %s: %w", traceID, err)
+		}
+		if env.Kind() != "trace_envelope" {
+			return nil, fmt.Errorf("%s is %s, want trace_envelope", tracePath, env.Kind())
+		}
+		out = append(out, env)
+	}
+	return out, nil
+}
+
 func loadHookEvents(homePath, workID, contextPackID string) ([]envelope.HookEvent, error) {
 	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
 	data, err := os.ReadFile(streamPath)

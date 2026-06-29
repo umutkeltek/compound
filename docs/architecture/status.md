@@ -29,6 +29,7 @@ This file is the current package/command map. `compound architecture doctor --st
 - Imported skill-manifest offers now have executable full-loop proof: `capability import-skills` can seed graph, `hook user-prompt-submit` persists an offered capability in ContextPack, an allowed action records that capability as used, and `hook session-end` validates it back into the same CapabilityGraph.
 
 - `compound event import-os` now adapts append-only OS-style event rows into typed `TraceEnvelope` files and `events/traces.ndjson` under `COMPOUND_HOME`; replay is idempotent and no memory claims are promoted.
+- `compound distiller request --event-trace <trace_id>` now consumes those imported `TraceEnvelope` files as provider-neutral extraction source material with prior-state coverage, still without model calls or memory promotion.
 
 ## Current Verdict
 

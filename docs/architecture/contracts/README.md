@@ -69,10 +69,11 @@ unadjudicated; distillation proposes candidates only.**
 `LLMExtractionRequest` is the provider-neutral request packet. It carries bounded raw trace text,
 prior-state coverage, source refs, typed summaries of ContextPack, WorkEnvelope, Receipt, explicit
 `capability_feedback[]` derived from `Receipt.skills.missed` / `Receipt.skills.false_triggered`
-(never `skills.candidate` offers), and extra spine envelopes. It can be assembled from explicit typed files or from a closed
-`COMPOUND_HOME` work chain via `distiller request --work-id <work_id>`, including matching
-HookEvents from `events/hook-events.ndjson`; it is prompt material only, not a model call and not
-authority.
+(never `skills.candidate` offers), and extra spine envelopes including `TraceEnvelope` event evidence.
+It can be assembled from explicit typed files, from a closed `COMPOUND_HOME` work chain via
+`distiller request --work-id <work_id>` including matching HookEvents from
+`events/hook-events.ndjson`, or from imported event traces via `distiller request --event-trace <trace_id>`.
+It is prompt material only, not a model call and not authority.
 
 `LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
 `schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.
@@ -82,7 +83,7 @@ memory directly.
 
 | Contract | Purpose | Key fields / invariant |
 |---|---|---|
-| **TraceDistiller** | turns spine artifacts (TraceEnvelope + Receipt + ContextPack + HookEvents + ExecutionRouteEvidence + raw refs) into a CandidateSet — extraction only, never canon | loads RetrievedPriorState first; each output cites `evidence_refs[]` + `distillation_policy_version` + a stable deterministic id (replay ⇒ same ids) |
+| **TraceDistiller** | turns spine artifacts (TraceEnvelope + Receipt + ContextPack + HookEvents + ExecutionRouteEvidence + raw refs) into a CandidateSet — extraction only, never canon | loads RetrievedPriorState first; `distiller request --event-trace <trace_id>` loads already-imported `TraceEnvelope` files from `COMPOUND_HOME/events` as source material only; each output cites `evidence_refs[]` + `distillation_policy_version` + a stable deterministic id (replay ⇒ same ids) |
 | **RetrievedPriorState** | the canon the distiller compares against *before* extracting (distill-against-canon, not blind) | current claims by type; decision/status/preference/architecture/constraint claims; candidate inboxes for failure/taste/product/capability/eval/method/policy; capability nodes; no-promote decisions; current policy version |
 | **CandidateSet** | the typed fan-out (all candidate-first) | MemoryCandidate · SkillCandidate · DecisionCandidate · FailurePattern · TasteObservation · ProductHypothesis · CapabilityObservation · RouteObservation · MethodUpgradeCandidate · DistillationPolicyPatchCandidate · EvalCaseCandidate |
 | **DistillationPolicy** | the *versioned* method that produced a candidate — so a method change is legible, not silent prompt drift | id, version, lenses[], thresholds, prompt_refs; changed only via an adjudicated DistillationPolicyPatchCandidate |

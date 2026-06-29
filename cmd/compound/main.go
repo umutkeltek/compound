@@ -154,7 +154,7 @@ usage:
   compound memory <candidate|adjudicate|recall|timeline|query|engine-doctor|engine-compare|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
-  compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...
+  compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
@@ -604,7 +604,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
@@ -701,7 +701,7 @@ func printDistillerEvalCorpus(report distiller.EvalCorpusReport) {
 func cmdDistillerRequest(args []string) {
 	traceRef := valueFlag(args, "--trace-ref")
 	if traceRef == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]...")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -767,6 +767,14 @@ func cmdDistillerRequest(args []string) {
 	}
 	for _, path := range valuesFlag(args, "--envelope") {
 		src.Extra = append(src.Extra, readTypedEnvelopeOrDie(path))
+	}
+	if traceIDs := valuesFlag(args, "--event-trace"); len(traceIDs) > 0 {
+		traces, err := distiller.LoadTraceEnvelopes(homePath, traceIDs)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller request event traces:", err)
+			os.Exit(1)
+		}
+		src.Extra = append(src.Extra, traces...)
 	}
 	req, err := distiller.BuildLLMExtractionRequestFromSources(traceRef, src, distiller.DefaultPolicy(), prior)
 	if err != nil {

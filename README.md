@@ -24,7 +24,7 @@ The current public surface is:
 | `compound policy evaluate` | ActionIntent -> PolicyDecision, enforced at adapters |
 | `compound hook <name>` / `compound harness list` | capability-aware hook fixtures and HarnessRegistry |
 | `compound memory candidate/adjudicate/recall/timeline/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall |
-| `compound distiller run <trace.json>` | trace -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
+| `compound distiller request/run` | typed trace/runtime/event source material -> RetrievedPriorState -> CandidateSet -> Critic -> Adjudicator |
 | `compound capability <add/surface/observe/consume/list>` | capability graph: auto-surface, never auto-execute |
 | `compound authority import/path/path-registry` / `compound decisions import` | import external authority, OS-style path authority, and DecisionLifecycle records through spine memory |
 | `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |

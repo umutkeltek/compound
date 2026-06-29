@@ -534,6 +534,63 @@ func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	}
 }
 
+func TestDistillerRequestLoadsImportedEventTraces(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	captureStdout(t, func() {
+		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
+	})
+
+	var traces []envelope.TraceEnvelope
+	for _, line := range splitJSONLines(readFile(t, filepath.Join(homePath, "events", "traces.ndjson"))) {
+		var tr envelope.TraceEnvelope
+		if err := json.Unmarshal([]byte(line), &tr); err != nil {
+			t.Fatalf("parse trace line: %v", err)
+		}
+		traces = append(traces, tr)
+	}
+	if len(traces) != 2 {
+		t.Fatalf("traces = %d, want 2", len(traces))
+	}
+
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{
+			"request",
+			"--trace-ref", "event-batch:control-events",
+			"--event-trace", traces[0].ID,
+			"--event-trace", traces[1].ID,
+		})
+	})
+	var req distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(out), &req); err != nil {
+		t.Fatalf("parse distiller request: %v\n%s", err, out)
+	}
+	if req.TraceRef != "event-batch:control-events" || req.RawTrace != "" {
+		t.Fatalf("request trace/raw = %q/%q", req.TraceRef, req.RawTrace)
+	}
+	traceEnvelopeCount := 0
+	for _, env := range req.Envelopes {
+		if env.Kind == "trace_envelope" {
+			traceEnvelopeCount++
+		}
+	}
+	if traceEnvelopeCount != 2 {
+		t.Fatalf("trace envelope count = %d, envelopes=%+v", traceEnvelopeCount, req.Envelopes)
+	}
+	for _, tr := range traces {
+		if !stringSliceContains(req.SourceRefs, "trace_envelope:"+tr.ID) {
+			t.Fatalf("request source refs missing trace %s: %v", tr.ID, req.SourceRefs)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("distiller request over event traces must not write claims ledger, stat err=%v", err)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -852,6 +909,15 @@ func splitJSONLines(s string) []string {
 		}
 	}
 	return out
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func hasCapabilityEdge(edges []capgraph.Edge, kind, from string) bool {
