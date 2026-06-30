@@ -218,17 +218,27 @@ type Review struct {
 }
 
 type SourceIssueReview struct {
-	SchemaVersion string   `json:"schema_version" yaml:"schema_version"`
-	ID            string   `json:"id" yaml:"id"`
-	ProductID     string   `json:"product_id" yaml:"product_id"`
-	IssueID       string   `json:"issue_id" yaml:"issue_id"`
-	Result        string   `json:"result" yaml:"result"`
-	Rationale     string   `json:"rationale" yaml:"rationale"`
-	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
-	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
-	AppliedAt     string   `json:"applied_at,omitempty" yaml:"applied_at,omitempty"`
-	EvidenceID    string   `json:"evidence_id,omitempty" yaml:"evidence_id,omitempty"`
-	SourceRef     string   `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
+	SchemaVersion string               `json:"schema_version" yaml:"schema_version"`
+	ID            string               `json:"id" yaml:"id"`
+	ProductID     string               `json:"product_id" yaml:"product_id"`
+	IssueID       string               `json:"issue_id" yaml:"issue_id"`
+	Result        string               `json:"result" yaml:"result"`
+	Rationale     string               `json:"rationale" yaml:"rationale"`
+	EvidenceRefs  []string             `json:"evidence_refs" yaml:"evidence_refs"`
+	FollowUp      *SourceIssueFollowUp `json:"follow_up,omitempty" yaml:"follow_up,omitempty"`
+	ReviewedAt    string               `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
+	AppliedAt     string               `json:"applied_at,omitempty" yaml:"applied_at,omitempty"`
+	EvidenceID    string               `json:"evidence_id,omitempty" yaml:"evidence_id,omitempty"`
+	SourceRef     string               `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
+}
+
+type SourceIssueFollowUp struct {
+	ChangeEvent       string   `json:"change_event" yaml:"change_event"`
+	ExpectedEffect    string   `json:"expected_effect" yaml:"expected_effect"`
+	Metrics           []string `json:"metrics" yaml:"metrics"`
+	ObservationWindow string   `json:"observation_window" yaml:"observation_window"`
+	NextAction        string   `json:"next_action" yaml:"next_action"`
+	EvidenceRefs      []string `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
 }
 
 type HypothesisCandidate struct {
@@ -278,6 +288,7 @@ type SourceIssueReviewReport struct {
 	EvidenceID   string   `json:"evidence_id"`
 	EvidenceRefs []string `json:"evidence_refs"`
 	TransitionID string   `json:"transition_id,omitempty"`
+	HypothesisID string   `json:"hypothesis_id,omitempty"`
 }
 
 type Timeline struct {
@@ -756,6 +767,16 @@ func ApplySourceIssueReview(homePath string, store *mem.Store, review SourceIssu
 	}
 	review.EvidenceID = evidence.ID
 	review.EvidenceRefs = compact(append(review.EvidenceRefs, evidence.ID, "product_source_issue:"+issue.ID))
+	var hypothesisID string
+	afterRefs := compact(append([]string{"product_source_issue:" + issue.ID + ":" + review.Result, "product_source_issue_review:" + review.ID, evidence.ID}, review.EvidenceRefs...))
+	if review.FollowUp != nil {
+		candidate := sourceIssueFollowUpHypothesis(review, now)
+		if err := writeHypothesisCandidate(homePath, candidate); err != nil {
+			return SourceIssueReviewReport{}, err
+		}
+		hypothesisID = candidate.ID
+		afterRefs = compact(append(afterRefs, "product_hypothesis:"+candidate.ID))
+	}
 	if err := appendUniqueSourceIssueReview(homePath, review); err != nil {
 		return SourceIssueReviewReport{}, err
 	}
@@ -765,7 +786,7 @@ func ApplySourceIssueReview(homePath string, store *mem.Store, review SourceIssu
 		ObjectID:     review.ID,
 		SourceTrace:  "product_source_issue_review:" + review.ID,
 		BeforeRefs:   compact(append([]string{"product_source_issue:" + issue.ID}, issue.EvidenceRefs...)),
-		AfterRefs:    compact(append([]string{"product_source_issue:" + issue.ID + ":" + review.Result, "product_source_issue_review:" + review.ID, evidence.ID}, review.EvidenceRefs...)),
+		AfterRefs:    afterRefs,
 		EvidenceRefs: review.EvidenceRefs,
 		Summary:      fmt.Sprintf("product source issue review %s closed issue %s as %s; no product surface changed", review.ID, issue.ID, review.Result),
 	}, now)
@@ -784,6 +805,7 @@ func ApplySourceIssueReview(homePath string, store *mem.Store, review SourceIssu
 		EvidenceID:   evidence.ID,
 		EvidenceRefs: review.EvidenceRefs,
 		TransitionID: tr.ID,
+		HypothesisID: hypothesisID,
 	}, nil
 }
 
@@ -1237,6 +1259,18 @@ func ValidateSourceIssueReview(review SourceIssueReview) error {
 	if len(review.EvidenceRefs) == 0 {
 		return fmt.Errorf("source issue review evidence_refs required")
 	}
+	if review.FollowUp != nil {
+		if review.Result != "resolved" {
+			return fmt.Errorf("source issue review follow_up requires result resolved")
+		}
+		if strings.TrimSpace(review.FollowUp.ChangeEvent) == "" ||
+			strings.TrimSpace(review.FollowUp.ExpectedEffect) == "" ||
+			strings.TrimSpace(review.FollowUp.ObservationWindow) == "" ||
+			strings.TrimSpace(review.FollowUp.NextAction) == "" ||
+			len(compact(review.FollowUp.Metrics)) == 0 {
+			return fmt.Errorf("source issue review follow_up requires change_event expected_effect metrics observation_window next_action")
+		}
+	}
 	return nil
 }
 
@@ -1484,6 +1518,27 @@ func hypothesisCandidate(h Hypothesis, now time.Time) HypothesisCandidate {
 		EvidenceRefs:      h.EvidenceRefs,
 		CreatedAt:         now.UTC().Format(time.RFC3339),
 	}
+}
+
+func sourceIssueFollowUpHypothesis(review SourceIssueReview, now time.Time) HypothesisCandidate {
+	f := review.FollowUp
+	evidenceRefs := compact(append([]string{}, review.EvidenceRefs...))
+	if f != nil {
+		evidenceRefs = compact(append(evidenceRefs, f.EvidenceRefs...))
+	}
+	evidenceRefs = compact(append(evidenceRefs, "product_source_issue_review:"+review.ID))
+	h := Hypothesis{
+		ID:                stableID("hyp_", review.ProductID, review.IssueID, review.ID, f.ChangeEvent, f.ExpectedEffect),
+		ProductID:         review.ProductID,
+		ChangeEvent:       f.ChangeEvent,
+		ExpectedEffect:    f.ExpectedEffect,
+		Metrics:           compact(f.Metrics),
+		ObservationWindow: f.ObservationWindow,
+		Result:            "unknown",
+		NextAction:        f.NextAction,
+		EvidenceRefs:      evidenceRefs,
+	}
+	return hypothesisCandidate(h, now)
 }
 
 func appendUniqueSignal(homePath string, signal Signal) error {
@@ -1975,6 +2030,19 @@ func sameSourceIssueReview(a, b SourceIssueReview) bool {
 		a.IssueID == b.IssueID &&
 		a.Result == b.Result &&
 		a.Rationale == b.Rationale &&
+		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00") &&
+		sameSourceIssueFollowUp(a.FollowUp, b.FollowUp)
+}
+
+func sameSourceIssueFollowUp(a, b *SourceIssueFollowUp) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ChangeEvent == b.ChangeEvent &&
+		a.ExpectedEffect == b.ExpectedEffect &&
+		a.ObservationWindow == b.ObservationWindow &&
+		a.NextAction == b.NextAction &&
+		strings.Join(a.Metrics, "\x00") == strings.Join(b.Metrics, "\x00") &&
 		strings.Join(a.EvidenceRefs, "\x00") == strings.Join(b.EvidenceRefs, "\x00")
 }
 

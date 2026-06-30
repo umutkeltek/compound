@@ -139,7 +139,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | product project/release contracts | `ProductContractAdapter` -> existing `Product` registry bundle; deterministic identity/surface/channel/privacy claims only, never analytics signals or causality |
 | decision records | `DecisionLifecycle` candidates; brain narrative markdown import records note evidence, derives stable ids from page metadata/heading when needed, extracts explicit verdict/review-trigger text, parks incomplete lifecycle proof, and emits reviewable lifecycle repair artifacts through the same repair-plan path; policy markdown source import records source evidence, supports single-file and directory batch import through the same adapter, preserves supersedes/replaced_by lifecycle transitions, gives each decision a stable entity, parks incomplete or non-accepted decisions, verifies source templates/docs contain lifecycle fields, emits reviewable lifecycle repair artifacts, and applies reviewed lifecycle fields only on explicit write |
 | knowledge-base pages | `compound memory import-page <markdown>` reads explicit `compound.knowledge_page.v0.1` `claims[]`, records one `EvidenceItem`, writes deterministic proposed memory candidates, and creates no promoted claims. Claims must still pass existing memory adjudication or reviewed `MeaningWritePlan`; page prose is not inferred into truth. |
-| product analytics exports | `ProductSignalExport`, App Store Connect datapoints snapshot rows, and explicit-window App Store Connect sales-series rows -> `ProductSignal` evidence + product `Transition` projection, never causality; ASC datapoints are neutral provider observations (before=after), while ASC sales-series requires explicit before/after ranges and a change event; mined `ProductHypothesis` candidates can become reviewed hypothesis-plan artifacts before any strategy/surface action; unknown/unsupported source fields fail strict doctor and may record `NoPromoteDecision`; source-issue review records closure evidence while preserving the original no-promote row; product timeline reads valid signals plus open/closed product-scoped source issues together |
+| product analytics exports | `ProductSignalExport`, App Store Connect datapoints snapshot rows, and explicit-window App Store Connect sales-series rows -> `ProductSignal` evidence + product `Transition` projection, never causality; ASC datapoints are neutral provider observations (before=after), while ASC sales-series requires explicit before/after ranges and a change event; mined `ProductHypothesis` candidates can become reviewed hypothesis-plan artifacts before any strategy/surface action; unknown/unsupported source fields fail strict doctor and may record `NoPromoteDecision`; source-issue review records closure evidence while preserving the original no-promote row, and reviewed `resolved` follow-up can create a parked ProductHypothesis candidate without creating ProductSignals or claims; product timeline reads valid signals plus open/closed product-scoped source issues together |
 | a retrieval / embedding store | retrieval engine or source index, never authority |
 
 Change-stream promotion candidate pages are product source observations, not
@@ -152,7 +152,10 @@ changes/signals/hypotheses require their own evidence path.
 turns one open source issue into JSON/Markdown review artifacts plus a gated
 `.review.yaml` draft. The draft preserves original evidence but keeps an
 invalid placeholder result until a reviewer edits it, so the next
-`product source-issue-review` step remains explicit and evidence-backed.
+`product source-issue-review` step remains explicit and evidence-backed. A
+reviewed `follow_up` block is allowed only with `result: resolved` and becomes a
+parked ProductHypothesis candidate; it is not a signal, claim, or product-surface
+mutation.
 
 A concrete mapping for a specific operating system — real repo paths and named
 tools — belongs in that operator's private overlay (`docs_private/`), never in

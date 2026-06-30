@@ -3215,6 +3215,9 @@ func cmdProduct(args []string) {
 		if report.TransitionID != "" {
 			fmt.Printf("- transition: %s\n", report.TransitionID)
 		}
+		if report.HypothesisID != "" {
+			fmt.Printf("- hypothesis: %s\n", report.HypothesisID)
+		}
 	case "timeline":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product timeline <product_id>")

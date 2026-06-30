@@ -1643,6 +1643,73 @@ func TestProductSourceIssuePlanUsesOpenSourceIssueWithoutClosingIt(t *testing.T)
 	}
 }
 
+func TestProductSourceIssueReviewResolvedFollowUpCreatesHypothesisCandidate(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "product", "change-stream-candidates.md")
+	importOut := captureStdout(t, func() {
+		cmdProduct([]string{"change-stream", fixture})
+	})
+	issueID := outputValue(importOut, "- issue:")
+	if issueID == "" {
+		t.Fatalf("change-stream output missing issue:\n%s", importOut)
+	}
+	reviewPath := filepath.Join(t.TempDir(), "source-issue-review.yaml")
+	reviewYAML := `schema_version: compound.product_source_issue_review.v0.1
+id: source_issue_review_follow_up_cli
+product_id: product:focus_notes
+issue_id: ` + issueID + `
+result: resolved
+rationale: "reviewed source issue represents a real change worth measuring, not a metric claim yet"
+evidence_refs:
+  - fixture:source-issue-review
+follow_up:
+  change_event: "Reviewed change-stream candidate as real App Store screenshot change"
+  expected_effect: "clearer first screenshot may improve product page conversion"
+  metrics:
+    - app_store_product_page_conversion
+  observation_window: "14d after reviewed change"
+  next_action: "import an explicit ProductSignal after the analytics window"
+  evidence_refs:
+    - fixture:source-issue-follow-up
+`
+	if err := os.WriteFile(reviewPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{"source-issue-review", reviewPath})
+	})
+	hypothesisID := outputValue(out, "- hypothesis:")
+	if !strings.Contains(out, "- status: closed") ||
+		!strings.Contains(out, "- transition:") ||
+		hypothesisID == "" {
+		t.Fatalf("source-issue-review follow-up output missing proof:\n%s", out)
+	}
+	tl, err := product.LoadTimeline(homePath, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Hypotheses) != 1 || tl.Hypotheses[0].ID != hypothesisID {
+		t.Fatalf("timeline hypotheses = %+v, want %s", tl.Hypotheses, hypothesisID)
+	}
+	doctor, err := product.Doctor(homePath, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.PendingReviewCount != 1 || doctor.SourceIssueCount != 1 {
+		t.Fatalf("doctor should keep follow-up review debt visible: %+v", doctor)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("follow-up should not create ProductSignal ledger: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("follow-up should not create promoted claims ledger: %v", err)
+	}
+}
+
 func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

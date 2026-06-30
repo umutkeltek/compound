@@ -221,6 +221,15 @@ func RenderSourceIssueReviewYAML(plan SourceIssuePlan) string {
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "# Edit result to one of: resolved, waived, false_positive.")
+	fmt.Fprintln(&b, "# Optional: when result is resolved and the source issue represents a real product change to measure,")
+	fmt.Fprintln(&b, "# add follow_up to create a parked ProductHypothesis candidate, not a ProductSignal or claim.")
+	fmt.Fprintln(&b, "# follow_up:")
+	fmt.Fprintln(&b, "#   change_event: \"TODO: reviewed product change\"")
+	fmt.Fprintln(&b, "#   expected_effect: \"TODO: expected measurable effect\"")
+	fmt.Fprintln(&b, "#   metrics:")
+	fmt.Fprintln(&b, "#     - app_store_product_page_conversion")
+	fmt.Fprintln(&b, "#   observation_window: \"14d after reviewed change\"")
+	fmt.Fprintln(&b, "#   next_action: \"TODO: import ProductSignal after the evidence window\"")
 	fmt.Fprintln(&b, "# Closing this issue must not imply a durable product change; log ProductSignal/ProductHypothesis separately when evidence supports it.")
 	return b.String()
 }

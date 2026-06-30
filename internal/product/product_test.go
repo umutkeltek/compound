@@ -448,6 +448,86 @@ func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T)
 	}
 }
 
+func TestSourceIssueReviewResolvedFollowUpCreatesParkedHypothesis(t *testing.T) {
+	home := t.TempDir()
+	doc, err := LoadChangeStreamCandidates("../../fixtures/product/change-stream-candidates.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeStream, err := ApplyChangeStreamCandidates(home, doc, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := SourceIssueReview{
+		SchemaVersion: SourceIssueReviewSchemaVersion,
+		ID:            "source_issue_review_follow_up",
+		ProductID:     "product:focus_notes",
+		IssueID:       changeStream.IssueIDs[0],
+		Result:        "resolved",
+		Rationale:     "reviewed source issue represents a real change worth measuring, not a metric claim yet",
+		EvidenceRefs:  []string{"fixture:source-issue-review"},
+		FollowUp: &SourceIssueFollowUp{
+			ChangeEvent:       "Reviewed change-stream candidate as real App Store screenshot change",
+			ExpectedEffect:    "clearer first screenshot may improve product page conversion",
+			Metrics:           []string{"app_store_product_page_conversion"},
+			ObservationWindow: "14d after reviewed change",
+			NextAction:        "import an explicit ProductSignal after the analytics window",
+			EvidenceRefs:      []string{"fixture:source-issue-follow-up"},
+		},
+	}
+	invalid := review
+	invalid.Result = "false_positive"
+	if err := ValidateSourceIssueReview(invalid); err == nil {
+		t.Fatal("follow_up should require resolved source issue review")
+	}
+	report, err := ApplySourceIssueReview(home, store, review, "fixtures/product/source-issue-review.yaml", tProduct.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "closed" || report.HypothesisID == "" || report.TransitionID == "" {
+		t.Fatalf("source issue follow-up report = %+v", report)
+	}
+	hypothesis, err := loadHypothesisCandidate(home, report.HypothesisID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hypothesis.Kind != string(candidates.ProductHypothesis) ||
+		hypothesis.ProductID != "product:focus_notes" ||
+		hypothesis.Verdict != candidates.Park ||
+		hypothesis.Result != "unknown" ||
+		!hasString(hypothesis.EvidenceRefs, "product_source_issue_review:"+review.ID) ||
+		!hasString(hypothesis.EvidenceRefs, "fixture:source-issue-follow-up") {
+		t.Fatalf("follow-up hypothesis = %+v", hypothesis)
+	}
+	tl, err := LoadTimeline(home, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Hypotheses) != 1 || tl.Hypotheses[0].ID != report.HypothesisID {
+		t.Fatalf("timeline hypotheses = %+v", tl.Hypotheses)
+	}
+	if !hasTimelineObject(tl.Transitions, "product_source_issue_review:"+review.ID) {
+		t.Fatalf("timeline transitions missing review: %+v", tl.Transitions)
+	}
+	doctor, err := Doctor(home, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.PendingReviewCount != 1 || doctor.SourceIssueCount != 1 {
+		t.Fatalf("doctor should keep follow-up review debt visible: %+v", doctor)
+	}
+	if _, err := os.Stat(signalsLog(home)); !os.IsNotExist(err) {
+		t.Fatalf("follow-up should not create ProductSignal ledger: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("follow-up should not create claims ledger: %v", err)
+	}
+}
+
 func TestChangeStreamCandidatesRecordProductSourceIssues(t *testing.T) {
 	doc, err := LoadChangeStreamCandidates("../../fixtures/product/change-stream-candidates.md")
 	if err != nil {
