@@ -600,13 +600,38 @@ func cmdCapability(args []string) {
 		die(store.Add(capgraph.Node{ID: p[0], Kind: p[1], Name: p[2], Triggers: trig}))
 		fmt.Printf("added node %s (%s)\n", p[0], p[1])
 	case "surface":
-		p := posn(nil)
+		jsonOut := hasFlag(rest, "--json")
+		harness := flag("--harness")
+		p := posn(map[string]bool{"--harness": true})
 		if len(p) == 0 {
-			fmt.Fprintln(os.Stderr, `usage: compound capability surface "<task>"`)
+			fmt.Fprintln(os.Stderr, `usage: compound capability surface [--harness codex|claude_code] [--json] "<task>"`)
 			os.Exit(2)
 		}
-		hits, err := store.Surface(p[0])
+		var hits []capgraph.Surfaced
+		var err error
+		if harness != "" {
+			hits, err = store.SurfaceForHarness(p[0], harness)
+		} else {
+			hits, err = store.Surface(p[0])
+		}
 		die(err)
+		if jsonOut {
+			out := struct {
+				SchemaVersion string              `json:"schema_version"`
+				AuthorityRef  string              `json:"authority_ref"`
+				Task          string              `json:"task"`
+				Harness       string              `json:"harness,omitempty"`
+				Offers        []capgraph.Surfaced `json:"offers"`
+			}{
+				SchemaVersion: "compound.capability_surface.v0.1",
+				AuthorityRef:  "compound://registries/capability-graph",
+				Task:          p[0],
+				Harness:       harness,
+				Offers:        hits,
+			}
+			die(json.NewEncoder(os.Stdout).Encode(out))
+			return
+		}
 		fmt.Printf("# %d capabilit(ies) surfaced for %q (offered, NOT executed)\n", len(hits), p[0])
 		for _, h := range hits {
 			fmt.Printf("  %-28s %-12s score %.1f  [%s]\n", h.Node.ID, h.Node.Kind, h.Score, h.Why)

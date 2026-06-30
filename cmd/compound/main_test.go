@@ -2407,6 +2407,49 @@ func TestCapabilityImportSkillsRecordsSourceObservationNoPromote(t *testing.T) {
 	}
 }
 
+func TestCapabilitySurfaceJSONFiltersByHarness(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml")})
+	})
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"surface", "--harness", "codex", "--json", "pricing"})
+	})
+	var report struct {
+		SchemaVersion string `json:"schema_version"`
+		AuthorityRef  string `json:"authority_ref"`
+		Task          string `json:"task"`
+		Harness       string `json:"harness"`
+		Offers        []struct {
+			Node capgraph.Node `json:"node"`
+		} `json:"offers"`
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("surface JSON did not parse: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != "compound.capability_surface.v0.1" ||
+		report.AuthorityRef != "compound://registries/capability-graph" ||
+		report.Task != "pricing" ||
+		report.Harness != "codex" {
+		t.Fatalf("unexpected surface metadata: %+v", report)
+	}
+	var ids []string
+	for _, offer := range report.Offers {
+		ids = append(ids, offer.Node.ID)
+	}
+	if !stringSliceContains(ids, "skill:codex-pricing") || !stringSliceContains(ids, "skill:generic-pricing") {
+		t.Fatalf("codex/generic offers missing: %+v", ids)
+	}
+	if stringSliceContains(ids, "skill:claude-pricing") {
+		t.Fatalf("claude-only offer leaked into codex surface: %+v", ids)
+	}
+}
+
 func TestCapabilityImportEvaluationsRecordsGraphEvidenceAndSourceNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

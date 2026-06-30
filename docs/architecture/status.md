@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound capability surface [--harness <harness>] --json "<task>"` now exposes the read-only `CapabilityGraph` surface as machine-readable authority (`compound://registries/capability-graph`). Umut OS compatibility front doors `os capability` and `os skills --host <host>` consume that surface when available, carry the source-authority handoff into `source_of_truth`, and demote OS generated skill/capability views to fallback/evidence inputs.
+
 - `compound hook pre-tool-use --enforce <fixture>` preserves the ActionIntent/PolicyDecision/source-control evidence path but returns policy gate exit codes, so wrapper adapters can fail closed for `blocked` and `fail_open` harnesses.
 
 - `internal/policy` now treats `StandingGrant` as a scoped policy envelope, not an unconditional allow-list. Grants can constrain `target_path`, `max_usd`, `max_tokens`, `blast_radius`, and `reversibility`; leaving that envelope falls back to baseline `PolicyDecision` hold/deny and the existing gate blocks the mutation. `architecture doctor --strict` now includes `standing-grant-contract` so public docs cannot drift back to broad grant wording.
