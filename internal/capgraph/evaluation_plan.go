@@ -181,7 +181,7 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 	if _, err := reviewartifact.Write(homePath, "capability-evaluation-intake", plan.ID, plan, "  ", RenderCapabilityEvaluationPlanReview(plan)); err != nil {
 		return paths, err
 	}
-	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderCapabilityEvaluationReviewYAMLDraft(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.WriteRaw(homePath, "capability-evaluation-intake", plan.ID+".review.yaml", []byte(RenderCapabilityEvaluationReviewYAMLDraft(plan))); err != nil {
 		return paths, err
 	}
 	draft, err := CapabilityEvaluationPlanSkillManifest(plan)
@@ -192,7 +192,7 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 	if err != nil {
 		return paths, err
 	}
-	if err := os.WriteFile(paths.ManifestDraftPath, manifestData, 0o644); err != nil {
+	if _, err := reviewartifact.WriteRaw(homePath, "capability-evaluation-intake", plan.ID+".skill-manifest.yaml", manifestData); err != nil {
 		return paths, err
 	}
 	return paths, nil

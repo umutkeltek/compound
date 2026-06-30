@@ -219,7 +219,7 @@ func RecordHypothesisPlan(homePath string, plan HypothesisPlan) (HypothesisPlanP
 	if _, err := reviewartifact.Write(homePath, "product-hypotheses", plan.ID, plan, " ", RenderHypothesisPlanReview(plan)); err != nil {
 		return paths, err
 	}
-	if err := os.WriteFile(paths.SignalDraftPath, []byte(RenderHypothesisSignalDraft(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.WriteRaw(homePath, "product-hypotheses", plan.ID+".signal.yaml", []byte(RenderHypothesisSignalDraft(plan))); err != nil {
 		return paths, err
 	}
 	return paths, nil

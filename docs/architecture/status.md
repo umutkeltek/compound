@@ -7,6 +7,7 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+- Owner-review artifact writes now route through the shared `internal/reviewartifact` owner for both core JSON/Markdown pairs and extra raw drafts. Capability evaluation intake `.review.yaml` / skill-manifest drafts, distiller improvement `.review.yaml`, and product hypothesis/review/source-issue draft files now use `reviewartifact.WriteRaw`, leaving call sites with only area, payload, and render logic.
 
 - `compound schema list/export/validate` now exposes machine-readable JSON Schema documents for core adapter contracts and validates concrete files through the owning runtime validators (`Envelope.Validate`, distiller reference extraction, runtime/product doctors, route evidence decoder). This gives external harnesses a schema surface without creating a second authority for semantic validation.
 - Capability surfacing is now constraint-aware at the runtime context boundary: `CapabilityGraph.SurfaceForHarness` attaches required refs, harness compatibility, conflicts, missed/false-trigger risks, evidence refs, and an offer-only cost/risk note; `compound orient` preserves those as structured `ContextPack.capability_offers[]` while still emitting legacy generated included refs, and `compound capability surface` prints the same constraints without executing skills/tools.

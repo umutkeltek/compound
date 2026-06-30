@@ -37,8 +37,8 @@ import (
 )
 
 // Paths is the core json+md pair a review artifact always writes. Callers that
-// emit extra drafts (a .review.yaml, a manifest) write those themselves and
-// carry their own wider Paths type.
+// emit extra drafts (a .review.yaml, a manifest) carry their own wider Paths
+// type, but still route those writes through WriteRaw or WriteJSON.
 type Paths struct {
 	PlanPath   string
 	ReviewPath string

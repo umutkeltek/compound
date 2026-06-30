@@ -2,7 +2,6 @@ package product
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -143,7 +142,7 @@ func RecordSourceIssuePlan(homePath string, plan SourceIssuePlan) (SourceIssuePl
 	if _, err := reviewartifact.Write(homePath, "product-source-issues", plan.ID, plan, " ", RenderSourceIssuePlanReview(plan)); err != nil {
 		return paths, err
 	}
-	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderSourceIssueReviewYAML(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.WriteRaw(homePath, "product-source-issues", plan.ID+".review.yaml", []byte(RenderSourceIssueReviewYAML(plan))); err != nil {
 		return paths, err
 	}
 	return paths, nil

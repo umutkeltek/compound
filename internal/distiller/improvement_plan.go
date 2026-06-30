@@ -229,7 +229,7 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 	if _, err := reviewartifact.Write(homePath, "distiller-improvements", plan.ID, plan, "  ", RenderImprovementPlanReview(plan)); err != nil {
 		return paths, err
 	}
-	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderImprovementReviewYAMLDraft(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.WriteRaw(homePath, "distiller-improvements", plan.ID+".review.yaml", []byte(RenderImprovementReviewYAMLDraft(plan))); err != nil {
 		return paths, err
 	}
 	return paths, nil
