@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- OS served-reader proof for operator-state now exists: `os status --json` carries `operator_state.authority_ref=compound://registries/operator-state`, `source_authority_id=opsrc_2ab1a37a42a2`, and marks `registry/operator-state.json` fallback/evidence-only while the plain status line reports `operator autonomy L3 from compound://registries/operator-state`.
+
 - `internal/policy` now imports the global operator autonomy ceiling as Compound authority. `compound policy import-operator-state <operator-state.json>` writes `COMPOUND_HOME/registries/operator-state.json` as `compound://registries/operator-state` and records `registries/operator-state-source-authority.jsonl`; policy loading consumes that authority, cites it in `PolicyDecision.evidence_refs[]`, and treats it as a ceiling for reversible local work rather than a bypass for public, financial, destructive, or security holds. Persistent proof imported a real operator-state source at L3 as `opsrc_2ab1a37a42a2`; `policy evaluate` allowed a local reversible write with obligations and held a public action, both citing `compound://registries/operator-state`.
 
 - Umut OS `os route`, `os capability`, and `os skills` now consume `compound://registries/model-router` for model lane planning when Compound route authority is installed. The generated OS `model-capabilities.source.ts` remains visible as fallback/evidence only. Live proof: `os route build-implement` and privacy-sensitive `os route classify-extract --privacy` both cite source authority `mrcsrc_05e5725f9dcf`; focused OS route tests pass for `os capability` / `os skills` JSON model-lane surfaces.
