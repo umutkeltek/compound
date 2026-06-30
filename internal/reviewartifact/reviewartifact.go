@@ -83,6 +83,42 @@ func Write(homePath, area, id string, payload any, indent, markdown string) (Pat
 	return paths, nil
 }
 
+// WriteJSON persists a single reviews/<area>/<name> JSON artifact with no
+// markdown sibling — for the review-record / apply-record / proof writers that
+// emit one custom-suffixed file (e.g. "<id>.reviewed.json", "<id>.apply.json").
+// name is the full filename; payload is MarshalIndent'd with indent plus a
+// trailing newline. Returns the written path.
+func WriteJSON(homePath, area, name string, payload any, indent string) (string, error) {
+	dir, err := Dir(homePath, area)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name)
+	data, err := json.MarshalIndent(payload, "", indent)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// WriteRaw persists a single reviews/<area>/<name> file with verbatim bytes (no
+// trailing newline added) — for non-JSON drafts such as a reviewed YAML manifest.
+// Returns the written path.
+func WriteRaw(homePath, area, name string, data []byte) (string, error) {
+	dir, err := Dir(homePath, area)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // HashTarget reports whether an owner target exists and its content hash, so a
 // review artifact can record what it reviewed against. A missing path (or empty
 // path) is the no-op (false, "", nil) — not an error. A file hashes its bytes; a

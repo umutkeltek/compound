@@ -189,3 +189,45 @@ func TestTimestamp(t *testing.T) {
 		t.Fatalf("Timestamp = %q, want UTC RFC3339", got)
 	}
 }
+
+func TestWriteJSON(t *testing.T) {
+	home := t.TempDir()
+	type rec struct {
+		ID string `json:"id"`
+	}
+	// Nested area + custom suffix + no markdown sibling.
+	path, err := WriteJSON(home, "distiller-eval/proofs", "p1.json", rec{ID: "x"}, "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(home, "reviews", "distiller-eval", "proofs", "p1.json") {
+		t.Fatalf("path = %q", path)
+	}
+	if _, err := os.Stat(filepath.Join(home, "reviews", "distiller-eval", "proofs", "p1.md")); !os.IsNotExist(err) {
+		t.Fatal("WriteJSON must NOT create a .md sibling")
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.HasSuffix(string(b), "}\n") || !strings.Contains(string(b), "\n  \"id\":") {
+		t.Fatalf("indent/newline not preserved: %q", string(b))
+	}
+	var got rec
+	if err := json.Unmarshal(b, &got); err != nil || got.ID != "x" {
+		t.Fatalf("round-trip failed: %+v %v", got, err)
+	}
+	if _, err := WriteJSON("  ", "a", "n.json", rec{}, " "); err == nil {
+		t.Fatal("expected error for empty home")
+	}
+}
+
+func TestWriteRaw(t *testing.T) {
+	home := t.TempDir()
+	body := []byte("schema_version: x\nid: y\n") // YAML manifest, no extra newline added
+	path, err := WriteRaw(home, "capability-evaluation-intake", "r1.reviewed-skill-manifest.yaml", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if string(b) != string(body) {
+		t.Fatalf("WriteRaw altered bytes: %q != %q", string(b), string(body))
+	}
+}
