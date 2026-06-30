@@ -117,6 +117,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
 		f = append(f, checkHookSourceControlContract(repoRoot)...)
 		f = append(f, checkStandingGrantContract(repoRoot)...)
+		f = append(f, checkPlacementGuardContract(repoRoot)...)
 		f = append(f, checkProductContractContract(repoRoot)...)
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
 		f = append(f, checkConversationMiningContract(repoRoot)...)
@@ -782,6 +783,53 @@ func checkStandingGrantContract(repoRoot string) []Finding {
 		return []Finding{{"standing-grant-contract", Fail, "public docs do not describe scoped StandingGrant envelopes with target_path/budget/blast/reversibility and PolicyDecision/Gate enforcement when leaving the envelope"}}
 	}
 	return []Finding{{"standing-grant-contract", Info, "StandingGrant remains a scoped policy envelope enforced by PolicyDecision/Gate"}}
+}
+
+func checkPlacementGuardContract(repoRoot string) []Finding {
+	hasPlacementGuard := false
+	hasPolicyContext := false
+	hasModes := false
+	hasConfidenceBlock := false
+	hasOpenWriteOverride := false
+	hasFailOpen := false
+	hasGateEnforce := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "placementguard") || strings.Contains(low, "placement guard") {
+			hasPlacementGuard = true
+		}
+		if (strings.Contains(low, "policydecision") || strings.Contains(low, "policy decision")) && strings.Contains(low, "context") {
+			hasPolicyContext = true
+		}
+		if strings.Contains(low, "observe") && strings.Contains(low, "warn") && strings.Contains(low, "block") {
+			hasModes = true
+		}
+		if strings.Contains(low, "confidence:block") && (strings.Contains(low, "hard-hold") || strings.Contains(low, "hard hold") || strings.Contains(low, "hold")) {
+			hasConfidenceBlock = true
+		}
+		if strings.Contains(low, "open_write") && strings.Contains(low, "placement_override") {
+			hasOpenWriteOverride = true
+		}
+		if strings.Contains(low, "fail open") || strings.Contains(low, "fail-open") {
+			hasFailOpen = true
+		}
+		if strings.Contains(low, "hook pre-tool-use --enforce") && (strings.Contains(low, "gate exit") || strings.Contains(low, "exit code")) {
+			hasGateEnforce = true
+		}
+		return nil
+	})
+	if !hasPlacementGuard || !hasPolicyContext || !hasModes || !hasConfidenceBlock || !hasOpenWriteOverride || !hasFailOpen || !hasGateEnforce {
+		return []Finding{{"placement-guard-contract", Fail, "public docs do not describe PlacementGuard as PolicyDecision context with observe/warn/block, confidence:block threshold, OPEN_WRITE/PLACEMENT_OVERRIDE fail-open behavior, and Gate exit enforcement"}}
+	}
+	return []Finding{{"placement-guard-contract", Info, "PlacementGuard remains PolicyDecision context with staged fail-open enforcement"}}
 }
 
 // checkProductContractContract keeps project/release source contracts from

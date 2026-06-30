@@ -20,6 +20,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/mem"
+	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
 	"compound/internal/routeevidence"
@@ -657,6 +658,61 @@ func TestHookPreToolUseEnforceBlocksFailOpenHarness(t *testing.T) {
 	})
 	if observed != 0 {
 		t.Fatalf("non-enforced fixture hook exit = %d, want 0\n%s", observed, observedOut)
+	}
+}
+
+func TestHookPreToolUseEnforceBlocksPlacementGuard(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	fixture := writeHookFixture(t, hook.Fixture{
+		Harness: "codex",
+		WorkID:  "work_placement",
+		Placement: &policy.PlacementGuardContext{
+			Mode:         "block",
+			Confidence:   "block",
+			OwnerRef:     "owner:decisions",
+			TargetRef:    "docs/wrong-home.md",
+			Reason:       "requested target does not match owner placement",
+			EvidenceRefs: []string{"placement:rule:abc123"},
+		},
+		Action: &envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            "act_placement",
+				CreatedAt:     cliTestNow.Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
+				IDs:           envelope.IDs{WorkID: "work_placement"},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier2",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         "codex",
+			Capability:    "filesystem.write",
+			Action:        "write_file",
+			Target:        envelope.ActionTarget{Kind: "file", Path: "docs/wrong-home.md"},
+			MutationClass: "local_reversible",
+			Reversibility: "easy",
+			BlastRadius:   "repo",
+		},
+	})
+	var code int
+	out := captureStdout(t, func() {
+		code = runHookCommand([]string{"pre-tool-use", "--enforce", fixture})
+	})
+	if code != 3 {
+		t.Fatalf("enforced placement hook exit = %d, want 3\n%s", code, out)
+	}
+	for _, want := range []string{
+		`"status": "fail_open"`,
+		`"outcome": "hold"`,
+		"placement_guard mode=block confidence=block",
+		"placement:rule:abc123",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("enforced placement output missing %q:\n%s", want, out)
+		}
 	}
 }
 

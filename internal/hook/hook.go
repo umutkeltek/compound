@@ -48,20 +48,21 @@ var hookCapability = map[string]string{
 
 // Fixture is one normalized hook invocation (a fixture file, or a live hook's stdin).
 type Fixture struct {
-	Hook           string                 `json:"hook"`
-	Harness        string                 `json:"harness"`
-	Cwd            string                 `json:"cwd,omitempty"`
-	Task           string                 `json:"task,omitempty"`
-	RepoKind       string                 `json:"repo_kind,omitempty"`
-	Prompt         string                 `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
-	Action         *envelope.ActionIntent `json:"action,omitempty"`  // pre-tool-use
-	WorkID         string                 `json:"work_id,omitempty"` // session-end
-	MoveType       string                 `json:"move_type,omitempty"`
-	Outcome        string                 `json:"outcome,omitempty"`
-	Summary        string                 `json:"summary,omitempty"`
-	Missed         []string               `json:"missed,omitempty"`
-	FalseTriggered []string               `json:"false_triggered,omitempty"`
-	Tool           string                 `json:"tool,omitempty"` // post-tool-use
+	Hook           string                        `json:"hook"`
+	Harness        string                        `json:"harness"`
+	Cwd            string                        `json:"cwd,omitempty"`
+	Task           string                        `json:"task,omitempty"`
+	RepoKind       string                        `json:"repo_kind,omitempty"`
+	Prompt         string                        `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
+	Action         *envelope.ActionIntent        `json:"action,omitempty"`  // pre-tool-use
+	WorkID         string                        `json:"work_id,omitempty"` // session-end
+	MoveType       string                        `json:"move_type,omitempty"`
+	Outcome        string                        `json:"outcome,omitempty"`
+	Summary        string                        `json:"summary,omitempty"`
+	Missed         []string                      `json:"missed,omitempty"`
+	FalseTriggered []string                      `json:"false_triggered,omitempty"`
+	Tool           string                        `json:"tool,omitempty"` // post-tool-use
+	Placement      *policy.PlacementGuardContext `json:"placement,omitempty"`
 }
 
 // Deps are the services a hook orchestrates.
@@ -249,6 +250,9 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	ai = normalizeActionTarget(fx, ai)
 	evalCtx := policy.EvaluationContext{}
+	if fx.Placement != nil {
+		evalCtx.Placement = fx.Placement
+	}
 	var sourceControl *policy.SourceControlContext
 	sideEffects := []string(nil)
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {

@@ -258,6 +258,168 @@ func TestGate(t *testing.T) {
 	}
 }
 
+func TestPlacementGuardObserveRecordsEvidenceOnly(t *testing.T) {
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Mode:         "observe",
+		Confidence:   "block",
+		OwnerRef:     "owner:decisions",
+		TargetRef:    "docs/x.md",
+		Reason:       "wrong owner",
+		EvidenceRefs: []string{"placement:obs"},
+	}}
+	pd := EvaluateWithContext(mkAction("local_reversible", "easy", "docs/x.md", "repo"), DefaultConfig(), ctx, fixedNow)
+	if pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("observe should keep baseline outcome, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !testContains(pd.EvidenceRefs, "placement:obs") {
+		t.Fatalf("placement evidence missing: %v", pd.EvidenceRefs)
+	}
+	if !reasonContains(pd.Reasons, "observe mode records only") {
+		t.Fatalf("observe reason missing: %v", pd.Reasons)
+	}
+	if err := pd.Validate(); err != nil {
+		t.Fatalf("decision invalid: %v", err)
+	}
+}
+
+func TestPlacementGuardWarnAddsReceiptObligation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ClassOutcome["placement_test"] = ClassRule{Outcome: "allow"}
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Mode:       "warn",
+		Confidence: "block",
+		OwnerRef:   "owner:memory",
+		TargetRef:  "docs/x.md",
+	}}
+	pd := EvaluateWithContext(mkAction("placement_test", "easy", "docs/x.md", "repo"), cfg, ctx, fixedNow)
+	if pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("warn should escalate allow to allow_with_obligations, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !testContains(pd.Obligations, "record placement warning") {
+		t.Fatalf("warn obligation missing: %v", pd.Obligations)
+	}
+	if err := pd.Validate(); err != nil {
+		t.Fatalf("decision invalid: %v", err)
+	}
+}
+
+func TestPlacementGuardBlockHoldsAndClearsGrant(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StandingGrants = []StandingGrant{{
+		ID:            "grant_deploy",
+		Capability:    "deploy.run",
+		MutationClass: "public",
+		BlastRadius:   "public",
+		ExpiresAt:     "2027-01-01T00:00:00Z",
+	}}
+	ai := mkAction("public", "manual", "site/index.html", "public")
+	ai.Capability = "deploy.run"
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Mode:       "block",
+		Confidence: "block",
+		OwnerRef:   "owner:site",
+		TargetRef:  "site/index.html",
+	}}
+	pd := EvaluateWithContext(ai, cfg, ctx, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("block should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if len(pd.Obligations) != 0 || pd.StandingGrantID != "" || pd.ExpiresAt != "" {
+		t.Fatalf("held placement decision should clear allow metadata: obligations=%v grant=%q expires=%q", pd.Obligations, pd.StandingGrantID, pd.ExpiresAt)
+	}
+	if !reasonContains(pd.Reasons, "block mode holds confidence:block placement") {
+		t.Fatalf("block reason missing: %v", pd.Reasons)
+	}
+}
+
+func TestPlacementGuardNonBlockConfidenceFailsOpen(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ClassOutcome["placement_test"] = ClassRule{Outcome: "allow"}
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Mode:       "block",
+		Confidence: "warn",
+		OwnerRef:   "owner:site",
+		TargetRef:  "docs/x.md",
+	}}
+	pd := EvaluateWithContext(mkAction("placement_test", "easy", "docs/x.md", "repo"), cfg, ctx, fixedNow)
+	if pd.Outcome != "allow" {
+		t.Fatalf("non-block confidence should fail open, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !reasonContains(pd.Reasons, "confidence below block threshold") {
+		t.Fatalf("threshold reason missing: %v", pd.Reasons)
+	}
+}
+
+func TestPlacementGuardOpenWriteAndOverrideWin(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ClassOutcome["placement_test"] = ClassRule{Outcome: "allow"}
+	tests := []struct {
+		name string
+		ctx  PlacementGuardContext
+		env  string
+		want string
+	}{
+		{name: "open write", ctx: PlacementGuardContext{Mode: "block", Confidence: "block", OpenWrite: true}, want: "OPEN_WRITE declared"},
+		{name: "fixture override", ctx: PlacementGuardContext{Mode: "block", Confidence: "block", Override: true}, want: "PLACEMENT_OVERRIDE active"},
+		{name: "env override", ctx: PlacementGuardContext{Mode: "block", Confidence: "block"}, env: "1", want: "PLACEMENT_OVERRIDE active"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PLACEMENT_OVERRIDE", tt.env)
+			pd := EvaluateWithContext(
+				mkAction("placement_test", "easy", "docs/x.md", "repo"),
+				cfg,
+				EvaluationContext{Placement: &tt.ctx},
+				fixedNow,
+			)
+			if pd.Outcome != "allow" {
+				t.Fatalf("guard escape should keep allow, got %q reasons=%v", pd.Outcome, pd.Reasons)
+			}
+			if !reasonContains(pd.Reasons, tt.want) {
+				t.Fatalf("reason missing %q: %v", tt.want, pd.Reasons)
+			}
+		})
+	}
+}
+
+func TestPlacementGuardReadActionUnchanged(t *testing.T) {
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Mode:         "block",
+		Confidence:   "block",
+		OwnerRef:     "owner:site",
+		TargetRef:    "docs/x.md",
+		EvidenceRefs: []string{"placement:read"},
+	}}
+	pd := EvaluateWithContext(mkAction("read", "easy", "docs/x.md", "repo"), DefaultConfig(), ctx, fixedNow)
+	if pd.Outcome != "allow" {
+		t.Fatalf("read action should remain allow, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !testContains(pd.EvidenceRefs, "placement:read") {
+		t.Fatalf("placement evidence missing: %v", pd.EvidenceRefs)
+	}
+	if reasonContains(pd.Reasons, "placement_guard") {
+		t.Fatalf("read action should not carry placement guard reasons: %v", pd.Reasons)
+	}
+}
+
+func TestPlacementGuardUnknownModeFailsOpenObserve(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ClassOutcome["placement_test"] = ClassRule{Outcome: "allow"}
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Mode:       "strict",
+		Confidence: "block",
+		OwnerRef:   "owner:site",
+		TargetRef:  "docs/x.md",
+	}}
+	pd := EvaluateWithContext(mkAction("placement_test", "easy", "docs/x.md", "repo"), cfg, ctx, fixedNow)
+	if pd.Outcome != "allow" {
+		t.Fatalf("unknown mode should fail open observe, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !reasonContains(pd.Reasons, `unknown mode "strict", fail-open observe`) {
+		t.Fatalf("unknown mode reason missing: %v", pd.Reasons)
+	}
+}
+
 func TestGlobToRegexp(t *testing.T) {
 	cases := []struct {
 		pat, path string

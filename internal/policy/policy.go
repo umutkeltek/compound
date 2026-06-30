@@ -53,6 +53,7 @@ type Config struct {
 	HumanReversibilities []string             `yaml:"human_reversibilities" json:"human_reversibilities"`
 	WideBlastRadii       []string             `yaml:"wide_blast_radii" json:"wide_blast_radii"`
 	StandingGrants       []StandingGrant      `yaml:"standing_grants" json:"standing_grants"`
+	PlacementGuardMode   string               `yaml:"placement_guard_mode,omitempty" json:"placement_guard_mode,omitempty"`
 }
 
 // DefaultConfig satisfies the three documented proof cases:
@@ -61,7 +62,8 @@ type Config struct {
 // EvaluationContext carries live observations that can only raise caution.
 // The core policy stays declarative; runtime adapters provide current evidence.
 type EvaluationContext struct {
-	SourceControl *SourceControlContext `json:"source_control,omitempty"`
+	SourceControl *SourceControlContext  `json:"source_control,omitempty"`
+	Placement     *PlacementGuardContext `json:"placement,omitempty"`
 }
 
 // SourceControlContext is a read-only git status observation for the action target.
@@ -69,6 +71,19 @@ type SourceControlContext struct {
 	EntityRef    string   `json:"entity_ref,omitempty"`
 	Status       string   `json:"status,omitempty"`
 	ChangedPaths int      `json:"changed_paths,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+// PlacementGuardContext is owner-placement evidence for an intended mutation.
+// It stages observe -> warn -> block without creating another guard path.
+type PlacementGuardContext struct {
+	Mode         string   `json:"mode,omitempty"`
+	Confidence   string   `json:"confidence,omitempty"`
+	OwnerRef     string   `json:"owner_ref,omitempty"`
+	TargetRef    string   `json:"target_ref,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	OpenWrite    bool     `json:"open_write,omitempty"`
+	Override     bool     `json:"override,omitempty"`
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 }
 
@@ -87,6 +102,7 @@ func DefaultConfig() Config {
 		},
 		HumanReversibilities: []string{"irreversible", "hard", "none"},
 		WideBlastRadii:       []string{"production", "public", "account", "fleet", "org", "user-data"},
+		PlacementGuardMode:   "observe",
 	}
 }
 
@@ -100,10 +116,13 @@ func LoadConfig(homePath string) (Config, string, error) {
 			if err := yaml.Unmarshal(data, &c); err != nil {
 				return Config{}, p, fmt.Errorf("parse %s: %w", p, err)
 			}
+			applyPlacementGuardEnv(&c)
 			return c, p, nil
 		}
 	}
-	return DefaultConfig(), "built-in", nil
+	c := DefaultConfig()
+	applyPlacementGuardEnv(&c)
+	return c, "built-in", nil
 }
 
 // Evaluate decides an ActionIntent. Precedence: forbidden path (deny) > scoped
@@ -119,6 +138,9 @@ func EvaluateWithContext(ai envelope.ActionIntent, cfg Config, ctx EvaluationCon
 	pd := evaluateBase(ai, cfg, now)
 	if ctx.SourceControl != nil {
 		pd = applySourceControlContext(pd, ai, *ctx.SourceControl, now)
+	}
+	if ctx.Placement != nil {
+		pd = applyPlacementGuardContext(pd, ai, cfg, *ctx.Placement, now)
 	}
 	return pd
 }
@@ -237,6 +259,110 @@ func Gate(pd envelope.PolicyDecision) error {
 		return nil
 	}
 	return &Blocked{Outcome: pd.Outcome, Reasons: pd.Reasons}
+}
+
+func applyPlacementGuardContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, cfg Config, pg PlacementGuardContext, now time.Time) envelope.PolicyDecision {
+	if len(pg.EvidenceRefs) > 0 {
+		pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, pg.EvidenceRefs...)
+	}
+	if ai.MutationClass == "read" {
+		return pd
+	}
+	mode, unknownMode := placementGuardMode(pg.Mode, cfg.PlacementGuardMode)
+	confidence := strings.ToLower(strings.TrimSpace(pg.Confidence))
+	reason := placementGuardReason(mode, confidence, pg)
+	if unknownMode != "" {
+		pd.Reasons = append(pd.Reasons, reason+fmt.Sprintf("; unknown mode %q, fail-open observe", unknownMode))
+		return pd
+	}
+	switch {
+	case pg.Override || placementGuardOverrideEnv():
+		pd.Reasons = append(pd.Reasons, reason+"; PLACEMENT_OVERRIDE active, fail-open")
+		return pd
+	case pg.OpenWrite:
+		pd.Reasons = append(pd.Reasons, reason+"; OPEN_WRITE declared, placement guard does not block")
+		return pd
+	case confidence != "block":
+		pd.Reasons = append(pd.Reasons, reason+"; confidence below block threshold")
+		return pd
+	}
+	switch mode {
+	case "observe":
+		pd.Reasons = append(pd.Reasons, reason+"; observe mode records only")
+	case "warn":
+		pd.Reasons = append(pd.Reasons, reason+"; warn mode requires explicit receipt")
+		if severity[pd.Outcome] < severity["allow_with_obligations"] {
+			pd.Outcome = "allow_with_obligations"
+			pd.ID = idFor("pol_", ai.ID, "warn", "placement-guard", ts(now))
+		}
+		if severity[pd.Outcome] <= severity["allow_with_obligations"] {
+			pd.Obligations = mergeStrings(pd.Obligations, "record placement warning")
+		}
+	case "block":
+		pd.Reasons = append(pd.Reasons, reason+"; block mode holds confidence:block placement")
+		if severity[pd.Outcome] < severity["hold"] {
+			pd.Outcome = "hold"
+			pd.Obligations = nil
+			pd.StandingGrantID = ""
+			pd.ExpiresAt = ""
+			pd.ID = idFor("pol_", ai.ID, "hold", "placement-guard", ts(now))
+		}
+	}
+	return pd
+}
+
+func placementGuardMode(values ...string) (string, string) {
+	for _, value := range values {
+		mode := strings.ToLower(strings.TrimSpace(value))
+		if mode == "" {
+			continue
+		}
+		switch mode {
+		case "observe", "warn", "block":
+			return mode, ""
+		default:
+			return "observe", mode
+		}
+	}
+	return "observe", ""
+}
+
+func placementGuardReason(mode, confidence string, pg PlacementGuardContext) string {
+	owner := strings.TrimSpace(pg.OwnerRef)
+	if owner == "" {
+		owner = "unknown-owner"
+	}
+	target := strings.TrimSpace(pg.TargetRef)
+	if target == "" {
+		target = "target"
+	}
+	if confidence == "" {
+		confidence = "unknown"
+	}
+	reason := fmt.Sprintf("placement_guard mode=%s confidence=%s owner=%s target=%s", mode, confidence, owner, target)
+	if detail := strings.TrimSpace(pg.Reason); detail != "" {
+		reason += "; " + detail
+	}
+	return reason
+}
+
+func applyPlacementGuardEnv(c *Config) {
+	mode := strings.TrimSpace(os.Getenv("COMPOUND_PLACEMENT_GUARD_MODE"))
+	if mode == "" {
+		mode = strings.TrimSpace(os.Getenv("PLACEMENT_GUARD_MODE"))
+	}
+	if mode != "" {
+		c.PlacementGuardMode = mode
+	}
+}
+
+func placementGuardOverrideEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PLACEMENT_OVERRIDE"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // --- internals ---

@@ -670,6 +670,42 @@ func TestStandingGrantContractFailsOnUnscopedDocs(t *testing.T) {
 	}
 }
 
+func TestPlacementGuardContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "placement-guard-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("placement guard contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected placement-guard-contract finding")
+	}
+}
+
+func TestPlacementGuardContractFailsOnHookOnlyDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "PlacementGuard hook blocks writes by checking owner placement.\n"
+	if err := os.WriteFile(filepath.Join(docs, "runtime.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkPlacementGuardContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "confidence:block") {
+		t.Fatalf("failure should name missing confidence threshold: %+v", findings)
+	}
+}
+
 func TestProductContractContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool

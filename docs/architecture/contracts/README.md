@@ -18,6 +18,10 @@ These are the typed objects every harness/hook/run flows through, hung off one r
 Hook adapters normalize relative `ActionIntent.target.path` values against hook `cwd` before policy evaluation,
 artifact persistence, and source-control inspection. Policy reasons, stored ActionIntent artifacts, and git evidence
 therefore refer to the same governed target.
+Placement guard evidence is also runtime policy context, not a second guard path: PreToolUse can pass
+`PlacementGuard` context into `PolicyDecision`, staged `observe -> warn -> block`; only `confidence:block`
+can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
+`hook pre-tool-use --enforce` carries the resulting Gate exit code for wrappers.
 
 | Contract | Purpose | Lifecycle |
 |---|---|---|
