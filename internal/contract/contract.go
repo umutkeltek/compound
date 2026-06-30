@@ -235,6 +235,7 @@ const (
 	InstalledHooksSourceAuthoritySchema = "compound.installed_hooks_source_authority.v0.1"
 	installedHooksSourceAuthorityFile   = "installed-hooks-source-authority.jsonl"
 	installedHooksCodexImportedVia      = "contract import-hooks --codex-hooks-json"
+	installedHooksRegistryImportedVia   = "contract import-hooks --hook-registration-ts"
 )
 
 type InstalledHooksManifest struct {
@@ -746,6 +747,28 @@ func ImportCodexHooksJSON(homePath, sourcePath string, now time.Time) (Installed
 	if err != nil {
 		return InstalledHooksImportReport{}, err
 	}
+	return importInstalledHooks(homePath, sourcePath, data, manifest, installedHooksCodexImportedVia, now)
+}
+
+func ImportHookRegistrationTS(homePath, sourcePath string, now time.Time) (InstalledHooksImportReport, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return InstalledHooksImportReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if strings.TrimSpace(sourcePath) == "" {
+		return InstalledHooksImportReport{}, fmt.Errorf("source path required")
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	manifest, err := parseHookRegistrationTS(data)
+	if err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	return importInstalledHooks(homePath, sourcePath, data, manifest, installedHooksRegistryImportedVia, now)
+}
+
+func importInstalledHooks(homePath, sourcePath string, data []byte, manifest InstalledHooksManifest, importedVia string, now time.Time) (InstalledHooksImportReport, error) {
 	if err := os.MkdirAll(filepath.Join(homePath, "config"), 0o755); err != nil {
 		return InstalledHooksImportReport{}, err
 	}
@@ -760,11 +783,11 @@ func ImportCodexHooksJSON(homePath, sourcePath string, now time.Time) (Installed
 	sourceRevision := hashBytes(data)
 	rec := InstalledHooksSourceAuthority{
 		SchemaVersion:       InstalledHooksSourceAuthoritySchema,
-		ID:                  installedHooksSourceAuthorityID(sourcePath, sourceRevision),
+		ID:                  installedHooksSourceAuthorityID(sourcePath, sourceRevision, importedVia),
 		CreatedAt:           now.UTC().Format(time.RFC3339),
 		SourcePath:          sourcePath,
 		SourceRevision:      sourceRevision,
-		ImportedVia:         installedHooksCodexImportedVia,
+		ImportedVia:         importedVia,
 		AuthorityRef:        InstalledHooksAuthorityRef,
 		AuthorityStatus:     "compound_primary",
 		SourceRole:          "evidence_only_input_after_import",
@@ -787,6 +810,195 @@ func ImportCodexHooksJSON(homePath, sourcePath string, now time.Time) (Installed
 		Harnesses:         rec.Harnesses,
 		Manifest:          manifest,
 	}, nil
+}
+
+func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
+	body, err := hookRegistrationArrayBody(string(data))
+	if err != nil {
+		return InstalledHooksManifest{}, err
+	}
+	objects, err := splitTopLevelObjects(body)
+	if err != nil {
+		return InstalledHooksManifest{}, err
+	}
+	manifest := InstalledHooksManifest{SchemaVersion: installedHooksSchemaVersion}
+	seen := map[string]bool{}
+	for i, obj := range objects {
+		rawHarness, ok := tsStringField(obj, "harness")
+		if !ok {
+			return InstalledHooksManifest{}, fmt.Errorf("hook registration %d missing harness", i+1)
+		}
+		harness := normalizeInstalledHookHarness(rawHarness)
+		event, ok := tsStringField(obj, "event")
+		if !ok {
+			return InstalledHooksManifest{}, fmt.Errorf("hook registration %d missing event", i+1)
+		}
+		file, ok := tsStringField(obj, "file")
+		if !ok {
+			return InstalledHooksManifest{}, fmt.Errorf("hook registration %d missing file", i+1)
+		}
+		command, ok := tsStringField(obj, "command")
+		if !ok {
+			return InstalledHooksManifest{}, fmt.Errorf("hook registration %d missing command", i+1)
+		}
+		ref := expandHomeRef(hookRefFromCommand(command))
+		if ref == "" {
+			ref = hookRefFromHarnessFile(rawHarness, file)
+		}
+		key := strings.Join([]string{harness, event, ref}, "\x00")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		manifest.Hooks = append(manifest.Hooks, InstalledHook{
+			Harness: harness,
+			Name:    event,
+			Ref:     ref,
+			Status:  "current",
+		})
+	}
+	if len(manifest.Hooks) == 0 {
+		return InstalledHooksManifest{}, fmt.Errorf("hook-registration ts has no hook registrations")
+	}
+	sort.Slice(manifest.Hooks, func(i, j int) bool {
+		a, b := manifest.Hooks[i], manifest.Hooks[j]
+		return strings.Join([]string{a.Harness, a.Name, a.Ref}, "\x00") < strings.Join([]string{b.Harness, b.Name, b.Ref}, "\x00")
+	})
+	return manifest, nil
+}
+
+func normalizeInstalledHookHarness(harness string) string {
+	switch strings.TrimSpace(harness) {
+	case "claude":
+		return "claude_code"
+	default:
+		return strings.TrimSpace(harness)
+	}
+}
+
+func hookRegistrationArrayBody(text string) (string, error) {
+	idx := strings.Index(text, "HOOK_REGISTRATIONS")
+	if idx == -1 {
+		return "", fmt.Errorf("HOOK_REGISTRATIONS not found")
+	}
+	eq := strings.Index(text[idx:], "=")
+	if eq == -1 {
+		return "", fmt.Errorf("HOOK_REGISTRATIONS assignment not found")
+	}
+	eq += idx
+	start := strings.Index(text[eq:], "[")
+	if start == -1 {
+		return "", fmt.Errorf("HOOK_REGISTRATIONS array not found")
+	}
+	start += eq
+	end, err := findMatchingDelimited(text, start, '[', ']')
+	if err != nil {
+		return "", err
+	}
+	return text[start+1 : end], nil
+}
+
+func splitTopLevelObjects(body string) ([]string, error) {
+	var objects []string
+	for i := 0; i < len(body); i++ {
+		if body[i] != '{' {
+			continue
+		}
+		end, err := findMatchingDelimited(body, i, '{', '}')
+		if err != nil {
+			return nil, err
+		}
+		objects = append(objects, body[i+1:end])
+		i = end
+	}
+	return objects, nil
+}
+
+func findMatchingDelimited(text string, start int, open, close byte) (int, error) {
+	if start < 0 || start >= len(text) || text[start] != open {
+		return -1, fmt.Errorf("delimiter %q not found", open)
+	}
+	depth := 0
+	var quote byte
+	escaped := false
+	for i := start; i < len(text); i++ {
+		c := text[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = c
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return i, nil
+			}
+		}
+	}
+	return -1, fmt.Errorf("no matching %q found", close)
+}
+
+func tsStringField(obj, key string) (string, bool) {
+	idx := strings.Index(obj, key+":")
+	if idx == -1 {
+		return "", false
+	}
+	rest := strings.TrimSpace(obj[idx+len(key)+1:])
+	if rest == "" {
+		return "", false
+	}
+	quote := rest[0]
+	if quote != '\'' && quote != '"' && quote != '`' {
+		return "", false
+	}
+	var b strings.Builder
+	escaped := false
+	for i := 1; i < len(rest); i++ {
+		c := rest[i]
+		if escaped {
+			b.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' {
+			escaped = true
+			continue
+		}
+		if c == quote {
+			return strings.TrimSpace(b.String()), true
+		}
+		b.WriteByte(c)
+	}
+	return "", false
+}
+
+func hookRefFromHarnessFile(harness, file string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	switch harness {
+	case "claude":
+		return filepath.Join(home, ".claude", "hooks", file)
+	case "codex":
+		return filepath.Join(home, ".codex", "hooks", file)
+	default:
+		return ""
+	}
 }
 
 func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
@@ -838,6 +1050,23 @@ func hookRefFromCommand(command string) string {
 	return ""
 }
 
+func expandHomeRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ref
+	}
+	ref = strings.ReplaceAll(ref, "${HOME}", home)
+	ref = strings.ReplaceAll(ref, "$HOME", home)
+	if strings.HasPrefix(ref, "~/") {
+		ref = filepath.Join(home, strings.TrimPrefix(ref, "~/"))
+	}
+	return ref
+}
+
 func loadInstalledHooksManifest(path string) (InstalledHooksManifest, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -887,8 +1116,8 @@ func installedHookHarnesses(manifest InstalledHooksManifest) []string {
 	return out
 }
 
-func installedHooksSourceAuthorityID(path, revision string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, installedHooksCodexImportedVia}, "|")))
+func installedHooksSourceAuthorityID(path, revision, importedVia string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, importedVia}, "|")))
 	return "hksrc_" + hex.EncodeToString(sum[:])[:12]
 }
 

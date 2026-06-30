@@ -92,9 +92,10 @@ Runtime and contracts:
 - `compound contract compile` and `compound orient` produce EffectiveContract
   and ContextPack artifacts, including included/excluded refs, active hook
   rosters, and structured capability offers.
-- `compound contract import-hooks --codex-hooks-json <hooks.json>` installs the
-  generated Codex hook roster as `compound://config/installed-hooks`;
-  `compound contract hooks-authority` reports that handoff.
+- `compound contract import-hooks --codex-hooks-json <hooks.json>` or
+  `--hook-registration-ts <hook-registration.ts>` installs generated hook
+  rosters as `compound://config/installed-hooks`; `compound contract
+  hooks-authority` reports that handoff.
 
 Execution and policy:
 

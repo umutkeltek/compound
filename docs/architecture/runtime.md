@@ -4,9 +4,9 @@ This is how a *running* compound instance works. Three parts: the generated-stat
 spine, and the thin hook clients. Build this **before** memory ingestion (`../roadmap/phases.md`). One doc on
 purpose — fragmenting "generated-state", "envelopes", and "hooks" into three would reproduce the disease.
 
-`compound contract import-hooks --codex-hooks-json <hooks.json>` installs a proven generated Codex hook
-roster as `compound://config/installed-hooks`; after import, `contract compile` and runtime ContextPacks
-read the Compound-owned manifest while the generated source remains evidence/rollback input.
+`compound contract import-hooks --codex-hooks-json <hooks.json>` or `--hook-registration-ts <hook-registration.ts>`
+installs proven generated hook rosters as `compound://config/installed-hooks`; after import, `contract compile`
+and runtime ContextPacks read the Compound-owned manifest while generated sources remain evidence/rollback input.
 
 ---
 

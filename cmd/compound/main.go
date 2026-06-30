@@ -3030,16 +3030,22 @@ func cmdContract(args []string) {
 		printJSON(ec)
 	case "import-hooks":
 		sourcePath := valueFlag(args[1:], "--codex-hooks-json")
-		if sourcePath == "" && len(args) == 2 {
+		registrationPath := valueFlag(args[1:], "--hook-registration-ts")
+		if sourcePath == "" && registrationPath == "" && len(args) == 2 {
 			sourcePath = args[1]
 		}
-		if sourcePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound contract import-hooks --codex-hooks-json <codex-hooks-json.json>")
+		if (sourcePath == "" && registrationPath == "") || (sourcePath != "" && registrationPath != "") {
+			fmt.Fprintln(os.Stderr, "usage: compound contract import-hooks (--codex-hooks-json <codex-hooks-json.json>|--hook-registration-ts <hook-registration.ts>)")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
 		die(err)
-		report, err := contract.ImportCodexHooksJSON(homePath, sourcePath, time.Now())
+		var report contract.InstalledHooksImportReport
+		if registrationPath != "" {
+			report, err = contract.ImportHookRegistrationTS(homePath, registrationPath, time.Now())
+		} else {
+			report, err = contract.ImportCodexHooksJSON(homePath, sourcePath, time.Now())
+		}
 		die(err)
 		printJSON(report)
 	case "hooks-authority":

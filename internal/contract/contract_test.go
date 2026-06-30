@@ -583,6 +583,63 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	}
 }
 
+func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
+	report, err := ImportHookRegistrationTS(home, source, fixedNow)
+	if err != nil {
+		t.Fatalf("import hook registration ts: %v", err)
+	}
+	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 5 {
+		t.Fatalf("unexpected import report: %+v", report)
+	}
+	if len(report.Harnesses) != 2 || report.Harnesses[0] != "claude_code" || report.Harnesses[1] != "codex" {
+		t.Fatalf("import harnesses = %+v", report.Harnesses)
+	}
+	records, err := LoadInstalledHooksSourceAuthority(home)
+	if err != nil {
+		t.Fatalf("load source authority: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("source authority records = %d, want 1", len(records))
+	}
+	if records[0].ImportedVia != installedHooksRegistryImportedVia {
+		t.Fatalf("imported_via = %q, want %q", records[0].ImportedVia, installedHooksRegistryImportedVia)
+	}
+
+	claudeInput := Input{Harness: "claude_code", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	ec, err := CompileWithRuntime(claudeInput, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hook://claude_code/PreToolUse", "hook://claude_code/SessionStart", "hook://claude_code/UserPromptSubmit"} {
+		if !contains(ec.ActiveHooks, want) {
+			t.Fatalf("claude effective contract active hooks = %v, want %s", ec.ActiveHooks, want)
+		}
+	}
+	pack, err := PackWithCapabilities(claudeInput, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(pack.ActiveHooks, "hook://claude_code/SessionStart") {
+		t.Fatalf("claude context pack active hooks = %v", pack.ActiveHooks)
+	}
+
+	codexInput := Input{Harness: "codex", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	codex, err := CompileWithRuntime(codexInput, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(codex.ActiveHooks, "hook://claude_code/PreToolUse") {
+		t.Fatalf("codex effective contract leaked claude hook: %v", codex.ActiveHooks)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !contains(codex.ActiveHooks, want) {
+			t.Fatalf("codex effective contract active hooks = %v, want %s", codex.ActiveHooks, want)
+		}
+	}
+}
+
 func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

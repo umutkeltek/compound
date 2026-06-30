@@ -261,6 +261,49 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	}
 }
 
+func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
+	importOut := captureStdout(t, func() {
+		cmdContract([]string{"import-hooks", "--hook-registration-ts", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://config/installed-hooks"`,
+		`"hook_count": 5`,
+		`"imported_via": "contract import-hooks --hook-registration-ts"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import-hooks output missing %q:\n%s", want, importOut)
+		}
+	}
+	authorityOut := captureStdout(t, func() {
+		cmdContract([]string{"hooks-authority"})
+	})
+	for _, want := range []string{
+		`"harnesses": [`,
+		`"claude_code"`,
+		`"codex"`,
+		`"hook_count": 5`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("hooks-authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+	out := captureStdout(t, func() {
+		cmdContract([]string{"compile", "--harness", "claude_code", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
+	})
+	var ec envelope.EffectiveContract
+	if err := json.Unmarshal([]byte(out), &ec); err != nil {
+		t.Fatalf("parse contract compile: %v\n%s", err, out)
+	}
+	for _, want := range []string{"hook://claude_code/SessionStart", "hook://claude_code/UserPromptSubmit", "hook://claude_code/PreToolUse"} {
+		if !stringSliceContains(ec.ActiveHooks, want) {
+			t.Fatalf("compiled active hooks = %v, want %s", ec.ActiveHooks, want)
+		}
+	}
+}
+
 func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
