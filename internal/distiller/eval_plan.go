@@ -1,17 +1,15 @@
 package distiller
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const EvalPlanSchemaVersion = "compound.distiller.eval_plan.v0.1"
@@ -72,17 +70,17 @@ func BuildEvalPlan(homePath, candidateID, targetCorpusDir string, now time.Time)
 	if c.Kind != KindEvalCase {
 		return EvalPlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, KindEvalCase)
 	}
-	evidenceRefs := uniqueEvalRefs(c.EvidenceRefs)
-	targetExists, targetHash, err := hashEvalTarget(targetCorpusDir)
+	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetCorpusDir)
 	if err != nil {
 		return EvalPlan{}, err
 	}
 	traceRef := firstEvalTraceRef(c, evidenceRefs)
-	proposedID := "eval_" + slugifyEval(c.Subject)
+	proposedID := "eval_" + reviewartifact.Slugify(c.Subject, 0)
 	if proposedID == "eval_" {
-		proposedID = "eval_" + slugifyEval(candidateID)
+		proposedID = "eval_" + reviewartifact.Slugify(candidateID, 0)
 	}
-	proposedID += "_" + digestEval12(candidateID+c.Statement)
+	proposedID += "_" + reviewartifact.Digest12(candidateID+c.Statement)
 	plan := EvalPlan{
 		SchemaVersion:    EvalPlanSchemaVersion,
 		ID:               idFor("evp_", candidateID, targetCorpusDir),
@@ -151,25 +149,8 @@ func RecordEvalPlan(homePath string, plan EvalPlan) (EvalPlanPaths, error) {
 	if plan.ID == "" {
 		return EvalPlanPaths{}, fmt.Errorf("eval plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "distiller-eval")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return EvalPlanPaths{}, err
-	}
-	paths := EvalPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderEvalPlanReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "distiller-eval", plan.ID, plan, " ", RenderEvalPlanReview(plan))
+	return EvalPlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderEvalPlanReview(plan EvalPlan) string {
@@ -215,53 +196,6 @@ func RenderEvalPlanReview(plan EvalPlan) string {
 	return b.String()
 }
 
-func hashEvalTarget(path string) (bool, string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false, "", nil
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	if !info.IsDir() {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return false, "", err
-		}
-		sum := sha256.Sum256(data)
-		return true, hex.EncodeToString(sum[:]), nil
-	}
-	var entries []string
-	if err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(path, p)
-		if err != nil {
-			return err
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		sum := sha256.Sum256(data)
-		entries = append(entries, filepath.ToSlash(rel)+":"+hex.EncodeToString(sum[:]))
-		return nil
-	}); err != nil {
-		return false, "", err
-	}
-	sort.Strings(entries)
-	sum := sha256.Sum256([]byte(strings.Join(entries, "\n")))
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
 func firstEvalTraceRef(c Candidate, refs []string) string {
 	for _, ref := range refs {
 		if strings.HasPrefix(ref, "trace:") || strings.HasPrefix(ref, "trace_envelope:") || strings.HasPrefix(ref, "raw_trace:") {
@@ -269,43 +203,4 @@ func firstEvalTraceRef(c Candidate, refs []string) string {
 		}
 	}
 	return "candidate:" + c.ID
-}
-
-func uniqueEvalRefs(values []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func slugifyEval(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func digestEval12(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
 }

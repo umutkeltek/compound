@@ -1,8 +1,6 @@
 package distiller
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -133,24 +132,24 @@ func BuildImprovementPlan(homePath, candidateID, targetPath string, now time.Tim
 	if c.Verdict != Park && c.Verdict != Operationalize && c.Verdict != candidates.NoPromote {
 		return ImprovementPlan{}, fmt.Errorf("candidate %s verdict=%q, want park, operationalize, or no_promote", candidateID, c.Verdict)
 	}
-	targetExists, targetHash, err := hashImprovementTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return ImprovementPlan{}, err
 	}
 	evidenceRefs := append([]string(nil), c.EvidenceRefs...)
 	sort.Strings(evidenceRefs)
-	key := slugifyImprovement(firstImprovementValue(c.Subject, c.Detail, c.Statement, c.ID))
+	key := reviewartifact.Slugify(reviewartifact.FirstNonEmpty(c.Subject, c.Detail, c.Statement, c.ID), 48)
 	if key == "" {
-		key = digestImprovement12(candidateID)
+		key = reviewartifact.Digest12(candidateID)
 	}
 	area := "method"
 	if c.Kind == KindPolicyPatch {
 		area = "policy"
 	}
-	statement := firstImprovementValue(c.Statement, c.Subject, "reviewed distiller improvement")
+	statement := reviewartifact.FirstNonEmpty(c.Statement, c.Subject, "reviewed distiller improvement")
 	plan := ImprovementPlan{
 		SchemaVersion:    ImprovementPlanSchemaVersion,
-		ID:               idImprovement("imp_", candidateID, targetPath),
+		ID:               reviewartifact.ID("imp_", candidateID, targetPath),
 		CreatedAt:        rfc3339(now),
 		Status:           "review_required",
 		CandidateID:      candidateID,
@@ -166,9 +165,9 @@ func BuildImprovementPlan(homePath, candidateID, targetPath string, now time.Tim
 		TargetExists:     targetExists,
 		TargetHash:       targetHash,
 		Draft: ImprovementDraft{
-			ImprovementID:    area + "_" + key + "_" + digestImprovement12(candidateID+c.Statement),
+			ImprovementID:    area + "_" + key + "_" + reviewartifact.Digest12(candidateID+c.Statement),
 			Area:             area,
-			Title:            firstImprovementValue(c.Subject, statement),
+			Title:            reviewartifact.FirstNonEmpty(c.Subject, statement),
 			ProposedChange:   statement,
 			Guardrail:        "Do not apply this improvement until a reviewed eval case or replay proof shows better extraction/adjudication without increasing false promotion.",
 			EvalRequirement:  "Add or cite at least one distiller eval case or replay trace that fails before the change and passes after review.",
@@ -226,8 +225,8 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 	if plan.ID == "" {
 		return ImprovementPlanPaths{}, fmt.Errorf("improvement plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "distiller-improvements")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := reviewartifact.Dir(homePath, "distiller-improvements")
+	if err != nil {
 		return ImprovementPlanPaths{}, err
 	}
 	paths := ImprovementPlanPaths{
@@ -235,14 +234,7 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
 		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
 	}
-	data, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderImprovementPlanReview(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.Write(homePath, "distiller-improvements", plan.ID, plan, "  ", RenderImprovementPlanReview(plan)); err != nil {
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderImprovementReviewYAMLDraft(plan)), 0o644); err != nil {
@@ -322,10 +314,10 @@ func (r ImprovementReview) Validate() error {
 	if r.Confidence < 0 || r.Confidence > 1 {
 		return fmt.Errorf("confidence must be between 0 and 1")
 	}
-	if len(compactImprovementStrings(r.EvidenceRefs)) == 0 {
+	if len(reviewartifact.Unique(r.EvidenceRefs)) == 0 {
 		return fmt.Errorf("evidence_refs required")
 	}
-	if strings.TrimSpace(r.Decision) == ImprovementReviewDecisionAccept && len(compactImprovementStrings(r.EvalProofRefs)) == 0 {
+	if strings.TrimSpace(r.Decision) == ImprovementReviewDecisionAccept && len(reviewartifact.Unique(r.EvalProofRefs)) == 0 {
 		return fmt.Errorf("accept decision requires at least one eval_proof_refs entry")
 	}
 	if strings.TrimSpace(r.Draft.ImprovementID) == "" || strings.TrimSpace(r.Draft.ProposedChange) == "" || strings.TrimSpace(r.Draft.Guardrail) == "" {
@@ -369,8 +361,8 @@ func RecordImprovementReview(homePath string, review ImprovementReview, now time
 		Decision:      review.Decision,
 		Rationale:     review.Rationale,
 		Confidence:    review.Confidence,
-		EvidenceRefs:  compactImprovementStrings(review.EvidenceRefs),
-		EvalProofRefs: compactImprovementStrings(review.EvalProofRefs),
+		EvidenceRefs:  reviewartifact.Unique(review.EvidenceRefs),
+		EvalProofRefs: reviewartifact.Unique(review.EvalProofRefs),
 		TargetPath:    review.TargetPath,
 		TargetHash:    review.TargetHash,
 		Draft:         review.Draft,
@@ -506,75 +498,4 @@ func improvementReviewStatus(decision string) string {
 	default:
 		return "needs_review"
 	}
-}
-
-func compactImprovementStrings(values []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	return out
-}
-
-func hashImprovementTarget(path string) (bool, string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false, "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	sum := sha256.Sum256(data)
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
-func firstImprovementValue(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func slugifyImprovement(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if len(out) > 48 {
-		out = strings.Trim(out[:48], "-")
-	}
-	return out
-}
-
-func idImprovement(prefix string, parts ...string) string {
-	return prefix + digestImprovement12(strings.Join(parts, "|"))
-}
-
-func digestImprovement12(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
 }
