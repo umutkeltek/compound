@@ -1,6 +1,7 @@
 # Package & Command Status
 
 > Latest runtime proof: persistent `~/.compound` packet-owner proof closed a real continuation packet through `work_51713aefb7f5` -> `rec_f94f4c4db8df` -> `tr_f94f4c4db8df`, tied to persisted ContextPack `ctx_bc30661e229e`. This proves the packet-owner seam is live runtime work identity rather than a pointer-only active packet.
+> Served-reader proof: Umut OS dashboard now emits `compound-active-packet-proof` from that same Compound work/context/receipt/transition chain, and `/operate` uses the card before falling back to `~/brain/execution-packets/LATEST.md`. The brain pointer is now source evidence/fallback for this slice, not the served active authority.
 
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
