@@ -90,26 +90,39 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
-func TestHashTarget(t *testing.T) {
-	if exists, hash, err := HashTarget(""); err != nil || exists || hash != "" {
+func TestHashFileTarget(t *testing.T) {
+	if exists, hash, err := HashFileTarget(""); err != nil || exists || hash != "" {
 		t.Fatalf("empty path: (%v,%q,%v), want (false,\"\",nil)", exists, hash, err)
 	}
-	if exists, hash, err := HashTarget(filepath.Join(t.TempDir(), "nope")); err != nil || exists || hash != "" {
+	if exists, hash, err := HashFileTarget(filepath.Join(t.TempDir(), "nope")); err != nil || exists || hash != "" {
 		t.Fatalf("missing path: (%v,%q,%v), want (false,\"\",nil)", exists, hash, err)
 	}
-
-	// File branch: identical to the file-only hashers it replaces.
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "f.txt")
 	if err := os.WriteFile(fp, []byte("payload"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	exists, hash, err := HashTarget(fp)
+	exists, hash, err := HashFileTarget(fp)
 	wantSum := sha256.Sum256([]byte("payload"))
 	if err != nil || !exists || hash != hex.EncodeToString(wantSum[:]) {
 		t.Fatalf("file hash = (%v,%q,%v), want (true,%q,nil)", exists, hash, err, hex.EncodeToString(wantSum[:]))
 	}
+	// A directory target is an error, not a recursive walk (finding 2).
+	if _, _, err := HashFileTarget(dir); err == nil {
+		t.Fatal("HashFileTarget(dir) must error, not walk")
+	}
+}
 
+func TestHashTreeTarget(t *testing.T) {
+	// File branch matches HashFileTarget.
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "f.txt")
+	_ = os.WriteFile(fp, []byte("payload"), 0o644)
+	_, fh, _ := HashTreeTarget(fp)
+	wantSum := sha256.Sum256([]byte("payload"))
+	if fh != hex.EncodeToString(wantSum[:]) {
+		t.Fatalf("tree file hash mismatch: %q", fh)
+	}
 	// Directory branch: stable regardless of file creation order.
 	dirA := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dirA, "a"), []byte("1"), 0o644)
@@ -117,10 +130,40 @@ func TestHashTarget(t *testing.T) {
 	dirB := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dirB, "b"), []byte("2"), 0o644)
 	_ = os.WriteFile(filepath.Join(dirB, "a"), []byte("1"), 0o644)
-	_, hashA, _ := HashTarget(dirA)
-	_, hashB, _ := HashTarget(dirB)
+	_, hashA, _ := HashTreeTarget(dirA)
+	_, hashB, _ := HashTreeTarget(dirB)
 	if hashA == "" || hashA != hashB {
 		t.Fatalf("dir hash not order-independent: %q vs %q", hashA, hashB)
+	}
+}
+
+// Finding 1: review ids/names and areas are joined into paths, and some come
+// from edited/generated YAML — a path-shaped value must be rejected, not allowed
+// to escape reviews/<area>/.
+func TestPathValidationRejectsTraversal(t *testing.T) {
+	home := t.TempDir()
+	type rec struct {
+		ID string `json:"id"`
+	}
+	for _, n := range []string{"../escape", "a/b", "..", ".", "x/../y", "/abs", "a\\b", "  "} {
+		if _, err := Write(home, "area", n, rec{}, " ", "m"); err == nil {
+			t.Errorf("Write id=%q: expected validation error", n)
+		}
+		if _, err := WriteJSON(home, "area", n, rec{}, " "); err == nil {
+			t.Errorf("WriteJSON name=%q: expected validation error", n)
+		}
+		if _, err := WriteRaw(home, "area", n, []byte("x")); err == nil {
+			t.Errorf("WriteRaw name=%q: expected validation error", n)
+		}
+	}
+	for _, a := range []string{"../up", "/abs", "a/../b", "..", ""} {
+		if _, err := Dir(home, a); err == nil {
+			t.Errorf("Dir area=%q: expected validation error", a)
+		}
+	}
+	// A valid nested area + bare name still works.
+	if _, err := WriteJSON(home, "distiller-eval/proofs", "p.json", rec{ID: "ok"}, "  "); err != nil {
+		t.Fatalf("valid nested area/name rejected: %v", err)
 	}
 }
 

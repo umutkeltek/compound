@@ -82,7 +82,7 @@ func BuildRoutePolicyPlan(homePath, candidateID, targetPath string, now time.Tim
 		return RoutePolicyPlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, candidates.RouteObservation)
 	}
 	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return RoutePolicyPlan{}, err
 	}

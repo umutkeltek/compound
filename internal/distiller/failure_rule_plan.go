@@ -69,7 +69,7 @@ func BuildFailureRulePlan(homePath, candidateID, targetPath string, now time.Tim
 		return FailureRulePlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, KindFailure)
 	}
 	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return FailureRulePlan{}, err
 	}

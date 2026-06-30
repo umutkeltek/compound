@@ -101,7 +101,7 @@ func BuildDecisionCandidatePlan(homePath, candidateID, targetPath string, now ti
 	if c.Verdict != candidates.Park {
 		return DecisionCandidatePlan{}, fmt.Errorf("candidate %s verdict=%q, want park", candidateID, c.Verdict)
 	}
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return DecisionCandidatePlan{}, err
 	}

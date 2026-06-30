@@ -132,7 +132,7 @@ func BuildImprovementPlan(homePath, candidateID, targetPath string, now time.Tim
 	if c.Verdict != Park && c.Verdict != Operationalize && c.Verdict != candidates.NoPromote {
 		return ImprovementPlan{}, fmt.Errorf("candidate %s verdict=%q, want park, operationalize, or no_promote", candidateID, c.Verdict)
 	}
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return ImprovementPlan{}, err
 	}

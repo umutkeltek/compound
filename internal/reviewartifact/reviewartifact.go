@@ -18,7 +18,10 @@
 //
 // Scope discipline: this module owns only the artifact mechanism. It performs no
 // gating, candidate adjudication, or promotion — those remain with internal/policy,
-// internal/writeback, and the domain packages.
+// internal/writeback, and the domain packages. It centralizes the core JSON/Markdown
+// artifact writers and their shared id/slug/dedupe/hash helpers; a few callers keep
+// specialized hashing that produces deliberately different output (e.g. product's
+// sha256:-prefixed target hash), which stays with that caller by design.
 package reviewartifact
 
 import (
@@ -41,10 +44,44 @@ type Paths struct {
 	ReviewPath string
 }
 
+// validArea rejects an area that is empty, absolute, or escapes reviews/ via
+// "..". A nested area such as "distiller-eval/proofs" is allowed.
+func validArea(area string) error {
+	if strings.TrimSpace(area) == "" {
+		return fmt.Errorf("review area required")
+	}
+	if filepath.IsAbs(area) {
+		return fmt.Errorf("review area must be relative, got %q", area)
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(area), "/") {
+		if seg == ".." {
+			return fmt.Errorf("review area must not escape reviews/, got %q", area)
+		}
+	}
+	return nil
+}
+
+// validName rejects an id/filename that is empty or path-shaped (contains a
+// directory component, is "." / "..", or holds a path separator). Review ids and
+// names are often derived from edited or generated YAML, so this keeps a crafted
+// value from escaping reviews/<area>/.
+func validName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("review artifact name required")
+	}
+	if name == "." || name == ".." || name != filepath.Base(name) || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("review artifact name must be a bare filename, got %q", name)
+	}
+	return nil
+}
+
 // Dir resolves and creates COMPOUND_HOME/reviews/<area>/.
 func Dir(homePath, area string) (string, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return "", fmt.Errorf("COMPOUND_HOME required")
+	}
+	if err := validArea(area); err != nil {
+		return "", err
 	}
 	dir := filepath.Join(homePath, "reviews", area)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -59,8 +96,8 @@ func Dir(homePath, area string) (string, error) {
 // is a caller parameter on purpose — different artifact families historically
 // serialize with " " or "  ", and Write preserves each one exactly.
 func Write(homePath, area, id string, payload any, indent, markdown string) (Paths, error) {
-	if strings.TrimSpace(id) == "" {
-		return Paths{}, fmt.Errorf("review artifact id required")
+	if err := validName(id); err != nil {
+		return Paths{}, err
 	}
 	dir, err := Dir(homePath, area)
 	if err != nil {
@@ -89,6 +126,9 @@ func Write(homePath, area, id string, payload any, indent, markdown string) (Pat
 // name is the full filename; payload is MarshalIndent'd with indent plus a
 // trailing newline. Returns the written path.
 func WriteJSON(homePath, area, name string, payload any, indent string) (string, error) {
+	if err := validName(name); err != nil {
+		return "", err
+	}
 	dir, err := Dir(homePath, area)
 	if err != nil {
 		return "", err
@@ -108,6 +148,9 @@ func WriteJSON(homePath, area, name string, payload any, indent string) (string,
 // trailing newline added) — for non-JSON drafts such as a reviewed YAML manifest.
 // Returns the written path.
 func WriteRaw(homePath, area, name string, data []byte) (string, error) {
+	if err := validName(name); err != nil {
+		return "", err
+	}
 	dir, err := Dir(homePath, area)
 	if err != nil {
 		return "", err
@@ -119,13 +162,33 @@ func WriteRaw(homePath, area, name string, data []byte) (string, error) {
 	return path, nil
 }
 
-// HashTarget reports whether an owner target exists and its content hash, so a
-// review artifact can record what it reviewed against. A missing path (or empty
-// path) is the no-op (false, "", nil) — not an error. A file hashes its bytes; a
-// directory hashes the sorted set of relative-path:content-hash entries, so the
-// result is stable regardless of walk order. The file branch is identical to the
-// file-only hashers it replaces, so directory-unaware callers are unaffected.
-func HashTarget(path string) (bool, string, error) {
+// HashFileTarget reports whether a file owner target exists and its content
+// hash. A missing or empty path is the no-op (false, "", nil); a directory is an
+// error, so a review artifact that means to hash one file fails fast instead of
+// recursively walking a mistaken repo root. This is the file-only behaviour the
+// per-package hashers originally had.
+func HashFileTarget(path string) (bool, string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false, "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	sum := sha256.Sum256(data)
+	return true, hex.EncodeToString(sum[:]), nil
+}
+
+// HashTreeTarget reports whether a target exists and its content hash, hashing a
+// file by its bytes or a directory by the sorted set of relative-path:hash
+// entries (stable regardless of walk order). Use it only where the target is
+// legitimately a tree (e.g. an eval corpus); for a single file use
+// HashFileTarget so a mistaken directory errors instead of triggering a walk.
+func HashTreeTarget(path string) (bool, string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return false, "", nil

@@ -100,7 +100,7 @@ func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet,
 	if nodeID := resolveCapabilityNode(nodes, eval.Capability); nodeID != "" {
 		return CapabilityEvaluationPlan{}, fmt.Errorf("capability %q already known as %s; use import-evaluations for graph evidence", eval.Capability, nodeID)
 	}
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return CapabilityEvaluationPlan{}, err
 	}

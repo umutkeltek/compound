@@ -71,7 +71,7 @@ func BuildEvalPlan(homePath, candidateID, targetCorpusDir string, now time.Time)
 		return EvalPlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, KindEvalCase)
 	}
 	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetCorpusDir)
+	targetExists, targetHash, err := reviewartifact.HashTreeTarget(targetCorpusDir)
 	if err != nil {
 		return EvalPlan{}, err
 	}

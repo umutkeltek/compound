@@ -70,7 +70,7 @@ func BuildTastePlan(homePath, candidateID, targetPath string, now time.Time) (Ta
 		return TastePlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, KindTaste)
 	}
 	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return TastePlan{}, err
 	}

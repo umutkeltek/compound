@@ -161,7 +161,7 @@ func BuildRouteOutcomeReview(ev Evidence, rec envelope.Receipt, targetPath strin
 	if now.IsZero() {
 		now = time.Now()
 	}
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return RouteOutcomeReview{}, err
 	}

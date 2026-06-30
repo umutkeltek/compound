@@ -85,7 +85,7 @@ func BuildSkillPlan(homePath, candidateID, targetPath string, now time.Time) (Sk
 	if c.Verdict != candidates.Park && c.Verdict != candidates.Operationalize {
 		return SkillPlan{}, fmt.Errorf("candidate %s verdict=%q, want park or operationalize", candidateID, c.Verdict)
 	}
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return SkillPlan{}, err
 	}

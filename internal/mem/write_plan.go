@@ -72,7 +72,7 @@ func (s *Store) BuildMeaningWritePlan(candidateID, targetPath string, now time.T
 	if strings.TrimSpace(c.Entity) == "" || strings.TrimSpace(c.Predicate) == "" || strings.TrimSpace(c.Object) == "" {
 		return MeaningWritePlan{}, fmt.Errorf("candidate %s missing entity/predicate/object", candidateID)
 	}
-	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashFileTarget(targetPath)
 	if err != nil {
 		return MeaningWritePlan{}, err
 	}
