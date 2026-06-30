@@ -17,6 +17,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
+	"compound/internal/eventsource"
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/mem"
@@ -3025,8 +3026,20 @@ func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
 	})
-	if !strings.Contains(out, "imported: 2") || !strings.Contains(out, "skipped: 0") {
+	if !strings.Contains(out, "- authority: compound://events/trace-envelopes") ||
+		!strings.Contains(out, "- source_authority: evsrc_") ||
+		!strings.Contains(out, "imported: 2") ||
+		!strings.Contains(out, "skipped: 0") {
 		t.Fatalf("event import output =\n%s", out)
+	}
+	authority, err := eventsource.LoadSourceAuthority(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authority) != 1 ||
+		authority[0].AuthorityRef != eventsource.TraceEventsAuthorityRef ||
+		authority[0].AuthorityStatus != "compound_primary" {
+		t.Fatalf("event source authority = %+v", authority)
 	}
 	tracePath := filepath.Join(homePath, "events", "traces.ndjson")
 	lines := splitJSONLines(readFile(t, tracePath))
@@ -3047,7 +3060,9 @@ func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	replay := captureStdout(t, func() {
 		cmdEvent([]string{"import-os", fixture, "--stream", "control-events"})
 	})
-	if !strings.Contains(replay, "imported: 0") || !strings.Contains(replay, "skipped: 2") {
+	if !strings.Contains(replay, "- source_authority: evsrc_") ||
+		!strings.Contains(replay, "imported: 0") ||
+		!strings.Contains(replay, "skipped: 2") {
 		t.Fatalf("event replay output =\n%s", replay)
 	}
 	if lines := splitJSONLines(readFile(t, tracePath)); len(lines) != 2 {

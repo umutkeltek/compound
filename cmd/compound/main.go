@@ -820,6 +820,12 @@ func cmdEvent(args []string) {
 	fmt.Println("# event import")
 	fmt.Printf("- status: %s\n", report.Status)
 	fmt.Printf("- stream: %s\n", report.Stream)
+	if report.AuthorityRef != "" {
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+	}
+	if report.SourceAuthorityID != "" {
+		fmt.Printf("- source_authority: %s\n", report.SourceAuthorityID)
+	}
 	fmt.Printf("- imported: %d\n", report.Imported)
 	fmt.Printf("- skipped: %d\n", report.Skipped)
 	for _, id := range report.TraceIDs {

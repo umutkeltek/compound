@@ -23,6 +23,21 @@ func TestImportOSEventsWritesTraceEnvelopesIdempotently(t *testing.T) {
 	if report.Status != "ok" || report.Imported != 2 || report.Skipped != 0 || len(report.TraceIDs) != 2 {
 		t.Fatalf("report = %+v", report)
 	}
+	if report.AuthorityRef != TraceEventsAuthorityRef || report.SourceAuthorityID == "" {
+		t.Fatalf("missing source authority: %+v", report)
+	}
+	authority, err := LoadSourceAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authority) != 1 ||
+		authority[0].ID != report.SourceAuthorityID ||
+		authority[0].AuthorityStatus != "compound_primary" ||
+		authority[0].SourceRole != "evidence_only_input_after_import" ||
+		authority[0].Imported != 2 ||
+		authority[0].Stream != "control-events" {
+		t.Fatalf("bad source authority: %+v", authority)
+	}
 	for _, id := range report.TraceIDs {
 		var tr envelope.TraceEnvelope
 		readJSON(t, filepath.Join(home, "events", id+".json"), &tr)
@@ -40,6 +55,13 @@ func TestImportOSEventsWritesTraceEnvelopesIdempotently(t *testing.T) {
 	}
 	if replay.Imported != 0 || replay.Skipped != 2 {
 		t.Fatalf("replay report = %+v", replay)
+	}
+	authority, err = LoadSourceAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(authority) != 2 || authority[1].ID != report.SourceAuthorityID || authority[1].Skipped != 2 {
+		t.Fatalf("bad replay source authority: %+v", authority)
 	}
 	if lines := readLines(t, filepath.Join(home, "events", "traces.ndjson")); len(lines) != 2 {
 		t.Fatalf("replay should not append duplicate traces, lines = %d", len(lines))
@@ -73,6 +95,30 @@ func TestBuildTraceEnvelopeNormalizesOSMutationAndEvidence(t *testing.T) {
 	}
 	if !contains(tr.ToolsModelsUsed, "service:packetizer") || !contains(tr.ToolsModelsUsed, "agent:worker") {
 		t.Fatalf("tools/models = %v", tr.ToolsModelsUsed)
+	}
+}
+
+func TestImportOSEventsAcceptsLegacyProviderEventShape(t *testing.T) {
+	home := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events-legacy.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	report, err := ImportOSEvents(home, fixture, ImportOptions{Stream: "os-control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 4 || report.SourceAuthorityID == "" {
+		t.Fatalf("report = %+v", report)
+	}
+	var tr envelope.TraceEnvelope
+	readJSON(t, filepath.Join(home, "events", report.TraceIDs[0]+".json"), &tr)
+	if tr.Source.SourceKind != "provider_configured" ||
+		tr.Source.EventClass != "legacy" ||
+		tr.Source.Quality != "partial" ||
+		tr.MutationClass != "read" ||
+		!contains(tr.ToolsModelsUsed, "provider:deepseek") ||
+		!contains(tr.Outputs, `direct_api_models:["deepseek-v4-flash","deepseek-v4-pro"]`) {
+		t.Fatalf("legacy trace = %+v", tr)
 	}
 }
 

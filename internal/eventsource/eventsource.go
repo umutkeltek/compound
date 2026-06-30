@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,27 +25,91 @@ type ImportOptions struct {
 }
 
 type ImportReport struct {
-	Status   string   `json:"status"`
-	Stream   string   `json:"stream"`
-	Imported int      `json:"imported"`
-	Skipped  int      `json:"skipped"`
-	TraceIDs []string `json:"trace_ids"`
+	Status            string                `json:"status"`
+	Stream            string                `json:"stream"`
+	AuthorityRef      string                `json:"authority_ref,omitempty"`
+	SourceAuthorityID string                `json:"source_authority_id,omitempty"`
+	SourceAuthority   SourceAuthorityRecord `json:"source_authority,omitempty"`
+	Imported          int                   `json:"imported"`
+	Skipped           int                   `json:"skipped"`
+	TraceIDs          []string              `json:"trace_ids"`
+}
+
+const (
+	TraceEventsAuthorityRef    = "compound://events/trace-envelopes"
+	SourceAuthoritySchema      = "compound.event_source_authority.v0.1"
+	eventSourceAuthorityFile   = "event-source-authority.jsonl"
+	eventSourceImportCommand   = "event import-os"
+	eventSourceRetiredRoleName = "source_event_stream_authority"
+)
+
+type SourceAuthorityRecord struct {
+	SchemaVersion       string   `json:"schema_version"`
+	ID                  string   `json:"id"`
+	CreatedAt           string   `json:"created_at"`
+	SourcePath          string   `json:"source_path"`
+	SourceRevision      string   `json:"source_revision"`
+	ImportedVia         string   `json:"imported_via"`
+	AuthorityRef        string   `json:"authority_ref"`
+	AuthorityStatus     string   `json:"authority_status"`
+	SourceRole          string   `json:"source_role"`
+	Retires             string   `json:"retires"`
+	RetirementCondition string   `json:"retirement_condition"`
+	Rollback            string   `json:"rollback"`
+	Stream              string   `json:"stream"`
+	Imported            int      `json:"imported"`
+	Skipped             int      `json:"skipped"`
+	TraceIDs            []string `json:"trace_ids,omitempty"`
+	EvidenceRefs        []string `json:"evidence_refs"`
 }
 
 type osEvent struct {
 	SchemaVersion   int            `json:"schema_version"`
 	ID              string         `json:"id"`
 	Kind            string         `json:"kind"`
+	Type            string         `json:"type"`
 	EventClass      string         `json:"event_class"`
 	MetadataQuality string         `json:"metadata_quality"`
 	MutationClass   string         `json:"mutation_class"`
-	Producer        map[string]any `json:"producer"`
-	Subject         map[string]any `json:"subject"`
-	Evidence        []osEvidence   `json:"evidence"`
+	Producer        objectMap      `json:"producer"`
+	Subject         objectMap      `json:"subject"`
+	Evidence        osEvidenceList `json:"evidence"`
 	Summary         string         `json:"summary"`
 	TS              string         `json:"ts"`
+	Timestamp       string         `json:"timestamp"`
 	Details         map[string]any `json:"details"`
 	Dashboard       map[string]any `json:"dashboard"`
+	Provider        string         `json:"provider"`
+	Scope           []string       `json:"scope"`
+	Source          string         `json:"source"`
+	Event           string         `json:"event"`
+	Project         string         `json:"project"`
+	Artifact        string         `json:"artifact"`
+	Actor           string         `json:"actor"`
+}
+
+type objectMap map[string]any
+
+func (m *objectMap) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		*m = nil
+		return nil
+	}
+	if strings.HasPrefix(raw, "{") {
+		var obj map[string]any
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return err
+		}
+		*m = obj
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*m = map[string]any{"value": value}
+	return nil
 }
 
 type osEvidence struct {
@@ -53,9 +118,41 @@ type osEvidence struct {
 	Redacted bool   `json:"redacted"`
 }
 
+type osEvidenceList []osEvidence
+
+func (l *osEvidenceList) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		*l = nil
+		return nil
+	}
+	if strings.HasPrefix(raw, "[") {
+		var rows []osEvidence
+		if err := json.Unmarshal(data, &rows); err != nil {
+			return err
+		}
+		*l = rows
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	rows := make([]osEvidence, 0, len(obj))
+	for key, value := range obj {
+		rows = append(rows, osEvidence{Kind: key, Value: evidenceValueString(value)})
+	}
+	*l = rows
+	return nil
+}
+
 func ImportOSEvents(homePath, path string, opts ImportOptions, now time.Time) (ImportReport, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return ImportReport{}, fmt.Errorf("home path required")
+	}
+	revision, err := fileRevision(path)
+	if err != nil {
+		return ImportReport{}, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -109,10 +206,36 @@ func ImportOSEvents(homePath, path string, opts ImportOptions, now time.Time) (I
 	if err := scanner.Err(); err != nil {
 		return report, err
 	}
+	rec := SourceAuthorityRecord{
+		SchemaVersion:       SourceAuthoritySchema,
+		ID:                  idFor("evsrc_", path, revision, stream),
+		CreatedAt:           rfc3339(now),
+		SourcePath:          path,
+		SourceRevision:      revision,
+		ImportedVia:         eventSourceImportCommand,
+		AuthorityRef:        TraceEventsAuthorityRef,
+		AuthorityStatus:     "compound_primary",
+		SourceRole:          "evidence_only_input_after_import",
+		Retires:             eventSourceRetiredRoleName + ":" + path,
+		RetirementCondition: "compound event import-os writes TraceEnvelope files under COMPOUND_HOME/events; source stream remains append-only rollback/evidence input",
+		Rollback:            "re-import source event stream or remove COMPOUND_HOME/events trace envelopes for this stream after review",
+		Stream:              stream,
+		Imported:            report.Imported,
+		Skipped:             report.Skipped,
+		TraceIDs:            append([]string(nil), report.TraceIDs...),
+		EvidenceRefs:        []string{revision, TraceEventsAuthorityRef},
+	}
+	if err := appendSourceAuthority(homePath, rec); err != nil {
+		return report, err
+	}
+	report.AuthorityRef = TraceEventsAuthorityRef
+	report.SourceAuthorityID = rec.ID
+	report.SourceAuthority = rec
 	return report, nil
 }
 
 func BuildTraceEnvelope(ev osEvent, path string, lineNo int, opts ImportOptions, now time.Time) (envelope.TraceEnvelope, error) {
+	ev = normalizeOSEvent(ev)
 	if ev.SchemaVersion == 0 {
 		return envelope.TraceEnvelope{}, fmt.Errorf("schema_version required")
 	}
@@ -190,6 +313,60 @@ func BuildTraceEnvelope(ev osEvent, path string, lineNo int, opts ImportOptions,
 	}, nil
 }
 
+func normalizeOSEvent(ev osEvent) osEvent {
+	if ev.SchemaVersion == 0 && (strings.TrimSpace(ev.Type) != "" ||
+		strings.TrimSpace(ev.Timestamp) != "" ||
+		strings.TrimSpace(ev.Event) != "" ||
+		(strings.TrimSpace(ev.Kind) != "" && strings.TrimSpace(ev.TS) != "")) {
+		ev.SchemaVersion = 1
+	}
+	if strings.TrimSpace(ev.Kind) == "" {
+		ev.Kind = firstNonEmpty(ev.Type, ev.Event)
+	}
+	if strings.TrimSpace(ev.TS) == "" {
+		ev.TS = strings.TrimSpace(ev.Timestamp)
+	}
+	if strings.TrimSpace(ev.EventClass) == "" && strings.TrimSpace(ev.Type) != "" {
+		ev.EventClass = "legacy"
+	}
+	if strings.TrimSpace(ev.MetadataQuality) == "" {
+		ev.MetadataQuality = "partial"
+	}
+	if ev.Producer == nil {
+		ev.Producer = objectMap{}
+	}
+	if _, ok := ev.Producer["caller"]; !ok {
+		if value := anyString(ev.Producer["value"]); value != "" {
+			ev.Producer["caller"] = value
+		}
+	}
+	if _, ok := ev.Producer["caller"]; !ok && strings.TrimSpace(ev.Source) != "" {
+		ev.Producer["caller"] = ev.Source
+	}
+	if _, ok := ev.Producer["agent"]; !ok && strings.TrimSpace(ev.Actor) != "" {
+		ev.Producer["agent"] = ev.Actor
+	}
+	if ev.Subject == nil {
+		ev.Subject = objectMap{}
+	}
+	if _, ok := ev.Subject["project"]; !ok && strings.TrimSpace(ev.Project) != "" {
+		ev.Subject["project"] = ev.Project
+	}
+	if _, ok := ev.Subject["path"]; !ok && strings.TrimSpace(ev.Artifact) != "" {
+		ev.Subject["path"] = ev.Artifact
+	}
+	if _, ok := ev.Subject["provider"]; !ok && strings.TrimSpace(ev.Provider) != "" {
+		ev.Subject["provider"] = ev.Provider
+	}
+	if len(ev.Evidence) == 0 && strings.TrimSpace(ev.Artifact) != "" {
+		ev.Evidence = osEvidenceList{{Kind: "path", Value: ev.Artifact}}
+	}
+	if _, ok := ev.Subject["scope"]; !ok && len(ev.Scope) > 0 {
+		ev.Subject["scope"] = strings.Join(ev.Scope, ",")
+	}
+	return ev
+}
+
 func recordTrace(homePath string, trace envelope.TraceEnvelope) (bool, error) {
 	path := filepath.Join(homePath, "events", trace.ID+".json")
 	if _, err := os.Stat(path); err == nil {
@@ -221,6 +398,64 @@ func recordTrace(homePath string, trace envelope.TraceEnvelope) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func SourceAuthorityPath(homePath string) string {
+	return filepath.Join(homePath, "registries", eventSourceAuthorityFile)
+}
+
+func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
+	data, err := os.ReadFile(SourceAuthorityPath(homePath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var records []SourceAuthorityRecord
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec SourceAuthorityRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			return nil, fmt.Errorf("parse event source authority line %d: %w", i+1, err)
+		}
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+func appendSourceAuthority(homePath string, rec SourceAuthorityRecord) error {
+	path := SourceAuthorityPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(data, '\n'))
+	return err
+}
+
+func fileRevision(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func evidenceRefs(ev osEvent) []string {
@@ -328,6 +563,28 @@ func anyString(v any) string {
 	}
 }
 
+func evidenceValueString(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(x)
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%f", x), "0"), ".")
+	default:
+		b, err := json.Marshal(x)
+		if err == nil {
+			return string(b)
+		}
+		return strings.TrimSpace(fmt.Sprint(x))
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
@@ -358,4 +615,11 @@ func idFor(prefix string, parts ...string) string {
 
 func itoa(v int) string {
 	return fmt.Sprintf("%d", v)
+}
+
+func rfc3339(t time.Time) string {
+	if t.IsZero() {
+		t = time.Now()
+	}
+	return t.UTC().Format(time.RFC3339)
 }
