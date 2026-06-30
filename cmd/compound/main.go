@@ -3130,6 +3130,7 @@ func cmdProduct(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- signal_draft: %s\n", paths.SignalDraftPath)
 	case "source-issue-plan":
 		productID := flagValue(args[1:], "--product")
 		issueID := flagValue(args[1:], "--issue")

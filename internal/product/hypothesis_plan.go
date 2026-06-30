@@ -55,8 +55,9 @@ type HypothesisPlanDraft struct {
 }
 
 type HypothesisPlanPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath        string
+	ReviewPath      string
+	SignalDraftPath string
 }
 
 type hypothesisPlanCandidate struct {
@@ -210,8 +211,9 @@ func RecordHypothesisPlan(homePath string, plan HypothesisPlan) (HypothesisPlanP
 		return HypothesisPlanPaths{}, err
 	}
 	paths := HypothesisPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
+		PlanPath:        filepath.Join(dir, plan.ID+".json"),
+		ReviewPath:      filepath.Join(dir, plan.ID+".md"),
+		SignalDraftPath: filepath.Join(dir, plan.ID+".signal.yaml"),
 	}
 	data, err := json.MarshalIndent(plan, "", " ")
 	if err != nil {
@@ -221,6 +223,9 @@ func RecordHypothesisPlan(homePath string, plan HypothesisPlan) (HypothesisPlanP
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewPath, []byte(RenderHypothesisPlanReview(plan)), 0o644); err != nil {
+		return paths, err
+	}
+	if err := os.WriteFile(paths.SignalDraftPath, []byte(RenderHypothesisSignalDraft(plan)), 0o644); err != nil {
 		return paths, err
 	}
 	return paths, nil
@@ -278,6 +283,50 @@ func RenderHypothesisPlanReview(plan HypothesisPlan) string {
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "%s\n", plan.ReviewDraft.ReviewNote)
+	return b.String()
+}
+
+func RenderHypothesisSignalDraft(plan HypothesisPlan) string {
+	metric := "TODO_metric_name"
+	if len(plan.Metrics) > 0 && !strings.Contains(plan.Metrics[0], "required") {
+		metric = plan.Metrics[0]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "schema_version: %s\n", SignalSchemaVersion)
+	fmt.Fprintln(&b, "source:")
+	fmt.Fprintln(&b, "  kind: TODO_provider")
+	fmt.Fprintf(&b, "  ref: product_hypothesis:%s\n", plan.CandidateID)
+	fmt.Fprintln(&b, "signal:")
+	fmt.Fprintf(&b, "  id: %s\n", stableID("sig_", plan.ProductID, plan.CandidateID, metric, plan.ObservationWindow))
+	fmt.Fprintf(&b, "  product_id: %s\n", plan.ProductID)
+	fmt.Fprintln(&b, "  surface: TODO_surface")
+	fmt.Fprintf(&b, "  change_event: %q\n", plan.ChangeEvent)
+	fmt.Fprintf(&b, "  metric_name: %s\n", metric)
+	fmt.Fprintln(&b, "  before: TODO_before_value")
+	fmt.Fprintln(&b, "  after: TODO_after_value")
+	fmt.Fprintf(&b, "  window: %q\n", plan.ObservationWindow)
+	fmt.Fprintln(&b, "  confidence: 0")
+	fmt.Fprintln(&b, "  confounders:")
+	for _, confounder := range plan.ReviewDraft.ConfoundersToCheck {
+		fmt.Fprintf(&b, "    - %q\n", confounder)
+	}
+	fmt.Fprintln(&b, "  interpretations:")
+	fmt.Fprintln(&b, "    - lens: hypothesis")
+	fmt.Fprintf(&b, "      claim: %q\n", "fill after metric evidence is imported; do not declare causality from this draft")
+	fmt.Fprintf(&b, "  next_action: %q\n", plan.NextAction)
+	fmt.Fprintln(&b, "  evidence_refs:")
+	for _, ref := range plan.EvidenceRefs {
+		fmt.Fprintf(&b, "    - %q\n", ref)
+	}
+	fmt.Fprintf(&b, "    - %q\n", "product_hypothesis:"+plan.CandidateID)
+	fmt.Fprintln(&b, "evidence_refs:")
+	for _, ref := range plan.EvidenceRefs {
+		fmt.Fprintf(&b, "  - %q\n", ref)
+	}
+	fmt.Fprintf(&b, "  - %q\n", "product_hypothesis:"+plan.CandidateID)
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "# This draft is intentionally invalid until TODO_provider, TODO_surface, before, and after are replaced with real evidence.")
+	fmt.Fprintln(&b, "# Importing it with product signal should fail before those fields are reviewed.")
 	return b.String()
 }
 

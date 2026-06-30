@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"compound/internal/candidates"
+	"compound/internal/mem"
 )
 
 func TestHypothesisPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T) {
@@ -83,6 +84,40 @@ func TestHypothesisPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T)
 		!strings.Contains(string(review), "Required Evidence Before Action") ||
 		!strings.Contains(string(review), "does not") {
 		t.Fatalf("review missing no-mutation/evidence text:\n%s", review)
+	}
+	signalDraft, err := os.ReadFile(paths.SignalDraftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(signalDraft), "TODO_before_value") ||
+		!strings.Contains(string(signalDraft), "product_hypothesis:"+candidateID) {
+		t.Fatalf("signal draft missing guarded placeholders/evidence:\n%s", signalDraft)
+	}
+	if _, err := LoadSignal(paths.SignalDraftPath); err == nil {
+		t.Fatal("generated signal draft should fail until real metric values are filled")
+	}
+	signalYAML := strings.ReplaceAll(string(signalDraft), "TODO_provider", "app_store_connect")
+	signalYAML = strings.ReplaceAll(signalYAML, "TODO_surface", "app-store-page")
+	signalYAML = strings.ReplaceAll(signalYAML, "TODO_before_value", "0.041")
+	signalYAML = strings.ReplaceAll(signalYAML, "TODO_after_value", "0.049")
+	signalPath := filepath.Join(t.TempDir(), "product-signal.yaml")
+	if err := os.WriteFile(signalPath, []byte(signalYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	signalDoc, err := LoadSignal(signalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signalReport, err := ApplySignal(home, store, signalDoc, signalPath, tProduct.AddDate(0, 0, 14))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signalReport.Status != "ok" || len(signalReport.SignalIDs) != 1 || len(signalReport.TransitionIDs) != 1 {
+		t.Fatalf("signal report = %+v", signalReport)
 	}
 	after, err := os.ReadFile(targetPath)
 	if err != nil {

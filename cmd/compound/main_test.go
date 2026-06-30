@@ -1752,11 +1752,13 @@ func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *tes
 		!strings.Contains(out, "- required_evidence: 4") ||
 		!strings.Contains(out, "- evidence_refs: 2") ||
 		!strings.Contains(out, "- plan:") ||
-		!strings.Contains(out, "- review:") {
+		!strings.Contains(out, "- review:") ||
+		!strings.Contains(out, "- signal_draft:") {
 		t.Fatalf("hypothesis-plan output missing proof lines:\n%s", out)
 	}
 	planPath := outputValue(out, "- plan:")
 	reviewPath := outputValue(out, "- review:")
+	signalDraftPath := outputValue(out, "- signal_draft:")
 	var plan product.HypothesisPlan
 	planData, err := os.ReadFile(planPath)
 	if err != nil {
@@ -1777,6 +1779,30 @@ func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *tes
 	if !strings.Contains(review, "does not mutate product strategy") ||
 		!strings.Contains(review, "Required Evidence Before Action") {
 		t.Fatalf("review missing no-mutation/procedure text:\n%s", review)
+	}
+	signalDraft := readFile(t, signalDraftPath)
+	if !strings.Contains(signalDraft, "TODO_before_value") ||
+		!strings.Contains(signalDraft, "product_hypothesis:"+rows[0].ID) {
+		t.Fatalf("signal draft missing guarded placeholders/evidence:\n%s", signalDraft)
+	}
+	if _, err := product.LoadSignal(signalDraftPath); err == nil {
+		t.Fatal("generated signal draft should not load before reviewer supplies metric values")
+	}
+	signalYAML := strings.ReplaceAll(signalDraft, "TODO_provider", "app_store_connect")
+	signalYAML = strings.ReplaceAll(signalYAML, "TODO_surface", "app-store-page")
+	signalYAML = strings.ReplaceAll(signalYAML, "TODO_before_value", "0.041")
+	signalYAML = strings.ReplaceAll(signalYAML, "TODO_after_value", "0.049")
+	signalPath := filepath.Join(t.TempDir(), "product-signal.yaml")
+	if err := os.WriteFile(signalPath, []byte(signalYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	signalOut := captureStdout(t, func() {
+		cmdProduct([]string{"signal", signalPath})
+	})
+	if !strings.Contains(signalOut, "# product signal") ||
+		!strings.Contains(signalOut, "- status: ok") ||
+		!strings.Contains(signalOut, "- transition:") {
+		t.Fatalf("edited signal draft did not import as ProductSignal:\n%s", signalOut)
 	}
 	if got := readFile(t, targetPath); got != original {
 		t.Fatalf("hypothesis plan mutated target:\n%s", got)
