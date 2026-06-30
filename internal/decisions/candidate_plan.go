@@ -1,8 +1,6 @@
 package decisions
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const DecisionCandidatePlanSchemaVersion = "compound.decision_candidate_plan.v0.1"
@@ -102,7 +101,7 @@ func BuildDecisionCandidatePlan(homePath, candidateID, targetPath string, now ti
 	if c.Verdict != candidates.Park {
 		return DecisionCandidatePlan{}, fmt.Errorf("candidate %s verdict=%q, want park", candidateID, c.Verdict)
 	}
-	targetExists, targetHash, err := hashDecisionCandidateTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return DecisionCandidatePlan{}, err
 	}
@@ -110,14 +109,14 @@ func BuildDecisionCandidatePlan(homePath, candidateID, targetPath string, now ti
 	sort.Strings(evidenceRefs)
 	qualifiers := copyStringMap(c.Qualifiers)
 	key := decisionCandidateKey(c)
-	choice := firstDecisionCandidateValue(c.Statement, c.Object, c.Detail, c.Subject, "review decision candidate")
-	title := firstDecisionCandidateValue(c.Subject, c.Statement, c.Object, key)
+	choice := reviewartifact.FirstNonEmpty(c.Statement, c.Object, c.Detail, c.Subject, "review decision candidate")
+	title := reviewartifact.FirstNonEmpty(c.Subject, c.Statement, c.Object, key)
 	status := decisionCandidateStatus(qualifiers)
-	kind := firstDecisionCandidateValue(qualifiers["kind"], KindOperational)
-	falsifier := firstDecisionCandidateValue(qualifiers["falsifier"], "review required: falsifier before acceptance")
-	reviewTrigger := firstDecisionCandidateValue(qualifiers["review_trigger"], "review required: trigger before acceptance")
-	rationale := firstDecisionCandidateValue(c.Detail, c.Statement, "review candidate evidence and owner context")
-	decisionID := firstDecisionCandidateValue(qualifiers["decision_id"], key)
+	kind := reviewartifact.FirstNonEmpty(qualifiers["kind"], KindOperational)
+	falsifier := reviewartifact.FirstNonEmpty(qualifiers["falsifier"], "review required: falsifier before acceptance")
+	reviewTrigger := reviewartifact.FirstNonEmpty(qualifiers["review_trigger"], "review required: trigger before acceptance")
+	rationale := reviewartifact.FirstNonEmpty(c.Detail, c.Statement, "review candidate evidence and owner context")
+	decisionID := reviewartifact.FirstNonEmpty(qualifiers["decision_id"], key)
 	if strings.HasPrefix(decisionID, "decision:") {
 		decisionID = strings.TrimPrefix(decisionID, "decision:")
 	}
@@ -134,7 +133,7 @@ func BuildDecisionCandidatePlan(homePath, candidateID, targetPath string, now ti
 	}
 	plan := DecisionCandidatePlan{
 		SchemaVersion:    DecisionCandidatePlanSchemaVersion,
-		ID:               idDecisionCandidate("dcp_", candidateID, targetPath),
+		ID:               reviewartifact.ID("dcp_", candidateID, targetPath),
 		CreatedAt:        now.UTC().Format(time.RFC3339),
 		Status:           "review_required",
 		CandidateID:      candidateID,
@@ -164,7 +163,7 @@ func BuildDecisionCandidatePlan(homePath, candidateID, targetPath string, now ti
 			ReviewTrigger: reviewTrigger,
 			Owner:         qualifiers["owner"],
 			Scope:         qualifiers["scope"],
-			EffectiveFrom: firstDecisionCandidateValue(qualifiers["effective_from"], qualifiers["effective_date"]),
+			EffectiveFrom: reviewartifact.FirstNonEmpty(qualifiers["effective_from"], qualifiers["effective_date"]),
 			Supersedes:    splitCSV(qualifiers["supersedes"]),
 			ReplacedBy:    qualifiers["replaced_by"],
 			RequiredEvidence: []string{
@@ -209,25 +208,8 @@ func RecordDecisionCandidatePlan(homePath string, plan DecisionCandidatePlan) (D
 	if plan.ID == "" {
 		return DecisionCandidatePlanPaths{}, fmt.Errorf("decision candidate plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "decision-candidates")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return DecisionCandidatePlanPaths{}, err
-	}
-	paths := DecisionCandidatePlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderDecisionCandidatePlanReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "decision-candidates", plan.ID, plan, " ", RenderDecisionCandidatePlanReview(plan))
+	return DecisionCandidatePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderDecisionCandidatePlanReview(plan DecisionCandidatePlan) string {
@@ -294,24 +276,8 @@ func RenderDecisionCandidatePlanReview(plan DecisionCandidatePlan) string {
 	return b.String()
 }
 
-func hashDecisionCandidateTarget(path string) (bool, string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false, "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	sum := sha256.Sum256(data)
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
 func decisionCandidateStatus(q map[string]string) string {
-	status := firstDecisionCandidateValue(q["lifecycle_status"], q["status"])
+	status := reviewartifact.FirstNonEmpty(q["lifecycle_status"], q["status"])
 	if status == "" {
 		return StatusProposed
 	}
@@ -319,22 +285,13 @@ func decisionCandidateStatus(q map[string]string) string {
 }
 
 func decisionCandidateKey(c decisionCandidateRecord) string {
-	raw := firstDecisionCandidateValue(c.Qualifiers["decision_id"], c.Subject, c.Statement, c.Object, c.ID)
+	raw := reviewartifact.FirstNonEmpty(c.Qualifiers["decision_id"], c.Subject, c.Statement, c.Object, c.ID)
 	raw = strings.TrimPrefix(raw, "decision:")
 	key := slugDecisionCandidate(raw)
 	if key == "" {
 		return digest12(c.ID)
 	}
 	return key
-}
-
-func firstDecisionCandidateValue(values ...string) string {
-	for _, value := range values {
-		if v := strings.TrimSpace(value); v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func slugDecisionCandidate(value string) string {
@@ -358,11 +315,6 @@ func slugDecisionCandidate(value string) string {
 		out = strings.Trim(out[:72], "-")
 	}
 	return out
-}
-
-func idDecisionCandidate(prefix string, parts ...string) string {
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
-	return prefix + hex.EncodeToString(sum[:])[:12]
 }
 
 func copyStringMap(in map[string]string) map[string]string {

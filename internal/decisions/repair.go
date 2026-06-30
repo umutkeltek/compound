@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -136,25 +137,8 @@ func RecordLifecycleRepairPlan(homePath string, plan LifecycleRepairPlan) (Repai
 	if strings.TrimSpace(homePath) == "" {
 		return RepairArtifactPaths{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	dir := filepath.Join(homePath, "reviews", "decision-lifecycle-repairs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return RepairArtifactPaths{}, err
-	}
-	paths := RepairArtifactPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	b, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(b, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderLifecycleRepairReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "decision-lifecycle-repairs", plan.ID, plan, "  ", RenderLifecycleRepairReview(plan))
+	return RepairArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func LoadLifecycleRepairPlan(path string) (LifecycleRepairPlan, error) {
