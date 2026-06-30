@@ -10,8 +10,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/mem"
 	"compound/internal/projection"
 )
 
@@ -224,6 +227,21 @@ type Input struct {
 	Mode        string // observe | plan | execute | review
 }
 
+const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"
+
+type InstalledHooksManifest struct {
+	SchemaVersion string          `yaml:"schema_version" json:"schema_version"`
+	Hooks         []InstalledHook `yaml:"hooks" json:"hooks"`
+}
+
+type InstalledHook struct {
+	Harness  string `yaml:"harness" json:"harness"`
+	Name     string `yaml:"name" json:"name"`
+	Ref      string `yaml:"ref" json:"ref"`
+	Revision string `yaml:"revision" json:"revision"`
+	Status   string `yaml:"status" json:"status"`
+}
+
 // Compile produces the EffectiveContract: the instructions, hooks, memory/capability/
 // mutation policy, and unknowns in force for this harness+repo+task.
 func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveContract {
@@ -265,6 +283,31 @@ func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveC
 	}
 }
 
+// CompileWithRuntime compiles the static contract and enriches it with runtime
+// state owned by COMPOUND_HOME: installed hook manifest, source file revisions,
+// and accepted decision claims. The pure Compile function stays for fixtures and
+// tests that do not want to touch runtime state.
+func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now time.Time) (envelope.EffectiveContract, error) {
+	ec := Compile(in, pol, now)
+	if strings.TrimSpace(homePath) == "" {
+		return ec, nil
+	}
+	ec.SourceRevisions = resolveSourceRevisions(ec.SourceRevisions, in.Cwd)
+	hooks, hookRevs, err := loadInstalledHooks(homePath, in.Harness)
+	if err != nil {
+		return ec, err
+	}
+	ec.ActiveHooks = hooks
+	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, hookRevs)
+	decisions, decisionRevs, err := loadDecisionRefs(homePath)
+	if err != nil {
+		return ec, err
+	}
+	ec.ActiveDecisions = decisions
+	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, decisionRevs)
+	return ec, nil
+}
+
 // Pack assembles the ContextPack an agent orients from. Its EXCLUDED list — what was
 // NOT loaded and why — is the whole point: it is required and never silently dropped.
 func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
@@ -299,6 +342,23 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	pack := Pack(in, pol, now)
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
+	}
+	decisions, _, err := loadDecisionRefs(homePath)
+	if err != nil {
+		return pack, err
+	}
+	for _, ref := range decisions {
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref:         ref,
+			SourceClass: "runtime",
+			Reason:      "accepted decision from Compound memory ledger; old source is source-in-place evidence",
+			Confidence:  1,
+			Status:      "current",
+		})
+	}
+	pack.ActiveDecisions = decisions
+	if len(decisions) > 0 {
+		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
 	}
 	if capgraph.Exists(homePath) {
 		store, err := capgraph.Open(homePath)
@@ -340,6 +400,207 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
 	return pack, nil
+}
+
+func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return nil, nil, err
+	}
+	refs := []string{}
+	revs := []envelope.SourceRev{}
+	for _, c := range claims {
+		if c.ClaimType != "decision" || c.Qualifiers == nil || canonicalDecisionStatus(c.Qualifiers["lifecycle_status"]) != "accepted" {
+			continue
+		}
+		id := strings.TrimSpace(c.Qualifiers["decision_id"])
+		if id == "" {
+			id = c.ID
+		}
+		ref := "decision://" + id
+		refs = append(refs, ref)
+		revs = append(revs, envelope.SourceRev{Source: ref, Rev: "claim:" + c.ID})
+	}
+	sort.Strings(refs)
+	sort.Slice(revs, func(i, j int) bool { return revs[i].Source < revs[j].Source })
+	return refs, revs, nil
+}
+
+func canonicalDecisionStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" {
+		return "accepted"
+	}
+	return status
+}
+
+func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRev, error) {
+	path := filepath.Join(homePath, "config", "installed-hooks.yaml")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		path = filepath.Join(homePath, "config", "installed-hooks.json")
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return []string{}, []envelope.SourceRev{}, nil
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	var manifest InstalledHooksManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return nil, nil, fmt.Errorf("parse installed hooks %s: %w", path, err)
+	}
+	if manifest.SchemaVersion != installedHooksSchemaVersion {
+		return nil, nil, fmt.Errorf("installed hooks schema_version must be %s, got %q", installedHooksSchemaVersion, manifest.SchemaVersion)
+	}
+	active := []string{}
+	revs := []envelope.SourceRev{{Source: "compound://config/installed-hooks", Rev: hashBytes(data)}}
+	for _, hook := range manifest.Hooks {
+		if strings.TrimSpace(hook.Name) == "" {
+			continue
+		}
+		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+			continue
+		}
+		if hook.Harness != "" && harness != "" && hook.Harness != harness {
+			continue
+		}
+		h := firstNonEmpty(hook.Harness, harness, "unknown")
+		ref := "hook://" + h + "/" + hook.Name
+		active = append(active, ref)
+		rev := strings.TrimSpace(hook.Revision)
+		if rev == "" && strings.TrimSpace(hook.Ref) != "" {
+			rev = revisionForPath(hook.Ref)
+		}
+		if rev == "" {
+			rev = "unknown"
+		}
+		revs = append(revs, envelope.SourceRev{Source: ref, Rev: rev})
+	}
+	sort.Strings(active)
+	sort.Slice(revs, func(i, j int) bool { return revs[i].Source < revs[j].Source })
+	return active, revs, nil
+}
+
+func resolveSourceRevisions(revs []envelope.SourceRev, cwd string) []envelope.SourceRev {
+	out := append([]envelope.SourceRev(nil), revs...)
+	for i := range out {
+		if rev := revisionForSource(out[i].Source, cwd); rev != "" {
+			out[i].Rev = rev
+		}
+	}
+	return out
+}
+
+func revisionForSource(source, cwd string) string {
+	switch {
+	case source == "AGENTS.md" || source == "CLAUDE.md" || source == "CONTEXT.md":
+		if p := findUp(cwd, source); p != "" {
+			return revisionForPath(p)
+		}
+	case source == "repo://docs":
+		if p := findUp(cwd, "docs"); p != "" {
+			return revisionForPath(p)
+		}
+	case filepath.IsAbs(source) || strings.HasPrefix(source, "~/"):
+		return revisionForPath(source)
+	}
+	return ""
+}
+
+func revisionForPath(path string) string {
+	path = expandPath(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return "sha256:" + hashDir(path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return "sha256:" + hashBytes(data)
+}
+
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func hashDir(root string) string {
+	var rows []string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		rows = append(rows, filepath.ToSlash(rel)+":"+hashBytes(data))
+		return nil
+	})
+	sort.Strings(rows)
+	return hashBytes([]byte(strings.Join(rows, "\n")))
+}
+
+func findUp(cwd, name string) string {
+	dir := expandPath(cwd)
+	if dir == "" {
+		return ""
+	}
+	if info, err := os.Stat(dir); err == nil && !info.IsDir() {
+		dir = filepath.Dir(dir)
+	}
+	for {
+		cand := filepath.Join(dir, name)
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func mergeSourceRevisions(groups ...[]envelope.SourceRev) []envelope.SourceRev {
+	bySource := map[string]envelope.SourceRev{}
+	for _, group := range groups {
+		for _, rev := range group {
+			if strings.TrimSpace(rev.Source) == "" {
+				continue
+			}
+			bySource[rev.Source] = rev
+		}
+	}
+	keys := make([]string, 0, len(bySource))
+	for key := range bySource {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make([]envelope.SourceRev, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, bySource[key])
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func projectionContextConfidence(status string) float64 {

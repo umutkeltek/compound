@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/mem"
 	"compound/internal/projection"
 )
 
@@ -429,6 +431,77 @@ func TestPackWithCapabilitiesFiltersByHarnessCompatibility(t *testing.T) {
 	}
 }
 
+func TestRuntimeContractIncludesAcceptedDecisionAndRealSourceRevisions(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Repo Instructions\nUse Compound context.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	brainDecision := filepath.Join(t.TempDir(), "brain-decision.md")
+	if err := os.WriteFile(brainDecision, []byte(`---
+id: compound-context-pack-decision
+title: Compound ContextPack owns decision context
+kind: doctrine
+status: accepted
+falsifier: Agents read the old brain file directly instead of the ContextPack.
+review_trigger: Revisit when ContextPack stops including the decision ref.
+owner: compound
+scope: public-core
+---
+# Compound ContextPack owns decision context
+Future agents consume this decision through Compound runtime context.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := decisions.ImportBrainDecision(store, brainDecision, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookPath := filepath.Join(t.TempDir(), "RecallContext.hook.ts")
+	if err := os.WriteFile(hookPath, []byte("console.log('hook')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema_version: compound.installed_hooks.v0.1\nhooks:\n - harness: codex\n   name: SessionStart\n   ref: " + hookPath + "\n   status: current\n"
+	if err := os.WriteFile(filepath.Join(home, "config", "installed-hooks.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{Harness: "codex", Cwd: repo, Task: "use imported decision", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionRef := "decision://" + report.Lifecycle.ID
+	if !contains(ec.ActiveDecisions, decisionRef) {
+		t.Fatalf("effective contract active decisions = %v, want %s", ec.ActiveDecisions, decisionRef)
+	}
+	if !contains(ec.ActiveHooks, "hook://codex/SessionStart") {
+		t.Fatalf("effective contract active hooks = %v", ec.ActiveHooks)
+	}
+	if sourceRev(ec.SourceRevisions, "AGENTS.md") == "unknown" {
+		t.Fatalf("AGENTS.md source revision was not resolved: %+v", ec.SourceRevisions)
+	}
+	if sourceRev(ec.SourceRevisions, "hook://codex/SessionStart") == "unknown" {
+		t.Fatalf("hook source revision was not resolved: %+v", ec.SourceRevisions)
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(pack.ActiveDecisions, decisionRef) {
+		t.Fatalf("context pack active decisions = %v, want %s", pack.ActiveDecisions, decisionRef)
+	}
+	if !hasIncluded(pack, decisionRef) {
+		t.Fatalf("context pack should include decision ref %s; included=%v", decisionRef, pack.Included)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -467,4 +540,13 @@ func hasExcluded(pack envelope.ContextPack, ref string) bool {
 
 func containsText(s, needle string) bool {
 	return strings.Contains(s, needle)
+}
+
+func sourceRev(revs []envelope.SourceRev, source string) string {
+	for _, rev := range revs {
+		if rev.Source == source {
+			return rev.Rev
+		}
+	}
+	return ""
 }

@@ -45,6 +45,15 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 		nil))
 	writeReceipt(t, home, testReceipt("rec_unchanged", "completed", false,
 		[]string{"capability://skill:offered-only"}, nil, nil))
+	invalidOld := testReceipt("rec_invalid_old", "completed", true,
+		[]string{"capability://skill:offered-only"}, nil, nil)
+	invalidOld.MoveType = "control_plane_repair"
+	invalidOld.ProofRefs = nil
+	b, err := json.MarshalIndent(invalidOld, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(home, "events", invalidOld.ID+".json"), string(b))
 	writeFile(t, filepath.Join(home, "events", "tr_not_receipt.json"), `{
   "schema_version": "compound.transition.v0.1"
 }`)
@@ -61,6 +70,9 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 1 {
 		t.Fatalf("skip counts = %+v", report)
+	}
+	if report.SkippedInvalidReceipt != 1 {
+		t.Fatalf("invalid receipt skip count = %+v", report)
 	}
 	if len(report.SkippedUnknown) != 1 || report.SkippedUnknown[0] != "skill:missing" {
 		t.Fatalf("skipped unknown = %v", report.SkippedUnknown)
@@ -85,6 +97,9 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 	if replay.AppliedEdges != 0 {
 		t.Fatalf("replay should be idempotent, got %+v", replay)
+	}
+	if replay.SkippedInvalidReceipt != 1 {
+		t.Fatalf("replay invalid receipt skip count = %+v", replay)
 	}
 	if got := len(readCapEdges(t, home)); got != len(edges) {
 		t.Fatalf("replay appended duplicate edges: before %d after %d", len(edges), got)

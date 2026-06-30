@@ -311,6 +311,7 @@ type ReceiptConsumeReport struct {
 	SkippedNonCompleted    int      `json:"skipped_non_completed"`
 	SkippedUnchanged       int      `json:"skipped_unchanged"`
 	SkippedMissingContext  int      `json:"skipped_missing_context"`
+	SkippedInvalidReceipt  int      `json:"skipped_invalid_receipt"`
 	SkippedUnknown         []string `json:"skipped_unknown"`
 }
 
@@ -376,7 +377,8 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 			return report, fmt.Errorf("parse receipt %s: %w", entry.Name(), err)
 		}
 		if err := rec.Validate(); err != nil {
-			return report, fmt.Errorf("receipt %s invalid: %w", entry.Name(), err)
+			report.SkippedInvalidReceipt++
+			continue
 		}
 		report.ReceiptsScanned++
 

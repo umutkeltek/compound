@@ -174,6 +174,20 @@ Every non-trivial run leaves evidence before it can be treated as done.
 	if l.Falsifier == "" || l.ReviewTrigger == "" || len(l.EvidenceRefs) < 2 || l.EvidenceRefs[1] != report.EvidenceID {
 		t.Fatalf("lifecycle evidence/proof fields = %+v", l)
 	}
+	rec, err := RecordSourceAuthority(home, DecisionImportReport(report), "decisions import --brain", time.Date(2026, 6, 29, 18, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.SourceRole != "source_in_place_evidence" || rec.AuthorityRef != "decision://brain-dec-0001" || rec.AuthorityStatus != "compound_primary" {
+		t.Fatalf("source authority = %+v", rec)
+	}
+	loaded, err := LoadSourceAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 1 || loaded[0].ID != rec.ID || loaded[0].ClaimID != report.ClaimID {
+		t.Fatalf("loaded source authority = %+v", loaded)
+	}
 }
 
 func TestImportBrainDecisionAdaptsNarrativeBrainPageConservatively(t *testing.T) {

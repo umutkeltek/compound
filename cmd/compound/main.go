@@ -601,6 +601,7 @@ func cmdCapability(args []string) {
 		fmt.Printf("- skipped_non_completed: %d\n", report.SkippedNonCompleted)
 		fmt.Printf("- skipped_unchanged: %d\n", report.SkippedUnchanged)
 		fmt.Printf("- skipped_missing_context: %d\n", report.SkippedMissingContext)
+		fmt.Printf("- skipped_invalid_receipt: %d\n", report.SkippedInvalidReceipt)
 		for _, id := range report.SkippedUnknown {
 			fmt.Printf("- skipped_unknown: %s\n", id)
 		}
@@ -2806,7 +2807,9 @@ func cmdContract(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
 		os.Exit(2)
 	}
-	printJSON(contract.Compile(in, orientPolicy(), time.Now()))
+	ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, time.Now())
+	die(err)
+	printJSON(ec)
 }
 
 // cmdOrient assembles the ContextPack an agent orients from. The excluded list — what
@@ -3732,7 +3735,7 @@ func cmdDecisions(args []string) {
 		}
 		return
 	}
-	store, _ := openMemStore()
+	store, homePath := openMemStore()
 	switch sub {
 	case "candidate-plan":
 		candidateID := flagValue(args[1:], "--candidate")
@@ -3774,12 +3777,19 @@ func cmdDecisions(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 	case "import":
 		var brainReports []decisions.BrainDecisionReport
+		var sourceAuthority []decisions.SourceAuthorityRecord
 		for _, path := range values("--brain") {
 			report, err := decisions.ImportBrainDecision(store, path, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "brain decision import:", err)
 				os.Exit(1)
 			}
+			rec, err := decisions.RecordSourceAuthority(homePath, decisions.DecisionImportReport(report), "decisions import --brain", time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "brain decision source authority:", err)
+				os.Exit(1)
+			}
+			sourceAuthority = append(sourceAuthority, rec)
 			brainReports = append(brainReports, report)
 		}
 		var policyReports []decisions.DecisionImportReport
@@ -3789,6 +3799,12 @@ func cmdDecisions(args []string) {
 				fmt.Fprintln(os.Stderr, "policy decision import:", err)
 				os.Exit(1)
 			}
+			rec, err := decisions.RecordSourceAuthority(homePath, report, "decisions import --policy", time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "policy decision source authority:", err)
+				os.Exit(1)
+			}
+			sourceAuthority = append(sourceAuthority, rec)
 			policyReports = append(policyReports, report)
 		}
 		policyDirs := values("--policy-dir")
@@ -3800,6 +3816,14 @@ func cmdDecisions(args []string) {
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "policy decisions import:", err)
 				os.Exit(1)
+			}
+			for _, report := range reports {
+				rec, err := decisions.RecordSourceAuthority(homePath, report, "decisions import --policy-dir", time.Now())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "policy decisions source authority:", err)
+					os.Exit(1)
+				}
+				sourceAuthority = append(sourceAuthority, rec)
 			}
 			policyReports = append(policyReports, reports...)
 		}
@@ -3853,6 +3877,9 @@ func cmdDecisions(args []string) {
 		}
 		for _, report := range policyReports {
 			fmt.Printf("- policy %s: %s status=%s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.Lifecycle.Status, report.CandidateID, report.EvidenceID, report.ClaimID)
+		}
+		for _, rec := range sourceAuthority {
+			fmt.Printf("- source_authority: %s %s -> %s (%s)\n", rec.ID, rec.SourceRole, rec.AuthorityRef, rec.AuthorityStatus)
 		}
 	case "doctor":
 		writebackEnabled := hasFlag(args[1:], "--writeback")

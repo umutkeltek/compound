@@ -151,6 +151,10 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 	pack := contract.Pack(in, deps.Orient, now)
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
+		ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
+		if err != nil {
+			return Result{}, err
+		}
 		pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
 		if err != nil {
 			return Result{}, err
@@ -184,6 +188,10 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	pack := contract.Pack(in, deps.Orient, now)
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
+		ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
+		if err != nil {
+			return Result{}, err
+		}
 		pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
 		if err != nil {
 			return Result{}, err
