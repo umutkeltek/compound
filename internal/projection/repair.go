@@ -1,15 +1,12 @@
 package projection
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 const RegenerationPlanSchemaVersion = "compound.projection_regeneration_plan.v0.1"
@@ -64,7 +61,7 @@ func BuildRegenerationPlan(f Freshness, refs RegenerationRefs, now time.Time) (R
 	createdAt := now.UTC().Format(time.RFC3339Nano)
 	plan := RegenerationPlan{
 		SchemaVersion:       RegenerationPlanSchemaVersion,
-		ID:                  "pgrp_" + digest12(strings.Join([]string{f.ProjectionID, f.ViewRef, f.Status, f.OutputHash, createdAt}, "\n")),
+		ID:                  "pgrp_" + reviewartifact.Digest12(strings.Join([]string{f.ProjectionID, f.ViewRef, f.Status, f.OutputHash, createdAt}, "\n")),
 		CreatedAt:           createdAt,
 		Status:              "review_required",
 		ProjectionID:        f.ProjectionID,
@@ -98,25 +95,8 @@ func RecordRegenerationPlan(homePath string, plan RegenerationPlan) (Regeneratio
 	if strings.TrimSpace(homePath) == "" {
 		return RegenerationArtifactPaths{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	dir := filepath.Join(homePath, "reviews", "projection-regeneration")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return RegenerationArtifactPaths{}, err
-	}
-	paths := RegenerationArtifactPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	b, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(b, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderRegenerationReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "projection-regeneration", plan.ID, plan, " ", RenderRegenerationReview(plan))
+	return RegenerationArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderRegenerationReview(plan RegenerationPlan) string {
@@ -179,9 +159,4 @@ func failedChecks(checks []Check) []Check {
 		}
 	}
 	return out
-}
-
-func digest12(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:12]
 }
