@@ -517,3 +517,58 @@ func TestMemoryEngineContractRequiresLedgerAndAuthorityGuards(t *testing.T) {
 		t.Fatalf("failure should name missing ledger/no-authority guard: %+v", findings)
 	}
 }
+
+func TestHarnessEntrypointContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "harness-entrypoint-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("harness entrypoint contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected harness-entrypoint-contract finding")
+	}
+}
+
+func TestHarnessEntrypointContractFailsWithoutOSEntrypointDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound harness observe` records built-in and normalized harness registries as SourceObservation/no-promote evidence without installing hooks.\n"
+	if err := os.WriteFile(filepath.Join(docs, "runtime.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkHarnessEntrypointContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "--os-entrypoints") {
+		t.Fatalf("failure should name missing os-entrypoints contract: %+v", findings)
+	}
+}
+
+func TestHarnessEntrypointContractRejectsCapabilityOverclaim(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound harness observe --os-entrypoints file` records SourceObservation/no-promote evidence and installs no hooks; OS entrypoints imply hook blocking, MCP, skills, and receipts.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkHarnessEntrypointContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "session-start-only") {
+		t.Fatalf("failure should name missing session-start-only guard: %+v", findings)
+	}
+}

@@ -110,6 +110,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkWorkPacketContract(repoRoot)...)
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
+		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -582,6 +583,58 @@ func checkMemoryEngineContract(repoRoot string) []Finding {
 		return []Finding{{"memory-engine-contract", Fail, "public docs do not describe configured MemoryEngine health through memory doctor sync/embedding, ledger_unchanged proof, engine-compare swap parity, and never-authority semantics"}}
 	}
 	return []Finding{{"memory-engine-contract", Info, "configured MemoryEngine health stays observable rented ledger-safe"}}
+}
+
+// checkHarnessEntrypointContract prevents OS-style entrypoint registries from
+// drifting into full capability authority. Entrypoint files prove context
+// entrypoints, not hook blocking, receipts, skills, or MCP support.
+func checkHarnessEntrypointContract(repoRoot string) []Finding {
+	hasHarnessObserve := false
+	hasOSEntrypoints := false
+	hasSessionStartOnly := false
+	hasNoPromote := false
+	hasNoHookInstall := false
+	hasExplicitCapabilityRegistry := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "compound harness observe") {
+			hasHarnessObserve = true
+		}
+		if strings.Contains(low, "--os-entrypoints") {
+			hasOSEntrypoints = true
+		}
+		if strings.Contains(low, "only session-start context") ||
+			strings.Contains(low, "only `session_start_context`") ||
+			strings.Contains(low, "infer only `session_start_context`") {
+			hasSessionStartOnly = true
+		}
+		if strings.Contains(low, "sourceobservation") &&
+			(strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote")) {
+			hasNoPromote = true
+		}
+		if strings.Contains(low, "not hook installation") ||
+			strings.Contains(low, "does not install hooks") ||
+			strings.Contains(low, "without installing hooks") {
+			hasNoHookInstall = true
+		}
+		if strings.Contains(low, "explicit normalized capability registry") ||
+			strings.Contains(low, "require an explicit normalized capability registry") {
+			hasExplicitCapabilityRegistry = true
+		}
+		return nil
+	})
+	if !hasHarnessObserve || !hasOSEntrypoints || !hasSessionStartOnly || !hasNoPromote || !hasNoHookInstall || !hasExplicitCapabilityRegistry {
+		return []Finding{{"harness-entrypoint-contract", Fail, "public docs do not describe --os-entrypoints as session-start-only SourceObservation/no-promote evidence with no hook install and no inferred hook/MCP/skill capability"}}
+	}
+	return []Finding{{"harness-entrypoint-contract", Info, "OS harness entrypoints stay evidence-only session-start context"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding —
