@@ -12,9 +12,17 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"gopkg.in/yaml.v3"
 )
 
-const ImprovementPlanSchemaVersion = "compound.distiller.improvement_plan.v0.1"
+const (
+	ImprovementPlanSchemaVersion           = "compound.distiller.improvement_plan.v0.1"
+	ImprovementReviewSchemaVersion         = "compound.distiller.improvement_review.v0.1"
+	ReviewedImprovementSchemaVersion       = "compound.distiller.reviewed_improvement.v0.1"
+	ImprovementReviewDecisionAccept        = "accept"
+	ImprovementReviewDecisionReject        = "reject"
+	ImprovementReviewDecisionKeepReviewing = "keep_reviewing"
+)
 
 // ImprovementPlan is a reviewed proposal from method_upgrade or policy_patch
 // candidates. It makes distiller self-improvement explicit without silently
@@ -41,20 +49,68 @@ type ImprovementPlan struct {
 }
 
 type ImprovementDraft struct {
-	ImprovementID    string   `json:"improvement_id"`
-	Area             string   `json:"area"`
-	Title            string   `json:"title"`
-	ProposedChange   string   `json:"proposed_change"`
-	Guardrail        string   `json:"guardrail"`
-	EvalRequirement  string   `json:"eval_requirement"`
-	RollbackPlan     string   `json:"rollback_plan"`
-	RequiredEvidence []string `json:"required_evidence"`
-	ReviewNote       string   `json:"review_note"`
+	ImprovementID    string   `json:"improvement_id" yaml:"improvement_id"`
+	Area             string   `json:"area" yaml:"area"`
+	Title            string   `json:"title" yaml:"title"`
+	ProposedChange   string   `json:"proposed_change" yaml:"proposed_change"`
+	Guardrail        string   `json:"guardrail" yaml:"guardrail"`
+	EvalRequirement  string   `json:"eval_requirement" yaml:"eval_requirement"`
+	RollbackPlan     string   `json:"rollback_plan" yaml:"rollback_plan"`
+	RequiredEvidence []string `json:"required_evidence" yaml:"required_evidence"`
+	ReviewNote       string   `json:"review_note" yaml:"review_note"`
 }
 
 type ImprovementPlanPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath       string
+	ReviewPath     string
+	ReviewYAMLPath string
+}
+
+type ImprovementReview struct {
+	SchemaVersion string           `json:"schema_version" yaml:"schema_version"`
+	ReviewID      string           `json:"review_id" yaml:"review_id"`
+	PlanID        string           `json:"plan_id" yaml:"plan_id"`
+	CandidateID   string           `json:"candidate_id" yaml:"candidate_id"`
+	CandidateKind string           `json:"candidate_kind" yaml:"candidate_kind"`
+	ImprovementID string           `json:"improvement_id" yaml:"improvement_id"`
+	Area          string           `json:"area" yaml:"area"`
+	Decision      string           `json:"decision" yaml:"decision"`
+	Rationale     string           `json:"rationale" yaml:"rationale"`
+	Confidence    float64          `json:"confidence" yaml:"confidence"`
+	EvidenceRefs  []string         `json:"evidence_refs" yaml:"evidence_refs"`
+	EvalProofRefs []string         `json:"eval_proof_refs" yaml:"eval_proof_refs"`
+	TargetPath    string           `json:"target_path,omitempty" yaml:"target_path,omitempty"`
+	TargetHash    string           `json:"target_hash,omitempty" yaml:"target_hash,omitempty"`
+	Draft         ImprovementDraft `json:"draft" yaml:"draft"`
+}
+
+type ReviewedImprovement struct {
+	SchemaVersion string           `json:"schema_version"`
+	ID            string           `json:"id"`
+	CreatedAt     string           `json:"created_at"`
+	Status        string           `json:"status"`
+	ReviewID      string           `json:"review_id"`
+	PlanID        string           `json:"plan_id"`
+	CandidateID   string           `json:"candidate_id"`
+	CandidateKind string           `json:"candidate_kind"`
+	ImprovementID string           `json:"improvement_id"`
+	Area          string           `json:"area"`
+	Decision      string           `json:"decision"`
+	Rationale     string           `json:"rationale"`
+	Confidence    float64          `json:"confidence"`
+	EvidenceRefs  []string         `json:"evidence_refs"`
+	EvalProofRefs []string         `json:"eval_proof_refs,omitempty"`
+	TargetPath    string           `json:"target_path,omitempty"`
+	TargetHash    string           `json:"target_hash,omitempty"`
+	Draft         ImprovementDraft `json:"draft"`
+	Warnings      []string         `json:"warnings,omitempty"`
+}
+
+type ImprovementReviewReport struct {
+	Status       string
+	ReviewID     string
+	Decision     string
+	ReviewedPath string
 }
 
 func BuildImprovementPlan(homePath, candidateID, targetPath string, now time.Time) (ImprovementPlan, error) {
@@ -175,8 +231,9 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 		return ImprovementPlanPaths{}, err
 	}
 	paths := ImprovementPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
+		PlanPath:       filepath.Join(dir, plan.ID+".json"),
+		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
+		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
 	}
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
@@ -188,7 +245,151 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 	if err := os.WriteFile(paths.ReviewPath, []byte(RenderImprovementPlanReview(plan)), 0o644); err != nil {
 		return paths, err
 	}
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderImprovementReviewYAMLDraft(plan)), 0o644); err != nil {
+		return paths, err
+	}
 	return paths, nil
+}
+
+func RenderImprovementReviewYAMLDraft(plan ImprovementPlan) string {
+	review := ImprovementReview{
+		SchemaVersion: ImprovementReviewSchemaVersion,
+		ReviewID:      "review_" + plan.Draft.ImprovementID,
+		PlanID:        plan.ID,
+		CandidateID:   plan.CandidateID,
+		CandidateKind: plan.CandidateKind,
+		ImprovementID: plan.Draft.ImprovementID,
+		Area:          plan.Draft.Area,
+		Decision:      "",
+		Rationale:     "",
+		Confidence:    0,
+		EvidenceRefs:  append([]string(nil), plan.EvidenceRefs...),
+		EvalProofRefs: []string{},
+		TargetPath:    plan.TargetPath,
+		TargetHash:    plan.TargetHash,
+		Draft:         plan.Draft,
+	}
+	data, err := yaml.Marshal(review)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func LoadImprovementReview(path string) (ImprovementReview, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ImprovementReview{}, fmt.Errorf("read distiller improvement review %s: %w", path, err)
+	}
+	var review ImprovementReview
+	if err := yaml.Unmarshal(data, &review); err != nil {
+		return ImprovementReview{}, fmt.Errorf("parse distiller improvement review %s: %w", path, err)
+	}
+	if err := review.Validate(); err != nil {
+		return ImprovementReview{}, fmt.Errorf("validate distiller improvement review %s: %w", path, err)
+	}
+	return review, nil
+}
+
+func (r ImprovementReview) Validate() error {
+	if strings.TrimSpace(r.SchemaVersion) != ImprovementReviewSchemaVersion {
+		return fmt.Errorf("schema_version must be %s", ImprovementReviewSchemaVersion)
+	}
+	if strings.TrimSpace(r.ReviewID) == "" {
+		return fmt.Errorf("review_id required")
+	}
+	if strings.TrimSpace(r.PlanID) == "" {
+		return fmt.Errorf("plan_id required")
+	}
+	if strings.TrimSpace(r.CandidateID) == "" {
+		return fmt.Errorf("candidate_id required")
+	}
+	if strings.TrimSpace(r.CandidateKind) != KindMethodUpgrade && strings.TrimSpace(r.CandidateKind) != KindPolicyPatch {
+		return fmt.Errorf("candidate_kind must be %s or %s", KindMethodUpgrade, KindPolicyPatch)
+	}
+	if strings.TrimSpace(r.ImprovementID) == "" {
+		return fmt.Errorf("improvement_id required")
+	}
+	if strings.TrimSpace(r.Area) != "method" && strings.TrimSpace(r.Area) != "policy" {
+		return fmt.Errorf("area must be method or policy")
+	}
+	if !improvementReviewDecisionOK(r.Decision) {
+		return fmt.Errorf("decision must be accept, reject, or keep_reviewing")
+	}
+	if strings.TrimSpace(r.Rationale) == "" {
+		return fmt.Errorf("rationale required")
+	}
+	if r.Confidence < 0 || r.Confidence > 1 {
+		return fmt.Errorf("confidence must be between 0 and 1")
+	}
+	if len(compactImprovementStrings(r.EvidenceRefs)) == 0 {
+		return fmt.Errorf("evidence_refs required")
+	}
+	if strings.TrimSpace(r.Decision) == ImprovementReviewDecisionAccept && len(compactImprovementStrings(r.EvalProofRefs)) == 0 {
+		return fmt.Errorf("accept decision requires at least one eval_proof_refs entry")
+	}
+	if strings.TrimSpace(r.Draft.ImprovementID) == "" || strings.TrimSpace(r.Draft.ProposedChange) == "" || strings.TrimSpace(r.Draft.Guardrail) == "" {
+		return fmt.Errorf("draft improvement_id, proposed_change, and guardrail required")
+	}
+	return nil
+}
+
+func RecordImprovementReview(homePath string, review ImprovementReview, now time.Time) (ImprovementReviewReport, error) {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return ImprovementReviewReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	plan, err := readImprovementPlan(homePath, review.PlanID)
+	if err != nil {
+		return ImprovementReviewReport{}, err
+	}
+	if err := improvementReviewMatchesPlan(review, plan); err != nil {
+		return ImprovementReviewReport{}, err
+	}
+	dir := filepath.Join(homePath, "reviews", "distiller-improvements")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ImprovementReviewReport{}, err
+	}
+	reviewed := ReviewedImprovement{
+		SchemaVersion: ReviewedImprovementSchemaVersion,
+		ID:            "reviewed_" + review.ReviewID,
+		CreatedAt:     rfc3339(now),
+		Status:        improvementReviewStatus(review.Decision),
+		ReviewID:      review.ReviewID,
+		PlanID:        review.PlanID,
+		CandidateID:   review.CandidateID,
+		CandidateKind: review.CandidateKind,
+		ImprovementID: review.ImprovementID,
+		Area:          review.Area,
+		Decision:      review.Decision,
+		Rationale:     review.Rationale,
+		Confidence:    review.Confidence,
+		EvidenceRefs:  compactImprovementStrings(review.EvidenceRefs),
+		EvalProofRefs: compactImprovementStrings(review.EvalProofRefs),
+		TargetPath:    review.TargetPath,
+		TargetHash:    review.TargetHash,
+		Draft:         review.Draft,
+		Warnings: []string{
+			"does not mutate distiller policy",
+			"does not edit prompts or code",
+			"does not update eval corpus",
+			"does not promote memory truth",
+		},
+	}
+	path := filepath.Join(dir, review.ReviewID+".reviewed.json")
+	data, err := json.MarshalIndent(reviewed, "", " ")
+	if err != nil {
+		return ImprovementReviewReport{}, err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return ImprovementReviewReport{}, err
+	}
+	return ImprovementReviewReport{
+		Status:       "reviewed",
+		ReviewID:     review.ReviewID,
+		Decision:     review.Decision,
+		ReviewedPath: path,
+	}, nil
 }
 
 func RenderImprovementPlanReview(plan ImprovementPlan) string {
@@ -241,6 +442,79 @@ func RenderImprovementPlanReview(plan ImprovementPlan) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "%s\n", plan.Draft.ReviewNote)
 	return b.String()
+}
+
+func readImprovementPlan(homePath, planID string) (ImprovementPlan, error) {
+	planID = strings.TrimSpace(planID)
+	if planID == "" {
+		return ImprovementPlan{}, fmt.Errorf("plan_id required")
+	}
+	path := filepath.Join(homePath, "reviews", "distiller-improvements", planID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ImprovementPlan{}, fmt.Errorf("read distiller improvement plan %s: %w", path, err)
+	}
+	var plan ImprovementPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return ImprovementPlan{}, fmt.Errorf("parse distiller improvement plan %s: %w", path, err)
+	}
+	if plan.ID != planID {
+		return ImprovementPlan{}, fmt.Errorf("plan file id %q does not match review plan_id %q", plan.ID, planID)
+	}
+	return plan, nil
+}
+
+func improvementReviewMatchesPlan(review ImprovementReview, plan ImprovementPlan) error {
+	if review.CandidateID != plan.CandidateID {
+		return fmt.Errorf("review candidate_id %q does not match plan candidate_id %q", review.CandidateID, plan.CandidateID)
+	}
+	if review.CandidateKind != plan.CandidateKind {
+		return fmt.Errorf("review candidate_kind %q does not match plan candidate_kind %q", review.CandidateKind, plan.CandidateKind)
+	}
+	if review.ImprovementID != plan.Draft.ImprovementID {
+		return fmt.Errorf("review improvement_id %q does not match plan improvement_id %q", review.ImprovementID, plan.Draft.ImprovementID)
+	}
+	if review.Area != plan.Draft.Area {
+		return fmt.Errorf("review area %q does not match plan area %q", review.Area, plan.Draft.Area)
+	}
+	if review.TargetHash != "" && plan.TargetHash != "" && review.TargetHash != plan.TargetHash {
+		return fmt.Errorf("review target_hash %q does not match plan target_hash %q", review.TargetHash, plan.TargetHash)
+	}
+	return nil
+}
+
+func improvementReviewDecisionOK(decision string) bool {
+	switch strings.TrimSpace(decision) {
+	case ImprovementReviewDecisionAccept, ImprovementReviewDecisionReject, ImprovementReviewDecisionKeepReviewing:
+		return true
+	default:
+		return false
+	}
+}
+
+func improvementReviewStatus(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case ImprovementReviewDecisionAccept:
+		return "accepted"
+	case ImprovementReviewDecisionReject:
+		return "rejected"
+	default:
+		return "needs_review"
+	}
+}
+
+func compactImprovementStrings(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func hashImprovementTarget(path string) (bool, string, error) {

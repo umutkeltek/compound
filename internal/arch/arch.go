@@ -115,6 +115,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkProductContractContract(repoRoot)...)
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
 		f = append(f, checkConversationMiningContract(repoRoot)...)
+		f = append(f, checkDistillerImprovementReviewContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -869,6 +870,47 @@ func checkConversationMiningContract(repoRoot string) []Finding {
 		return []Finding{{"conversation-mining-contract", Fail, "public docs do not describe distiller import-conversation-mining as lossiness-aware SourceObservation/no-promote evidence with reviewed improvement-plan next step, no Dream execution, and no memory promotion"}}
 	}
 	return []Finding{{"conversation-mining-contract", Info, "conversation mining stays lossiness-aware source evidence, not Dream or memory authority"}}
+}
+
+func checkDistillerImprovementReviewContract(repoRoot string) []Finding {
+	hasPlan := false
+	hasReview := false
+	hasReviewYAML := false
+	hasEvalProof := false
+	hasNoMutation := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "distiller improvement-plan") {
+			hasPlan = true
+		}
+		if strings.Contains(low, "distiller improvement-review") {
+			hasReview = true
+		}
+		if strings.Contains(low, ".review.yaml") {
+			hasReviewYAML = true
+		}
+		if strings.Contains(low, "eval_proof_refs") {
+			hasEvalProof = true
+		}
+		if strings.Contains(low, "does not mutate distiller policy") &&
+			strings.Contains(low, "eval corpus") &&
+			(strings.Contains(low, "memory truth") || strings.Contains(low, "promote memory")) {
+			hasNoMutation = true
+		}
+		return nil
+	})
+	if !hasPlan || !hasReview || !hasReviewYAML || !hasEvalProof || !hasNoMutation {
+		return []Finding{{"distiller-improvement-review-contract", Fail, "public docs do not describe distiller improvement-plan/review as gated review YAML with eval_proof_refs and no policy/eval-corpus/memory mutation"}}
+	}
+	return []Finding{{"distiller-improvement-review-contract", Info, "distiller improvement review is gated proof artifact, not policy/eval-corpus/memory mutation"}}
 }
 
 func convergenceDebt(strict bool) []Finding {

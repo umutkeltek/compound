@@ -778,3 +778,22 @@ func TestConversationMiningContractFailsWithoutGates(t *testing.T) {
 		t.Fatalf("failure should name missing lossiness/no-promotion guards: %+v", findings)
 	}
 }
+
+func TestDistillerImprovementReviewContractFailsWithoutGate(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound distiller improvement-plan` writes a review note but applies method changes.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkDistillerImprovementReviewContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "eval_proof_refs") || !strings.Contains(findings[0].Message, "gated review YAML") {
+		t.Fatalf("failure should name missing review/proof guards: %+v", findings)
+	}
+}

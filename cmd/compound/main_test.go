@@ -24,6 +24,7 @@ import (
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
 	"compound/internal/work"
+	"gopkg.in/yaml.v3"
 )
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
@@ -2543,8 +2544,45 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 	if plan.CandidateID != sourceCandidateID || plan.CandidateVerdict != candidates.NoPromote || plan.Draft.Area != "method" {
 		t.Fatalf("improvement plan = %+v", plan)
 	}
+	reviewYAMLPath := outputValue(planOut, "- review_yaml:")
+	if reviewYAMLPath == "" {
+		t.Fatalf("improvement plan did not print review_yaml:\n%s", planOut)
+	}
+	var review distiller.ImprovementReview
+	if err := yaml.Unmarshal([]byte(readFile(t, reviewYAMLPath)), &review); err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = distiller.ImprovementReviewDecisionAccept
+	review.Rationale = "reviewed conversation-mining import replay; keep source evidence candidate-only while improving future extraction review."
+	review.Confidence = 0.77
+	review.EvalProofRefs = []string{"distiller_eval:conversation-mining-review-replay"}
+	reviewData, err := yaml.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editedReviewPath := filepath.Join(homePath, "reviews", "distiller-improvements", "edited-conversation-mining.review.yaml")
+	if err := os.WriteFile(editedReviewPath, reviewData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdDistiller([]string{"improvement-review", editedReviewPath})
+	})
+	if !strings.Contains(reviewOut, "# distiller improvement-review") || !strings.Contains(reviewOut, "- decision: accept") {
+		t.Fatalf("conversation mining source candidate did not enter improvement-review path:\n%s", reviewOut)
+	}
+	reviewedPath := outputValue(reviewOut, "- reviewed:")
+	if reviewedPath == "" {
+		t.Fatalf("improvement-review did not print reviewed artifact:\n%s", reviewOut)
+	}
+	var reviewed distiller.ReviewedImprovement
+	if err := json.Unmarshal([]byte(readFile(t, reviewedPath)), &reviewed); err != nil {
+		t.Fatal(err)
+	}
+	if reviewed.Status != "accepted" || reviewed.PlanID != plan.ID || reviewed.CandidateID != sourceCandidateID || len(reviewed.EvalProofRefs) != 1 {
+		t.Fatalf("reviewed improvement = %+v", reviewed)
+	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("conversation mining improvement-plan must not write claims ledger, stat err=%v", err)
+		t.Fatalf("conversation mining improvement-plan/review must not write claims ledger, stat err=%v", err)
 	}
 }
 

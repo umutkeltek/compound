@@ -198,3 +198,5 @@ one skill manifest view
 
 This proves Compound can learn from generated files without making them new truth
 owners.
+
+Distiller improvement review YAML is a source-adapter closure surface: `compound distiller improvement-review <review.yaml>` validates edited decision/rationale/confidence, requires `eval_proof_refs` for accept, and emits a reviewed improvement artifact without mutating distiller policy, prompts/code, eval corpus, source owners, or memory truth.

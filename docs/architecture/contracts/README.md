@@ -196,3 +196,7 @@ An **uncertain** match creates **parked evidence only — never a promoted claim
   `move_type` enum: `outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only`. A
   `control_plane_repair` only counts when it removes a duplicate owner, fixes a recurring failure, or creates
   runtime proof — otherwise `audit_only`, which does not count.
+
+## Distiller Improvement Review Gate
+
+`compound distiller improvement-plan --candidate <id>` writes JSON/Markdown review artifacts plus gated `.review.yaml` under `COMPOUND_HOME/reviews/distiller-improvements/`. `compound distiller improvement-review <review.yaml>` validates edited decision/rationale/confidence, requires `eval_proof_refs` for accept, and emits a reviewed improvement artifact. It does not mutate distiller policy, edit prompts/code, update eval corpus, call a model, mutate source owners, or promote memory truth.

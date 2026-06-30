@@ -160,6 +160,7 @@ usage:
   compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller improvement-plan --candidate C [--target file] method_upgrade/policy_patch -> reviewed distiller improvement draft
+  compound distiller improvement-review <review.yaml>           validate reviewed distiller improvement decision, no source mutation
   compound distiller rule-plan --candidate C [--target file]  failure_pattern candidate -> reviewed rule draft, no doctrine mutation
   compound distiller taste-plan --candidate C [--target file] taste candidate -> reviewed taste standard draft, no doctrine mutation
   compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...
@@ -889,6 +890,33 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		return
+	}
+	if len(args) >= 1 && args[0] == "improvement-review" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller improvement-review <review.yaml>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		review, err := distiller.LoadImprovementReview(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller improvement-review:", err)
+			os.Exit(1)
+		}
+		report, err := distiller.RecordImprovementReview(homePath, review, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller improvement-review:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller improvement-review %s\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
 		return
 	}
 	if len(args) >= 1 && args[0] == "rule-plan" {
