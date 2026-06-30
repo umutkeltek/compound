@@ -832,6 +832,7 @@ func checkConversationMiningContract(repoRoot string) []Finding {
 	hasImport := false
 	hasSourceNoPromote := false
 	hasLossiness := false
+	hasImprovementPlan := false
 	hasNoDream := false
 	hasNoMemoryPromotion := false
 	docs := filepath.Join(repoRoot, "docs")
@@ -853,6 +854,9 @@ func checkConversationMiningContract(repoRoot string) []Finding {
 		if strings.Contains(low, "lossiness") || strings.Contains(low, "lossy corpus") {
 			hasLossiness = true
 		}
+		if strings.Contains(low, "distiller improvement-plan") {
+			hasImprovementPlan = true
+		}
 		if strings.Contains(low, "no dream execution") || strings.Contains(low, "does not execute dream") || (strings.Contains(low, "dream execution") && strings.Contains(low, "gated")) {
 			hasNoDream = true
 		}
@@ -861,8 +865,8 @@ func checkConversationMiningContract(repoRoot string) []Finding {
 		}
 		return nil
 	})
-	if !hasImport || !hasSourceNoPromote || !hasLossiness || !hasNoDream || !hasNoMemoryPromotion {
-		return []Finding{{"conversation-mining-contract", Fail, "public docs do not describe distiller import-conversation-mining as lossiness-aware SourceObservation/no-promote evidence with no Dream execution or memory promotion"}}
+	if !hasImport || !hasSourceNoPromote || !hasLossiness || !hasImprovementPlan || !hasNoDream || !hasNoMemoryPromotion {
+		return []Finding{{"conversation-mining-contract", Fail, "public docs do not describe distiller import-conversation-mining as lossiness-aware SourceObservation/no-promote evidence with reviewed improvement-plan next step, no Dream execution, and no memory promotion"}}
 	}
 	return []Finding{{"conversation-mining-contract", Info, "conversation mining stays lossiness-aware source evidence, not Dream or memory authority"}}
 }

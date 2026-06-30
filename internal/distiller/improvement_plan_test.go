@@ -17,6 +17,7 @@ func TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T
 		inboxKind  candidates.Kind
 		subject    string
 		statement  string
+		verdict    string
 		wantArea   string
 		wantPrefix string
 	}{
@@ -26,6 +27,7 @@ func TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T
 			inboxKind:  candidates.MethodUpgrade,
 			subject:    "distill.memory.dates",
 			statement:  "ground relative dates against trace timestamp before emitting memory candidates",
+			verdict:    Park,
 			wantArea:   "method",
 			wantPrefix: "method_distill-memory-dates_",
 		},
@@ -35,8 +37,19 @@ func TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T
 			inboxKind:  candidates.PolicyPatch,
 			subject:    "distill.promotion.policy",
 			statement:  "reject model-supplied promotion_basis unless source adapter already proved basis",
+			verdict:    Park,
 			wantArea:   "policy",
 			wantPrefix: "policy_distill-promotion-policy_",
+		},
+		{
+			name:       "source observation no-promote method upgrade",
+			kind:       KindMethodUpgrade,
+			inboxKind:  candidates.MethodUpgrade,
+			subject:    "conversation_mining",
+			statement:  "review mined conversation quality and lossiness before changing extraction",
+			verdict:    candidates.NoPromote,
+			wantArea:   "method",
+			wantPrefix: "method_conversation-mining_",
 		},
 	}
 	for _, tt := range tests {
@@ -55,7 +68,7 @@ func TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T
 				Detail:       "self_improvement",
 				Confidence:   0.9,
 				EvidenceRefs: []string{"trace:distiller", "eval:before"},
-				Verdict:      Park,
+				Verdict:      tt.verdict,
 			}
 			data, err := json.MarshalIndent(candidate, "", "  ")
 			if err != nil {
@@ -78,7 +91,7 @@ func TestImprovementPlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T
 				plan.Status != "review_required" ||
 				plan.CandidateID != candidateID ||
 				plan.CandidateKind != tt.kind ||
-				plan.CandidateVerdict != Park ||
+				plan.CandidateVerdict != tt.verdict ||
 				plan.Draft.Area != tt.wantArea ||
 				!strings.HasPrefix(plan.Draft.ImprovementID, tt.wantPrefix) ||
 				!strings.Contains(plan.Draft.ProposedChange, strings.Fields(tt.statement)[0]) ||

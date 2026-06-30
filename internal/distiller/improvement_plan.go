@@ -74,8 +74,8 @@ func BuildImprovementPlan(homePath, candidateID, targetPath string, now time.Tim
 	if c.Kind != KindMethodUpgrade && c.Kind != KindPolicyPatch {
 		return ImprovementPlan{}, fmt.Errorf("candidate %s kind=%q, want %q or %q", candidateID, c.Kind, KindMethodUpgrade, KindPolicyPatch)
 	}
-	if c.Verdict != Park && c.Verdict != Operationalize {
-		return ImprovementPlan{}, fmt.Errorf("candidate %s verdict=%q, want park or operationalize", candidateID, c.Verdict)
+	if c.Verdict != Park && c.Verdict != Operationalize && c.Verdict != candidates.NoPromote {
+		return ImprovementPlan{}, fmt.Errorf("candidate %s verdict=%q, want park, operationalize, or no_promote", candidateID, c.Verdict)
 	}
 	targetExists, targetHash, err := hashImprovementTarget(targetPath)
 	if err != nil {

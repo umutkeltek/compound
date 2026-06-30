@@ -757,6 +757,7 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
 		for _, id := range sourceReport.CandidateIDs {
 			fmt.Printf("- source_candidate: %s\n", id)
+			fmt.Printf("- review_command: compound distiller improvement-plan --candidate %s\n", id)
 		}
 		for _, id := range sourceReport.NoPromoteIDs {
 			fmt.Printf("- source_no_promote: %s\n", id)

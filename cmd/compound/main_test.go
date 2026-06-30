@@ -2507,11 +2507,16 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 		"- top_tag: architecture",
 		"- source_observation:",
 		"- source_candidate:",
+		"- review_command: compound distiller improvement-plan --candidate",
 		"- source_no_promote:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("import-conversation-mining output missing %q:\n%s", want, out)
 		}
+	}
+	sourceCandidateID := outputValue(out, "- source_candidate:")
+	if sourceCandidateID == "" {
+		t.Fatalf("source candidate missing:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("conversation mining import must not write claims ledger, stat err=%v", err)
@@ -2523,6 +2528,23 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 	}
 	if len(files) != 1 {
 		t.Fatalf("method upgrade candidates = %d, want 1", len(files))
+	}
+	planOut := captureStdout(t, func() {
+		cmdDistiller([]string{"improvement-plan", "--candidate", sourceCandidateID})
+	})
+	if !strings.Contains(planOut, "# distiller improvement-plan") || !strings.Contains(planOut, "- candidate_kind: method_upgrade") {
+		t.Fatalf("conversation mining source candidate did not enter improvement-plan path:\n%s", planOut)
+	}
+	planPath := outputValue(planOut, "- plan:")
+	var plan distiller.ImprovementPlan
+	if err := json.Unmarshal([]byte(readFile(t, planPath)), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.CandidateID != sourceCandidateID || plan.CandidateVerdict != candidates.NoPromote || plan.Draft.Area != "method" {
+		t.Fatalf("improvement plan = %+v", plan)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("conversation mining improvement-plan must not write claims ledger, stat err=%v", err)
 	}
 }
 

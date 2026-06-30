@@ -774,7 +774,7 @@ func TestConversationMiningContractFailsWithoutGates(t *testing.T) {
 	if len(findings) != 1 || findings[0].Severity != Fail {
 		t.Fatalf("findings = %+v, want one failure", findings)
 	}
-	if !strings.Contains(findings[0].Message, "lossiness-aware") || !strings.Contains(findings[0].Message, "memory promotion") {
+	if !strings.Contains(findings[0].Message, "lossiness-aware") || !strings.Contains(findings[0].Message, "improvement-plan") || !strings.Contains(findings[0].Message, "memory promotion") {
 		t.Fatalf("failure should name missing lossiness/no-promotion guards: %+v", findings)
 	}
 }
