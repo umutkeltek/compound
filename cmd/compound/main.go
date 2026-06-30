@@ -4003,11 +4003,43 @@ func cmdDecisions(args []string) {
 	}
 }
 
-func runDecisionWriteback(report decisions.DoctorReport, now time.Time) (writebackWorkResult, error) {
+// writebackSpec is the per-doctor parameterization of the one writeback
+// choreography (runDoctorWriteback). Each doctor differs only in these values
+// plus how it builds its OwnerWritebackGate and summaries; the spine
+// (work create→claim→advance→ActionIntent→policy→gate→receipt→transition) is shared.
+type writebackSpec struct {
+	Owner            string
+	DesiredOutcome   string
+	SuccessPredicate string
+	NonGoals         []string
+	Risk             string
+	Privacy          string
+	Actor            string
+	IDParts          []string // cliID middle parts; cliTS(now) is appended
+	Capability       string
+	Action           string
+	TargetKind       string
+	TargetID         string
+	TargetPath       string
+	Preview          string
+	RollbackPlan     string
+	RunningNote      string
+	CheckedNote      string
+	EvidenceRefs     []string
+	Verification     string // post-check VerificationID; "" => the checked gate's CandidateRef
+	MoveType         string // success-close move_type
+	BlockedSummary   func(status, gateID string) string
+	AllowedSummary   func(status, gateID string) string
+	GateFor          func(actionIntentID, policyDecisionID string) writeback.OwnerWritebackGate
+}
+
+// runDoctorWriteback runs the one governed owner-writeback choreography shared by
+// every doctor: open work + writeback stores, create/claim a work envelope,
+// propose the ActionIntent, evaluate policy and the writeback gate, then close
+// the work (control_plane_repair/outward_delta, or audit_only when the gate
+// blocks) while recording the gate and the receipt/transition refs.
+func runDoctorWriteback(spec writebackSpec, now time.Time) (writebackWorkResult, error) {
 	var result writebackWorkResult
-	if !decisions.NeedsWriteback(report) {
-		return result, nil
-	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		return result, err
@@ -4020,301 +4052,200 @@ func runDecisionWriteback(report decisions.DoctorReport, now time.Time) (writeba
 	if err != nil {
 		return result, err
 	}
-	gapCount := len(report.LifecycleGaps)
 	w, err := workStore.Create(work.CreateInput{
+		Owner:            spec.Owner,
+		DesiredOutcome:   spec.DesiredOutcome,
+		SuccessPredicate: spec.SuccessPredicate,
+		NonGoals:         spec.NonGoals,
+		State:            "ready",
+		Risk:             spec.Risk,
+		Privacy:          spec.Privacy,
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	if _, err := workStore.Claim(w.ID, spec.Actor, now); err != nil {
+		return result, err
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", Note: spec.RunningNote}, now); err != nil {
+		return result, err
+	}
+	idParts := append(append([]string{}, spec.IDParts...), cliTS(now))
+	ai := envelope.ActionIntent{
+		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", idParts...), w.ID, now, spec.EvidenceRefs),
+		Actor:         spec.Actor,
+		Capability:    spec.Capability,
+		Action:        spec.Action,
+		Target:        envelope.ActionTarget{Kind: spec.TargetKind, ID: spec.TargetID, Path: spec.TargetPath},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       spec.Preview,
+		RollbackPlan:  spec.RollbackPlan,
+	}
+	pd := policy.Evaluate(ai, policyConfig(), now)
+	gate := spec.GateFor(ai.ID, pd.ID)
+	checked, err := writeback.EvaluateGate(gate, &pd, now)
+	if err != nil {
+		return result, err
+	}
+	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
+	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
+		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
+			Outcome:  "failed",
+			MoveType: "audit_only",
+			Summary:  spec.BlockedSummary(checked.Status, checked.ID),
+			Changed:  true,
+		}, now)
+		if closeErr == nil {
+			checked.ReceiptRef = closeRes.Receipt.ID
+			result.ReceiptID = closeRes.Receipt.ID
+			result.TransitionID = closeRes.Transition.ID
+		}
+		if err := writebackStore.RecordGate(checked); err != nil {
+			return result, err
+		}
+		return result, closeErr
+	}
+	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
+		return result, err
+	}
+	verification := spec.Verification
+	if verification == "" {
+		verification = checked.CandidateRef
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
+		To:             "running",
+		ArtifactID:     checked.ID,
+		VerificationID: verification,
+		Note:           spec.CheckedNote,
+	}, now); err != nil {
+		return result, err
+	}
+	closeRes, err := workStore.Close(w.ID, work.CloseInput{
+		Outcome:  "completed",
+		MoveType: spec.MoveType,
+		Summary:  spec.AllowedSummary(checked.Status, checked.ID),
+		Changed:  true,
+	}, now)
+	if err != nil {
+		return result, err
+	}
+	checked.ReceiptRef = closeRes.Receipt.ID
+	if err := writebackStore.RecordGate(checked); err != nil {
+		return result, err
+	}
+	result.ReceiptID = closeRes.Receipt.ID
+	result.TransitionID = closeRes.Transition.ID
+	return result, nil
+}
+
+func runDecisionWriteback(report decisions.DoctorReport, now time.Time) (writebackWorkResult, error) {
+	if !decisions.NeedsWriteback(report) {
+		return writebackWorkResult{}, nil
+	}
+	gapCount := len(report.LifecycleGaps)
+	return runDoctorWriteback(writebackSpec{
 		Owner:            "decisions:lifecycle",
 		DesiredOutcome:   "Route decision lifecycle gaps through governed owner writeback",
 		SuccessPredicate: "decision writeback gate recorded with receipt/transition refs",
 		NonGoals:         []string{"mutate decision owner files", "promote decision truth"},
-		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
+		Actor:            "compound decisions doctor",
+		IDParts:          []string{"decision-writeback", strconv.Itoa(gapCount)},
+		Capability:       "decisions.writeback",
+		Action:           "record_decision_lifecycle_writeback_gate",
+		TargetKind:       "decision_lifecycle",
+		TargetID:         "spine-memory-decisions",
+		Preview:          fmt.Sprintf("decisions doctor found %d lifecycle gap(s); record owner writeback gate", gapCount),
+		RollbackPlan:     "remove COMPOUND_HOME writeback gate/work records before any owner file is changed",
+		RunningNote:      "decisions doctor running writeback",
+		CheckedNote:      "decision writeback gate checked",
+		EvidenceRefs:     decisions.EvidenceRefs(report),
+		MoveType:         "control_plane_repair",
+		BlockedSummary: func(status, _ string) string {
+			return fmt.Sprintf("decision lifecycle writeback blocked for %d gap(s): gate %s", gapCount, status)
+		},
+		AllowedSummary: func(_, gateID string) string {
+			return fmt.Sprintf("%d decision lifecycle gap(s) routed through owner writeback gate %s", gapCount, gateID)
+		},
+		GateFor: func(aiID, pdID string) writeback.OwnerWritebackGate {
+			return decisions.WritebackGate(report, aiID, pdID, now)
+		},
 	}, now)
-	if err != nil {
-		return result, err
-	}
-	if _, err := workStore.Claim(w.ID, "compound decisions doctor", now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:   "running",
-		Note: "decisions doctor running writeback",
-	}, now); err != nil {
-		return result, err
-	}
-	evidenceRefs := decisions.EvidenceRefs(report)
-	ai := envelope.ActionIntent{
-		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "decision-writeback", strconv.Itoa(gapCount), cliTS(now)), w.ID, now, evidenceRefs),
-		Actor:         "compound decisions doctor",
-		Capability:    "decisions.writeback",
-		Action:        "record_decision_lifecycle_writeback_gate",
-		Target:        envelope.ActionTarget{Kind: "decision_lifecycle", ID: "spine-memory-decisions"},
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("decisions doctor found %d lifecycle gap(s); record owner writeback gate", gapCount),
-		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any owner file is changed",
-	}
-	pd := policy.Evaluate(ai, policyConfig(), now)
-	gate := decisions.WritebackGate(report, ai.ID, pd.ID, now)
-	checked, err := writeback.EvaluateGate(gate, &pd, now)
-	if err != nil {
-		return result, err
-	}
-	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
-	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
-		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
-			Outcome:  "failed",
-			MoveType: "audit_only",
-			Summary:  fmt.Sprintf("decision lifecycle writeback blocked for %d gap(s): gate %s", gapCount, checked.Status),
-			Changed:  true,
-		}, now)
-		if closeErr == nil {
-			checked.ReceiptRef = closeRes.Receipt.ID
-			result.ReceiptID = closeRes.Receipt.ID
-			result.TransitionID = closeRes.Transition.ID
-		}
-		if err := writebackStore.RecordGate(checked); err != nil {
-			return result, err
-		}
-		return result, closeErr
-	}
-	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:             "running",
-		ArtifactID:     checked.ID,
-		VerificationID: checked.CandidateRef,
-		Note:           "decision writeback gate checked",
-	}, now); err != nil {
-		return result, err
-	}
-	closeRes, err := workStore.Close(w.ID, work.CloseInput{
-		Outcome:  "completed",
-		MoveType: "control_plane_repair",
-		Summary:  fmt.Sprintf("%d decision lifecycle gap(s) routed through owner writeback gate %s", gapCount, checked.ID),
-		Changed:  true,
-	}, now)
-	if err != nil {
-		return result, err
-	}
-	checked.ReceiptRef = closeRes.Receipt.ID
-	if err := writebackStore.RecordGate(checked); err != nil {
-		return result, err
-	}
-	result.ReceiptID = closeRes.Receipt.ID
-	result.TransitionID = closeRes.Transition.ID
-	return result, nil
 }
 
 func runRuntimeWriteback(report runtimebinding.DoctorReport, now time.Time) (writebackWorkResult, error) {
-	var result writebackWorkResult
 	if !runtimebinding.NeedsWriteback(report) {
-		return result, nil
+		return writebackWorkResult{}, nil
 	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		return result, err
-	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	writebackStore, err := writeback.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	w, err := workStore.Create(work.CreateInput{
+	return runDoctorWriteback(writebackSpec{
 		Owner:            "runtime:" + report.ServiceID,
 		DesiredOutcome:   "Route failing runtime doctor report through governed owner writeback",
 		SuccessPredicate: "runtime writeback gate recorded with receipt/transition refs",
 		NonGoals:         []string{"mutate runtime owner files", "promote runtime truth"},
-		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
+		Actor:            "compound runtime doctor",
+		IDParts:          []string{"runtime-writeback", report.ServiceID, report.Status},
+		Capability:       "runtime.writeback",
+		Action:           "record_runtime_writeback_gate",
+		TargetKind:       "runtime_binding",
+		TargetID:         report.ServiceID,
+		Preview:          fmt.Sprintf("runtime doctor for %s is %s; record owner writeback gate", report.ServiceID, report.Status),
+		RollbackPlan:     "remove COMPOUND_HOME writeback gate/work records before any owner file is changed",
+		RunningNote:      "runtime doctor running writeback",
+		CheckedNote:      "runtime writeback gate checked",
+		EvidenceRefs:     runtimebinding.EvidenceRefs(report),
+		Verification:     "runtime:" + report.ServiceID + ":" + report.Status,
+		MoveType:         "control_plane_repair",
+		BlockedSummary: func(status, _ string) string {
+			return fmt.Sprintf("runtime writeback blocked for %s: gate %s", report.ServiceID, status)
+		},
+		AllowedSummary: func(_, gateID string) string {
+			return fmt.Sprintf("runtime %s %s routed through owner writeback gate %s", report.ServiceID, report.Status, gateID)
+		},
+		GateFor: func(aiID, pdID string) writeback.OwnerWritebackGate {
+			return runtimebinding.WritebackGate(report, aiID, pdID, now)
+		},
 	}, now)
-	if err != nil {
-		return result, err
-	}
-	if _, err := workStore.Claim(w.ID, "compound runtime doctor", now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:   "running",
-		Note: "runtime doctor running writeback",
-	}, now); err != nil {
-		return result, err
-	}
-	evidenceRefs := runtimebinding.EvidenceRefs(report)
-	ai := envelope.ActionIntent{
-		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "runtime-writeback", report.ServiceID, report.Status, cliTS(now)), w.ID, now, evidenceRefs),
-		Actor:         "compound runtime doctor",
-		Capability:    "runtime.writeback",
-		Action:        "record_runtime_writeback_gate",
-		Target:        envelope.ActionTarget{Kind: "runtime_binding", ID: report.ServiceID},
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("runtime doctor for %s is %s; record owner writeback gate", report.ServiceID, report.Status),
-		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any owner file is changed",
-	}
-	pd := policy.Evaluate(ai, policyConfig(), now)
-	gate := runtimebinding.WritebackGate(report, ai.ID, pd.ID, now)
-	checked, err := writeback.EvaluateGate(gate, &pd, now)
-	if err != nil {
-		return result, err
-	}
-	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
-	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
-		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
-			Outcome:  "failed",
-			MoveType: "audit_only",
-			Summary:  fmt.Sprintf("runtime writeback blocked for %s: gate %s", report.ServiceID, checked.Status),
-			Changed:  true,
-		}, now)
-		if closeErr == nil {
-			checked.ReceiptRef = closeRes.Receipt.ID
-			result.ReceiptID = closeRes.Receipt.ID
-			result.TransitionID = closeRes.Transition.ID
-		}
-		if err := writebackStore.RecordGate(checked); err != nil {
-			return result, err
-		}
-		return result, closeErr
-	}
-	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:             "running",
-		ArtifactID:     checked.ID,
-		VerificationID: "runtime:" + report.ServiceID + ":" + report.Status,
-		Note:           "runtime writeback gate checked",
-	}, now); err != nil {
-		return result, err
-	}
-	closeRes, err := workStore.Close(w.ID, work.CloseInput{
-		Outcome:  "completed",
-		MoveType: "control_plane_repair",
-		Summary:  fmt.Sprintf("runtime %s %s routed through owner writeback gate %s", report.ServiceID, report.Status, checked.ID),
-		Changed:  true,
-	}, now)
-	if err != nil {
-		return result, err
-	}
-	checked.ReceiptRef = closeRes.Receipt.ID
-	if err := writebackStore.RecordGate(checked); err != nil {
-		return result, err
-	}
-	result.ReceiptID = closeRes.Receipt.ID
-	result.TransitionID = closeRes.Transition.ID
-	return result, nil
 }
 
 func runDistillerWriteback(report distiller.DoctorReport, now time.Time) (writebackWorkResult, error) {
-	var result writebackWorkResult
 	if !distiller.NeedsWriteback(report) {
-		return result, nil
-	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		return result, err
-	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	writebackStore, err := writeback.Open(homePath)
-	if err != nil {
-		return result, err
+		return writebackWorkResult{}, nil
 	}
 	debtCount := report.SelfImprovementDebt
-	w, err := workStore.Create(work.CreateInput{
+	return runDoctorWriteback(writebackSpec{
 		Owner:            "distiller:policy",
 		DesiredOutcome:   "Route distiller method/policy debt through governed owner writeback",
 		SuccessPredicate: "distiller writeback gate recorded with receipt/transition refs",
 		NonGoals:         []string{"mutate distillation policy", "call model extractor", "promote memory truth"},
-		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
+		Actor:            "compound distiller doctor",
+		IDParts:          []string{"distiller-writeback", strconv.Itoa(report.MethodUpgradeDebt), strconv.Itoa(report.PolicyPatchDebt)},
+		Capability:       "distiller.writeback",
+		Action:           "record_distillation_policy_writeback_gate",
+		TargetKind:       "distillation_policy",
+		TargetID:         distiller.DefaultPolicy().Stamp(),
+		Preview:          fmt.Sprintf("distiller doctor found %d method/policy debt item(s); record owner writeback gate", debtCount),
+		RollbackPlan:     "remove COMPOUND_HOME writeback gate/work records before any distillation policy is changed",
+		RunningNote:      "distiller doctor running writeback",
+		CheckedNote:      "distiller writeback gate checked",
+		EvidenceRefs:     distiller.EvidenceRefs(report),
+		MoveType:         "control_plane_repair",
+		BlockedSummary: func(status, _ string) string {
+			return fmt.Sprintf("distiller method/policy writeback blocked for %d debt item(s): gate %s", debtCount, status)
+		},
+		AllowedSummary: func(_, gateID string) string {
+			return fmt.Sprintf("%d distiller method/policy debt item(s) routed through owner writeback gate %s", debtCount, gateID)
+		},
+		GateFor: func(aiID, pdID string) writeback.OwnerWritebackGate {
+			return distiller.WritebackGate(report, aiID, pdID, now)
+		},
 	}, now)
-	if err != nil {
-		return result, err
-	}
-	if _, err := workStore.Claim(w.ID, "compound distiller doctor", now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:   "running",
-		Note: "distiller doctor running writeback",
-	}, now); err != nil {
-		return result, err
-	}
-	evidenceRefs := distiller.EvidenceRefs(report)
-	ai := envelope.ActionIntent{
-		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "distiller-writeback", strconv.Itoa(report.MethodUpgradeDebt), strconv.Itoa(report.PolicyPatchDebt), cliTS(now)), w.ID, now, evidenceRefs),
-		Actor:         "compound distiller doctor",
-		Capability:    "distiller.writeback",
-		Action:        "record_distillation_policy_writeback_gate",
-		Target:        envelope.ActionTarget{Kind: "distillation_policy", ID: distiller.DefaultPolicy().Stamp()},
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("distiller doctor found %d method/policy debt item(s); record owner writeback gate", debtCount),
-		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any distillation policy is changed",
-	}
-	pd := policy.Evaluate(ai, policyConfig(), now)
-	gate := distiller.WritebackGate(report, ai.ID, pd.ID, now)
-	checked, err := writeback.EvaluateGate(gate, &pd, now)
-	if err != nil {
-		return result, err
-	}
-	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
-	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
-		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
-			Outcome:  "failed",
-			MoveType: "audit_only",
-			Summary:  fmt.Sprintf("distiller method/policy writeback blocked for %d debt item(s): gate %s", debtCount, checked.Status),
-			Changed:  true,
-		}, now)
-		if closeErr == nil {
-			checked.ReceiptRef = closeRes.Receipt.ID
-			result.ReceiptID = closeRes.Receipt.ID
-			result.TransitionID = closeRes.Transition.ID
-		}
-		if err := writebackStore.RecordGate(checked); err != nil {
-			return result, err
-		}
-		return result, closeErr
-	}
-	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:             "running",
-		ArtifactID:     checked.ID,
-		VerificationID: checked.CandidateRef,
-		Note:           "distiller writeback gate checked",
-	}, now); err != nil {
-		return result, err
-	}
-	closeRes, err := workStore.Close(w.ID, work.CloseInput{
-		Outcome:  "completed",
-		MoveType: "control_plane_repair",
-		Summary:  fmt.Sprintf("%d distiller method/policy debt item(s) routed through owner writeback gate %s", debtCount, checked.ID),
-		Changed:  true,
-	}, now)
-	if err != nil {
-		return result, err
-	}
-	checked.ReceiptRef = closeRes.Receipt.ID
-	if err := writebackStore.RecordGate(checked); err != nil {
-		return result, err
-	}
-	result.ReceiptID = closeRes.Receipt.ID
-	result.TransitionID = closeRes.Transition.ID
-	return result, nil
 }
 
 func cmdRuntime(args []string) {
@@ -4457,215 +4388,75 @@ type writebackWorkResult struct {
 }
 
 func runProductWriteback(report product.DoctorReport, now time.Time) (writebackWorkResult, error) {
-	var result writebackWorkResult
 	if !product.NeedsWriteback(report) {
-		return result, nil
+		return writebackWorkResult{}, nil
 	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		return result, err
-	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	writebackStore, err := writeback.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	w, err := workStore.Create(work.CreateInput{
+	return runDoctorWriteback(writebackSpec{
 		Owner:            "product_strategy:" + report.ProductID,
 		DesiredOutcome:   "Route product feedback review through governed owner writeback",
 		SuccessPredicate: "product feedback writeback gate recorded with receipt/transition refs",
-		NonGoals: []string{
-			"mutate product pages",
-			"declare product causality",
-			"execute next product action",
+		NonGoals:         []string{"mutate product pages", "declare product causality", "execute next product action"},
+		Risk:             "tier1",
+		Privacy:          "private",
+		Actor:            "compound product doctor",
+		IDParts:          []string{"product-writeback", report.ProductID, strconv.Itoa(report.PendingReviewCount), strconv.Itoa(report.SourceIssueCount)},
+		Capability:       "product.writeback",
+		Action:           "record_product_feedback_writeback_gate",
+		TargetKind:       "product_strategy",
+		TargetID:         report.ProductID,
+		Preview:          fmt.Sprintf("product doctor found %d pending hypothesis review(s) and %d source issue(s); record owner writeback gate", report.PendingReviewCount, report.SourceIssueCount),
+		RollbackPlan:     "remove COMPOUND_HOME writeback gate/work records before any product owner file or external surface is changed",
+		RunningNote:      "product doctor running writeback",
+		CheckedNote:      "product hypothesis writeback gate checked",
+		EvidenceRefs:     product.EvidenceRefs(report),
+		MoveType:         "outward_delta",
+		BlockedSummary: func(_, gateID string) string {
+			return fmt.Sprintf("product feedback writeback blocked for %s: gate %s", report.ProductID, gateID)
 		},
-		State:   "ready",
-		Risk:    "tier1",
-		Privacy: "private",
+		AllowedSummary: func(_, gateID string) string {
+			return fmt.Sprintf("product %s feedback review routed through owner writeback gate %s", report.ProductID, gateID)
+		},
+		GateFor: func(aiID, pdID string) writeback.OwnerWritebackGate {
+			return product.WritebackGate(report, aiID, pdID, now)
+		},
 	}, now)
-	if err != nil {
-		return result, err
-	}
-	if _, err := workStore.Claim(w.ID, "compound product doctor", now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:   "running",
-		Note: "product doctor running writeback",
-	}, now); err != nil {
-		return result, err
-	}
-	evidenceRefs := product.EvidenceRefs(report)
-	ai := envelope.ActionIntent{
-		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "product-writeback", report.ProductID, strconv.Itoa(report.PendingReviewCount), strconv.Itoa(report.SourceIssueCount), cliTS(now)), w.ID, now, evidenceRefs),
-		Actor:         "compound product doctor",
-		Capability:    "product.writeback",
-		Action:        "record_product_feedback_writeback_gate",
-		Target:        envelope.ActionTarget{Kind: "product_strategy", ID: report.ProductID},
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("product doctor found %d pending hypothesis review(s) and %d source issue(s); record owner writeback gate", report.PendingReviewCount, report.SourceIssueCount),
-		RollbackPlan:  "remove COMPOUND_HOME writeback gate/work records before any product owner file or external surface is changed",
-	}
-	pd := policy.Evaluate(ai, policyConfig(), now)
-	gate := product.WritebackGate(report, ai.ID, pd.ID, now)
-	checked, err := writeback.EvaluateGate(gate, &pd, now)
-	if err != nil {
-		return result, err
-	}
-	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
-	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
-		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
-			Outcome:  "failed",
-			MoveType: "audit_only",
-			Summary:  fmt.Sprintf("product feedback writeback blocked for %s: gate %s", report.ProductID, checked.ID),
-			Changed:  true,
-		}, now)
-		if closeErr == nil {
-			checked.ReceiptRef = closeRes.Receipt.ID
-			result.ReceiptID = closeRes.Receipt.ID
-			result.TransitionID = closeRes.Transition.ID
-		}
-		if err := writebackStore.RecordGate(checked); err != nil {
-			return result, err
-		}
-		return result, closeErr
-	}
-	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:             "running",
-		ArtifactID:     checked.ID,
-		VerificationID: checked.CandidateRef,
-		Note:           "product hypothesis writeback gate checked",
-	}, now); err != nil {
-		return result, err
-	}
-	closeRes, err := workStore.Close(w.ID, work.CloseInput{
-		Outcome:  "completed",
-		MoveType: "outward_delta",
-		Summary:  fmt.Sprintf("product %s feedback review routed through owner writeback gate %s", report.ProductID, checked.ID),
-		Changed:  true,
-	}, now)
-	if err != nil {
-		return result, err
-	}
-	checked.ReceiptRef = closeRes.Receipt.ID
-	if err := writebackStore.RecordGate(checked); err != nil {
-		return result, err
-	}
-	result.ReceiptID = closeRes.Receipt.ID
-	result.TransitionID = closeRes.Transition.ID
-	return result, nil
 }
 
 func runProjectionWriteback(report projection.Freshness, now time.Time) (writebackWorkResult, error) {
-	var result writebackWorkResult
 	if !projection.NeedsWriteback(report) {
-		return result, nil
+		return writebackWorkResult{}, nil
 	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		return result, err
-	}
-	workStore, err := work.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	writebackStore, err := writeback.Open(homePath)
-	if err != nil {
-		return result, err
-	}
-	w, err := workStore.Create(work.CreateInput{
+	return runDoctorWriteback(writebackSpec{
 		Owner:            "projection:" + report.ProjectionID,
 		DesiredOutcome:   "Route stale/drifted projection through governed owner writeback",
 		SuccessPredicate: "writeback gate recorded with receipt/transition refs",
 		NonGoals:         []string{"regenerate the projection output", "promote projection truth"},
-		State:            "ready",
 		Risk:             "tier1",
 		Privacy:          "private",
+		Actor:            "compound projection doctor",
+		IDParts:          []string{"projection-writeback", report.ProjectionID, report.Status},
+		Capability:       "projection.writeback",
+		Action:           "record_projection_writeback_gate",
+		TargetKind:       "generated_view",
+		TargetID:         report.ProjectionID,
+		TargetPath:       report.ViewRef,
+		Preview:          fmt.Sprintf("projection %s is %s; record owner writeback gate for %s", report.ProjectionID, report.Status, report.ViewRef),
+		RollbackPlan:     "remove the COMPOUND_HOME writeback gate/work records before any owner file is changed",
+		RunningNote:      "projection doctor running writeback",
+		CheckedNote:      "projection writeback gate checked",
+		EvidenceRefs:     projection.EvidenceRefs(report),
+		Verification:     "projection:" + report.ProjectionID + ":" + report.Status,
+		MoveType:         "control_plane_repair",
+		BlockedSummary: func(status, _ string) string {
+			return fmt.Sprintf("projection writeback blocked for %s: gate %s", report.ProjectionID, status)
+		},
+		AllowedSummary: func(_, gateID string) string {
+			return fmt.Sprintf("projection %s %s routed through owner writeback gate %s", report.ProjectionID, report.Status, gateID)
+		},
+		GateFor: func(aiID, pdID string) writeback.OwnerWritebackGate {
+			return projection.WritebackGate(report, aiID, pdID, now)
+		},
 	}, now)
-	if err != nil {
-		return result, err
-	}
-	if _, err := workStore.Claim(w.ID, "compound projection doctor", now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:   "running",
-		Note: "projection doctor running writeback",
-	}, now); err != nil {
-		return result, err
-	}
-	evidenceRefs := projection.EvidenceRefs(report)
-	ai := envelope.ActionIntent{
-		Header:        cliHeader(envelope.SVActionIntent, cliID("act_", "projection-writeback", report.ProjectionID, report.Status, cliTS(now)), w.ID, now, evidenceRefs),
-		Actor:         "compound projection doctor",
-		Capability:    "projection.writeback",
-		Action:        "record_projection_writeback_gate",
-		Target:        envelope.ActionTarget{Kind: "generated_view", ID: report.ProjectionID, Path: report.ViewRef},
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "local",
-		Preview:       fmt.Sprintf("projection %s is %s; record owner writeback gate for %s", report.ProjectionID, report.Status, report.ViewRef),
-		RollbackPlan:  "remove the COMPOUND_HOME writeback gate/work records before any owner file is changed",
-	}
-	pd := policy.Evaluate(ai, policyConfig(), now)
-	gate := projection.WritebackGate(report, ai.ID, pd.ID, now)
-	checked, err := writeback.EvaluateGate(gate, &pd, now)
-	if err != nil {
-		return result, err
-	}
-	result = writebackWorkResult{WorkID: w.ID, ActionIntentID: ai.ID, PolicyDecisionID: pd.ID, GateID: checked.ID, GateStatus: checked.Status}
-	if !policy.Allowed(pd) || checked.Status != writeback.GateAllowed {
-		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
-			Outcome:  "failed",
-			MoveType: "audit_only",
-			Summary:  fmt.Sprintf("projection writeback blocked for %s: gate %s", report.ProjectionID, checked.Status),
-			Changed:  true,
-		}, now)
-		if closeErr == nil {
-			checked.ReceiptRef = closeRes.Receipt.ID
-			result.ReceiptID = closeRes.Receipt.ID
-			result.TransitionID = closeRes.Transition.ID
-		}
-		if err := writebackStore.RecordGate(checked); err != nil {
-			return result, err
-		}
-		return result, closeErr
-	}
-	if _, err := workStore.RecordAction(w.ID, ai, pd, now); err != nil {
-		return result, err
-	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
-		To:             "running",
-		ArtifactID:     checked.ID,
-		VerificationID: "projection:" + report.ProjectionID + ":" + report.Status,
-		Note:           "projection writeback gate checked",
-	}, now); err != nil {
-		return result, err
-	}
-	closeRes, err := workStore.Close(w.ID, work.CloseInput{
-		Outcome:  "completed",
-		MoveType: "control_plane_repair",
-		Summary:  fmt.Sprintf("projection %s %s routed through owner writeback gate %s", report.ProjectionID, report.Status, checked.ID),
-		Changed:  true,
-	}, now)
-	if err != nil {
-		return result, err
-	}
-	checked.ReceiptRef = closeRes.Receipt.ID
-	if err := writebackStore.RecordGate(checked); err != nil {
-		return result, err
-	}
-	result.ReceiptID = closeRes.Receipt.ID
-	result.TransitionID = closeRes.Transition.ID
-	return result, nil
 }
 
 func runProjectionSourceObservation(report projection.Freshness, now time.Time) (sourceobs.Report, error) {
