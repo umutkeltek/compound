@@ -259,6 +259,7 @@ type ContextPack struct {
 	Excluded           []ExcludedRef     `json:"excluded"`
 	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
 	ActiveInstructions []string          `json:"active_instructions"`
+	ActiveHooks        []string          `json:"active_hooks"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`

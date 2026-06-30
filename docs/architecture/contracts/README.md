@@ -20,7 +20,8 @@ artifact persistence, and source-control inspection. Policy reasons, stored Acti
 therefore refer to the same governed target.
 `compound contract import-hooks --codex-hooks-json <hooks.json>` imports a generated Codex hook roster into
 `COMPOUND_HOME/config/installed-hooks.yaml` as `compound://config/installed-hooks`; after that handoff the
-generated hook JSON is evidence/rollback input, and `EffectiveContract.active_hooks[]` comes from Compound.
+generated hook JSON is evidence/rollback input, and `EffectiveContract.active_hooks[]` plus runtime
+`ContextPack.active_hooks[]` come from Compound.
 Placement guard evidence is also runtime policy context, not a second guard path: PreToolUse can pass
 `PlacementGuard` context into `PolicyDecision`, staged `observe -> warn -> block`; only `confidence:block`
 can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and

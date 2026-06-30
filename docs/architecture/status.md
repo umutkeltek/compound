@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Runtime ContextPacks now carry Compound-owned installed hook refs: `hook session-start` persists `ContextPack.active_hooks[]` and renders the same refs in the markdown injection, so imported hook-roster authority reaches the agent-facing consumer path.
+
 - `contract compile` now consumes a Compound-owned installed hook roster. `compound contract import-hooks --codex-hooks-json <hooks.json>` imports the OS-generated Codex hooks JSON into `COMPOUND_HOME/config/installed-hooks.yaml` as `compound://config/installed-hooks`, records `registries/installed-hooks-source-authority.jsonl`, and demotes the generated source view to evidence/rollback input. Persistent proof imports the real OS Codex hooks JSON and `contract compile --harness codex ...` returns `hook://codex/SessionStart` and `hook://codex/UserPromptSubmit` with an installed-hooks source revision.
 
 - `ContextPack` now includes relevance-gated `active_memory[]` from the owned memory ledger, separate from accepted decision refs and rented MemoryEngine breadth. `hook session-start` consumes the same pack path, so a promoted runtime claim can appear in the persisted markdown injection as `claim://...` with source stores/indexes explicitly marked evidence, not authority. Persistent proof: `hook session-start` over `fixtures/hooks/session-start.compound-memory.json` wrote `ctx_afbb98bb4cbb` / `hook_9b31f093e630`, including `claim://claim_903bb6caae25` for the Stage 1 capability authority claim; `schema validate context-pack` passed on that pack.

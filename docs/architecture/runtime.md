@@ -5,8 +5,8 @@ spine, and the thin hook clients. Build this **before** memory ingestion (`../ro
 purpose — fragmenting "generated-state", "envelopes", and "hooks" into three would reproduce the disease.
 
 `compound contract import-hooks --codex-hooks-json <hooks.json>` installs a proven generated Codex hook
-roster as `compound://config/installed-hooks`; after import, `contract compile` reads the Compound-owned
-manifest and the generated source remains evidence/rollback input.
+roster as `compound://config/installed-hooks`; after import, `contract compile` and runtime ContextPacks
+read the Compound-owned manifest while the generated source remains evidence/rollback input.
 
 ---
 

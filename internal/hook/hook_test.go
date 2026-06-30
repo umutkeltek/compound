@@ -73,6 +73,9 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if _, err := capgraph.ApplySkillManifest(homePath, manifest, fixedNow); err != nil {
 		t.Fatalf("apply skill manifest: %v", err)
 	}
+	if _, err := contract.ImportCodexHooksJSON(homePath, filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json"), fixedNow); err != nil {
+		t.Fatalf("import codex hooks: %v", err)
+	}
 
 	deps := baseDeps()
 	deps.HomePath = homePath
@@ -117,12 +120,25 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if strings.Contains(string(reqBytes), "DO NOT LEAK RAW PROMPT BODY") {
 		t.Fatalf("context request leaked raw prompt:\n%s", string(reqBytes))
 	}
+	packBytes, err := os.ReadFile(res.Injection.ContextPackPath)
+	if err != nil {
+		t.Fatalf("read context pack: %v", err)
+	}
+	var pack envelope.ContextPack
+	if err := json.Unmarshal(packBytes, &pack); err != nil {
+		t.Fatalf("parse context pack: %v", err)
+	}
+	if !containsString(pack.ActiveHooks, "hook://codex/SessionStart") {
+		t.Fatalf("context pack active hooks = %v, want hook://codex/SessionStart", pack.ActiveHooks)
+	}
 	b, err := os.ReadFile(res.Injection.Path)
 	if err != nil {
 		t.Fatalf("read injection: %v", err)
 	}
 	text := string(b)
 	for _, want := range []string{
+		"## Active Hooks",
+		"hook://codex/SessionStart",
 		"capability://skill:codex-pricing",
 		"capability://skill:generic-pricing",
 		"[offer, not execution]",

@@ -23,6 +23,9 @@ func TestExportContextPackSchemaIncludesCapabilityOffers(t *testing.T) {
 	if _, ok := props["active_memory"]; !ok {
 		t.Fatalf("context_pack schema missing active_memory: %+v", props)
 	}
+	if _, ok := props["active_hooks"]; !ok {
+		t.Fatalf("context_pack schema missing active_hooks: %+v", props)
+	}
 	if doc["$id"] != "compound://schemas/context_pack" {
 		t.Fatalf("schema id = %v", doc["$id"])
 	}

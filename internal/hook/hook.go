@@ -622,6 +622,7 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 		}
 	}
 	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
+	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
 	writeStringList(&b, "Active Decisions", pack.ActiveDecisions)
 	writeStringList(&b, "Required Checks", pack.RequiredChecks)
 	writeStringList(&b, "Avoid", pack.Avoid)

@@ -366,6 +366,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		Included:           incl,
 		Excluded:           excl,
 		ActiveInstructions: orEmpty(active),
+		ActiveHooks:        []string{},
 		ActiveDecisions:    []string{},
 		ActiveMemory:       []string{},
 		RequiredChecks:     []string{},
@@ -379,6 +380,14 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	pack := Pack(in, pol, now)
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
+	}
+	hooks, _, err := loadInstalledHooks(homePath, in.Harness)
+	if err != nil {
+		return pack, err
+	}
+	pack.ActiveHooks = hooks
+	if len(hooks) > 0 {
+		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(hooks))
 	}
 	decisions, _, err := loadDecisionRefs(homePath)
 	if err != nil {

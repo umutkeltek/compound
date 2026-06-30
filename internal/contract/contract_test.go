@@ -569,6 +569,15 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 			t.Fatalf("effective contract active hooks = %v, want %s", ec.ActiveHooks, want)
 		}
 	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !contains(pack.ActiveHooks, want) {
+			t.Fatalf("context pack active hooks = %v, want %s", pack.ActiveHooks, want)
+		}
+	}
 	if sourceRev(ec.SourceRevisions, InstalledHooksAuthorityRef) == "" {
 		t.Fatalf("effective contract missing installed-hooks source revision: %+v", ec.SourceRevisions)
 	}
