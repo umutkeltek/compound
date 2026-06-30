@@ -81,3 +81,30 @@ func TestWriteCandidate(t *testing.T) {
 		t.Fatal("unknown kind must error before write")
 	}
 }
+
+// Guards (C3 hardening): the codec rejects path-shaped ids and payloads that
+// contradict the path they would be filed under.
+func TestCandidateCodecGuards(t *testing.T) {
+	home := t.TempDir()
+	type rec struct {
+		ID   string `json:"id,omitempty"`
+		Kind string `json:"kind,omitempty"`
+	}
+	for _, bad := range []string{"", "..", ".", "a/b", "../escape", "x\\y"} {
+		if err := WriteCandidate(home, Memory, bad, rec{}); err == nil {
+			t.Errorf("WriteCandidate id=%q: expected rejection", bad)
+		}
+		if err := ReadCandidate(home, Memory, bad, &rec{}); err == nil {
+			t.Errorf("ReadCandidate id=%q: expected rejection", bad)
+		}
+	}
+	if err := WriteCandidate(home, Memory, "c1", rec{ID: "other"}); err == nil {
+		t.Fatal("payload id mismatch must be rejected")
+	}
+	if err := WriteCandidate(home, Memory, "c2", rec{Kind: "skill"}); err == nil {
+		t.Fatal("payload kind mismatch must be rejected")
+	}
+	if err := WriteCandidate(home, Memory, "c3", rec{ID: "c3", Kind: "memory"}); err != nil {
+		t.Fatalf("matching id+kind rejected: %v", err)
+	}
+}
