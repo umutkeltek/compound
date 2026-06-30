@@ -96,6 +96,7 @@ arbitration. (Hooks sit at high-gravity points — a tiny SessionStart nudge ben
 them thin.)
 
 Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-tool-use, session-end, stop}`.
+`compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate`, so wrapper adapters can fail closed even when a harness only reports `fail_open`.
 Each: `stdin JSON → normalized HookEvent persisted under events/ → compound service → typed object written under .compound → small
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 

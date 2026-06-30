@@ -196,7 +196,7 @@ usage:
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound policy evaluate <action-intent.json>                 ActionIntent -> PolicyDecision
-  compound hook <name> <fixture.json>                           run lifecycle hook over fixture
+  compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
@@ -2302,21 +2302,27 @@ func fallbackTag(b bool) string {
 // cmdHook runs one lifecycle hook over a fixture, producing typed envelopes. Capability-
 // aware per harness; no live install (docs/architecture/runtime.md §3, roadmap P5).
 func cmdHook(args []string) {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> <fixture.json>")
-		os.Exit(2)
+	if code := runHookCommand(args); code != 0 {
+		os.Exit(code)
 	}
-	hookName, fixturePath := args[0], args[1]
+}
+
+func runHookCommand(args []string) int {
+	hookName, fixturePath, enforce, err := parseHookArgs(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 	homePath := ""
 	data, err := os.ReadFile(fixturePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return 1
 	}
 	var fx hook.Fixture
 	if err := json.Unmarshal(data, &fx); err != nil {
 		fmt.Fprintln(os.Stderr, "error: parse hook fixture:", err)
-		os.Exit(1)
+		return 1
 	}
 	fx.Hook = hookName // the CLI verb is authoritative
 
@@ -2332,13 +2338,53 @@ func cmdHook(args []string) {
 	res, err := hook.Run(fx, deps, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return 1
 	}
 	printJSON(res)
 	if hookName == "session-end" {
 		autoConsumeCapabilityFeedback(homePath)
 	}
 	fmt.Fprintf(os.Stderr, "[%s/%s] %s — %s\n", fx.Harness, res.Event.Status, res.Event.HookName, res.Summary)
+	if enforce {
+		return hookEnforceExit(hookName, res)
+	}
+	return 0
+}
+
+func parseHookArgs(args []string) (hookName, fixturePath string, enforce bool, err error) {
+	if len(args) < 2 {
+		return "", "", false, fmt.Errorf("usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json>")
+	}
+	hookName = args[0]
+	for _, arg := range args[1:] {
+		if arg == "--enforce" {
+			enforce = true
+			continue
+		}
+		if fixturePath != "" {
+			return "", "", false, fmt.Errorf("usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json>")
+		}
+		fixturePath = arg
+	}
+	if fixturePath == "" {
+		return "", "", false, fmt.Errorf("usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json>")
+	}
+	return hookName, fixturePath, enforce, nil
+}
+
+func hookEnforceExit(hookName string, res hook.Result) int {
+	if hookName != "pre-tool-use" {
+		return 0
+	}
+	for _, produced := range res.Produced {
+		if pd, ok := produced.(*envelope.PolicyDecision); ok && !policy.Allowed(*pd) {
+			return gateExit(*pd)
+		}
+	}
+	if res.Event.Status == "blocked" || res.Event.Status == "fail_open" {
+		return 1
+	}
+	return 0
 }
 
 // gateExit maps a policy outcome to a scriptable exit code (0 allow, 3 hold, 4 deny).

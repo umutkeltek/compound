@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound hook pre-tool-use --enforce <fixture>` preserves the ActionIntent/PolicyDecision/source-control evidence path but returns policy gate exit codes, so wrapper adapters can fail closed for `blocked` and `fail_open` harnesses.
+
 - `internal/policy` now treats `StandingGrant` as a scoped policy envelope, not an unconditional allow-list. Grants can constrain `target_path`, `max_usd`, `max_tokens`, `blast_radius`, and `reversibility`; leaving that envelope falls back to baseline `PolicyDecision` hold/deny and the existing gate blocks the mutation. `architecture doctor --strict` now includes `standing-grant-contract` so public docs cannot drift back to broad grant wording.
 - Owner-review artifact writes now route through the shared `internal/reviewartifact` owner for both core JSON/Markdown pairs and extra raw drafts. Capability evaluation intake `.review.yaml` / skill-manifest drafts, distiller improvement `.review.yaml`, and product hypothesis/review/source-issue draft files now use `reviewartifact.WriteRaw`, leaving call sites with only area, payload, and render logic.
 

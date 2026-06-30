@@ -570,6 +570,96 @@ func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
 	}
 }
 
+func TestHookPreToolUseEnforceReturnsGateExit(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	fixture := writeHookFixture(t, hook.Fixture{
+		Harness: "claude_code",
+		WorkID:  "work_enforce",
+		Action: &envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            "act_enforce",
+				CreatedAt:     cliTestNow.Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
+				IDs:           envelope.IDs{WorkID: "work_enforce"},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier2",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         "claude_code",
+			Capability:    "filesystem.delete",
+			Action:        "delete_tree",
+			Target:        envelope.ActionTarget{Kind: "path", Path: "build/cache"},
+			MutationClass: "destructive",
+			Reversibility: "hard",
+		},
+	})
+
+	var code int
+	out := captureStdout(t, func() {
+		code = runHookCommand([]string{"pre-tool-use", "--enforce", fixture})
+	})
+	if code != 3 {
+		t.Fatalf("enforced held hook exit = %d, want 3\n%s", code, out)
+	}
+	for _, want := range []string{`"status": "blocked"`, `"outcome": "hold"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("enforced hook output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestHookPreToolUseEnforceBlocksFailOpenHarness(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	fixture := writeHookFixture(t, hook.Fixture{
+		Harness: "codex",
+		WorkID:  "work_fail_open",
+		Action: &envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            "act_fail_open",
+				CreatedAt:     cliTestNow.Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
+				IDs:           envelope.IDs{WorkID: "work_fail_open"},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier2",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         "codex",
+			Capability:    "filesystem.delete",
+			Action:        "delete_tree",
+			Target:        envelope.ActionTarget{Kind: "path", Path: "build/cache"},
+			MutationClass: "destructive",
+			Reversibility: "hard",
+		},
+	})
+
+	var enforced int
+	enforcedOut := captureStdout(t, func() {
+		enforced = runHookCommand([]string{"pre-tool-use", "--enforce", fixture})
+	})
+	if enforced != 3 {
+		t.Fatalf("enforced fail-open hook exit = %d, want 3\n%s", enforced, enforcedOut)
+	}
+	if !strings.Contains(enforcedOut, `"status": "fail_open"`) {
+		t.Fatalf("enforced hook should preserve fail_open evidence:\n%s", enforcedOut)
+	}
+
+	var observed int
+	observedOut := captureStdout(t, func() {
+		observed = runHookCommand([]string{"pre-tool-use", fixture})
+	})
+	if observed != 0 {
+		t.Fatalf("non-enforced fixture hook exit = %d, want 0\n%s", observed, observedOut)
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -99,7 +99,8 @@ Execution and policy:
 - `compound policy evaluate` turns ActionIntent into an enforceable
   PolicyDecision.
 - `compound hook ...` and `compound harness ...` normalize harness events into
-  spine objects.
+  spine objects; `compound hook pre-tool-use --enforce ...` returns policy gate
+  exit codes for wrapper enforcement.
 
 Meaning and evidence:
 
