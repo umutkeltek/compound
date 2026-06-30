@@ -2208,6 +2208,49 @@ func TestCapabilityImportEvaluationsSurfacesUnknownReviewDebt(t *testing.T) {
 	}
 }
 
+func TestCapabilityImportSurfacingMissesRecordsFeedbackAndSourceNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmdCapability([]string{"add", "skill:web-design-guidelines", "skill", "Web Design Guidelines", "--triggers", "css"})
+	beforeOut := captureStdout(t, func() {
+		cmdCapability([]string{"surface", "app store design review"})
+	})
+	if strings.Contains(beforeOut, "skill:web-design-guidelines") {
+		t.Fatalf("precondition: skill surfaced before report feedback:\n%s", beforeOut)
+	}
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-surfacing-misses", filepath.Join("..", "..", "fixtures", "capability-surfacing", "skill-surfacing-proposals.json")})
+	})
+	for _, want := range []string{
+		"# capability import-surfacing-misses",
+		"- status: review",
+		"- misses_read: 2",
+		"- applied_misses: 1",
+		"- edge: missed_when:context:app->skill:web-design-guidelines",
+		"- skipped_unknown_count: 1",
+		"- skipped_unknown: production-audit",
+		"- source_observation:",
+		"- source_candidate:",
+		"- source_no_promote:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-surfacing-misses output missing %q:\n%s", want, out)
+		}
+	}
+	afterOut := captureStdout(t, func() {
+		cmdCapability([]string{"surface", "app store design review"})
+	})
+	if !strings.Contains(afterOut, "skill:web-design-guidelines") {
+		t.Fatalf("surfacing miss feedback should surface skill:\n%s", afterOut)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("surfacing miss import must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

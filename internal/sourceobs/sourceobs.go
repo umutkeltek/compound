@@ -340,6 +340,48 @@ func FromCapabilityEvaluations(set capgraph.CapabilityEvaluationSet, now time.Ti
 	}
 }
 
+// FromSkillSurfacingMisses converts generated skill surfacing miss reports into
+// source observation evidence. The report may teach CapabilityGraph feedback
+// edges, but the report source itself stays no-promote evidence.
+func FromSkillSurfacingMisses(misses capgraph.SkillSurfacingMisses, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(misses.Revision)
+	if revision == "" {
+		revision = "skill_surfacing_misses:" + misses.ID
+	}
+	evidenceRefs := capgraph.SkillSurfacingMissesEvidenceRefs(misses)
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "skill_surfacing_misses", misses.ID, misses.SourcePath, revision),
+		AdapterID:     "compound.skill-surfacing-misses",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        misses.SourcePath,
+			Kind:        "state_record",
+			Owner:       firstNonEmpty(capgraph.SkillSurfacingMissesSourceName(misses.SourcePath), misses.ID),
+			SourceClass: "skill_surfacing_misses",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "skill_surfacing_misses",
+			Consumer:    "compound capability import-surfacing-misses",
+			Generator:   "skill_surfacing_detector",
+			Marker:      "skill-surfacing-proposals.json",
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("misses=%d proposals=%d remaining=%d", len(misses.AllMisses), len(misses.Proposals), misses.Remaining),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "capability",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     misses.ID,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
 // FromHarnessRegistry converts harness capability reality into generic
 // SourceObservation evidence. Harness observations are capability evidence only:
 // they do not install hooks, mutate capability graph nodes, or grant authority.
