@@ -325,12 +325,16 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 		EvidenceRefs: []string{"artifact_sha256:skill-fixture"},
 		Skills: []capgraph.SkillManifestEntry{
 			{
-				ID:           "skill:pricing",
-				Name:         "Pricing",
-				Status:       "active",
-				Triggers:     []string{"pricing", "paywall"},
-				Capabilities: []string{"monetization"},
-				Weight:       2,
+				ID:                  "skill:pricing",
+				Name:                "Pricing",
+				Status:              "active",
+				Triggers:            []string{"pricing", "paywall"},
+				Capabilities:        []string{"monetization"},
+				CompatibleHarnesses: []string{"claude_code"},
+				Requires:            []string{"tool:revenuecat"},
+				ConflictsWith:       []string{"skill:old-paywall"},
+				ValidatedBy:         []string{"eval:pricing-copy"},
+				Weight:              2,
 			},
 			{
 				ID:       "skill:old-paywall",
@@ -352,6 +356,28 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	}
 	if !hasIncluded(pack, "capability://skill:pricing") {
 		t.Fatalf("context pack should include surfaced skill offer; included=%v", pack.Included)
+	}
+	offer := findCapabilityOffer(pack, "capability://skill:pricing")
+	if offer == nil {
+		t.Fatalf("context pack should include structured capability offer; offers=%v", pack.CapabilityOffers)
+	}
+	if offer.Kind != "skill" || offer.Name != "Pricing" || offer.Score <= 0 {
+		t.Fatalf("unexpected capability offer: %+v", offer)
+	}
+	if !hasOfferConstraint(offer.Required, capgraph.EdRequires, "tool:revenuecat") {
+		t.Fatalf("required constraints = %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Conflicts, capgraph.EdConflictsWith, "skill:old-paywall") {
+		t.Fatalf("conflict constraints = %+v", offer.Conflicts)
+	}
+	if !hasOfferConstraint(offer.Harnesses, capgraph.EdSurfacesWith, "harness:claude_code") {
+		t.Fatalf("harness constraints = %+v", offer.Harnesses)
+	}
+	if !hasOfferConstraint(offer.Evidence, capgraph.EdValidatedBy, "eval:pricing-copy") {
+		t.Fatalf("evidence constraints = %+v", offer.Evidence)
+	}
+	if offer.CostRiskNote == "" || !containsText(offer.CostRiskNote, "offer only") {
+		t.Fatalf("offer should carry execution boundary note: %+v", offer)
 	}
 	if hasIncluded(pack, "capability://skill:old-paywall") {
 		t.Fatalf("retired capability must not be included; included=%v", pack.Included)
@@ -532,6 +558,24 @@ func hasIncluded(pack envelope.ContextPack, ref string) bool {
 func hasExcluded(pack envelope.ContextPack, ref string) bool {
 	for _, exc := range pack.Excluded {
 		if exc.Ref == ref && exc.Reason != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func findCapabilityOffer(pack envelope.ContextPack, ref string) *envelope.CapabilityOffer {
+	for i := range pack.CapabilityOffers {
+		if pack.CapabilityOffers[i].Ref == ref {
+			return &pack.CapabilityOffers[i]
+		}
+	}
+	return nil
+}
+
+func hasOfferConstraint(values []envelope.CapabilityOfferConstraint, kind, ref string) bool {
+	for _, value := range values {
+		if value.Kind == kind && value.Ref == ref {
 			return true
 		}
 	}

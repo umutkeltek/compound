@@ -19,7 +19,7 @@ The current public surface is:
 |---|---|
 | `compound home init/doctor/where/backup/export/verify/restore/compact` | `COMPOUND_HOME` runtime body: generated state, archive/restore, public fixture export, safe compaction; never repo source |
 | `compound envelope validate/kinds` | typed envelope spine |
-| `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs; can include recorded projection freshness refs as generated context evidence |
+| `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs; can include constraint-aware `capability_offers[]` plus recorded projection freshness refs as generated context evidence |
 | `compound work create/import-packet/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition; packet markdown imports as source-backed proposed work, not proof |
 | `compound policy evaluate` | ActionIntent -> PolicyDecision, enforced at adapters |
 | `compound hook <name>` / `compound harness <list\|observe [registry.yaml\|--os-entrypoints file]>` | capability-aware hook fixtures and HarnessRegistry; observe records built-in, normalized, or OS-style entrypoint registry evidence/no-promote without installing hooks |

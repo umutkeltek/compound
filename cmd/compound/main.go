@@ -561,6 +561,7 @@ func cmdCapability(args []string) {
 		fmt.Printf("# %d capabilit(ies) surfaced for %q (offered, NOT executed)\n", len(hits), p[0])
 		for _, h := range hits {
 			fmt.Printf("  %-28s %-12s score %.1f  [%s]\n", h.Node.ID, h.Node.Kind, h.Score, h.Why)
+			printCapabilityConstraints(h.Constraints)
 		}
 	case "observe":
 		node := posn(map[string]bool{"--signal": true, "--context": true, "--conf": true})
@@ -619,6 +620,33 @@ func cmdCapability(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> ...")
 		os.Exit(2)
 	}
+}
+
+func printCapabilityConstraints(c capgraph.SurfacingConstraints) {
+	printCapabilityConstraintRefs("requires", c.Required)
+	printCapabilityConstraintRefs("conflicts", c.Conflicts)
+	printCapabilityConstraintRefs("harnesses", c.Harnesses)
+	printCapabilityConstraintRefs("missed_when", c.KnownMissedWhen)
+	printCapabilityConstraintRefs("false_triggered_by", c.KnownFalseTriggeredBy)
+	printCapabilityConstraintRefs("evidence", c.Evidence)
+	if c.CostRiskNote != "" {
+		fmt.Printf("    note: %s\n", c.CostRiskNote)
+	}
+}
+
+func printCapabilityConstraintRefs(label string, values []capgraph.SurfacingConstraint) {
+	if len(values) == 0 {
+		return
+	}
+	refs := make([]string, 0, len(values))
+	for _, value := range values {
+		ref := value.Ref
+		if value.Detail != "" {
+			ref += " (" + value.Detail + ")"
+		}
+		refs = append(refs, ref)
+	}
+	fmt.Printf("    %s: %s\n", label, strings.Join(refs, ", "))
 }
 
 // cmdSource imports existing-system SourceObservation records into Compound-owned

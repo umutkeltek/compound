@@ -158,9 +158,27 @@ func (s *Store) Observe(node, signal, context string, conf float64, now time.Tim
 // Surfaced is a node the graph offers for a task, with the score that ranked it. It is OFFERED,
 // not run.
 type Surfaced struct {
-	Node  Node    `json:"node"`
-	Score float64 `json:"score"`
-	Why   string  `json:"why"`
+	Node        Node                 `json:"node"`
+	Score       float64              `json:"score"`
+	Why         string               `json:"why"`
+	Constraints SurfacingConstraints `json:"constraints,omitempty"`
+}
+
+type SurfacingConstraint struct {
+	Kind       string  `json:"kind"`
+	Ref        string  `json:"ref"`
+	Detail     string  `json:"detail,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+
+type SurfacingConstraints struct {
+	Required              []SurfacingConstraint `json:"required,omitempty"`
+	Conflicts             []SurfacingConstraint `json:"conflicts,omitempty"`
+	Harnesses             []SurfacingConstraint `json:"harnesses,omitempty"`
+	KnownMissedWhen       []SurfacingConstraint `json:"known_missed_when,omitempty"`
+	KnownFalseTriggeredBy []SurfacingConstraint `json:"known_false_triggered_by,omitempty"`
+	Evidence              []SurfacingConstraint `json:"evidence,omitempty"`
+	CostRiskNote          string                `json:"cost_risk_note,omitempty"`
 }
 
 // Surface returns the capability nodes relevant to a task, ranked — and runs NOTHING. Base score
@@ -237,7 +255,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if sub[n.ID] > 0 {
 			why += fmt.Sprintf(" -false_triggered=%.1f", sub[n.ID])
 		}
-		out = append(out, Surfaced{Node: n, Score: score, Why: why})
+		out = append(out, Surfaced{Node: n, Score: score, Why: why, Constraints: capabilityConstraints(n.ID, edges)})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
@@ -246,6 +264,55 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		return out[i].Node.ID < out[j].Node.ID
 	})
 	return out, nil
+}
+
+func capabilityConstraints(nodeID string, edges []Edge) SurfacingConstraints {
+	var c SurfacingConstraints
+	c.CostRiskNote = "offer only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision"
+	add := func(dst *[]SurfacingConstraint, kind, ref, detail string, conf float64) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		*dst = append(*dst, SurfacingConstraint{Kind: kind, Ref: ref, Detail: detail, Confidence: conf})
+	}
+	for _, e := range edges {
+		switch e.Kind {
+		case EdRequires:
+			if e.From == nodeID {
+				add(&c.Required, e.Kind, e.To, "", e.Confidence)
+			}
+		case EdConflictsWith:
+			if e.From == nodeID {
+				add(&c.Conflicts, e.Kind, e.To, "", e.Confidence)
+			} else if e.To == nodeID {
+				add(&c.Conflicts, e.Kind, e.From, "", e.Confidence)
+			}
+		case EdSurfacesWith:
+			if e.From == nodeID && strings.HasPrefix(e.To, "harness:") {
+				add(&c.Harnesses, e.Kind, e.To, "compatible harness", e.Confidence)
+			}
+		case EdMissedWhen:
+			if e.To == nodeID && strings.HasPrefix(e.From, "context:") {
+				add(&c.KnownMissedWhen, e.Kind, e.From, strings.TrimPrefix(e.From, "context:"), e.Confidence)
+			}
+		case EdFalseTriggeredBy:
+			if e.To == nodeID && strings.HasPrefix(e.From, "context:") {
+				add(&c.KnownFalseTriggeredBy, e.Kind, e.From, strings.TrimPrefix(e.From, "context:"), e.Confidence)
+			}
+		case EdValidatedBy, EdEvaluatedBy:
+			if e.From == nodeID {
+				add(&c.Evidence, e.Kind, e.To, "", e.Confidence)
+			}
+		}
+	}
+	sortConstraints(c.Required)
+	sortConstraints(c.Conflicts)
+	sortConstraints(c.Harnesses)
+	sortConstraints(c.KnownMissedWhen)
+	sortConstraints(c.KnownFalseTriggeredBy)
+	sortConstraints(c.Evidence)
+	return c
 }
 
 func harnessID(harness string) string {
@@ -619,6 +686,18 @@ func capabilityNodeID(ref string) string {
 	ref = strings.TrimSpace(ref)
 	ref = strings.TrimPrefix(ref, "capability://")
 	return strings.TrimSpace(ref)
+}
+
+func sortConstraints(values []SurfacingConstraint) {
+	sort.Slice(values, func(i, j int) bool {
+		if values[i].Kind != values[j].Kind {
+			return values[i].Kind < values[j].Kind
+		}
+		if values[i].Ref != values[j].Ref {
+			return values[i].Ref < values[j].Ref
+		}
+		return values[i].Detail < values[j].Detail
+	})
 }
 
 func edgeKey(e Edge) string {

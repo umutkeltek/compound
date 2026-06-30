@@ -106,6 +106,61 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 }
 
+func TestSurfaceIncludesCapabilityConstraints(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}, Weight: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{ID: "tool:revenuecat", Kind: "tool", Name: "RevenueCat", Triggers: []string{"subscription"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{ID: "skill:legacy-paywall", Kind: "skill", Name: "Legacy Paywall", Triggers: []string{"paywall"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range []Edge{
+		{Kind: EdRequires, From: "skill:pricing", To: "tool:revenuecat", Confidence: 0.9},
+		{Kind: EdConflictsWith, From: "skill:pricing", To: "skill:legacy-paywall", Confidence: 0.8},
+		{Kind: EdSurfacesWith, From: "skill:pricing", To: "harness:codex", Confidence: 1},
+		{Kind: EdMissedWhen, From: "context:pricing", To: "skill:pricing", Confidence: 0.4},
+		{Kind: EdFalseTriggeredBy, From: "context:paywall", To: "skill:pricing", Confidence: 0.3},
+		{Kind: EdValidatedBy, From: "skill:pricing", To: "rec_pricing_success", Confidence: 1},
+	} {
+		if err := s.AddEdge(edge, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hits, err := s.SurfaceForHarness("pricing paywall", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit := findSurfaceHit(hits, "skill:pricing")
+	if hit == nil {
+		t.Fatalf("pricing skill not surfaced: %+v", hits)
+	}
+	if !hasConstraint(hit.Constraints.Required, EdRequires, "tool:revenuecat") {
+		t.Fatalf("required constraints = %+v", hit.Constraints.Required)
+	}
+	if !hasConstraint(hit.Constraints.Conflicts, EdConflictsWith, "skill:legacy-paywall") {
+		t.Fatalf("conflict constraints = %+v", hit.Constraints.Conflicts)
+	}
+	if !hasConstraint(hit.Constraints.Harnesses, EdSurfacesWith, "harness:codex") {
+		t.Fatalf("harness constraints = %+v", hit.Constraints.Harnesses)
+	}
+	if !hasConstraint(hit.Constraints.KnownMissedWhen, EdMissedWhen, "context:pricing") {
+		t.Fatalf("missed constraints = %+v", hit.Constraints.KnownMissedWhen)
+	}
+	if !hasConstraint(hit.Constraints.KnownFalseTriggeredBy, EdFalseTriggeredBy, "context:paywall") {
+		t.Fatalf("false-trigger constraints = %+v", hit.Constraints.KnownFalseTriggeredBy)
+	}
+	if !hasConstraint(hit.Constraints.Evidence, EdValidatedBy, "rec_pricing_success") {
+		t.Fatalf("evidence constraints = %+v", hit.Constraints.Evidence)
+	}
+	if hit.Constraints.CostRiskNote == "" {
+		t.Fatalf("missing cost/risk note: %+v", hit.Constraints)
+	}
+}
+
 func TestConsumeReceiptsFalseTriggeredLowersSurfacing(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:noisy", Kind: "skill", Name: "Noisy", Triggers: []string{"receipt"}}); err != nil {
@@ -535,6 +590,24 @@ func surfaced(s *Store, task string) map[string]float64 {
 		m[h.Node.ID] = h.Score
 	}
 	return m
+}
+
+func findSurfaceHit(hits []Surfaced, id string) *Surfaced {
+	for i := range hits {
+		if hits[i].Node.ID == id {
+			return &hits[i]
+		}
+	}
+	return nil
+}
+
+func hasConstraint(values []SurfacingConstraint, kind, ref string) bool {
+	for _, value := range values {
+		if value.Kind == kind && value.Ref == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSurfaced(hits []Surfaced, id string) bool {

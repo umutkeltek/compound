@@ -370,6 +370,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			return pack, err
 		}
 		for _, hit := range surfaced {
+			pack.CapabilityOffers = append(pack.CapabilityOffers, capabilityOffer(hit))
 			pack.Included = append(pack.Included, envelope.IncludedRef{
 				Ref:         "capability://" + hit.Node.ID,
 				SourceClass: "generated",
@@ -400,6 +401,36 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
 	return pack, nil
+}
+
+func capabilityOffer(hit capgraph.Surfaced) envelope.CapabilityOffer {
+	return envelope.CapabilityOffer{
+		Ref:                   "capability://" + hit.Node.ID,
+		Kind:                  hit.Node.Kind,
+		Name:                  hit.Node.Name,
+		Score:                 hit.Score,
+		Why:                   hit.Why,
+		Required:              capabilityOfferConstraints(hit.Constraints.Required),
+		Conflicts:             capabilityOfferConstraints(hit.Constraints.Conflicts),
+		Harnesses:             capabilityOfferConstraints(hit.Constraints.Harnesses),
+		KnownMissedWhen:       capabilityOfferConstraints(hit.Constraints.KnownMissedWhen),
+		KnownFalseTriggeredBy: capabilityOfferConstraints(hit.Constraints.KnownFalseTriggeredBy),
+		Evidence:              capabilityOfferConstraints(hit.Constraints.Evidence),
+		CostRiskNote:          hit.Constraints.CostRiskNote,
+	}
+}
+
+func capabilityOfferConstraints(values []capgraph.SurfacingConstraint) []envelope.CapabilityOfferConstraint {
+	out := make([]envelope.CapabilityOfferConstraint, 0, len(values))
+	for _, value := range values {
+		out = append(out, envelope.CapabilityOfferConstraint{
+			Kind:       value.Kind,
+			Ref:        value.Ref,
+			Detail:     value.Detail,
+			Confidence: value.Confidence,
+		})
+	}
+	return out
 }
 
 func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {

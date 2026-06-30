@@ -232,15 +232,36 @@ type ExcludedRef struct {
 	Ref    string `json:"ref"`
 	Reason string `json:"reason"`
 }
+type CapabilityOfferConstraint struct {
+	Kind       string  `json:"kind"`
+	Ref        string  `json:"ref"`
+	Detail     string  `json:"detail,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+}
+type CapabilityOffer struct {
+	Ref                   string                      `json:"ref"`
+	Kind                  string                      `json:"kind"`
+	Name                  string                      `json:"name"`
+	Score                 float64                     `json:"score"`
+	Why                   string                      `json:"why"`
+	Required              []CapabilityOfferConstraint `json:"required,omitempty"`
+	Conflicts             []CapabilityOfferConstraint `json:"conflicts,omitempty"`
+	Harnesses             []CapabilityOfferConstraint `json:"harnesses,omitempty"`
+	KnownMissedWhen       []CapabilityOfferConstraint `json:"known_missed_when,omitempty"`
+	KnownFalseTriggeredBy []CapabilityOfferConstraint `json:"known_false_triggered_by,omitempty"`
+	Evidence              []CapabilityOfferConstraint `json:"evidence,omitempty"`
+	CostRiskNote          string                      `json:"cost_risk_note,omitempty"`
+}
 type ContextPack struct {
 	Header
-	SummaryMD          string        `json:"summary_md"`
-	Included           []IncludedRef `json:"included"`
-	Excluded           []ExcludedRef `json:"excluded"`
-	ActiveInstructions []string      `json:"active_instructions"`
-	ActiveDecisions    []string      `json:"active_decisions"`
-	RequiredChecks     []string      `json:"required_checks"`
-	Avoid              []string      `json:"avoid"`
+	SummaryMD          string            `json:"summary_md"`
+	Included           []IncludedRef     `json:"included"`
+	Excluded           []ExcludedRef     `json:"excluded"`
+	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
+	ActiveInstructions []string          `json:"active_instructions"`
+	ActiveDecisions    []string          `json:"active_decisions"`
+	RequiredChecks     []string          `json:"required_checks"`
+	Avoid              []string          `json:"avoid"`
 }
 
 func (e *ContextPack) Kind() string { return "context_pack" }
@@ -252,12 +273,32 @@ func (e *ContextPack) Validate() error {
 		v.enum(fmt.Sprintf("included[%d].status", i), inc.Status, AuthorityStatuses, false)
 		v.req(fmt.Sprintf("included[%d].ref", i), inc.Ref)
 	}
+	for i, offer := range e.CapabilityOffers {
+		prefix := fmt.Sprintf("capability_offers[%d]", i)
+		v.req(prefix+".ref", offer.Ref)
+		v.req(prefix+".kind", offer.Kind)
+		v.req(prefix+".name", offer.Name)
+		validateCapabilityOfferConstraints(v, prefix+".required", offer.Required)
+		validateCapabilityOfferConstraints(v, prefix+".conflicts", offer.Conflicts)
+		validateCapabilityOfferConstraints(v, prefix+".harnesses", offer.Harnesses)
+		validateCapabilityOfferConstraints(v, prefix+".known_missed_when", offer.KnownMissedWhen)
+		validateCapabilityOfferConstraints(v, prefix+".known_false_triggered_by", offer.KnownFalseTriggeredBy)
+		validateCapabilityOfferConstraints(v, prefix+".evidence", offer.Evidence)
+	}
 	// the excluded list (what was NOT loaded, and why) is the whole point of replaceability;
 	// require its presence (may be empty) so it's never silently dropped.
 	if e.Excluded == nil {
 		v.addf("excluded must be present (record what was not loaded and why)")
 	}
 	return v.result(e.Kind())
+}
+
+func validateCapabilityOfferConstraints(v *verr, field string, values []CapabilityOfferConstraint) {
+	for i, c := range values {
+		prefix := fmt.Sprintf("%s[%d]", field, i)
+		v.req(prefix+".kind", c.Kind)
+		v.req(prefix+".ref", c.Ref)
+	}
 }
 
 type WorkEnvelope struct {

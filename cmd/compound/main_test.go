@@ -2264,8 +2264,8 @@ func TestCapabilityImportEvaluationsRecordsGraphEvidenceAndSourceNoPromote(t *te
 	if !strings.Contains(surfaceOut, "skill:web-design-guidelines") {
 		t.Fatalf("surface output missing skill offer:\n%s", surfaceOut)
 	}
-	if strings.Contains(surfaceOut, "eval:capability-evaluation") {
-		t.Fatalf("evaluation evidence node must not surface as capability offer:\n%s", surfaceOut)
+	if strings.Contains(surfaceOut, "\n  eval:capability-evaluation") {
+		t.Fatalf("evaluation evidence node must not surface as a capability offer row:\n%s", surfaceOut)
 	}
 	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
 	entries, err := os.ReadDir(candidateDir)
