@@ -1,10 +1,14 @@
 package routeevidence
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/candidates"
+	"compound/internal/writeback"
 )
 
 func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
@@ -48,21 +52,18 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		len(plan.LaneJustification) != 2 {
 		t.Fatalf("bad route plan: %+v", plan)
 	}
-	if plan.Chain[0].ModelID != "auto/judge" || plan.Chain[0].GateRole != "eligible" {
-		t.Fatalf("first lane = %+v", plan.Chain[0])
+	if plan.Chain[0].ModelID != "auto/judge" ||
+		plan.Chain[0].GateRole != "eligible" ||
+		plan.Chain[1].ModelID != "scout/chat" ||
+		plan.Chain[1].GateRole != "tripwire_only" {
+		t.Fatalf("bad chain: %+v", plan.Chain)
 	}
-	if plan.Chain[1].ModelID != "scout/chat" || plan.Chain[1].GateRole != "tripwire_only" {
-		t.Fatalf("free judge lane must stay tripwire-only: %+v", plan.Chain[1])
-	}
-	if !strings.Contains(strings.Join(plan.LaneJustification, "\n"), "routing_defaults[judge-critique][1] -> scout/chat") {
-		t.Fatalf("missing lane justification: %+v", plan.LaneJustification)
-	}
-	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("model capability import/plan must not promote claims, stat err=%v", err)
+	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "free judge/critique lane scout/chat may object but must not gate verdicts") {
+		t.Fatalf("missing free-lane warning: %+v", plan.Warnings)
 	}
 }
 
-func TestCapabilityRoutePlanPrivacySensitiveKeepsOnlyLocalBatch(t *testing.T) {
+func TestPrivacySensitiveCapabilityRouteKeepsOnlyLocalBatch(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
 	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
@@ -89,5 +90,116 @@ func TestCapabilityRoutePlanPrivacySensitiveKeepsOnlyLocalBatch(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "privacy-sensitive plan omitted non-local-batch lanes") {
 		t.Fatalf("missing privacy warning: %+v", plan.Warnings)
+	}
+}
+
+func TestCapabilityRoutePlanSurfacesPendingCostObservation(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import model capabilities: %v", err)
+	}
+
+	report, err := DoctorProviderLedgerCosts(filepath.Join("..", "..", "fixtures", "route", "provider-calls-cost-gaps.ndjson"), ProviderLedgerImportOptions{})
+	if err != nil {
+		t.Fatalf("doctor provider costs: %v", err)
+	}
+	report, err = RecordCostDoctorObservation(home, report, t0)
+	if err != nil {
+		t.Fatalf("record cost observation: %v", err)
+	}
+
+	plan, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatalf("plan judge route: %v", err)
+	}
+	if len(plan.PendingObservations) != 1 {
+		t.Fatalf("pending observations = %+v, want one cost observation", plan.PendingObservations)
+	}
+	pending := plan.PendingObservations[0]
+	if pending.CandidateID != report.CandidateID ||
+		pending.NoPromoteID != report.NoPromoteID ||
+		pending.OwnerTargetKind != "route_cost_coverage" ||
+		pending.ReviewCommand != "compound route plan --candidate "+report.CandidateID {
+		t.Fatalf("bad pending observation: %+v report=%+v", pending, report)
+	}
+	if !strings.Contains(strings.Join(pending.MatchReasons, "\n"), "global:provider_cost_coverage") {
+		t.Fatalf("missing global cost match reason: %+v", pending.MatchReasons)
+	}
+	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "pending route observations require owner review") {
+		t.Fatalf("missing pending observation warning: %+v", plan.Warnings)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("route plan must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestCapabilityRoutePlanMatchesPendingObservationByModel(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import model capabilities: %v", err)
+	}
+	candidate := routeCandidate{
+		ID:           "route_outcome_auto_judge",
+		Kind:         string(candidates.RouteObservation),
+		Subject:      "route-outcome:auto/judge",
+		Statement:    "auto/judge produced failed receipt; review before reuse",
+		Detail:       "receipt=rec_failed route_status=completed",
+		Confidence:   0.9,
+		EvidenceRefs: []string{"route:auto_judge", "receipt:failed"},
+		Verdict:      candidates.NoPromote,
+	}
+	writeRouteCandidateFixture(t, home, candidate)
+	store, err := writeback.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nop, _, err := store.RecordNoPromote(writeback.NoPromoteDecision{
+		CandidateRef:  candidate.ID,
+		CandidateKind: string(candidates.RouteObservation),
+		OwnerTarget:   writeback.OwnerTarget{Kind: "route_outcome", Ref: "auto/judge"},
+		Basis:         "route outcome requires owner review before route policy changes",
+		EvidenceRefs:  candidate.EvidenceRefs,
+	}, t0)
+	if err != nil {
+		t.Fatalf("record no-promote: %v", err)
+	}
+
+	judgePlan, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatalf("plan judge route: %v", err)
+	}
+	if len(judgePlan.PendingObservations) != 1 {
+		t.Fatalf("judge pending observations = %+v, want route outcome", judgePlan.PendingObservations)
+	}
+	if got := strings.Join(judgePlan.PendingObservations[0].MatchReasons, "\n"); !strings.Contains(got, "model:auto/judge") {
+		t.Fatalf("missing model match reason: %+v", judgePlan.PendingObservations[0])
+	}
+	if judgePlan.PendingObservations[0].NoPromoteID != nop.ID {
+		t.Fatalf("no_promote id = %q, want %q", judgePlan.PendingObservations[0].NoPromoteID, nop.ID)
+	}
+
+	classifyPlan, err := PlanCapabilityRoute(home, "classify-extract", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatalf("plan classify route: %v", err)
+	}
+	if len(classifyPlan.PendingObservations) != 0 {
+		t.Fatalf("classify pending observations = %+v, want none", classifyPlan.PendingObservations)
+	}
+}
+
+func writeRouteCandidateFixture(t *testing.T, home string, candidate routeCandidate) {
+	t.Helper()
+	dir := filepath.Join(home, candidates.InboxDir(candidates.RouteObservation))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, candidate.ID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

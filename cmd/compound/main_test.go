@@ -4563,6 +4563,23 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 		!strings.Contains(planOut, "- verdict: metadata_only_not_task_success") {
 		t.Fatalf("bad route plan output:\n%s", planOut)
 	}
+	costFixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls-cost-gaps.ndjson")
+	costOut := captureStdout(t, func() {
+		cmdRoute([]string{"cost-doctor", costFixture, "--record"})
+	})
+	if !strings.Contains(costOut, "- candidate: route_cost_") ||
+		!strings.Contains(costOut, "- no_promote: nop_") {
+		t.Fatalf("bad route cost-doctor output:\n%s", costOut)
+	}
+	planWithDebtOut := captureStdout(t, func() {
+		cmdRoute([]string{"plan", "--capability-class", "judge-critique"})
+	})
+	if !strings.Contains(planWithDebtOut, "- pending_route_observations: 1") ||
+		!strings.Contains(planWithDebtOut, "match=global:provider_cost_coverage") ||
+		!strings.Contains(planWithDebtOut, "review=\"compound route plan --candidate route_cost_") ||
+		!strings.Contains(planWithDebtOut, "- warning: pending route observations require owner review before routing policy changes") {
+		t.Fatalf("route plan missing pending observation debt:\n%s", planWithDebtOut)
+	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("route model capability import/plan must not promote claims, stat err=%v", err)
 	}

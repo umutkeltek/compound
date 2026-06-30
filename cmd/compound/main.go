@@ -2084,6 +2084,12 @@ func cmdRoute(args []string) {
 					fmt.Printf("- omitted: %d %s reason=%s\n", lane.Position, lane.ModelID, lane.OmitReason)
 				}
 			}
+			if len(plan.PendingObservations) > 0 {
+				fmt.Printf("- pending_route_observations: %d\n", len(plan.PendingObservations))
+				for _, observation := range plan.PendingObservations {
+					fmt.Printf("- pending_observation: %s match=%s review=\"%s\"\n", observation.CandidateID, strings.Join(observation.MatchReasons, ","), observation.ReviewCommand)
+				}
+			}
 			for _, warning := range plan.Warnings {
 				fmt.Printf("- warning: %s\n", warning)
 			}

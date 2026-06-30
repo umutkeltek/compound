@@ -11,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
+	"compound/internal/writeback"
 	"gopkg.in/yaml.v3"
 )
 
@@ -80,21 +83,22 @@ type CapabilityRoutePlanOptions struct {
 }
 
 type CapabilityRoutePlan struct {
-	SchemaVersion     string                `json:"schema_version"`
-	ID                string                `json:"id"`
-	CreatedAt         string                `json:"created_at"`
-	Status            string                `json:"status"`
-	AuthorityRef      string                `json:"authority_ref"`
-	AuthorityPath     string                `json:"authority_path"`
-	SourceAuthorityID string                `json:"source_authority_id,omitempty"`
-	SourceRevision    string                `json:"source_revision,omitempty"`
-	CapabilityClass   string                `json:"capability_class"`
-	PrivacySensitive  bool                  `json:"privacy_sensitive"`
-	RoutingRule       string                `json:"routing_rule"`
-	LaneJustification []string              `json:"lane_justification"`
-	Chain             []CapabilityRouteLane `json:"chain"`
-	Omitted           []CapabilityRouteLane `json:"omitted,omitempty"`
-	Warnings          []string              `json:"warnings,omitempty"`
+	SchemaVersion       string                    `json:"schema_version"`
+	ID                  string                    `json:"id"`
+	CreatedAt           string                    `json:"created_at"`
+	Status              string                    `json:"status"`
+	AuthorityRef        string                    `json:"authority_ref"`
+	AuthorityPath       string                    `json:"authority_path"`
+	SourceAuthorityID   string                    `json:"source_authority_id,omitempty"`
+	SourceRevision      string                    `json:"source_revision,omitempty"`
+	CapabilityClass     string                    `json:"capability_class"`
+	PrivacySensitive    bool                      `json:"privacy_sensitive"`
+	RoutingRule         string                    `json:"routing_rule"`
+	LaneJustification   []string                  `json:"lane_justification"`
+	Chain               []CapabilityRouteLane     `json:"chain"`
+	Omitted             []CapabilityRouteLane     `json:"omitted,omitempty"`
+	PendingObservations []PendingRouteObservation `json:"pending_observations,omitempty"`
+	Warnings            []string                  `json:"warnings,omitempty"`
 }
 
 type CapabilityRouteLane struct {
@@ -109,6 +113,24 @@ type CapabilityRouteLane struct {
 	SupervisionRequired bool   `json:"supervision_required,omitempty"`
 	Justification       string `json:"justification"`
 	OmitReason          string `json:"omit_reason,omitempty"`
+}
+
+// PendingRouteObservation is read-only review debt visible to route planners.
+// It points at existing route_observation candidates; it never mutates
+// model-router, gateway, provider config, or claims.
+type PendingRouteObservation struct {
+	CandidateID     string   `json:"candidate_id"`
+	Subject         string   `json:"subject,omitempty"`
+	Statement       string   `json:"statement,omitempty"`
+	Detail          string   `json:"detail,omitempty"`
+	Verdict         string   `json:"verdict,omitempty"`
+	EvidenceRefs    []string `json:"evidence_refs,omitempty"`
+	MatchReasons    []string `json:"match_reasons"`
+	NoPromoteID     string   `json:"no_promote_id,omitempty"`
+	NoPromoteBasis  string   `json:"no_promote_basis,omitempty"`
+	OwnerTargetKind string   `json:"owner_target_kind,omitempty"`
+	OwnerTargetRef  string   `json:"owner_target_ref,omitempty"`
+	ReviewCommand   string   `json:"review_command"`
 }
 
 func ImportModelCapabilitiesYAML(homePath, sourcePath string, now time.Time) (ModelCapabilitiesImportReport, error) {
@@ -271,6 +293,14 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 			plan.Warnings = append(plan.Warnings, "free judge/critique lane "+lane.ModelID+" may object but must not gate verdicts")
 		}
 	}
+	pending, err := pendingRouteObservations(homePath, capabilityClass, defaults, now)
+	if err != nil {
+		return CapabilityRoutePlan{}, err
+	}
+	plan.PendingObservations = pending
+	if len(pending) > 0 {
+		plan.Warnings = append(plan.Warnings, "pending route observations require owner review before routing policy changes")
+	}
 	plan.Warnings = sortedStrings(plan.Warnings)
 	if len(plan.Chain) == 0 {
 		plan.Status = "blocked_no_lane"
@@ -401,6 +431,84 @@ func laneJustification(class string, position int, modelID string, model ModelCa
 		level = "missing"
 	}
 	return fmt.Sprintf("%s[%d] -> %s (%s) claim=%s role=%s", "routing_defaults["+class+"]", position, modelID, model.Tier, level, role)
+}
+
+func pendingRouteObservations(homePath, capabilityClass string, modelIDs []string, now time.Time) ([]PendingRouteObservation, error) {
+	dir := filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	store, err := writeback.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	var out []PendingRouteObservation
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		candidateID := strings.TrimSuffix(entry.Name(), ".json")
+		c, err := readRouteCandidate(homePath, candidateID)
+		if err != nil {
+			return nil, err
+		}
+		if c.Kind != string(candidates.RouteObservation) {
+			continue
+		}
+		matchReasons := routeObservationMatchReasons(c, capabilityClass, modelIDs)
+		if len(matchReasons) == 0 {
+			continue
+		}
+		pending := PendingRouteObservation{
+			CandidateID:   c.ID,
+			Subject:       c.Subject,
+			Statement:     c.Statement,
+			Detail:        c.Detail,
+			Verdict:       c.Verdict,
+			EvidenceRefs:  reviewartifact.UniqueSorted(c.EvidenceRefs),
+			MatchReasons:  matchReasons,
+			ReviewCommand: "compound route plan --candidate " + c.ID,
+		}
+		if nop, ok, err := store.ActiveNoPromote(c.ID, now); err != nil {
+			return nil, err
+		} else if ok {
+			pending.NoPromoteID = nop.ID
+			pending.NoPromoteBasis = nop.Basis
+			pending.OwnerTargetKind = nop.OwnerTarget.Kind
+			pending.OwnerTargetRef = nop.OwnerTarget.Ref
+		}
+		out = append(out, pending)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CandidateID < out[j].CandidateID
+	})
+	return out, nil
+}
+
+func routeObservationMatchReasons(c routeCandidate, capabilityClass string, modelIDs []string) []string {
+	haystack := strings.ToLower(strings.Join([]string{c.Subject, c.Statement, c.Detail}, " "))
+	var reasons []string
+	if containsRouteToken(haystack, capabilityClass) {
+		reasons = append(reasons, "capability_class:"+capabilityClass)
+	}
+	for _, modelID := range modelIDs {
+		if containsRouteToken(haystack, modelID) {
+			reasons = append(reasons, "model:"+modelID)
+		}
+	}
+	if strings.Contains(haystack, "provider-ledger") || strings.Contains(haystack, "cost-coverage") {
+		reasons = append(reasons, "global:provider_cost_coverage")
+	}
+	return reviewartifact.UniqueSorted(reasons)
+}
+
+func containsRouteToken(haystack, token string) bool {
+	token = strings.ToLower(strings.TrimSpace(token))
+	return token != "" && strings.Contains(haystack, token)
 }
 
 func modelCapabilityIDs(manifest ModelCapabilitiesManifest) []string {
