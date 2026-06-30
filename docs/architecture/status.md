@@ -9,6 +9,7 @@ This file is the current package/command map. `compound architecture doctor --st
 ## Recent Runtime Proof
 
 - OS served-reader proof for operator-state now exists: `os status --json` carries `operator_state.authority_ref=compound://registries/operator-state`, `source_authority_id=opsrc_2ab1a37a42a2`, and marks `registry/operator-state.json` fallback/evidence-only while the plain status line reports `operator autonomy L3 from compound://registries/operator-state`.
+- OS `/operate` served UI now renders the same Compound operator authority strip (`authority_ref`, `autonomy_level`, `source_authority_id`, fallback/evidence-only registry role), proving the dashboard consumer path reads Compound primary authority instead of leaving the handoff only in CLI/status JSON.
 
 - `internal/policy` now imports the global operator autonomy ceiling as Compound authority. `compound policy import-operator-state <operator-state.json>` writes `COMPOUND_HOME/registries/operator-state.json` as `compound://registries/operator-state` and records `registries/operator-state-source-authority.jsonl`; policy loading consumes that authority, cites it in `PolicyDecision.evidence_refs[]`, and treats it as a ceiling for reversible local work rather than a bypass for public, financial, destructive, or security holds. Persistent proof imported a real operator-state source at L3 as `opsrc_2ab1a37a42a2`; `policy evaluate` allowed a local reversible write with obligations and held a public action, both citing `compound://registries/operator-state`.
 
