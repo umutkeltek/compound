@@ -33,6 +33,16 @@ func TestCapabilityDirIsSingleSourced(t *testing.T) {
 	}
 }
 
+func TestEvalCaseConsumerIsReviewedPlan(t *testing.T) {
+	spec, ok := SpecFor(EvalCase)
+	if !ok {
+		t.Fatal("eval_case spec missing")
+	}
+	if spec.Consumer != "compound distiller eval-plan" {
+		t.Fatalf("eval_case consumer = %q, want reviewed eval-plan surface", spec.Consumer)
+	}
+}
+
 // An unknown / path-bearing kind has no dir — a Kind keys a filesystem path, so this is the
 // path-traversal guard the producers rely on.
 func TestRelationIsStructuralNotCandidateKind(t *testing.T) {

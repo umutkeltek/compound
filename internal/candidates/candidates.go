@@ -87,7 +87,7 @@ var specs = map[Kind]Spec{
 	RouteObservation:  {RouteObservation, "inbox/route-observations", []string{Park, Operationalize}, "compound route plan"},
 	CapabilityObs:     {CapabilityObs, "inbox/capability-observations", []string{Operationalize, Park}, "capgraph.Consume"},
 	MethodUpgrade:     {MethodUpgrade, "inbox/method-upgrades", []string{Park, Operationalize}, "compound distiller improvement-plan"},
-	EvalCase:          {EvalCase, "inbox/eval-cases", []string{Operationalize, Park}, "distiller regression corpus"},
+	EvalCase:          {EvalCase, "inbox/eval-cases", []string{Operationalize, Park}, "compound distiller eval-plan"},
 	PolicyPatch:       {PolicyPatch, "inbox/policy-patches", []string{Park, Operationalize}, "compound distiller improvement-plan"},
 }
 
