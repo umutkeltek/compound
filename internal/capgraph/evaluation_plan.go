@@ -254,10 +254,6 @@ func RecordCapabilityEvaluationReview(homePath string, review CapabilityEvaluati
 	if err := review.Validate(); err != nil {
 		return CapabilityEvaluationReviewReport{}, err
 	}
-	dir := filepath.Join(homePath, "reviews", "capability-evaluation-intake")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return CapabilityEvaluationReviewReport{}, err
-	}
 	nodeStatus := capabilityEvaluationReviewNodeStatus(review.Decision)
 	manifest := SkillManifest{
 		SchemaVersion: SkillManifestSchemaVersion,
@@ -286,12 +282,12 @@ func RecordCapabilityEvaluationReview(homePath string, review CapabilityEvaluati
 			},
 		},
 	}
-	manifestPath := filepath.Join(dir, review.ReviewID+".reviewed-skill-manifest.yaml")
 	data, err := yaml.Marshal(manifest)
 	if err != nil {
 		return CapabilityEvaluationReviewReport{}, err
 	}
-	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+	manifestPath, err := reviewartifact.WriteRaw(homePath, "capability-evaluation-intake", review.ReviewID+".reviewed-skill-manifest.yaml", data)
+	if err != nil {
 		return CapabilityEvaluationReviewReport{}, err
 	}
 	return CapabilityEvaluationReviewReport{
