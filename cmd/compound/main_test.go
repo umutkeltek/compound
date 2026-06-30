@@ -2240,6 +2240,7 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 		"- evidence_refs:",
 		"- plan:",
 		"- review:",
+		"- manifest_draft:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("evaluation-plan output missing %q:\n%s", want, out)
@@ -2247,12 +2248,20 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 	}
 	planPath := outputValue(out, "- plan:")
 	reviewPath := outputValue(out, "- review:")
+	manifestDraftPath := outputValue(out, "- manifest_draft:")
 	var plan capgraph.CapabilityEvaluationPlan
 	if err := json.Unmarshal([]byte(readFile(t, planPath)), &plan); err != nil {
 		t.Fatal(err)
 	}
 	if plan.NodeDraft.NodeID != "skill:web-design-guidelines" || plan.TargetHash == "" {
 		t.Fatalf("plan = %+v", plan)
+	}
+	manifest, err := capgraph.LoadSkillManifest(manifestDraftPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Skills) != 1 || manifest.Skills[0].Status != "needs_review" || manifest.Skills[0].ID != "skill:web-design-guidelines" {
+		t.Fatalf("manifest draft = %+v", manifest)
 	}
 	review := readFile(t, reviewPath)
 	if !strings.Contains(review, "does not mutate CapabilityGraph") || !strings.Contains(review, "Required Review") {
@@ -2263,6 +2272,18 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation-plan must not mutate capability graph, stat err=%v", err)
+	}
+	importOut := captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", manifestDraftPath})
+	})
+	if !strings.Contains(importOut, "node: skill:web-design-guidelines") {
+		t.Fatalf("manifest draft import output =\n%s", importOut)
+	}
+	surfaceOut := captureStdout(t, func() {
+		cmdCapability([]string{"surface", "web design guidelines"})
+	})
+	if strings.Contains(surfaceOut, "skill:web-design-guidelines") {
+		t.Fatalf("needs_review manifest draft must not surface:\n%s", surfaceOut)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation-plan must not promote claims, stat err=%v", err)

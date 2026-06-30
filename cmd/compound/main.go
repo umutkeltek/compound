@@ -401,6 +401,7 @@ func cmdCapability(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- manifest_draft: %s\n", paths.ManifestDraftPath)
 	case "skill-plan":
 		candidateID := flag("--candidate")
 		targetPath := flag("--target")

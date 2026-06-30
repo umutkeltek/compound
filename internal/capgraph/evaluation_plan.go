@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const CapabilityEvaluationPlanSchemaVersion = "compound.capability.evaluation_plan.v0.1"
@@ -50,8 +52,9 @@ type CapabilityNodeDraft struct {
 }
 
 type CapabilityEvaluationPlanPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath          string
+	ReviewPath        string
+	ManifestDraftPath string
 }
 
 func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet, selector, targetPath string, now time.Time) (CapabilityEvaluationPlan, error) {
@@ -146,8 +149,9 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 		return CapabilityEvaluationPlanPaths{}, err
 	}
 	paths := CapabilityEvaluationPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
+		PlanPath:          filepath.Join(dir, plan.ID+".json"),
+		ReviewPath:        filepath.Join(dir, plan.ID+".md"),
+		ManifestDraftPath: filepath.Join(dir, plan.ID+".skill-manifest.yaml"),
 	}
 	data, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
@@ -159,7 +163,55 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 	if err := os.WriteFile(paths.ReviewPath, []byte(RenderCapabilityEvaluationPlanReview(plan)), 0o644); err != nil {
 		return paths, err
 	}
+	draft, err := CapabilityEvaluationPlanSkillManifest(plan)
+	if err != nil {
+		return paths, err
+	}
+	manifestData, err := yaml.Marshal(draft)
+	if err != nil {
+		return paths, err
+	}
+	if err := os.WriteFile(paths.ManifestDraftPath, manifestData, 0o644); err != nil {
+		return paths, err
+	}
 	return paths, nil
+}
+
+func CapabilityEvaluationPlanSkillManifest(plan CapabilityEvaluationPlan) (SkillManifest, error) {
+	if strings.TrimSpace(plan.ID) == "" {
+		return SkillManifest{}, fmt.Errorf("capability evaluation plan id required")
+	}
+	if strings.TrimSpace(plan.NodeDraft.NodeID) == "" {
+		return SkillManifest{}, fmt.Errorf("capability evaluation plan node draft id required")
+	}
+	manifest := SkillManifest{
+		SchemaVersion: SkillManifestSchemaVersion,
+		ID:            "skill_manifest:" + plan.ID,
+		AdapterID:     "compound.capability-evaluation-plan",
+		SourceSystem:  "compound",
+		ObservedAt:    plan.CreatedAt,
+		SourceRef: SkillSourceRef{
+			Path:        "capability-evaluation:" + plan.EvaluationID,
+			Kind:        "review_artifact",
+			Owner:       plan.Capability,
+			SourceClass: "capability_evaluation_intake",
+			Revision:    plan.ID,
+		},
+		EvidenceRefs: append([]string(nil), plan.EvidenceRefs...),
+		Skills: []SkillManifestEntry{
+			{
+				ID:           plan.NodeDraft.NodeID,
+				Kind:         plan.NodeDraft.Kind,
+				Name:         plan.NodeDraft.Name,
+				Status:       "needs_review",
+				Triggers:     append([]string(nil), plan.NodeDraft.Triggers...),
+				Capabilities: []string{plan.Capability},
+				EvidenceRefs: append([]string(nil), plan.EvidenceRefs...),
+				Weight:       plan.NodeDraft.Weight,
+			},
+		},
+	}
+	return manifest, nil
 }
 
 func RenderCapabilityEvaluationPlanReview(plan CapabilityEvaluationPlan) string {
@@ -185,6 +237,7 @@ func RenderCapabilityEvaluationPlanReview(plan CapabilityEvaluationPlan) string 
 	}
 	fmt.Fprintf(&b, "- evidence_refs: %s\n\n", strings.Join(plan.EvidenceRefs, ", "))
 	fmt.Fprintln(&b, "This owner-review artifact does not mutate CapabilityGraph, install skill files, execute tools/MCPs, surface offers, or promote memory truth.")
+	fmt.Fprintln(&b, "The sibling skill-manifest draft uses status `needs_review`, so importing it remains non-surfacing until a reviewer edits it to `active`.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## Draft CapabilityGraph Node")
 	fmt.Fprintln(&b)
