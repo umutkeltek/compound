@@ -1875,6 +1875,14 @@ signal:
 		!strings.Contains(signalOut, "- transition:") {
 		t.Fatalf("signal output missing proof:\n%s", signalOut)
 	}
+	doctorOut := captureStdout(t, func() {
+		cmdProduct([]string{"doctor", "product:focus_notes"})
+	})
+	if !strings.Contains(doctorOut, "- review_ready: 1") ||
+		!strings.Contains(doctorOut, "- review_plan: compound product review-plan --hypothesis "+candidateID+" --signal "+signalID) ||
+		!strings.Contains(doctorOut, "match: metric_match app_store_product_page_conversion 14d") {
+		t.Fatalf("doctor should surface review-ready signal pair:\n%s", doctorOut)
+	}
 	targetPath := filepath.Join(t.TempDir(), "product-review.md")
 	original := "# Product Review\n\nExisting review notes.\n"
 	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
@@ -1939,6 +1947,13 @@ signal:
 	}
 	if doctor.Status != "ok" || doctor.PendingReviewCount != 0 {
 		t.Fatalf("review should clear pending hypothesis debt: %+v", doctor)
+	}
+	afterDoctorOut := captureStdout(t, func() {
+		cmdProduct([]string{"doctor", "product:focus_notes"})
+	})
+	if !strings.Contains(afterDoctorOut, "- review_ready: 0") ||
+		strings.Contains(afterDoctorOut, "- review_plan:") {
+		t.Fatalf("doctor should clear review-ready pair after review:\n%s", afterDoctorOut)
 	}
 	if got := readFile(t, targetPath); got != original {
 		t.Fatalf("review-plan mutated target:\n%s", got)

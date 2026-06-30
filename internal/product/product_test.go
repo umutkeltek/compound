@@ -65,12 +65,30 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if doctor.Status != "needs_review" || doctor.SignalCount != 1 || doctor.HypothesisCount != 1 || doctor.PendingReviewCount != 1 {
 		t.Fatalf("doctor = %+v", doctor)
 	}
+	if doctor.ReviewReadyCount != 1 || len(doctor.ReviewReady) != 1 {
+		t.Fatalf("review-ready doctor = %+v", doctor)
+	}
+	ready := doctor.ReviewReady[0]
+	if ready.HypothesisID != "hyp_focus_visuals_conversion" ||
+		ready.SignalID != "sig_focus_screenshot_20260629" ||
+		ready.MatchReason != "metric_match" ||
+		ready.ReviewPlanCommand != "compound product review-plan --hypothesis hyp_focus_visuals_conversion --signal sig_focus_screenshot_20260629" {
+		t.Fatalf("review-ready = %+v", ready)
+	}
+	refs := EvidenceRefs(doctor)
+	if !hasString(refs, "product_review_ready:hyp_focus_visuals_conversion:sig_focus_screenshot_20260629") ||
+		!hasString(refs, "product_signal:sig_focus_screenshot_20260629") {
+		t.Fatalf("doctor evidence refs missing review-ready pair: %+v", refs)
+	}
 	if !NeedsWriteback(doctor) {
 		t.Fatal("NeedsWriteback = false, want true")
 	}
 	gate := WritebackGate(doctor, "act_product_review", "pol_product_review", tProduct)
 	if gate.CandidateKind != string(candidates.ProductHypothesis) || gate.OwnerTarget.Kind != "product_strategy" || gate.OwnerTarget.Ref != "product:focus-notes" {
 		t.Fatalf("gate = %+v", gate)
+	}
+	if !strings.Contains(gate.GateBasis, "1 signal-backed review-ready pair") {
+		t.Fatalf("gate basis missing review-ready count: %s", gate.GateBasis)
 	}
 	checked, err := writeback.EvaluateGate(gate, nil, tProduct)
 	if err != nil {

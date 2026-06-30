@@ -327,9 +327,21 @@ type DoctorReport struct {
 	HypothesisCount     int                   `json:"hypothesis_count"`
 	SourceIssueCount    int                   `json:"source_issue_count"`
 	PendingReviewCount  int                   `json:"pending_review_count"`
+	ReviewReadyCount    int                   `json:"review_ready_count"`
 	PendingReview       []HypothesisCandidate `json:"pending_review,omitempty"`
+	ReviewReady         []ReviewReady         `json:"review_ready,omitempty"`
 	SourceIssues        []ProductSourceIssue  `json:"source_issues,omitempty"`
 	MissingEvidenceRefs []string              `json:"missing_evidence_refs,omitempty"`
+}
+
+type ReviewReady struct {
+	HypothesisID      string   `json:"hypothesis_id"`
+	SignalID          string   `json:"signal_id"`
+	MetricName        string   `json:"metric_name"`
+	Window            string   `json:"window"`
+	MatchReason       string   `json:"match_reason"`
+	ReviewPlanCommand string   `json:"review_plan_command"`
+	EvidenceRefs      []string `json:"evidence_refs,omitempty"`
 }
 
 type SignalDoctorReport struct {
@@ -1331,6 +1343,8 @@ func Doctor(homePath, productID string) (DoctorReport, error) {
 		}
 	}
 	report.PendingReviewCount = len(report.PendingReview)
+	report.ReviewReady = reviewReadySignals(report.PendingReview, tl.Signals)
+	report.ReviewReadyCount = len(report.ReviewReady)
 	report.SourceIssueCount = len(report.SourceIssues)
 	if report.PendingReviewCount > 0 || report.SourceIssueCount > 0 {
 		report.Status = "needs_review"
@@ -1354,6 +1368,10 @@ func EvidenceRefs(report DoctorReport) []string {
 		refs = append(refs, "product_hypothesis:"+h.ID+":"+h.Result)
 		refs = append(refs, h.EvidenceRefs...)
 	}
+	for _, ready := range report.ReviewReady {
+		refs = append(refs, "product_review_ready:"+ready.HypothesisID+":"+ready.SignalID)
+		refs = append(refs, ready.EvidenceRefs...)
+	}
 	for _, issue := range report.SourceIssues {
 		refs = append(refs, "product_source_issue:"+issue.ID, issue.SourceRef)
 		refs = append(refs, issue.EvidenceRefs...)
@@ -1371,7 +1389,7 @@ func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef strin
 		CandidateRef:      fmt.Sprintf("product:feedback_review:%s:%s", report.ProductID, productDoctorDigest(report)),
 		CandidateKind:     productDoctorCandidateKind(report),
 		OwnerTarget:       writeback.OwnerTarget{Kind: "product_strategy", Ref: report.ProductID},
-		GateBasis:         fmt.Sprintf("product doctor found %d pending hypothesis review(s), %d source issue(s), and %d missing-evidence hypothesis record(s)", report.PendingReviewCount, report.SourceIssueCount, len(report.MissingEvidenceRefs)),
+		GateBasis:         fmt.Sprintf("product doctor found %d pending hypothesis review(s), %d signal-backed review-ready pair(s), %d source issue(s), and %d missing-evidence hypothesis record(s)", report.PendingReviewCount, report.ReviewReadyCount, report.SourceIssueCount, len(report.MissingEvidenceRefs)),
 		ActionIntentRef:   actionIntentRef,
 		MutationClass:     "local_reversible",
 		PolicyDecisionRef: policyDecisionRef,
@@ -1983,6 +2001,58 @@ func productDoctorDigest(report DoctorReport) string {
 func productDoctorCandidateKind(report DoctorReport) string {
 	if report.PendingReviewCount > 0 || len(report.MissingEvidenceRefs) > 0 {
 		return string(candidates.ProductHypothesis)
+	}
+	return ""
+}
+
+func reviewReadySignals(hypotheses []HypothesisCandidate, signals []Signal) []ReviewReady {
+	var out []ReviewReady
+	for _, h := range hypotheses {
+		for _, signal := range signals {
+			reason := signalHypothesisMatchReason(h, signal)
+			if reason == "" {
+				continue
+			}
+			evidenceRefs := append([]string{}, h.EvidenceRefs...)
+			evidenceRefs = append(evidenceRefs, signal.EvidenceRefs...)
+			evidenceRefs = append(evidenceRefs, "product_hypothesis:"+h.ID, "product_signal:"+signal.ID)
+			out = append(out, ReviewReady{
+				HypothesisID:      h.ID,
+				SignalID:          signal.ID,
+				MetricName:        signal.MetricName,
+				Window:            signal.Window,
+				MatchReason:       reason,
+				ReviewPlanCommand: fmt.Sprintf("compound product review-plan --hypothesis %s --signal %s", h.ID, signal.ID),
+				EvidenceRefs:      compact(evidenceRefs),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].HypothesisID == out[j].HypothesisID {
+			return out[i].SignalID < out[j].SignalID
+		}
+		return out[i].HypothesisID < out[j].HypothesisID
+	})
+	return out
+}
+
+func signalHypothesisMatchReason(h HypothesisCandidate, signal Signal) string {
+	if strings.TrimSpace(h.ProductID) == "" || h.ProductID != signal.ProductID {
+		return ""
+	}
+	for _, ref := range h.EvidenceRefs {
+		if strings.TrimSpace(ref) == "product_signal:"+signal.ID {
+			return "explicit_evidence_ref"
+		}
+	}
+	signalMetric := normalizeIDPart(signal.MetricName)
+	for _, metric := range h.Metrics {
+		if signalMetric != "" && normalizeIDPart(metric) == signalMetric {
+			return "metric_match"
+		}
+	}
+	if normalizeIDPart(h.ChangeEvent) != "" && normalizeIDPart(h.ChangeEvent) == normalizeIDPart(signal.ChangeEvent) {
+		return "change_event_match"
 	}
 	return ""
 }

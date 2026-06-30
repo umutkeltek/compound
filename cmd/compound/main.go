@@ -3322,6 +3322,11 @@ func cmdProduct(args []string) {
 		fmt.Printf("- signals: %d\n", report.SignalCount)
 		fmt.Printf("- hypotheses: %d\n", report.HypothesisCount)
 		fmt.Printf("- pending_review: %d\n", report.PendingReviewCount)
+		fmt.Printf("- review_ready: %d\n", report.ReviewReadyCount)
+		for _, ready := range report.ReviewReady {
+			fmt.Printf("- review_plan: %s\n", ready.ReviewPlanCommand)
+			fmt.Printf("  match: %s %s %s\n", ready.MatchReason, ready.MetricName, ready.Window)
+		}
 		fmt.Printf("- source_issues: %d\n", report.SourceIssueCount)
 		fmt.Printf("- missing_evidence_refs: %d\n", len(report.MissingEvidenceRefs))
 		if len(args) == 3 && args[2] == "--writeback" && product.NeedsWriteback(report) {
