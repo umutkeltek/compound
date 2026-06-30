@@ -572,20 +572,7 @@ func checkPriorCoverage(want map[string]int, got PriorCoverage) []EvalCheck {
 	if len(want) == 0 {
 		return nil
 	}
-	fields := map[string]int{
-		"skill_candidates":        got.SkillCandidates,
-		"decision_candidates":     got.DecisionCandidates,
-		"failure_patterns":        got.FailurePatterns,
-		"taste_observations":      got.TasteObservations,
-		"product_hypotheses":      got.ProductHypotheses,
-		"route_observations":      got.RouteObservations,
-		"policy_patches":          got.PolicyPatches,
-		"current_claims":          got.CurrentClaims,
-		"capability_observations": got.CapabilityObs,
-		"eval_cases":              got.EvalCases,
-		"method_upgrades":         got.MethodUpgrades,
-		"no_promote_decisions":    got.NoPromoteDecisions,
-	}
+	fields := priorCoverageFields(got)
 	checks := make([]EvalCheck, 0, len(want))
 	for field, expected := range want {
 		actual, ok := fields[field]
@@ -596,6 +583,24 @@ func checkPriorCoverage(want map[string]int, got PriorCoverage) []EvalCheck {
 		checks = append(checks, checkInt("prior_coverage."+field, actual, expected))
 	}
 	return checks
+}
+
+// priorCoverageFields projects a PriorCoverage into a field-name -> value map
+// keyed by the struct's own json tags. This makes the PriorCoverage struct the
+// single source of the coverage-axis vocabulary: the struct, Coverage(), the
+// eval check, and an eval case's prior_coverage keys all agree by construction.
+// Every field is checkable (no hand-maintained subset), and a typo'd axis name
+// is reported as an unknown field instead of silently passing.
+func priorCoverageFields(c PriorCoverage) map[string]int {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return nil
+	}
+	var fields map[string]int
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil
+	}
+	return fields
 }
 
 func priorSignalKinds(signals []LLMPriorSignal) map[string]int {
