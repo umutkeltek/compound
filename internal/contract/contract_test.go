@@ -606,6 +606,13 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if records[0].ImportedVia != installedHooksRegistryImportedVia {
 		t.Fatalf("imported_via = %q, want %q", records[0].ImportedVia, installedHooksRegistryImportedVia)
 	}
+	manifest, err := LoadInstalledHooksManifest(home)
+	if err != nil {
+		t.Fatalf("load installed hooks manifest: %v", err)
+	}
+	if !installedHookHasMatcher(manifest, "claude_code", "PreToolUse", "Write|Edit|MultiEdit") {
+		t.Fatalf("imported hook registration should preserve PreToolUse matcher: %+v", manifest.Hooks)
+	}
 
 	claudeInput := Input{Harness: "claude_code", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
 	ec, err := CompileWithRuntime(claudeInput, DefaultPolicy(), home, fixedNow)
@@ -623,6 +630,21 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	}
 	if !contains(pack.ActiveHooks, "hook://claude_code/SessionStart") {
 		t.Fatalf("claude context pack active hooks = %v", pack.ActiveHooks)
+	}
+	readOnlyInput := Input{Harness: "claude_code", Cwd: t.TempDir(), Task: "audit current hook status", RepoKind: "control-plane", RepoKindVia: "flag"}
+	readOnlyEC, err := CompileWithRuntime(readOnlyInput, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(readOnlyEC.ActiveHooks, "hook://claude_code/PreToolUse") {
+		t.Fatalf("read-only effective contract should exclude write-scoped PreToolUse hook: %v", readOnlyEC.ActiveHooks)
+	}
+	readOnlyPack, err := PackWithCapabilities(readOnlyInput, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(readOnlyPack.ActiveHooks, "hook://claude_code/PreToolUse") || !hasExcluded(readOnlyPack, "hook://claude_code/PreToolUse") {
+		t.Fatalf("read-only context pack active=%v excluded=%v", readOnlyPack.ActiveHooks, readOnlyPack.Excluded)
 	}
 
 	codexInput := Input{Harness: "codex", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
@@ -826,6 +848,15 @@ func countStrings(values []string, want string) int {
 func hasExcluded(pack envelope.ContextPack, ref string) bool {
 	for _, exc := range pack.Excluded {
 		if exc.Ref == ref && exc.Reason != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func installedHookHasMatcher(manifest InstalledHooksManifest, harness, name, matcher string) bool {
+	for _, hook := range manifest.Hooks {
+		if hook.Harness == harness && hook.Name == name && hook.Matcher == matcher {
 			return true
 		}
 	}

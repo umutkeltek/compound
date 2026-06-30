@@ -21,7 +21,10 @@ therefore refer to the same governed target.
 `compound contract import-hooks --codex-hooks-json <hooks.json>` or `--hook-registration-ts <hook-registration.ts>`
 imports generated hook rosters into `COMPOUND_HOME/config/installed-hooks.yaml` as
 `compound://config/installed-hooks`; after handoff generated hook sources are evidence/rollback input, and
-`EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]` come from Compound.
+`EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]` come from Compound. Hook selection is
+task-conditioned where the imported roster provides event/matcher metadata: clearly read-only tasks exclude
+write-scoped `PreToolUse` hooks from active refs and record the excluded hook in `ContextPack.excluded`; this does
+not uninstall the hook or mutate harness settings.
 Placement guard evidence is also runtime policy context, not a second guard path: PreToolUse can pass
 `PlacementGuard` context into `PolicyDecision`, staged `observe -> warn -> block`; only `confidence:block`
 can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and

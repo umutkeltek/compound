@@ -246,6 +246,8 @@ type InstalledHooksManifest struct {
 type InstalledHook struct {
 	Harness  string `yaml:"harness" json:"harness"`
 	Name     string `yaml:"name" json:"name"`
+	Event    string `yaml:"event,omitempty" json:"event,omitempty"`
+	Matcher  string `yaml:"matcher,omitempty" json:"matcher,omitempty"`
 	Ref      string `yaml:"ref" json:"ref"`
 	Revision string `yaml:"revision" json:"revision"`
 	Status   string `yaml:"status" json:"status"`
@@ -330,7 +332,7 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		return ec, nil
 	}
 	ec.SourceRevisions = resolveSourceRevisions(ec.SourceRevisions, in.Cwd)
-	hooks, hookRevs, err := loadInstalledHooks(homePath, in.Harness)
+	hooks, _, hookRevs, err := loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return ec, err
 	}
@@ -382,11 +384,12 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
 	}
-	hooks, _, err := loadInstalledHooks(homePath, in.Harness)
+	hooks, excludedHooks, _, err := loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return pack, err
 	}
 	pack.ActiveHooks = hooks
+	pack.Excluded = append(pack.Excluded, excludedHooks...)
 	if len(hooks) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(hooks))
 	}
@@ -841,6 +844,7 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 		if !ok {
 			return InstalledHooksManifest{}, fmt.Errorf("hook registration %d missing command", i+1)
 		}
+		matcher, _ := tsStringField(obj, "matcher")
 		ref := expandHomeRef(hookRefFromCommand(command))
 		if ref == "" {
 			ref = hookRefFromHarnessFile(rawHarness, file)
@@ -853,6 +857,8 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 		manifest.Hooks = append(manifest.Hooks, InstalledHook{
 			Harness: harness,
 			Name:    event,
+			Event:   event,
+			Matcher: matcher,
 			Ref:     ref,
 			Status:  "current",
 		})
@@ -1028,6 +1034,7 @@ func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
 				manifest.Hooks = append(manifest.Hooks, InstalledHook{
 					Harness: "codex",
 					Name:    event,
+					Event:   event,
 					Ref:     ref,
 					Status:  "current",
 				})
@@ -1122,22 +1129,28 @@ func installedHooksSourceAuthorityID(path, revision, importedVia string) string 
 }
 
 func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRev, error) {
+	active, _, revs, err := loadInstalledHooksForInput(homePath, Input{Harness: harness})
+	return active, revs, err
+}
+
+func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope.ExcludedRef, []envelope.SourceRev, error) {
 	path := InstalledHooksPath(homePath)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = filepath.Join(homePath, "config", "installed-hooks.json")
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return []string{}, []envelope.SourceRev{}, nil
+		return []string{}, []envelope.ExcludedRef{}, []envelope.SourceRev{}, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	manifest, err := loadInstalledHooksManifest(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	active := []string{}
+	excluded := []envelope.ExcludedRef{}
 	revs := []envelope.SourceRev{{Source: InstalledHooksAuthorityRef, Rev: hashBytes(data)}}
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Name) == "" {
@@ -1146,11 +1159,18 @@ func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRe
 		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
 			continue
 		}
-		if hook.Harness != "" && harness != "" && hook.Harness != harness {
+		if hook.Harness != "" && in.Harness != "" && hook.Harness != in.Harness {
 			continue
 		}
-		h := firstNonEmpty(hook.Harness, harness, "unknown")
+		h := firstNonEmpty(hook.Harness, in.Harness, "unknown")
 		ref := "hook://" + h + "/" + hook.Name
+		if installedHookExcludedForTask(hook, in) {
+			excluded = append(excluded, envelope.ExcludedRef{
+				Ref:    ref,
+				Reason: "write-scoped hook excluded from read-only task context; installed hook remains Compound authority/fallback",
+			})
+			continue
+		}
 		active = append(active, ref)
 		rev := strings.TrimSpace(hook.Revision)
 		if rev == "" && strings.TrimSpace(hook.Ref) != "" {
@@ -1162,8 +1182,55 @@ func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRe
 		revs = append(revs, envelope.SourceRev{Source: ref, Rev: rev})
 	}
 	sort.Strings(active)
+	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Ref < excluded[j].Ref })
 	sort.Slice(revs, func(i, j int) bool { return revs[i].Source < revs[j].Source })
-	return active, revs, nil
+	return active, excluded, revs, nil
+}
+
+func installedHookExcludedForTask(hook InstalledHook, in Input) bool {
+	return readOnlyTask(in) && writeScopedHook(hook)
+}
+
+func writeScopedHook(hook InstalledHook) bool {
+	event := strings.ToLower(strings.TrimSpace(firstNonEmpty(hook.Event, hook.Name)))
+	matcher := strings.ToLower(strings.TrimSpace(hook.Matcher))
+	ref := strings.ToLower(strings.TrimSpace(hook.Ref))
+	if event != "pretooluse" {
+		return false
+	}
+	if matcher == "" {
+		return true
+	}
+	return strings.Contains(matcher, "write") ||
+		strings.Contains(matcher, "edit") ||
+		strings.Contains(matcher, "multiedit") ||
+		strings.Contains(ref, "placementguard")
+}
+
+func readOnlyTask(in Input) bool {
+	text := strings.ToLower(strings.Join([]string{in.Task, in.Mode}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	mutationSignals := []string{
+		"write", "edit", "modify", "change", "implement", "fix", "patch", "commit",
+		"apply", "create", "add", "delete", "remove", "move", "rename", "run", "execute",
+	}
+	for _, sig := range mutationSignals {
+		if strings.Contains(text, sig) {
+			return false
+		}
+	}
+	readOnlySignals := []string{
+		"audit", "inspect", "explain", "review", "status", "list", "show", "read",
+		"understand", "analyze", "analyse", "summarize", "summarise", "diagnose",
+	}
+	for _, sig := range readOnlySignals {
+		if strings.Contains(text, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveSourceRevisions(revs []envelope.SourceRev, cwd string) []envelope.SourceRev {
