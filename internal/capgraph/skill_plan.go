@@ -1,8 +1,6 @@
 package capgraph
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const SkillPlanSchemaVersion = "compound.capability.skill_plan.v0.1"
@@ -86,23 +85,23 @@ func BuildSkillPlan(homePath, candidateID, targetPath string, now time.Time) (Sk
 	if c.Verdict != candidates.Park && c.Verdict != candidates.Operationalize {
 		return SkillPlan{}, fmt.Errorf("candidate %s verdict=%q, want park or operationalize", candidateID, c.Verdict)
 	}
-	targetExists, targetHash, err := hashSkillTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return SkillPlan{}, err
 	}
 	evidenceRefs := append([]string(nil), c.EvidenceRefs...)
 	sort.Strings(evidenceRefs)
-	key := slugifySkill(firstSkillValue(c.Subject, c.Detail, c.Statement, c.ID))
+	key := reviewartifact.Slugify(reviewartifact.FirstNonEmpty(c.Subject, c.Detail, c.Statement, c.ID), 48)
 	if key == "" {
-		key = digestSkill12(candidateID)
+		key = reviewartifact.Digest12(candidateID)
 	}
-	name := firstSkillValue(c.Subject, c.Statement, key)
-	statement := firstSkillValue(c.Statement, c.Subject, "reviewed skill candidate")
+	name := reviewartifact.FirstNonEmpty(c.Subject, c.Statement, key)
+	statement := reviewartifact.FirstNonEmpty(c.Statement, c.Subject, "reviewed skill candidate")
 	triggers := planSkillTriggers(c.Subject, c.Statement, c.Detail)
 	plan := SkillPlan{
 		SchemaVersion:    SkillPlanSchemaVersion,
-		ID:               idSkill("skp_", candidateID, targetPath),
-		CreatedAt:        rfc3339Skill(now),
+		ID:               reviewartifact.ID("skp_", candidateID, targetPath),
+		CreatedAt:        reviewartifact.Timestamp(now),
 		Status:           "review_required",
 		CandidateID:      candidateID,
 		CandidateVerdict: c.Verdict,
@@ -161,25 +160,8 @@ func RecordSkillPlan(homePath string, plan SkillPlan) (SkillPlanPaths, error) {
 	if plan.ID == "" {
 		return SkillPlanPaths{}, fmt.Errorf("skill plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "capability-skills")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return SkillPlanPaths{}, err
-	}
-	paths := SkillPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderSkillPlanReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "capability-skills", plan.ID, plan, "  ", RenderSkillPlanReview(plan))
+	return SkillPlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderSkillPlanReview(plan SkillPlan) string {
@@ -234,22 +216,6 @@ func RenderSkillPlanReview(plan SkillPlan) string {
 	return b.String()
 }
 
-func hashSkillTarget(path string) (bool, string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false, "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	sum := sha256.Sum256(data)
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
 func planSkillTriggers(values ...string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -271,49 +237,4 @@ func planSkillTriggers(values ...string) []string {
 		out = []string{"review"}
 	}
 	return out
-}
-
-func firstSkillValue(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func slugifySkill(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if len(out) > 48 {
-		out = strings.Trim(out[:48], "-")
-	}
-	return out
-}
-
-func idSkill(prefix string, parts ...string) string {
-	return prefix + digestSkill12(strings.Join(parts, "|"))
-}
-
-func digestSkill12(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
-}
-
-func rfc3339Skill(now time.Time) string {
-	return now.UTC().Format(time.RFC3339)
 }

@@ -12,6 +12,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/envelope"
+	"compound/internal/reviewartifact"
 	"compound/internal/writeback"
 )
 
@@ -160,11 +161,11 @@ func BuildRouteOutcomeReview(ev Evidence, rec envelope.Receipt, targetPath strin
 	if now.IsZero() {
 		now = time.Now()
 	}
-	targetExists, targetHash, err := hashPlanTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return RouteOutcomeReview{}, err
 	}
-	workID := firstPlanValue(ev.WorkID, rec.IDs.WorkID)
+	workID := reviewartifact.FirstNonEmpty(ev.WorkID, rec.IDs.WorkID)
 	refs := dedupeRefs(append([]string{ev.ID, rec.ID}, append(ev.EvidenceRefs, rec.EvidenceRefs...)...))
 	assessment := assessRouteOutcome(ev, rec)
 	id := idFor("ror_", ev.ID, rec.ID, rec.Outcome, fmt.Sprintf("%t", rec.StateDelta.Changed))
@@ -207,25 +208,8 @@ func RecordRouteOutcomeReview(homePath string, review RouteOutcomeReview) (Route
 	if review.ID == "" {
 		return RouteOutcomeReviewPaths{}, fmt.Errorf("route outcome review id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "route-remorse")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return RouteOutcomeReviewPaths{}, err
-	}
-	paths := RouteOutcomeReviewPaths{
-		PlanPath:   filepath.Join(dir, review.ID+".json"),
-		ReviewPath: filepath.Join(dir, review.ID+".md"),
-	}
-	data, err := json.MarshalIndent(review, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderRouteOutcomeReview(review)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "route-remorse", review.ID, review, "  ", RenderRouteOutcomeReview(review))
+	return RouteOutcomeReviewPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RecordRouteOutcomeObservation(homePath string, review RouteOutcomeReview, now time.Time) (RouteOutcomeReview, error) {
@@ -271,7 +255,7 @@ func BuildRouteOutcomeCandidate(review RouteOutcomeReview) RouteOutcomeCandidate
 	statement := fmt.Sprintf(
 		"route %s produced receipt outcome %s changed=%t",
 		routeKey,
-		firstPlanValue(review.ReceiptOutcome, "unknown"),
+		reviewartifact.FirstNonEmpty(review.ReceiptOutcome, "unknown"),
 		review.ReceiptStateChanged,
 	)
 	detail := fmt.Sprintf(
@@ -435,7 +419,7 @@ func buildRouteOutcomeDraft(review RouteOutcomeReview, rec envelope.Receipt) Rou
 			"not task success by itself",
 			"not permission to mutate gateway/provider/model-router config",
 		},
-		ReviewNote: firstPlanValue(
+		ReviewNote: reviewartifact.FirstNonEmpty(
 			rec.Next.ReviewTrigger,
 			"Route outcome review is evidence for a future route_observation policy draft only after owner review.",
 		),

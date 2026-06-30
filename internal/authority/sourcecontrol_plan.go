@@ -1,14 +1,11 @@
 package authority
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 const SourceControlReviewPlanSchemaVersion = "compound.source_control_review_plan.v0.1"
@@ -73,7 +70,7 @@ func BuildSourceControlReviewPlan(snapshot SourceControlSnapshot, workID string,
 	}
 	evidence := snapshot.EvidenceReference()
 	key := snapshot.RepoID + snapshot.GitRoot + snapshot.Head + fmt.Sprint(snapshot.Staged, snapshot.Unstaged, snapshot.Untracked) + strings.TrimSpace(workID)
-	reviewID := "scr_" + digestSourceControlPlan(key)
+	reviewID := "scr_" + reviewartifact.Digest12(key)
 	plan := SourceControlReviewPlan{
 		SchemaVersion: SourceControlReviewPlanSchemaVersion,
 		ID:            reviewID,
@@ -128,25 +125,8 @@ func RecordSourceControlReviewPlan(homePath string, plan SourceControlReviewPlan
 	if strings.TrimSpace(plan.ID) == "" {
 		return SourceControlReviewPlanPaths{}, fmt.Errorf("source-control review plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "source-control-cleanup")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return SourceControlReviewPlanPaths{}, err
-	}
-	paths := SourceControlReviewPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderSourceControlReviewPlan(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "source-control-cleanup", plan.ID, plan, "  ", RenderSourceControlReviewPlan(plan))
+	return SourceControlReviewPlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderSourceControlReviewPlan(plan SourceControlReviewPlan) string {
@@ -194,9 +174,4 @@ func RenderSourceControlReviewPlan(plan SourceControlReviewPlan) string {
 		}
 	}
 	return b.String()
-}
-
-func digestSourceControlPlan(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
 }

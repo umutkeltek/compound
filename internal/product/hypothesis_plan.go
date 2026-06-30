@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const HypothesisPlanSchemaVersion = "compound.product_hypothesis_plan.v0.1"
@@ -206,8 +207,8 @@ func RecordHypothesisPlan(homePath string, plan HypothesisPlan) (HypothesisPlanP
 	if plan.ID == "" {
 		return HypothesisPlanPaths{}, fmt.Errorf("product hypothesis plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "product-hypotheses")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := reviewartifact.Dir(homePath, "product-hypotheses")
+	if err != nil {
 		return HypothesisPlanPaths{}, err
 	}
 	paths := HypothesisPlanPaths{
@@ -215,14 +216,7 @@ func RecordHypothesisPlan(homePath string, plan HypothesisPlan) (HypothesisPlanP
 		ReviewPath:      filepath.Join(dir, plan.ID+".md"),
 		SignalDraftPath: filepath.Join(dir, plan.ID+".signal.yaml"),
 	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderHypothesisPlanReview(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.Write(homePath, "product-hypotheses", plan.ID, plan, " ", RenderHypothesisPlanReview(plan)); err != nil {
 		return paths, err
 	}
 	if err := os.WriteFile(paths.SignalDraftPath, []byte(RenderHypothesisSignalDraft(plan)), 0o644); err != nil {

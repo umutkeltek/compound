@@ -1,12 +1,13 @@
 package product
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 const SourceIssuePlanSchemaVersion = "compound.product_source_issue_plan.v0.1"
@@ -130,8 +131,8 @@ func RecordSourceIssuePlan(homePath string, plan SourceIssuePlan) (SourceIssuePl
 	if plan.ID == "" {
 		return SourceIssuePlanPaths{}, fmt.Errorf("product source issue plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "product-source-issues")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := reviewartifact.Dir(homePath, "product-source-issues")
+	if err != nil {
 		return SourceIssuePlanPaths{}, err
 	}
 	paths := SourceIssuePlanPaths{
@@ -139,14 +140,7 @@ func RecordSourceIssuePlan(homePath string, plan SourceIssuePlan) (SourceIssuePl
 		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
 		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
 	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderSourceIssuePlanReview(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.Write(homePath, "product-source-issues", plan.ID, plan, " ", RenderSourceIssuePlanReview(plan)); err != nil {
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderSourceIssueReviewYAML(plan)), 0o644); err != nil {

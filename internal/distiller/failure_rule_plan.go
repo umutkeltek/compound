@@ -1,17 +1,15 @@
 package distiller
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const FailureRulePlanSchemaVersion = "compound.distiller.failure_rule_plan.v0.1"
@@ -70,17 +68,17 @@ func BuildFailureRulePlan(homePath, candidateID, targetPath string, now time.Tim
 	if c.Kind != KindFailure {
 		return FailureRulePlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, KindFailure)
 	}
-	evidenceRefs := uniquePlanRefs(c.EvidenceRefs)
-	targetExists, targetHash, err := hashRuleTarget(targetPath)
+	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return FailureRulePlan{}, err
 	}
-	failureKey := firstNonEmptyPlan(c.Subject, c.Detail, c.Statement, c.ID)
-	slug := slugifyPlan(failureKey)
+	failureKey := reviewartifact.FirstNonEmpty(c.Subject, c.Detail, c.Statement, c.ID)
+	slug := reviewartifact.Slugify(failureKey, 0)
 	if slug == "" {
-		slug = digestPlan12(candidateID)
+		slug = reviewartifact.Digest12(candidateID)
 	}
-	title := firstNonEmptyPlan(c.Subject, c.Statement, "Failure pattern "+candidateID)
+	title := reviewartifact.FirstNonEmpty(c.Subject, c.Statement, "Failure pattern "+candidateID)
 	plan := FailureRulePlan{
 		SchemaVersion:    FailureRulePlanSchemaVersion,
 		ID:               idFor("frp_", candidateID, targetPath),
@@ -98,9 +96,9 @@ func BuildFailureRulePlan(homePath, candidateID, targetPath string, now time.Tim
 		TargetExists:     targetExists,
 		TargetHash:       targetHash,
 		RuleDraft: FailureRuleDraft{
-			RuleID:            "rule_" + slug + "_" + digestPlan12(candidateID+c.Statement),
+			RuleID:            "rule_" + slug + "_" + reviewartifact.Digest12(candidateID+c.Statement),
 			Title:             title,
-			Trigger:           "When this failure pattern is observed again: " + firstNonEmptyPlan(c.Statement, c.Subject, c.ID),
+			Trigger:           "When this failure pattern is observed again: " + reviewartifact.FirstNonEmpty(c.Statement, c.Subject, c.ID),
 			RequiredAction:    "Stop repeating the failed path; run the smallest governed repair or route to owner review.",
 			Verification:      "A future run cites this rule, avoids the repeated failure, and leaves a Receipt/Transition state delta.",
 			RetirementTrigger: "Retire or revise when evidence shows the trigger no longer predicts the failure or the rule creates more OS tax than it removes.",
@@ -147,25 +145,8 @@ func RecordFailureRulePlan(homePath string, plan FailureRulePlan) (FailureRulePl
 	if plan.ID == "" {
 		return FailureRulePlanPaths{}, fmt.Errorf("failure rule plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "failure-rules")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return FailureRulePlanPaths{}, err
-	}
-	paths := FailureRulePlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderFailureRuleReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "failure-rules", plan.ID, plan, " ", RenderFailureRuleReview(plan))
+	return FailureRulePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderFailureRuleReview(plan FailureRulePlan) string {
@@ -216,68 +197,4 @@ func RenderFailureRuleReview(plan FailureRulePlan) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "%s\n", plan.RuleDraft.ReviewNote)
 	return b.String()
-}
-
-func hashRuleTarget(path string) (bool, string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false, "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	sum := sha256.Sum256(data)
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
-func uniquePlanRefs(values []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func firstNonEmptyPlan(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func slugifyPlan(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func digestPlan12(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
 }

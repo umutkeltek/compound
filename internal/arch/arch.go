@@ -34,7 +34,7 @@ var Classification = map[string]Class{
 	"policy": Spine, "harness": Spine, "hook": Spine, "arch": Spine,
 	"distiller": Spine, "capgraph": Spine, "runtimebinding": Spine, "projection": Spine, "writeback": Spine, "product": Spine, "routeevidence": Spine,
 	// shared leaf
-	"candidates": Leaf,
+	"candidates": Leaf, "reviewartifact": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
 	// importers — keep, upgrade in place

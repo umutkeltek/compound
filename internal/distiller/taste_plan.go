@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const TastePlanSchemaVersion = "compound.distiller.taste_plan.v0.1"
@@ -68,16 +69,16 @@ func BuildTastePlan(homePath, candidateID, targetPath string, now time.Time) (Ta
 	if c.Kind != KindTaste {
 		return TastePlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, KindTaste)
 	}
-	evidenceRefs := uniquePlanRefs(c.EvidenceRefs)
-	targetExists, targetHash, err := hashRuleTarget(targetPath)
+	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return TastePlan{}, err
 	}
-	key := slugifyPlan(firstNonEmptyPlan(c.Subject, c.Detail, c.Statement, c.ID))
+	key := reviewartifact.Slugify(reviewartifact.FirstNonEmpty(c.Subject, c.Detail, c.Statement, c.ID), 0)
 	if key == "" {
-		key = digestPlan12(candidateID)
+		key = reviewartifact.Digest12(candidateID)
 	}
-	statement := firstNonEmptyPlan(c.Statement, c.Subject, "reviewed taste observation")
+	statement := reviewartifact.FirstNonEmpty(c.Statement, c.Subject, "reviewed taste observation")
 	plan := TastePlan{
 		SchemaVersion:    TastePlanSchemaVersion,
 		ID:               idFor("tsp_", candidateID, targetPath),
@@ -95,8 +96,8 @@ func BuildTastePlan(homePath, candidateID, targetPath string, now time.Time) (Ta
 		TargetExists:     targetExists,
 		TargetHash:       targetHash,
 		StandardDraft: TasteStandardDraft{
-			StandardID:       "taste_" + key + "_" + digestPlan12(candidateID+c.Statement),
-			Title:            firstNonEmptyPlan(c.Subject, statement),
+			StandardID:       "taste_" + key + "_" + reviewartifact.Digest12(candidateID+c.Statement),
+			Title:            reviewartifact.FirstNonEmpty(c.Subject, statement),
 			AppliesWhen:      "When work touches a product/design/content surface matching this taste observation.",
 			PositiveStandard: statement,
 			AntiPattern:      "Do not generalize this into global style law without product/context evidence.",
@@ -144,25 +145,8 @@ func RecordTastePlan(homePath string, plan TastePlan) (TastePlanPaths, error) {
 	if plan.ID == "" {
 		return TastePlanPaths{}, fmt.Errorf("taste plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "taste-standards")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return TastePlanPaths{}, err
-	}
-	paths := TastePlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderTasteReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "taste-standards", plan.ID, plan, " ", RenderTasteReview(plan))
+	return TastePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderTasteReview(plan TastePlan) string {
