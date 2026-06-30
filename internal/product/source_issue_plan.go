@@ -42,8 +42,9 @@ type SourceIssuePlanDraft struct {
 }
 
 type SourceIssuePlanPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath       string
+	ReviewPath     string
+	ReviewYAMLPath string
 }
 
 func BuildSourceIssuePlan(homePath, productID, issueID, targetPath string, now time.Time) (SourceIssuePlan, error) {
@@ -134,8 +135,9 @@ func RecordSourceIssuePlan(homePath string, plan SourceIssuePlan) (SourceIssuePl
 		return SourceIssuePlanPaths{}, err
 	}
 	paths := SourceIssuePlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
+		PlanPath:       filepath.Join(dir, plan.ID+".json"),
+		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
+		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
 	}
 	data, err := json.MarshalIndent(plan, "", " ")
 	if err != nil {
@@ -145,6 +147,9 @@ func RecordSourceIssuePlan(homePath string, plan SourceIssuePlan) (SourceIssuePl
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewPath, []byte(RenderSourceIssuePlanReview(plan)), 0o644); err != nil {
+		return paths, err
+	}
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderSourceIssueReviewYAML(plan)), 0o644); err != nil {
 		return paths, err
 	}
 	return paths, nil
@@ -199,5 +204,23 @@ func RenderSourceIssuePlanReview(plan SourceIssuePlan) string {
 	fmt.Fprintln(&b, "```")
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "%s\n", plan.ReviewDraft.ReviewNote)
+	return b.String()
+}
+
+func RenderSourceIssueReviewYAML(plan SourceIssuePlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "schema_version: %s\n", SourceIssueReviewSchemaVersion)
+	fmt.Fprintf(&b, "id: %s\n", plan.ReviewDraft.ReviewID)
+	fmt.Fprintf(&b, "product_id: %s\n", plan.ProductID)
+	fmt.Fprintf(&b, "issue_id: %s\n", plan.IssueID)
+	fmt.Fprintln(&b, "result: TODO_resolved_waived_or_false_positive")
+	fmt.Fprintln(&b, "rationale: \"TODO: reviewed source owner evidence\"")
+	fmt.Fprintln(&b, "evidence_refs:")
+	for _, ref := range plan.EvidenceRefs {
+		fmt.Fprintf(&b, "  - %q\n", ref)
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "# Edit result to one of: resolved, waived, false_positive.")
+	fmt.Fprintln(&b, "# Closing this issue must not imply a durable product change; log ProductSignal/ProductHypothesis separately when evidence supports it.")
 	return b.String()
 }

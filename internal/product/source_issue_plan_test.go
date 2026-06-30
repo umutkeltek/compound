@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/mem"
 )
@@ -63,6 +64,20 @@ func TestSourceIssuePlanRecordsReviewArtifactsWithoutClosingIssue(t *testing.T) 
 	if !strings.Contains(string(reviewData), "Review YAML Template") || !strings.Contains(string(reviewData), "result: resolved|waived|false_positive") {
 		t.Fatalf("review markdown missing closure template:\n%s", string(reviewData))
 	}
+	reviewYAMLData, err := os.ReadFile(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(reviewYAMLData), "TODO_resolved_waived_or_false_positive") {
+		t.Fatalf("review YAML draft should require explicit result:\n%s", string(reviewYAMLData))
+	}
+	draft, err := LoadSourceIssueReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSourceIssueReview(draft); err == nil {
+		t.Fatal("generated review YAML draft should not validate before reviewer selects a result")
+	}
 	afterTarget, err := os.ReadFile(targetPath)
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +91,34 @@ func TestSourceIssuePlanRecordsReviewArtifactsWithoutClosingIssue(t *testing.T) 
 	}
 	if doctor.Status != "needs_review" || doctor.SourceIssueCount != 2 {
 		t.Fatalf("plan should not close issue, doctor = %+v", doctor)
+	}
+	reviewedYAML := strings.ReplaceAll(string(reviewYAMLData), "TODO_resolved_waived_or_false_positive", "false_positive")
+	reviewedYAML = strings.ReplaceAll(reviewedYAML, "TODO: reviewed source owner evidence", "reviewed source issue was not durable product change")
+	reviewedPath := filepath.Join(t.TempDir(), "source-issue-review.yaml")
+	if err := os.WriteFile(reviewedPath, []byte(reviewedYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewed, err := LoadSourceIssueReview(reviewedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closure, err := ApplySourceIssueReview(home, store, reviewed, reviewedPath, tProduct.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closure.Status != "closed" || closure.IssueID != report.IssueIDs[0] || closure.TransitionID == "" {
+		t.Fatalf("closure from generated review YAML = %+v", closure)
+	}
+	afterClosure, err := Doctor(home, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterClosure.Status != "needs_review" || afterClosure.SourceIssueCount != 1 {
+		t.Fatalf("closing one generated source issue should leave one open issue, doctor = %+v", afterClosure)
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("source issue plan should not create claims ledger: %v", err)

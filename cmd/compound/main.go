@@ -3164,6 +3164,7 @@ func cmdProduct(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "review":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml>")

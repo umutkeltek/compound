@@ -1563,11 +1563,13 @@ func TestProductSourceIssuePlanUsesOpenSourceIssueWithoutClosingIt(t *testing.T)
 		!strings.Contains(out, "- required_evidence: 4") ||
 		!strings.Contains(out, "- evidence_refs:") ||
 		!strings.Contains(out, "- plan:") ||
-		!strings.Contains(out, "- review:") {
+		!strings.Contains(out, "- review:") ||
+		!strings.Contains(out, "- review_yaml:") {
 		t.Fatalf("source-issue-plan output missing proof:\n%s", out)
 	}
 	planPath := outputValue(out, "- plan:")
 	reviewPath := outputValue(out, "- review:")
+	reviewYAMLPath := outputValue(out, "- review_yaml:")
 	var plan product.SourceIssuePlan
 	planData, err := os.ReadFile(planPath)
 	if err != nil {
@@ -1586,6 +1588,20 @@ func TestProductSourceIssuePlanUsesOpenSourceIssueWithoutClosingIt(t *testing.T)
 	if !strings.Contains(string(reviewData), "result: resolved|waived|false_positive") {
 		t.Fatalf("review artifact missing closure template:\n%s", string(reviewData))
 	}
+	reviewYAMLData, err := os.ReadFile(reviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(reviewYAMLData), "TODO_resolved_waived_or_false_positive") {
+		t.Fatalf("review YAML should require explicit review result:\n%s", string(reviewYAMLData))
+	}
+	draft, err := product.LoadSourceIssueReview(reviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := product.ValidateSourceIssueReview(draft); err == nil {
+		t.Fatal("generated review YAML draft should not validate before reviewer selects a result")
+	}
 	afterTarget, err := os.ReadFile(targetPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1599,6 +1615,28 @@ func TestProductSourceIssuePlanUsesOpenSourceIssueWithoutClosingIt(t *testing.T)
 	}
 	if doctor.Status != "needs_review" || doctor.SourceIssueCount != 2 {
 		t.Fatalf("source issue plan should not close issue, doctor = %+v", doctor)
+	}
+	reviewedYAML := strings.ReplaceAll(string(reviewYAMLData), "TODO_resolved_waived_or_false_positive", "false_positive")
+	reviewedYAML = strings.ReplaceAll(reviewedYAML, "TODO: reviewed source owner evidence", "reviewed source issue was not durable product change")
+	reviewedPath := filepath.Join(t.TempDir(), "source-issue-review.yaml")
+	if err := os.WriteFile(reviewedPath, []byte(reviewedYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdProduct([]string{"source-issue-review", reviewedPath})
+	})
+	if !strings.Contains(reviewOut, "# product source issue review "+plan.ReviewDraft.ReviewID) ||
+		!strings.Contains(reviewOut, "- status: closed") ||
+		!strings.Contains(reviewOut, "- issue: "+issueID) ||
+		!strings.Contains(reviewOut, "- transition:") {
+		t.Fatalf("source-issue-review output missing closure proof:\n%s", reviewOut)
+	}
+	afterClosure, err := product.Doctor(homePath, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterClosure.Status != "needs_review" || afterClosure.SourceIssueCount != 1 {
+		t.Fatalf("closing one generated source issue should leave one open issue, doctor = %+v", afterClosure)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("source issue plan should not create promoted claims ledger: %v", err)

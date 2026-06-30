@@ -149,8 +149,10 @@ and dirty preview as product-scoped source issues backed by `NoPromoteDecision`;
 review/closure still goes through `product source-issue-review`, and durable
 changes/signals/hypotheses require their own evidence path.
 `compound product source-issue-plan --product <id> --issue <id> [--target <file>]`
-turns one open source issue into review artifacts without closing it or mutating
-the product surface.
+turns one open source issue into JSON/Markdown review artifacts plus a gated
+`.review.yaml` draft. The draft preserves original evidence but keeps an
+invalid placeholder result until a reviewer edits it, so the next
+`product source-issue-review` step remains explicit and evidence-backed.
 
 A concrete mapping for a specific operating system — real repo paths and named
 tools — belongs in that operator's private overlay (`docs_private/`), never in
