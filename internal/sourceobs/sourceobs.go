@@ -8,7 +8,6 @@ package sourceobs
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -700,19 +699,7 @@ func WriteCandidate(homePath string, c CandidateRecord) error {
 	if _, ok := candidates.SpecFor(candidates.Kind(c.Kind)); !ok {
 		return fmt.Errorf("candidate kind %q unknown", c.Kind)
 	}
-	rel := candidates.InboxDir(candidates.Kind(c.Kind))
-	if rel == "" {
-		return fmt.Errorf("candidate kind %q has no inbox dir", c.Kind)
-	}
-	dir := filepath.Join(homePath, rel)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, c.ID+".json"), append(data, '\n'), 0o644)
+	return candidates.WriteCandidate(homePath, candidates.Kind(c.Kind), c.ID, c)
 }
 
 func evidenceRefs(obs SourceObservation) []string {

@@ -39,3 +39,26 @@ func ReadCandidate(homePath string, kind Kind, id string, target any) error {
 	}
 	return json.Unmarshal(data, target)
 }
+
+// WriteCandidate persists a candidate record to inbox/<kind>-candidates/<id>.json
+// under COMPOUND_HOME. It is the one owner of the candidate-inbox WRITE mechanism
+// — the twin of ReadCandidate — so every producer (distiller fan-out, source
+// observations, product hypotheses, memory capture/adjudication) hands its own
+// projected record as payload and shares this path + serialization (canonical
+// two-space-indented JSON plus a trailing newline). An unknown kind is rejected
+// before any disk write.
+func WriteCandidate(homePath string, kind Kind, id string, payload any) error {
+	dir := InboxDir(kind)
+	if dir == "" {
+		return fmt.Errorf("unknown candidate kind %q", kind)
+	}
+	full := filepath.Join(homePath, dir)
+	if err := os.MkdirAll(full, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(full, id+".json"), append(data, '\n'), 0o644)
+}

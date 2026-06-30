@@ -516,19 +516,7 @@ func writeCandidate(homePath string, c Candidate) error {
 	if !contains(Kinds, c.Kind) { // belt-and-suspenders: Kind keys a path, so it must be a known typed kind
 		return fmt.Errorf("refusing to write candidate with unknown kind %q", c.Kind)
 	}
-	rel := candidates.InboxDir(candidates.Kind(c.Kind)) // one canonical inbox per kind (no three-names drift)
-	if rel == "" {
-		return fmt.Errorf("candidate kind %q has no inbox mapping", c.Kind)
-	}
-	dir := filepath.Join(homePath, rel)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(&c, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, c.ID+".json"), append(b, '\n'), 0o644)
+	return candidates.WriteCandidate(homePath, candidates.Kind(c.Kind), c.ID, &c)
 }
 
 func appendDecision(homePath string, d AdjudicationDecision) error {

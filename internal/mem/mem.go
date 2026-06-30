@@ -166,7 +166,7 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		c.ID = idFor("cand_", c.Entity, c.Predicate, c.Object, ts(now))
 		c.State = "proposed"
 		c.CreatedAt = rfc3339(now)
-		if err := writeJSON(filepath.Join(s.candDir(), c.ID+".json"), &c); err != nil {
+		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
 			return out, err
 		}
 		out = append(out, c)
@@ -232,7 +232,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 
 	if verdict != "promote" {
 		c.State = map[string]string{"reject": "rejected", "park": "parked", "no_promote": "no_promote"}[verdict]
-		if err := writeJSON(filepath.Join(s.candDir(), c.ID+".json"), &c); err != nil {
+		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
 			return res, err
 		}
 		res.Candidate = c
@@ -294,7 +294,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	if dup {
 		c.State = "rejected"
 		c.Reason = "duplicate of current claim " + prior.ID
-		_ = writeJSON(filepath.Join(s.candDir(), c.ID+".json"), &c)
+		_ = candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
 		res.Verdict, res.Candidate, res.Note = "reject", c, "already current: "+prior.ID
 		return res, nil
 	}

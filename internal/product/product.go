@@ -1580,15 +1580,7 @@ func appendUniqueSignal(homePath string, signal Signal) error {
 }
 
 func writeHypothesisCandidate(homePath string, c HypothesisCandidate) error {
-	dir := filepath.Join(homePath, candidates.InboxDir(candidates.ProductHypothesis))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dir, c.ID+".json"), append(b, '\n'), 0o644)
+	return candidates.WriteCandidate(homePath, candidates.ProductHypothesis, c.ID, c)
 }
 
 func loadHypothesisCandidate(homePath, id string) (HypothesisCandidate, error) {

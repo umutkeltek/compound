@@ -191,7 +191,7 @@ func (s *Store) writeStableCandidate(c Candidate) (bool, error) {
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
-	if err := writeJSON(path, &c); err != nil {
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
 		return false, err
 	}
 	return true, nil

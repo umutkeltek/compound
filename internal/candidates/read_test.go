@@ -3,6 +3,7 @@ package candidates
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +54,30 @@ func TestReadCandidate(t *testing.T) {
 	// An unknown kind errors before touching disk.
 	if err := ReadCandidate(home, Kind("bogus-kind"), "x", &rec{}); err == nil {
 		t.Fatal("unknown kind must error")
+	}
+}
+
+// Depth probe for the candidate-inbox writer: it shares one path + serialization
+// with ReadCandidate (round-trips), writes the canonical two-space JSON + newline,
+// and rejects an unknown kind before touching disk.
+func TestWriteCandidate(t *testing.T) {
+	home := t.TempDir()
+	type rec struct {
+		ID     string `json:"id"`
+		Entity string `json:"entity"`
+	}
+	if err := WriteCandidate(home, Memory, "c1", rec{ID: "c1", Entity: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	var got rec
+	if err := ReadCandidate(home, Memory, "c1", &got); err != nil || got.Entity != "x" {
+		t.Fatalf("write→read round-trip: %+v err=%v", got, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(home, InboxDir(Memory), "c1.json"))
+	if !strings.HasSuffix(string(b), "}\n") || !strings.Contains(string(b), "\n  \"id\":") {
+		t.Fatalf("serialization not canonical (two-space + trailing newline): %q", string(b))
+	}
+	if err := WriteCandidate(home, Kind("bogus-kind"), "x", rec{}); err == nil {
+		t.Fatal("unknown kind must error before write")
 	}
 }
