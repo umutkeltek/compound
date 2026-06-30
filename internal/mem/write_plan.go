@@ -1,13 +1,11 @@
 package mem
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/reviewartifact"
 )
 
@@ -107,19 +105,11 @@ func (s *Store) BuildMeaningWritePlan(candidateID, targetPath string, now time.T
 
 func (s *Store) readMeaningCandidate(candidateID string) (meaningCandidateRecord, error) {
 	var c meaningCandidateRecord
-	path := filepath.Join(s.candDir(), candidateID+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return c, err
-	}
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := candidates.ReadCandidate(s.home, candidates.Memory, candidateID, &c); err != nil {
 		return c, err
 	}
 	if c.ID == "" {
 		c.ID = candidateID
-	}
-	if c.ID != candidateID {
-		return c, fmt.Errorf("candidate file id %q does not match requested %q", c.ID, candidateID)
 	}
 	if c.Kind != "" && c.Kind != "memory" {
 		return c, fmt.Errorf("candidate %s kind=%q, want memory", candidateID, c.Kind)

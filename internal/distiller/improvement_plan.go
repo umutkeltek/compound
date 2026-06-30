@@ -189,23 +189,15 @@ func readImprovementCandidate(homePath, candidateID string) (Candidate, error) {
 	kinds := []candidates.Kind{candidates.MethodUpgrade, candidates.PolicyPatch}
 	var found *Candidate
 	for _, kind := range kinds {
-		path := filepath.Join(homePath, candidates.InboxDir(kind), candidateID+".json")
-		data, err := os.ReadFile(path)
-		if err != nil {
+		var c Candidate
+		if err := candidates.ReadCandidate(homePath, kind, candidateID, &c); err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
 			return Candidate{}, err
 		}
-		var c Candidate
-		if err := json.Unmarshal(data, &c); err != nil {
-			return Candidate{}, err
-		}
 		if c.ID == "" {
 			c.ID = candidateID
-		}
-		if c.ID != candidateID {
-			return Candidate{}, fmt.Errorf("candidate file id %q does not match requested %q", c.ID, candidateID)
 		}
 		if found != nil {
 			return Candidate{}, fmt.Errorf("candidate id %q found in multiple improvement inboxes", candidateID)

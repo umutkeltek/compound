@@ -1,10 +1,7 @@
 package decisions
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -181,19 +178,11 @@ func BuildDecisionCandidatePlan(homePath, candidateID, targetPath string, now ti
 
 func readDecisionCandidate(homePath, candidateID string) (decisionCandidateRecord, error) {
 	var c decisionCandidateRecord
-	path := filepath.Join(homePath, candidates.InboxDir(candidates.Decision), candidateID+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return c, err
-	}
-	if err := json.Unmarshal(data, &c); err != nil {
+	if err := candidates.ReadCandidate(homePath, candidates.Decision, candidateID, &c); err != nil {
 		return c, err
 	}
 	if c.ID == "" {
 		c.ID = candidateID
-	}
-	if c.ID != candidateID {
-		return c, fmt.Errorf("candidate file id %q does not match requested %q", c.ID, candidateID)
 	}
 	if c.Kind == "" {
 		c.Kind = string(candidates.Decision)
