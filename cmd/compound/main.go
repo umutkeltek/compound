@@ -2197,6 +2197,9 @@ func cmdRoute(args []string) {
 		fmt.Printf("- route_evidence: %s\n", review.RouteEvidenceID)
 		fmt.Printf("- receipt: %s\n", review.ReceiptID)
 		fmt.Printf("- selected_target: %s/%s (%s)\n", target.Provider, target.Model, target.Protocol)
+		if len(review.CapabilityClasses) > 0 {
+			fmt.Printf("- capability_classes: %s\n", strings.Join(review.CapabilityClasses, ","))
+		}
 		fmt.Printf("- receipt_outcome: %s\n", review.ReceiptOutcome)
 		fmt.Printf("- state_changed: %t\n", review.ReceiptStateChanged)
 		fmt.Printf("- assessment_class: %s\n", review.Assessment.Class)

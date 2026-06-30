@@ -33,6 +33,7 @@ type RouteOutcomeReview struct {
 	ReceiptStateChanged     bool                   `json:"receipt_state_changed"`
 	RouteStatus             string                 `json:"route_status"`
 	SelectedTarget          Target                 `json:"selected_target"`
+	CapabilityClasses       []string               `json:"capability_classes,omitempty"`
 	Usage                   Usage                  `json:"usage,omitempty"`
 	CostMicros              int64                  `json:"cost_micros,omitempty"`
 	LatencyMS               int64                  `json:"latency_ms,omitempty"`
@@ -216,6 +217,11 @@ func RecordRouteOutcomeObservation(homePath string, review RouteOutcomeReview, n
 	if !review.Assessment.ShouldReviewPolicy {
 		return review, fmt.Errorf("route outcome %s does not require policy observation", review.Assessment.Class)
 	}
+	enriched, err := enrichRouteOutcomeReview(homePath, review)
+	if err != nil {
+		return review, err
+	}
+	review = enriched
 	cand := BuildRouteOutcomeCandidate(review)
 	dir := filepath.Join(homePath, candidates.InboxDir(candidates.RouteObservation))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -258,15 +264,18 @@ func BuildRouteOutcomeCandidate(review RouteOutcomeReview) RouteOutcomeCandidate
 		reviewartifact.FirstNonEmpty(review.ReceiptOutcome, "unknown"),
 		review.ReceiptStateChanged,
 	)
-	detail := fmt.Sprintf(
-		"class=%s request=%s work=%s route_status=%s cost_micros=%d latency_ms=%d",
-		review.Assessment.Class,
-		review.RequestID,
-		review.WorkID,
-		review.RouteStatus,
-		review.CostMicros,
-		review.LatencyMS,
-	)
+	detailParts := []string{
+		"class=" + review.Assessment.Class,
+		"request=" + review.RequestID,
+		"work=" + review.WorkID,
+		"route_status=" + review.RouteStatus,
+		fmt.Sprintf("cost_micros=%d", review.CostMicros),
+		fmt.Sprintf("latency_ms=%d", review.LatencyMS),
+	}
+	if len(review.CapabilityClasses) > 0 {
+		detailParts = append(detailParts, "capability_classes="+strings.Join(review.CapabilityClasses, ","))
+	}
+	detail := strings.Join(detailParts, " ")
 	refs := dedupeRefs(append([]string{review.ID}, review.EvidenceRefs...))
 	return RouteOutcomeCandidate{
 		SchemaVersion: RouteOutcomeCandidateSchemaVersion,
@@ -295,6 +304,60 @@ func RouteOutcomeNoPromote(cand RouteOutcomeCandidate, review RouteOutcomeReview
 	}
 }
 
+func enrichRouteOutcomeReview(homePath string, review RouteOutcomeReview) (RouteOutcomeReview, error) {
+	classes, err := routeOutcomeCapabilityClasses(homePath, review.SelectedTarget)
+	if err != nil {
+		return review, err
+	}
+	review.CapabilityClasses = reviewartifact.UniqueSorted(append(review.CapabilityClasses, classes...))
+	return review, nil
+}
+
+func routeOutcomeCapabilityClasses(homePath string, target Target) ([]string, error) {
+	manifest, _, err := LoadModelCapabilitiesFromHome(homePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("load route capability authority for outcome review: %w", err)
+	}
+	targetIDs := routeOutcomeTargetIDs(target)
+	var classes []string
+	for class, defaults := range manifest.RoutingDefaults {
+		for _, modelID := range defaults {
+			if targetIDs[strings.ToLower(strings.TrimSpace(modelID))] {
+				classes = append(classes, class)
+				break
+			}
+		}
+	}
+	return reviewartifact.UniqueSorted(classes), nil
+}
+
+func routeOutcomeTargetIDs(target Target) map[string]bool {
+	provider := strings.TrimSpace(target.Provider)
+	model := strings.TrimSpace(target.Model)
+	protocol := strings.TrimSpace(target.Protocol)
+	out := map[string]bool{}
+	add := func(parts ...string) {
+		var clean []string
+		for _, part := range parts {
+			part = strings.Trim(part, "/ ")
+			if part != "" {
+				clean = append(clean, part)
+			}
+		}
+		if len(clean) == 0 {
+			return
+		}
+		out[strings.ToLower(strings.Join(clean, "/"))] = true
+	}
+	add(model)
+	add(provider, model)
+	add(provider, model, protocol)
+	return out
+}
+
 func RenderRouteOutcomeReview(review RouteOutcomeReview) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Route Outcome Review: %s\n\n", review.RouteEvidenceID)
@@ -306,6 +369,9 @@ func RenderRouteOutcomeReview(review RouteOutcomeReview) string {
 		fmt.Fprintf(&b, "- work: %s\n", review.WorkID)
 	}
 	fmt.Fprintf(&b, "- selected_target: %s/%s (%s)\n", review.SelectedTarget.Provider, review.SelectedTarget.Model, review.SelectedTarget.Protocol)
+	if len(review.CapabilityClasses) > 0 {
+		fmt.Fprintf(&b, "- capability_classes: %s\n", strings.Join(review.CapabilityClasses, ", "))
+	}
 	fmt.Fprintf(&b, "- receipt_outcome: %s\n", review.ReceiptOutcome)
 	fmt.Fprintf(&b, "- state_changed: %t\n", review.ReceiptStateChanged)
 	fmt.Fprintf(&b, "- assessment_class: %s\n", review.Assessment.Class)

@@ -189,6 +189,49 @@ func TestCapabilityRoutePlanMatchesPendingObservationByModel(t *testing.T) {
 	}
 }
 
+func TestRouteOutcomeObservationFeedsCapabilityRoutePlanByInferredClass(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+	if _, err := ImportModelCapabilitiesYAML(home, source, t0); err != nil {
+		t.Fatalf("import model capabilities: %v", err)
+	}
+	ev := fixtureEvidence()
+	ev.WorkID = "work_route_outcome"
+	ev.SelectedTarget = Target{Provider: "auto", Model: "judge", Protocol: "openai-chat-completions"}
+	rec := fixtureReceipt("failed", false)
+	review, err := BuildRouteOutcomeReview(ev, rec, "", t0)
+	if err != nil {
+		t.Fatalf("build outcome review: %v", err)
+	}
+	review, err = RecordRouteOutcomeObservation(home, review, t0)
+	if err != nil {
+		t.Fatalf("record outcome observation: %v", err)
+	}
+	if got := strings.Join(review.CapabilityClasses, ","); got != "judge-critique" {
+		t.Fatalf("capability classes = %q, want judge-critique", got)
+	}
+	plan, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatalf("plan judge route: %v", err)
+	}
+	if len(plan.PendingObservations) != 1 {
+		t.Fatalf("pending observations = %+v, want route outcome", plan.PendingObservations)
+	}
+	pending := plan.PendingObservations[0]
+	if pending.CandidateID != review.CandidateID || pending.NoPromoteID != review.NoPromoteID {
+		t.Fatalf("pending observation = %+v review=%+v", pending, review)
+	}
+	if !strings.Contains(strings.Join(pending.MatchReasons, "\n"), "capability_class:judge-critique") {
+		t.Fatalf("missing capability class match reason: %+v", pending.MatchReasons)
+	}
+	if !strings.Contains(pending.Detail, "capability_classes=judge-critique") {
+		t.Fatalf("pending detail missing inferred capability class: %s", pending.Detail)
+	}
+	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "pending route observations require owner review") {
+		t.Fatalf("missing pending warning: %+v", plan.Warnings)
+	}
+}
+
 func writeRouteCandidateFixture(t *testing.T, home string, candidate routeCandidate) {
 	t.Helper()
 	dir := filepath.Join(home, candidates.InboxDir(candidates.RouteObservation))
