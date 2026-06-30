@@ -2240,6 +2240,7 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 		"- evidence_refs:",
 		"- plan:",
 		"- review:",
+		"- review_yaml:",
 		"- manifest_draft:",
 	} {
 		if !strings.Contains(out, want) {
@@ -2248,6 +2249,7 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 	}
 	planPath := outputValue(out, "- plan:")
 	reviewPath := outputValue(out, "- review:")
+	reviewYAMLPath := outputValue(out, "- review_yaml:")
 	manifestDraftPath := outputValue(out, "- manifest_draft:")
 	var plan capgraph.CapabilityEvaluationPlan
 	if err := json.Unmarshal([]byte(readFile(t, planPath)), &plan); err != nil {
@@ -2273,6 +2275,36 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation-plan must not mutate capability graph, stat err=%v", err)
 	}
+	if _, err := capgraph.LoadCapabilityEvaluationReview(reviewYAMLPath); err == nil {
+		t.Fatal("unedited evaluation review YAML should be rejected")
+	}
+	reviewYAML := readFile(t, reviewYAMLPath)
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_activate_reject_or_keep_needs_review", "activate")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: \"\"", "rationale: \"reviewed trigger scope and validation evidence\"")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: -1", "confidence: 0.84")
+	editedReviewYAMLPath := filepath.Join(t.TempDir(), "capability-evaluation-review.yaml")
+	if err := os.WriteFile(editedReviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdCapability([]string{"evaluation-review", editedReviewYAMLPath})
+	})
+	for _, want := range []string{
+		"# capability evaluation-review",
+		"- status: manifest_ready",
+		"- decision: activate",
+		"- node: skill:web-design-guidelines",
+		"- node_status: active",
+		"- manifest:",
+	} {
+		if !strings.Contains(reviewOut, want) {
+			t.Fatalf("evaluation-review output missing %q:\n%s", want, reviewOut)
+		}
+	}
+	activeManifestPath := outputValue(reviewOut, "- manifest:")
+	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evaluation-review must not mutate capability graph, stat err=%v", err)
+	}
 	importOut := captureStdout(t, func() {
 		cmdCapability([]string{"import-skills", manifestDraftPath})
 	})
@@ -2284,6 +2316,18 @@ func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *te
 	})
 	if strings.Contains(surfaceOut, "skill:web-design-guidelines") {
 		t.Fatalf("needs_review manifest draft must not surface:\n%s", surfaceOut)
+	}
+	activeImportOut := captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", activeManifestPath})
+	})
+	if !strings.Contains(activeImportOut, "node: skill:web-design-guidelines") {
+		t.Fatalf("active manifest import output =\n%s", activeImportOut)
+	}
+	activeSurfaceOut := captureStdout(t, func() {
+		cmdCapability([]string{"surface", "web design guidelines"})
+	})
+	if !strings.Contains(activeSurfaceOut, "skill:web-design-guidelines") {
+		t.Fatalf("reviewed active manifest should surface:\n%s", activeSurfaceOut)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation-plan must not promote claims, stat err=%v", err)

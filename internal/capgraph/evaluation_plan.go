@@ -14,7 +14,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const CapabilityEvaluationPlanSchemaVersion = "compound.capability.evaluation_plan.v0.1"
+const (
+	CapabilityEvaluationPlanSchemaVersion   = "compound.capability.evaluation_plan.v0.1"
+	CapabilityEvaluationReviewSchemaVersion = "compound.capability.evaluation_review.v0.1"
+)
 
 // CapabilityEvaluationPlan is an owner-review artifact for an evaluated
 // capability that is not yet known to the CapabilityGraph. It never mutates
@@ -42,19 +45,42 @@ type CapabilityEvaluationPlan struct {
 }
 
 type CapabilityNodeDraft struct {
-	NodeID           string   `json:"node_id"`
-	Kind             string   `json:"kind"`
-	Name             string   `json:"name"`
-	Triggers         []string `json:"triggers"`
-	Weight           float64  `json:"weight"`
-	RequiredEvidence []string `json:"required_evidence"`
-	ReviewNote       string   `json:"review_note"`
+	NodeID           string   `json:"node_id" yaml:"node_id"`
+	Kind             string   `json:"kind" yaml:"kind"`
+	Name             string   `json:"name" yaml:"name"`
+	Triggers         []string `json:"triggers" yaml:"triggers"`
+	Weight           float64  `json:"weight" yaml:"weight"`
+	RequiredEvidence []string `json:"required_evidence" yaml:"required_evidence"`
+	ReviewNote       string   `json:"review_note" yaml:"review_note"`
 }
 
 type CapabilityEvaluationPlanPaths struct {
 	PlanPath          string
 	ReviewPath        string
+	ReviewYAMLPath    string
 	ManifestDraftPath string
+}
+
+type CapabilityEvaluationReview struct {
+	SchemaVersion string              `json:"schema_version" yaml:"schema_version"`
+	ReviewID      string              `json:"review_id" yaml:"review_id"`
+	PlanID        string              `json:"plan_id" yaml:"plan_id"`
+	EvaluationID  string              `json:"evaluation_id" yaml:"evaluation_id"`
+	Capability    string              `json:"capability" yaml:"capability"`
+	Decision      string              `json:"decision" yaml:"decision"`
+	Rationale     string              `json:"rationale" yaml:"rationale"`
+	Confidence    float64             `json:"confidence" yaml:"confidence"`
+	NodeDraft     CapabilityNodeDraft `json:"node_draft" yaml:"node_draft"`
+	EvidenceRefs  []string            `json:"evidence_refs" yaml:"evidence_refs"`
+}
+
+type CapabilityEvaluationReviewReport struct {
+	Status       string `json:"status"`
+	ReviewID     string `json:"review_id"`
+	Decision     string `json:"decision"`
+	NodeID       string `json:"node_id"`
+	NodeStatus   string `json:"node_status"`
+	ManifestPath string `json:"manifest_path"`
 }
 
 func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet, selector, targetPath string, now time.Time) (CapabilityEvaluationPlan, error) {
@@ -151,6 +177,7 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 	paths := CapabilityEvaluationPlanPaths{
 		PlanPath:          filepath.Join(dir, plan.ID+".json"),
 		ReviewPath:        filepath.Join(dir, plan.ID+".md"),
+		ReviewYAMLPath:    filepath.Join(dir, plan.ID+".review.yaml"),
 		ManifestDraftPath: filepath.Join(dir, plan.ID+".skill-manifest.yaml"),
 	}
 	data, err := json.MarshalIndent(plan, "", "  ")
@@ -161,6 +188,9 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewPath, []byte(RenderCapabilityEvaluationPlanReview(plan)), 0o644); err != nil {
+		return paths, err
+	}
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderCapabilityEvaluationReviewYAMLDraft(plan)), 0o644); err != nil {
 		return paths, err
 	}
 	draft, err := CapabilityEvaluationPlanSkillManifest(plan)
@@ -175,6 +205,112 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 		return paths, err
 	}
 	return paths, nil
+}
+
+func LoadCapabilityEvaluationReview(path string) (CapabilityEvaluationReview, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CapabilityEvaluationReview{}, fmt.Errorf("read capability evaluation review %s: %w", path, err)
+	}
+	var review CapabilityEvaluationReview
+	if err := yaml.Unmarshal(data, &review); err != nil {
+		return CapabilityEvaluationReview{}, fmt.Errorf("parse capability evaluation review %s: %w", path, err)
+	}
+	if err := review.Validate(); err != nil {
+		return CapabilityEvaluationReview{}, fmt.Errorf("validate capability evaluation review %s: %w", path, err)
+	}
+	return review, nil
+}
+
+func (r CapabilityEvaluationReview) Validate() error {
+	if strings.TrimSpace(r.SchemaVersion) != CapabilityEvaluationReviewSchemaVersion {
+		return fmt.Errorf("schema_version must be %s", CapabilityEvaluationReviewSchemaVersion)
+	}
+	if strings.TrimSpace(r.ReviewID) == "" {
+		return fmt.Errorf("review_id required")
+	}
+	if strings.TrimSpace(r.PlanID) == "" {
+		return fmt.Errorf("plan_id required")
+	}
+	if strings.TrimSpace(r.EvaluationID) == "" {
+		return fmt.Errorf("evaluation_id required")
+	}
+	if strings.TrimSpace(r.Capability) == "" {
+		return fmt.Errorf("capability required")
+	}
+	if !capabilityEvaluationReviewDecisionOK(r.Decision) {
+		return fmt.Errorf("decision must be activate, reject, or keep_needs_review")
+	}
+	if strings.TrimSpace(r.Rationale) == "" {
+		return fmt.Errorf("rationale required")
+	}
+	if r.Confidence < 0 || r.Confidence > 1 {
+		return fmt.Errorf("confidence must be between 0 and 1")
+	}
+	if strings.TrimSpace(r.NodeDraft.NodeID) == "" || !contains(NodeKinds, strings.TrimSpace(r.NodeDraft.Kind)) || strings.TrimSpace(r.NodeDraft.Name) == "" || len(r.NodeDraft.Triggers) == 0 {
+		return fmt.Errorf("node_draft must include id, known kind, name, and triggers")
+	}
+	if len(r.EvidenceRefs) == 0 {
+		return fmt.Errorf("evidence_refs required")
+	}
+	return nil
+}
+
+func RecordCapabilityEvaluationReview(homePath string, review CapabilityEvaluationReview, sourcePath string, now time.Time) (CapabilityEvaluationReviewReport, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return CapabilityEvaluationReviewReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if err := review.Validate(); err != nil {
+		return CapabilityEvaluationReviewReport{}, err
+	}
+	dir := filepath.Join(homePath, "reviews", "capability-evaluation-intake")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return CapabilityEvaluationReviewReport{}, err
+	}
+	nodeStatus := capabilityEvaluationReviewNodeStatus(review.Decision)
+	manifest := SkillManifest{
+		SchemaVersion: SkillManifestSchemaVersion,
+		ID:            "skill_manifest:" + review.ReviewID,
+		AdapterID:     "compound.capability-evaluation-review",
+		SourceSystem:  "compound",
+		ObservedAt:    now.UTC().Format(time.RFC3339),
+		SourceRef: SkillSourceRef{
+			Path:        strings.TrimSpace(sourcePath),
+			Kind:        "review_decision",
+			Owner:       review.Capability,
+			SourceClass: "capability_evaluation_review",
+			Revision:    review.ReviewID,
+		},
+		EvidenceRefs: append([]string(nil), review.EvidenceRefs...),
+		Skills: []SkillManifestEntry{
+			{
+				ID:           review.NodeDraft.NodeID,
+				Kind:         review.NodeDraft.Kind,
+				Name:         review.NodeDraft.Name,
+				Status:       nodeStatus,
+				Triggers:     append([]string(nil), review.NodeDraft.Triggers...),
+				Capabilities: []string{review.Capability},
+				EvidenceRefs: append([]string(nil), review.EvidenceRefs...),
+				Weight:       review.NodeDraft.Weight,
+			},
+		},
+	}
+	manifestPath := filepath.Join(dir, review.ReviewID+".reviewed-skill-manifest.yaml")
+	data, err := yaml.Marshal(manifest)
+	if err != nil {
+		return CapabilityEvaluationReviewReport{}, err
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		return CapabilityEvaluationReviewReport{}, err
+	}
+	return CapabilityEvaluationReviewReport{
+		Status:       "manifest_ready",
+		ReviewID:     review.ReviewID,
+		Decision:     review.Decision,
+		NodeID:       review.NodeDraft.NodeID,
+		NodeStatus:   nodeStatus,
+		ManifestPath: manifestPath,
+	}, nil
 }
 
 func CapabilityEvaluationPlanSkillManifest(plan CapabilityEvaluationPlan) (SkillManifest, error) {
@@ -237,7 +373,8 @@ func RenderCapabilityEvaluationPlanReview(plan CapabilityEvaluationPlan) string 
 	}
 	fmt.Fprintf(&b, "- evidence_refs: %s\n\n", strings.Join(plan.EvidenceRefs, ", "))
 	fmt.Fprintln(&b, "This owner-review artifact does not mutate CapabilityGraph, install skill files, execute tools/MCPs, surface offers, or promote memory truth.")
-	fmt.Fprintln(&b, "The sibling skill-manifest draft uses status `needs_review`, so importing it remains non-surfacing until a reviewer edits it to `active`.")
+	fmt.Fprintln(&b, "The sibling skill-manifest draft uses status `needs_review`, so importing it remains non-surfacing.")
+	fmt.Fprintln(&b, "Use the sibling review YAML and `compound capability evaluation-review <review.yaml>` to produce a reviewed active manifest.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## Draft CapabilityGraph Node")
 	fmt.Fprintln(&b)
@@ -260,6 +397,32 @@ func RenderCapabilityEvaluationPlanReview(plan CapabilityEvaluationPlan) string 
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "%s\n", plan.NodeDraft.ReviewNote)
+	return b.String()
+}
+
+func RenderCapabilityEvaluationReviewYAMLDraft(plan CapabilityEvaluationPlan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "schema_version: %s\n", CapabilityEvaluationReviewSchemaVersion)
+	fmt.Fprintf(&b, "review_id: review_%s\n", plan.ID)
+	fmt.Fprintf(&b, "plan_id: %s\n", plan.ID)
+	fmt.Fprintf(&b, "evaluation_id: %s\n", plan.EvaluationID)
+	fmt.Fprintf(&b, "capability: %s\n", plan.Capability)
+	fmt.Fprintln(&b, "decision: TODO_activate_reject_or_keep_needs_review")
+	fmt.Fprintln(&b, "rationale: \"\"")
+	fmt.Fprintln(&b, "confidence: -1")
+	fmt.Fprintln(&b, "node_draft:")
+	fmt.Fprintf(&b, "  node_id: %s\n", plan.NodeDraft.NodeID)
+	fmt.Fprintf(&b, "  kind: %s\n", plan.NodeDraft.Kind)
+	fmt.Fprintf(&b, "  name: %q\n", plan.NodeDraft.Name)
+	fmt.Fprintln(&b, "  triggers:")
+	for _, trigger := range plan.NodeDraft.Triggers {
+		fmt.Fprintf(&b, "    - %s\n", trigger)
+	}
+	fmt.Fprintf(&b, "  weight: %.3g\n", plan.NodeDraft.Weight)
+	fmt.Fprintln(&b, "evidence_refs:")
+	for _, ref := range plan.EvidenceRefs {
+		fmt.Fprintf(&b, "  - %s\n", ref)
+	}
 	return b.String()
 }
 
@@ -330,6 +493,26 @@ func capabilityEvaluationPlanEvidence(set CapabilityEvaluationSet, eval Capabili
 	}
 	sort.Strings(out)
 	return out
+}
+
+func capabilityEvaluationReviewDecisionOK(decision string) bool {
+	switch strings.TrimSpace(decision) {
+	case "activate", "reject", "keep_needs_review":
+		return true
+	default:
+		return false
+	}
+}
+
+func capabilityEvaluationReviewNodeStatus(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case "activate":
+		return "active"
+	case "reject":
+		return "retired"
+	default:
+		return "needs_review"
+	}
 }
 
 func suggestedCapabilityKind(eval CapabilityEvaluation) string {

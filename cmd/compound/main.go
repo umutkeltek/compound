@@ -167,7 +167,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|evaluation-plan|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations accept normalized files, OS generated JSON, mcporter JSON, or OS capability-evaluation records
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations accept normalized files, OS generated JSON, mcporter JSON, or OS capability-evaluation records
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -190,7 +190,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|evaluation-plan|skill-plan> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|evaluation-plan|evaluation-review|skill-plan> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -401,7 +401,24 @@ func cmdCapability(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 		fmt.Printf("- manifest_draft: %s\n", paths.ManifestDraftPath)
+	case "evaluation-review":
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability evaluation-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := capgraph.LoadCapabilityEvaluationReview(p[0])
+		die(err)
+		report, err := capgraph.RecordCapabilityEvaluationReview(homePath, review, p[0], time.Now())
+		die(err)
+		fmt.Printf("# capability evaluation-review %s\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- node: %s\n", report.NodeID)
+		fmt.Printf("- node_status: %s\n", report.NodeStatus)
+		fmt.Printf("- manifest: %s\n", report.ManifestPath)
 	case "skill-plan":
 		candidateID := flag("--candidate")
 		targetPath := flag("--target")

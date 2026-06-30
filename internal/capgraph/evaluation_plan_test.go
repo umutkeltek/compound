@@ -61,6 +61,38 @@ func TestCapabilityEvaluationPlanRecordsReviewArtifactsWithoutMutatingGraph(t *t
 	if manifest.Skills[0].ID != "skill:web-design-guidelines" || manifest.Skills[0].Status != "needs_review" {
 		t.Fatalf("manifest skill = %+v", manifest.Skills[0])
 	}
+	if _, err := LoadCapabilityEvaluationReview(paths.ReviewYAMLPath); err == nil {
+		t.Fatal("unedited review YAML should be rejected")
+	}
+	reviewDraft := string(mustReadFile(t, paths.ReviewYAMLPath))
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_activate_reject_or_keep_needs_review", "activate")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "rationale: \"\"", "rationale: \"reviewed overlap and validation evidence\"")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "confidence: -1", "confidence: 0.82")
+	reviewPath := filepath.Join(t.TempDir(), "capability-review.yaml")
+	if err := os.WriteFile(reviewPath, []byte(reviewDraft), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewDoc, err := LoadCapabilityEvaluationReview(reviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewReport, err := RecordCapabilityEvaluationReview(home, reviewDoc, reviewPath, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewReport.Status != "manifest_ready" || reviewReport.NodeStatus != "active" || reviewReport.ManifestPath == "" {
+		t.Fatalf("review report = %+v", reviewReport)
+	}
+	if _, err := os.Stat(filepath.Join(home, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evaluation-review must not mutate capability nodes, stat err=%v", err)
+	}
+	activeManifest, err := LoadSkillManifest(reviewReport.ManifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeManifest.Skills[0].Status != "active" {
+		t.Fatalf("active manifest = %+v", activeManifest)
+	}
 	report, err := ApplySkillManifest(home, manifest, t0)
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +110,20 @@ func TestCapabilityEvaluationPlanRecordsReviewArtifactsWithoutMutatingGraph(t *t
 	}
 	if len(hits) != 0 {
 		t.Fatalf("needs_review draft import must not surface: %+v", hits)
+	}
+	activeReport, err := ApplySkillManifest(home, activeManifest, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if activeReport.Status != "ok" || len(activeReport.NodeIDs) != 1 {
+		t.Fatalf("active manifest report = %+v", activeReport)
+	}
+	hits, err = store.Surface("web design guidelines")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Node.ID != "skill:web-design-guidelines" {
+		t.Fatalf("reviewed active manifest should surface: %+v", hits)
 	}
 	review, err := os.ReadFile(paths.ReviewPath)
 	if err != nil {
