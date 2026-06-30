@@ -1,14 +1,11 @@
 package runtimebinding
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 const RepairPlanSchemaVersion = "compound.runtime_repair_plan.v0.1"
@@ -82,7 +79,7 @@ func BuildRepairPlan(report DoctorReport, refs RepairRefs, now time.Time) (Repai
 	if plan.FailedCount == 0 {
 		return RepairPlan{}, fmt.Errorf("runtime report %s has no failed checks", report.ServiceID)
 	}
-	plan.ID = "rrp_" + runtimeDigest12(plan.ServiceID+"\n"+plan.Owner+"\n"+plan.WritebackGateID+"\n"+runtimeRepairDigest(plan))
+	plan.ID = "rrp_" + reviewartifact.Digest12(plan.ServiceID+"\n"+plan.Owner+"\n"+plan.WritebackGateID+"\n"+runtimeRepairDigest(plan))
 	return plan, nil
 }
 
@@ -90,25 +87,8 @@ func RecordRepairPlan(homePath string, plan RepairPlan) (RepairArtifactPaths, er
 	if strings.TrimSpace(homePath) == "" {
 		return RepairArtifactPaths{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	dir := filepath.Join(homePath, "reviews", "runtime-repair")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return RepairArtifactPaths{}, err
-	}
-	paths := RepairArtifactPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	b, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(b, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderRepairReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "runtime-repair", plan.ID, plan, "  ", RenderRepairReview(plan))
+	return RepairArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderRepairReview(plan RepairPlan) string {
@@ -172,9 +152,4 @@ func runtimeRepairDigest(plan RepairPlan) string {
 		parts = append(parts, action.Check+"="+action.Suggestion+"="+action.Detail)
 	}
 	return strings.Join(parts, "\n")
-}
-
-func runtimeDigest12(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:12]
 }
