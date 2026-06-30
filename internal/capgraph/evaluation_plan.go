@@ -1,9 +1,6 @@
 package capgraph
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -102,13 +100,13 @@ func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet,
 	if nodeID := resolveCapabilityNode(nodes, eval.Capability); nodeID != "" {
 		return CapabilityEvaluationPlan{}, fmt.Errorf("capability %q already known as %s; use import-evaluations for graph evidence", eval.Capability, nodeID)
 	}
-	targetExists, targetHash, err := hashSkillTarget(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return CapabilityEvaluationPlan{}, err
 	}
-	key := slugifySkill(firstEvalNonEmpty(eval.Capability, eval.ID))
+	key := reviewartifact.Slugify(firstEvalNonEmpty(eval.Capability, eval.ID), 48)
 	if key == "" {
-		key = digestEvalPlan12(eval.ID)
+		key = reviewartifact.Digest12(eval.ID)
 	}
 	kind := suggestedCapabilityKind(eval)
 	nodeID := kind + ":" + key
@@ -116,7 +114,7 @@ func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet,
 	evidenceRefs := capabilityEvaluationPlanEvidence(set, eval)
 	plan := CapabilityEvaluationPlan{
 		SchemaVersion: CapabilityEvaluationPlanSchemaVersion,
-		ID:            idEvalPlan("cep_", set.ID, eval.ID, targetPath),
+		ID:            reviewartifact.ID("cep_", set.ID, eval.ID, targetPath),
 		CreatedAt:     now.UTC().Format(time.RFC3339),
 		Status:        "review_required",
 		EvaluationSet: set.ID,
@@ -170,8 +168,8 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 	if strings.TrimSpace(plan.ID) == "" {
 		return CapabilityEvaluationPlanPaths{}, fmt.Errorf("capability evaluation plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "capability-evaluation-intake")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := reviewartifact.Dir(homePath, "capability-evaluation-intake")
+	if err != nil {
 		return CapabilityEvaluationPlanPaths{}, err
 	}
 	paths := CapabilityEvaluationPlanPaths{
@@ -180,14 +178,7 @@ func RecordCapabilityEvaluationPlan(homePath string, plan CapabilityEvaluationPl
 		ReviewYAMLPath:    filepath.Join(dir, plan.ID+".review.yaml"),
 		ManifestDraftPath: filepath.Join(dir, plan.ID+".skill-manifest.yaml"),
 	}
-	data, err := json.MarshalIndent(plan, "", "  ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderCapabilityEvaluationPlanReview(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.Write(homePath, "capability-evaluation-intake", plan.ID, plan, "  ", RenderCapabilityEvaluationPlanReview(plan)); err != nil {
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderCapabilityEvaluationReviewYAMLDraft(plan)), 0o644); err != nil {
@@ -574,13 +565,4 @@ func humanCapabilityName(value string) string {
 		parts[i] = strings.ToUpper(part[:1]) + part[1:]
 	}
 	return strings.Join(parts, " ")
-}
-
-func idEvalPlan(prefix string, parts ...string) string {
-	return prefix + digestEvalPlan12(strings.Join(parts, "|"))
-}
-
-func digestEvalPlan12(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
 }
