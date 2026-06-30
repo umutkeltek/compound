@@ -1,7 +1,6 @@
 package product
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const ReviewPlanSchemaVersion = "compound.product_review_plan.v0.1"
@@ -158,8 +158,8 @@ func RecordReviewPlan(homePath string, plan ReviewPlan) (ReviewPlanPaths, error)
 	if plan.ID == "" {
 		return ReviewPlanPaths{}, fmt.Errorf("product review plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "product-reviews")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir, err := reviewartifact.Dir(homePath, "product-reviews")
+	if err != nil {
 		return ReviewPlanPaths{}, err
 	}
 	paths := ReviewPlanPaths{
@@ -167,14 +167,7 @@ func RecordReviewPlan(homePath string, plan ReviewPlan) (ReviewPlanPaths, error)
 		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
 		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
 	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderReviewPlan(plan)), 0o644); err != nil {
+	if _, err := reviewartifact.Write(homePath, "product-reviews", plan.ID, plan, " ", RenderReviewPlan(plan)); err != nil {
 		return paths, err
 	}
 	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(RenderReviewYAMLDraft(plan)), 0o644); err != nil {
