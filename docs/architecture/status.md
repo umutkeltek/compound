@@ -190,7 +190,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 - harness-entrypoint-contract guard: `compound harness observe --os-entrypoints` must remain documented as session-start-only SourceObservation/no-promote evidence with no hook installation and no inferred hook/MCP/skill capability;
 - hook-source-control-contract guard: `hook pre-tool-use` must remain documented as normalizing relative target paths before policy evaluation, ActionIntent persistence, read-only git inspection, and no repo mutation;
 - product-contract-contract guard: `product import --project-contract ... --release ...` must remain documented as deterministic identity/surface/channel/privacy intake only, with no analytics signals or causality;
-- capability-evaluation-contract guard: `capability import-evaluations` must remain documented evidence-only, `evaluated_by`/no-promote backed, and non-surfacing as agent offers;
+- capability-evaluation-contract guard: `capability import-evaluations` must remain documented evidence-only, `evaluated_by`/no-promote backed, and non-surfacing as agent offers; `capability evaluation-review` must remain documented as gated review YAML that validates edited decision/rationale/confidence and emits reviewed manifests without graph mutation, leaving `import-skills` as the graph mutation boundary;
 - convergence ratchet: `converge-pending` packages must not exceed budget, now fixed at `0`.
 
 ## Next Coverage Moves

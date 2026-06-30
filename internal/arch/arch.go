@@ -751,6 +751,14 @@ func checkCapabilityEvaluationContract(repoRoot string) []Finding {
 	hasEvaluatedBy := false
 	hasNoSurface := false
 	hasNoPromote := false
+	hasReviewYAML := false
+	hasReviewCommand := false
+	hasEditedDecisionGate := false
+	hasReviewedManifest := false
+	hasReviewNoMutation := false
+	hasReviewMutationClaim := false
+	hasImportSkillsBoundary := false
+
 	docs := filepath.Join(repoRoot, "docs")
 	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
@@ -779,12 +787,44 @@ func checkCapabilityEvaluationContract(repoRoot string) []Finding {
 		if strings.Contains(low, "sourceobservation") && (strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote")) {
 			hasNoPromote = true
 		}
+		if strings.Contains(low, "review yaml") || strings.Contains(low, "review_yaml") || strings.Contains(low, ".review.yaml") {
+			hasReviewYAML = true
+		}
+		if strings.Contains(low, "capability evaluation-review") {
+			hasReviewCommand = true
+		}
+		if strings.Contains(low, "edited decision") && strings.Contains(low, "rationale") && strings.Contains(low, "confidence") {
+			hasEditedDecisionGate = true
+		}
+		if strings.Contains(low, "reviewed manifest") {
+			hasReviewedManifest = true
+		}
+		if (strings.Contains(low, "evaluation-review") || strings.Contains(low, "review yaml")) &&
+			(strings.Contains(low, "without mutating") || strings.Contains(low, "does not mutate") || strings.Contains(low, "no graph mutation")) {
+			hasReviewNoMutation = true
+		}
+		if strings.Contains(low, "evaluation-review mutates") ||
+			strings.Contains(low, "evaluation-review updates the graph") ||
+			strings.Contains(low, "evaluation-review installs") {
+			hasReviewMutationClaim = true
+		}
+		if strings.Contains(low, "only `import-skills` mutates") ||
+			strings.Contains(low, "only import-skills mutates") ||
+			(strings.Contains(low, "import-skills") && strings.Contains(low, "mutates the graph")) {
+			hasImportSkillsBoundary = true
+		}
 		return nil
 	})
 	if !hasImportEvaluations || !hasEvidenceOnly || !hasEvaluatedBy || !hasNoSurface || !hasNoPromote {
 		return []Finding{{"capability-evaluation-contract", Fail, "public docs do not describe capability import-evaluations as evidence-only evaluated_by/no-promote records that never surface as agent offers"}}
 	}
-	return []Finding{{"capability-evaluation-contract", Info, "capability evaluations stay evidence-only non-surfacing graph critique"}}
+	if !hasReviewYAML || !hasReviewCommand || !hasEditedDecisionGate || !hasReviewedManifest || !hasReviewNoMutation || !hasImportSkillsBoundary {
+		return []Finding{{"capability-evaluation-contract", Fail, "public docs do not describe capability evaluation-review as gated review YAML producing reviewed manifests without graph mutation; import-skills must remain the graph mutation boundary"}}
+	}
+	if hasReviewMutationClaim {
+		return []Finding{{"capability-evaluation-contract", Fail, "public docs claim capability evaluation-review mutates graph state; import-skills must remain the graph mutation boundary"}}
+	}
+	return []Finding{{"capability-evaluation-contract", Info, "capability evaluations stay evidence-only; review YAML gates activation before import-skills mutates graph offers"}}
 }
 
 func convergenceDebt(strict bool) []Finding {

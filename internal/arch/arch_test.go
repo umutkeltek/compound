@@ -699,3 +699,46 @@ func TestCapabilityEvaluationContractFailsWhenEvalCanSurface(t *testing.T) {
 		t.Fatalf("failure should name non-surfacing guard: %+v", findings)
 	}
 }
+
+func TestCapabilityEvaluationContractFailsWithoutReviewGate(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound capability import-evaluations` imports evidence-only eval records with evaluated_by edges, SourceObservation/no-promote evidence, and eval records never surface as agent offers.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkCapabilityEvaluationContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "evaluation-review") || !strings.Contains(findings[0].Message, "import-skills") {
+		t.Fatalf("failure should name review gate and import boundary: %+v", findings)
+	}
+}
+
+func TestCapabilityEvaluationContractFailsWhenReviewMutatesGraph(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join([]string{
+		"`compound capability import-evaluations` imports evidence-only eval records with evaluated_by edges, SourceObservation/no-promote evidence, and eval records never surface as agent offers.",
+		"`compound capability evaluation-plan` writes a .review.yaml review YAML.",
+		"`compound capability evaluation-review <review.yaml>` validates an edited decision with rationale and confidence, writes a reviewed manifest without mutating graph state, but evaluation-review mutates graph state directly.",
+		"Only `import-skills` mutates the graph after a reviewed manifest exists.",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkCapabilityEvaluationContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "evaluation-review mutates") {
+		t.Fatalf("failure should name direct mutation contradiction: %+v", findings)
+	}
+}
