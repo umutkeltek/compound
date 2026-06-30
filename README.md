@@ -17,7 +17,7 @@ The current public surface is:
 
 | command | what it does |
 |---|---|
-| `compound home init/doctor/where` | `COMPOUND_HOME` runtime body: generated state, never repo source |
+| `compound home init/doctor/where/backup/export/verify/restore/compact` | `COMPOUND_HOME` runtime body: generated state, archive/restore, public fixture export, safe compaction; never repo source |
 | `compound envelope validate/kinds` | typed envelope spine |
 | `compound contract compile` / `compound orient` | EffectiveContract -> ContextPack; records included and excluded refs; can include recorded projection freshness refs as generated context evidence |
 | `compound work create/import-packet/show/list/claim/advance/close/act` | one `work_id` threads intent -> context -> action -> policy -> receipt -> transition; packet markdown imports as source-backed proposed work, not proof |
@@ -112,6 +112,21 @@ Runtime state belongs in `COMPOUND_HOME`, resolved as:
 Public core has no private path defaults. Private paths, credentials, engines,
 accounts, and real operator data live in runtime state or private overlay files,
 never tracked public docs or fixtures.
+
+Home archive commands:
+
+```text
+compound home backup [--target archive.tar.gz]
+compound home export --public-fixture [--target fixture.tar.gz]
+compound home verify [archive.tar.gz]
+compound home restore archive.tar.gz --target <empty-home-path>
+compound home compact [--dry-run] [--rebuildable]
+```
+
+`backup` preserves durable evidence/work/config state while excluding transient
+or rebuildable roots (`tmp`, `lock`, `exports`, `indexes`, `projections`).
+`export --public-fixture` emits layout and sanitized manifest metadata only,
+with no private runtime files.
 
 ## Rented Edge
 

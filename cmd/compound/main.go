@@ -141,7 +141,7 @@ func usage() {
 
 usage:
   compound version
-  compound home <init|doctor|where> [--home P] [--local]        COMPOUND_HOME runtime body
+  compound home <init|doctor|where|backup|export|verify|restore|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound contract compile --harness H --cwd D --task T        compile EffectiveContract in force
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
@@ -2833,21 +2833,31 @@ func cmdOrient(args []string) {
 // The first envelope-first brick: generated state lives here, never in the repo.
 func cmdHome(args []string) {
 	flagHome, sub, kind := "", "", "global"
+	positionals := []string{}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "--home" && i+1 < len(args):
 			flagHome = args[i+1]
 			i++
+		case (a == "--target" || a == "--archive") && i+1 < len(args):
+			i++
 		case a == "--local":
 			kind = "local"
 		case a == "--global":
 			kind = "global"
 		case strings.HasPrefix(a, "-"):
-			// ignore unknown flags
-		case sub == "":
-			sub = a
+			// command-specific boolean flags are read below.
+		default:
+			positionals = append(positionals, a)
 		}
+	}
+	if len(positionals) > 0 {
+		sub = positionals[0]
+	}
+	restPos := []string{}
+	if len(positionals) > 1 {
+		restPos = positionals[1:]
 	}
 	resolve := func() string {
 		p, err := home.Resolve(flagHome)
@@ -2879,8 +2889,63 @@ func cmdHome(args []string) {
 		fmt.Println(resolve())
 	case "doctor", "":
 		printHomeDoctor(home.Doctor(resolve()))
+	case "backup":
+		report, err := home.Backup(resolve(), flagValue(args, "--target"), time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home backup:", err)
+			os.Exit(1)
+		}
+		printHomeArchiveReport("backup", report)
+	case "export":
+		report, err := home.ExportPublicFixture(resolve(), flagValue(args, "--target"), time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home export:", err)
+			os.Exit(1)
+		}
+		printHomeArchiveReport("export", report)
+	case "verify":
+		archivePath := flagValue(args, "--archive")
+		if archivePath == "" && len(restPos) > 0 {
+			archivePath = restPos[0]
+		}
+		if archivePath == "" {
+			printHomeDoctor(home.Doctor(resolve()))
+			return
+		}
+		report, err := home.VerifyArchive(archivePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home verify:", err)
+			os.Exit(1)
+		}
+		printHomeVerifyReport(report)
+	case "restore":
+		archivePath := flagValue(args, "--archive")
+		if archivePath == "" && len(restPos) > 0 {
+			archivePath = restPos[0]
+		}
+		targetPath := flagValue(args, "--target")
+		if archivePath == "" || targetPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound home restore <archive.tar.gz> --target <empty-home-path>")
+			os.Exit(2)
+		}
+		report, err := home.RestoreArchive(archivePath, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home restore:", err)
+			os.Exit(1)
+		}
+		printHomeRestoreReport(report)
+	case "compact":
+		report, err := home.Compact(resolve(), home.CompactOptions{
+			DryRun:      hasFlag(args, "--dry-run"),
+			Rebuildable: hasFlag(args, "--rebuildable"),
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home compact:", err)
+			os.Exit(1)
+		}
+		printHomeCompactReport(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where> [--home <path>] [--local|--global]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|compact> [--home <path>] [--local|--global]")
 		os.Exit(2)
 	}
 }
@@ -2905,6 +2970,47 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
 	if !r.OK {
 		os.Exit(1)
+	}
+}
+
+func printHomeArchiveReport(action string, r home.ArchiveReport) {
+	fmt.Printf("# home %s\n", action)
+	fmt.Printf("- kind: %s\n", r.Kind)
+	fmt.Printf("- archive: %s\n", r.ArchivePath)
+	fmt.Printf("- files: %d\n", r.Files)
+	fmt.Printf("- bytes: %d\n", r.Bytes)
+	for _, skipped := range r.Skipped {
+		fmt.Printf("- skipped_root: %s\n", skipped)
+	}
+}
+
+func printHomeVerifyReport(r home.VerifyReport) {
+	fmt.Println("# home verify")
+	fmt.Printf("- archive: %s\n", r.ArchivePath)
+	fmt.Printf("- kind: %s\n", r.Kind)
+	fmt.Printf("- files: %d\n", r.Files)
+	fmt.Printf("- bytes: %d\n", r.Bytes)
+	fmt.Printf("- verdict: %s\n", homeOKStr(r.OK))
+}
+
+func printHomeRestoreReport(r home.RestoreReport) {
+	fmt.Println("# home restore")
+	fmt.Printf("- archive: %s\n", r.ArchivePath)
+	fmt.Printf("- target_home: %s\n", r.TargetHome)
+	fmt.Printf("- kind: %s\n", r.Kind)
+	fmt.Printf("- files: %d\n", r.Files)
+	fmt.Printf("- bytes: %d\n", r.Bytes)
+	fmt.Println("- verdict: ok")
+}
+
+func printHomeCompactReport(r home.CompactReport) {
+	fmt.Println("# home compact")
+	fmt.Printf("- home: %s\n", r.Home)
+	fmt.Printf("- dry_run: %v\n", r.DryRun)
+	fmt.Printf("- removed_files: %d\n", r.RemovedFiles)
+	fmt.Printf("- removed_bytes: %d\n", r.RemovedBytes)
+	for _, dir := range r.ClearedDirs {
+		fmt.Printf("- cleared_dir: %s\n", dir)
 	}
 }
 

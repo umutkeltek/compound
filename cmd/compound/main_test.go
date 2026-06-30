@@ -29,6 +29,59 @@ import (
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
+func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "ledger", "durable.json"), []byte(`{"ok":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "tmp", "cache.txt"), []byte("drop"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "home.tar.gz")
+	out := captureStdout(t, func() {
+		cmdHome([]string{"backup", "--target", archivePath})
+	})
+	if !strings.Contains(out, "# home backup") || !strings.Contains(out, "- archive: "+archivePath) {
+		t.Fatalf("backup output:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		cmdHome([]string{"verify", archivePath})
+	})
+	if !strings.Contains(out, "- verdict: ok") || !strings.Contains(out, "- kind: backup") {
+		t.Fatalf("verify output:\n%s", out)
+	}
+
+	restorePath := filepath.Join(t.TempDir(), ".compound-restored")
+	out = captureStdout(t, func() {
+		cmdHome([]string{"restore", archivePath, "--target", restorePath})
+	})
+	if !strings.Contains(out, "# home restore") || !strings.Contains(out, "- verdict: ok") {
+		t.Fatalf("restore output:\n%s", out)
+	}
+	if got := readFile(t, filepath.Join(restorePath, "ledger", "durable.json")); got != `{"ok":true}` {
+		t.Fatalf("restored durable file = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(restorePath, "tmp", "cache.txt")); !os.IsNotExist(err) {
+		t.Fatalf("backup should not restore tmp cache, stat err=%v", err)
+	}
+
+	out = captureStdout(t, func() {
+		cmdHome([]string{"compact"})
+	})
+	if !strings.Contains(out, "# home compact") || !strings.Contains(out, "- removed_files: 1") {
+		t.Fatalf("compact output:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "tmp", "cache.txt")); !os.IsNotExist(err) {
+		t.Fatalf("compact should remove tmp cache, stat err=%v", err)
+	}
+}
+
 func TestOrientUsesRepoKindRegistry(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

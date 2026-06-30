@@ -150,3 +150,17 @@ compound transition show <id>
 Proof: one stable `work_id` links context→action→policy→receipt→transition; **all** generated files under
 `.compound`; repo source unchanged except intentional source/test files. No legacy index, no model gateway, no memory
 ingestion yet — they all need this spine first.
+
+Home durability is part of the runtime contract:
+
+```text
+compound home backup [--target archive.tar.gz]
+compound home verify [archive.tar.gz]
+compound home restore archive.tar.gz --target <empty-home-path>
+compound home export --public-fixture [--target fixture.tar.gz]
+compound home compact [--dry-run] [--rebuildable]
+```
+
+`backup` stores durable owned state and intentionally excludes transient or
+rebuildable roots. `export --public-fixture` emits only sanitized layout/manifest
+metadata, not private events, ledgers, context packs, or work records.
