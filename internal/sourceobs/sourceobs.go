@@ -294,6 +294,52 @@ func FromSkillManifest(manifest capgraph.SkillManifest, now time.Time) SourceObs
 	}
 }
 
+// FromCapabilityEvaluations converts scored capability evaluation records into
+// source-observation evidence. The graph adapter can attach evaluation edges to
+// known capabilities, but the source stream itself stays no-promote evidence and
+// cannot install, retire, or execute a capability.
+func FromCapabilityEvaluations(set capgraph.CapabilityEvaluationSet, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(set.Revision)
+	if revision == "" {
+		revision = "capability_evaluations:" + set.ID
+	}
+	evidenceRefs := append([]string(nil), set.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"capability_evaluations:" + revision}
+	}
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "capability_evaluations", set.ID, set.SourcePath, revision),
+		AdapterID:     "compound.capability-evaluations",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        set.SourcePath,
+			Kind:        firstNonEmpty(set.SourceKind, "state_records"),
+			Owner:       firstNonEmpty(set.SourceSystem, set.ID),
+			SourceClass: "capability_evaluation",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "capability_evaluations",
+			Consumer:    "compound capability import-evaluations",
+			Generator:   firstNonEmpty(set.AdapterID, "compound capability evaluation adapter"),
+			Marker:      capgraph.CapabilityEvaluationSetSchemaVersion,
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("evaluations=%d", len(set.Evaluations)),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "capability",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     set.ID,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
 // FromHarnessRegistry converts harness capability reality into generic
 // SourceObservation evidence. Harness observations are capability evidence only:
 // they do not install hooks, mutate capability graph nodes, or grant authority.

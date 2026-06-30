@@ -231,6 +231,57 @@ func TestSkillManifestObservationWritesCapabilityNoPromote(t *testing.T) {
 	}
 }
 
+func TestCapabilityEvaluationObservationWritesCapabilityNoPromote(t *testing.T) {
+	home := t.TempDir()
+	set := capgraph.CapabilityEvaluationSet{
+		SchemaVersion: capgraph.CapabilityEvaluationSetSchemaVersion,
+		ID:            "capability_evaluations_fixture",
+		AdapterID:     "os.capability-evaluations",
+		SourceSystem:  "capability-evaluations",
+		SourcePath:    "state/capability-evaluations",
+		SourceKind:    "state_records_dir",
+		Revision:      "sha256:evaluations",
+		EvidenceRefs:  []string{"capability_evaluation:known"},
+		Evaluations: []capgraph.CapabilityEvaluation{
+			{
+				SchemaVersion:  1,
+				ID:             "known",
+				CreatedAt:      "2026-06-24T05:49:48Z",
+				SourceReceipt:  "receipt:known",
+				Capability:     "web-design-guidelines",
+				Verdict:        "adapt",
+				LocalStateOnly: true,
+			},
+		},
+	}
+	obs := FromCapabilityEvaluations(set, tSource)
+	if obs.GeneratedView.ViewKind != "capability_evaluations" || obs.GeneratedView.Consumer != "compound capability import-evaluations" {
+		t.Fatalf("unexpected capability evaluation observation: %+v", obs)
+	}
+	if obs.SourceRef.SourceClass != "capability_evaluation" || len(obs.EvidenceRefs) != 1 {
+		t.Fatalf("source ref/evidence = %+v refs=%v", obs.SourceRef, obs.EvidenceRefs)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.CapabilityObs), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Verdict != candidates.NoPromote || c.Subject != set.ID || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+}
+
 func TestHarnessRegistryObservationWritesCapabilityNoPromote(t *testing.T) {
 	home := t.TempDir()
 	obs := FromHarnessRegistry(harness.DefaultRegistry(), tSource)

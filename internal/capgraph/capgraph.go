@@ -35,9 +35,10 @@ const (
 	EdMissedWhen       = "missed_when"
 	EdFalseTriggeredBy = "false_triggered_by"
 	EdRetiredBy        = "retired_by"
+	EdEvaluatedBy      = "evaluated_by"
 )
 
-var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpecializes, EdFallbackFor, EdValidatedBy, EdMissedWhen, EdFalseTriggeredBy, EdRetiredBy}
+var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpecializes, EdFallbackFor, EdValidatedBy, EdMissedWhen, EdFalseTriggeredBy, EdRetiredBy, EdEvaluatedBy}
 
 // FeedbackEdges are the ones a CapabilityObservation can write (context:<token> → node).
 var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true}

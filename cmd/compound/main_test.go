@@ -1747,6 +1747,43 @@ func TestCapabilityImportSkillsRecordsSourceObservationNoPromote(t *testing.T) {
 	}
 }
 
+func TestCapabilityImportEvaluationsRecordsGraphEvidenceAndSourceNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"add", "skill:web-design-guidelines", "skill", "Web Design Guidelines", "--triggers", "web,design"})
+		cmdCapability([]string{"import-evaluations", filepath.Join("..", "..", "fixtures", "capability-evaluations", "web-design-guidelines.json")})
+	})
+	for _, want := range []string{"# capability import-evaluations", "- eval_node: eval:capability-evaluation-external-vercel-web-design-guidelines", "- edge: evaluated_by:skill:web-design-guidelines->eval:capability-evaluation-external-vercel-web-design-guidelines", "- edge: validated_by:skill:web-design-guidelines->eval:capability-evaluation-external-vercel-web-design-guidelines", "- source_observation:", "- source_candidate:", "- source_no_promote:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-evaluations output missing %q:\n%s", want, out)
+		}
+	}
+	edges := readCapabilityEdges(t, homePath)
+	if !hasCapabilityEdge(edges, capgraph.EdEvaluatedBy, "skill:web-design-guidelines") || !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:web-design-guidelines") {
+		t.Fatalf("expected evaluation edges, got %+v", edges)
+	}
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read capability observations: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("capability observation entries = %d, want 1", len(entries))
+	}
+	noPromoteRows := readNoPromoteDecisionRows(t, homePath)
+	if len(noPromoteRows) != 1 || noPromoteRows[0].OwnerTarget.Kind != "source_observation" {
+		t.Fatalf("no-promote rows = %+v", noPromoteRows)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evaluation import should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

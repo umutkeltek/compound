@@ -167,7 +167,7 @@ usage:
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills accept normalized files, OS generated JSON, or mcporter JSON
+  compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations accept normalized files, OS generated JSON, mcporter JSON, or OS capability-evaluation records
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -190,7 +190,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills|skill-plan> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|skill-plan> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -337,6 +337,42 @@ func cmdCapability(args []string) {
 		for _, id := range sourceReport.NoPromoteIDs {
 			fmt.Printf("- source_no_promote: %s\n", id)
 		}
+	case "import-evaluations":
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-evaluations <capability-evaluation.json|dir>")
+			os.Exit(2)
+		}
+		now := time.Now()
+		set, err := capgraph.LoadCapabilityEvaluations(p[0])
+		die(err)
+		report, err := capgraph.ApplyCapabilityEvaluations(homePath, set, now)
+		die(err)
+		sourceReport, err := sourceobs.Apply(homePath, sourceobs.FromCapabilityEvaluations(set, now), now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source observe:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# capability import-evaluations %s\n", report.EvaluationSetID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- evaluations_read: %d\n", report.EvaluationsRead)
+		fmt.Printf("- applied_evaluations: %d\n", report.AppliedEvaluations)
+		for _, id := range report.EvaluationNodeIDs {
+			fmt.Printf("- eval_node: %s\n", id)
+		}
+		for _, id := range report.EdgeIDs {
+			fmt.Printf("- edge: %s\n", id)
+		}
+		for _, id := range report.SkippedUnknown {
+			fmt.Printf("- skipped_unknown: %s\n", id)
+		}
+		fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+		for _, id := range sourceReport.CandidateIDs {
+			fmt.Printf("- source_candidate: %s\n", id)
+		}
+		for _, id := range sourceReport.NoPromoteIDs {
+			fmt.Printf("- source_no_promote: %s\n", id)
+		}
 	case "skill-plan":
 		candidateID := flag("--candidate")
 		targetPath := flag("--target")
@@ -442,7 +478,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|import-topology|import-skills> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|import-topology|import-skills|import-evaluations|skill-plan> ...")
 		os.Exit(2)
 	}
 }
