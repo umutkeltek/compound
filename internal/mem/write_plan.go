@@ -1,15 +1,14 @@
 package mem
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 const MeaningWritePlanSchemaVersion = "compound.meaning_write_plan.v0.1"
@@ -73,11 +72,11 @@ func (s *Store) BuildMeaningWritePlan(candidateID, targetPath string, now time.T
 	if strings.TrimSpace(c.Entity) == "" || strings.TrimSpace(c.Predicate) == "" || strings.TrimSpace(c.Object) == "" {
 		return MeaningWritePlan{}, fmt.Errorf("candidate %s missing entity/predicate/object", candidateID)
 	}
-	targetExists, targetHash, err := hashFileIfExists(targetPath)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return MeaningWritePlan{}, err
 	}
-	evidenceRefs := uniqueStrings(append(append([]string{}, c.EvidenceRefs...), c.SourceTraceRef))
+	evidenceRefs := reviewartifact.UniqueSorted(append(append([]string{}, c.EvidenceRefs...), c.SourceTraceRef))
 	if len(evidenceRefs) == 0 {
 		evidenceRefs = []string{"candidate:" + candidateID}
 	}
@@ -102,7 +101,7 @@ func (s *Store) BuildMeaningWritePlan(candidateID, targetPath string, now time.T
 		Warnings:        []string{"review artifact only; does not mutate curated memory source", "promotion remains separate from source write review"},
 	}
 	plan.ProposedMarkdown = renderMeaningWriteMarkdown(plan)
-	plan.ID = "mwp_" + digest12("meaning-write\n"+candidateID+"\n"+targetPath+"\n"+targetHash+"\n"+plan.ProposedMarkdown)
+	plan.ID = "mwp_" + reviewartifact.Digest12("meaning-write\n"+candidateID+"\n"+targetPath+"\n"+targetHash+"\n"+plan.ProposedMarkdown)
 	return plan, nil
 }
 
@@ -135,25 +134,8 @@ func RecordMeaningWritePlan(homePath string, plan MeaningWritePlan) (MeaningWrit
 	if plan.ID == "" {
 		return MeaningWritePlanPaths{}, fmt.Errorf("meaning write plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "meaning-write")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return MeaningWritePlanPaths{}, err
-	}
-	paths := MeaningWritePlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderMeaningWriteReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "meaning-write", plan.ID, plan, " ", RenderMeaningWriteReview(plan))
+	return MeaningWritePlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderMeaningWriteReview(plan MeaningWritePlan) string {
@@ -196,33 +178,6 @@ func renderMeaningWriteMarkdown(plan MeaningWritePlan) string {
 	return b.String()
 }
 
-func hashFileIfExists(path string) (bool, string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	sum := sha256.Sum256(data)
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
-func uniqueStrings(values []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
-}
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -230,9 +185,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func digest12(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])[:12]
 }
