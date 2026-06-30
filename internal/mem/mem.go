@@ -231,7 +231,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	}
 
 	if verdict != "promote" {
-		c.State = map[string]string{"reject": "rejected", "park": "parked", "no_promote": "no_promote"}[verdict]
+		c.State = nonPromoteState(verdict)
 		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
 			return res, err
 		}
@@ -253,7 +253,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 			return err
 		}
 		prior, hasPrior = p, hp
-		if hasPrior && prior.Object == c.Object {
+		if isDuplicatePromotion(c, prior, hasPrior) {
 			dup = true
 			return nil // same value already current → no redundant version
 		}
@@ -261,30 +261,13 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 		if err != nil {
 			return err
 		}
-		claim = Claim{
-			ID:             idFor("claim_", c.Entity, c.Predicate, c.Object, strconv.FormatInt(seq, 10)),
-			Seq:            seq,
-			Entity:         c.Entity,
-			Predicate:      c.Predicate,
-			Object:         c.Object,
-			ValidFrom:      orDef(c.ObservationDate, rfc3339(now)),
-			Confidence:     c.Confidence,
-			Derivation:     c.Derivation,
-			ClaimType:      c.ClaimType, // carry the taxonomy + topic qualifiers onto the durable claim
-			Qualifiers:     c.Qualifiers,
-			PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
-			EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
-			Visibility:     orDef(c.Visibility, "operational"),
-			CreatedAt:      rfc3339(now),
-		}
-		if hasPrior {
-			claim.Supersedes = prior.ID
-		}
+		claim = promotedClaim(c, prior, hasPrior, seq, now)
 		if err := appendJSONL(s.claimsLog(), &claim); err != nil {
 			return err
 		}
 		if hasPrior {
-			return appendJSONL(s.edgesLog(), &Edge{Seq: seq, Kind: "supersedes", From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)})
+			edge := supersedesEdge(claim, prior, c, seq, now)
+			return appendJSONL(s.edgesLog(), &edge)
 		}
 		return nil
 	})
@@ -317,6 +300,55 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	}
 	res.Candidate, res.Claim, res.Transition = c, &claim, &tr
 	return res, nil
+}
+
+// The promotion decision is pure: nonPromoteState / isDuplicatePromotion /
+// promotedClaim / supersedesEdge compute the verdict's effect from a candidate
+// and the prior current claim, with no I/O. Adjudicate is the thin apply: it
+// reads the candidate + prior, allocates the seq under the lock, then writes what
+// these decide. The split lets the decision be table-tested without a
+// COMPOUND_HOME (see TestPromotionDecisionIsPure).
+
+// nonPromoteState maps a non-promote verdict to the candidate's resulting state.
+func nonPromoteState(verdict string) string {
+	return map[string]string{"reject": "rejected", "park": "parked", "no_promote": "no_promote"}[verdict]
+}
+
+// isDuplicatePromotion reports whether promoting c would only restate the current
+// claim (same object), so no new version is needed.
+func isDuplicatePromotion(c Candidate, prior Claim, hasPrior bool) bool {
+	return hasPrior && prior.Object == c.Object
+}
+
+// promotedClaim builds the durable Claim a promotion appends at the allocated
+// seq: the candidate's value + taxonomy, superseding the prior claim when one
+// exists.
+func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.Time) Claim {
+	claim := Claim{
+		ID:             idFor("claim_", c.Entity, c.Predicate, c.Object, strconv.FormatInt(seq, 10)),
+		Seq:            seq,
+		Entity:         c.Entity,
+		Predicate:      c.Predicate,
+		Object:         c.Object,
+		ValidFrom:      orDef(c.ObservationDate, rfc3339(now)),
+		Confidence:     c.Confidence,
+		Derivation:     c.Derivation,
+		ClaimType:      c.ClaimType, // carry the taxonomy + topic qualifiers onto the durable claim
+		Qualifiers:     c.Qualifiers,
+		PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
+		EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
+		Visibility:     orDef(c.Visibility, "operational"),
+		CreatedAt:      rfc3339(now),
+	}
+	if hasPrior {
+		claim.Supersedes = prior.ID
+	}
+	return claim
+}
+
+// supersedesEdge builds the supersedes edge from a promoted claim to the prior.
+func supersedesEdge(claim, prior Claim, c Candidate, seq int64, now time.Time) Edge {
+	return Edge{Seq: seq, Kind: "supersedes", From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
 }
 
 func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID string, now time.Time) envelope.Transition {
