@@ -94,6 +94,8 @@ It is prompt material only, not a model call and not authority.
 
 `ConversationMiningImport` adapts generated conversation-mining reports and mined tag rows through `compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]`. It records lossiness/known lossy corpus rules, accepted/rejected/source-quality counts, provider mix, and accepted-for-review rows as `SourceObservation -> method_upgrade candidate -> NoPromoteDecision`, then prints the exact reviewed next step `compound distiller improvement-plan --candidate <id>`. It has no Dream execution, no memory promotion, no source-owner mutation, and facts still require distiller extraction plus adjudication or reviewed write-plan.
 
+`ConversationCoverageImport` adapts generated conversation corpus coverage summaries through `compound distiller import-conversation-coverage <summary.json>`. It is summary-only: source counts, mapped/unmapped clean coverage, retained-ratio signal, Dream-candidate counts, missing embeddings, and top-tag count become `SourceObservation -> method_upgrade candidate -> NoPromoteDecision`, then the CLI prints exact reviewed next step `compound distiller improvement-plan --candidate <id>`. It has no row import, no Dream execution, no memory promotion, no source-owner mutation, and no raw conversation/body ingestion.
+
 `LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
 `schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.
 Unknown kind, missing confidence, malformed JSON, or model-supplied `promotion_basis` is invalid.

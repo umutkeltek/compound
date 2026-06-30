@@ -40,6 +40,65 @@ func TestLoadConversationMiningRecordsTagsAndLossiness(t *testing.T) {
 	}
 }
 
+func TestLoadConversationCoverageSummarizesSourceQualityDebt(t *testing.T) {
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "agent-conversation-coverage-latest.json")
+	writeFile(t, reportPath, `{
+		"ok": true,
+		"updated_at": "2026-06-20T15:13:24Z",
+		"sources": {
+			"claude": {
+				"raw_files": 10,
+				"mapped_clean": 7,
+				"unmapped_raw": 3,
+				"stable": 10,
+				"raw_mb": 100.5,
+				"clean_mb": 7.1,
+				"avg_retained_ratio": 0.08,
+				"dream_candidates": 2,
+				"missing_embeddings": 0
+			},
+			"codex": {
+				"raw_files": 5,
+				"mapped_clean": 5,
+				"unmapped_raw": 0,
+				"stable": 5,
+				"raw_mb": 90.0,
+				"clean_mb": 8.0,
+				"avg_retained_ratio": 0.11,
+				"dream_candidates": 0,
+				"missing_embeddings": 1
+			}
+		},
+		"total_rows": 15,
+		"top_tags": [
+			{"source":"claude","raw_basename":"a.jsonl","clean_status":"mapped","importance":19,"quality_score":10,"knowledge_type":"operational","dream_candidate":true,"reasons":["architecture"]}
+		]
+	}`)
+
+	got, err := LoadConversationCoverage(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID == "" || got.ReportDigest == "" || got.Revision == "" {
+		t.Fatalf("missing identity/digest: %+v", got)
+	}
+	if got.SourceCount != 2 || got.TotalRows != 15 || got.RawFiles != 15 || got.MappedClean != 12 || got.UnmappedRaw != 3 {
+		t.Fatalf("coverage counts = %+v", got)
+	}
+	if got.DreamCandidates != 2 || got.MissingEmbeddings != 1 || got.TopTagCount != 1 {
+		t.Fatalf("source quality counts = %+v", got)
+	}
+	for _, want := range []string{"claude_unmapped_raw=3", "claude_dream_candidates=2", "codex_missing_embeddings=1", "claude_low_retained_ratio=0.080"} {
+		if !containsString(got.ReviewDebt, want) {
+			t.Fatalf("review debt missing %q in %v", want, got.ReviewDebt)
+		}
+	}
+	if !hasPrefix(got.EvidenceRefs, "conversation_coverage_report:sha256:") {
+		t.Fatalf("evidence refs = %v", got.EvidenceRefs)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

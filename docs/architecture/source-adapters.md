@@ -27,6 +27,15 @@ Writeback requires an OwnerWritebackGate plus PolicyDecision.
 This is the difference between using an existing operating system as a dogfood
 source and rebuilding its fragmentation inside Compound.
 
+Conversation coverage summaries are source-quality evidence, not corpus imports.
+`compound distiller import-conversation-coverage <summary.json>` is summary-only:
+it records source counts, mapped/unmapped coverage, retained-ratio signal,
+Dream-candidate counts, missing embeddings, and top-tag count as
+`SourceObservation -> method_upgrade candidate -> NoPromoteDecision`, then prints
+the reviewed next step `compound distiller improvement-plan --candidate <id>`.
+It has no row import, no Dream execution, no memory promotion, no source-owner
+mutation, and no raw conversation/body ingestion.
+
 ## SourceObservation
 
 Every adapter emits observations with enough metadata to answer: what was read,

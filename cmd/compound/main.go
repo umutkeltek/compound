@@ -167,6 +167,8 @@ usage:
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
+  compound distiller import-conversation-coverage <summary.json>
+                                                                 conversation corpus coverage -> SourceObservation/no-promote; no row import, Dream execution, or memory promotion
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
@@ -699,6 +701,66 @@ func cmdDistiller(args []string) {
 			cov.SkillCandidates, cov.DecisionCandidates, cov.FailurePatterns, cov.TasteObservations, cov.ProductHypotheses, cov.RouteObservations, cov.CapabilityObs, cov.EvalCases, cov.MethodUpgrades, cov.PolicyPatches)
 		fmt.Printf("- capability_nodes: %d\n", cov.CapabilityNodes)
 		fmt.Printf("- no_promote_decisions: %d\n", cov.NoPromoteDecisions)
+		return
+	}
+	if len(args) >= 1 && args[0] == "import-conversation-coverage" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller import-conversation-coverage <coverage-summary.json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		now := time.Now()
+		coverage, err := distiller.LoadConversationCoverage(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller import-conversation-coverage:", err)
+			os.Exit(1)
+		}
+		sourceReport, err := sourceobs.Apply(homePath, sourceobs.FromConversationCoverage(sourceobs.ConversationCoverageObservation{
+			ID:                coverage.ID,
+			ReportPath:        coverage.ReportPath,
+			Revision:          coverage.Revision,
+			SourceCount:       coverage.SourceCount,
+			TotalRows:         coverage.TotalRows,
+			RawFiles:          coverage.RawFiles,
+			MappedClean:       coverage.MappedClean,
+			UnmappedRaw:       coverage.UnmappedRaw,
+			Stable:            coverage.Stable,
+			DreamCandidates:   coverage.DreamCandidates,
+			MissingEmbeddings: coverage.MissingEmbeddings,
+			AvgRetainedRatio:  coverage.AvgRetainedRatio,
+			TopTagCount:       coverage.TopTagCount,
+			ReviewDebt:        coverage.ReviewDebt,
+			EvidenceRefs:      coverage.EvidenceRefs,
+		}, now), now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source observe:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller import-conversation-coverage %s\n", coverage.ID)
+		fmt.Printf("- sources: %d\n", coverage.SourceCount)
+		fmt.Printf("- total_rows: %d\n", coverage.TotalRows)
+		fmt.Printf("- raw_files: %d\n", coverage.RawFiles)
+		fmt.Printf("- mapped_clean: %d\n", coverage.MappedClean)
+		fmt.Printf("- unmapped_raw: %d\n", coverage.UnmappedRaw)
+		fmt.Printf("- dream_candidates: %d\n", coverage.DreamCandidates)
+		fmt.Printf("- missing_embeddings: %d\n", coverage.MissingEmbeddings)
+		fmt.Printf("- avg_retained_ratio: %.3f\n", coverage.AvgRetainedRatio)
+		fmt.Printf("- review_debt: %d\n", len(coverage.ReviewDebt))
+		fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+		if len(sourceReport.CandidateIDs) > 0 {
+			fmt.Printf("- source_candidate: %s\n", sourceReport.CandidateIDs[0])
+			fmt.Printf("- review_command: compound distiller improvement-plan --candidate %s\n", sourceReport.CandidateIDs[0])
+		}
+		if len(sourceReport.NoPromoteIDs) > 0 {
+			fmt.Printf("- source_no_promote: %s\n", sourceReport.NoPromoteIDs[0])
+		}
+		fmt.Println("- row_import: no")
+		fmt.Println("- dream_execution: no")
+		fmt.Println("- memory_promotion: no")
 		return
 	}
 	if len(args) >= 1 && args[0] == "import-conversation-mining" {

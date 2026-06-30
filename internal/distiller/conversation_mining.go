@@ -67,6 +67,57 @@ type ConversationLossinessReport struct {
 	CodexCleanRawSizeRatio  float64        `json:"codex_clean_vs_raw_size_ratio"`
 }
 
+type ConversationCoverageReportFile struct {
+	OK        bool                                  `json:"ok"`
+	UpdatedAt string                                `json:"updated_at"`
+	Sources   map[string]ConversationCoverageSource `json:"sources"`
+	TotalRows int                                   `json:"total_rows"`
+	TopTags   []ConversationCoverageTopTag          `json:"top_tags"`
+}
+
+type ConversationCoverageSource struct {
+	RawFiles          int     `json:"raw_files"`
+	MappedClean       int     `json:"mapped_clean"`
+	UnmappedRaw       int     `json:"unmapped_raw"`
+	Stable            int     `json:"stable"`
+	RawMB             float64 `json:"raw_mb"`
+	CleanMB           float64 `json:"clean_mb"`
+	AvgRetainedRatio  float64 `json:"avg_retained_ratio"`
+	DreamCandidates   int     `json:"dream_candidates"`
+	MissingEmbeddings int     `json:"missing_embeddings"`
+}
+
+type ConversationCoverageTopTag struct {
+	Source         string   `json:"source"`
+	RawBasename    string   `json:"raw_basename"`
+	CleanStatus    string   `json:"clean_status"`
+	Importance     int      `json:"importance"`
+	QualityScore   int      `json:"quality_score"`
+	KnowledgeType  string   `json:"knowledge_type"`
+	DreamCandidate bool     `json:"dream_candidate"`
+	Reasons        []string `json:"reasons"`
+}
+
+type ConversationCoverageImport struct {
+	ID                string
+	ReportPath        string
+	Revision          string
+	ReportDigest      string
+	Report            ConversationCoverageReportFile
+	SourceCount       int
+	TotalRows         int
+	RawFiles          int
+	MappedClean       int
+	UnmappedRaw       int
+	Stable            int
+	DreamCandidates   int
+	MissingEmbeddings int
+	AvgRetainedRatio  float64
+	TopTagCount       int
+	ReviewDebt        []string
+	EvidenceRefs      []string
+}
+
 type ConversationMiningImport struct {
 	ID                  string
 	ReportPath          string
@@ -85,6 +136,64 @@ type ConversationMiningImport struct {
 	LossinessKnownRules bool
 	LossinessDetail     string
 	EvidenceRefs        []string
+}
+
+func LoadConversationCoverage(reportPath string) (ConversationCoverageImport, error) {
+	var out ConversationCoverageImport
+	reportPath = strings.TrimSpace(reportPath)
+	if reportPath == "" {
+		return out, fmt.Errorf("conversation coverage report path required")
+	}
+	reportData, reportDigest, err := readDigest(reportPath)
+	if err != nil {
+		return out, fmt.Errorf("read conversation coverage report %s: %w", reportPath, err)
+	}
+	var report ConversationCoverageReportFile
+	if err := json.Unmarshal(reportData, &report); err != nil {
+		return out, fmt.Errorf("parse conversation coverage report %s: %w", reportPath, err)
+	}
+	if report.Sources == nil {
+		report.Sources = map[string]ConversationCoverageSource{}
+	}
+	out.ReportPath = reportPath
+	out.ReportDigest = reportDigest
+	out.Report = report
+	out.SourceCount = len(report.Sources)
+	out.TotalRows = report.TotalRows
+	out.TopTagCount = len(report.TopTags)
+	out.EvidenceRefs = append(out.EvidenceRefs, "conversation_coverage_report:sha256:"+reportDigest)
+	var retainedSum float64
+	var retainedCount int
+	for name, source := range report.Sources {
+		out.RawFiles += source.RawFiles
+		out.MappedClean += source.MappedClean
+		out.UnmappedRaw += source.UnmappedRaw
+		out.Stable += source.Stable
+		out.DreamCandidates += source.DreamCandidates
+		out.MissingEmbeddings += source.MissingEmbeddings
+		if source.AvgRetainedRatio > 0 {
+			retainedSum += source.AvgRetainedRatio
+			retainedCount++
+		}
+		if source.UnmappedRaw > 0 {
+			out.ReviewDebt = append(out.ReviewDebt, fmt.Sprintf("%s_unmapped_raw=%d", name, source.UnmappedRaw))
+		}
+		if source.MissingEmbeddings > 0 {
+			out.ReviewDebt = append(out.ReviewDebt, fmt.Sprintf("%s_missing_embeddings=%d", name, source.MissingEmbeddings))
+		}
+		if source.DreamCandidates > 0 {
+			out.ReviewDebt = append(out.ReviewDebt, fmt.Sprintf("%s_dream_candidates=%d", name, source.DreamCandidates))
+		}
+		if source.AvgRetainedRatio > 0 && source.AvgRetainedRatio < 0.10 {
+			out.ReviewDebt = append(out.ReviewDebt, fmt.Sprintf("%s_low_retained_ratio=%.3f", name, source.AvgRetainedRatio))
+		}
+	}
+	if retainedCount > 0 {
+		out.AvgRetainedRatio = retainedSum / float64(retainedCount)
+	}
+	out.Revision = reportDigest
+	out.ID = "conversation_coverage:" + digestParts(filepath.Base(reportPath), reportDigest)[:12]
+	return out, nil
 }
 
 func LoadConversationMining(reportPath string, opts ConversationMiningOptions) (ConversationMiningImport, error) {

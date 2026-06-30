@@ -779,6 +779,42 @@ func TestConversationMiningContractFailsWithoutGates(t *testing.T) {
 	}
 }
 
+func TestConversationCoverageContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "conversation-coverage-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("conversation coverage contract failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected conversation-coverage-contract finding")
+	}
+}
+
+func TestConversationCoverageContractFailsWithoutGates(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound distiller import-conversation-coverage` imports coverage rows for Dream.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkConversationCoverageContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "summary-only") || !strings.Contains(findings[0].Message, "no row import") || !strings.Contains(findings[0].Message, "memory promotion") {
+		t.Fatalf("failure should name coverage gates: %+v", findings)
+	}
+}
+
 func TestDistillerImprovementReviewContractFailsWithoutGate(t *testing.T) {
 	repo := t.TempDir()
 	docs := filepath.Join(repo, "docs")

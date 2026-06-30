@@ -2593,6 +2593,92 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 	}
 }
 
+func TestDistillerImportConversationCoverageRecordsSourceNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "agent-conversation-coverage-latest.json")
+	if err := os.WriteFile(reportPath, []byte(`{
+		"ok": true,
+		"updated_at": "2026-06-20T15:13:24Z",
+		"sources": {
+			"claude": {
+				"raw_files": 23665,
+				"mapped_clean": 21783,
+				"unmapped_raw": 1882,
+				"stable": 23659,
+				"raw_mb": 2514.53,
+				"clean_mb": 107.18,
+				"avg_retained_ratio": 0.08021,
+				"dream_candidates": 69,
+				"missing_embeddings": 0
+			},
+			"codex": {
+				"raw_files": 1829,
+				"mapped_clean": 1357,
+				"unmapped_raw": 472,
+				"stable": 1822,
+				"raw_mb": 8845.39,
+				"clean_mb": 106.17,
+				"avg_retained_ratio": 0.09318,
+				"dream_candidates": 4,
+				"missing_embeddings": 0
+			}
+		},
+		"total_rows": 25494,
+		"top_tags": [
+			{"source":"claude","raw_basename":"session.jsonl","clean_status":"mapped","importance":19,"quality_score":10,"knowledge_type":"operational","dream_candidate":true,"reasons":["architecture"]}
+		]
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"import-conversation-coverage", reportPath})
+	})
+	for _, want := range []string{
+		"# distiller import-conversation-coverage conversation_coverage:",
+		"- unmapped_raw: 2354",
+		"- dream_candidates: 73",
+		"- review_debt: 6",
+		"- source_observation:",
+		"- source_candidate:",
+		"- review_command: compound distiller improvement-plan --candidate",
+		"- source_no_promote:",
+		"- row_import: no",
+		"- dream_execution: no",
+		"- memory_promotion: no",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-conversation-coverage output missing %q:\n%s", want, out)
+		}
+	}
+	sourceCandidateID := outputValue(out, "- source_candidate:")
+	if sourceCandidateID == "" {
+		t.Fatalf("source candidate missing:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("conversation coverage import should not write claims ledger, stat err=%v", err)
+	}
+	methodDir := filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade))
+	files, err := os.ReadDir(methodDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("method upgrade candidates = %d, want 1", len(files))
+	}
+	planOut := captureStdout(t, func() {
+		cmdDistiller([]string{"improvement-plan", "--candidate", sourceCandidateID})
+	})
+	if !strings.Contains(planOut, "# distiller improvement-plan") || !strings.Contains(planOut, "- candidate_kind: method_upgrade") {
+		t.Fatalf("conversation coverage source candidate did not enter improvement-plan path:\n%s", planOut)
+	}
+}
+
 func TestDistillerRunLLMEventResponseParksMemoryWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

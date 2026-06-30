@@ -115,6 +115,24 @@ type ConversationMiningObservation struct {
 	EvidenceRefs      []string
 }
 
+type ConversationCoverageObservation struct {
+	ID                string
+	ReportPath        string
+	Revision          string
+	SourceCount       int
+	TotalRows         int
+	RawFiles          int
+	MappedClean       int
+	UnmappedRaw       int
+	Stable            int
+	DreamCandidates   int
+	MissingEmbeddings int
+	AvgRetainedRatio  float64
+	TopTagCount       int
+	ReviewDebt        []string
+	EvidenceRefs      []string
+}
+
 func Load(path string) (SourceObservation, error) {
 	var obs SourceObservation
 	data, err := os.ReadFile(path)
@@ -405,6 +423,65 @@ func FromSkillSurfacingMisses(misses capgraph.SkillSurfacingMisses, now time.Tim
 // source observation evidence. Conversation mining identifies extraction
 // opportunity and corpus quality; it does not execute Dream, promote memory, or
 // mutate source owners.
+func FromConversationCoverage(coverage ConversationCoverageObservation, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(coverage.Revision)
+	if revision == "" {
+		revision = "conversation_coverage:" + coverage.ID
+	}
+	evidenceRefs := append([]string(nil), coverage.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"conversation_coverage:" + revision}
+	}
+	reviewDebt := "none"
+	if len(coverage.ReviewDebt) > 0 {
+		reviewDebt = strings.Join(coverage.ReviewDebt, ",")
+	}
+	detail := fmt.Sprintf("sources=%d total_rows=%d raw_files=%d mapped_clean=%d unmapped_raw=%d stable=%d dream_candidates=%d missing_embeddings=%d avg_retained_ratio=%.3f top_tags=%d review_debt=%s",
+		coverage.SourceCount,
+		coverage.TotalRows,
+		coverage.RawFiles,
+		coverage.MappedClean,
+		coverage.UnmappedRaw,
+		coverage.Stable,
+		coverage.DreamCandidates,
+		coverage.MissingEmbeddings,
+		coverage.AvgRetainedRatio,
+		coverage.TopTagCount,
+		reviewDebt,
+	)
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "conversation_coverage", coverage.ID, coverage.ReportPath, revision),
+		AdapterID:     "compound.conversation-coverage",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        coverage.ReportPath,
+			Kind:        "state_record",
+			Owner:       firstNonEmpty(filepath.Base(coverage.ReportPath), coverage.ID),
+			SourceClass: "conversation_coverage",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "conversation_coverage",
+			Consumer:    "compound distiller import-conversation-coverage",
+			Generator:   "conversation_coverage_adapter",
+			Marker:      "agent-conversation-coverage-summary",
+			Freshness:   "observed",
+			DriftReason: detail,
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "distiller",
+				CandidateKind:  string(candidates.MethodUpgrade),
+				EntityHint:     firstNonEmpty(coverage.ID, "conversation_coverage"),
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
 func FromConversationMining(mining ConversationMiningObservation, now time.Time) SourceObservation {
 	revision := strings.TrimSpace(mining.Revision)
 	if revision == "" {
