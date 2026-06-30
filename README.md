@@ -31,7 +31,7 @@ The current public surface is:
 | `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |
 | `compound runtime doctor <runtime-binding.yaml>` / `runtime repair-plan <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle; failing reports can emit gated review artifacts |
 | `compound runtime doctor --project-contract <project.yaml>` / `runtime repair-plan --project-contract <project.yaml>` | adapt an infra-os-style project contract into the same runtime doctor/repair path |
-| `compound product hypothesis-plan --candidate <id>` | product_hypothesis candidates become reviewed experiment/review drafts before product strategy, analytics, or store-surface changes |
+| `compound product import/signal/change-stream/hypothesis-plan/review/source-issue-review/timeline/doctor` | product identity, market signals, mined change-stream candidates, hypotheses, reviews, and source-issue closure through evidence/review gates before product strategy, analytics, or store-surface changes |
 | `compound projection doctor <freshness.yaml>` | check generated-view freshness/drift from source and output hashes; `--record-context` makes freshness available to scoped `orient` |
 
 Gen-1 memory-era top-level verbs are retired tombstones:
@@ -63,7 +63,7 @@ Object families currently named in the architecture:
 - **Decisions**: committed choices and their lifecycle.
 - **Procedures / Capabilities**: skills, tools, MCPs, model profiles, workflows.
 - **Permissions**: policy, autonomy envelopes, gates.
-- **Doctrine / Product / Taste**: durable standards, product signals, hypotheses.
+- **Doctrine / Product / Taste**: durable standards, product signals, mined change candidates, hypotheses.
 
 Read in this order:
 

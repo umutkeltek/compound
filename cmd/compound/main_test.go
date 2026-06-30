@@ -1499,6 +1499,40 @@ func TestProductSignalImportsASCSalesSeriesWindows(t *testing.T) {
 	}
 }
 
+func TestProductChangeStreamImportsSourceIssues(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "product", "change-stream-candidates.md")
+	out := captureStdout(t, func() {
+		cmdProduct([]string{"change-stream", fixture})
+	})
+	if !strings.Contains(out, "# product change-stream change_stream_candidates:change-stream-candidates.md") ||
+		!strings.Contains(out, "- candidates_read: 2") ||
+		!strings.Contains(out, "- issues_created: 2") ||
+		!strings.Contains(out, "- product: product:focus_notes") {
+		t.Fatalf("change-stream output missing proof:\n%s", out)
+	}
+	replay := captureStdout(t, func() {
+		cmdProduct([]string{"change-stream", fixture})
+	})
+	if !strings.Contains(replay, "- issues_created: 0") || !strings.Contains(replay, "- issues_existing: 2") {
+		t.Fatalf("change-stream replay should be idempotent:\n%s", replay)
+	}
+	doctor, err := product.Doctor(homePath, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.SourceIssueCount != 2 {
+		t.Fatalf("product doctor should surface change-stream source issues: %+v", doctor)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("change-stream import should not create promoted claims ledger: %v", err)
+	}
+}
+
 func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

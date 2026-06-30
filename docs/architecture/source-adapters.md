@@ -142,6 +142,13 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | product analytics exports | `ProductSignalExport`, App Store Connect datapoints snapshot rows, and explicit-window App Store Connect sales-series rows -> `ProductSignal` evidence + product `Transition` projection, never causality; ASC datapoints are neutral provider observations (before=after), while ASC sales-series requires explicit before/after ranges and a change event; mined `ProductHypothesis` candidates can become reviewed hypothesis-plan artifacts before any strategy/surface action; unknown/unsupported source fields fail strict doctor and may record `NoPromoteDecision`; source-issue review records closure evidence while preserving the original no-promote row; product timeline reads valid signals plus open/closed product-scoped source issues together |
 | a retrieval / embedding store | retrieval engine or source index, never authority |
 
+Change-stream promotion candidate pages are product source observations, not
+product truth. `compound product change-stream <candidates.md>` preserves the
+generated page hash/capture and each candidate's product, surface, repo, score,
+and dirty preview as product-scoped source issues backed by `NoPromoteDecision`;
+review/closure still goes through `product source-issue-review`, and durable
+changes/signals/hypotheses require their own evidence path.
+
 A concrete mapping for a specific operating system — real repo paths and named
 tools — belongs in that operator's private overlay (`docs_private/`), never in
 this public doc. Public adapters use synthetic fixtures and relative paths.

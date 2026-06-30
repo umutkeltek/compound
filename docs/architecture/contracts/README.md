@@ -66,6 +66,8 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 
 `RoutePolicyPlan` is the reviewed routing-policy proposal contract from a parked `route_observation` candidate. `compound route plan --candidate <id> [--target <file>]` writes JSON/Markdown review artifacts under `COMPOUND_HOME/reviews/route-policy/`, preserving route key, candidate verdict, evidence refs, draft applies_when/route_preference/cost_guard/escalation_trigger/verification, and optional target hash. It does not mutate gateway/provider/model-router config, does not claim task success, and does not promote claims.
 
+Product source issue note: `product change-stream <candidates.md>` imports mined change-stream promotion candidate pages as product-scoped source issues through idempotent `NoPromoteDecision` rows. These records preserve source hash/capture, product, surface, repo, score, and dirty-preview evidence, and they are visible through `product timeline` / `product doctor`; they are not durable product changes, product signals, hypotheses, metric claims, or source mutations.
+
 ## Distillation & capability-growth contracts (the compounding layer — P6 continuation + P8)
 
 These turn traces into *adjudicated, versioned* knowledge and grow capability from evidence. They **extend**

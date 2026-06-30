@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -444,6 +445,54 @@ func TestSignalDoctorRejectsUnknownExportFieldsAndRecordsNoPromote(t *testing.T)
 	}
 	if postReviewDoctor.Status != "ok" || postReviewDoctor.SourceIssueCount != 0 || NeedsWriteback(postReviewDoctor) {
 		t.Fatalf("post source issue review doctor = %+v", postReviewDoctor)
+	}
+}
+
+func TestChangeStreamCandidatesRecordProductSourceIssues(t *testing.T) {
+	doc, err := LoadChangeStreamCandidates("../../fixtures/product/change-stream-candidates.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.SourceHash == "" || doc.SourceCapture == "" || len(doc.Candidates) != 2 {
+		t.Fatalf("change stream doc = %+v", doc)
+	}
+	if doc.Candidates[0].ProductID != "product:focus_notes" || doc.Candidates[0].Surface != "App Store screenshots" || len(doc.Candidates[0].DirtyPreview) != 3 {
+		t.Fatalf("first candidate = %+v", doc.Candidates[0])
+	}
+	home := t.TempDir()
+	report, err := ApplyChangeStreamCandidates(home, doc, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || report.CandidatesRead != 2 || report.IssuesCreated != 2 || report.IssuesExisting != 0 || len(report.IssueIDs) != 2 {
+		t.Fatalf("change stream report = %+v", report)
+	}
+	replayed, err := ApplyChangeStreamCandidates(home, doc, tProduct.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.IssuesCreated != 0 || replayed.IssuesExisting != 2 || len(replayed.IssueIDs) != 2 || replayed.IssueIDs[0] != report.IssueIDs[0] {
+		t.Fatalf("replay report = %+v want existing issues %+v", replayed, report.IssueIDs)
+	}
+	tl, err := LoadTimeline(home, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.SourceIssues) != 2 {
+		t.Fatalf("timeline source issues = %+v", tl.SourceIssues)
+	}
+	if !strings.Contains(tl.SourceIssues[0].Basis, "review before treating as product change") {
+		t.Fatalf("source issue basis should preserve review gate, got %+v", tl.SourceIssues[0])
+	}
+	doctor, err := Doctor(home, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.SourceIssueCount != 2 || !NeedsWriteback(doctor) {
+		t.Fatalf("doctor = %+v", doctor)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("change stream import should not create claims ledger: %v", err)
 	}
 }
 

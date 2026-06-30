@@ -2904,7 +2904,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | hypothesis-plan --candidate <candidate_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -3067,6 +3067,35 @@ func cmdProduct(args []string) {
 				}
 				fmt.Println()
 			}
+		}
+	case "change-stream":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product change-stream <candidates.md>")
+			os.Exit(2)
+		}
+		doc, err := product.LoadChangeStreamCandidates(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product change-stream:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplyChangeStreamCandidates(homePath, doc, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product change-stream:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product change-stream %s\n\n", report.SourceRef)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- candidates_read: %d\n", report.CandidatesRead)
+		fmt.Printf("- issues_created: %d\n", report.IssuesCreated)
+		fmt.Printf("- issues_existing: %d\n", report.IssuesExisting)
+		if report.SourceHash != "" {
+			fmt.Printf("- source_hash: %s\n", report.SourceHash)
+		}
+		for _, productID := range report.ProductIDs {
+			fmt.Printf("- product: %s\n", productID)
+		}
+		for _, issueID := range report.IssueIDs {
+			fmt.Printf("- issue: %s\n", issueID)
 		}
 	case "hypothesis-plan":
 		candidateID := flagValue(args[1:], "--candidate")

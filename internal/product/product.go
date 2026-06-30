@@ -1716,7 +1716,7 @@ func loadProductSourceIssues(homePath, productID string) ([]ProductSourceIssue, 
 		if err := json.Unmarshal(line, &d); err != nil || d.ID == "" {
 			return nil
 		}
-		if d.OwnerTarget.Kind != "product_signal_source" {
+		if d.OwnerTarget.Kind != "product_signal_source" && d.OwnerTarget.Kind != ProductChangeStreamOwner {
 			return nil
 		}
 		if !containsValue(d.EvidenceRefs, productRef(productID)) {
