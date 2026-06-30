@@ -98,6 +98,9 @@ Execution and policy:
 - `compound work ...` creates, claims, advances, closes, and imports work.
 - `compound policy evaluate` turns ActionIntent into an enforceable
   PolicyDecision.
+- `compound policy import-placement-rules <placement-rules.json>` installs owner
+  placement rules into `COMPOUND_HOME/registries/placement-rules.json`;
+  `compound policy placement-authority` reports that handoff.
 - `compound hook ...` and `compound harness ...` normalize harness events into
   spine objects; `compound hook pre-tool-use --enforce ...` returns policy gate
   exit codes for wrapper enforcement.

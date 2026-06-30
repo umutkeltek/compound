@@ -716,6 +716,88 @@ func TestHookPreToolUseEnforceBlocksPlacementGuard(t *testing.T) {
 	}
 }
 
+func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
+	homePath := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("HOME", userHome)
+	t.Setenv("PLACEMENT_GUARD_MODE", "block")
+
+	source := filepath.Join("..", "..", "fixtures", "policy", "placement-rules.json")
+	importOut := captureStdout(t, func() {
+		cmdPolicy([]string{"import-placement-rules", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/placement-rules"`,
+		`"owner_count": 1`,
+		`"open_write_count": 1`,
+		`"authority_status": "compound_primary"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import placement rules output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	authorityOut := captureStdout(t, func() {
+		cmdPolicy([]string{"placement-authority"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"owner_count": 1`,
+		`"source_role": "evidence_only_input_after_import"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("placement authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+
+	target := filepath.Join(userHome, "outside", "DOC-0001.md")
+	fixture := writeHookFixture(t, hook.Fixture{
+		Harness: "codex",
+		WorkID:  "work_placement_authority",
+		Action: &envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            "act_placement_authority",
+				CreatedAt:     cliTestNow.Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
+				IDs:           envelope.IDs{WorkID: "work_placement_authority"},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier2",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         "codex",
+			Capability:    "filesystem.write",
+			Action:        "write_file",
+			Target:        envelope.ActionTarget{Kind: "file", Path: target},
+			MutationClass: "local_reversible",
+			Reversibility: "easy",
+			BlastRadius:   "repo",
+		},
+	})
+
+	var code int
+	out := captureStdout(t, func() {
+		code = runHookCommand([]string{"pre-tool-use", "--enforce", fixture})
+	})
+	if code != 3 {
+		t.Fatalf("enforced hook exit = %d, want 3\n%s", code, out)
+	}
+	for _, want := range []string{
+		`"status": "fail_open"`,
+		`"outcome": "hold"`,
+		"compound://registries/placement-rules",
+		"placement-owner:docs",
+		"canon-filename-outside-owner-home",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("hook output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

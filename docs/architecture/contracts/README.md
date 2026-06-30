@@ -22,6 +22,9 @@ Placement guard evidence is also runtime policy context, not a second guard path
 `PlacementGuard` context into `PolicyDecision`, staged `observe -> warn -> block`; only `confidence:block`
 can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
 `hook pre-tool-use --enforce` carries the resulting Gate exit code for wrappers.
+`compound policy import-placement-rules <placement-rules.json>` imports generated owner placement rules
+into `COMPOUND_HOME/registries/placement-rules.json` as `compound://registries/placement-rules`; after
+that handoff the generated source view is evidence/rollback input, and PreToolUse reads the Compound copy.
 
 | Contract | Purpose | Lifecycle |
 |---|---|---|

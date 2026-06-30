@@ -250,11 +250,19 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	ai = normalizeActionTarget(fx, ai)
 	evalCtx := policy.EvaluationContext{}
-	if fx.Placement != nil {
-		evalCtx.Placement = fx.Placement
-	}
 	var sourceControl *policy.SourceControlContext
 	sideEffects := []string(nil)
+	if fx.Placement != nil {
+		evalCtx.Placement = fx.Placement
+	} else if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
+		placement, effects, err := policy.PlacementContextFromHome(deps.HomePath, ai.Target.Path)
+		if err == nil && placement != nil {
+			evalCtx.Placement = placement
+		}
+		if err == nil {
+			sideEffects = append(sideEffects, effects...)
+		}
+	}
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
 		var effects []string
 		var err error

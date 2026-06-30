@@ -87,6 +87,9 @@ to `hold`/blocked through the same policy gate.
 `PolicyDecision` with staged `observe -> warn -> block` behavior. Only `confidence:block` can hard-hold;
 `OPEN_WRITE` and `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
 `compound hook pre-tool-use --enforce <fixture.json>` returns the resulting gate exit code for wrapper adapters.
+`compound policy import-placement-rules <placement-rules.json>` installs generated owner placement rules
+as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
+input after import, while PreToolUse reads the Compound-owned registry.
 
 ---
 
@@ -150,6 +153,8 @@ compound contract compile --harness claude-code --cwd .
 compound orient --task "audit generated-state layout"
 compound work create --intent "audit generated-state layout"
 compound policy evaluate fixtures/action-intent/local-doc-write.json
+compound policy import-placement-rules fixtures/policy/placement-rules.json
+compound policy placement-authority
 compound receipt create  fixtures/receipt/state-delta.json
 compound transition create fixtures/transition/basic.json
 compound transition show <id>
