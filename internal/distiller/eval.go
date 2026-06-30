@@ -13,6 +13,7 @@ import (
 
 	"compound/internal/envelope"
 	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 )
 
 const EvalCaseSchemaVersion = "compound.distiller.eval_case.v0.1"
@@ -219,19 +220,7 @@ func ValidateRecordedEvalProofRefs(homePath string, refs []string) error {
 }
 
 func recordEvalProofJSON(homePath, proofRef string, value any) (string, error) {
-	dir := filepath.Join(homePath, "reviews", "distiller-eval", "proofs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, safeEvalProofRef(proofRef)+".json")
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
+	return reviewartifact.WriteJSON(homePath, "distiller-eval/proofs", safeEvalProofRef(proofRef)+".json", value, "  ")
 }
 
 func validateRecordedEvalProofRef(homePath, ref string) error {

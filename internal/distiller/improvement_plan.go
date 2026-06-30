@@ -343,10 +343,6 @@ func RecordImprovementReview(homePath string, review ImprovementReview, now time
 			return ImprovementReviewReport{}, err
 		}
 	}
-	dir := filepath.Join(homePath, "reviews", "distiller-improvements")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ImprovementReviewReport{}, err
-	}
 	reviewed := ReviewedImprovement{
 		SchemaVersion: ReviewedImprovementSchemaVersion,
 		ID:            "reviewed_" + review.ReviewID,
@@ -373,12 +369,8 @@ func RecordImprovementReview(homePath string, review ImprovementReview, now time
 			"does not promote memory truth",
 		},
 	}
-	path := filepath.Join(dir, review.ReviewID+".reviewed.json")
-	data, err := json.MarshalIndent(reviewed, "", " ")
+	path, err := reviewartifact.WriteJSON(homePath, "distiller-improvements", review.ReviewID+".reviewed.json", reviewed, " ")
 	if err != nil {
-		return ImprovementReviewReport{}, err
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		return ImprovementReviewReport{}, err
 	}
 	return ImprovementReviewReport{
