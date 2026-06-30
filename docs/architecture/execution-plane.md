@@ -53,6 +53,14 @@ Local `compound distiller extract` follows the same rule: successful extraction 
 `ExecutionRouteEvidence` and an audit-only Transition whose routing/cost projections point at that
 evidence; it still does not prove the extracted candidates are true or promoted.
 
+Compound-owned route policy authority is separate from route execution evidence. `compound route
+import-model-capabilities <model-capabilities.yaml>` imports generated model-router capability claims
+and `routing_defaults` into `compound://registries/model-router`, records source authority, and leaves
+the generated source view as rollback/evidence input. `compound route plan --capability-class <class>
+[--privacy-sensitive]` only renders a planned lane chain with `lane_justification`: it does not call
+models, rank live providers, mutate gateway config, or certify task success. Privacy-sensitive plans
+filter to `local-batch` lanes; free judge/critique lanes are tripwires, not verdict gates.
+
 ## Second-order effects (design against these)
 
 - **Cheap-mediocre drift.** If the router optimizes cost/latency without *outcome* feedback, the

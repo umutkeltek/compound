@@ -200,10 +200,12 @@ usage:
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
+  compound route import-model-capabilities <model-capabilities.yaml> OS model router YAML -> Compound route authority
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
+  compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
   compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
@@ -2034,7 +2036,7 @@ func cmdTransition(args []string) {
 
 func cmdRoute(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -2044,10 +2046,46 @@ func cmdRoute(args []string) {
 	}
 	if args[0] == "plan" {
 		candidateID := flagValue(args[1:], "--candidate")
+		capabilityClass := flagValue(args[1:], "--capability-class")
 		targetPath := flagValue(args[1:], "--target")
-		if candidateID == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound route plan --candidate <candidate_id> [--target <file>]")
+		if (candidateID == "" && capabilityClass == "") || (candidateID != "" && capabilityClass != "") {
+			fmt.Fprintln(os.Stderr, "usage: compound route plan (--candidate <candidate_id> [--target <file>]|--capability-class <class> [--privacy-sensitive])")
 			os.Exit(2)
+		}
+		if capabilityClass != "" {
+			plan, err := routeevidence.PlanCapabilityRoute(homePath, capabilityClass, routeevidence.CapabilityRoutePlanOptions{
+				PrivacySensitive: hasFlag(args[1:], "--privacy-sensitive"),
+			}, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "route plan:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("# route capability-plan %s\n", plan.ID)
+			fmt.Printf("- status: %s\n", plan.Status)
+			fmt.Printf("- authority: %s\n", plan.AuthorityRef)
+			fmt.Printf("- authority_path: %s\n", plan.AuthorityPath)
+			if plan.SourceAuthorityID != "" {
+				fmt.Printf("- source_authority: %s\n", plan.SourceAuthorityID)
+			}
+			fmt.Printf("- capability_class: %s\n", plan.CapabilityClass)
+			fmt.Printf("- privacy_sensitive: %t\n", plan.PrivacySensitive)
+			fmt.Printf("- routing_rule: %s\n", plan.RoutingRule)
+			fmt.Printf("- chain_count: %d\n", len(plan.Chain))
+			for _, lane := range plan.Chain {
+				fmt.Printf("- lane: %d %s tier=%s role=%s claim=%s\n", lane.Position, lane.ModelID, lane.Tier, lane.GateRole, lane.ClaimLevel)
+				fmt.Printf("  lane_justification: %s\n", lane.Justification)
+			}
+			if len(plan.Omitted) > 0 {
+				fmt.Printf("- omitted_count: %d\n", len(plan.Omitted))
+				for _, lane := range plan.Omitted {
+					fmt.Printf("- omitted: %d %s reason=%s\n", lane.Position, lane.ModelID, lane.OmitReason)
+				}
+			}
+			for _, warning := range plan.Warnings {
+				fmt.Printf("- warning: %s\n", warning)
+			}
+			fmt.Println("- verdict: metadata_only_not_task_success")
+			return
 		}
 		plan, err := routeevidence.BuildRoutePolicyPlan(homePath, candidateID, targetPath, time.Now())
 		if err != nil {
@@ -2075,6 +2113,26 @@ func cmdRoute(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		return
+	}
+	if args[0] == "import-model-capabilities" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound route import-model-capabilities <model-capabilities.yaml>")
+			os.Exit(2)
+		}
+		report, err := routeevidence.ImportModelCapabilitiesYAML(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route import-model-capabilities:", err)
+			os.Exit(1)
+		}
+		fmt.Println("# route import-model-capabilities")
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- authority_path: %s\n", report.AuthorityPath)
+		fmt.Printf("- source_authority: %s\n", report.SourceAuthorityID)
+		fmt.Printf("- models: %d\n", report.ModelCount)
+		fmt.Printf("- capability_classes: %d\n", report.CapabilityClassCount)
+		fmt.Printf("- routing_defaults: %d\n", report.RoutingDefaultCount)
+		fmt.Println("- verdict: compound_primary")
 		return
 	}
 	if args[0] == "outcome-review" {

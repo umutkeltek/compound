@@ -123,8 +123,9 @@ Adaptive systems:
 
 - `compound capability ...` owns the capability graph. It surfaces offers with
   constraints; it does not execute skills/tools.
-- `compound route ...` records route evidence, provider-call cost coverage, and
-  receipt-linked route outcome reviews.
+- `compound route ...` records route evidence, provider-call cost coverage,
+  receipt-linked route outcome reviews, and Compound-owned model-router route
+  plans from imported capability/default-lane authority.
 - `compound runtime doctor ...` checks RuntimeBinding/ServiceContract bundles;
   `--live` runs explicit HTTP/TCP/file/env probes.
 - `compound product ...` handles product identity, signals, hypotheses, source

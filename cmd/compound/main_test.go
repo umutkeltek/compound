@@ -4437,6 +4437,40 @@ func writeJSONFixture(t *testing.T, path string, v any) {
 	}
 }
 
+func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+
+	importOut := captureStdout(t, func() {
+		cmdRoute([]string{"import-model-capabilities", source})
+	})
+	if !strings.Contains(importOut, "# route import-model-capabilities") ||
+		!strings.Contains(importOut, "- authority: compound://registries/model-router") ||
+		!strings.Contains(importOut, "- models: 4") ||
+		!strings.Contains(importOut, "- verdict: compound_primary") {
+		t.Fatalf("bad import output:\n%s", importOut)
+	}
+
+	planOut := captureStdout(t, func() {
+		cmdRoute([]string{"plan", "--capability-class", "judge-critique"})
+	})
+	if !strings.Contains(planOut, "# route capability-plan crp_") ||
+		!strings.Contains(planOut, "- routing_rule: routing_defaults[judge-critique]") ||
+		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][0] -> auto/judge") ||
+		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][1] -> scout/chat") ||
+		!strings.Contains(planOut, "role=tripwire_only") ||
+		!strings.Contains(planOut, "- verdict: metadata_only_not_task_success") {
+		t.Fatalf("bad route plan output:\n%s", planOut)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("route model capability import/plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func writeJSONFile(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fixture.json")
