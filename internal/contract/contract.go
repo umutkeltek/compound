@@ -331,6 +331,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		Excluded:           excl,
 		ActiveInstructions: orEmpty(active),
 		ActiveDecisions:    []string{},
+		ActiveMemory:       []string{},
 		RequiredChecks:     []string{},
 		Avoid:              orEmpty(mem.Forbidden),
 	}
@@ -359,6 +360,27 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	pack.ActiveDecisions = decisions
 	if len(decisions) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
+	}
+	memoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
+	if err != nil {
+		return pack, err
+	}
+	for _, ref := range memoryRefs {
+		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref:         ref.Ref,
+			SourceClass: "runtime",
+			Reason:      ref.Reason,
+			Confidence:  ref.Confidence,
+			Status:      "current",
+		})
+	}
+	if len(memoryRefs) > 0 {
+		lines := make([]string, 0, len(memoryRefs))
+		for _, ref := range memoryRefs {
+			lines = append(lines, ref.Line)
+		}
+		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
 	}
 	if capgraph.Exists(homePath) {
 		store, err := capgraph.Open(homePath)
@@ -431,6 +453,146 @@ func capabilityOfferConstraints(values []capgraph.SurfacingConstraint) []envelop
 		})
 	}
 	return out
+}
+
+const maxContextMemoryRefs = 5
+
+type contextMemoryRef struct {
+	Ref        string
+	Reason     string
+	Line       string
+	Confidence float64
+	Seq        int64
+}
+
+func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemoryRef, error) {
+	if len(rule.Ambient) == 0 {
+		return nil, nil
+	}
+	entities := memoryEntityKeys(in)
+	if len(entities) == 0 {
+		return nil, nil
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
+	for _, claim := range claims {
+		if !ambientMemoryClaimAllowed(claim, rule, entities) {
+			continue
+		}
+		line := memoryLine(claim)
+		out = append(out, contextMemoryRef{
+			Ref:        "claim://" + claim.ID,
+			Reason:     "Compound memory ledger claim; source stores and indexes are evidence, not authority: " + line,
+			Line:       line,
+			Confidence: claim.Confidence,
+			Seq:        claim.Seq,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Seq == out[j].Seq {
+			return out[i].Ref < out[j].Ref
+		}
+		return out[i].Seq > out[j].Seq
+	})
+	if len(out) > maxContextMemoryRefs {
+		out = out[:maxContextMemoryRefs]
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
+	return out, nil
+}
+
+func ambientMemoryClaimAllowed(claim mem.Claim, rule MemoryRule, entities map[string]bool) bool {
+	if claim.ClaimType == "decision" {
+		return false
+	}
+	if !memoryVisibilityAllowed(claim.Visibility) {
+		return false
+	}
+	if !entities[memoryKey(claim.Entity)] {
+		return false
+	}
+	if (contains(rule.Forbidden, "personal-corpus") || contains(rule.ExplicitOnly, "personal-corpus")) && personalMemoryClaim(claim) {
+		return false
+	}
+	if (contains(rule.Forbidden, "self-model") || contains(rule.ExplicitOnly, "self-model")) && selfModelClaim(claim) {
+		return false
+	}
+	return true
+}
+
+func memoryEntityKeys(in Input) map[string]bool {
+	keys := map[string]bool{}
+	add := func(value string) {
+		key := memoryKey(value)
+		if len(key) >= 3 {
+			keys[key] = true
+		}
+	}
+	add(filepath.Base(in.Cwd))
+	for _, part := range strings.Fields(in.Task) {
+		add(part)
+	}
+	return keys
+}
+
+func memoryKey(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if i := strings.LastIndex(value, ":"); i >= 0 && i+1 < len(value) {
+		value = value[i+1:]
+	}
+	var b strings.Builder
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func memoryVisibilityAllowed(visibility string) bool {
+	switch strings.ToLower(strings.TrimSpace(visibility)) {
+	case "", "ambient", "contextual", "operational", "world", "public":
+		return true
+	default:
+		return false
+	}
+}
+
+func selfModelClaim(claim mem.Claim) bool {
+	if memoryKey(claim.Entity) == "umut" || memoryKey(claim.Entity) == "operator" {
+		return true
+	}
+	return qualifierContains(claim, "domain", "self") || qualifierContains(claim, "domain", "personal")
+}
+
+func personalMemoryClaim(claim mem.Claim) bool {
+	return strings.EqualFold(claim.Visibility, "private") ||
+		strings.EqualFold(claim.ClaimType, "preference") ||
+		selfModelClaim(claim) ||
+		qualifierContains(claim, "source", "corpus")
+}
+
+func qualifierContains(claim mem.Claim, key, needle string) bool {
+	if claim.Qualifiers == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(claim.Qualifiers[key]), needle)
+}
+
+func memoryLine(claim mem.Claim) string {
+	text := fmt.Sprintf("%s.%s = %s", claim.Entity, claim.Predicate, claim.Object)
+	const max = 180
+	if len(text) <= max {
+		return text
+	}
+	return strings.TrimSpace(text[:max-3]) + "..."
 }
 
 func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {

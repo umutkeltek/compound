@@ -20,6 +20,9 @@ func TestExportContextPackSchemaIncludesCapabilityOffers(t *testing.T) {
 	if _, ok := props["capability_offers"]; !ok {
 		t.Fatalf("context_pack schema missing capability_offers: %+v", props)
 	}
+	if _, ok := props["active_memory"]; !ok {
+		t.Fatalf("context_pack schema missing active_memory: %+v", props)
+	}
 	if doc["$id"] != "compound://schemas/context_pack" {
 		t.Fatalf("schema id = %v", doc["$id"])
 	}
@@ -96,6 +99,7 @@ func validContextPack(t *testing.T) []byte {
 		}},
 		ActiveInstructions: []string{},
 		ActiveDecisions:    []string{},
+		ActiveMemory:       []string{"claim://claim_test"},
 		RequiredChecks:     []string{},
 		Avoid:              []string{},
 	}

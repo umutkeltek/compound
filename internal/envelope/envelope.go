@@ -260,6 +260,7 @@ type ContextPack struct {
 	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
 	ActiveInstructions []string          `json:"active_instructions"`
 	ActiveDecisions    []string          `json:"active_decisions"`
+	ActiveMemory       []string          `json:"active_memory,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`
 }

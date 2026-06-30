@@ -529,6 +529,72 @@ Future agents consume this decision through Compound runtime context.
 	}
 }
 
+func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:          "compound",
+			Predicate:       "capability_authority_surface",
+			Object:          "Compound owns the capability graph runtime surface",
+			Confidence:      0.91,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			Qualifiers:      map[string]string{"domain": "capability_authority"},
+			PromotionBasis:  candidates.BasisCuratedPage,
+			SourceTraceRef:  "ev_compound",
+			SnippetHash:     "sha256:compound",
+			Visibility:      "contextual",
+			ObservationDate: "2026-06-30T00:00:00Z",
+		},
+		{
+			Entity:          "umut",
+			Predicate:       "preference",
+			Object:          "private self-model fact",
+			Confidence:      1,
+			Derivation:      "deterministic",
+			ClaimType:       "preference",
+			PromotionBasis:  candidates.BasisExplicitConfirmation,
+			SourceTraceRef:  "ev_private",
+			SnippetHash:     "sha256:private",
+			Visibility:      "private",
+			ObservationDate: "2026-06-30T00:00:00Z",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relevant, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(got[1].ID, "promote", "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	in := Input{Harness: "codex", Cwd: "/repo/compound", Task: "resume compound absorption", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "claim://" + relevant.Claim.ID
+	if !contains(pack.ActiveMemory, ref) {
+		t.Fatalf("context pack active_memory = %v, want %s", pack.ActiveMemory, ref)
+	}
+	if !hasIncluded(pack, ref) {
+		t.Fatalf("context pack should include memory ref %s; included=%v", ref, pack.Included)
+	}
+	if !strings.Contains(pack.SummaryMD, "Compound memory (owned ledger): compound.capability_authority_surface") {
+		t.Fatalf("summary should carry compact Compound memory line, got %q", pack.SummaryMD)
+	}
+	if strings.Contains(pack.SummaryMD, "private self-model fact") {
+		t.Fatalf("summary leaked private/self-model memory: %q", pack.SummaryMD)
+	}
+}
+
 func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

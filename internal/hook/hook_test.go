@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
 	"compound/internal/envelope"
@@ -141,6 +142,60 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	}
 	if got := res.Event.SideEffects; len(got) != 3 || got[0] != res.Injection.ContextRequestRef || got[1] != res.Injection.ContextPackRef || got[2] != res.Injection.Ref {
 		t.Fatalf("side effects = %v, want request, context pack, injection refs", got)
+	}
+}
+
+func TestSessionStartInjectionIncludesRelevantCompoundMemory(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{{
+		Entity:          "compound",
+		Predicate:       "capability_authority_surface",
+		Object:          "Compound owns the capability graph runtime surface",
+		Confidence:      0.91,
+		Derivation:      "deterministic",
+		ClaimType:       "architecture",
+		Qualifiers:      map[string]string{"domain": "capability_authority"},
+		PromotionBasis:  candidates.BasisCuratedPage,
+		SourceTraceRef:  "ev_compound",
+		SnippetHash:     "sha256:compound",
+		Visibility:      "contextual",
+		ObservationDate: "2026-06-30T00:00:00Z",
+	}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	fx := Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/compound", Task: "resume compound absorption", RepoKind: "control-plane"}
+	res, err := Run(fx, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	wantLine := "Compound memory (owned ledger): compound.capability_authority_surface"
+	if !strings.Contains(res.Summary, wantLine) {
+		t.Fatalf("summary missing Compound memory line:\n%s", res.Summary)
+	}
+	if res.Injection == nil {
+		t.Fatal("session-start should persist injection with HomePath")
+	}
+	b, err := os.ReadFile(res.Injection.Path)
+	if err != nil {
+		t.Fatalf("read injection: %v", err)
+	}
+	text := string(b)
+	if !strings.Contains(text, wantLine) {
+		t.Fatalf("injection missing Compound memory line:\n%s", text)
+	}
+	if !strings.Contains(text, "claim://"+promoted.Claim.ID) {
+		t.Fatalf("injection missing claim ref claim://%s:\n%s", promoted.Claim.ID, text)
 	}
 }
 

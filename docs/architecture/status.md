@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `ContextPack` now includes relevance-gated `active_memory[]` from the owned memory ledger, separate from accepted decision refs and rented MemoryEngine breadth. `hook session-start` consumes the same pack path, so a promoted runtime claim can appear in the persisted markdown injection as `claim://...` with source stores/indexes explicitly marked evidence, not authority. Persistent proof: `hook session-start` over `fixtures/hooks/session-start.compound-memory.json` wrote `ctx_afbb98bb4cbb` / `hook_9b31f093e630`, including `claim://claim_903bb6caae25` for the Stage 1 capability authority claim; `schema validate context-pack` passed on that pack.
+
 - `compound capability surface [--harness <harness>] --json "<task>"` now exposes the read-only `CapabilityGraph` surface as machine-readable authority (`compound://registries/capability-graph`). Umut OS compatibility front doors `os capability` and `os skills --host <host>` consume that surface when available, carry the source-authority handoff into `source_of_truth`, and demote OS generated skill/capability views to fallback/evidence inputs.
 
 - `compound hook pre-tool-use --enforce <fixture>` preserves the ActionIntent/PolicyDecision/source-control evidence path but returns policy gate exit codes, so wrapper adapters can fail closed for `blocked` and `fail_open` harnesses.

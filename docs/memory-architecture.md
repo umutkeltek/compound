@@ -166,7 +166,10 @@ and existing claim ids remapped to small integers before the model sees them (it
 **SMART — task-shaped recall, not flat top-k.** Hard filters (visibility/retired/scope/time) run before any
 engine breadth. Recall then seed-matches, walks **bounded typed edges** (BFS/DFS) around the seeds, and
 returns a **token-budget-trimmed subgraph** plus a **coverage verdict** — on a gap it names the missing
-claim rather than fabricating a trace. Patterns are computed **structurally** (high-degree claims =
+claim rather than fabricating a trace. Runtime context uses the same rule: `ContextPack.active_memory[]` contains
+only current `claim://...` refs from the owned ledger that match repo/task context and repo-kind memory policy.
+Session-start hooks may render those compact claim lines, but rented source stores and MemoryEngine indexes remain
+evidence/adapters, never authority. Patterns are computed **structurally** (high-degree claims =
 load-bearing positions; high-betweenness cross-cluster bridges = contradiction/cross-domain candidates),
 no LLM required. Temperature is a **derived** score (`salience·decay + reinforcement-on-access`), not a
 hand-assigned tier, with `salience` driven by evidence-count and position-strength.
