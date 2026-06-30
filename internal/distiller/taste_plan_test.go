@@ -14,7 +14,7 @@ func TestTastePlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T) {
  "trace_ref": "trace_taste_standard",
  "candidates": [{
   "kind": "taste",
-  "subject": "product:exampleapp:visuals",
+  "subject": "product:sample-mobile-app:visuals",
   "statement": "screenshots should feel native, specific, and inspection-ready rather than generic marketing cards",
   "detail": "app_store_visuals",
   "confidence": 0.88,
@@ -51,7 +51,7 @@ func TestTastePlanRecordsReviewArtifactsWithoutMutatingTarget(t *testing.T) {
 		plan.Status != "review_required" ||
 		plan.CandidateID != tasteCandidateID ||
 		plan.CandidateVerdict != Park ||
-		plan.TasteKey != "product-exampleapp-visuals" ||
+		plan.TasteKey != "product-sample-mobile-app-visuals" ||
 		plan.StandardDraft.StandardID == "" ||
 		!strings.Contains(plan.StandardDraft.PositiveStandard, "inspection-ready") ||
 		len(plan.StandardDraft.RequiredEvidence) != 4 ||

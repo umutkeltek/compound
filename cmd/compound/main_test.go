@@ -937,7 +937,7 @@ func TestDistillerTastePlanUsesTasteCandidateWithoutMutatingTarget(t *testing.T)
  "trace_ref": "trace_taste_plan_candidate",
  "candidates": [{
   "kind": "taste",
-  "subject": "product:exampleapp:visuals",
+  "subject": "product:sample-mobile-app:visuals",
   "statement": "screenshots should feel native, specific, and inspection-ready rather than generic marketing cards",
   "detail": "app_store_visuals",
   "confidence": 0.88,
@@ -961,7 +961,7 @@ func TestDistillerTastePlanUsesTasteCandidateWithoutMutatingTarget(t *testing.T)
 	})
 	if !strings.Contains(out, "# distiller taste-plan tsp_") ||
 		!strings.Contains(out, "- status: review_required") ||
-		!strings.Contains(out, "- taste_key: product-exampleapp-visuals") ||
+		!strings.Contains(out, "- taste_key: product-sample-mobile-app-visuals") ||
 		!strings.Contains(out, "- target_exists: true") ||
 		!strings.Contains(out, "- required_evidence: 4") ||
 		!strings.Contains(out, "- evidence_refs: 2") ||
@@ -2955,7 +2955,7 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 		SourceRefs:    []string{"trace_envelope:trace_brain_write_candidate"},
 		Candidates: []distiller.LLMCandidate{{
 			Kind:         distiller.KindMemory,
-			Entity:       "project:exampleapp",
+			Entity:       "project:sample-mobile-app",
 			Predicate:    "release_gate",
 			Object:       "review App Store screenshots before release",
 			Confidence:   &confidence,
@@ -2979,11 +2979,11 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 	if len(candidateRows) != 1 || candidateRows[0].Verdict != distiller.Park {
 		t.Fatalf("parked candidates = %+v", candidateRows)
 	}
-	targetPath := filepath.Join(t.TempDir(), "brain", "products", "exampleapp.md")
+	targetPath := filepath.Join(t.TempDir(), "brain", "products", "sample-mobile-app.md")
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	original := "# ExampleApp\n\nExisting curated product memory.\n"
+	original := "# SampleMobileApp\n\nExisting curated product memory.\n"
 	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -3013,7 +3013,7 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 	}
 	if plan.SchemaVersion != mem.MeaningWritePlanSchemaVersion ||
 		plan.CandidateID != candidateRows[0].ID ||
-		plan.Entity != "project:exampleapp" ||
+		plan.Entity != "project:sample-mobile-app" ||
 		plan.TargetHash == "" ||
 		!strings.Contains(plan.ProposedMarkdown, "review App Store screenshots before release") {
 		t.Fatalf("bad meaning write plan: %+v", plan)

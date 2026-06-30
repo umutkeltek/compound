@@ -26,6 +26,31 @@ func TestDoctorGreenAgainstRealRepo(t *testing.T) {
 
 // The candidate-map check is pure (no fs) — every kind has one home dir, created by home, with a
 // consumer. This locks the B1 invariant.
+func TestDocLeakUsesSourceLeakTokensForFixtures(t *testing.T) {
+	repo := t.TempDir()
+	for _, dir := range []string{"docs", "docs_private", "fixtures"} {
+		if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs_private", "leak-tokens.txt"), []byte("docs-only-token\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs_private", "source-leak-tokens.txt"), []byte("private-product\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "fixtures", "example.yaml"), []byte("name: private-product\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkDocLeak(repo, false)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one source leak failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "fixtures/example.yaml") || !strings.Contains(findings[0].Message, "private-product") {
+		t.Fatalf("failure should name source fixture token: %+v", findings)
+	}
+}
+
 func TestCandidateMapInvariantPure(t *testing.T) {
 	r := Doctor("", false)
 	for _, f := range r.Findings {

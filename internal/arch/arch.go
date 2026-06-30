@@ -75,7 +75,11 @@ var genericLeak = regexp.MustCompile(`(?i)(/Users/[a-z]|/home/[a-z]|[a-z0-9._%+\
 // absent list leaves the gate blind to operator tool/product names (it can still catch generic
 // path/email shapes), and a public release must not pass with the gate silently disarmed.
 func loadPrivateLeakTokens(repoRoot string) (toks []string, present bool) {
-	b, err := os.ReadFile(filepath.Join(repoRoot, "docs_private", "leak-tokens.txt"))
+	return loadLeakTokens(filepath.Join(repoRoot, "docs_private", "leak-tokens.txt"))
+}
+
+func loadLeakTokens(path string) (toks []string, present bool) {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
@@ -182,9 +186,9 @@ func checkClassificationTotal(repoRoot string) []Finding {
 	return f
 }
 
-// checkDocLeak: no operator-private token in any tracked doc under docs/ (docs_private is gitignored).
-// It fails CLOSED on a missing private token list: without it the gate is blind to operator
-// tool/product names, so --strict (the public-release gate) makes the absent list fatal.
+// checkDocLeak: no operator-private token in tracked docs, and no configured
+// product/example leak token in public source fixtures/tests. docs_private is
+// gitignored; public core knows scan mechanics, not private names.
 func checkDocLeak(repoRoot string, strict bool) []Finding {
 	var f []Finding
 	privateToks, present := loadPrivateLeakTokens(repoRoot)
@@ -193,38 +197,77 @@ func checkDocLeak(repoRoot string, strict bool) []Finding {
 		if strict {
 			sev = Fail
 		}
-		f = append(f, Finding{"doc-leak", sev, "private leak-token list docs_private/leak-tokens.txt is MISSING — the operator-token gate is DISARMED (only generic path/email shapes are caught); create it (gitignored, one token per line) before any public release"})
+		f = append(f, Finding{"doc-leak", sev, "private leak-token list docs_private/leak-tokens.txt MISSING — operator-token gate DISARMED (only generic path/email shapes are caught); create it (gitignored, one token per line) before any public release"})
 	}
-	docs := filepath.Join(repoRoot, "docs")
-	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
-			return nil
-		}
-		if strings.Contains(path, "docs_private") {
-			return nil
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(repoRoot, path)
-		for i, line := range strings.Split(string(b), "\n") {
-			if m := genericLeak.FindString(line); m != "" {
-				f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
-			}
-			low := strings.ToLower(line)
-			for _, t := range privateToks {
-				if strings.Contains(low, t) {
-					f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
-				}
-			}
-		}
-		return nil
-	})
+	f = append(f, scanLeakRoots(repoRoot, []string{filepath.Join(repoRoot, "docs")}, privateToks, true)...)
+	sourceToks, sourcePresent := loadSourceLeakTokens(repoRoot)
+	if sourcePresent {
+		f = append(f, scanLeakRoots(repoRoot, sourceLeakScanRoots(repoRoot), sourceToks, false)...)
+	}
 	if len(f) == 0 {
-		f = append(f, Finding{"doc-leak", Info, "public docs clean (generic shapes + private list)"})
+		msg := "public docs clean (generic shapes + private list)"
+		if sourcePresent {
+			msg = "public docs and configured source surfaces clean (generic shapes + private lists)"
+		}
+		f = append(f, Finding{"doc-leak", Info, msg})
 	}
 	return f
+}
+
+func loadSourceLeakTokens(repoRoot string) (toks []string, present bool) {
+	return loadLeakTokens(filepath.Join(repoRoot, "docs_private", "source-leak-tokens.txt"))
+}
+
+func scanLeakRoots(repoRoot string, roots []string, privateToks []string, generic bool) []Finding {
+	var f []Finding
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || strings.Contains(path, "docs_private") {
+				return nil
+			}
+			if !leakScanFile(path) {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			rel, _ := filepath.Rel(repoRoot, path)
+			for i, line := range strings.Split(string(b), "\n") {
+				if generic {
+					if m := genericLeak.FindString(line); m != "" {
+						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks " + strconv(m)})
+					}
+				}
+				low := strings.ToLower(line)
+				for _, t := range privateToks {
+					if strings.Contains(low, t) {
+						f = append(f, Finding{"doc-leak", Fail, rel + ":" + itoa(i+1) + " leaks private token " + strconv(t)})
+					}
+				}
+			}
+			return nil
+		})
+	}
+	return f
+}
+
+func sourceLeakScanRoots(repoRoot string) []string {
+	return []string{
+		filepath.Join(repoRoot, "fixtures"),
+		filepath.Join(repoRoot, "internal"),
+		filepath.Join(repoRoot, "cmd"),
+	}
+}
+
+func leakScanFile(path string) bool {
+	ext := filepath.Ext(path)
+	switch ext {
+	case ".go", ".md", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".txt":
+		return true
+	default:
+		return false
+	}
 }
 
 // checkRetiredSurfaceReferences keeps proven-retired public surfaces from

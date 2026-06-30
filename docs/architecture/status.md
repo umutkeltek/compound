@@ -183,7 +183,7 @@ Intentionally no alias layer. Alias layers keep obsolete surfaces alive and recr
 
 - candidate-map integrity: every candidate kind has exactly one created inbox dir and consumer;
 - package classification totality: every `internal/` directory is classified, and every classified package exists;
-- public-doc leak gate: generic path/email leaks plus private leak-token list;
+- public leak gate: docs scan generic path/email leaks plus private leak-token list; optional private source-leak token list scans public fixtures/tests/source examples without hardcoding operator names into public core;
 - retired-surface guard: old skill-matrix debt cannot reappear in public docs;
 - distiller-contract guard: duplicate candidate anti-churn must remain documented beyond memory-only duplicates;
 - llm-grounding-contract guard: request-grounded candidate `evidence_refs[]` / request `source_refs[]` gating must remain documented for eval/live extraction;

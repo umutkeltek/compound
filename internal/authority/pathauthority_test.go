@@ -10,21 +10,21 @@ import (
 func TestImportPathAuthorityMergesMovedPathIntoSameEntity(t *testing.T) {
 	existing := []mem.Entity{
 		{
-			Slug:        "project:example-app",
+			Slug:        "project:sample-mobile-app",
 			Kind:        "project",
-			Aliases:     []string{"ExampleApp"},
-			Identifiers: []string{"bundle:com.example.exampleapp", "/workspace/old/example-app"},
+			Aliases:     []string{"SampleMobileApp"},
+			Identifiers: []string{"bundle:com.example.samplemobile", "/workspace/old/sample-mobile-app"},
 			Visibility:  "operational",
 		},
 	}
-	_, entity, facts, report, err := ImportPathAuthority("../../fixtures/authority/path-authority-example-app.yaml", existing)
+	_, entity, facts, report, err := ImportPathAuthority("../../fixtures/authority/path-authority-sample-mobile-app.yaml", existing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "ok" || report.EntityRef != "project:example-app" {
+	if report.Status != "ok" || report.EntityRef != "project:sample-mobile-app" {
 		t.Fatalf("report = %+v", report)
 	}
-	for _, want := range []string{"https://example.invalid/example-app.git", "git_remote:https://example.invalid/example-app.git", "com.example.exampleapp", "/workspace/old/example-app", "/workspace/new/example-app", "host:macbook"} {
+	for _, want := range []string{"https://example.invalid/sample-mobile-app.git", "git_remote:https://example.invalid/sample-mobile-app.git", "com.example.samplemobile", "/workspace/old/sample-mobile-app", "/workspace/new/sample-mobile-app", "host:macbook"} {
 		if !hasString(entity.Identifiers, want) {
 			t.Fatalf("identifiers missing %q: %v", want, entity.Identifiers)
 		}
