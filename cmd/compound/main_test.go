@@ -2181,6 +2181,33 @@ func TestCapabilityImportEvaluationsRecordsGraphEvidenceAndSourceNoPromote(t *te
 	}
 }
 
+func TestCapabilityImportEvaluationsSurfacesUnknownReviewDebt(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-evaluations", filepath.Join("..", "..", "fixtures", "capability-evaluations", "web-design-guidelines.json")})
+	})
+	for _, want := range []string{
+		"- status: review",
+		"- evaluations_read: 1",
+		"- applied_evaluations: 0",
+		"- skipped_unknown_count: 1",
+		"- skipped_unknown: web-design-guidelines",
+		"- source_no_promote:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-evaluations output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("unknown evaluation import must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -357,6 +357,7 @@ func cmdCapability(args []string) {
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- evaluations_read: %d\n", report.EvaluationsRead)
 		fmt.Printf("- applied_evaluations: %d\n", report.AppliedEvaluations)
+		fmt.Printf("- skipped_unknown_count: %d\n", len(report.SkippedUnknown))
 		for _, id := range report.EvaluationNodeIDs {
 			fmt.Printf("- eval_node: %s\n", id)
 		}

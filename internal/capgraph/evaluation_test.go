@@ -64,7 +64,7 @@ func TestApplyCapabilityEvaluationsRecordsEvalEdgesForKnownNodesOnly(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.EvaluationsRead != 2 || report.AppliedEvaluations != 1 || len(report.SkippedUnknown) != 1 {
+	if report.Status != "review" || report.EvaluationsRead != 2 || report.AppliedEvaluations != 1 || len(report.SkippedUnknown) != 1 {
 		t.Fatalf("report = %+v", report)
 	}
 	edges := readCapEdges(t, home)

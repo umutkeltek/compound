@@ -242,6 +242,9 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 		report.AppliedEvaluations++
 	}
 	sort.Strings(report.SkippedUnknown)
+	if len(report.SkippedUnknown) > 0 {
+		report.Status = "review"
+	}
 	return report, nil
 }
 
