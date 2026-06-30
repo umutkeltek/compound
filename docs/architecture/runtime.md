@@ -8,6 +8,10 @@ purpose — fragmenting "generated-state", "envelopes", and "hooks" into three w
 installs proven generated hook rosters as `compound://config/installed-hooks`; after import, `contract compile`
 and runtime ContextPacks read the Compound-owned manifest while generated sources remain evidence/rollback input.
 
+`compound policy import-operator-state <operator-state.json>` installs the global autonomy ceiling
+`compound://registries/operator-state` under `COMPOUND_HOME`; policy evaluation cites that authority and uses
+it as a ceiling, not a bypass for public, spend, destructive, or security holds.
+
 ---
 
 ## 1. `COMPOUND_HOME` / `.compound` — the runtime body
@@ -159,6 +163,8 @@ compound work create --intent "audit generated-state layout"
 compound policy evaluate fixtures/action-intent/local-doc-write.json
 compound policy import-placement-rules fixtures/policy/placement-rules.json
 compound policy placement-authority
+compound policy import-operator-state fixtures/policy/operator-state-l1.json
+compound policy operator-authority
 compound receipt create  fixtures/receipt/state-delta.json
 compound transition create fixtures/transition/basic.json
 compound transition show <id>

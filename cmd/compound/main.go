@@ -195,7 +195,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
-  compound policy <evaluate|import-placement-rules|placement-authority> ActionIntent -> PolicyDecision; import owner placement rules
+	compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
@@ -2512,7 +2512,7 @@ func loadActionIntent(path string) envelope.ActionIntent {
 // (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -2587,8 +2587,73 @@ func cmdPolicy(args []string) {
 		}
 		report.SourceAuthority = records
 		printJSON(report)
+	case "import-operator-state":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound policy import-operator-state <operator-state.json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report, err := policy.ImportOperatorState(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+	case "operator-authority":
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound policy operator-authority")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		type operatorAuthorityReport struct {
+			AuthorityRef     string                                      `json:"authority_ref"`
+			AuthorityPath    string                                      `json:"authority_path"`
+			Installed        bool                                        `json:"installed"`
+			AutonomyLevel    string                                      `json:"autonomy_level,omitempty"`
+			Mode             string                                      `json:"mode,omitempty"`
+			NeedsUmutCount   int                                         `json:"needs_umut_count,omitempty"`
+			BlockedCount     int                                         `json:"blocked_count,omitempty"`
+			SourceAuthority  []policy.OperatorStateSourceAuthorityRecord `json:"source_authority,omitempty"`
+			SourceRecordPath string                                      `json:"source_record_path"`
+		}
+		report := operatorAuthorityReport{
+			AuthorityRef:     policy.OperatorStateAuthorityRef,
+			AuthorityPath:    policy.OperatorStatePath(homePath),
+			SourceRecordPath: policy.OperatorStateSourceAuthorityPath(homePath),
+		}
+		state, err := policy.LoadOperatorStateFromHome(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.Installed = true
+			report.AutonomyLevel = policy.OperatorStateLevel(state)
+			report.Mode = state.Mode
+			report.NeedsUmutCount = len(state.NeedsUmut)
+			report.BlockedCount = len(state.Blocked)
+		}
+		records, err := policy.LoadOperatorStateSourceAuthority(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.SourceAuthority = records
+		}
+		printJSON(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ...")
 		os.Exit(2)
 	}
 }

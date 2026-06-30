@@ -888,6 +888,71 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 	}
 }
 
+func TestPolicyOperatorStateAuthorityFeedsPolicyConfig(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	source := filepath.Join("..", "..", "fixtures", "policy", "operator-state-l1.json")
+	importOut := captureStdout(t, func() {
+		cmdPolicy([]string{"import-operator-state", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/operator-state"`,
+		`"autonomy_level": "L1"`,
+		`"authority_status": "compound_primary"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import operator-state output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	authorityOut := captureStdout(t, func() {
+		cmdPolicy([]string{"operator-authority"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"autonomy_level": "L1"`,
+		`"source_role": "evidence_only_input_after_import"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("operator authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+
+	cfg := policyConfig()
+	ai := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            "act_operator_state",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
+			IDs:           envelope.IDs{WorkID: "work_operator_state"},
+			Authority:     envelope.Authority{SourceClass: "runtime"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "codex",
+		Capability:    "filesystem.write",
+		Action:        "write_file",
+		Target:        envelope.ActionTarget{Kind: "file", Path: "docs/x.md"},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "repo",
+	}
+	pd := policy.Evaluate(ai, cfg, cliTestNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("L1 operator state should hold local reversible action, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !stringSliceContains(pd.EvidenceRefs, policy.OperatorStateAuthorityRef) {
+		t.Fatalf("policy decision missing operator-state authority evidence: %v", pd.EvidenceRefs)
+	}
+	if !strings.Contains(strings.Join(pd.Reasons, " "), "operator autonomy ceiling L1") {
+		t.Fatalf("policy decision missing autonomy reason: %v", pd.Reasons)
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

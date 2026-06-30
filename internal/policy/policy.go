@@ -48,12 +48,15 @@ type StandingGrant struct {
 // Config is the declarative policy. Shipped as a leak-free built-in default; overridable
 // from COMPOUND_HOME/config/policy.yaml.
 type Config struct {
-	ForbiddenPaths       []string             `yaml:"forbidden_paths" json:"forbidden_paths"`
-	ClassOutcome         map[string]ClassRule `yaml:"class_outcome" json:"class_outcome"`
-	HumanReversibilities []string             `yaml:"human_reversibilities" json:"human_reversibilities"`
-	WideBlastRadii       []string             `yaml:"wide_blast_radii" json:"wide_blast_radii"`
-	StandingGrants       []StandingGrant      `yaml:"standing_grants" json:"standing_grants"`
-	PlacementGuardMode   string               `yaml:"placement_guard_mode,omitempty" json:"placement_guard_mode,omitempty"`
+	ForbiddenPaths               []string             `yaml:"forbidden_paths" json:"forbidden_paths"`
+	ClassOutcome                 map[string]ClassRule `yaml:"class_outcome" json:"class_outcome"`
+	HumanReversibilities         []string             `yaml:"human_reversibilities" json:"human_reversibilities"`
+	WideBlastRadii               []string             `yaml:"wide_blast_radii" json:"wide_blast_radii"`
+	StandingGrants               []StandingGrant      `yaml:"standing_grants" json:"standing_grants"`
+	PlacementGuardMode           string               `yaml:"placement_guard_mode,omitempty" json:"placement_guard_mode,omitempty"`
+	OperatorAutonomyLevel        string               `yaml:"operator_autonomy_level,omitempty" json:"operator_autonomy_level,omitempty"`
+	OperatorAutonomyAuthorityRef string               `yaml:"operator_autonomy_authority_ref,omitempty" json:"operator_autonomy_authority_ref,omitempty"`
+	PolicyEvidenceRefs           []string             `yaml:"policy_evidence_refs,omitempty" json:"policy_evidence_refs,omitempty"`
 }
 
 // DefaultConfig satisfies the three documented proof cases:
@@ -117,11 +120,17 @@ func LoadConfig(homePath string) (Config, string, error) {
 				return Config{}, p, fmt.Errorf("parse %s: %w", p, err)
 			}
 			applyPlacementGuardEnv(&c)
+			if err := ApplyOperatorStateFromHome(&c, homePath); err != nil {
+				return Config{}, p, err
+			}
 			return c, p, nil
 		}
 	}
 	c := DefaultConfig()
 	applyPlacementGuardEnv(&c)
+	if err := ApplyOperatorStateFromHome(&c, homePath); err != nil {
+		return Config{}, "built-in", err
+	}
 	return c, "built-in", nil
 }
 
@@ -149,8 +158,8 @@ func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.
 	// 1. forbidden path -> deny (hard safety; beats even a standing grant).
 	if p := ai.Target.Path; p != "" {
 		if pat, ok := matchForbidden(cfg.ForbiddenPaths, p); ok {
-			return mkDecision(ai, "deny",
-				[]string{fmt.Sprintf("target path %q matches forbidden pattern %q", p, pat)}, nil, "", "", now)
+			return withPolicyEvidence(mkDecision(ai, "deny",
+				[]string{fmt.Sprintf("target path %q matches forbidden pattern %q", p, pat)}, nil, "", "", now), cfg)
 		}
 	}
 
@@ -158,14 +167,14 @@ func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.
 
 	// 2. standing grant -> allow only inside its explicit envelope.
 	if g, missReasons, ok := matchGrant(cfg.StandingGrants, ai, cfg, now); ok {
-		return mkDecision(ai, "allow",
+		return withPolicyEvidence(mkDecision(ai, "allow",
 			[]string{fmt.Sprintf("covered by standing grant %s (capability=%q class=%q)", g.ID, g.Capability, g.MutationClass)},
-			nil, g.ID, g.ExpiresAt, now)
+			nil, g.ID, g.ExpiresAt, now), cfg)
 	} else if len(missReasons) > 0 {
 		reasons = append(reasons, missReasons...)
 	}
 
-	return mkDecision(ai, outcome, reasons, obligations, "", "", now)
+	return withPolicyEvidence(mkDecision(ai, outcome, reasons, obligations, "", "", now), cfg)
 }
 
 func baselineOutcome(ai envelope.ActionIntent, cfg Config) (string, []string, []string) {
@@ -177,6 +186,13 @@ func baselineOutcome(ai envelope.ActionIntent, cfg Config) (string, []string, []
 		reasons = append(reasons, fmt.Sprintf("baseline for mutation_class %q is %s", ai.MutationClass, base.Outcome))
 	} else {
 		reasons = append(reasons, fmt.Sprintf("mutation_class %q has no rule; failing closed to hold", ai.MutationClass))
+	}
+	if level := strings.TrimSpace(cfg.OperatorAutonomyLevel); level != "" && ai.MutationClass != "read" {
+		source := strings.TrimSpace(cfg.OperatorAutonomyAuthorityRef)
+		if source == "" {
+			source = "policy config"
+		}
+		reasons = append(reasons, fmt.Sprintf("operator autonomy ceiling %s from %s applies", level, source))
 	}
 
 	// 4. reversibility escalation (D3): a non-read mutation that is operator-owned-reversibility
@@ -259,6 +275,13 @@ func Gate(pd envelope.PolicyDecision) error {
 		return nil
 	}
 	return &Blocked{Outcome: pd.Outcome, Reasons: pd.Reasons}
+}
+
+func withPolicyEvidence(pd envelope.PolicyDecision, cfg Config) envelope.PolicyDecision {
+	if len(cfg.PolicyEvidenceRefs) > 0 {
+		pd.EvidenceRefs = mergeStrings(pd.EvidenceRefs, cfg.PolicyEvidenceRefs...)
+	}
+	return pd
 }
 
 func applyPlacementGuardContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, cfg Config, pg PlacementGuardContext, now time.Time) envelope.PolicyDecision {
