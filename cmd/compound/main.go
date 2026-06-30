@@ -148,7 +148,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound policy evaluate <action-intent.json>                 ActionIntent -> PolicyDecision
   compound hook <name> <fixture.json>                           run lifecycle hook over fixture
-  compound harness <list|NAME|observe>                          HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
+  compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
@@ -1800,8 +1800,8 @@ func cmdHarness(args []string) {
 		target = args[0]
 	}
 	if target == "observe" {
-		if len(args) > 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound harness observe [harness-registry.yaml]")
+		if len(args) > 3 {
+			fmt.Fprintln(os.Stderr, "usage: compound harness observe [harness-registry.yaml|--os-entrypoints file]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -1811,11 +1811,20 @@ func cmdHarness(args []string) {
 		}
 		now := time.Now()
 		obs := sourceobs.FromHarnessRegistry(reg, now)
-		if len(args) == 2 {
+		switch {
+		case len(args) == 2:
 			manifest, err := harness.LoadRegistryManifest(args[1])
 			die(err)
 			obs, err = sourceobs.FromHarnessRegistryManifest(manifest, now)
 			die(err)
+		case len(args) == 3 && args[1] == "--os-entrypoints":
+			manifest, err := harness.LoadOSEntrypointsManifest(args[2])
+			die(err)
+			obs, err = sourceobs.FromHarnessRegistryManifest(manifest, now)
+			die(err)
+		case len(args) == 3:
+			fmt.Fprintln(os.Stderr, "usage: compound harness observe [harness-registry.yaml|--os-entrypoints file]")
+			os.Exit(2)
 		}
 		report, err := sourceobs.Apply(homePath, obs, now)
 		die(err)

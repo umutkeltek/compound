@@ -120,3 +120,57 @@ harnesses:
 		t.Fatalf("defaulted source ref/evidence = %+v refs=%v", manifest.SourceRef, manifest.EvidenceRefs)
 	}
 }
+
+func TestLoadOSEntrypointsManifest(t *testing.T) {
+	manifest, err := LoadOSEntrypointsManifest(filepath.Join("..", "..", "fixtures", "harness", "os-harness-entrypoints.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.SchemaVersion != RegistryManifestSchemaVersion || manifest.ID != "os-harness-entrypoints" || manifest.AdapterID != OSEntrypointsAdapterID {
+		t.Fatalf("manifest identity = %q/%q/%q", manifest.SchemaVersion, manifest.ID, manifest.AdapterID)
+	}
+	if manifest.SourceRef.SourceClass != "os-harness-entrypoints" || !strings.HasPrefix(manifest.SourceRef.Revision, "sha256:") {
+		t.Fatalf("source ref = %+v", manifest.SourceRef)
+	}
+	reg, err := manifest.Registry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg.Supports("claude_code", "SessionStart") || !reg.Supports("codex", "SessionStart") {
+		t.Fatalf("entrypoint adapter should mark session-start context available")
+	}
+	if reg.Supports("claude_code", "PreToolUse") || reg.Supports("codex", "PostToolUse") || reg.Supports("hermes", "SessionEnd") {
+		t.Fatalf("OS entrypoint adapter should not infer hook/MCP/receipt capabilities")
+	}
+	claude, ok := reg.Get("claude_code")
+	if !ok {
+		t.Fatalf("claude source id should canonicalize to claude_code")
+	}
+	if !strings.Contains(claude.InstructionMechanism, "entrypoint:") || !hasString(claude.Limitations, "source_id=claude") {
+		t.Fatalf("claude manifest row = %+v", claude)
+	}
+}
+
+func TestLoadOSEntrypointsManifestRejectsEmptyEntrypoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "harness-entrypoints.yaml")
+	data := []byte(`version: 2
+harnesses:
+  codex:
+    status: generated_applied
+`)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadOSEntrypointsManifest(path); err == nil || !strings.Contains(err.Error(), "needs entrypoint") {
+		t.Fatalf("empty entrypoint err = %v", err)
+	}
+}
+
+func hasString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

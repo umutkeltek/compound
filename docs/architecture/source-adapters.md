@@ -146,10 +146,12 @@ tools — belongs in that operator's private overlay (`docs_private/`), never in
 this public doc. Public adapters use synthetic fixtures and relative paths.
 
 Harness capability registries follow the same source-observation rule:
-`compound harness observe [registry.yaml]` records built-in or normalized external
-hook/context/skill/MCP support and limitations as `SourceObservation ->
-capability_observation candidate -> NoPromoteDecision`. It does not install hooks,
-mutate CapabilityGraph nodes, or make registry defaults authority.
+`compound harness observe [registry.yaml|--os-entrypoints file]` records built-in,
+normalized external, or OS-style harness entrypoint support and limitations as
+`SourceObservation -> capability_observation candidate -> NoPromoteDecision`. OS-style
+entrypoint imports conservatively infer only `session_start_context` from entrypoint
+presence and preserve generator/check/status as limitations. The adapter does not
+install hooks, mutate CapabilityGraph nodes, or make registry defaults authority.
 
 ## First Acceptance Test
 

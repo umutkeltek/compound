@@ -20,6 +20,8 @@ import (
 
 const RegistryManifestSchemaVersion = "compound.harness_registry.v0.1"
 
+const OSEntrypointsAdapterID = "compound.os-harness-entrypoints"
+
 // Capabilities is what a harness can verifiably do across the hook lifecycle.
 type Capabilities struct {
 	SessionStartContext bool `json:"session_start_context"`
@@ -60,6 +62,25 @@ type RegistryManifest struct {
 	SourceRef     ManifestSourceRef `json:"source_ref" yaml:"source_ref"`
 	Harnesses     []ManifestHarness `json:"harnesses" yaml:"harnesses"`
 	EvidenceRefs  []string          `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
+}
+
+type OSEntrypointsFile struct {
+	Version      int                        `yaml:"version"`
+	Generated    bool                       `yaml:"generated"`
+	Status       string                     `yaml:"status"`
+	LastReviewed string                     `yaml:"last_reviewed"`
+	ReviewAfter  string                     `yaml:"review_after"`
+	ExpiresAt    string                     `yaml:"expires_at"`
+	MustInclude  string                     `yaml:"must_include"`
+	Harnesses    map[string]OSEntrypointRow `yaml:"harnesses"`
+}
+
+type OSEntrypointRow struct {
+	Entrypoint string `yaml:"entrypoint"`
+	Status     string `yaml:"status"`
+	Generator  string `yaml:"generator"`
+	Check      string `yaml:"check"`
+	ExpiresAt  string `yaml:"expires_at"`
 }
 
 type ManifestHarness struct {
@@ -156,6 +177,60 @@ func LoadRegistryManifest(path string) (RegistryManifest, error) {
 	return manifest, nil
 }
 
+func LoadOSEntrypointsManifest(path string) (RegistryManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return RegistryManifest{}, fmt.Errorf("read OS harness entrypoints %s: %w", path, err)
+	}
+	var source OSEntrypointsFile
+	if err := yaml.Unmarshal(data, &source); err != nil {
+		return RegistryManifest{}, fmt.Errorf("parse OS harness entrypoints %s: %w", path, err)
+	}
+	if len(source.Harnesses) == 0 {
+		return RegistryManifest{}, fmt.Errorf("OS harness entrypoints needs at least one harness")
+	}
+	sum := sha256.Sum256(data)
+	revision := "sha256:" + hex.EncodeToString(sum[:])
+	manifest := RegistryManifest{
+		SchemaVersion: RegistryManifestSchemaVersion,
+		ID:            "os-harness-entrypoints",
+		AdapterID:     OSEntrypointsAdapterID,
+		SourceSystem:  "external-os",
+		SourceRef: ManifestSourceRef{
+			Path:        path,
+			Kind:        "registry",
+			Owner:       "harness-entrypoints",
+			SourceClass: "os-harness-entrypoints",
+			Revision:    revision,
+		},
+		EvidenceRefs: []string{"os_harness_entrypoints:" + revision},
+	}
+	names := make([]string, 0, len(source.Harnesses))
+	for name := range source.Harnesses {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, sourceID := range names {
+		row := source.Harnesses[sourceID]
+		entrypoint := strings.TrimSpace(row.Entrypoint)
+		if entrypoint == "" {
+			return RegistryManifest{}, fmt.Errorf("OS harness entrypoint %q needs entrypoint", sourceID)
+		}
+		manifest.Harnesses = append(manifest.Harnesses, ManifestHarness{
+			Name:                 canonicalHarnessName(sourceID),
+			InstructionMechanism: osEntrypointInstruction(row),
+			Capabilities: ManifestCapabilities{
+				SessionStartContext: true,
+			},
+			Limitations: osEntrypointLimitations(sourceID, source, row),
+		})
+	}
+	if _, err := manifest.Registry(); err != nil {
+		return RegistryManifest{}, err
+	}
+	return manifest, nil
+}
+
 func (m RegistryManifest) Registry() (Registry, error) {
 	if strings.TrimSpace(m.SchemaVersion) != RegistryManifestSchemaVersion {
 		return Registry{}, fmt.Errorf("harness registry schema_version = %q, want %q", m.SchemaVersion, RegistryManifestSchemaVersion)
@@ -219,6 +294,44 @@ func RegistryRevision(reg Registry) string {
 	data, _ := json.Marshal(snapshot)
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func canonicalHarnessName(name string) string {
+	switch strings.TrimSpace(name) {
+	case "claude":
+		return "claude_code"
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+func osEntrypointInstruction(row OSEntrypointRow) string {
+	parts := []string{"entrypoint:" + strings.TrimSpace(row.Entrypoint)}
+	if strings.TrimSpace(row.Generator) != "" {
+		parts = append(parts, "generator:"+strings.TrimSpace(row.Generator))
+	}
+	return strings.Join(parts, " ")
+}
+
+func osEntrypointLimitations(sourceID string, source OSEntrypointsFile, row OSEntrypointRow) []string {
+	var out []string
+	add := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, key+"="+value)
+		}
+	}
+	add("source_id", sourceID)
+	add("registry_status", source.Status)
+	add("entrypoint_status", row.Status)
+	add("must_include", source.MustInclude)
+	add("check", row.Check)
+	add("generator", row.Generator)
+	add("last_reviewed", source.LastReviewed)
+	add("review_after", source.ReviewAfter)
+	add("registry_expires_at", source.ExpiresAt)
+	add("entrypoint_expires_at", row.ExpiresAt)
+	return out
 }
 
 // Generic is the fallback for an unknown harness: assume fail-open, enforce everything in
