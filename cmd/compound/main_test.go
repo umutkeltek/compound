@@ -31,6 +31,85 @@ import (
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
+func TestSchemaCLIExportAndValidate(t *testing.T) {
+	listOut := captureStdout(t, func() {
+		cmdSchema([]string{"list"})
+	})
+	if !strings.Contains(listOut, "context_pack") || !strings.Contains(listOut, "route_evidence") {
+		t.Fatalf("schema list output =\n%s", listOut)
+	}
+
+	exportOut := captureStdout(t, func() {
+		cmdSchema([]string{"export", "context-pack"})
+	})
+	if !strings.Contains(exportOut, `"compound://schemas/context_pack"`) || !strings.Contains(exportOut, `"capability_offers"`) {
+		t.Fatalf("schema export output =\n%s", exportOut)
+	}
+
+	dir := t.TempDir()
+	allOut := captureStdout(t, func() {
+		cmdSchema([]string{"export", "--all", "--dir", dir})
+	})
+	if !strings.Contains(allOut, "context_pack.schema.json") {
+		t.Fatalf("schema export --all output =\n%s", allOut)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "route_evidence.schema.json")); err != nil {
+		t.Fatalf("missing exported route schema: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "context-pack.json")
+	data, err := json.Marshal(validCLIContextPack())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	validateOut := captureStdout(t, func() {
+		cmdSchema([]string{"validate", "context-pack", path})
+	})
+	if !strings.Contains(validateOut, "ok (context-pack)") {
+		t.Fatalf("schema validate output =\n%s", validateOut)
+	}
+}
+
+func validCLIContextPack() envelope.ContextPack {
+	return envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            "ctx_cli_schema",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound", Version: "test"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD: "schema cli test",
+		Included: []envelope.IncludedRef{{
+			Ref:         "capability://skill:test",
+			SourceClass: "generated",
+			Reason:      "schema test",
+			Confidence:  1,
+			Status:      "current",
+		}},
+		Excluded: []envelope.ExcludedRef{},
+		CapabilityOffers: []envelope.CapabilityOffer{{
+			Ref:          "capability://skill:test",
+			Kind:         "skill",
+			Name:         "Test Skill",
+			Score:        1,
+			Why:          "trigger",
+			CostRiskNote: "offer only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision",
+		}},
+		ActiveInstructions: []string{},
+		ActiveDecisions:    []string{},
+		RequiredChecks:     []string{},
+		Avoid:              []string{},
+	}
+}
+
 func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -37,6 +37,7 @@ import (
 	"compound/internal/projection"
 	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
+	"compound/internal/schema"
 	"compound/internal/sourceobs"
 	"compound/internal/tooltopology"
 	"compound/internal/work"
@@ -75,6 +76,8 @@ func main() {
 		cmdHome(os.Args[2:])
 	case "envelope":
 		cmdEnvelope(os.Args[2:])
+	case "schema":
+		cmdSchema(os.Args[2:])
 	case "contract":
 		cmdContract(os.Args[2:])
 	case "orient":
@@ -143,6 +146,7 @@ usage:
   compound version
   compound home <init|doctor|where|backup|export|verify|restore|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
+  compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract compile --harness H --cwd D --task T        compile EffectiveContract in force
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
@@ -3080,6 +3084,61 @@ func cmdEnvelope(args []string) {
 		}
 	default:
 		fmt.Fprintln(os.Stderr, "usage: compound envelope <validate <file>...|kinds>")
+		os.Exit(2)
+	}
+}
+
+func cmdSchema(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound schema <list|export|validate> ...")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "list":
+		for _, c := range schema.Contracts() {
+			fmt.Printf("%-20s %s\n", c.Name, c.Description)
+		}
+	case "export":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound schema export <name>|--all [--dir <dir>]")
+			os.Exit(2)
+		}
+		if args[1] == "--all" {
+			dir := flagValue(args[2:], "--dir")
+			if dir == "" {
+				all := map[string]any{}
+				for _, c := range schema.Contracts() {
+					doc, err := schema.Export(c.Name)
+					die(err)
+					all[c.Name] = doc
+				}
+				printJSON(all)
+				return
+			}
+			die(os.MkdirAll(dir, 0o755))
+			for _, c := range schema.Contracts() {
+				doc, err := schema.Export(c.Name)
+				die(err)
+				b, err := json.MarshalIndent(doc, "", "  ")
+				die(err)
+				path := filepath.Join(dir, c.Name+".schema.json")
+				die(os.WriteFile(path, append(b, '\n'), 0o644))
+				fmt.Printf("- %s\n", path)
+			}
+			return
+		}
+		doc, err := schema.Export(args[1])
+		die(err)
+		printJSON(doc)
+	case "validate":
+		if len(args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: compound schema validate <name> <file>")
+			os.Exit(2)
+		}
+		die(schema.Validate(args[1], args[2]))
+		fmt.Printf("%s: ok (%s)\n", args[2], args[1])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound schema <list|export|validate> ...")
 		os.Exit(2)
 	}
 }

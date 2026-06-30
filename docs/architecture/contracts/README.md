@@ -13,8 +13,7 @@ vertical slice needs it (`../../roadmap/phases.md`).
 
 Context orientation resolves repo kind by explicit flag, committed `.compound/repo.yaml`, private `COMPOUND_HOME/config/repo-kinds.yaml`, then product default. Product repos exclude control-plane governance refs with recorded reasons; control-plane repos include them.
 
-These are the typed objects every harness/hook/run flows through, hung off one root **`work_id`**. Full JSON
-schemas: `../runtime.md`.
+These are the typed objects every harness/hook/run flows through, hung off one root **`work_id`**. Export machine-readable JSON Schemas with `compound schema export <name>` or `compound schema export --all --dir <dir>`; validate concrete files with `compound schema validate <name> <file>`. Runtime semantics still live in the owning package validators.
 
 Hook adapters normalize relative `ActionIntent.target.path` values against hook `cwd` before policy evaluation,
 artifact persistence, and source-control inspection. Policy reasons, stored ActionIntent artifacts, and git evidence
