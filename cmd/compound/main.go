@@ -366,16 +366,19 @@ func cmdCapability(args []string) {
 	case "import-skills":
 		now := time.Now()
 		osSkillPath := flag("--os-skill-json")
-		p := posn(map[string]bool{"--os-skill-json": true})
+		osPluginBoardPath := flag("--os-plugin-board-json")
+		p := posn(map[string]bool{"--os-skill-json": true, "--os-plugin-board-json": true})
 		var manifest capgraph.SkillManifest
 		var err error
 		switch {
 		case osSkillPath != "" && len(p) == 0:
 			manifest, err = capgraph.LoadOSSkillManifest(osSkillPath, now)
-		case osSkillPath == "" && len(p) == 1:
+		case osPluginBoardPath != "" && len(p) == 0:
+			manifest, err = capgraph.LoadOSPluginBoard(osPluginBoardPath, now)
+		case osSkillPath == "" && osPluginBoardPath == "" && len(p) == 1:
 			manifest, err = capgraph.LoadSkillManifest(p[0])
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml> | --os-skill-json <skill-manifest.json>")
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml> | --os-skill-json <skill-manifest.json> | --os-plugin-board-json <skills-selection-board.json>")
 			os.Exit(2)
 		}
 		die(err)

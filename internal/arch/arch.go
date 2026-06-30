@@ -113,6 +113,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkKnowledgePageContract(repoRoot)...)
 		f = append(f, checkWorkPacketContract(repoRoot)...)
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
+		f = append(f, checkPluginServingContract(repoRoot)...)
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
 		f = append(f, checkHookSourceControlContract(repoRoot)...)
@@ -588,6 +589,51 @@ func checkMCPorterTopologyContract(repoRoot string) []Finding {
 		return []Finding{{"mcporter-topology-contract", Fail, "public docs do not describe mcporter list --json topology import with non-surfacing auth/error/offline servers, SourceObservation/no-promote, and no MCP execution/config mutation"}}
 	}
 	return []Finding{{"mcporter-topology-contract", Info, "mcporter catalog import stays observational non-executing capability graph evidence"}}
+}
+
+// checkPluginServingContract keeps plugin enable-state as inventory evidence,
+// not an executable capability offer. Plugin adapters may be observed by the
+// graph, but they must stay non-surfacing and never mutate harness configs.
+func checkPluginServingContract(repoRoot string) []Finding {
+	hasPluginBoard := false
+	hasRetiredAdapter := false
+	hasNoPromote := false
+	hasNoSurface := false
+	hasNoExecution := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "os-plugin-board-json") || strings.Contains(low, "skills-selection-board.json") {
+			hasPluginBoard = true
+		}
+		if strings.Contains(low, "retired `adapter`") || strings.Contains(low, "retired adapter") {
+			hasRetiredAdapter = true
+		}
+		if strings.Contains(low, "sourceobservation") && (strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote")) {
+			hasNoPromote = true
+		}
+		if strings.Contains(low, "non-surfacing") || strings.Contains(low, "zero `adapter:plugin:*` offers") {
+			hasNoSurface = true
+		}
+		if strings.Contains(low, "non-executing") ||
+			strings.Contains(low, "must not surface plugin adapters") ||
+			strings.Contains(low, "execute plugins") ||
+			strings.Contains(low, "mutate harness/plugin configs") {
+			hasNoExecution = true
+		}
+		return nil
+	})
+	if !hasPluginBoard || !hasRetiredAdapter || !hasNoPromote || !hasNoSurface || !hasNoExecution {
+		return []Finding{{"plugin-serving-contract", Fail, "public docs do not describe OS plugin board import as retired adapter inventory with SourceObservation/no-promote, non-surfacing offers, and no plugin execution/config mutation"}}
+	}
+	return []Finding{{"plugin-serving-contract", Info, "plugin serving inventory stays non-surfacing capability graph evidence"}}
 }
 
 // checkMemoryEngineContract keeps rented memory engines observable without

@@ -8,6 +8,7 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound capability import-skills --os-plugin-board-json <skills-selection-board.json>` now adapts OS plugin serving matrix rows into retired `adapter` nodes in the existing `CapabilityGraph`, preserving enabled harness edges as inventory evidence while keeping plugin adapters non-surfacing and non-executing. Persistent proof imported 18 plugin rows with source authority `capsrc_f8297f7122c7`; `capability surface --json "open browser plugin"` returned zero `adapter:plugin:*` offers.
 - OS served-reader proof for operator-state now exists: `os status --json` carries `operator_state.authority_ref=compound://registries/operator-state`, `source_authority_id=opsrc_2ab1a37a42a2`, and marks `registry/operator-state.json` fallback/evidence-only while the plain status line reports `operator autonomy L3 from compound://registries/operator-state`.
 - OS `/operate` served UI now renders the same Compound operator authority strip (`authority_ref`, `autonomy_level`, `source_authority_id`, fallback/evidence-only registry role), proving the dashboard consumer path reads Compound primary authority instead of leaving the handoff only in CLI/status JSON.
 

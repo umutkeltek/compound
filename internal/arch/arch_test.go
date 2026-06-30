@@ -966,3 +966,39 @@ func TestDistillerImprovementReviewContractFailsWithoutGate(t *testing.T) {
 		t.Fatalf("failure should name missing review/proof guards: %+v", findings)
 	}
 }
+
+func TestPluginServingContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "plugin-serving-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("plugin serving contract failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected plugin-serving-contract finding")
+	}
+}
+
+func TestPluginServingContractFailsWhenDocsMakePluginsExecutable(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound capability import-skills --os-plugin-board-json <skills-selection-board.json>` imports plugins as active offers.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkPluginServingContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "retired adapter") || !strings.Contains(findings[0].Message, "non-surfacing") {
+		t.Fatalf("failure should name retired/non-surfacing plugin boundary: %+v", findings)
+	}
+}

@@ -2583,6 +2583,38 @@ func TestCapabilityImportSkillsRecordsSourceAuthority(t *testing.T) {
 	}
 }
 
+func TestCapabilityImportPluginBoardRecordsSourceAuthority(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", "--os-plugin-board-json", filepath.Join("..", "..", "fixtures", "skills", "os-plugin-board.json")})
+	})
+	if !strings.Contains(out, "- source_authority:") || !strings.Contains(out, "- node: adapter:plugin:browser-openai-bundled") {
+		t.Fatalf("plugin-board import output missing authority/node marker:\n%s", out)
+	}
+	records, err := capgraph.LoadSourceAuthority(homePath)
+	if err != nil {
+		t.Fatalf("load source authority: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("source authority records = %d, want 1", len(records))
+	}
+	rec := records[0]
+	if rec.SourceClass != "os-plugin-serving-board-json" || rec.SourceObservationID == "" || len(rec.NoPromoteIDs) != 1 {
+		t.Fatalf("plugin authority marker missing proof fields: %+v", rec)
+	}
+	if !stringSliceContains(rec.NodeIDs, "adapter:plugin:browser-openai-bundled") {
+		t.Fatalf("plugin authority missing adapter node: %+v", rec.NodeIDs)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("plugin-board import must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestCapabilityImportTopologyRecordsSourceObservationNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
