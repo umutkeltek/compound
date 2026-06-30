@@ -572,3 +572,58 @@ func TestHarnessEntrypointContractRejectsCapabilityOverclaim(t *testing.T) {
 		t.Fatalf("failure should name missing session-start-only guard: %+v", findings)
 	}
 }
+
+func TestProductContractContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "product-contract-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("product contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected product-contract-contract finding")
+	}
+}
+
+func TestProductContractContractFailsWithoutReleaseSource(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`product import --project-contract <project.yaml>` records deterministic identity surface channel privacy and never analytics signals or causality.\n"
+	if err := os.WriteFile(filepath.Join(docs, "source-adapters.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkProductContractContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "--release") {
+		t.Fatalf("failure should name missing release contract: %+v", findings)
+	}
+}
+
+func TestProductContractContractRejectsAnalyticsCausalityOverclaim(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`product import --project-contract <project.yaml> --release <release.yaml>` records deterministic identity surface channel privacy and creates analytics signals with causal attribution.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkProductContractContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "no analytics signals or causality") {
+		t.Fatalf("failure should name analytics/causality guard: %+v", findings)
+	}
+}

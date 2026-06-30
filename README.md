@@ -130,7 +130,8 @@ The ledger is authority. Engines are rebuildable views.
   doc leak checks, candidate-map integrity, retired-surface/distiller-contract/
   llm-grounding-contract/route-outcome-contract/knowledge-page-contract/
   packet-work-contract/mcporter-topology-contract/memory-engine-contract/
-  harness-entrypoint-contract guards, and a convergence budget of `0`.
+  harness-entrypoint-contract/product-contract-contract guards, and a convergence
+  budget of `0`.
 - `compound memory doctor` verifies the memory hop: capture, promotion,
   retrieval, authority, and optional engine sync.
 

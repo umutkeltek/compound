@@ -111,6 +111,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
+		f = append(f, checkProductContractContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -635,6 +636,57 @@ func checkHarnessEntrypointContract(repoRoot string) []Finding {
 		return []Finding{{"harness-entrypoint-contract", Fail, "public docs do not describe --os-entrypoints as session-start-only SourceObservation/no-promote evidence with no hook install and no inferred hook/MCP/skill capability"}}
 	}
 	return []Finding{{"harness-entrypoint-contract", Info, "OS harness entrypoints stay evidence-only session-start context"}}
+}
+
+// checkProductContractContract keeps project/release source contracts from
+// becoming product analytics or strategy authority. They may register product
+// identity and deterministic surfaces/channels/privacy, but signals,
+// hypotheses, causality, and actions must enter through product signal/review.
+func checkProductContractContract(repoRoot string) []Finding {
+	hasProjectContractImport := false
+	hasReleaseImport := false
+	hasDeterministicFields := false
+	hasNoAnalytics := false
+	hasNoCausality := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "product import") && strings.Contains(low, "--project-contract") {
+			hasProjectContractImport = true
+		}
+		if strings.Contains(low, "--release") || strings.Contains(low, "release contract") {
+			hasReleaseImport = true
+		}
+		if strings.Contains(low, "deterministic") &&
+			strings.Contains(low, "identity") &&
+			strings.Contains(low, "surface") &&
+			strings.Contains(low, "channel") &&
+			strings.Contains(low, "privacy") {
+			hasDeterministicFields = true
+		}
+		if strings.Contains(low, "never analytics signals") ||
+			strings.Contains(low, "no analytics signal") ||
+			strings.Contains(low, "does not create") && strings.Contains(low, "signals") {
+			hasNoAnalytics = true
+		}
+		if strings.Contains(low, "never") && strings.Contains(low, "causality") ||
+			strings.Contains(low, "without causal attribution") ||
+			strings.Contains(low, "does not declare causality") {
+			hasNoCausality = true
+		}
+		return nil
+	})
+	if !hasProjectContractImport || !hasReleaseImport || !hasDeterministicFields || !hasNoAnalytics || !hasNoCausality {
+		return []Finding{{"product-contract-contract", Fail, "public docs do not describe product --project-contract/--release as deterministic identity/surface/channel/privacy intake only, with no analytics signals or causality"}}
+	}
+	return []Finding{{"product-contract-contract", Info, "product project/release contracts stay deterministic non-causal intake"}}
 }
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding —
