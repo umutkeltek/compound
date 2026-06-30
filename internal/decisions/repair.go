@@ -80,7 +80,7 @@ type RepairApplyOptions struct {
 }
 
 func BuildLifecycleRepairPlan(root string, now time.Time) (LifecycleRepairPlan, error) {
-	files, err := policyDecisionFiles(root)
+	files, err := EligiblePolicyDecisionFiles(root)
 	if err != nil {
 		return LifecycleRepairPlan{}, err
 	}
@@ -88,8 +88,16 @@ func BuildLifecycleRepairPlan(root string, now time.Time) (LifecycleRepairPlan, 
 }
 
 func BuildBrainLifecycleRepairPlan(paths []string, now time.Time) (LifecycleRepairPlan, error) {
+	return BuildSourceLifecycleRepairPlan(paths, "brain", now)
+}
+
+func BuildSourceLifecycleRepairPlan(paths []string, sourceKind string, now time.Time) (LifecycleRepairPlan, error) {
 	if len(paths) == 0 {
-		return LifecycleRepairPlan{}, fmt.Errorf("brain markdown path required")
+		return LifecycleRepairPlan{}, fmt.Errorf("decision source markdown path required")
+	}
+	sourceKind = strings.TrimSpace(sourceKind)
+	if sourceKind == "" {
+		sourceKind = "note"
 	}
 	abs := make([]string, 0, len(paths))
 	for _, path := range paths {
@@ -99,7 +107,7 @@ func BuildBrainLifecycleRepairPlan(paths []string, now time.Time) (LifecycleRepa
 		}
 		abs = append(abs, got)
 	}
-	return buildLifecycleRepairPlan(commonSourceRoot(abs), "brain", abs, now)
+	return buildLifecycleRepairPlan(commonSourceRoot(abs), sourceKind, abs, now)
 }
 
 func buildLifecycleRepairPlan(root, sourceKind string, files []string, now time.Time) (LifecycleRepairPlan, error) {

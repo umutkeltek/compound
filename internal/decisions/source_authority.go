@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 const DecisionSourceAuthoritySchemaVersion = "compound.decision_source_authority.v0.1"
@@ -36,6 +38,15 @@ type SourceAuthorityRecord struct {
 	EvidenceRefs        []string `json:"evidence_refs"`
 }
 
+type SourceAuthorityCoverageReport struct {
+	Status         string
+	Records        []SourceAuthorityRecord
+	Eligible       []string
+	Missing        []string
+	CountsByKind   map[string]int
+	CountsByStatus map[string]int
+}
+
 func RecordSourceAuthority(homePath string, report DecisionImportReport, importedVia string, now time.Time) (SourceAuthorityRecord, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return SourceAuthorityRecord{}, fmt.Errorf("COMPOUND_HOME required")
@@ -49,14 +60,14 @@ func RecordSourceAuthority(homePath string, report DecisionImportReport, importe
 	}
 	rec := SourceAuthorityRecord{
 		SchemaVersion:       DecisionSourceAuthoritySchemaVersion,
-		ID:                  decisionSourceAuthorityID(report.SourcePath, report.EvidenceID, report.ClaimID, importedVia),
+		ID:                  decisionSourceAuthorityID(report.SourcePath, decisionID, importedVia),
 		CreatedAt:           now.UTC().Format(time.RFC3339),
 		SourcePath:          report.SourcePath,
 		SourceKind:          firstNonEmpty(report.SourceKind, "decision_source"),
 		SourceRole:          "source_in_place_evidence",
 		ImportedVia:         firstNonEmpty(importedVia, "decisions import"),
 		AuthorityRef:        "decision://" + decisionID,
-		AuthorityStatus:     "compound_primary",
+		AuthorityStatus:     authorityStatusForImport(report),
 		DecisionID:          decisionID,
 		EvidenceID:          report.EvidenceID,
 		CandidateID:         report.CandidateID,
@@ -80,7 +91,7 @@ func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	byID := map[string]SourceAuthorityRecord{}
+	byKey := map[string]SourceAuthorityRecord{}
 	var order []string
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -93,16 +104,54 @@ func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
 		if rec.ID == "" {
 			return nil, fmt.Errorf("decision source authority record missing id")
 		}
-		if _, ok := byID[rec.ID]; !ok {
-			order = append(order, rec.ID)
+		key := sourceAuthorityKey(rec)
+		if _, ok := byKey[key]; !ok {
+			order = append(order, key)
 		}
-		byID[rec.ID] = rec
+		byKey[key] = rec
 	}
 	out := make([]SourceAuthorityRecord, 0, len(order))
-	for _, id := range order {
-		out = append(out, byID[id])
+	for _, key := range order {
+		out = append(out, byKey[key])
 	}
 	return out, nil
+}
+
+func SourceAuthorityCoverage(homePath string, eligiblePaths []string) (SourceAuthorityCoverageReport, error) {
+	records, err := LoadSourceAuthority(homePath)
+	if err != nil {
+		return SourceAuthorityCoverageReport{}, err
+	}
+	report := SourceAuthorityCoverageReport{
+		Status:         "ok",
+		Records:        records,
+		CountsByKind:   map[string]int{},
+		CountsByStatus: map[string]int{},
+	}
+	covered := map[string]bool{}
+	for _, rec := range records {
+		covered[cleanPathForCoverage(rec.SourcePath)] = true
+		report.CountsByKind[rec.SourceKind]++
+		report.CountsByStatus[rec.AuthorityStatus]++
+	}
+	eligibleSeen := map[string]bool{}
+	for _, path := range eligiblePaths {
+		clean := cleanPathForCoverage(path)
+		if clean == "" || eligibleSeen[clean] {
+			continue
+		}
+		eligibleSeen[clean] = true
+		report.Eligible = append(report.Eligible, clean)
+		if !covered[clean] {
+			report.Missing = append(report.Missing, clean)
+		}
+	}
+	sort.Strings(report.Eligible)
+	sort.Strings(report.Missing)
+	if len(report.Missing) > 0 {
+		report.Status = "missing"
+	}
+	return report, nil
 }
 
 func appendSourceAuthority(homePath string, rec SourceAuthorityRecord) error {
@@ -126,9 +175,41 @@ func decisionSourceAuthorityLog(homePath string) string {
 	return filepath.Join(homePath, "registries", "decision-source-authority.jsonl")
 }
 
-func decisionSourceAuthorityID(path, evidenceID, claimID, importedVia string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{path, evidenceID, claimID, importedVia}, "|")))
+func decisionSourceAuthorityID(path, decisionID, importedVia string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{cleanPathForCoverage(path), decisionID, importedVia}, "|")))
 	return "decsrc_" + hex.EncodeToString(sum[:])[:12]
+}
+
+func authorityStatusForImport(report DecisionImportReport) string {
+	if strings.TrimSpace(report.ClaimID) != "" && report.Verdict == candidates.Promote {
+		return "compound_primary"
+	}
+	switch report.Verdict {
+	case candidates.Park:
+		return "compound_parked"
+	case candidates.Reject:
+		return "compound_rejected"
+	default:
+		return "compound_candidate"
+	}
+}
+
+func sourceAuthorityKey(rec SourceAuthorityRecord) string {
+	if strings.TrimSpace(rec.Retires) != "" {
+		return strings.TrimSpace(rec.Retires)
+	}
+	return strings.Join([]string{cleanPathForCoverage(rec.SourcePath), rec.AuthorityRef}, "|")
+}
+
+func cleanPathForCoverage(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return filepath.Clean(path)
 }
 
 func cleanRefs(values []string) []string {

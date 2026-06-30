@@ -319,9 +319,21 @@ func nonPromoteState(verdict string) string {
 }
 
 // isDuplicatePromotion reports whether promoting c would only restate the current
-// claim (same object), so no new version is needed.
+// claim (same object and qualifiers), so no new version is needed.
 func isDuplicatePromotion(c Candidate, prior Claim, hasPrior bool) bool {
-	return hasPrior && prior.Object == c.Object
+	return hasPrior && prior.Object == c.Object && sameQualifiers(prior.Qualifiers, c.Qualifiers)
+}
+
+func sameQualifiers(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, av := range a {
+		if b[key] != av {
+			return false
+		}
+	}
+	return true
 }
 
 // promotedClaim builds the durable Claim a promotion appends at the allocated

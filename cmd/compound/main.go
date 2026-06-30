@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -108,6 +109,50 @@ func main() {
 	}
 }
 
+func sortedMapKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func decisionSourceKind(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "note"
+	}
+	return raw
+}
+
+func importDecisionSource(store *mem.Store, path, sourceKind string, now time.Time) (decisions.BrainDecisionReport, error) {
+	switch sourceKind {
+	case "note":
+		return decisions.ImportNoteDecision(store, path, now)
+	default:
+		return decisions.BrainDecisionReport{}, fmt.Errorf("unsupported decision source kind %q (supported: note)", sourceKind)
+	}
+}
+
+func importDecisionSourceDir(store *mem.Store, root, sourceKind string, now time.Time) ([]decisions.BrainDecisionReport, error) {
+	switch sourceKind {
+	case "note":
+		return decisions.ImportNoteDecisionDir(store, root, now)
+	default:
+		return nil, fmt.Errorf("unsupported decision source kind %q (supported: note)", sourceKind)
+	}
+}
+
+func eligibleDecisionSourceFiles(root, sourceKind string) ([]string, error) {
+	switch sourceKind {
+	case "note":
+		return decisions.EligibleNoteDecisionFiles(root)
+	default:
+		return nil, fmt.Errorf("unsupported decision source kind %q (supported: note)", sourceKind)
+	}
+}
+
 // cmdArchitecture runs the architecture doctor: candidate-map integrity, total package
 // classification (a new unclassified package fails), public-doc leak gate, and the visible
 // memory-stack convergence debt. Exits non-zero if any check FAILs.
@@ -178,7 +223,7 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
+  compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] RuntimeBinding health/live probes + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
@@ -3969,8 +4014,23 @@ func cmdDecisions(args []string) {
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 	case "import":
-		var brainReports []decisions.BrainDecisionReport
+		sourceKind := decisionSourceKind(value("--source-kind"))
+		var sourceReports []decisions.BrainDecisionReport
 		var sourceAuthority []decisions.SourceAuthorityRecord
+		for _, path := range values("--source") {
+			report, err := importDecisionSource(store, path, sourceKind, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decision source import:", err)
+				os.Exit(1)
+			}
+			rec, err := decisions.RecordSourceAuthority(homePath, decisions.DecisionImportReport(report), "decisions import --source", time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decision source authority:", err)
+				os.Exit(1)
+			}
+			sourceAuthority = append(sourceAuthority, rec)
+			sourceReports = append(sourceReports, report)
+		}
 		for _, path := range values("--brain") {
 			report, err := decisions.ImportBrainDecision(store, path, time.Now())
 			if err != nil {
@@ -3983,7 +4043,23 @@ func cmdDecisions(args []string) {
 				os.Exit(1)
 			}
 			sourceAuthority = append(sourceAuthority, rec)
-			brainReports = append(brainReports, report)
+			sourceReports = append(sourceReports, report)
+		}
+		for _, root := range values("--source-dir") {
+			reports, err := importDecisionSourceDir(store, root, sourceKind, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decision sources import:", err)
+				os.Exit(1)
+			}
+			for _, report := range reports {
+				rec, err := decisions.RecordSourceAuthority(homePath, decisions.DecisionImportReport(report), "decisions import --source-dir", time.Now())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "decision sources authority:", err)
+					os.Exit(1)
+				}
+				sourceAuthority = append(sourceAuthority, rec)
+			}
+			sourceReports = append(sourceReports, reports...)
 		}
 		var policyReports []decisions.DecisionImportReport
 		for _, path := range values("--policy") {
@@ -4050,7 +4126,7 @@ func cmdDecisions(args []string) {
 				parked++
 			}
 		}
-		for _, report := range brainReports {
+		for _, report := range sourceReports {
 			if report.Verdict == candidates.Promote {
 				promoted++
 			} else {
@@ -4064,15 +4140,64 @@ func cmdDecisions(args []string) {
 				parked++
 			}
 		}
-		fmt.Printf("imported %d decision candidates through spine memory (%d promoted, %d parked)\n", len(captured)+len(brainReports)+len(policyReports), promoted, parked)
-		for _, report := range brainReports {
-			fmt.Printf("- brain %s: %s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.CandidateID, report.EvidenceID, report.ClaimID)
+		fmt.Printf("processed %d decision sources through spine memory (%d primary, %d parked)\n", len(captured)+len(sourceReports)+len(policyReports), promoted, parked)
+		for _, report := range sourceReports {
+			fmt.Printf("- source %s: %s kind=%s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.SourceKind, report.CandidateID, report.EvidenceID, report.ClaimID)
 		}
 		for _, report := range policyReports {
 			fmt.Printf("- policy %s: %s status=%s candidate=%s evidence=%s claim=%s\n", report.Lifecycle.ID, report.Verdict, report.Lifecycle.Status, report.CandidateID, report.EvidenceID, report.ClaimID)
 		}
 		for _, rec := range sourceAuthority {
 			fmt.Printf("- source_authority: %s %s -> %s (%s)\n", rec.ID, rec.SourceRole, rec.AuthorityRef, rec.AuthorityStatus)
+		}
+	case "authority":
+		sourceKind := decisionSourceKind(value("--source-kind"))
+		policyDirs := values("--policy-dir")
+		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
+			policyDirs = append(policyDirs, root)
+		}
+		var eligible []string
+		eligible = append(eligible, values("--source")...)
+		eligible = append(eligible, values("--policy")...)
+		eligible = append(eligible, values("--brain")...)
+		for _, root := range policyDirs {
+			files, err := decisions.EligiblePolicyDecisionFiles(root)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions authority:", err)
+				os.Exit(1)
+			}
+			eligible = append(eligible, files...)
+		}
+		for _, root := range values("--source-dir") {
+			files, err := eligibleDecisionSourceFiles(root, sourceKind)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions authority:", err)
+				os.Exit(1)
+			}
+			eligible = append(eligible, files...)
+		}
+		report, err := decisions.SourceAuthorityCoverage(homePath, eligible)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions authority:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# decisions authority\n\n")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- records: %d\n", len(report.Records))
+		fmt.Printf("- eligible: %d\n", len(report.Eligible))
+		fmt.Printf("- covered: %d\n", len(report.Eligible)-len(report.Missing))
+		fmt.Printf("- missing: %d\n", len(report.Missing))
+		for _, kind := range sortedMapKeys(report.CountsByKind) {
+			fmt.Printf("- source_kind.%s: %d\n", kind, report.CountsByKind[kind])
+		}
+		for _, status := range sortedMapKeys(report.CountsByStatus) {
+			fmt.Printf("- authority_status.%s: %d\n", status, report.CountsByStatus[status])
+		}
+		for _, path := range report.Missing {
+			fmt.Printf("- missing_source: %s\n", path)
+		}
+		if len(report.Eligible) > 0 && len(report.Missing) > 0 {
+			os.Exit(1)
 		}
 	case "doctor":
 		writebackEnabled := hasFlag(args[1:], "--writeback")
@@ -4108,13 +4233,23 @@ func cmdDecisions(args []string) {
 			}
 		}
 	case "repair-plan":
+		sourceKind := decisionSourceKind(value("--source-kind"))
 		policyDirs := values("--policy-dir")
+		sourcePaths := append([]string{}, values("--source")...)
 		brainPaths := values("--brain")
+		for _, root := range values("--source-dir") {
+			files, err := eligibleDecisionSourceFiles(root, sourceKind)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions repair-plan:", err)
+				os.Exit(1)
+			}
+			sourcePaths = append(sourcePaths, files...)
+		}
 		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
 			policyDirs = append(policyDirs, root)
 		}
-		if len(policyDirs) == 0 && len(brainPaths) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: compound decisions repair-plan [--policy-dir <dir>] [--brain <markdown>]")
+		if len(policyDirs) == 0 && len(sourcePaths) == 0 && len(brainPaths) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound decisions repair-plan [--policy-dir <dir>] [--source <markdown>] [--source-dir <dir>] [--source-kind note] [--brain <markdown>]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -4141,6 +4276,26 @@ func cmdDecisions(args []string) {
 			fmt.Printf("  missing_review_trigger: %d\n", plan.MissingFieldCounts["review_trigger"])
 			fmt.Printf("  plan: %s\n", paths.PlanPath)
 			fmt.Printf("  review: %s\n", paths.ReviewPath)
+		}
+		if len(sourcePaths) > 0 {
+			plan, err := decisions.BuildSourceLifecycleRepairPlan(sourcePaths, sourceKind, time.Now())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions repair-plan:", err)
+				os.Exit(1)
+			}
+			paths, err := decisions.RecordLifecycleRepairPlan(homePath, plan)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "decisions repair-plan:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- source_root: %s\n", plan.SourceRoot)
+			fmt.Printf(" source_kind: %s\n", plan.SourceKind)
+			fmt.Printf(" status: %s\n", plan.Status)
+			fmt.Printf(" repairs: %d\n", plan.RepairCount)
+			fmt.Printf(" missing_falsifier: %d\n", plan.MissingFieldCounts["falsifier"])
+			fmt.Printf(" missing_review_trigger: %d\n", plan.MissingFieldCounts["review_trigger"])
+			fmt.Printf(" plan: %s\n", paths.PlanPath)
+			fmt.Printf(" review: %s\n", paths.ReviewPath)
 		}
 		if len(brainPaths) > 0 {
 			plan, err := decisions.BuildBrainLifecycleRepairPlan(brainPaths, time.Now())

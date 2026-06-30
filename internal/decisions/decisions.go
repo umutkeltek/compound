@@ -229,7 +229,7 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 	if f.Scope != "" {
 		q["scope"] = strings.TrimSpace(f.Scope)
 	}
-	cands, err := store.Capture([]mem.Candidate{{
+	cand := mem.Candidate{
 		Entity:         decisionEntity(f.ID),
 		Predicate:      "decided",
 		Object:         f.Title,
@@ -241,7 +241,13 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 		SourceTraceRef: evidence.ID,
 		SnippetHash:    digest12(f.ID + "\n" + f.Title),
 		Visibility:     "operational",
-	}}, now)
+	}
+	if existing, ok, err := existingDecisionImportReport(store, cand, path, "policy", evidence.ID); err != nil {
+		return report, err
+	} else if ok {
+		return existing, nil
+	}
+	cands, err := store.Capture([]mem.Candidate{cand}, now)
 	if err != nil {
 		return report, err
 	}
@@ -261,6 +267,8 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 	if res.Claim != nil {
 		report.ClaimID = res.Claim.ID
 		report.Lifecycle = LifecycleFromClaim(*res.Claim)
+	} else if claimID := alreadyCurrentClaimID(res); claimID != "" {
+		report.ClaimID = claimID
 	}
 	return report, nil
 }
@@ -268,7 +276,7 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 // ImportPolicyDecisionDir imports policy markdown files through the same
 // evidence-backed lifecycle path as ImportPolicyDecision.
 func ImportPolicyDecisionDir(store *mem.Store, root string, now time.Time) ([]DecisionImportReport, error) {
-	files, err := policyDecisionFiles(root)
+	files, err := EligiblePolicyDecisionFiles(root)
 	if err != nil {
 		return nil, err
 	}
@@ -283,7 +291,7 @@ func ImportPolicyDecisionDir(store *mem.Store, root string, now time.Time) ([]De
 	return reports, nil
 }
 
-func policyDecisionFiles(root string) ([]string, error) {
+func EligiblePolicyDecisionFiles(root string) ([]string, error) {
 	base := filepath.Join(root, "decisions")
 	if st, err := os.Stat(base); err != nil || !st.IsDir() {
 		base = root
@@ -303,10 +311,83 @@ func policyDecisionFiles(root string) ([]string, error) {
 	return files, err
 }
 
+// EligibleNoteDecisionFiles returns markdown decision pages from a generic note
+// source. It excludes index/template prose so corpus import does not promote
+// documentation as a decision source.
+func EligibleNoteDecisionFiles(root string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		name := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+		if name == "readme" || strings.Contains(name, "template") {
+			return nil
+		}
+		files = append(files, path)
+		return nil
+	})
+	sort.Strings(files)
+	return files, err
+}
+
+// EligibleBrainDecisionFiles is a compatibility alias for private brain-source
+// callers; public corpus imports should use EligibleNoteDecisionFiles.
+func EligibleBrainDecisionFiles(root string) ([]string, error) {
+	return EligibleNoteDecisionFiles(root)
+}
+
+// ImportNoteDecisionDir imports every eligible generic note decision page.
+func ImportNoteDecisionDir(store *mem.Store, root string, now time.Time) ([]BrainDecisionReport, error) {
+	files, err := EligibleNoteDecisionFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	reports := make([]BrainDecisionReport, 0, len(files))
+	for _, path := range files {
+		report, err := ImportNoteDecision(store, path, now)
+		if err != nil {
+			return reports, err
+		}
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
+// ImportBrainDecisionDir is a compatibility alias for private brain-source callers.
+func ImportBrainDecisionDir(store *mem.Store, root string, now time.Time) ([]BrainDecisionReport, error) {
+	files, err := EligibleBrainDecisionFiles(root)
+	if err != nil {
+		return nil, err
+	}
+	reports := make([]BrainDecisionReport, 0, len(files))
+	for _, path := range files {
+		report, err := ImportBrainDecision(store, path, now)
+		if err != nil {
+			return reports, err
+		}
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
 // ImportBrainDecision imports one curated knowledge-base decision page into the
 // owned decision lifecycle path. The markdown page is evidence; deterministic
 // frontmatter/body parsing proposes the decision, and code adjudicates it.
 func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDecisionReport, error) {
+	return importNoteDecision(store, path, "brain", "brain", "brain-decision-import", now)
+}
+
+// ImportNoteDecision imports one generic markdown note decision page into
+// owned decision lifecycle path.
+func ImportNoteDecision(store *mem.Store, path string, now time.Time) (BrainDecisionReport, error) {
+	return importNoteDecision(store, path, "note", "note", "note-decision-import", now)
+}
+
+func importNoteDecision(store *mem.Store, path, sourceKind, idPrefix, workID string, now time.Time) (BrainDecisionReport, error) {
 	var report BrainDecisionReport
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -317,7 +398,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	_ = yaml.Unmarshal([]byte(fm), &f)
 	heading := firstHeading(body)
 	if f.ID == "" {
-		f.ID = stableBrainDecisionID(f, heading, path)
+		f.ID = stableDecisionID(idPrefix, f, heading, path)
 	}
 	if f.Title == "" || preferBrainHeading(f.Title, heading) {
 		f.Title = heading
@@ -326,7 +407,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 		f.Title = choice
 	}
 	if strings.TrimSpace(f.Title) == "" {
-		return report, fmt.Errorf("brain decision %s: title required", path)
+		return report, fmt.Errorf("%s decision %s: title required", sourceKind, path)
 	}
 	if f.Kind == "" {
 		f.Kind = KindDoctrine
@@ -346,7 +427,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	}
 	evidence, err := store.RecordEvidence(mem.EvidenceItem{
 		SourceKind: "note",
-		SourceID:   "brain:" + filepath.ToSlash(path),
+		SourceID:   sourceKind + ":" + filepath.ToSlash(path),
 		QuoteText:  decisionQuote(f.Title, body),
 		Actor:      "tool",
 		Visibility: "private",
@@ -354,7 +435,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	if err != nil {
 		return report, err
 	}
-	q := lifecycleQualifiers(f.Kind, "brain", f.ID, f.Status)
+	q := lifecycleQualifiers(f.Kind, sourceKind, f.ID, f.Status)
 	if len(f.Domains) > 0 {
 		q["domain"] = strings.Join(f.Domains, ",")
 	}
@@ -376,7 +457,7 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	if f.Scope != "" {
 		q["scope"] = strings.TrimSpace(f.Scope)
 	}
-	cands, err := store.Capture([]mem.Candidate{{
+	cand := mem.Candidate{
 		Entity:         decisionEntity(f.ID),
 		Predicate:      "decided",
 		Object:         f.Title,
@@ -388,18 +469,24 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 		SourceTraceRef: evidence.ID,
 		SnippetHash:    digest12(f.ID + "\n" + f.Title),
 		Visibility:     "operational",
-	}}, now)
+	}
+	if existing, ok, err := existingDecisionImportReport(store, cand, path, sourceKind, evidence.ID); err != nil {
+		return report, err
+	} else if ok {
+		return BrainDecisionReport(existing), nil
+	}
+	cands, err := store.Capture([]mem.Candidate{cand}, now)
 	if err != nil {
 		return report, err
 	}
 	verdict := VerdictForCandidate(cands[0])
-	res, err := store.Adjudicate(cands[0].ID, verdict, "brain-decision-import", now)
+	res, err := store.Adjudicate(cands[0].ID, verdict, workID, now)
 	if err != nil {
 		return report, err
 	}
 	report = BrainDecisionReport{
 		SourcePath:  path,
-		SourceKind:  "brain",
+		SourceKind:  sourceKind,
 		EvidenceID:  evidence.ID,
 		CandidateID: cands[0].ID,
 		Verdict:     verdict,
@@ -408,8 +495,86 @@ func ImportBrainDecision(store *mem.Store, path string, now time.Time) (BrainDec
 	if res.Claim != nil {
 		report.ClaimID = res.Claim.ID
 		report.Lifecycle = LifecycleFromClaim(*res.Claim)
+	} else if claimID := alreadyCurrentClaimID(res); claimID != "" {
+		report.ClaimID = claimID
 	}
 	return report, nil
+}
+
+func alreadyCurrentClaimID(res mem.AdjudicateResult) string {
+	if !strings.HasPrefix(res.Note, "already current:") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(res.Note, "already current:"))
+}
+
+func existingDecisionImportReport(store *mem.Store, cand mem.Candidate, sourcePath, sourceKind, evidenceID string) (DecisionImportReport, bool, error) {
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return DecisionImportReport{}, false, err
+	}
+	for _, claim := range claims {
+		if claim.ClaimType != "decision" ||
+			claim.Entity != cand.Entity ||
+			claim.Predicate != cand.Predicate ||
+			claim.Object != cand.Object ||
+			!sameStringMap(claim.Qualifiers, cand.Qualifiers) {
+			continue
+		}
+		candidateID := ""
+		if len(claim.EvidenceRefs) > 0 {
+			candidateID = claim.EvidenceRefs[0]
+		}
+		return DecisionImportReport{
+			SourcePath:  sourcePath,
+			SourceKind:  sourceKind,
+			EvidenceID:  evidenceID,
+			CandidateID: candidateID,
+			ClaimID:     claim.ID,
+			Verdict:     candidates.Promote,
+			Lifecycle:   LifecycleFromClaim(claim),
+		}, true, nil
+	}
+	cands, err := store.AllCandidates()
+	if err != nil {
+		return DecisionImportReport{}, false, err
+	}
+	for _, existing := range cands {
+		if existing.State == "promoted" || !sameDecisionCandidate(existing, cand) {
+			continue
+		}
+		return DecisionImportReport{
+			SourcePath:  sourcePath,
+			SourceKind:  sourceKind,
+			EvidenceID:  evidenceID,
+			CandidateID: existing.ID,
+			Verdict:     VerdictForCandidate(existing),
+			Lifecycle:   LifecycleFromCandidate(existing),
+		}, true, nil
+	}
+	return DecisionImportReport{}, false, nil
+}
+
+func sameDecisionCandidate(a, b mem.Candidate) bool {
+	return a.Entity == b.Entity &&
+		a.Predicate == b.Predicate &&
+		a.Object == b.Object &&
+		a.ClaimType == b.ClaimType &&
+		a.PromotionBasis == b.PromotionBasis &&
+		a.SourceTraceRef == b.SourceTraceRef &&
+		sameStringMap(a.Qualifiers, b.Qualifiers)
+}
+
+func sameStringMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, av := range a {
+		if b[key] != av {
+			return false
+		}
+	}
+	return true
 }
 
 var reDecHeader = regexp.MustCompile(`(?m)^###\s+([DO]\d+)\b[^\n]*?—\s*(.+)$`)
@@ -687,6 +852,10 @@ func firstHeading(body string) string {
 }
 
 func stableBrainDecisionID(f decFrontmatter, heading, path string) string {
+	return stableDecisionID("brain", f, heading, path)
+}
+
+func stableDecisionID(prefix string, f decFrontmatter, heading, path string) string {
 	parts := []string{
 		strings.TrimSpace(f.Title),
 		strings.TrimSpace(f.Date),
@@ -702,7 +871,11 @@ func stableBrainDecisionID(f decFrontmatter, heading, path string) string {
 	if len(stable) == 0 {
 		stable = append(stable, filepath.Base(path))
 	}
-	return "brain-" + digest12(strings.Join(stable, "\n"))
+	prefix = strings.Trim(strings.TrimSpace(prefix), "-")
+	if prefix == "" {
+		prefix = "note"
+	}
+	return prefix + "-" + digest12(strings.Join(stable, "\n"))
 }
 
 func preferBrainHeading(frontmatterTitle, heading string) bool {

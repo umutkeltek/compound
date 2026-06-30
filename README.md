@@ -107,7 +107,7 @@ Meaning and evidence:
   timelines, and reviewed write plans.
 - `compound distiller ...` turns traces/runtime source material into candidate
   sets; it never promotes model output by confidence alone.
-- `compound decisions ...` imports and repairs DecisionLifecycle records.
+- `compound decisions ...` imports, repairs, and audits DecisionLifecycle source authority.
 - `compound authority ...`, `compound source observe`, and `compound event
   import-os` adapt existing sources into evidence and candidates.
 

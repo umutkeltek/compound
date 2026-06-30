@@ -3946,6 +3946,72 @@ When ReleaseX ships or is externally blocked, execute the parked spec.
 	}
 }
 
+func TestDecisionsGenericSourceDirImportRepairAndAuthorityCoverage(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	sourceDir := t.TempDir()
+	writeSourceFile := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(sourceDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSourceFile("README.md", "# Decision index")
+	writeSourceFile("decision-template.md", "# Template")
+	writeSourceFile("2026-06-30-complete.md", `---
+title: Complete note decision
+status: accepted
+falsifier: Complete decision no longer protects the behavior.
+review_trigger: Re-check when behavior changes.
+---
+# Complete note decision
+
+## Decision
+Use Compound as the decision authority.
+`)
+	writeSourceFile("2026-06-30-incomplete.md", `---
+title: Incomplete note decision
+status: accepted
+---
+# Incomplete note decision
+
+## Decision
+Park until lifecycle proof is reviewed.
+`)
+	importOut := captureStdout(t, func() {
+		cmdDecisions([]string{"import", "--source-dir", sourceDir, "--source-kind", "note"})
+	})
+	if !strings.Contains(importOut, "processed 2 decision sources") ||
+		!strings.Contains(importOut, "compound_primary") ||
+		!strings.Contains(importOut, "compound_parked") ||
+		!strings.Contains(importOut, "- source note-") {
+		t.Fatalf("import output =\n%s", importOut)
+	}
+	repairOut := captureStdout(t, func() {
+		cmdDecisions([]string{"repair-plan", "--source-dir", sourceDir, "--source-kind", "note"})
+	})
+	if !strings.Contains(repairOut, "source_kind: note") || !strings.Contains(repairOut, "repairs: 1") {
+		t.Fatalf("repair output =\n%s", repairOut)
+	}
+	authorityOut := captureStdout(t, func() {
+		cmdDecisions([]string{"authority", "--source-dir", sourceDir, "--source-kind", "note"})
+	})
+	for _, want := range []string{
+		"# decisions authority",
+		"- status: ok",
+		"- eligible: 2",
+		"- covered: 2",
+		"- missing: 0",
+		"source_kind.note: 2",
+		"authority_status.compound_primary: 1",
+		"authority_status.compound_parked: 1",
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+}
+
 func writeHookFixture(t *testing.T, fixture hook.Fixture) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "hook.json")

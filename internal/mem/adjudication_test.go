@@ -17,14 +17,17 @@ func TestPromotionDecisionIsPure(t *testing.T) {
 		}
 	}
 
-	prior := Claim{ID: "claim_prior", Entity: "e", Predicate: "p", Object: "v1"}
+	prior := Claim{ID: "claim_prior", Entity: "e", Predicate: "p", Object: "v1", Qualifiers: map[string]string{"status": "accepted"}}
 	newer := Candidate{ID: "cand1", Entity: "e", Predicate: "p", Object: "v2", Confidence: 0.9, SourceTraceRef: "trace1"}
 
 	if isDuplicatePromotion(newer, prior, true) {
 		t.Error("different object must not be a duplicate")
 	}
-	if !isDuplicatePromotion(Candidate{Object: "v1"}, prior, true) {
-		t.Error("same object must be a duplicate")
+	if !isDuplicatePromotion(Candidate{Object: "v1", Qualifiers: map[string]string{"status": "accepted"}}, prior, true) {
+		t.Error("same object and qualifiers must be a duplicate")
+	}
+	if isDuplicatePromotion(Candidate{Object: "v1", Qualifiers: map[string]string{"status": "deprecated"}}, prior, true) {
+		t.Error("same object with changed qualifiers must not be a duplicate")
 	}
 	if isDuplicatePromotion(newer, Claim{}, false) {
 		t.Error("no prior must not be a duplicate")

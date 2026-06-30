@@ -442,8 +442,7 @@ func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	refs := []string{}
-	revs := []envelope.SourceRev{}
+	byRef := map[string]mem.Claim{}
 	for _, c := range claims {
 		if c.ClaimType != "decision" || c.Qualifiers == nil || canonicalDecisionStatus(c.Qualifiers["lifecycle_status"]) != "accepted" {
 			continue
@@ -453,11 +452,19 @@ func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {
 			id = c.ID
 		}
 		ref := "decision://" + id
+		if prior, ok := byRef[ref]; !ok || c.Seq > prior.Seq || (c.Seq == prior.Seq && c.ID > prior.ID) {
+			byRef[ref] = c
+		}
+	}
+	refs := make([]string, 0, len(byRef))
+	for ref := range byRef {
 		refs = append(refs, ref)
-		revs = append(revs, envelope.SourceRev{Source: ref, Rev: "claim:" + c.ID})
 	}
 	sort.Strings(refs)
-	sort.Slice(revs, func(i, j int) bool { return revs[i].Source < revs[j].Source })
+	revs := make([]envelope.SourceRev, 0, len(refs))
+	for _, ref := range refs {
+		revs = append(revs, envelope.SourceRev{Source: ref, Rev: "claim:" + byRef[ref].ID})
+	}
 	return refs, revs, nil
 }
 

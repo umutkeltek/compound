@@ -72,6 +72,224 @@ scope: public-core
 	}
 }
 
+func TestEligibleNoteDecisionFilesExcludesIndexesAndTemplates(t *testing.T) {
+	dir := t.TempDir()
+	want := filepath.Join(dir, "2026-06-30-real-decision.md")
+	writeFile(t, want, "# Real decision")
+	writeFile(t, filepath.Join(dir, "README.md"), "# Index")
+	writeFile(t, filepath.Join(dir, "decision-template.md"), "# Template")
+	got, err := EligibleNoteDecisionFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("EligibleNoteDecisionFiles = %v, want %s", got, want)
+	}
+}
+
+func TestSourceAuthorityCoverageCollapsesBySourceAndStatusReflectsVerdict(t *testing.T) {
+	home := t.TempDir()
+	sourcePath := filepath.Join(t.TempDir(), "decision.md")
+	parked, err := RecordSourceAuthority(home, DecisionImportReport{
+		SourcePath:  sourcePath,
+		SourceKind:  "note",
+		EvidenceID:  "ev_1",
+		CandidateID: "cand_1",
+		Verdict:     candidates.Park,
+		Lifecycle:   Lifecycle{ID: "brain-one"},
+	}, "decisions import --source-dir", time.Date(2026, 6, 30, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.AuthorityStatus != "compound_parked" {
+		t.Fatalf("parked source authority = %+v", parked)
+	}
+	promoted, err := RecordSourceAuthority(home, DecisionImportReport{
+		SourcePath:  sourcePath,
+		SourceKind:  "note",
+		EvidenceID:  "ev_2",
+		CandidateID: "cand_2",
+		ClaimID:     "claim_2",
+		Verdict:     candidates.Promote,
+		Lifecycle:   Lifecycle{ID: "brain-one"},
+	}, "decisions import --source-dir", time.Date(2026, 6, 30, 12, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.ID != parked.ID || promoted.AuthorityStatus != "compound_primary" {
+		t.Fatalf("promoted source authority = %+v parked=%+v", promoted, parked)
+	}
+	coverage, err := SourceAuthorityCoverage(home, []string{sourcePath, sourcePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coverage.Status != "ok" || len(coverage.Records) != 1 || len(coverage.Eligible) != 1 || len(coverage.Missing) != 0 {
+		t.Fatalf("coverage = %+v", coverage)
+	}
+	if coverage.Records[0].ClaimID != "claim_2" || coverage.CountsByStatus["compound_primary"] != 1 {
+		t.Fatalf("coverage records/status = %+v", coverage)
+	}
+}
+
+func TestImportBrainDecisionDirPreservesBrainSourceKind(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "decision.md"), `---
+title: Brain decision
+status: accepted
+falsifier: Brain source no longer applies.
+review_trigger: Re-check source.
+---
+# Brain decision
+`)
+	reports, err := ImportBrainDecisionDir(store, dir, time.Date(2026, 6, 30, 12, 30, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports = %+v", reports)
+	}
+	if reports[0].SourceKind != "brain" || !strings.HasPrefix(reports[0].Lifecycle.ID, "brain-") {
+		t.Fatalf("brain dir report = %+v", reports[0])
+	}
+}
+
+func TestImportReplayKeepsSourceAuthorityPrimary(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decisions", "DEC-0001.md")
+	writeFile(t, path, `---
+id: DEC-0001
+title: Use Compound decisions
+status: accepted
+falsifier: Decision stops protecting the intended behavior.
+review_trigger: Re-check when the behavior changes.
+---
+# Use Compound decisions
+`)
+	first, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ClaimID == "" {
+		t.Fatalf("first import = %+v", first)
+	}
+	beforeCandidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 30, 13, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ClaimID != first.ClaimID {
+		t.Fatalf("replay claim id = %q, want %q; report=%+v", second.ClaimID, first.ClaimID, second)
+	}
+	afterCandidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterCandidates) != len(beforeCandidates) {
+		t.Fatalf("replay created duplicate candidates: before=%d after=%d", len(beforeCandidates), len(afterCandidates))
+	}
+	rec, err := RecordSourceAuthority(home, second, "decisions import --policy", time.Date(2026, 6, 30, 13, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.AuthorityStatus != "compound_primary" {
+		t.Fatalf("source authority after replay = %+v", rec)
+	}
+}
+
+func TestImportPolicyDecisionSourceEditCreatesNewClaim(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decisions", "DEC-0001.md")
+	writeFile(t, path, `---
+id: DEC-0001
+title: Use Compound decisions
+status: accepted
+falsifier: Original falsifier.
+review_trigger: Re-check when the behavior changes.
+---
+# Use Compound decisions
+`)
+	first, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 30, 13, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, `---
+id: DEC-0001
+title: Use Compound decisions
+status: accepted
+falsifier: Updated falsifier.
+review_trigger: Re-check when the behavior changes.
+---
+# Use Compound decisions
+`)
+	second, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 30, 13, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ClaimID == "" || second.ClaimID == first.ClaimID {
+		t.Fatalf("source edit should create a new claim: first=%+v second=%+v", first, second)
+	}
+	if second.Lifecycle.Falsifier != "Updated falsifier." {
+		t.Fatalf("updated lifecycle not reflected: %+v", second.Lifecycle)
+	}
+}
+
+func TestParkedDecisionImportReplayReusesCandidate(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decisions", "DEC-0007.md")
+	writeFile(t, path, `---
+id: DEC-0007
+title: Older accepted source shape
+status: accepted
+---
+# Older accepted source shape
+`)
+	first, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 30, 14, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Verdict != candidates.Park || first.ClaimID != "" {
+		t.Fatalf("first import = %+v", first)
+	}
+	beforeCandidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ImportPolicyDecision(store, path, time.Date(2026, 6, 30, 14, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.CandidateID != first.CandidateID || second.Verdict != candidates.Park {
+		t.Fatalf("second import = %+v want candidate %s", second, first.CandidateID)
+	}
+	afterCandidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterCandidates) != len(beforeCandidates) {
+		t.Fatalf("parked replay created duplicate candidates: before=%d after=%d", len(beforeCandidates), len(afterCandidates))
+	}
+}
+
 func TestImportPolicyDecisionDirKeepsDecisionEntitiesSeparate(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

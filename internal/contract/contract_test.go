@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
@@ -528,6 +529,76 @@ Future agents consume this decision through Compound runtime context.
 	}
 }
 
+func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands, err := store.Capture([]mem.Candidate{
+		{
+			Entity:         "decision:legacy-DEC-0001",
+			Predicate:      "decided",
+			Object:         "Legacy localization baseline",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": "DEC-0001", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_old",
+			SnippetHash:    "old",
+			Visibility:     "ambient",
+		},
+		{
+			Entity:         "decision:DEC-0001",
+			Predicate:      "decided",
+			Object:         "Current localization baseline",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": "DEC-0001", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_new",
+			SnippetHash:    "new",
+			Visibility:     "ambient",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Adjudicate(cands[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Adjudicate(cands[1].ID, "promote", "test", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := mkInput("control-plane")
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countStrings(ec.ActiveDecisions, "decision://DEC-0001"); got != 1 {
+		t.Fatalf("contract should include one decision ref, got %d in %v", got, ec.ActiveDecisions)
+	}
+	if rev := sourceRev(ec.SourceRevisions, "decision://DEC-0001"); rev != "claim:"+second.Claim.ID {
+		t.Fatalf("contract should use newest claim revision, got %q want %q (old %s)", rev, "claim:"+second.Claim.ID, first.Claim.ID)
+	}
+
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countStrings(pack.ActiveDecisions, "decision://DEC-0001"); got != 1 {
+		t.Fatalf("pack should include one active decision ref, got %d in %v", got, pack.ActiveDecisions)
+	}
+	if got := countIncluded(pack, "decision://DEC-0001"); got != 1 {
+		t.Fatalf("pack should include one included decision ref, got %d in %+v", got, pack.Included)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -553,6 +624,26 @@ func hasIncluded(pack envelope.ContextPack, ref string) bool {
 		}
 	}
 	return false
+}
+
+func countIncluded(pack envelope.ContextPack, ref string) int {
+	n := 0
+	for _, inc := range pack.Included {
+		if inc.Ref == ref {
+			n++
+		}
+	}
+	return n
+}
+
+func countStrings(values []string, want string) int {
+	n := 0
+	for _, value := range values {
+		if value == want {
+			n++
+		}
+	}
+	return n
 }
 
 func hasExcluded(pack envelope.ContextPack, ref string) bool {
