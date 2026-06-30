@@ -230,19 +230,7 @@ func RecordLifecycleRepairApplyReport(homePath string, report LifecycleRepairApp
 	if strings.TrimSpace(homePath) == "" {
 		return "", fmt.Errorf("COMPOUND_HOME required")
 	}
-	dir := filepath.Join(homePath, "reviews", "decision-lifecycle-repairs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, report.ID+".apply.json")
-	b, err := json.MarshalIndent(report, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
-		return "", err
-	}
-	return path, nil
+	return reviewartifact.WriteJSON(homePath, "decision-lifecycle-repairs", report.ID+".apply.json", report, "  ")
 }
 
 func RenderLifecycleRepairReview(plan LifecycleRepairPlan) string {
