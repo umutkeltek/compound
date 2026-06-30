@@ -66,7 +66,7 @@ This file is the current package/command map. `compound architecture doctor --st
 - `compound-memory-cli-engine` now has an expansion-only regression: a query that does not lexically match indexed claims can still return the correct allowlisted claim through external memory CLI output, while empty allowlists fail closed before the CLI is called.
 - `compound-memory-cli-engine` now supports explicit profiles for known local memory CLIs. Profiles select read-only query presets and advertised embedder names, while bin/template/embedder env overrides remain available; profile output is rented expansion context only and never writes memory or owns recall authority.
 
-- `compound harness observe` now records the current HarnessRegistry through `SourceObservation -> capability_observation candidate -> NoPromoteDecision`, so hook/context/skill/MCP support and limitations become reviewable capability evidence without installing hooks, mutating CapabilityGraph nodes, promoting claims, or treating harness defaults as authority.
+- `compound harness observe [registry.yaml]` now records either the built-in HarnessRegistry or a normalized external harness registry manifest through `SourceObservation -> capability_observation candidate -> NoPromoteDecision`, so hook/context/skill/MCP support and limitations become reviewable capability evidence without installing hooks, mutating CapabilityGraph nodes, promoting claims, or treating registry defaults as authority.
 
 - LLM extraction requests now expose explicit `capability_feedback[]` from `Receipt.skills.missed` / `Receipt.skills.false_triggered`, with instructions forbidding inference from inert `skills.candidate` offers.
 

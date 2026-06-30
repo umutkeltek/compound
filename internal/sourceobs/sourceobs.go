@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -299,13 +298,9 @@ func FromSkillManifest(manifest capgraph.SkillManifest, now time.Time) SourceObs
 // SourceObservation evidence. Harness observations are capability evidence only:
 // they do not install hooks, mutate capability graph nodes, or grant authority.
 func FromHarnessRegistry(reg harness.Registry, now time.Time) SourceObservation {
-	revision := harnessRegistryRevision(reg)
+	revision := harness.RegistryRevision(reg)
 	names := reg.Names()
-	limitations := 0
-	for _, name := range names {
-		h, _ := reg.Get(name)
-		limitations += len(h.Limitations)
-	}
+	limitations := registryLimitationCount(reg, names)
 	return SourceObservation{
 		SchemaVersion: SchemaVersion,
 		ID:            idFor("srcobs_", "harness_registry", strings.Join(names, ","), revision),
@@ -323,7 +318,7 @@ func FromHarnessRegistry(reg harness.Registry, now time.Time) SourceObservation 
 			ViewKind:    "harness_registry",
 			Consumer:    "compound harness observe",
 			Generator:   "compound harness default registry",
-			Marker:      "compound.harness_registry.v0.1",
+			Marker:      harness.RegistryManifestSchemaVersion,
 			Freshness:   "observed",
 			DriftReason: fmt.Sprintf("harnesses=%d limitations=%d", len(names), limitations),
 		},
@@ -337,6 +332,69 @@ func FromHarnessRegistry(reg harness.Registry, now time.Time) SourceObservation 
 		},
 		EvidenceRefs: []string{"harness_registry:" + revision},
 	}
+}
+
+func FromHarnessRegistryManifest(manifest harness.RegistryManifest, now time.Time) (SourceObservation, error) {
+	reg, err := manifest.Registry()
+	if err != nil {
+		return SourceObservation{}, err
+	}
+	revision := strings.TrimSpace(manifest.SourceRef.Revision)
+	if revision == "" {
+		revision = harness.RegistryRevision(reg)
+	}
+	evidenceRefs := append([]string(nil), manifest.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"harness_registry:" + revision}
+	}
+	observedAt := rfc3339(now)
+	if strings.TrimSpace(manifest.ObservedAt) != "" {
+		observedAt = strings.TrimSpace(manifest.ObservedAt)
+	}
+	names := reg.Names()
+	limitations := registryLimitationCount(reg, names)
+	id := firstNonEmpty(manifest.ID, "harness-registry")
+	adapterID := firstNonEmpty(manifest.AdapterID, "compound.harness-registry")
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "harness_registry", id, manifest.SourceRef.Path, revision),
+		AdapterID:     adapterID,
+		SourceSystem:  firstNonEmpty(manifest.SourceSystem, "compound"),
+		ObservedAt:    observedAt,
+		SourceRef: SourceRef{
+			Path:        firstNonEmpty(manifest.SourceRef.Path, "compound://harness/registry-manifest"),
+			Kind:        firstNonEmpty(manifest.SourceRef.Kind, "registry"),
+			Owner:       firstNonEmpty(manifest.SourceRef.Owner, id),
+			SourceClass: firstNonEmpty(manifest.SourceRef.SourceClass, "generated"),
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "harness_registry",
+			Consumer:    "compound harness observe",
+			Generator:   adapterID,
+			Marker:      harness.RegistryManifestSchemaVersion,
+			Freshness:   "observed",
+			DriftReason: fmt.Sprintf("harnesses=%d limitations=%d manifest=%s", len(names), limitations, id),
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "capability",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     "harness_registry:" + id,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}, nil
+}
+
+func registryLimitationCount(reg harness.Registry, names []string) int {
+	total := 0
+	for _, name := range names {
+		h, _ := reg.Get(name)
+		total += len(h.Limitations)
+	}
+	return total
 }
 
 func CandidateFromMap(obs SourceObservation, m MapTarget, now time.Time) CandidateRecord {
@@ -448,33 +506,6 @@ func projectionDriftReason(f projection.Freshness) string {
 func idFor(prefix string, parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return prefix + hex.EncodeToString(sum[:])[:12]
-}
-
-func harnessRegistryRevision(reg harness.Registry) string {
-	type harnessSnapshot struct {
-		Name                 string               `json:"name"`
-		InstructionMechanism string               `json:"instruction_mechanism"`
-		Capabilities         harness.Capabilities `json:"capabilities"`
-		Limitations          []string             `json:"limitations"`
-		Fallback             bool                 `json:"fallback,omitempty"`
-	}
-	names := reg.Names()
-	snapshot := make([]harnessSnapshot, 0, len(names))
-	for _, name := range names {
-		h, _ := reg.Get(name)
-		limitations := append([]string(nil), h.Limitations...)
-		sort.Strings(limitations)
-		snapshot = append(snapshot, harnessSnapshot{
-			Name:                 h.Name,
-			InstructionMechanism: h.InstructionMechanism,
-			Capabilities:         h.Capabilities,
-			Limitations:          limitations,
-			Fallback:             h.Fallback,
-		})
-	}
-	data, _ := json.Marshal(snapshot)
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func rfc3339(now time.Time) string {

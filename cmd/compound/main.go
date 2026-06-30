@@ -1800,12 +1800,24 @@ func cmdHarness(args []string) {
 		target = args[0]
 	}
 	if target == "observe" {
+		if len(args) > 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound harness observe [harness-registry.yaml]")
+			os.Exit(2)
+		}
 		homePath, err := home.Resolve("")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 			os.Exit(1)
 		}
-		report, err := sourceobs.Apply(homePath, sourceobs.FromHarnessRegistry(reg, time.Now()), time.Now())
+		now := time.Now()
+		obs := sourceobs.FromHarnessRegistry(reg, now)
+		if len(args) == 2 {
+			manifest, err := harness.LoadRegistryManifest(args[1])
+			die(err)
+			obs, err = sourceobs.FromHarnessRegistryManifest(manifest, now)
+			die(err)
+		}
+		report, err := sourceobs.Apply(homePath, obs, now)
 		die(err)
 		fmt.Println("# harness observe")
 		fmt.Printf("- source_observation: %s\n", report.ObservationID)

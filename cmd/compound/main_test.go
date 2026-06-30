@@ -2396,6 +2396,46 @@ func TestHarnessObserveWritesCapabilityNoPromote(t *testing.T) {
 	}
 }
 
+func TestHarnessObserveManifestWritesCapabilityNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	fixture := filepath.Join("..", "..", "fixtures", "harness", "harness-registry.yaml")
+	out := captureStdout(t, func() {
+		cmdHarness([]string{"observe", fixture})
+	})
+	for _, want := range []string{"# harness observe", "- source_observation: srcobs_", "- source_candidate:", "- source_no_promote:", "- verdict: capability_evidence_only_not_authority"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("harness manifest observe output missing %q:\n%s", want, out)
+		}
+	}
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("capability candidate entries = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(candidateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var candidate sourceobs.CandidateRecord
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Subject != "harness_registry:fixture-harness-registry" || candidate.Verdict != candidates.NoPromote || candidate.PromoteAllowed {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	rows := readNoPromoteDecisionRows(t, homePath)
+	if len(rows) != 1 || rows[0].CandidateRef != candidate.ID {
+		t.Fatalf("no-promote rows = %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("harness manifest observation should not promote claims, stat err=%v", err)
+	}
+}
+
 func TestProjectionRepairPlanCreatesGateSourceObservationAndReview(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

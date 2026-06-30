@@ -264,6 +264,49 @@ func TestHarnessRegistryObservationWritesCapabilityNoPromote(t *testing.T) {
 	}
 }
 
+func TestHarnessRegistryManifestObservationWritesCapabilityNoPromote(t *testing.T) {
+	home := t.TempDir()
+	manifest, err := harness.LoadRegistryManifest(filepath.Join("..", "..", "fixtures", "harness", "harness-registry.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs, err := FromHarnessRegistryManifest(manifest, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obs.ID == "" || obs.AdapterID != "fixture.harness-registry" || obs.SourceSystem != "fixture-os" {
+		t.Fatalf("observation identity = %+v", obs)
+	}
+	if obs.GeneratedView.ViewKind != "harness_registry" || obs.GeneratedView.Marker != harness.RegistryManifestSchemaVersion {
+		t.Fatalf("generated view = %+v", obs.GeneratedView)
+	}
+	if got := obs.MapsTo[0].EntityHint; got != "harness_registry:fixture-harness-registry" {
+		t.Fatalf("entity hint = %q", got)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.CapabilityObs), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Verdict != candidates.NoPromote || c.Subject != "harness_registry:fixture-harness-registry" || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("harness manifest source observation should not promote claims, stat err=%v", err)
+	}
+}
+
 func TestValidateRejectsUnknownCandidateKind(t *testing.T) {
 	obs := validObservation()
 	obs.MapsTo[0].CandidateKind = "../../bad"

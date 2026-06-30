@@ -113,8 +113,7 @@ it sees skill name/desc/path and loads full SKILL.md on demand; the initial list
 `HarnessRegistry` records what each harness actually supports (`session_start_context`,
 `pre_tool_use_block`, `session_end_receipt`, `native_skills`, `mcp`, …) and its `limitations[]` (long-session
 drift, fail-open risk, instruction cap, skill truncation, cwd-dependent guidance). Do not assume Codex can
-block a tool call unless locally verified — enforce via wrapper/adapter + the compound CLI. **No live hook
-install before the fixture loop passes.**
+block a tool call unless locally verified — enforce via wrapper/adapter + the compound CLI. External maps enter as normalized `compound.harness_registry.v0.1` manifests observed by `compound harness observe <registry.yaml>`; observation is evidence/no-promote, not hook installation. **No live hook install before the fixture loop passes.**
 
 ---
 

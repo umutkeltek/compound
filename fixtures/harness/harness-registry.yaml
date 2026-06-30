@@ -1,0 +1,38 @@
+schema_version: compound.harness_registry.v0.1
+id: fixture-harness-registry
+adapter_id: fixture.harness-registry
+source_system: fixture-os
+observed_at: "2026-06-29T12:00:00Z"
+source_ref:
+  path: fixtures/harness/harness-registry.yaml
+  kind: registry
+  owner: fixture-harness-owner
+  source_class: generated
+  revision: sha256:harness-fixture
+harnesses:
+  - name: codex
+    instruction_mechanism: AGENTS.md + skills
+    capabilities:
+      session_start_context: true
+      user_prompt_context: true
+      pre_tool_use_block: false
+      post_tool_use_event: true
+      session_end_receipt: true
+      native_skills: true
+      mcp: true
+    limitations:
+      - no verified native pre-tool-use block
+  - name: claude_code
+    instruction_mechanism: CLAUDE.md + hooks + skills
+    capabilities:
+      session_start_context: true
+      user_prompt_context: true
+      pre_tool_use_block: true
+      post_tool_use_event: true
+      session_end_receipt: true
+      native_skills: true
+      mcp: true
+    limitations:
+      - hook behavior can vary by installation
+evidence_refs:
+  - harness_registry_fixture:sha256:harness-fixture
