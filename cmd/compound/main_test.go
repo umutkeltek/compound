@@ -214,6 +214,53 @@ func TestOrientUsesRepoKindRegistry(t *testing.T) {
 	}
 }
 
+func TestContractImportHooksFeedsCompile(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	source := filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json")
+	importOut := captureStdout(t, func() {
+		cmdContract([]string{"import-hooks", "--codex-hooks-json", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://config/installed-hooks"`,
+		`"hook_count": 2`,
+		`"authority_status": "compound_primary"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import-hooks output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	authorityOut := captureStdout(t, func() {
+		cmdContract([]string{"hooks-authority"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"hook_count": 2`,
+		`"source_role": "evidence_only_input_after_import"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("hooks-authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+
+	out := captureStdout(t, func() {
+		cmdContract([]string{"compile", "--harness", "codex", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
+	})
+	var ec envelope.EffectiveContract
+	if err := json.Unmarshal([]byte(out), &ec); err != nil {
+		t.Fatalf("parse contract compile: %v\n%s", err, out)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !stringSliceContains(ec.ActiveHooks, want) {
+			t.Fatalf("compiled active hooks = %v, want %s", ec.ActiveHooks, want)
+		}
+	}
+	if !sourceRevisionExists(ec.SourceRevisions, "compound://config/installed-hooks") {
+		t.Fatalf("compiled source revisions missing installed hooks authority: %+v", ec.SourceRevisions)
+	}
+}
+
 func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -4474,6 +4521,15 @@ func splitJSONLines(s string) []string {
 func stringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceRevisionExists(revs []envelope.SourceRev, source string) bool {
+	for _, rev := range revs {
+		if rev.Source == source {
 			return true
 		}
 	}

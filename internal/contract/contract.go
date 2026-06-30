@@ -9,6 +9,7 @@ package contract
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -229,6 +230,13 @@ type Input struct {
 
 const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"
 
+const (
+	InstalledHooksAuthorityRef          = "compound://config/installed-hooks"
+	InstalledHooksSourceAuthoritySchema = "compound.installed_hooks_source_authority.v0.1"
+	installedHooksSourceAuthorityFile   = "installed-hooks-source-authority.jsonl"
+	installedHooksCodexImportedVia      = "contract import-hooks --codex-hooks-json"
+)
+
 type InstalledHooksManifest struct {
 	SchemaVersion string          `yaml:"schema_version" json:"schema_version"`
 	Hooks         []InstalledHook `yaml:"hooks" json:"hooks"`
@@ -240,6 +248,34 @@ type InstalledHook struct {
 	Ref      string `yaml:"ref" json:"ref"`
 	Revision string `yaml:"revision" json:"revision"`
 	Status   string `yaml:"status" json:"status"`
+}
+
+type InstalledHooksImportReport struct {
+	AuthorityRef      string                        `json:"authority_ref"`
+	AuthorityPath     string                        `json:"authority_path"`
+	SourceAuthorityID string                        `json:"source_authority_id"`
+	SourceAuthority   InstalledHooksSourceAuthority `json:"source_authority"`
+	HookCount         int                           `json:"hook_count"`
+	Harnesses         []string                      `json:"harnesses"`
+	Manifest          InstalledHooksManifest        `json:"manifest"`
+}
+
+type InstalledHooksSourceAuthority struct {
+	SchemaVersion       string   `json:"schema_version"`
+	ID                  string   `json:"id"`
+	CreatedAt           string   `json:"created_at"`
+	SourcePath          string   `json:"source_path"`
+	SourceRevision      string   `json:"source_revision"`
+	ImportedVia         string   `json:"imported_via"`
+	AuthorityRef        string   `json:"authority_ref"`
+	AuthorityStatus     string   `json:"authority_status"`
+	SourceRole          string   `json:"source_role"`
+	Retires             string   `json:"retires"`
+	RetirementCondition string   `json:"retirement_condition"`
+	Rollback            string   `json:"rollback"`
+	Harnesses           []string `json:"harnesses"`
+	HookCount           int      `json:"hook_count"`
+	EvidenceRefs        []string `json:"evidence_refs"`
 }
 
 // Compile produces the EffectiveContract: the instructions, hooks, memory/capability/
@@ -638,8 +674,217 @@ func canonicalDecisionStatus(status string) string {
 	return status
 }
 
+type codexHooksFile struct {
+	Hooks map[string][]codexHookGroup `json:"hooks"`
+}
+
+type codexHookGroup struct {
+	Hooks []codexHookCommand `json:"hooks"`
+}
+
+type codexHookCommand struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+}
+
+func InstalledHooksPath(homePath string) string {
+	return filepath.Join(homePath, "config", "installed-hooks.yaml")
+}
+
+func InstalledHooksSourceAuthorityPath(homePath string) string {
+	return filepath.Join(homePath, "registries", installedHooksSourceAuthorityFile)
+}
+
+func LoadInstalledHooksManifest(homePath string) (InstalledHooksManifest, error) {
+	return loadInstalledHooksManifest(InstalledHooksPath(homePath))
+}
+
+func LoadInstalledHooksSourceAuthority(homePath string) ([]InstalledHooksSourceAuthority, error) {
+	data, err := os.ReadFile(InstalledHooksSourceAuthorityPath(homePath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var records []InstalledHooksSourceAuthority
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var rec InstalledHooksSourceAuthority
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			return nil, fmt.Errorf("parse installed hooks source authority line %d: %w", i+1, err)
+		}
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+func ImportCodexHooksJSON(homePath, sourcePath string, now time.Time) (InstalledHooksImportReport, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return InstalledHooksImportReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if strings.TrimSpace(sourcePath) == "" {
+		return InstalledHooksImportReport{}, fmt.Errorf("source path required")
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	manifest, err := parseCodexHooksJSON(data)
+	if err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	if err := os.MkdirAll(filepath.Join(homePath, "config"), 0o755); err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	authorityPath := InstalledHooksPath(homePath)
+	manifestData, err := yaml.Marshal(manifest)
+	if err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	if err := os.WriteFile(authorityPath, manifestData, 0o644); err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	sourceRevision := hashBytes(data)
+	rec := InstalledHooksSourceAuthority{
+		SchemaVersion:       InstalledHooksSourceAuthoritySchema,
+		ID:                  installedHooksSourceAuthorityID(sourcePath, sourceRevision),
+		CreatedAt:           now.UTC().Format(time.RFC3339),
+		SourcePath:          sourcePath,
+		SourceRevision:      sourceRevision,
+		ImportedVia:         installedHooksCodexImportedVia,
+		AuthorityRef:        InstalledHooksAuthorityRef,
+		AuthorityStatus:     "compound_primary",
+		SourceRole:          "evidence_only_input_after_import",
+		Retires:             "source_view_authority:" + sourcePath,
+		RetirementCondition: "EffectiveContract reads compound://config/installed-hooks from COMPOUND_HOME; source view remains rollback/evidence input",
+		Rollback:            "re-import source hooks JSON or remove COMPOUND_HOME config/installed-hooks.yaml",
+		Harnesses:           installedHookHarnesses(manifest),
+		HookCount:           len(manifest.Hooks),
+		EvidenceRefs:        []string{sourceRevision, InstalledHooksAuthorityRef},
+	}
+	if err := appendInstalledHooksSourceAuthority(homePath, rec); err != nil {
+		return InstalledHooksImportReport{}, err
+	}
+	return InstalledHooksImportReport{
+		AuthorityRef:      InstalledHooksAuthorityRef,
+		AuthorityPath:     authorityPath,
+		SourceAuthorityID: rec.ID,
+		SourceAuthority:   rec,
+		HookCount:         len(manifest.Hooks),
+		Harnesses:         rec.Harnesses,
+		Manifest:          manifest,
+	}, nil
+}
+
+func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
+	var src codexHooksFile
+	if err := json.Unmarshal(data, &src); err != nil {
+		return InstalledHooksManifest{}, fmt.Errorf("parse codex hooks json: %w", err)
+	}
+	events := make([]string, 0, len(src.Hooks))
+	for event := range src.Hooks {
+		events = append(events, event)
+	}
+	sort.Strings(events)
+	manifest := InstalledHooksManifest{SchemaVersion: installedHooksSchemaVersion}
+	seen := map[string]bool{}
+	for _, event := range events {
+		for _, group := range src.Hooks[event] {
+			for _, hook := range group.Hooks {
+				ref := hookRefFromCommand(hook.Command)
+				if ref == "" {
+					continue
+				}
+				key := event + "\x00" + ref
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				manifest.Hooks = append(manifest.Hooks, InstalledHook{
+					Harness: "codex",
+					Name:    event,
+					Ref:     ref,
+					Status:  "current",
+				})
+			}
+		}
+	}
+	if len(manifest.Hooks) == 0 {
+		return InstalledHooksManifest{}, fmt.Errorf("codex hooks json has no command hooks")
+	}
+	return manifest, nil
+}
+
+func hookRefFromCommand(command string) string {
+	for _, field := range strings.Fields(command) {
+		field = strings.Trim(field, `"'`)
+		if strings.Contains(field, ".hook.") || strings.HasSuffix(field, ".hook.ts") {
+			return field
+		}
+	}
+	return ""
+}
+
+func loadInstalledHooksManifest(path string) (InstalledHooksManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return InstalledHooksManifest{}, err
+	}
+	var manifest InstalledHooksManifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return InstalledHooksManifest{}, fmt.Errorf("parse installed hooks %s: %w", path, err)
+	}
+	if manifest.SchemaVersion != installedHooksSchemaVersion {
+		return InstalledHooksManifest{}, fmt.Errorf("installed hooks schema_version must be %s, got %q", installedHooksSchemaVersion, manifest.SchemaVersion)
+	}
+	return manifest, nil
+}
+
+func appendInstalledHooksSourceAuthority(homePath string, rec InstalledHooksSourceAuthority) error {
+	path := InstalledHooksSourceAuthorityPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(data, '\n'))
+	return err
+}
+
+func installedHookHarnesses(manifest InstalledHooksManifest) []string {
+	seen := map[string]bool{}
+	for _, hook := range manifest.Hooks {
+		h := strings.TrimSpace(hook.Harness)
+		if h != "" {
+			seen[h] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for h := range seen {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func installedHooksSourceAuthorityID(path, revision string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, installedHooksCodexImportedVia}, "|")))
+	return "hksrc_" + hex.EncodeToString(sum[:])[:12]
+}
+
 func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRev, error) {
-	path := filepath.Join(homePath, "config", "installed-hooks.yaml")
+	path := InstalledHooksPath(homePath)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = filepath.Join(homePath, "config", "installed-hooks.json")
 	}
@@ -650,15 +895,12 @@ func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRe
 	if err != nil {
 		return nil, nil, err
 	}
-	var manifest InstalledHooksManifest
-	if err := yaml.Unmarshal(data, &manifest); err != nil {
-		return nil, nil, fmt.Errorf("parse installed hooks %s: %w", path, err)
-	}
-	if manifest.SchemaVersion != installedHooksSchemaVersion {
-		return nil, nil, fmt.Errorf("installed hooks schema_version must be %s, got %q", installedHooksSchemaVersion, manifest.SchemaVersion)
+	manifest, err := loadInstalledHooksManifest(path)
+	if err != nil {
+		return nil, nil, err
 	}
 	active := []string{}
-	revs := []envelope.SourceRev{{Source: "compound://config/installed-hooks", Rev: hashBytes(data)}}
+	revs := []envelope.SourceRev{{Source: InstalledHooksAuthorityRef, Rev: hashBytes(data)}}
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Name) == "" {
 			continue

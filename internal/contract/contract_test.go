@@ -529,6 +529,51 @@ Future agents consume this decision through Compound runtime context.
 	}
 }
 
+func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json")
+	report, err := ImportCodexHooksJSON(home, source, fixedNow)
+	if err != nil {
+		t.Fatalf("import codex hooks json: %v", err)
+	}
+	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 2 {
+		t.Fatalf("unexpected import report: %+v", report)
+	}
+	if len(report.Harnesses) != 1 || report.Harnesses[0] != "codex" {
+		t.Fatalf("import harnesses = %+v", report.Harnesses)
+	}
+	manifest, err := LoadInstalledHooksManifest(home)
+	if err != nil {
+		t.Fatalf("load installed hooks manifest: %v", err)
+	}
+	if len(manifest.Hooks) != 2 {
+		t.Fatalf("installed hooks = %+v", manifest.Hooks)
+	}
+	records, err := LoadInstalledHooksSourceAuthority(home)
+	if err != nil {
+		t.Fatalf("load source authority: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("source authority records = %d, want 1", len(records))
+	}
+	if records[0].AuthorityStatus != "compound_primary" || records[0].SourceRole != "evidence_only_input_after_import" {
+		t.Fatalf("bad source authority: %+v", records[0])
+	}
+	in := Input{Harness: "codex", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !contains(ec.ActiveHooks, want) {
+			t.Fatalf("effective contract active hooks = %v, want %s", ec.ActiveHooks, want)
+		}
+	}
+	if sourceRev(ec.SourceRevisions, InstalledHooksAuthorityRef) == "" {
+		t.Fatalf("effective contract missing installed-hooks source revision: %+v", ec.SourceRevisions)
+	}
+}
+
 func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

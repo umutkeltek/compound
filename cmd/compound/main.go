@@ -192,7 +192,7 @@ usage:
   compound home <init|doctor|where|backup|export|verify|restore|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
-  compound contract compile --harness H --cwd D --task T        compile EffectiveContract in force
+  compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound policy <evaluate|import-placement-rules|placement-authority> ActionIntent -> PolicyDecision; import owner placement rules
@@ -3011,21 +3011,92 @@ func cliTS(now time.Time) string {
 // cmdContract compiles the EffectiveContract — the instructions/hooks/policies in force
 // for a harness+repo+task (docs/architecture/contracts/README.md).
 func cmdContract(args []string) {
-	if len(args) == 0 || args[0] != "compile" {
-		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound contract <compile|import-hooks|hooks-authority> ...")
 		os.Exit(2)
 	}
-	homePath, err := home.Resolve("")
-	die(err)
-	in, err := parseOrientArgsWithHome(args[1:], homePath)
-	die(err)
-	if in.Harness == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
+	switch args[0] {
+	case "compile":
+		homePath, err := home.Resolve("")
+		die(err)
+		in, err := parseOrientArgsWithHome(args[1:], homePath)
+		die(err)
+		if in.Harness == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound contract compile --harness <h> --cwd <dir> --task <t> [--repo-kind <k>] [--mode <m>]")
+			os.Exit(2)
+		}
+		ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, time.Now())
+		die(err)
+		printJSON(ec)
+	case "import-hooks":
+		sourcePath := valueFlag(args[1:], "--codex-hooks-json")
+		if sourcePath == "" && len(args) == 2 {
+			sourcePath = args[1]
+		}
+		if sourcePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound contract import-hooks --codex-hooks-json <codex-hooks-json.json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		die(err)
+		report, err := contract.ImportCodexHooksJSON(homePath, sourcePath, time.Now())
+		die(err)
+		printJSON(report)
+	case "hooks-authority":
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound contract hooks-authority")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		die(err)
+		type hooksAuthorityReport struct {
+			AuthorityRef     string                                   `json:"authority_ref"`
+			AuthorityPath    string                                   `json:"authority_path"`
+			Installed        bool                                     `json:"installed"`
+			HookCount        int                                      `json:"hook_count,omitempty"`
+			Harnesses        []string                                 `json:"harnesses,omitempty"`
+			SourceAuthority  []contract.InstalledHooksSourceAuthority `json:"source_authority,omitempty"`
+			SourceRecordPath string                                   `json:"source_record_path"`
+		}
+		report := hooksAuthorityReport{
+			AuthorityRef:     contract.InstalledHooksAuthorityRef,
+			AuthorityPath:    contract.InstalledHooksPath(homePath),
+			SourceRecordPath: contract.InstalledHooksSourceAuthorityPath(homePath),
+		}
+		manifest, err := contract.LoadInstalledHooksManifest(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				die(err)
+			}
+		} else {
+			report.Installed = true
+			report.HookCount = len(manifest.Hooks)
+			report.Harnesses = hookManifestHarnesses(manifest)
+		}
+		records, err := contract.LoadInstalledHooksSourceAuthority(homePath)
+		die(err)
+		report.SourceAuthority = records
+		printJSON(report)
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound contract <compile|import-hooks|hooks-authority> ...")
 		os.Exit(2)
 	}
-	ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, time.Now())
-	die(err)
-	printJSON(ec)
+}
+
+func hookManifestHarnesses(manifest contract.InstalledHooksManifest) []string {
+	seen := map[string]bool{}
+	for _, hook := range manifest.Hooks {
+		h := strings.TrimSpace(hook.Harness)
+		if h != "" {
+			seen[h] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for h := range seen {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // cmdOrient assembles the ContextPack an agent orients from. The excluded list — what

@@ -90,8 +90,11 @@ Runtime and contracts:
 - `compound schema list/export/validate` exports JSON Schema and validates files
   through the owning runtime validators.
 - `compound contract compile` and `compound orient` produce EffectiveContract
-  and ContextPack artifacts, including included/excluded refs and structured
-  capability offers.
+  and ContextPack artifacts, including included/excluded refs, active hook
+  rosters, and structured capability offers.
+- `compound contract import-hooks --codex-hooks-json <hooks.json>` installs the
+  generated Codex hook roster as `compound://config/installed-hooks`;
+  `compound contract hooks-authority` reports that handoff.
 
 Execution and policy:
 
