@@ -295,7 +295,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	}
 
 	c.State = "promoted"
-	if err := writeJSON(filepath.Join(s.candDir(), c.ID+".json"), &c); err != nil {
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
 		return res, err
 	}
 	res.Candidate, res.Claim, res.Transition = c, &claim, &tr
