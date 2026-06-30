@@ -79,8 +79,9 @@ authoritative ≠ current*.
 run-id / provider-call-id / receipt-path / memory-slug / dashboard-card. One root id linking
 intent→context→action→policy→run→receipt→transition is the cure. Governance is enforced here: **a mutating
 adapter rejects a mutation that lacks a valid `PolicyDecision`** — prompt-only "approval" is not enough.
-`StandingGrant`s pre-authorize an envelope (scope/budget/blast-radius/reversibility) so agents act without
-being paged inside the grant and escalate only when leaving it.
+`StandingGrant`s pre-authorize scoped envelopes (`target_path`, `max_usd`, `max_tokens`, `blast_radius`,
+`reversibility`) so agents act without being paged only while inside the grant; leaving the envelope escalates
+to `hold`/blocked through the same policy gate.
 
 ---
 

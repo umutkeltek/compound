@@ -634,6 +634,42 @@ func TestHookSourceControlContractFailsOnRawTargetDocs(t *testing.T) {
 	}
 }
 
+func TestStandingGrantContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "standing-grant-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("standing grant contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected standing-grant-contract finding")
+	}
+}
+
+func TestStandingGrantContractFailsOnUnscopedDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "StandingGrant lets policy allow approved actions without asking.\n"
+	if err := os.WriteFile(filepath.Join(docs, "runtime.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkStandingGrantContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "target_path/budget/blast/reversibility") {
+		t.Fatalf("failure should name missing scoped envelope fields: %+v", findings)
+	}
+}
+
 func TestProductContractContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool

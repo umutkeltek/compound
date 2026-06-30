@@ -129,10 +129,11 @@ func TestUnknownClassFailsClosed(t *testing.T) {
 	}
 }
 
-// A standing grant allows an otherwise-held action; an expired grant does not.
+// A standing grant allows an otherwise-held action only inside its explicit
+// envelope; an expired grant does not.
 func TestStandingGrant(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.StandingGrants = []StandingGrant{{ID: "grant_deploy", Capability: "deploy.run", MutationClass: "public", ExpiresAt: "2027-01-01T00:00:00Z"}}
+	cfg.StandingGrants = []StandingGrant{{ID: "grant_deploy", Capability: "deploy.run", MutationClass: "public", BlastRadius: "public", ExpiresAt: "2027-01-01T00:00:00Z"}}
 	ai := mkAction("public", "manual", "site/index.html", "public")
 	ai.Capability = "deploy.run"
 	pd := Evaluate(ai, cfg, fixedNow)
@@ -143,6 +144,91 @@ func TestStandingGrant(t *testing.T) {
 	cfg.StandingGrants[0].ExpiresAt = "2020-01-01T00:00:00Z"
 	if pd := Evaluate(ai, cfg, fixedNow); pd.Outcome != "hold" {
 		t.Errorf("expired grant should fall to baseline hold, got %q", pd.Outcome)
+	}
+}
+
+func TestStandingGrantDoesNotBypassEnvelope(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StandingGrants = []StandingGrant{{ID: "grant_loose", Capability: "deploy.run", MutationClass: "public"}}
+	ai := mkAction("public", "manual", "site/index.html", "public")
+	ai.Capability = "deploy.run"
+
+	pd := Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("unscoped public grant should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if pd.StandingGrantID != "" {
+		t.Fatalf("out-of-envelope grant should not attach id, got %q", pd.StandingGrantID)
+	}
+	if !reasonContains(pd.Reasons, `standing grant "grant_loose" does not cover blast_radius "public"`) {
+		t.Fatalf("reasons missing grant envelope miss: %v", pd.Reasons)
+	}
+
+	cfg.StandingGrants[0].BlastRadius = "public"
+	pd = Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_loose" {
+		t.Fatalf("explicit public grant should allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+}
+
+func TestStandingGrantRequiresExplicitHumanReversibility(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.StandingGrants = []StandingGrant{{ID: "grant_local", Capability: "filesystem.write", MutationClass: "local_reversible"}}
+	ai := mkAction("local_reversible", "irreversible", "docs/x.md", "repo")
+
+	pd := Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("unscoped irreversible grant should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !reasonContains(pd.Reasons, `standing grant "grant_local" does not cover reversibility "irreversible"`) {
+		t.Fatalf("reasons missing reversibility miss: %v", pd.Reasons)
+	}
+
+	cfg.StandingGrants[0].Reversibility = "irreversible"
+	pd = Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_local" {
+		t.Fatalf("explicit irreversible grant should allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+}
+
+func TestStandingGrantScopeAndBudget(t *testing.T) {
+	maxUSD := 10.0
+	cfg := DefaultConfig()
+	cfg.StandingGrants = []StandingGrant{{
+		ID:            "grant_billing",
+		Capability:    "billing.charge",
+		MutationClass: "financial",
+		BlastRadius:   "account",
+		TargetPath:    "billing/approved/**",
+		MaxUSD:        &maxUSD,
+	}}
+	ai := mkAction("financial", "manual", "billing/approved/charge.json", "account")
+	ai.Capability = "billing.charge"
+	cost := 12.5
+	ai.EstimatedCost.USD = &cost
+
+	pd := Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("over-budget grant should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !reasonContains(pd.Reasons, `estimated_cost.usd 12.50 exceeds max_usd 10.00`) {
+		t.Fatalf("reasons missing budget miss: %v", pd.Reasons)
+	}
+
+	cost = 7.5
+	ai.EstimatedCost.USD = &cost
+	pd = Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "allow" || pd.StandingGrantID != "grant_billing" {
+		t.Fatalf("in-budget scoped grant should allow, got outcome=%q grant=%q reasons=%v", pd.Outcome, pd.StandingGrantID, pd.Reasons)
+	}
+
+	ai.Target.Path = "billing/unapproved/charge.json"
+	pd = Evaluate(ai, cfg, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("out-of-scope target should hold, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	if !reasonContains(pd.Reasons, `target path "billing/unapproved/charge.json" outside target_path "billing/approved/**"`) {
+		t.Fatalf("reasons missing target scope miss: %v", pd.Reasons)
 	}
 }
 

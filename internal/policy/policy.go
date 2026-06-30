@@ -30,13 +30,19 @@ type ClassRule struct {
 	Obligations []string `yaml:"obligations" json:"obligations"`
 }
 
-// StandingGrant is a pre-authorization envelope (D3: humans own irreversible decisions
-// by SETTING THE ENVELOPE, not by being paged each time). A matching unexpired grant allows.
+// StandingGrant is a pre-authorization envelope (D3: humans own irreversible
+// decisions by SETTING THE ENVELOPE, not by being paged each time). A matching
+// unexpired grant allows only while the action stays inside its scope.
 type StandingGrant struct {
-	ID            string `yaml:"id" json:"id"`
-	Capability    string `yaml:"capability" json:"capability"`
-	MutationClass string `yaml:"mutation_class" json:"mutation_class"`
-	ExpiresAt     string `yaml:"expires_at" json:"expires_at"` // RFC3339; empty = no expiry
+	ID            string   `yaml:"id" json:"id"`
+	Capability    string   `yaml:"capability" json:"capability"`
+	MutationClass string   `yaml:"mutation_class" json:"mutation_class"`
+	Reversibility string   `yaml:"reversibility,omitempty" json:"reversibility,omitempty"`
+	BlastRadius   string   `yaml:"blast_radius,omitempty" json:"blast_radius,omitempty"`
+	TargetPath    string   `yaml:"target_path,omitempty" json:"target_path,omitempty"`
+	MaxUSD        *float64 `yaml:"max_usd,omitempty" json:"max_usd,omitempty"`
+	MaxTokens     *int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	ExpiresAt     string   `yaml:"expires_at" json:"expires_at"` // RFC3339; empty = no expiry
 }
 
 // Config is the declarative policy. Shipped as a leak-free built-in default; overridable
@@ -100,8 +106,8 @@ func LoadConfig(homePath string) (Config, string, error) {
 	return DefaultConfig(), "built-in", nil
 }
 
-// Evaluate decides an ActionIntent. Precedence: forbidden path (deny) > standing grant
-// (allow) > class baseline, then risk/blast escalation can only raise caution.
+// Evaluate decides an ActionIntent. Precedence: forbidden path (deny) > scoped
+// standing grant (allow) > class baseline and risk/blast escalation.
 func Evaluate(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.PolicyDecision {
 	return EvaluateWithContext(ai, cfg, EvaluationContext{}, now)
 }
@@ -126,14 +132,21 @@ func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.
 		}
 	}
 
-	// 2. standing grant -> allow (pre-authorized envelope).
-	if g, ok := matchGrant(cfg.StandingGrants, ai, now); ok {
+	outcome, reasons, obligations := baselineOutcome(ai, cfg)
+
+	// 2. standing grant -> allow only inside its explicit envelope.
+	if g, missReasons, ok := matchGrant(cfg.StandingGrants, ai, cfg, now); ok {
 		return mkDecision(ai, "allow",
 			[]string{fmt.Sprintf("covered by standing grant %s (capability=%q class=%q)", g.ID, g.Capability, g.MutationClass)},
 			nil, g.ID, g.ExpiresAt, now)
+	} else if len(missReasons) > 0 {
+		reasons = append(reasons, missReasons...)
 	}
 
-	// 3. baseline by mutation class; unknown class fails closed to hold.
+	return mkDecision(ai, outcome, reasons, obligations, "", "", now)
+}
+
+func baselineOutcome(ai envelope.ActionIntent, cfg Config) (string, []string, []string) {
 	var reasons []string
 	outcome := "hold"
 	base, known := cfg.ClassOutcome[ai.MutationClass]
@@ -173,7 +186,7 @@ func evaluateBase(ai envelope.ActionIntent, cfg Config, now time.Time) envelope.
 		}
 	}
 
-	return mkDecision(ai, outcome, reasons, obligations, "", "", now)
+	return outcome, reasons, obligations
 }
 
 func applySourceControlContext(pd envelope.PolicyDecision, ai envelope.ActionIntent, sc SourceControlContext, now time.Time) envelope.PolicyDecision {
@@ -265,7 +278,8 @@ func matchForbidden(patterns []string, p string) (string, bool) {
 	return "", false
 }
 
-func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, now time.Time) (StandingGrant, bool) {
+func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, cfg Config, now time.Time) (StandingGrant, []string, bool) {
+	var misses []string
 	for _, g := range grants {
 		if g.Capability != "" && g.Capability != ai.Capability {
 			continue
@@ -275,12 +289,61 @@ func matchGrant(grants []StandingGrant, ai envelope.ActionIntent, now time.Time)
 		}
 		if g.ExpiresAt != "" {
 			if t, err := time.Parse(time.RFC3339, g.ExpiresAt); err == nil && now.After(t) {
-				continue // expired
+				misses = append(misses, fmt.Sprintf("standing grant %q expired at %s", grantID(g), g.ExpiresAt))
+				continue
 			}
 		}
-		return g, true
+		reasons := grantEnvelopeMisses(g, ai, cfg)
+		if len(reasons) == 0 {
+			return g, nil, true
+		}
+		misses = append(misses, reasons...)
 	}
-	return StandingGrant{}, false
+	return StandingGrant{}, misses, false
+}
+
+func grantEnvelopeMisses(g StandingGrant, ai envelope.ActionIntent, cfg Config) []string {
+	var reasons []string
+	id := grantID(g)
+	if g.Reversibility != "" && g.Reversibility != ai.Reversibility {
+		reasons = append(reasons, fmt.Sprintf("standing grant %q covers reversibility %q, not %q", id, g.Reversibility, ai.Reversibility))
+	} else if g.Reversibility == "" && ai.MutationClass != "read" && contains(cfg.HumanReversibilities, ai.Reversibility) {
+		reasons = append(reasons, fmt.Sprintf("standing grant %q does not cover reversibility %q", id, ai.Reversibility))
+	}
+	if g.BlastRadius != "" && g.BlastRadius != ai.BlastRadius {
+		reasons = append(reasons, fmt.Sprintf("standing grant %q covers blast_radius %q, not %q", id, g.BlastRadius, ai.BlastRadius))
+	} else if g.BlastRadius == "" && ai.MutationClass != "read" && contains(cfg.WideBlastRadii, ai.BlastRadius) {
+		reasons = append(reasons, fmt.Sprintf("standing grant %q does not cover blast_radius %q", id, ai.BlastRadius))
+	}
+	if g.TargetPath != "" {
+		if ai.Target.Path == "" {
+			reasons = append(reasons, fmt.Sprintf("standing grant %q target path empty outside target_path %q", id, g.TargetPath))
+		} else if _, ok := matchForbidden([]string{g.TargetPath}, ai.Target.Path); !ok {
+			reasons = append(reasons, fmt.Sprintf("standing grant %q target path %q outside target_path %q", id, ai.Target.Path, g.TargetPath))
+		}
+	}
+	if ai.EstimatedCost.USD != nil {
+		if g.MaxUSD == nil {
+			reasons = append(reasons, fmt.Sprintf("standing grant %q does not set max_usd for estimated_cost.usd %.2f", id, *ai.EstimatedCost.USD))
+		} else if *ai.EstimatedCost.USD > *g.MaxUSD {
+			reasons = append(reasons, fmt.Sprintf("standing grant %q estimated_cost.usd %.2f exceeds max_usd %.2f", id, *ai.EstimatedCost.USD, *g.MaxUSD))
+		}
+	}
+	if ai.EstimatedCost.Tokens != nil {
+		if g.MaxTokens == nil {
+			reasons = append(reasons, fmt.Sprintf("standing grant %q does not set max_tokens for estimated_cost.tokens %d", id, *ai.EstimatedCost.Tokens))
+		} else if *ai.EstimatedCost.Tokens > *g.MaxTokens {
+			reasons = append(reasons, fmt.Sprintf("standing grant %q estimated_cost.tokens %d exceeds max_tokens %d", id, *ai.EstimatedCost.Tokens, *g.MaxTokens))
+		}
+	}
+	return reasons
+}
+
+func grantID(g StandingGrant) string {
+	if strings.TrimSpace(g.ID) == "" {
+		return "(unnamed)"
+	}
+	return g.ID
 }
 
 // globToRegexp converts a path glob (supporting **, *, ?) to an anchored regexp.

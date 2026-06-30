@@ -7,6 +7,8 @@
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, and the memory convergence ratchet.
 
 ## Recent Runtime Proof
+
+- `internal/policy` now treats `StandingGrant` as a scoped policy envelope, not an unconditional allow-list. Grants can constrain `target_path`, `max_usd`, `max_tokens`, `blast_radius`, and `reversibility`; leaving that envelope falls back to baseline `PolicyDecision` hold/deny and the existing gate blocks the mutation. `architecture doctor --strict` now includes `standing-grant-contract` so public docs cannot drift back to broad grant wording.
 - Owner-review artifact writes now route through the shared `internal/reviewartifact` owner for both core JSON/Markdown pairs and extra raw drafts. Capability evaluation intake `.review.yaml` / skill-manifest drafts, distiller improvement `.review.yaml`, and product hypothesis/review/source-issue draft files now use `reviewartifact.WriteRaw`, leaving call sites with only area, payload, and render logic.
 
 - `compound schema list/export/validate` now exposes machine-readable JSON Schema documents for core adapter contracts and validates concrete files through the owning runtime validators (`Envelope.Validate`, distiller reference extraction, runtime/product doctors, route evidence decoder). This gives external harnesses a schema surface without creating a second authority for semantic validation.

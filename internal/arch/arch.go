@@ -116,6 +116,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
 		f = append(f, checkHookSourceControlContract(repoRoot)...)
+		f = append(f, checkStandingGrantContract(repoRoot)...)
 		f = append(f, checkProductContractContract(repoRoot)...)
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
 		f = append(f, checkConversationMiningContract(repoRoot)...)
@@ -734,6 +735,53 @@ func checkHookSourceControlContract(repoRoot string) []Finding {
 		return []Finding{{"hook-source-control-contract", Fail, "public docs do not describe hook pre-tool-use relative target normalization before policy evaluation, ActionIntent persistence, read-only git inspection, and no repo mutation"}}
 	}
 	return []Finding{{"hook-source-control-contract", Info, "hook source-control gate normalizes target identity before policy and git inspection"}}
+}
+
+// checkStandingGrantContract keeps autonomy grants from drifting back to
+// unconditional allow-list entries. Grants must describe a scoped envelope and
+// leave final enforcement in PolicyDecision/Gate.
+func checkStandingGrantContract(repoRoot string) []Finding {
+	hasStandingGrant := false
+	hasScopeBudget := false
+	hasBlastReversibility := false
+	hasTargetCostFields := false
+	hasLeavingEnvelope := false
+	hasPolicyGate := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "standinggrant") || strings.Contains(low, "standing grant") {
+			hasStandingGrant = true
+		}
+		if strings.Contains(low, "scope") && strings.Contains(low, "budget") {
+			hasScopeBudget = true
+		}
+		if (strings.Contains(low, "blast_radius") || strings.Contains(low, "blast-radius")) && strings.Contains(low, "reversibility") {
+			hasBlastReversibility = true
+		}
+		if strings.Contains(low, "target_path") && (strings.Contains(low, "estimated_cost") || strings.Contains(low, "max_usd") || strings.Contains(low, "max_tokens")) {
+			hasTargetCostFields = true
+		}
+		if strings.Contains(low, "leaving") && (strings.Contains(low, "escalate") || strings.Contains(low, "hold") || strings.Contains(low, "blocked")) {
+			hasLeavingEnvelope = true
+		}
+		if (strings.Contains(low, "policydecision") || strings.Contains(low, "policy decision")) &&
+			(strings.Contains(low, "gate") || strings.Contains(low, "adapter rejects") || strings.Contains(low, "enforces")) {
+			hasPolicyGate = true
+		}
+		return nil
+	})
+	if !hasStandingGrant || !hasScopeBudget || !hasBlastReversibility || !hasTargetCostFields || !hasLeavingEnvelope || !hasPolicyGate {
+		return []Finding{{"standing-grant-contract", Fail, "public docs do not describe scoped StandingGrant envelopes with target_path/budget/blast/reversibility and PolicyDecision/Gate enforcement when leaving the envelope"}}
+	}
+	return []Finding{{"standing-grant-contract", Info, "StandingGrant remains a scoped policy envelope enforced by PolicyDecision/Gate"}}
 }
 
 // checkProductContractContract keeps project/release source contracts from
