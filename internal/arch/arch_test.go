@@ -840,6 +840,42 @@ func TestConversationCoverageContractFailsWithoutGates(t *testing.T) {
 	}
 }
 
+func TestDecisionSourceAuthorityContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "decision-source-authority-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("decision source authority contract failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected decision-source-authority-contract finding")
+	}
+}
+
+func TestDecisionSourceAuthorityContractFailsWithoutCoverageAndRuntimeDedupe(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`decisions import --policy-dir <dir>` imports DecisionLifecycle records.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkDecisionSourceAuthorityContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "source-authority coverage") || !strings.Contains(findings[0].Message, "runtime decision:// dedupe") {
+		t.Fatalf("failure should name missing authority/runtime guards: %+v", findings)
+	}
+}
+
 func TestDistillerImprovementReviewContractFailsWithoutGate(t *testing.T) {
 	repo := t.TempDir()
 	docs := filepath.Join(repo, "docs")

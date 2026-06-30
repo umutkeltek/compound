@@ -397,6 +397,7 @@ func importNoteDecision(store *mem.Store, path, sourceKind, idPrefix, workID str
 	var f decFrontmatter
 	_ = yaml.Unmarshal([]byte(fm), &f)
 	heading := firstHeading(body)
+	generatedID := strings.TrimSpace(f.ID) == ""
 	if f.ID == "" {
 		f.ID = stableDecisionID(idPrefix, f, heading, path)
 	}
@@ -470,7 +471,7 @@ func importNoteDecision(store *mem.Store, path, sourceKind, idPrefix, workID str
 		SnippetHash:    digest12(f.ID + "\n" + f.Title),
 		Visibility:     "operational",
 	}
-	if existing, ok, err := existingDecisionImportReport(store, cand, path, sourceKind, evidence.ID); err != nil {
+	if existing, ok, err := existingDecisionImportReport(store, cand, path, sourceKind, evidence.ID, legacyBrainCandidatesForGenericNote(cand, generatedID)...); err != nil {
 		return report, err
 	} else if ok {
 		return BrainDecisionReport(existing), nil
@@ -508,49 +509,61 @@ func alreadyCurrentClaimID(res mem.AdjudicateResult) string {
 	return strings.TrimSpace(strings.TrimPrefix(res.Note, "already current:"))
 }
 
-func existingDecisionImportReport(store *mem.Store, cand mem.Candidate, sourcePath, sourceKind, evidenceID string) (DecisionImportReport, bool, error) {
+func existingDecisionImportReport(store *mem.Store, cand mem.Candidate, sourcePath, sourceKind, evidenceID string, alternates ...mem.Candidate) (DecisionImportReport, bool, error) {
+	all := append([]mem.Candidate{cand}, alternates...)
 	claims, err := store.AllCurrent()
 	if err != nil {
 		return DecisionImportReport{}, false, err
 	}
 	for _, claim := range claims {
-		if claim.ClaimType != "decision" ||
-			claim.Entity != cand.Entity ||
-			claim.Predicate != cand.Predicate ||
-			claim.Object != cand.Object ||
-			!sameStringMap(claim.Qualifiers, cand.Qualifiers) {
-			continue
+		for _, candidate := range all {
+			if claim.ClaimType != "decision" ||
+				claim.Entity != candidate.Entity ||
+				claim.Predicate != candidate.Predicate ||
+				claim.Object != candidate.Object ||
+				!sameStringMap(claim.Qualifiers, candidate.Qualifiers) {
+				continue
+			}
+			candidateID := ""
+			if len(claim.EvidenceRefs) > 0 {
+				candidateID = claim.EvidenceRefs[0]
+			}
+			return DecisionImportReport{
+				SourcePath:  sourcePath,
+				SourceKind:  sourceKind,
+				EvidenceID:  evidenceID,
+				CandidateID: candidateID,
+				ClaimID:     claim.ID,
+				Verdict:     candidates.Promote,
+				Lifecycle:   LifecycleFromClaim(claim),
+			}, true, nil
 		}
-		candidateID := ""
-		if len(claim.EvidenceRefs) > 0 {
-			candidateID = claim.EvidenceRefs[0]
-		}
-		return DecisionImportReport{
-			SourcePath:  sourcePath,
-			SourceKind:  sourceKind,
-			EvidenceID:  evidenceID,
-			CandidateID: candidateID,
-			ClaimID:     claim.ID,
-			Verdict:     candidates.Promote,
-			Lifecycle:   LifecycleFromClaim(claim),
-		}, true, nil
 	}
 	cands, err := store.AllCandidates()
 	if err != nil {
 		return DecisionImportReport{}, false, err
 	}
 	for _, existing := range cands {
-		if existing.State == "promoted" || !sameDecisionCandidate(existing, cand) {
+		if existing.State == "promoted" {
 			continue
 		}
-		return DecisionImportReport{
-			SourcePath:  sourcePath,
-			SourceKind:  sourceKind,
-			EvidenceID:  evidenceID,
-			CandidateID: existing.ID,
-			Verdict:     VerdictForCandidate(existing),
-			Lifecycle:   LifecycleFromCandidate(existing),
-		}, true, nil
+		for i, candidate := range all {
+			matches := sameDecisionCandidate(existing, candidate)
+			if !matches && i > 0 {
+				matches = sameDecisionCandidateIgnoringTrace(existing, candidate)
+			}
+			if !matches {
+				continue
+			}
+			return DecisionImportReport{
+				SourcePath:  sourcePath,
+				SourceKind:  sourceKind,
+				EvidenceID:  evidenceID,
+				CandidateID: existing.ID,
+				Verdict:     VerdictForCandidate(existing),
+				Lifecycle:   LifecycleFromCandidate(existing),
+			}, true, nil
+		}
 	}
 	return DecisionImportReport{}, false, nil
 }
@@ -563,6 +576,43 @@ func sameDecisionCandidate(a, b mem.Candidate) bool {
 		a.PromotionBasis == b.PromotionBasis &&
 		a.SourceTraceRef == b.SourceTraceRef &&
 		sameStringMap(a.Qualifiers, b.Qualifiers)
+}
+
+func sameDecisionCandidateIgnoringTrace(a, b mem.Candidate) bool {
+	return a.Entity == b.Entity &&
+		a.Predicate == b.Predicate &&
+		a.Object == b.Object &&
+		a.ClaimType == b.ClaimType &&
+		a.PromotionBasis == b.PromotionBasis &&
+		sameStringMap(a.Qualifiers, b.Qualifiers)
+}
+
+func legacyBrainCandidatesForGenericNote(cand mem.Candidate, generatedID bool) []mem.Candidate {
+	if !generatedID || cand.Qualifiers == nil || cand.Qualifiers["source"] != "note" {
+		return nil
+	}
+	id := strings.TrimSpace(cand.Qualifiers["decision_id"])
+	if !strings.HasPrefix(id, "note-") {
+		return nil
+	}
+	legacyID := "brain-" + strings.TrimPrefix(id, "note-")
+	legacy := cand
+	legacy.Entity = decisionEntity(legacyID)
+	legacy.Qualifiers = cloneStringMap(cand.Qualifiers)
+	legacy.Qualifiers["decision_id"] = legacyID
+	legacy.Qualifiers["source"] = "brain"
+	return []mem.Candidate{legacy}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func sameStringMap(a, b map[string]string) bool {

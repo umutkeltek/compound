@@ -158,6 +158,80 @@ review_trigger: Re-check source.
 	}
 }
 
+func TestImportNoteDecisionReusesLegacyGeneratedBrainDecision(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decision.md")
+	writeFile(t, path, `---
+title: Generated id decision
+status: accepted
+falsifier: Decision no longer protects behavior.
+review_trigger: Re-check behavior.
+---
+# Generated id decision
+`)
+	brainReport, err := ImportBrainDecision(store, path, time.Date(2026, 6, 30, 12, 30, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	noteReport, err := ImportNoteDecision(store, path, time.Date(2026, 6, 30, 12, 31, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if brainReport.ClaimID == "" || noteReport.ClaimID != brainReport.ClaimID {
+		t.Fatalf("note import should reuse legacy brain claim: brain=%+v note=%+v", brainReport, noteReport)
+	}
+	if !strings.HasPrefix(noteReport.Lifecycle.ID, "brain-") {
+		t.Fatalf("note import should keep existing brain decision id: %+v", noteReport.Lifecycle)
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("claims = %+v", claims)
+	}
+}
+
+func TestImportNoteDecisionReusesLegacyParkedBrainCandidate(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "decision.md")
+	writeFile(t, path, `---
+title: Incomplete generated id decision
+status: accepted
+---
+# Incomplete generated id decision
+`)
+	brainReport, err := ImportBrainDecision(store, path, time.Date(2026, 6, 30, 12, 40, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if brainReport.Verdict != candidates.Park {
+		t.Fatalf("brain report should park: %+v", brainReport)
+	}
+	noteReport, err := ImportNoteDecision(store, path, time.Date(2026, 6, 30, 12, 41, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noteReport.CandidateID != brainReport.CandidateID || noteReport.Lifecycle.ID != brainReport.Lifecycle.ID {
+		t.Fatalf("note import should reuse legacy parked candidate: brain=%+v note=%+v", brainReport, noteReport)
+	}
+	cands, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %+v", cands)
+	}
+}
+
 func TestImportReplayKeepsSourceAuthorityPrimary(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

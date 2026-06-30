@@ -120,6 +120,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
 		f = append(f, checkConversationMiningContract(repoRoot)...)
 		f = append(f, checkConversationCoverageContract(repoRoot)...)
+		f = append(f, checkDecisionSourceAuthorityContract(repoRoot)...)
 		f = append(f, checkDistillerImprovementReviewContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
@@ -957,6 +958,57 @@ func checkConversationCoverageContract(repoRoot string) []Finding {
 		return []Finding{{"conversation-coverage-contract", Fail, "public docs do not describe distiller import-conversation-coverage as summary-only SourceObservation/no-promote evidence with reviewed improvement-plan next step, no row import, no Dream execution, and no memory promotion"}}
 	}
 	return []Finding{{"conversation-coverage-contract", Info, "conversation coverage stays summary-only source-quality evidence, not row import, Dream, or memory authority"}}
+}
+
+func checkDecisionSourceAuthorityContract(repoRoot string) []Finding {
+	hasGenericSourceImport := false
+	hasSourceKindNote := false
+	hasPolicyDir := false
+	hasAuthorityCommand := false
+	hasSourceAuthorityLog := false
+	hasLifecycleOwner := false
+	hasNoCandidateOnlyParser := false
+	hasRuntimeDedupe := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "decisions import --source") || strings.Contains(low, "import --source <") {
+			hasGenericSourceImport = true
+		}
+		if strings.Contains(low, "--source-dir <dir> --source-kind note") || strings.Contains(low, "--source-kind note") {
+			hasSourceKindNote = true
+		}
+		if strings.Contains(low, "--policy-dir <dir>") {
+			hasPolicyDir = true
+		}
+		if strings.Contains(low, "decisions authority") {
+			hasAuthorityCommand = true
+		}
+		if strings.Contains(low, "decision-source-authority.jsonl") || strings.Contains(low, "source-authority coverage") {
+			hasSourceAuthorityLog = true
+		}
+		if strings.Contains(low, "decisionlifecycle") {
+			hasLifecycleOwner = true
+		}
+		if strings.Contains(low, "not a candidate-only parser") || strings.Contains(low, "not candidate-only") {
+			hasNoCandidateOnlyParser = true
+		}
+		if strings.Contains(low, "dedupe") && strings.Contains(low, "decision://") && (strings.Contains(low, "contract compile") || strings.Contains(low, "orient")) {
+			hasRuntimeDedupe = true
+		}
+		return nil
+	})
+	if !hasGenericSourceImport || !hasSourceKindNote || !hasPolicyDir || !hasAuthorityCommand || !hasSourceAuthorityLog || !hasLifecycleOwner || !hasNoCandidateOnlyParser || !hasRuntimeDedupe {
+		return []Finding{{"decision-source-authority-contract", Fail, "public docs do not describe generic DecisionLifecycle source import, policy-dir import, source-authority coverage, non-candidate-only adapter, and runtime decision:// dedupe"}}
+	}
+	return []Finding{{"decision-source-authority-contract", Info, "decision source authority covers generic note/policy imports, source coverage, and runtime decision ref dedupe"}}
 }
 
 func checkDistillerImprovementReviewContract(repoRoot string) []Finding {
