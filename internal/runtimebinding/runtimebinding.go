@@ -4,8 +4,13 @@
 package runtimebinding
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -26,6 +31,7 @@ var statuses = []string{StatusCandidate, StatusActive, StatusStale, StatusRetire
 type Bundle struct {
 	RuntimeBinding  RuntimeBinding  `json:"runtime_binding" yaml:"runtime_binding"`
 	ServiceContract ServiceContract `json:"service_contract" yaml:"service_contract"`
+	RuntimeProbes   []RuntimeProbe  `json:"runtime_probes,omitempty" yaml:"runtime_probes,omitempty"`
 }
 
 type RuntimeBinding struct {
@@ -49,6 +55,15 @@ type ServiceContract struct {
 	RiskTier      string   `json:"risk_tier" yaml:"risk_tier"`
 	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
 	Status        string   `json:"status" yaml:"status"`
+}
+
+type RuntimeProbe struct {
+	ID             string `json:"id" yaml:"id"`
+	Kind           string `json:"kind" yaml:"kind"`
+	Target         string `json:"target" yaml:"target"`
+	Method         string `json:"method,omitempty" yaml:"method,omitempty"`
+	ExpectedStatus int    `json:"expected_status,omitempty" yaml:"expected_status,omitempty"`
+	TimeoutMS      int    `json:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"`
 }
 
 type Check struct {
@@ -138,6 +153,139 @@ func Doctor(b Bundle) DoctorReport {
 	add("status", validStatus(rb.Status) && validStatus(sc.Status), joinNonEmpty(rb.Status, sc.Status))
 
 	return report
+}
+
+func DoctorWithLiveProbes(ctx context.Context, b Bundle, now time.Time) DoctorReport {
+	report := Doctor(b)
+	for i, probe := range b.RuntimeProbes {
+		check := runProbe(ctx, probe, i, now)
+		if check.Status != "ok" {
+			report.Status = "fail"
+		}
+		report.Checks = append(report.Checks, check)
+	}
+	return report
+}
+
+func runProbe(ctx context.Context, probe RuntimeProbe, idx int, now time.Time) Check {
+	_ = now
+	id := probeID(probe, idx)
+	if strings.TrimSpace(probe.Kind) == "" || strings.TrimSpace(probe.Target) == "" {
+		return Check{Name: "live:" + id, Status: "fail", Detail: "probe kind and target required"}
+	}
+	timeout := probeTimeout(probe)
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	switch strings.ToLower(strings.TrimSpace(probe.Kind)) {
+	case "http":
+		return runHTTPProbe(probeCtx, probe, id, start)
+	case "tcp":
+		return runTCPProbe(probeCtx, probe, id, start)
+	case "file":
+		return runFileProbe(probe, id, start)
+	case "env":
+		return runEnvProbe(probe, id, start)
+	default:
+		return Check{Name: "live:" + id, Status: "fail", Detail: "unsupported probe kind " + probe.Kind}
+	}
+}
+
+func runHTTPProbe(ctx context.Context, probe RuntimeProbe, id string, start time.Time) Check {
+	target := strings.TrimSpace(probe.Target)
+	if _, err := url.ParseRequestURI(target); err != nil {
+		return Check{Name: "live:" + id, Status: "fail", Detail: "invalid http target " + target}
+	}
+	method := strings.ToUpper(strings.TrimSpace(probe.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
+	if err != nil {
+		return Check{Name: "live:" + id, Status: "fail", Detail: err.Error()}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Check{Name: "live:" + id, Status: "fail", Detail: err.Error()}
+	}
+	defer resp.Body.Close()
+
+	expected := probe.ExpectedStatus
+	ok := false
+	if expected > 0 {
+		ok = resp.StatusCode == expected
+	} else {
+		ok = resp.StatusCode >= 200 && resp.StatusCode < 400
+	}
+	return probeCheck(id, ok, fmt.Sprintf("http %s status=%d elapsed_ms=%d", target, resp.StatusCode, elapsedMS(start)))
+}
+
+func runTCPProbe(ctx context.Context, probe RuntimeProbe, id string, start time.Time) Check {
+	target := strings.TrimSpace(probe.Target)
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", target)
+	if err != nil {
+		return Check{Name: "live:" + id, Status: "fail", Detail: err.Error()}
+	}
+	_ = conn.Close()
+	return probeCheck(id, true, fmt.Sprintf("tcp %s reachable elapsed_ms=%d", target, elapsedMS(start)))
+}
+
+func runFileProbe(probe RuntimeProbe, id string, start time.Time) Check {
+	target := expandUser(strings.TrimSpace(probe.Target))
+	info, err := os.Stat(target)
+	if err != nil {
+		return Check{Name: "live:" + id, Status: "fail", Detail: "file missing " + target}
+	}
+	if info.IsDir() {
+		return Check{Name: "live:" + id, Status: "fail", Detail: "file target is directory " + target}
+	}
+	return probeCheck(id, true, fmt.Sprintf("file %s exists bytes=%d elapsed_ms=%d", target, info.Size(), elapsedMS(start)))
+}
+
+func runEnvProbe(probe RuntimeProbe, id string, start time.Time) Check {
+	target := strings.TrimSpace(probe.Target)
+	if target == "" {
+		return Check{Name: "live:" + id, Status: "fail", Detail: "env target required"}
+	}
+	_, ok := os.LookupEnv(target)
+	return probeCheck(id, ok, fmt.Sprintf("env %s present=%v elapsed_ms=%d", target, ok, elapsedMS(start)))
+}
+
+func probeCheck(id string, ok bool, detail string) Check {
+	status := "ok"
+	if !ok {
+		status = "fail"
+	}
+	return Check{Name: "live:" + id, Status: status, Detail: detail}
+}
+
+func probeID(probe RuntimeProbe, idx int) string {
+	if strings.TrimSpace(probe.ID) != "" {
+		return strings.TrimSpace(probe.ID)
+	}
+	return fmt.Sprintf("%s-%d", strings.ToLower(strings.TrimSpace(probe.Kind)), idx+1)
+}
+
+func probeTimeout(probe RuntimeProbe) time.Duration {
+	if probe.TimeoutMS > 0 {
+		return time.Duration(probe.TimeoutMS) * time.Millisecond
+	}
+	return 2 * time.Second
+}
+
+func elapsedMS(start time.Time) int64 {
+	return time.Since(start).Milliseconds()
+}
+
+func expandUser(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if h, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(h, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
 }
 
 func validStatus(s string) bool {

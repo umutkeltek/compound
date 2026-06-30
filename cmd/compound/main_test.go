@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3546,6 +3548,56 @@ func TestRuntimeRepairPlanCreatesGateAndReview(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("runtime repair-plan should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
+func TestRuntimeDoctorLiveProbeIsOptIn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime-live.yaml")
+	body := `runtime_binding:
+  service_id: service:live-api
+  owner_entity: product:live
+  host_binding: host:local-test
+  deployment_binding: process:live-api
+  data_bindings: [sqlite:live.db]
+  health_check_refs: [` + srv.URL + `/health]
+  risk_tier: tier1
+  evidence_refs: [fixture:runtime-binding]
+  status: active
+service_contract:
+  service_id: service:live-api
+  interface_refs: [http:get:/health]
+  owner_entity: product:live
+  risk_tier: tier1
+  evidence_refs: [fixture:service-contract]
+  status: active
+runtime_probes:
+  - id: health
+    kind: http
+    target: ` + srv.URL + `/health
+    expected_status: 204
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdRuntime([]string{"doctor", path})
+	})
+	if strings.Contains(out, "live:health") {
+		t.Fatalf("structural doctor should not run live probe without --live:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		cmdRuntime([]string{"doctor", "--live", path})
+	})
+	if !strings.Contains(out, "- live:health: ok") || !strings.Contains(out, "- status: ok") {
+		t.Fatalf("live doctor output:\n%s", out)
 	}
 }
 

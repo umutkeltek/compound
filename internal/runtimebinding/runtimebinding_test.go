@@ -1,6 +1,10 @@
 package runtimebinding
 
 import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +35,67 @@ func TestDoctorFailsMissingHost(t *testing.T) {
 	}
 	if got := checkStatus(report, "host"); got != "fail" {
 		t.Fatalf("host check = %q, want fail", got)
+	}
+}
+
+func TestDoctorWithLiveProbes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	filePath := filepath.Join(t.TempDir(), "service.db")
+	if err := os.WriteFile(filePath, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SYNTHETIC_RUNTIME_TOKEN", "present")
+
+	b := validBundle()
+	b.RuntimeProbes = []RuntimeProbe{
+		{ID: "health", Kind: "http", Target: srv.URL + "/health", ExpectedStatus: http.StatusNoContent},
+		{ID: "port", Kind: "tcp", Target: ln.Addr().String()},
+		{ID: "data", Kind: "file", Target: filePath},
+		{ID: "credential", Kind: "env", Target: "SYNTHETIC_RUNTIME_TOKEN"},
+	}
+	report := DoctorWithLiveProbes(context.Background(), b, time.Now())
+	if report.Status != "ok" {
+		t.Fatalf("status = %q, checks = %+v", report.Status, report.Checks)
+	}
+	for _, name := range []string{"live:health", "live:port", "live:data", "live:credential"} {
+		if got := checkStatus(report, name); got != "ok" {
+			t.Fatalf("%s = %q, checks=%+v", name, got, report.Checks)
+		}
+	}
+}
+
+func TestDoctorWithLiveProbesFailsUnavailableEvidence(t *testing.T) {
+	b := validBundle()
+	b.RuntimeProbes = []RuntimeProbe{
+		{ID: "credential", Kind: "env", Target: "COMPOUND_TEST_MISSING_RUNTIME_TOKEN"},
+		{ID: "data", Kind: "file", Target: filepath.Join(t.TempDir(), "missing.db")},
+	}
+	report := DoctorWithLiveProbes(context.Background(), b, time.Now())
+	if report.Status != "fail" {
+		t.Fatalf("status = %q, checks = %+v", report.Status, report.Checks)
+	}
+	if got := checkStatus(report, "live:credential"); got != "fail" {
+		t.Fatalf("credential check = %q, want fail", got)
+	}
+	if got := checkStatus(report, "live:data"); got != "fail" {
+		t.Fatalf("data check = %q, want fail", got)
+	}
+	if !NeedsWriteback(report) {
+		t.Fatalf("live runtime failure should need writeback")
 	}
 }
 
