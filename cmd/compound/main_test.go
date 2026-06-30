@@ -2208,6 +2208,67 @@ func TestCapabilityImportEvaluationsSurfacesUnknownReviewDebt(t *testing.T) {
 	}
 }
 
+func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	targetPath := filepath.Join(t.TempDir(), "skill-manifest.yaml")
+	if err := os.WriteFile(targetPath, []byte("existing: skill manifest\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{
+			"evaluation-plan",
+			filepath.Join("..", "..", "fixtures", "capability-evaluations", "web-design-guidelines.json"),
+			"--capability", "web-design-guidelines",
+			"--target", targetPath,
+		})
+	})
+	for _, want := range []string{
+		"# capability evaluation-plan",
+		"- status: review_required",
+		"- evaluation_set:",
+		"- evaluation: capability-evaluation.external.vercel.web-design-guidelines",
+		"- capability: web-design-guidelines",
+		"- verdict: adapt",
+		"- node_draft: skill:web-design-guidelines",
+		"- node_kind: skill",
+		"- required_evidence: 5",
+		"- evidence_refs:",
+		"- plan:",
+		"- review:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("evaluation-plan output missing %q:\n%s", want, out)
+		}
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan capgraph.CapabilityEvaluationPlan
+	if err := json.Unmarshal([]byte(readFile(t, planPath)), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.NodeDraft.NodeID != "skill:web-design-guidelines" || plan.TargetHash == "" {
+		t.Fatalf("plan = %+v", plan)
+	}
+	review := readFile(t, reviewPath)
+	if !strings.Contains(review, "does not mutate CapabilityGraph") || !strings.Contains(review, "Required Review") {
+		t.Fatalf("review missing guardrails:\n%s", review)
+	}
+	if got := readFile(t, targetPath); got != "existing: skill manifest\n" {
+		t.Fatalf("target mutated: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evaluation-plan must not mutate capability graph, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evaluation-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
