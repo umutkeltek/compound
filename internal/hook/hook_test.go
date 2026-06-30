@@ -485,6 +485,49 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 	}
 }
 
+func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
+	homePath := t.TempDir()
+	repo := initHookGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+	ai := &envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: "act_dirty_relative", CreatedAt: fixedNow.Format(time.RFC3339),
+			Producer: envelope.Producer{Kind: "hook", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_dirty_relative"},
+			Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: "claude_code", Capability: "filesystem.write", Action: "write_file",
+		Target:        envelope.ActionTarget{Kind: "file", Path: "README.md"},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "repo",
+	}
+	res, err := Run(Fixture{
+		Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_dirty_relative",
+		Cwd: repo, Action: ai,
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pd := res.Produced[1].(*envelope.PolicyDecision)
+	if res.Event.Status != "blocked" || pd.Outcome != "hold" {
+		t.Fatalf("event/policy = %q/%q reasons=%v, want blocked/hold", res.Event.Status, pd.Outcome, pd.Reasons)
+	}
+	if !reasonHas(pd.Reasons, "source_control_status dirty") {
+		t.Fatalf("policy reasons = %v, want dirty source-control hold", pd.Reasons)
+	}
+	if len(pd.EvidenceRefs) == 0 || !strings.HasPrefix(pd.EvidenceRefs[0], "source-control:repo:") {
+		t.Fatalf("policy evidence refs = %v, want source-control evidence", pd.EvidenceRefs)
+	}
+}
+
 func TestSessionEndClosesWork(t *testing.T) {
 	store, err := work.Open(t.TempDir())
 	if err != nil {

@@ -245,7 +245,7 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
 		var effects []string
 		var err error
-		sourceControl, effects, err = sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
+		sourceControl, effects, err = sourceControlContextForAction(deps.HomePath, actionTargetPath(fx, ai), now)
 		if err != nil {
 			return Result{}, err
 		}
@@ -289,6 +289,18 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		summary += "; held review work " + reviewWorkID
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: summary}, nil
+}
+
+func actionTargetPath(fx Fixture, ai envelope.ActionIntent) string {
+	targetPath := strings.TrimSpace(ai.Target.Path)
+	if targetPath == "" || filepath.IsAbs(targetPath) {
+		return targetPath
+	}
+	cwd := strings.TrimSpace(fx.Cwd)
+	if cwd == "" {
+		return targetPath
+	}
+	return filepath.Join(cwd, targetPath)
 }
 
 func createHeldGateReview(store *work.Store, fx Fixture, ai envelope.ActionIntent, pd envelope.PolicyDecision, sc policy.SourceControlContext, now time.Time) (envelope.WorkEnvelope, error) {
