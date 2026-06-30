@@ -126,6 +126,7 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | generated spine views (`spine/views/*`) | `GeneratedViewObservation` + `ProjectionFreshness`; optional `--record-context` makes freshness visible to scoped `ContextPack` without running generators |
 | dashboards / read models | `ProjectionFreshness` through dashboard read-model adapter; card/source coverage evidence, optional scoped context ref, never authority |
 | event streams (`events/*.ndjson`) | `TraceEnvelope` / event evidence |
+| conversation-mining reports / mined tag rows | `ConversationMiningAdapter` -> `SourceObservation -> method_upgrade candidate -> NoPromoteDecision`; preserves processed/accepted/rejected counts, provider mix, accepted-for-review rows, and lossiness/known lossy corpus rules. `compound distiller import-conversation-mining` does not execute Dream, does not promote memory, and does not mutate source owners; facts still require distiller extraction plus adjudication or reviewed write-plan. |
 | parked memory candidates -> curated knowledge markdown | `MeaningWritePlan` review artifacts under `COMPOUND_HOME`; no direct source mutation or memory promotion |
 | append-only ledgers (`ledger/*.ndjson`) | receipt / route / cost evidence; provider-call rows can become metadata-only `ExecutionRouteEvidence`, and cost-coverage gaps can become parked `route_observation` candidates plus no-promote decisions |
 | contract files | source material for contract candidates |

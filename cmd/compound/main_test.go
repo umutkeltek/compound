@@ -2475,6 +2475,57 @@ func TestDistillerRequestLoadsImportedEventTraces(t *testing.T) {
 	}
 }
 
+func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	dir := t.TempDir()
+	reportPath := filepath.Join(dir, "agent-conversation-mining-report-latest.json")
+	tagsPath := filepath.Join(dir, "agent-conversation-mined-tags-latest.jsonl")
+	lossinessPath := filepath.Join(dir, "agent-conversation-lossiness-latest.json")
+	if err := os.WriteFile(tagsPath, []byte(`{"accept_for_dream":true,"importance":10,"knowledge_type":"operational","quality_score":10,"tags":["architecture","distillation"],"decision_reasons":["accepted"],"summary":"high-signal system discussion","model_provider":"deterministic","model_name":"rules-v1","candidate":{"source":"codex","raw_path":"raw/session.jsonl","clean_path":"clean/session.md","clean_status":"mapped","stable":true,"importance":19,"quality_score":10,"knowledge_type":"operational","dream_candidate":true,"reasons":["architecture"],"retained_ratio":0.02,"excerpt":"<<ref>>"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lossinessPath, []byte(`{"known_lossy_rules":{"drops":"tool results"},"claude_clean_vs_raw_size_ratio":0.044,"codex_clean_vs_raw_size_ratio":0.012}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reportPath, []byte(`{"ok":true,"updated_at":"2026-06-20T17:19:19Z","queue":"queue.jsonl","processed":1,"accepted":1,"rejected":0,"providers":{"deterministic":1},"out":"`+tagsPath+`","report":"`+reportPath+`","dream_pack":"dream-pack","dream_pack_files":1,"note":"Prepared high-fidelity Dream pack only. Dream execution remains separate gated."}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"import-conversation-mining", reportPath, "--lossiness", lossinessPath})
+	})
+	for _, want := range []string{
+		"# distiller import-conversation-mining",
+		"- status: ok",
+		"- mined_rows: 1",
+		"- accepted_for_review: 1",
+		"- dream_execution: gated",
+		"- lossiness_recorded: true",
+		"- top_tag: architecture",
+		"- source_observation:",
+		"- source_candidate:",
+		"- source_no_promote:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-conversation-mining output missing %q:\n%s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("conversation mining import must not write claims ledger, stat err=%v", err)
+	}
+	methodDir := filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade))
+	files, err := os.ReadDir(methodDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("method upgrade candidates = %d, want 1", len(files))
+	}
+}
+
 func TestDistillerRunLLMEventResponseParksMemoryWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

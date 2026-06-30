@@ -96,6 +96,25 @@ type Report struct {
 	NoPromoteIDs  []string `json:"no_promote_ids,omitempty"`
 }
 
+type ConversationMiningObservation struct {
+	ID                string
+	ReportPath        string
+	MinedTagsPath     string
+	LossinessPath     string
+	Revision          string
+	Processed         int
+	Accepted          int
+	Rejected          int
+	MinedRows         int
+	AcceptedForReview int
+	DreamPackFiles    int
+	DreamExecution    string
+	LossinessRecorded bool
+	LossinessDetail   string
+	Note              string
+	EvidenceRefs      []string
+}
+
 func Load(path string) (SourceObservation, error) {
 	var obs SourceObservation
 	data, err := os.ReadFile(path)
@@ -375,6 +394,80 @@ func FromSkillSurfacingMisses(misses capgraph.SkillSurfacingMisses, now time.Tim
 				ObjectFamily:   "capability",
 				CandidateKind:  string(candidates.CapabilityObs),
 				EntityHint:     misses.ID,
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
+// FromConversationMining converts generated conversation-mining reports into
+// source observation evidence. Conversation mining identifies extraction
+// opportunity and corpus quality; it does not execute Dream, promote memory, or
+// mutate source owners.
+func FromConversationMining(mining ConversationMiningObservation, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(mining.Revision)
+	if revision == "" {
+		revision = "conversation_mining:" + mining.ID
+	}
+	evidenceRefs := append([]string(nil), mining.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"conversation_mining:" + revision}
+	}
+	generatedFrom := []SourceRef{}
+	if strings.TrimSpace(mining.MinedTagsPath) != "" {
+		generatedFrom = append(generatedFrom, SourceRef{
+			Path:        mining.MinedTagsPath,
+			Kind:        "state_records",
+			Owner:       firstNonEmpty(filepath.Base(mining.MinedTagsPath), mining.ID),
+			SourceClass: "conversation_mining",
+			Revision:    revision,
+		})
+	}
+	if strings.TrimSpace(mining.LossinessPath) != "" {
+		generatedFrom = append(generatedFrom, SourceRef{
+			Path:        mining.LossinessPath,
+			Kind:        "state_record",
+			Owner:       firstNonEmpty(filepath.Base(mining.LossinessPath), mining.ID),
+			SourceClass: "conversation_lossiness",
+			Revision:    revision,
+		})
+	}
+	detail := fmt.Sprintf("processed=%d accepted=%d rejected=%d mined_rows=%d accepted_for_review=%d dream_execution=%s lossiness_recorded=%t",
+		mining.Processed, mining.Accepted, mining.Rejected, mining.MinedRows, mining.AcceptedForReview, firstNonEmpty(mining.DreamExecution, "gated"), mining.LossinessRecorded)
+	if strings.TrimSpace(mining.LossinessDetail) != "" {
+		detail += " " + strings.TrimSpace(mining.LossinessDetail)
+	}
+	if strings.TrimSpace(mining.Note) != "" {
+		detail += " note=" + strings.TrimSpace(mining.Note)
+	}
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "conversation_mining", mining.ID, mining.ReportPath, revision),
+		AdapterID:     "compound.conversation-mining",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        mining.ReportPath,
+			Kind:        "state_record",
+			Owner:       firstNonEmpty(filepath.Base(mining.ReportPath), mining.ID),
+			SourceClass: "conversation_mining",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:      "conversation_mining",
+			Consumer:      "compound distiller import-conversation-mining",
+			GeneratedFrom: generatedFrom,
+			Generator:     "conversation_mining_adapter",
+			Marker:        "agent-conversation-mining-report",
+			Freshness:     "observed",
+			DriftReason:   detail,
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "distiller",
+				CandidateKind:  string(candidates.MethodUpgrade),
+				EntityHint:     firstNonEmpty(mining.ID, "conversation_mining"),
 				PromoteAllowed: false,
 			},
 		},

@@ -166,6 +166,8 @@ usage:
                                                                  TraceDistiller LLM request packet, no model call
   compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
                                                                  gated rented model extraction; provider output stays candidate-only
+  compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
+                                                                 mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
@@ -698,6 +700,69 @@ func cmdDistiller(args []string) {
 		fmt.Printf("- no_promote_decisions: %d\n", cov.NoPromoteDecisions)
 		return
 	}
+	if len(args) >= 1 && args[0] == "import-conversation-mining" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller import-conversation-mining <mining-report.json> [--mined-tags <mined-tags.jsonl>] [--lossiness <lossiness.json>]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		now := time.Now()
+		mining, err := distiller.LoadConversationMining(args[1], distiller.ConversationMiningOptions{
+			MinedTagsPath: flagValue(args[2:], "--mined-tags"),
+			LossinessPath: flagValue(args[2:], "--lossiness"),
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller import-conversation-mining:", err)
+			os.Exit(1)
+		}
+		sourceReport, err := sourceobs.Apply(homePath, sourceobs.FromConversationMining(sourceobs.ConversationMiningObservation{
+			ID:                mining.ID,
+			ReportPath:        mining.ReportPath,
+			MinedTagsPath:     mining.MinedTagsPath,
+			LossinessPath:     mining.LossinessPath,
+			Revision:          mining.Revision,
+			Processed:         mining.Report.Processed,
+			Accepted:          mining.Report.Accepted,
+			Rejected:          mining.Report.Rejected,
+			MinedRows:         mining.MinedRows,
+			AcceptedForReview: mining.AcceptedForReview,
+			DreamPackFiles:    mining.Report.DreamPackFiles,
+			DreamExecution:    mining.DreamExecution(),
+			LossinessRecorded: mining.LossinessRecorded,
+			LossinessDetail:   mining.LossinessDetail,
+			Note:              mining.Report.Note,
+			EvidenceRefs:      mining.EvidenceRefs,
+		}, now), now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source observe:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller import-conversation-mining %s\n", mining.ID)
+		fmt.Printf("- status: %s\n", mining.Status())
+		fmt.Printf("- processed: %d\n", mining.Report.Processed)
+		fmt.Printf("- accepted: %d\n", mining.Report.Accepted)
+		fmt.Printf("- rejected: %d\n", mining.Report.Rejected)
+		fmt.Printf("- mined_rows: %d\n", mining.MinedRows)
+		fmt.Printf("- accepted_for_review: %d\n", mining.AcceptedForReview)
+		fmt.Printf("- dream_execution: %s\n", mining.DreamExecution())
+		fmt.Printf("- dream_pack_files: %d\n", mining.Report.DreamPackFiles)
+		fmt.Printf("- lossiness_recorded: %t\n", mining.LossinessRecorded)
+		for _, tag := range mining.TopTags {
+			fmt.Printf("- top_tag: %s\n", tag)
+		}
+		fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+		for _, id := range sourceReport.CandidateIDs {
+			fmt.Printf("- source_candidate: %s\n", id)
+		}
+		for _, id := range sourceReport.NoPromoteIDs {
+			fmt.Printf("- source_no_promote: %s\n", id)
+		}
+		return
+	}
 	if len(args) >= 1 && args[0] == "doctor" {
 		writebackEnabled := hasFlag(args[1:], "--writeback")
 		homePath, err := home.Resolve("")
@@ -952,7 +1017,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 

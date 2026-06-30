@@ -92,6 +92,8 @@ It can be assembled from explicit typed files, from a closed `COMPOUND_HOME` wor
 `events/hook-events.ndjson`, or from imported event traces via `distiller request --event-trace <trace_id>`.
 It is prompt material only, not a model call and not authority.
 
+`ConversationMiningImport` adapts generated conversation-mining reports and mined tag rows through `compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]`. It records lossiness/known lossy corpus rules, accepted/rejected/source-quality counts, provider mix, and accepted-for-review rows as `SourceObservation -> method_upgrade candidate -> NoPromoteDecision`. It has no Dream execution, no memory promotion, no source-owner mutation, and facts still require distiller extraction plus adjudication or reviewed write-plan.
+
 `LLMExtractionResponse` is the provider-neutral model-output adapter for TraceDistiller. It carries
 `schema_version`, `trace_ref`, `source_refs[]`, and `candidates[]`; code normalizes it into `Trace`.
 Unknown kind, missing confidence, malformed JSON, or model-supplied `promotion_basis` is invalid.

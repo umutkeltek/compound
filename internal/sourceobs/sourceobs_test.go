@@ -231,6 +231,56 @@ func TestSkillManifestObservationWritesCapabilityNoPromote(t *testing.T) {
 	}
 }
 
+func TestConversationMiningObservationWritesMethodUpgradeNoPromote(t *testing.T) {
+	home := t.TempDir()
+	obs := FromConversationMining(ConversationMiningObservation{
+		ID:                "conversation_mining_fixture",
+		ReportPath:        "fixtures/conversation-mining/report.json",
+		MinedTagsPath:     "fixtures/conversation-mining/tags.jsonl",
+		LossinessPath:     "fixtures/conversation-mining/lossiness.json",
+		Revision:          "sha256:mining",
+		Processed:         2,
+		Accepted:          2,
+		Rejected:          0,
+		MinedRows:         2,
+		AcceptedForReview: 1,
+		DreamPackFiles:    2,
+		DreamExecution:    "gated",
+		LossinessRecorded: true,
+		LossinessDetail:   "claude_ratio=0.044 codex_ratio=0.012 known_rules=true",
+		Note:              "Dream execution remains separate gated.",
+		EvidenceRefs:      []string{"conversation_mining_report:sha256:abc"},
+	}, tSource)
+	if obs.GeneratedView.ViewKind != "conversation_mining" || obs.GeneratedView.Consumer != "compound distiller import-conversation-mining" {
+		t.Fatalf("observation generated view = %+v", obs.GeneratedView)
+	}
+	if len(obs.MapsTo) != 1 || obs.MapsTo[0].CandidateKind != string(candidates.MethodUpgrade) || obs.MapsTo[0].PromoteAllowed {
+		t.Fatalf("maps_to = %+v", obs.MapsTo)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.MethodUpgrade), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Verdict != candidates.NoPromote || c.Subject != "conversation_mining_fixture" || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("conversation mining source observation should not promote claims, stat err=%v", err)
+	}
+}
+
 func TestCapabilityEvaluationObservationWritesCapabilityNoPromote(t *testing.T) {
 	home := t.TempDir()
 	set := capgraph.CapabilityEvaluationSet{

@@ -114,6 +114,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkHookSourceControlContract(repoRoot)...)
 		f = append(f, checkProductContractContract(repoRoot)...)
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
+		f = append(f, checkConversationMiningContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -825,6 +826,45 @@ func checkCapabilityEvaluationContract(repoRoot string) []Finding {
 		return []Finding{{"capability-evaluation-contract", Fail, "public docs claim capability evaluation-review mutates graph state; import-skills must remain the graph mutation boundary"}}
 	}
 	return []Finding{{"capability-evaluation-contract", Info, "capability evaluations stay evidence-only; review YAML gates activation before import-skills mutates graph offers"}}
+}
+
+func checkConversationMiningContract(repoRoot string) []Finding {
+	hasImport := false
+	hasSourceNoPromote := false
+	hasLossiness := false
+	hasNoDream := false
+	hasNoMemoryPromotion := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "import-conversation-mining") {
+			hasImport = true
+		}
+		if strings.Contains(low, "sourceobservation") && (strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote")) {
+			hasSourceNoPromote = true
+		}
+		if strings.Contains(low, "lossiness") || strings.Contains(low, "lossy corpus") {
+			hasLossiness = true
+		}
+		if strings.Contains(low, "no dream execution") || strings.Contains(low, "does not execute dream") || (strings.Contains(low, "dream execution") && strings.Contains(low, "gated")) {
+			hasNoDream = true
+		}
+		if strings.Contains(low, "no memory promotion") || strings.Contains(low, "does not promote memory") || strings.Contains(low, "without memory promotion") {
+			hasNoMemoryPromotion = true
+		}
+		return nil
+	})
+	if !hasImport || !hasSourceNoPromote || !hasLossiness || !hasNoDream || !hasNoMemoryPromotion {
+		return []Finding{{"conversation-mining-contract", Fail, "public docs do not describe distiller import-conversation-mining as lossiness-aware SourceObservation/no-promote evidence with no Dream execution or memory promotion"}}
+	}
+	return []Finding{{"conversation-mining-contract", Info, "conversation mining stays lossiness-aware source evidence, not Dream or memory authority"}}
 }
 
 func convergenceDebt(strict bool) []Finding {
