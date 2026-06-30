@@ -1,13 +1,17 @@
 package mem
 
-import "testing"
+import (
+	"testing"
+
+	"compound/internal/candidates"
+)
 
 // A topic revisited across sessions is a recurrence Pattern (hypothesis, not canon); a single
 // claim is not. The spine-native convergence of Gen-1 pattern.Build.
 func TestPatternsRecurrence(t *testing.T) {
 	s := newStore(t)
 	promote := func(pred, obj, trace string) {
-		c, err := s.Capture([]Candidate{{Entity: "svc", Predicate: pred, Object: obj, Confidence: 0.9, SourceTraceRef: trace}}, t0)
+		c, err := s.Capture([]Candidate{{Entity: "svc", Predicate: pred, Object: obj, Confidence: 0.9, PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: trace}}, t0)
 		if err != nil {
 			t.Fatal(err)
 		}

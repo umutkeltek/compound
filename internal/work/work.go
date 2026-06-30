@@ -312,6 +312,11 @@ type CloseInput struct {
 	Changed                    bool
 	MissedCapabilities         []string
 	FalseTriggeredCapabilities []string
+	ProofRefs                  []string
+	MemoryCandidates           []string
+	MemoryPromoted             []string
+	MemoryParked               []string
+	MemoryRejected             []string
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -349,7 +354,9 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	if err != nil {
 		return res, err
 	}
-	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs)
+	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs, in.MissedCapabilities, in.FalseTriggeredCapabilities)
+	proofRefs := mergeUnique(in.ProofRefs, w.ArtifactIDs, w.VerificationIDs)
+	memoryCandidates := mergeUnique(w.MemoryCandidateIDs, in.MemoryCandidates)
 
 	// Receipt — how the run is learned from.
 	rOut := receiptOutcome[in.Outcome]
@@ -371,8 +378,14 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			FalseTriggered: orEmpty(in.FalseTriggeredCapabilities),
 			Candidate:      capabilityRefs,
 		},
-		Memory: envelope.ReceiptMemory{Candidates: orEmpty(w.MemoryCandidateIDs), Promoted: []string{}, Parked: []string{}},
-		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
+		Memory: envelope.ReceiptMemory{
+			Candidates: memoryCandidates,
+			Promoted:   orEmpty(in.MemoryPromoted),
+			Parked:     orEmpty(in.MemoryParked),
+			Rejected:   orEmpty(in.MemoryRejected),
+		},
+		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
+		ProofRefs: proofRefs,
 	}
 	if err := rec.Validate(); err != nil {
 		return res, fmt.Errorf("emitted receipt invalid: %w", err)
@@ -384,6 +397,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		before = []string{w.IDs.ContextPackID}
 	}
 	after := append(append([]string{}, orEmpty(w.ArtifactIDs)...), rec.ID)
+	typedProjectionRefs := closeProjectionRefs(rec, w.IDs.ContextPackID)
 	tr := envelope.Transition{
 		Header:     newHeader(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		BeforeRefs: before,
@@ -393,6 +407,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		Projections: envelope.Projections{
 			Memory: []string{}, Skill: skillProjectionRefs, Product: []string{}, Cost: []string{},
 			Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{},
+			Typed: typedProjectionRefs,
 		},
 		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: in.MoveType != "audit_only"},
 	}
@@ -491,6 +506,49 @@ func mergeUnique(groups ...[]string) []string {
 			seen[v] = true
 			out = append(out, v)
 		}
+	}
+	return out
+}
+
+func closeProjectionRefs(rec envelope.Receipt, contextPackID string) []envelope.ProjectionRef {
+	var out []envelope.ProjectionRef
+	add := func(kind, ref, role, evidence string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		out = append(out, envelope.ProjectionRef{Kind: kind, Ref: ref, Role: role, EvidenceRef: evidence})
+	}
+	for _, ref := range rec.Skills.Candidate {
+		add("skill", ref, "offered", contextPackID)
+	}
+	for _, ref := range rec.Skills.Used {
+		add("skill", ref, "used", rec.ID)
+	}
+	for _, ref := range rec.Skills.Missed {
+		add("skill", ref, "missed", rec.ID)
+	}
+	for _, ref := range rec.Skills.FalseTriggered {
+		add("skill", ref, "false_triggered", rec.ID)
+	}
+	for _, ref := range rec.Memory.Candidates {
+		add("memory", ref, "candidate", rec.ID)
+	}
+	for _, ref := range rec.Memory.Promoted {
+		add("memory", ref, "promoted", rec.ID)
+	}
+	for _, ref := range rec.Memory.Parked {
+		add("memory", ref, "parked", rec.ID)
+	}
+	for _, ref := range rec.Memory.Rejected {
+		add("memory", ref, "rejected", rec.ID)
+	}
+	for _, ref := range rec.ProofRefs {
+		if strings.HasPrefix(ref, "failure:") || strings.HasPrefix(ref, "failure_pattern:") || strings.HasPrefix(ref, "rule:") || strings.HasPrefix(ref, "check:") || strings.HasPrefix(ref, "guard:") {
+			add("rule", ref, "proof", rec.ID)
+			continue
+		}
+		add("control_plane", ref, "proof", rec.ID)
 	}
 	return out
 }

@@ -1,6 +1,8 @@
 package work
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -41,7 +43,7 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	if _, err := s.Advance(id, AdvanceInput{To: "verifying", ArtifactID: "artifact_timeline", VerificationID: "ver_001"}, fixedNow); err != nil {
 		t.Fatalf("advance verifying: %v", err)
 	}
-	res, err := s.Close(id, CloseInput{Outcome: "completed", MoveType: "memory_delta", Summary: "timeline capability proven", Changed: true}, fixedNow)
+	res, err := s.Close(id, CloseInput{Outcome: "completed", MoveType: "memory_delta", Summary: "timeline capability proven", Changed: true, MemoryPromoted: []string{"claim_timeline"}}, fixedNow)
 	if err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -82,6 +84,9 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	}
 	if res.Receipt.MoveType != "memory_delta" {
 		t.Errorf("receipt move_type = %q", res.Receipt.MoveType)
+	}
+	if !contains(res.Receipt.Memory.Promoted, "claim_timeline") {
+		t.Errorf("memory_delta receipt missing promoted memory proof: %+v", res.Receipt.Memory)
 	}
 
 	// The lifecycle log records the full sequence for this work.
@@ -187,10 +192,64 @@ func TestClosePreservesExplicitCapabilityFeedback(t *testing.T) {
 	if !contains(closed.Receipt.Skills.FalseTriggered, "capability://skill:generic-copy") {
 		t.Fatalf("receipt false_triggered skills = %v", closed.Receipt.Skills.FalseTriggered)
 	}
+	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:pricing", "missed") {
+		t.Fatalf("transition typed projections missing missed skill: %+v", closed.Transition.Projections.Typed)
+	}
+	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:generic-copy", "false_triggered") {
+		t.Fatalf("transition typed projections missing false-triggered skill: %+v", closed.Transition.Projections.Typed)
+	}
 }
 
 // The store enforces governance structurally: a denied/held decision cannot be recorded
 // as a performed action; an allowing one links the action + policy into the work chain.
+func TestContextPackOffersAreTypedAsOfferedNotUsed(t *testing.T) {
+	s := newStore(t)
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            "ctx_offers",
+			CreatedAt:     fixedNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "work"},
+			Authority:     envelope.Authority{SourceClass: "runtime"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Included: []envelope.IncludedRef{{Ref: "capability://skill:pricing", SourceClass: "runtime", Status: "current"}},
+		Excluded: []envelope.ExcludedRef{},
+	}
+	packPath := filepath.Join(s.home, "context", "packs", pack.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.writeJSON(packPath, &pack); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p", ContextPackID: pack.ID}, fixedNow)
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Summary: "handoff proof", ProofRefs: []string{"artifact:handoff"}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(closed.Receipt.Skills.Candidate, "capability://skill:pricing") {
+		t.Fatalf("receipt candidate/offers = %v", closed.Receipt.Skills.Candidate)
+	}
+	if contains(closed.Receipt.Skills.Used, "capability://skill:pricing") {
+		t.Fatalf("offered capability must not count as used: %v", closed.Receipt.Skills.Used)
+	}
+	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:pricing", "offered") {
+		t.Fatalf("offer should be typed as offered: %+v", closed.Transition.Projections.Typed)
+	}
+	if containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:pricing", "used") {
+		t.Fatalf("offer must not be typed as used: %+v", closed.Transition.Projections.Typed)
+	}
+}
+
 func TestRecordActionGate(t *testing.T) {
 	s := newStore(t)
 	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
@@ -267,11 +326,66 @@ func TestRecordActionGate(t *testing.T) {
 	if !contains(closed.Transition.Projections.Skill, "filesystem.write") {
 		t.Fatalf("transition skill projections = %v, want filesystem.write", closed.Transition.Projections.Skill)
 	}
+	if !containsProjection(closed.Transition.Projections.Typed, "skill", "filesystem.write", "used") {
+		t.Fatalf("transition typed projections = %+v, want used filesystem.write", closed.Transition.Projections.Typed)
+	}
+}
+
+func TestCloseMoveTypeProofValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      CloseInput
+		wantErr bool
+	}{
+		{name: "memory needs memory proof", in: CloseInput{Outcome: "completed", MoveType: "memory_delta", Changed: true}, wantErr: true},
+		{name: "memory with promoted proof", in: CloseInput{Outcome: "completed", MoveType: "memory_delta", Changed: true, MemoryPromoted: []string{"claim_1"}}},
+		{name: "rule needs rule proof", in: CloseInput{Outcome: "completed", MoveType: "rule_delta", Changed: true, ProofRefs: []string{"artifact:not-rule"}}, wantErr: true},
+		{name: "rule with guard proof", in: CloseInput{Outcome: "completed", MoveType: "rule_delta", Changed: true, ProofRefs: []string{"guard:repeat-failure"}}},
+		{name: "control repair needs proof", in: CloseInput{Outcome: "completed", MoveType: "control_plane_repair", Changed: true}, wantErr: true},
+		{name: "control repair with gate proof", in: CloseInput{Outcome: "completed", MoveType: "control_plane_repair", Changed: true, ProofRefs: []string{"owg_gate"}}},
+		{name: "outward completed needs change or proof", in: CloseInput{Outcome: "completed", MoveType: "outward_delta"}, wantErr: true},
+		{name: "outward with blocker handoff proof", in: CloseInput{Outcome: "completed", MoveType: "outward_delta", ProofRefs: []string{"artifact:handoff"}}},
+		{name: "audit does not claim future behavior", in: CloseInput{Outcome: "completed", MoveType: "audit_only", Changed: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+			if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			res, err := s.Close(w.ID, tt.in, fixedNow)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected close error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("close: %v", err)
+			}
+			if tt.in.MoveType == "audit_only" && res.Transition.SecondOrder.FutureBehaviorChanged {
+				t.Fatalf("audit_only transition claimed future behavior changed")
+			}
+		})
+	}
 }
 
 func contains(set []string, v string) bool {
 	for _, s := range set {
 		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+func containsProjection(set []envelope.ProjectionRef, kind, ref, role string) bool {
+	for _, p := range set {
+		if p.Kind == kind && p.Ref == ref && p.Role == role {
 			return true
 		}
 	}

@@ -458,6 +458,10 @@ func readCapEdges(t *testing.T, home string) []Edge {
 }
 
 func testReceipt(id, outcome string, changed bool, used, missed, candidate []string) envelope.Receipt {
+	proofRefs := []string{}
+	if outcome == "completed" && !changed {
+		proofRefs = []string{"artifact:unchanged-review"}
+	}
 	return envelope.Receipt{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVReceipt,
@@ -480,10 +484,11 @@ func testReceipt(id, outcome string, changed bool, used, missed, candidate []str
 			Artifacts:    []string{},
 			Verification: []string{},
 		},
-		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
-		Skills: envelope.ReceiptSkills{Used: used, Missed: missed, Candidate: candidate},
-		Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
-		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
+		Cost:      envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills:    envelope.ReceiptSkills{Used: used, Missed: missed, Candidate: candidate},
+		Memory:    envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
+		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
+		ProofRefs: proofRefs,
 	}
 }
 

@@ -62,7 +62,7 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 		Hook:     "session-end",
 		Harness:  "codex",
 		WorkID:   w.ID,
-		MoveType: "memory_delta",
+		MoveType: "outward_delta",
 		Outcome:  "completed",
 		Summary:  "pricing experiment prepared with reusable workflow notes",
 	}, deps, t0)

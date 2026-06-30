@@ -2636,6 +2636,11 @@ func cmdWork(args []string) {
 			Changed:                    has("--changed"),
 			MissedCapabilities:         splitCSV(flag("--missed")),
 			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
+			ProofRefs:                  splitCSV(flag("--proof")),
+			MemoryCandidates:           splitCSV(flag("--memory-candidate")),
+			MemoryPromoted:             splitCSV(flag("--memory-promoted")),
+			MemoryParked:               splitCSV(flag("--memory-parked")),
+			MemoryRejected:             splitCSV(flag("--memory-rejected")),
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s closed: %s  move_type=%s  receipt=%s  transition=%s\n",

@@ -1,6 +1,10 @@
 package mem
 
-import "testing"
+import (
+	"testing"
+
+	"compound/internal/candidates"
+)
 
 // A typed claim carries its ClaimType + qualifiers onto the durable claim, and a domain qualifier
 // sharpens the Position/Pattern topic axis (group by domain, not the bare predicate). An unknown
@@ -9,7 +13,7 @@ func TestClaimTypeAndDomainTopic(t *testing.T) {
 	s := newStore(t)
 	c1, err := s.Capture([]Candidate{{
 		Entity: "proj", Predicate: "primary_lang", Object: "go", Confidence: 0.9,
-		ClaimType: "architecture", Qualifiers: map[string]string{"domain": "stack"},
+		ClaimType: "architecture", PromotionBasis: candidates.BasisExplicitConfirmation, Qualifiers: map[string]string{"domain": "stack"},
 	}}, t0)
 	if err != nil {
 		t.Fatal(err)

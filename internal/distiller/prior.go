@@ -93,6 +93,7 @@ func LoadPriorStateFromHome(homePath string, store *mem.Store, policy Policy) (P
 		return prior, nil
 	}
 	for _, kind := range []string{
+		KindMemory,
 		KindFailure,
 		KindTaste,
 		KindProduct,

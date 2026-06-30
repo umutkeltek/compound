@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 var t0 = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
@@ -20,7 +22,7 @@ func newStore(t *testing.T) *Store {
 }
 
 func cand(entity, pred, obj, obs string) Candidate {
-	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
+	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
 }
 
 // The headline P6 proof: a fact changes over time; the ledger keeps BOTH versions; as-of
@@ -144,6 +146,28 @@ func TestCandidateFirstNoCanonWithoutPromote(t *testing.T) {
 	}
 	if claims, _ := s.loadClaims(); len(claims) != 0 {
 		t.Errorf("no_promote must not write a claim; got %d", len(claims))
+	}
+}
+
+func TestAdjudicatePromoteRequiresPromotionBasis(t *testing.T) {
+	s := newStore(t)
+	noBasis := cand("e", "p", "v", "")
+	noBasis.PromotionBasis = ""
+	got, _ := s.Capture([]Candidate{noBasis}, t0)
+	if _, err := s.Adjudicate(got[0].ID, "promote", "", t0); err == nil {
+		t.Fatal("promote without promotion_basis should fail at memory authority boundary")
+	}
+	if claims, _ := s.loadClaims(); len(claims) != 0 {
+		t.Fatalf("basis-less promotion wrote %d claim(s)", len(claims))
+	}
+
+	withBasis, _ := s.Capture([]Candidate{cand("e", "p", "v2", "")}, t0)
+	res, err := s.Adjudicate(withBasis[0].ID, "promote", "", t0)
+	if err != nil || res.Claim == nil {
+		t.Fatalf("promote with valid basis should pass: %v", err)
+	}
+	if res.Claim.PromotionBasis != candidates.BasisExplicitConfirmation {
+		t.Fatalf("claim basis = %q", res.Claim.PromotionBasis)
 	}
 }
 

@@ -3152,6 +3152,7 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 		Object:         "go",
 		Confidence:     0.9,
 		Derivation:     "extracted",
+		PromotionBasis: candidates.BasisTrustedDeterministic,
 		SourceTraceRef: "trace_cli_memory_doctor",
 		SnippetHash:    "sha256:test",
 	}}, cliTestNow)

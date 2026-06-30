@@ -31,6 +31,29 @@ func TestEntityResolveByAliasIdentifierPath(t *testing.T) {
 
 // Path-independence (the user's "project identity survives a folder move"): the same entity
 // resolves by a STABLE identifier even after its path changes, and the new path resolves too.
+func TestEntityResolveHighestPrecedenceWins(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.RegisterEntity(Entity{Slug: "project:active", Kind: "project"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterEntity(Entity{Slug: "project:old", Kind: "project", Aliases: []string{"project:active"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.ResolveEntity("project:active"); err != nil || r.Status != "resolved" || r.Slug != "project:active" || r.Via != "slug" {
+		t.Fatalf("slug must beat lower-tier alias matches globally; got %+v err=%v", r, err)
+	}
+
+	if _, err := s.RegisterEntity(Entity{Slug: "project:remote", Kind: "project", Identifiers: []string{"github.com/acme/active"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterEntity(Entity{Slug: "project:alias-only", Kind: "project", Aliases: []string{"github.com/acme/active"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.ResolveEntity("github.com/acme/active"); err != nil || r.Status != "resolved" || r.Slug != "project:remote" || r.Via != "identifier" {
+		t.Fatalf("identifier must beat lower-tier alias matches globally; got %+v err=%v", r, err)
+	}
+}
+
 func TestEntitySurvivesPathMove(t *testing.T) {
 	s := newStore(t)
 	s.RegisterEntity(Entity{Slug: "project:save", Kind: "project", Identifiers: []string{"bundle:com.acme.save"}}, t0)

@@ -239,6 +239,10 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 		return res, nil
 	}
 
+	if !candidates.ValidBasis(c.PromotionBasis) {
+		return res, fmt.Errorf("candidate %s cannot promote without valid promotion_basis (got %q; allowed: %v)", candID, c.PromotionBasis, candidates.PromotionBases)
+	}
+
 	// promote: the prior-lookup + seq allocation + claim/edge append run under one lock so
 	// seq stays monotonic-unique and supersession is consistent even across concurrent writers
 	// (single-writer is the norm; the lock makes MVCC-by-fold mechanically true, not just a phrase).
@@ -376,11 +380,14 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 			EvidenceRefs:  claim.EvidenceRefs,
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		BeforeRefs:  before,
-		ActionRefs:  []string{},
-		AfterRefs:   []string{claim.ID},
-		StateDelta:  delta,
-		Projections: envelope.Projections{Memory: []string{claim.ID}, Skill: []string{}, Product: []string{}, Cost: []string{}, Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{}},
+		BeforeRefs: before,
+		ActionRefs: []string{},
+		AfterRefs:  []string{claim.ID},
+		StateDelta: delta,
+		Projections: envelope.Projections{
+			Memory: []string{claim.ID}, Skill: []string{}, Product: []string{}, Cost: []string{}, Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{},
+			Typed: []envelope.ProjectionRef{{Kind: "memory", Ref: claim.ID, Role: "promoted", EvidenceRef: strings.Join(claim.EvidenceRefs, ",")}},
+		},
 		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: true},
 	}
 }

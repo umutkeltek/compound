@@ -59,7 +59,7 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 			Outputs:         []string{},
 			Cost:            ReceiptCost{ModelCalls: []string{}},
 		},
-		&Receipt{Header: hdr(SVReceipt, "rec_1"), Outcome: "completed", MoveType: "memory_delta"},
+		&Receipt{Header: hdr(SVReceipt, "rec_1"), Outcome: "completed", MoveType: "memory_delta", Memory: ReceiptMemory{Promoted: []string{"claim_1"}}},
 		&Transition{Header: withWork(hdr(SVTransition, "tr_1"), "work_1")},
 	}
 	if len(envs) != len(registry) {

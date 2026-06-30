@@ -40,6 +40,8 @@ var (
 	Reversibilities   = []string{"none", "easy", "manual", "hard", "irreversible"}
 	PolicyOutcomes    = []string{"allow", "allow_with_obligations", "hold", "deny"}
 	MoveTypes         = []string{"outward_delta", "memory_delta", "rule_delta", "control_plane_repair", "audit_only"}
+	ProjectionKinds   = []string{"memory", "skill", "product", "cost", "risk", "taste", "routing", "human_attention", "rule", "control_plane"}
+	ProjectionRoles   = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
 	HookNames         = []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd", "Stop"}
 	HookStatuses      = []string{"ok", "fail_open", "blocked", "error"}
 	ReceiptOutcomes   = []string{"completed", "blocked", "failed", "no_op"}
@@ -424,6 +426,7 @@ type ReceiptMemory struct {
 	Candidates []string `json:"candidates"`
 	Promoted   []string `json:"promoted"`
 	Parked     []string `json:"parked"`
+	Rejected   []string `json:"rejected,omitempty"`
 }
 type ReceiptNext struct {
 	SuggestedWork []string `json:"suggested_work"`
@@ -438,6 +441,7 @@ type Receipt struct {
 	Skills     ReceiptSkills `json:"skills"`
 	Memory     ReceiptMemory `json:"memory"`
 	Next       ReceiptNext   `json:"next"`
+	ProofRefs  []string      `json:"proof_refs,omitempty"`
 }
 
 func (e *Receipt) Kind() string { return "receipt" }
@@ -446,18 +450,69 @@ func (e *Receipt) Validate() error {
 	e.Header.validate(v, SVReceipt, "rec_")
 	v.enum("outcome", e.Outcome, ReceiptOutcomes, true)
 	v.enum("move_type", e.MoveType, MoveTypes, true)
+	proofRefs := append(append([]string{}, e.ProofRefs...), e.StateDelta.Artifacts...)
+	proofRefs = append(proofRefs, e.StateDelta.Verification...)
+	switch e.MoveType {
+	case "outward_delta":
+		if e.Outcome == "completed" && !e.StateDelta.Changed && len(nonEmpty(proofRefs)) == 0 {
+			v.addf("outward_delta completed requires state_delta.changed=true or proof_refs/artifacts/verification")
+		}
+	case "memory_delta":
+		if len(nonEmpty(append(append(append([]string{}, e.Memory.Candidates...), e.Memory.Promoted...), append(e.Memory.Parked, e.Memory.Rejected...)...))) == 0 {
+			v.addf("memory_delta requires memory candidate/promoted/parked/rejected ref")
+		}
+	case "rule_delta":
+		if !hasPrefixedProof(proofRefs, []string{"failure:", "failure_pattern:", "rule:", "check:", "guard:"}) {
+			v.addf("rule_delta requires failure/rule/check/guard proof_ref")
+		}
+	case "control_plane_repair":
+		if len(nonEmpty(proofRefs)) == 0 {
+			v.addf("control_plane_repair requires repair/retirement/gate proof_ref, artifact, or verification")
+		}
+	}
 	return v.result(e.Kind())
 }
 
+func nonEmpty(values []string) []string {
+	out := []string{}
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func hasPrefixedProof(values []string, prefixes []string) bool {
+	for _, v := range nonEmpty(values) {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(v, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type ProjectionRef struct {
+	Kind        string  `json:"kind"`
+	Ref         string  `json:"ref"`
+	Role        string  `json:"role"`
+	EvidenceRef string  `json:"evidence_ref,omitempty"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	Status      string  `json:"status,omitempty"`
+}
+
 type Projections struct {
-	Memory         []string `json:"memory"`
-	Skill          []string `json:"skill"`
-	Product        []string `json:"product"`
-	Cost           []string `json:"cost"`
-	Risk           []string `json:"risk"`
-	Taste          []string `json:"taste"`
-	Routing        []string `json:"routing"`
-	HumanAttention []string `json:"human_attention"`
+	Memory         []string        `json:"memory"`
+	Skill          []string        `json:"skill"`
+	Product        []string        `json:"product"`
+	Cost           []string        `json:"cost"`
+	Risk           []string        `json:"risk"`
+	Taste          []string        `json:"taste"`
+	Routing        []string        `json:"routing"`
+	HumanAttention []string        `json:"human_attention"`
+	Typed          []ProjectionRef `json:"typed,omitempty"`
 }
 type SecondOrder struct {
 	FutureBehaviorChanged bool   `json:"future_behavior_changed"`
@@ -483,6 +538,11 @@ func (e *Transition) Validate() error {
 	e.Header.validate(v, SVTransition, "tr_")
 	if e.IDs.WorkID == "" {
 		v.addf("ids.work_id is required (a transition belongs to a work)")
+	}
+	for i, p := range e.Projections.Typed {
+		v.enum(fmt.Sprintf("projections.typed[%d].kind", i), p.Kind, ProjectionKinds, true)
+		v.enum(fmt.Sprintf("projections.typed[%d].role", i), p.Role, ProjectionRoles, true)
+		v.req(fmt.Sprintf("projections.typed[%d].ref", i), p.Ref)
 	}
 	return v.result(e.Kind())
 }

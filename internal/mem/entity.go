@@ -117,19 +117,26 @@ func (s *Store) ResolveEntity(token string) (EntityResolution, error) {
 	if len(best) == 0 {
 		return EntityResolution{Status: "unresolved"}, nil
 	}
-	if len(best) > 1 {
-		// more than one distinct entity matched — ambiguous, do not guess.
-		slugs := make([]string, 0, len(best))
-		for s := range best {
-			slugs = append(slugs, s)
+	highest := -1
+	for _, tier := range best {
+		if tier > highest {
+			highest = tier
 		}
-		sort.Strings(slugs)
+	}
+	slugs := make([]string, 0, len(best))
+	for slug, tier := range best {
+		if tier == highest {
+			slugs = append(slugs, slug)
+		}
+	}
+	sort.Strings(slugs)
+	if len(slugs) > 1 {
+		// More than one distinct entity matched at the same strongest tier:
+		// preserve uncertainty instead of letting lower-precedence matches
+		// force ambiguity over an explicit id or identifier.
 		return EntityResolution{Status: "multi", Slug: strings.Join(slugs, ",")}, nil
 	}
-	for slug := range best {
-		return EntityResolution{Slug: slug, Status: "resolved", Via: via[slug]}, nil
-	}
-	return EntityResolution{Status: "unresolved"}, nil
+	return EntityResolution{Slug: slugs[0], Status: "resolved", Via: via[slugs[0]]}, nil
 }
 
 // isPathPrefix reports whether tok is the path identifier id itself or a path nested under it —

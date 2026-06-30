@@ -269,6 +269,13 @@ func critique(c Candidate, prior PriorState) Critique {
 			return Critique{Supersedes: cl.ID, Notes: "changes " + cl.Object + " → " + c.Object}
 		}
 	}
+	if dup, ok := duplicatePriorCandidate(c, prior.CandidatesByKind[KindMemory]); ok {
+		return Critique{
+			Duplicate:            true,
+			DuplicateCandidateID: dup.ID,
+			Notes:                "matches prior memory candidate " + dup.ID,
+		}
+	}
 	return Critique{IsNew: true}
 }
 
@@ -336,6 +343,10 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 		wroteCandidate := false
 		crit := critique(c, prior)
 		verdict, basis := adjudicate(c, crit, policy.PromotionMode)
+		if c.Kind == KindMemory && verdict == Promote && !candidates.ValidBasis(c.PromotionBasis) && policy.PromotionMode == ModeFixtureAutoPromote {
+			c.PromotionBasis = candidates.BasisTrustedDeterministic
+			basis = "fixture auto-promote memory (basis: " + c.PromotionBasis + ")"
+		}
 		c.Verdict = verdict // stamp onto the written record so a consumer respects adjudication
 		rel, priorClaim, priorCandidate := "new", "", ""
 		switch {
@@ -377,6 +388,9 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 				// mem detected a duplicate the prior-state critic missed (race / same-trace dup).
 				dec.Verdict, dec.Relation, dec.Basis = Reject, "duplicate", "duplicate per mem ledger"
 			}
+		case c.Kind == KindMemory && verdict == Reject && crit.Duplicate && crit.DuplicateCandidateID != "":
+		// A parked memory candidate is already in the inbox. Do not create a
+		// second parked row; the no-promote record carries the repeat evidence.
 		case c.Kind != KindMemory && verdict == Reject && crit.Duplicate:
 			// Anti-churn: the adjudication and no-promote row are the durable
 			// record. Do not write another candidate inbox file for the same

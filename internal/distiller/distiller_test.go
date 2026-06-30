@@ -372,6 +372,27 @@ func TestLiveModeParksMemoryWithoutBasis(t *testing.T) {
 	}
 }
 
+func TestDuplicateParkedMemoryCandidateUsesNoPromote(t *testing.T) {
+	home, store := setup(t)
+	first := runWith(t, home, store, `{"trace_ref":"t1","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95}]}`, DefaultPolicy())
+	if first.Decisions[0].Verdict != Park {
+		t.Fatalf("setup memory should park without basis, got %+v", first.Decisions[0])
+	}
+
+	dup := runWith(t, home, store, `{"trace_ref":"t2","candidates":[{"kind":"memory","entity":" SVC ","predicate":"LANG","object":"go","confidence":0.95}]}`, DefaultPolicy())
+	rejected := firstDecisionWithVerdict(t, dup, Reject)
+	if rejected.PriorCandidateID != first.Decisions[0].CandidateID {
+		t.Fatalf("prior candidate = %q, want %q", rejected.PriorCandidateID, first.Decisions[0].CandidateID)
+	}
+	if rejected.NoPromoteID == "" {
+		t.Fatalf("duplicate parked memory missing no_promote_id: %+v", rejected)
+	}
+	files, _ := filepath.Glob(filepath.Join(home, candidates.InboxDir(candidates.Memory), "*.json"))
+	if len(files) != 1 {
+		t.Fatalf("duplicate parked memory should not write another inbox row; found %d", len(files))
+	}
+}
+
 // With a valid promotion basis, the same candidate PROMOTES and the basis is persisted on the claim
 // (the recallable "why" of canon — the first convergence increment of memory.PromotionBasis onto mem).
 func TestLiveModePromotesWithBasisPersisted(t *testing.T) {
