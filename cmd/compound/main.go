@@ -172,7 +172,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
+  compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -195,7 +195,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -275,6 +275,20 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, "source observe:", err)
 			os.Exit(1)
 		}
+		auth, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+			SourcePath:          topo.SourceRef.Path,
+			SourceKind:          topo.SourceRef.Kind,
+			SourceOwner:         topo.SourceRef.Owner,
+			SourceClass:         topo.SourceRef.SourceClass,
+			SourceRevision:      topo.SourceRef.Revision,
+			ImportedVia:         "compound capability import-topology",
+			NodeIDs:             report.NodeIDs,
+			EdgeIDs:             report.EdgeIDs,
+			SourceObservationID: sourceReport.ObservationID,
+			NoPromoteIDs:        sourceReport.NoPromoteIDs,
+			EvidenceRefs:        topo.EvidenceRefs,
+		}, now)
+		die(err)
 		fmt.Printf("# tool topology %s\n\n", report.TopologyID)
 		fmt.Printf("- status: %s\n", report.Status)
 		for _, check := range report.Checks {
@@ -297,6 +311,7 @@ func cmdCapability(args []string) {
 		for _, id := range sourceReport.NoPromoteIDs {
 			fmt.Printf("- source_no_promote: %s\n", id)
 		}
+		fmt.Printf("- source_authority: %s\n", auth.ID)
 	case "import-skills":
 		now := time.Now()
 		osSkillPath := flag("--os-skill-json")
@@ -320,6 +335,20 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, "source observe:", err)
 			os.Exit(1)
 		}
+		auth, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+			SourcePath:          manifest.SourceRef.Path,
+			SourceKind:          manifest.SourceRef.Kind,
+			SourceOwner:         manifest.SourceRef.Owner,
+			SourceClass:         manifest.SourceRef.SourceClass,
+			SourceRevision:      manifest.SourceRef.Revision,
+			ImportedVia:         "compound capability import-skills",
+			NodeIDs:             report.NodeIDs,
+			EdgeIDs:             report.EdgeIDs,
+			SourceObservationID: sourceReport.ObservationID,
+			NoPromoteIDs:        sourceReport.NoPromoteIDs,
+			EvidenceRefs:        manifest.EvidenceRefs,
+		}, now)
+		die(err)
 		fmt.Printf("# capability import-skills %s\n", report.ManifestID)
 		fmt.Printf("- status: %s\n", report.Status)
 		for _, check := range report.Checks {
@@ -341,6 +370,25 @@ func cmdCapability(args []string) {
 		}
 		for _, id := range sourceReport.NoPromoteIDs {
 			fmt.Printf("- source_no_promote: %s\n", id)
+		}
+		fmt.Printf("- source_authority: %s\n", auth.ID)
+	case "authority":
+		records, err := capgraph.LoadSourceAuthority(homePath)
+		die(err)
+		if len(records) == 0 {
+			fmt.Println("(no capability source authority records)")
+			return
+		}
+		for _, rec := range records {
+			fmt.Printf("%s %s source=%s authority=%s nodes=%d edges=%d retires=%s\n",
+				rec.ID,
+				rec.AuthorityStatus,
+				rec.SourcePath,
+				rec.AuthorityRef,
+				len(rec.NodeIDs),
+				len(rec.EdgeIDs),
+				rec.Retires,
+			)
 		}
 	case "import-evaluations":
 		p := posn(nil)

@@ -2019,6 +2019,53 @@ func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) 
 	}
 }
 
+func TestCapabilityImportSkillsRecordsSourceAuthority(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	})
+	if !strings.Contains(out, "- source_authority:") {
+		t.Fatalf("import-skills output missing source authority marker:\n%s", out)
+	}
+	captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	})
+
+	records, err := capgraph.LoadSourceAuthority(homePath)
+	if err != nil {
+		t.Fatalf("load source authority: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("source authority records = %d, want 1", len(records))
+	}
+	rec := records[0]
+	if rec.AuthorityStatus != "compound_authoritative" || rec.SourceRole != "evidence_only_input" {
+		t.Fatalf("wrong authority status/role: %+v", rec)
+	}
+	if rec.Retires != "source_view_authority:fixtures/skills/skill-manifest.yaml" {
+		t.Fatalf("retired source authority = %q", rec.Retires)
+	}
+	if !stringSliceContains(rec.NodeIDs, "skill:pricing") || rec.SourceObservationID == "" || len(rec.NoPromoteIDs) != 1 {
+		t.Fatalf("authority marker missing proof fields: %+v", rec)
+	}
+
+	authorityOut := captureStdout(t, func() { cmdCapability([]string{"authority"}) })
+	if !strings.Contains(authorityOut, rec.ID) || !strings.Contains(authorityOut, "compound_authoritative") {
+		t.Fatalf("capability authority output missing marker:\n%s", authorityOut)
+	}
+	if strings.Count(authorityOut, rec.ID) != 1 {
+		t.Fatalf("capability authority output should collapse replayed imports:\n%s", authorityOut)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("capability source authority must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestCapabilityImportTopologyRecordsSourceObservationNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -2029,7 +2076,7 @@ func TestCapabilityImportTopologyRecordsSourceObservationNoPromote(t *testing.T)
 	out := captureStdout(t, func() {
 		cmdCapability([]string{"import-topology", filepath.Join("..", "..", "fixtures", "tooltopology", "browser-cli-vs-mcp.yaml")})
 	})
-	for _, want := range []string{"# tool topology topo_fixture_browser", "- node: tool:browser-cli", "- edge: fallback_for:mcp:browser->tool:browser-cli", "- source_observation:", "- source_candidate:", "- source_no_promote:"} {
+	for _, want := range []string{"# tool topology topo_fixture_browser", "- node: tool:browser-cli", "- edge: fallback_for:mcp:browser->tool:browser-cli", "- source_observation:", "- source_candidate:", "- source_no_promote:", "- source_authority:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("import-topology output missing %q:\n%s", want, out)
 		}

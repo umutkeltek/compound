@@ -143,8 +143,8 @@ copies. The mapping is by surface *kind*, not by any specific repo layout:
 | registries | `RegistryEntry` candidates |
 | capability evaluation records | `CapabilityEvaluationAdapter` -> `CapabilityGraph` evidence-only eval nodes + `evaluated_by` edges to already-known capability nodes; positive useful/keep/adapt/merge/publicize verdicts also add `validated_by` evidence edges; imported evaluation source records `SourceObservation -> capability_observation candidate -> NoPromoteDecision`; unknown capabilities are skipped rather than installed and make the import report `status: review` with `skipped_unknown_count`; `capability evaluation-plan <eval.json|dir> --capability <id-or-name>` writes review artifacts plus a normalized `needs_review` skill-manifest draft for one unknown evaluated capability under `COMPOUND_HOME/reviews/capability-evaluation-intake/`; `capability evaluation-review <review.yaml>` validates an edited review decision and writes a reviewed manifest without mutating graph/source owners; records never retire/execute/surface/promote claims |
 | skill surfacing miss reports | `SkillSurfacingMissAdapter` -> `CapabilityGraph` `missed_when` edges for already-known capability nodes using receipt/reason context; imported report source also records `SourceObservation -> capability_observation candidate -> NoPromoteDecision`; unknown skills are review debt, never installed |
-| tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges from normalized topology YAML, generated resolver JSON, or `mcporter list --json` catalog output; imported topology source also records `SourceObservation -> capability_observation candidate -> NoPromoteDecision` |
-| skill manifests / external skill catalogs | `SkillManifestAdapter` -> `CapabilityGraph` skill/lens/procedure nodes + graph edges from normalized manifests or generated skill-manifest JSON; imported manifest source also records `SourceObservation -> capability_observation candidate -> NoPromoteDecision`; offers only, never execution |
+| tool resolver / MCP catalogs | `ToolTopologyAdapter` -> `CapabilityGraph` tool/mcp/adapter nodes + fallback edges from normalized topology YAML, generated resolver JSON, or `mcporter list --json` catalog output; imported topology source also records `SourceObservation -> capability_observation candidate -> NoPromoteDecision` plus a capability source-authority handoff: Compound graph authoritative, source view evidence-only rollback input |
+| skill manifests / external skill catalogs | `SkillManifestAdapter` -> `CapabilityGraph` skill/lens/procedure nodes + graph edges from normalized manifests or generated skill-manifest JSON; imported manifest source also records `SourceObservation -> capability_observation candidate -> NoPromoteDecision` plus a capability source-authority handoff: Compound graph authoritative, source view evidence-only rollback input; offers only, never execution |
 | work packets | `work import-packet` -> deterministic source-backed `WorkEnvelope` keyed by packet hash; packet remains evidence, no source mutation, no receipt/transition until actual close. Packet-sourced work can be imported as `ready` or advanced through the normal lifecycle, then close emits the same-`work_id` Receipt + Transition proof chain |
 | runtime / service contracts | `RuntimeBinding` / `ServiceContract` candidates; failing doctor reports can emit gated runtime repair-plan artifacts without owner mutation |
 | product project/release contracts | `ProductContractAdapter` -> existing `Product` registry bundle; deterministic identity/surface/channel/privacy claims only, never analytics signals or causality |
@@ -193,16 +193,18 @@ one generated operating-system view
  -> source doctor reports fresh/stale/drifted
 
 one tool resolver view
- -> ToolTopologyAdapter
- -> CapabilityGraph offers
- -> SourceObservation
- -> capability_observation candidate no_promote
+-> ToolTopologyAdapter
+-> CapabilityGraph offers
+-> SourceObservation
+-> capability_observation candidate no_promote
+-> capability source-authority handoff
 
 one skill manifest view
- -> SkillManifestAdapter
- -> CapabilityGraph offers
- -> SourceObservation
- -> capability_observation candidate no_promote
+-> SkillManifestAdapter
+-> CapabilityGraph offers
+-> SourceObservation
+-> capability_observation candidate no_promote
+-> capability source-authority handoff
 ```
 
 This proves Compound can learn from generated files without making them new truth
