@@ -627,3 +627,39 @@ func TestProductContractContractRejectsAnalyticsCausalityOverclaim(t *testing.T)
 		t.Fatalf("failure should name analytics/causality guard: %+v", findings)
 	}
 }
+
+func TestCapabilityEvaluationContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "capability-evaluation-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("capability evaluation contract failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected capability-evaluation-contract finding")
+	}
+}
+
+func TestCapabilityEvaluationContractFailsWhenEvalCanSurface(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`compound capability import-evaluations` creates eval nodes with evaluated_by edges and SourceObservation/no-promote evidence.\n"
+	if err := os.WriteFile(filepath.Join(docs, "contracts.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkCapabilityEvaluationContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "never surface") {
+		t.Fatalf("failure should name non-surfacing guard: %+v", findings)
+	}
+}

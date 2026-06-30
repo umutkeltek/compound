@@ -46,12 +46,13 @@ var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true
 // Node is a capability. Triggers are the task tokens that surface it; Weight is its base surfacing
 // strength (learned feedback adds/subtracts on top).
 type Node struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind"`
-	Name     string   `json:"name"`
-	Triggers []string `json:"triggers"`
-	Weight   float64  `json:"weight"`
-	Retired  bool     `json:"retired,omitempty"`
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Name         string   `json:"name"`
+	Triggers     []string `json:"triggers"`
+	Weight       float64  `json:"weight"`
+	Retired      bool     `json:"retired,omitempty"`
+	EvidenceOnly bool     `json:"evidence_only,omitempty"`
 }
 
 // Edge is a typed relation. For feedback edges From is "context:<token>" and To is a node id.
@@ -213,7 +214,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 
 	var out []Surfaced
 	for _, n := range nodes {
-		if n.Retired {
+		if n.Retired || n.EvidenceOnly {
 			continue
 		}
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {

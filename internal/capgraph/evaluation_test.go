@@ -74,6 +74,9 @@ func TestApplyCapabilityEvaluationsRecordsEvalEdgesForKnownNodesOnly(t *testing.
 	if !hasEdge(edges, EdValidatedBy, "skill:web-design-guidelines", "eval:known") {
 		t.Fatalf("positive evaluation should validate known capability, got %+v", edges)
 	}
+	if hasSurfaced(mustSurface(t, store, "web design guidelines"), "eval:known") {
+		t.Fatal("evaluation records are evidence nodes and must not surface as capability offers")
+	}
 	if hasEdge(edges, EdEvaluatedBy, "skill:not-installed-skill", "eval:unknown") {
 		t.Fatalf("unknown capability must not receive graph edge: %+v", edges)
 	}

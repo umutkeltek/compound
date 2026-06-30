@@ -190,11 +190,12 @@ func ApplyCapabilityEvaluations(homePath string, set CapabilityEvaluationSet, no
 			return report, err
 		}
 		evalNode := Node{
-			ID:       capabilityEvaluationNodeID(eval),
-			Kind:     "eval",
-			Name:     "Capability evaluation: " + eval.Capability,
-			Triggers: evaluationTriggers(eval),
-			Weight:   0.25,
+			ID:           capabilityEvaluationNodeID(eval),
+			Kind:         "eval",
+			Name:         "Capability evaluation: " + eval.Capability,
+			Triggers:     evaluationTriggers(eval),
+			Weight:       0.25,
+			EvidenceOnly: true,
 		}
 		if err := store.Add(evalNode); err != nil {
 			report.Status = "fail"

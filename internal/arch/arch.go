@@ -112,6 +112,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
 		f = append(f, checkProductContractContract(repoRoot)...)
+		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -691,6 +692,51 @@ func checkProductContractContract(repoRoot string) []Finding {
 
 // convergenceDebt reports the two-stack memory debt as a tracked, visible Info finding —
 // the coherent treatment when a duplicate cannot yet be retired (Law 9: make it observable).
+// checkCapabilityEvaluationContract keeps scored capability-evaluation records
+// from drifting into capability offers or promotion authority. Evaluations
+// critique already-known graph nodes; they do not mint executable skills.
+func checkCapabilityEvaluationContract(repoRoot string) []Finding {
+	hasImportEvaluations := false
+	hasEvidenceOnly := false
+	hasEvaluatedBy := false
+	hasNoSurface := false
+	hasNoPromote := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "capability import-evaluations") {
+			hasImportEvaluations = true
+		}
+		if strings.Contains(low, "evidence-only") && strings.Contains(low, "eval") {
+			hasEvidenceOnly = true
+		}
+		if strings.Contains(low, "evaluated_by") {
+			hasEvaluatedBy = true
+		}
+		if strings.Contains(low, "do not surface") ||
+			strings.Contains(low, "never surface") ||
+			strings.Contains(low, "records never retire/execute/surface") ||
+			strings.Contains(low, "surface eval records as offers") {
+			hasNoSurface = true
+		}
+		if strings.Contains(low, "sourceobservation") && (strings.Contains(low, "nopromotedecision") || strings.Contains(low, "no-promote")) {
+			hasNoPromote = true
+		}
+		return nil
+	})
+	if !hasImportEvaluations || !hasEvidenceOnly || !hasEvaluatedBy || !hasNoSurface || !hasNoPromote {
+		return []Finding{{"capability-evaluation-contract", Fail, "public docs do not describe capability import-evaluations as evidence-only evaluated_by/no-promote records that never surface as agent offers"}}
+	}
+	return []Finding{{"capability-evaluation-contract", Info, "capability evaluations stay evidence-only non-surfacing graph critique"}}
+}
+
 func convergenceDebt(strict bool) []Finding {
 	var pending []string
 	for pkg, c := range Classification {

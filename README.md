@@ -26,7 +26,7 @@ The current public surface is:
 | `compound route import` / `compound route import-provider-ledger` / `compound route cost-doctor` / `compound route outcome-review` / `compound route plan --candidate <id>` | route metadata, provider-call NDJSON rows, cost-coverage gaps, receipt-linked outcome reviews, and route_observation candidates become evidence/review artifacts; no gateway or provider config mutation |
 | `compound memory candidate/import-page/adjudicate/recall/timeline/write-plan/query/doctor` | spine memory: candidates, claims, positions, patterns, evidence, supersession, as-of recall, curated markdown page import, reviewed curated-source write plans |
 | `compound distiller request/run/eval/eval-plan/improvement-plan/rule-plan/taste-plan` | typed trace/runtime/event source material -> RetrievedPriorState with bounded `prior_signals[]` -> request-grounded CandidateSet -> Critic -> Adjudicator; eval/live extraction rejects missing or ungrounded candidate evidence refs plus thin candidate shape (memory requires entity/predicate/object; non-memory requires subject/statement) before inbox write; eval_case, method_upgrade, policy_patch, failure_pattern, and taste candidates become reviewed drafts before corpus, prompt, policy, code, doctrine, or product mutation |
-| `compound capability <add/surface/observe/consume/list/import-topology/import-skills/import-evaluations/skill-plan>` | capability graph: auto-surface, never auto-execute; topology, skill manifests, and capability-evaluation records enter as graph evidence plus SourceObservation/no-promote rows; skill candidates become reviewed graph-node drafts before import |
+| `compound capability <add/surface/observe/consume/list/import-topology/import-skills/import-evaluations/skill-plan>` | capability graph: auto-surface, never auto-execute; topology and skill manifests can create offers, capability-evaluation records enter as evidence-only graph nodes plus SourceObservation/no-promote rows; skill candidates become reviewed graph-node drafts before import |
 | `compound authority import/path/path-registry/git/dirty-plan` / `compound decisions import/candidate-plan` | import external authority, OS-style path authority, source-control snapshots, source-control cleanup review artifacts, DecisionLifecycle records, and decision-candidate review drafts through spine memory |
 | `compound event import-os <events.ndjson>` | adapt append-only OS-style events into `TraceEnvelope` evidence; no memory promotion |
 | `compound runtime doctor <runtime-binding.yaml>` / `runtime repair-plan <runtime-binding.yaml>` | check a RuntimeBinding + ServiceContract bundle; failing reports can emit gated review artifacts |
@@ -130,7 +130,7 @@ The ledger is authority. Engines are rebuildable views.
   doc leak checks, candidate-map integrity, retired-surface/distiller-contract/
   llm-grounding-contract/route-outcome-contract/knowledge-page-contract/
   packet-work-contract/mcporter-topology-contract/memory-engine-contract/
-  harness-entrypoint-contract/product-contract-contract guards, and a convergence
+  harness-entrypoint-contract/product-contract-contract/capability-evaluation-contract guards, and a convergence
   budget of `0`.
 - `compound memory doctor` verifies the memory hop: capture, promotion,
   retrieval, authority, and optional engine sync.

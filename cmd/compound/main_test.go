@@ -1767,6 +1767,15 @@ func TestCapabilityImportEvaluationsRecordsGraphEvidenceAndSourceNoPromote(t *te
 	if !hasCapabilityEdge(edges, capgraph.EdEvaluatedBy, "skill:web-design-guidelines") || !hasCapabilityEdge(edges, capgraph.EdValidatedBy, "skill:web-design-guidelines") {
 		t.Fatalf("expected evaluation edges, got %+v", edges)
 	}
+	surfaceOut := captureStdout(t, func() {
+		cmdCapability([]string{"surface", "web design guidelines"})
+	})
+	if !strings.Contains(surfaceOut, "skill:web-design-guidelines") {
+		t.Fatalf("surface output missing skill offer:\n%s", surfaceOut)
+	}
+	if strings.Contains(surfaceOut, "eval:capability-evaluation") {
+		t.Fatalf("evaluation evidence node must not surface as capability offer:\n%s", surfaceOut)
+	}
 	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
 	entries, err := os.ReadDir(candidateDir)
 	if err != nil {
