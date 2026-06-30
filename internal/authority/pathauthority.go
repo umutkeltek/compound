@@ -229,22 +229,6 @@ func validatePathAuthority(pa PathAuthority) error {
 }
 
 func mergePathAuthorityEntity(pa PathAuthority, existing []mem.Entity) mem.Entity {
-	e := mem.Entity{
-		Slug:       pa.EntityRef,
-		Kind:       pa.EntityKind,
-		Visibility: "operational",
-	}
-	for _, ex := range existing {
-		if ex.Slug == pa.EntityRef {
-			e = ex
-			e.Kind = pa.EntityKind
-			if e.Visibility == "" {
-				e.Visibility = "operational"
-			}
-			break
-		}
-	}
-	e.Aliases = mergeStrings(e.Aliases, pa.Aliases...)
 	var ids []string
 	for _, sb := range pa.SourceBindings {
 		ids = append(ids, sb.Value)
@@ -256,8 +240,7 @@ func mergePathAuthorityEntity(pa PathAuthority, existing []mem.Entity) mem.Entit
 	for _, hb := range pa.HostBindings {
 		ids = append(ids, "host:"+hb.Host)
 	}
-	e.Identifiers = mergeStrings(e.Identifiers, ids...)
-	return e
+	return mergeEntity(existing, pa.EntityRef, pa.EntityKind, pa.Aliases, ids)
 }
 
 func pathAuthorityFromOSRoot(key string, root osPathRoot, canonical bool, sourceName string) (PathAuthority, error) {

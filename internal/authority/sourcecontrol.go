@@ -279,17 +279,6 @@ func slugToken(value string) string {
 }
 
 func mergeSourceControlEntity(snap SourceControlSnapshot, existing []mem.Entity) mem.Entity {
-	e := mem.Entity{Slug: snap.RepoID, Kind: "repo", Visibility: "operational"}
-	for _, ex := range existing {
-		if ex.Slug == snap.RepoID {
-			e = ex
-			e.Kind = "repo"
-			if e.Visibility == "" {
-				e.Visibility = "operational"
-			}
-			break
-		}
-	}
 	ids := []string{snap.GitRoot}
 	if snap.RequestedPath != "" {
 		ids = append(ids, snap.RequestedPath)
@@ -297,9 +286,7 @@ func mergeSourceControlEntity(snap SourceControlSnapshot, existing []mem.Entity)
 	if snap.Remote != "" {
 		ids = append(ids, snap.Remote, "git_remote:"+snap.Remote)
 	}
-	e.Aliases = mergeStrings(e.Aliases, strings.TrimPrefix(snap.RepoID, "repo:"))
-	e.Identifiers = mergeStrings(e.Identifiers, ids...)
-	return e
+	return mergeEntity(existing, snap.RepoID, "repo", []string{strings.TrimPrefix(snap.RepoID, "repo:")}, ids)
 }
 
 func sourceControlCandidates(snap SourceControlSnapshot) []mem.Candidate {
