@@ -1812,6 +1812,142 @@ func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *tes
 	}
 }
 
+func TestProductReviewPlanUsesSignalEvidenceWithoutResolvingHypothesis(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	candidateID := "hyp_cli_review_plan"
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.ProductHypothesis))
+	if err := os.MkdirAll(candidateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := product.HypothesisCandidate{
+		SchemaVersion:     product.ProductHypothesisCandidate,
+		ID:                candidateID,
+		Kind:              string(candidates.ProductHypothesis),
+		ProductID:         "product:focus_notes",
+		ChangeEvent:       "Changed first screenshot to show faster capture.",
+		ExpectedEffect:    "product page conversion improves",
+		Metrics:           []string{"app_store_product_page_conversion"},
+		ObservationWindow: "14d",
+		Result:            "unknown",
+		NextAction:        "review explicit signal evidence",
+		Verdict:           candidates.Park,
+		EvidenceRefs:      []string{"product_source_issue_review:cli"},
+	}
+	candidateData, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidateDir, candidateID+".json"), append(candidateData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	signalID := "sig_cli_review_plan"
+	signalPath := filepath.Join(t.TempDir(), "signal.yaml")
+	if err := os.WriteFile(signalPath, []byte(`schema_version: compound.product_signal.v0.1
+source:
+ kind: app_store_connect
+ ref: fixture:cli-review-plan
+signal:
+ id: sig_cli_review_plan
+ product_id: product:focus_notes
+ surface: app-store-page
+ change_event: "Changed first screenshot to show faster capture."
+ metric_name: app_store_product_page_conversion
+ before: 0.041
+ after: 0.049
+ window: "14d"
+ confidence: 0.66
+ confounders:
+  - "paid acquisition changed during window"
+ evidence_refs:
+  - asc:focus:conversion-window
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	signalOut := captureStdout(t, func() {
+		cmdProduct([]string{"signal", signalPath})
+	})
+	if !strings.Contains(signalOut, "# product signal "+signalID) ||
+		!strings.Contains(signalOut, "- status: ok") ||
+		!strings.Contains(signalOut, "- transition:") {
+		t.Fatalf("signal output missing proof:\n%s", signalOut)
+	}
+	targetPath := filepath.Join(t.TempDir(), "product-review.md")
+	original := "# Product Review\n\nExisting review notes.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{"review-plan", "--hypothesis", candidateID, "--signal", signalID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# product review-plan prp_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- hypothesis: "+candidateID) ||
+		!strings.Contains(out, "- signal: "+signalID) ||
+		!strings.Contains(out, "- review_yaml:") {
+		t.Fatalf("review-plan output missing proof lines:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewYAMLPath := outputValue(out, "- review_yaml:")
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan product.ReviewPlan
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != product.ReviewPlanSchemaVersion ||
+		plan.HypothesisID != candidateID ||
+		plan.SignalID != signalID ||
+		plan.ReviewDraft.ReviewID == "" {
+		t.Fatalf("bad review plan: %+v", plan)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unedited, err := product.LoadReview(reviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.ApplyReview(homePath, store, unedited, reviewYAMLPath, cliTestNow.Add(time.Hour)); err == nil {
+		t.Fatal("unedited review YAML should be rejected")
+	}
+	reviewYAML := readFile(t, reviewYAMLPath)
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_result_supported_refuted_or_inconclusive", "supported")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: \"\"", "rationale: \"signal moved in the expected direction after confounder review\"")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: -1", "confidence: 0.61")
+	reviewPath := filepath.Join(t.TempDir(), "review.yaml")
+	if err := os.WriteFile(reviewPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdProduct([]string{"review", reviewPath})
+	})
+	if !strings.Contains(reviewOut, "# product review "+plan.ReviewDraft.ReviewID) ||
+		!strings.Contains(reviewOut, "- status: updated") ||
+		!strings.Contains(reviewOut, "- transition:") {
+		t.Fatalf("product review output missing proof:\n%s", reviewOut)
+	}
+	doctor, err := product.Doctor(homePath, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "ok" || doctor.PendingReviewCount != 0 {
+		t.Fatalf("review should clear pending hypothesis debt: %+v", doctor)
+	}
+	if got := readFile(t, targetPath); got != original {
+		t.Fatalf("review-plan mutated target:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("review-plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

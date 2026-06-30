@@ -2904,7 +2904,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -3131,6 +3131,41 @@ func cmdProduct(args []string) {
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- signal_draft: %s\n", paths.SignalDraftPath)
+	case "review-plan":
+		hypothesisID := flagValue(args[1:], "--hypothesis")
+		signalID := flagValue(args[1:], "--signal")
+		targetPath := flagValue(args[1:], "--target")
+		if hypothesisID == "" || signalID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := product.BuildReviewPlan(homePath, hypothesisID, signalID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product review-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := product.RecordReviewPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product review-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product review-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- product: %s\n", plan.ProductID)
+		fmt.Printf("- hypothesis: %s\n", plan.HypothesisID)
+		fmt.Printf("- signal: %s\n", plan.SignalID)
+		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "source-issue-plan":
 		productID := flagValue(args[1:], "--product")
 		issueID := flagValue(args[1:], "--issue")
