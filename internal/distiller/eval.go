@@ -1,6 +1,8 @@
 package distiller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -64,6 +66,7 @@ type EvalReport struct {
 
 type EvalCorpusReport struct {
 	SchemaVersion  string       `json:"schema_version"`
+	ID             string       `json:"id"`
 	Dir            string       `json:"dir"`
 	Status         string       `json:"status"`
 	CaseCount      int          `json:"case_count"`
@@ -160,7 +163,176 @@ func EvaluateCorpusDirInRoot(dir, evalRoot string, now time.Time) (EvalCorpusRep
 	if report.FailCount == 0 {
 		report.Status = "pass"
 	}
+	report.ID = evalCorpusReportID(report)
 	return report, nil
+}
+
+type EvalProofRecord struct {
+	ProofRef string
+	Path     string
+}
+
+func RecordEvalReport(homePath string, report EvalReport) (EvalProofRecord, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return EvalProofRecord{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if strings.TrimSpace(report.ID) == "" {
+		return EvalProofRecord{}, fmt.Errorf("eval report id required")
+	}
+	ref := "distiller_eval:" + report.ID
+	path, err := recordEvalProofJSON(homePath, ref, report)
+	if err != nil {
+		return EvalProofRecord{}, err
+	}
+	return EvalProofRecord{ProofRef: ref, Path: path}, nil
+}
+
+func RecordEvalCorpusReport(homePath string, report EvalCorpusReport) (EvalProofRecord, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return EvalProofRecord{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if strings.TrimSpace(report.ID) == "" {
+		report.ID = evalCorpusReportID(report)
+	}
+	ref := "distiller_eval_corpus:" + report.ID
+	path, err := recordEvalProofJSON(homePath, ref, report)
+	if err != nil {
+		return EvalProofRecord{}, err
+	}
+	return EvalProofRecord{ProofRef: ref, Path: path}, nil
+}
+
+func ValidateRecordedEvalProofRefs(homePath string, refs []string) error {
+	refs = compactEvalProofRefs(refs)
+	if strings.TrimSpace(homePath) == "" {
+		return fmt.Errorf("COMPOUND_HOME required")
+	}
+	if len(refs) == 0 {
+		return fmt.Errorf("eval_proof_refs required")
+	}
+	for _, ref := range refs {
+		if err := validateRecordedEvalProofRef(homePath, ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordEvalProofJSON(homePath, proofRef string, value any) (string, error) {
+	dir := filepath.Join(homePath, "reviews", "distiller-eval", "proofs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, safeEvalProofRef(proofRef)+".json")
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func validateRecordedEvalProofRef(homePath, ref string) error {
+	path := filepath.Join(homePath, "reviews", "distiller-eval", "proofs", safeEvalProofRef(ref)+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("eval proof ref %q not recorded", ref)
+		}
+		return err
+	}
+	switch {
+	case strings.HasPrefix(ref, "distiller_eval:"):
+		var report EvalReport
+		if err := json.Unmarshal(data, &report); err != nil {
+			return fmt.Errorf("parse eval proof %q: %w", ref, err)
+		}
+		wantID := strings.TrimPrefix(ref, "distiller_eval:")
+		if report.ID != wantID {
+			return fmt.Errorf("eval proof ref %q id mismatch: %q", ref, report.ID)
+		}
+		if report.Status != "pass" {
+			return fmt.Errorf("eval proof ref %q status=%q, want pass", ref, report.Status)
+		}
+		if report.Run.LiveModelCalls != 0 {
+			return fmt.Errorf("eval proof ref %q used live_model_calls=%d", ref, report.Run.LiveModelCalls)
+		}
+	case strings.HasPrefix(ref, "distiller_eval_corpus:"):
+		var report EvalCorpusReport
+		if err := json.Unmarshal(data, &report); err != nil {
+			return fmt.Errorf("parse eval corpus proof %q: %w", ref, err)
+		}
+		wantID := strings.TrimPrefix(ref, "distiller_eval_corpus:")
+		if report.ID != wantID {
+			return fmt.Errorf("eval corpus proof ref %q id mismatch: %q", ref, report.ID)
+		}
+		if report.Status != "pass" || report.FailCount != 0 || report.PassCount != report.CaseCount {
+			return fmt.Errorf("eval corpus proof ref %q not passing: status=%q pass=%d fail=%d cases=%d", ref, report.Status, report.PassCount, report.FailCount, report.CaseCount)
+		}
+		if report.LiveModelCalls != 0 {
+			return fmt.Errorf("eval corpus proof ref %q used live_model_calls=%d", ref, report.LiveModelCalls)
+		}
+	default:
+		return fmt.Errorf("eval proof ref %q must start with distiller_eval: or distiller_eval_corpus:", ref)
+	}
+	return nil
+}
+
+func evalCorpusReportID(report EvalCorpusReport) string {
+	var parts []string
+	parts = append(parts, report.SchemaVersion, report.Status, fmt.Sprintf("cases=%d/pass=%d/fail=%d/decisions=%d/current=%d/live=%d", report.CaseCount, report.PassCount, report.FailCount, report.DecisionCount, report.CurrentClaims, report.LiveModelCalls))
+	for _, r := range report.Reports {
+		parts = append(parts, r.ID, r.Status, fmt.Sprintf("decisions=%d/current=%d/live=%d/error=%s", r.Run.DecisionCount, r.Run.CurrentClaims, r.Run.LiveModelCalls, r.Run.Error))
+		for _, check := range r.Checks {
+			parts = append(parts, check.Name+"="+check.Status+":"+check.Detail)
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return "eval_corpus_" + hex.EncodeToString(sum[:])[:12]
+}
+
+func safeEvalProofRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	var b strings.Builder
+	lastDash := false
+	for _, r := range ref {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		sum := sha256.Sum256([]byte(ref))
+		return hex.EncodeToString(sum[:])[:12]
+	}
+	if len(out) > 96 {
+		sum := sha256.Sum256([]byte(ref))
+		out = strings.Trim(out[:83], "-") + "-" + hex.EncodeToString(sum[:])[:12]
+	}
+	return out
+}
+
+func compactEvalProofRefs(refs []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
 }
 
 func LoadEvalCase(path string) (EvalCase, error) {

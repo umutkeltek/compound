@@ -2555,7 +2555,14 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 	review.Decision = distiller.ImprovementReviewDecisionAccept
 	review.Rationale = "reviewed conversation-mining import replay; keep source evidence candidate-only while improving future extraction review."
 	review.Confidence = 0.77
-	review.EvalProofRefs = []string{"distiller_eval:conversation-mining-review-replay"}
+	evalOut := captureStdout(t, func() {
+		cmdDistiller([]string{"eval", filepath.Join("..", "..", "fixtures", "distiller", "llm-offline-eval.json"), "--record"})
+	})
+	proofRef := outputValue(evalOut, "- proof_ref:")
+	if proofRef == "" {
+		t.Fatalf("distiller eval --record did not print proof_ref:\n%s", evalOut)
+	}
+	review.EvalProofRefs = []string{proofRef}
 	reviewData, err := yaml.Marshal(review)
 	if err != nil {
 		t.Fatal(err)

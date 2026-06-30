@@ -171,6 +171,58 @@ func TestEvaluateCorpusDirPassesFixtureSuite(t *testing.T) {
 	}
 }
 
+func TestRecordEvalProofRefsValidateOnlyRecordedPassingReports(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join("..", "..", "fixtures", "distiller", "llm-offline-eval.json")
+	report, err := EvaluateCaseFile(path, t0)
+	if err != nil {
+		t.Fatalf("evaluate case: %v", err)
+	}
+	proof, err := RecordEvalReport(home, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.ProofRef != "distiller_eval:"+report.ID || proof.Path == "" {
+		t.Fatalf("proof = %+v", proof)
+	}
+	if err := ValidateRecordedEvalProofRefs(home, []string{proof.ProofRef}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRecordedEvalProofRefs(home, []string{"distiller_eval:missing"}); err == nil || !strings.Contains(err.Error(), "not recorded") {
+		t.Fatalf("missing proof err = %v", err)
+	}
+
+	failing := report
+	failing.ID = "failing-eval-proof"
+	failing.Status = "fail"
+	failingProof, err := RecordEvalReport(home, failing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRecordedEvalProofRefs(home, []string{failingProof.ProofRef}); err == nil || !strings.Contains(err.Error(), "status") {
+		t.Fatalf("failing proof err = %v", err)
+	}
+}
+
+func TestRecordEvalCorpusProofRef(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join("..", "..", "fixtures", "distiller")
+	report, err := EvaluateCorpusDir(dir, t0)
+	if err != nil {
+		t.Fatalf("evaluate corpus: %v", err)
+	}
+	proof, err := RecordEvalCorpusReport(home, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(proof.ProofRef, "distiller_eval_corpus:eval_corpus_") || proof.Path == "" {
+		t.Fatalf("proof = %+v", proof)
+	}
+	if err := ValidateRecordedEvalProofRefs(home, []string{proof.ProofRef}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEvaluateCorpusDirReportsFailingCase(t *testing.T) {
 	dir := t.TempDir()
 	response := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_fail","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"evidence_refs":["manual:test"]}]}`

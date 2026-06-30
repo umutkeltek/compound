@@ -877,6 +877,8 @@ func checkDistillerImprovementReviewContract(repoRoot string) []Finding {
 	hasReview := false
 	hasReviewYAML := false
 	hasEvalProof := false
+	hasEvalRecord := false
+	hasRecordedProof := false
 	hasNoMutation := false
 	docs := filepath.Join(repoRoot, "docs")
 	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
@@ -900,6 +902,12 @@ func checkDistillerImprovementReviewContract(repoRoot string) []Finding {
 		if strings.Contains(low, "eval_proof_refs") {
 			hasEvalProof = true
 		}
+		if strings.Contains(low, "distiller eval") && strings.Contains(low, "--record") {
+			hasEvalRecord = true
+		}
+		if strings.Contains(low, "recorded passing eval proof") || strings.Contains(low, "recorded passing eval proofs") {
+			hasRecordedProof = true
+		}
 		if strings.Contains(low, "does not mutate distiller policy") &&
 			strings.Contains(low, "eval corpus") &&
 			(strings.Contains(low, "memory truth") || strings.Contains(low, "promote memory")) {
@@ -907,10 +915,10 @@ func checkDistillerImprovementReviewContract(repoRoot string) []Finding {
 		}
 		return nil
 	})
-	if !hasPlan || !hasReview || !hasReviewYAML || !hasEvalProof || !hasNoMutation {
-		return []Finding{{"distiller-improvement-review-contract", Fail, "public docs do not describe distiller improvement-plan/review as gated review YAML with eval_proof_refs and no policy/eval-corpus/memory mutation"}}
+	if !hasPlan || !hasReview || !hasReviewYAML || !hasEvalProof || !hasEvalRecord || !hasRecordedProof || !hasNoMutation {
+		return []Finding{{"distiller-improvement-review-contract", Fail, "public docs do not describe distiller improvement-plan/review as gated review YAML with recorded eval_proof_refs and no policy/eval-corpus/memory mutation"}}
 	}
-	return []Finding{{"distiller-improvement-review-contract", Info, "distiller improvement review is gated proof artifact, not policy/eval-corpus/memory mutation"}}
+	return []Finding{{"distiller-improvement-review-contract", Info, "distiller improvement review is gated by recorded eval proof, not policy/eval-corpus/memory mutation"}}
 }
 
 func convergenceDebt(strict bool) []Finding {

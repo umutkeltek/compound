@@ -157,7 +157,7 @@ usage:
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                                                                  spine memory: candidates, claims, positions, patterns, evidence
-  compound distiller eval <case.json|cases-dir>               Offline request/response/adjudication eval corpus, no model call
+  compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller improvement-plan --candidate C [--target file] method_upgrade/policy_patch -> reviewed distiller improvement draft
   compound distiller improvement-review <review.yaml>           validate reviewed distiller improvement decision, no source mutation
@@ -1000,8 +1000,16 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) >= 1 && args[0] == "eval" {
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir>")
+		record := hasFlag(args[1:], "--record")
+		var paths []string
+		for _, arg := range args[1:] {
+			if arg == "--record" {
+				continue
+			}
+			paths = append(paths, arg)
+		}
+		if len(paths) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
@@ -1009,13 +1017,14 @@ func cmdDistiller(args []string) {
 			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 			os.Exit(1)
 		}
-		info, err := os.Stat(args[1])
+		targetPath := paths[0]
+		info, err := os.Stat(targetPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "distiller eval:", err)
 			os.Exit(1)
 		}
 		if info.IsDir() {
-			report, err := distiller.EvaluateCorpusDirInRoot(args[1], homePath, time.Now())
+			report, err := distiller.EvaluateCorpusDirInRoot(targetPath, homePath, time.Now())
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "distiller eval:", err)
 				os.Exit(1)
@@ -1024,9 +1033,18 @@ func cmdDistiller(args []string) {
 			if report.Status != "pass" {
 				os.Exit(1)
 			}
+			if record {
+				proof, err := distiller.RecordEvalCorpusReport(homePath, report)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "distiller eval record:", err)
+					os.Exit(1)
+				}
+				fmt.Printf("- proof_ref: %s\n", proof.ProofRef)
+				fmt.Printf("- proof: %s\n", proof.Path)
+			}
 			return
 		}
-		report, err := distiller.EvaluateCaseFileInRoot(args[1], homePath, time.Now())
+		report, err := distiller.EvaluateCaseFileInRoot(targetPath, homePath, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "distiller eval:", err)
 			os.Exit(1)
@@ -1034,6 +1052,15 @@ func cmdDistiller(args []string) {
 		printDistillerEval(report)
 		if report.Status != "pass" {
 			os.Exit(1)
+		}
+		if record {
+			proof, err := distiller.RecordEvalReport(homePath, report)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "distiller eval record:", err)
+				os.Exit(1)
+			}
+			fmt.Printf("- proof_ref: %s\n", proof.ProofRef)
+			fmt.Printf("- proof: %s\n", proof.Path)
 		}
 		return
 	}
@@ -1046,7 +1073,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 

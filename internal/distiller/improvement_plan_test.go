@@ -191,7 +191,7 @@ func TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth(t *
 		t.Fatalf("accept review without proof should fail, err=%v", err)
 	}
 
-	review.EvalProofRefs = []string{"distiller_eval:conversation-mining-review-replay"}
+	review.EvalProofRefs = []string{"distiller_eval:missing"}
 	data, err = yaml.Marshal(review)
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +200,33 @@ func TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth(t *
 		t.Fatal(err)
 	}
 	loaded, err := LoadImprovementReview(editedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordImprovementReview(home, loaded, time.Date(2026, 6, 30, 12, 5, 0, 0, time.UTC)); err == nil || !strings.Contains(err.Error(), "not recorded") {
+		t.Fatalf("unrecorded proof should fail at record time, err=%v", err)
+	}
+
+	proof, err := RecordEvalReport(home, EvalReport{
+		SchemaVersion: EvalCaseSchemaVersion,
+		ID:            "conversation-mining-review-replay",
+		Status:        "pass",
+		Run: EvalRunReport{
+			LiveModelCalls: 0,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review.EvalProofRefs = []string{proof.ProofRef}
+	data, err = yaml.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(editedPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = LoadImprovementReview(editedPath)
 	if err != nil {
 		t.Fatal(err)
 	}

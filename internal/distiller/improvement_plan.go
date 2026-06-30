@@ -346,6 +346,11 @@ func RecordImprovementReview(homePath string, review ImprovementReview, now time
 	if err := improvementReviewMatchesPlan(review, plan); err != nil {
 		return ImprovementReviewReport{}, err
 	}
+	if strings.TrimSpace(review.Decision) == ImprovementReviewDecisionAccept {
+		if err := ValidateRecordedEvalProofRefs(homePath, review.EvalProofRefs); err != nil {
+			return ImprovementReviewReport{}, err
+		}
+	}
 	dir := filepath.Join(homePath, "reviews", "distiller-improvements")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ImprovementReviewReport{}, err
