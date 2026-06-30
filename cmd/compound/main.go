@@ -174,7 +174,7 @@ usage:
 compound runtime doctor [--project-contract] <yaml> [--writeback] | runtime repair-plan [--project-contract] <yaml> RuntimeBinding health + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | hypothesis-plan --candidate C [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound event import-os <events.ndjson>                       OS-style append-only events -> TraceEnvelope evidence
@@ -2904,7 +2904,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -3119,6 +3119,40 @@ func cmdProduct(args []string) {
 		fmt.Printf("- candidate: %s\n", plan.CandidateID)
 		fmt.Printf("- product: %s\n", plan.ProductID)
 		fmt.Printf("- hypothesis_key: %s\n", plan.HypothesisKey)
+		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+	case "source-issue-plan":
+		productID := flagValue(args[1:], "--product")
+		issueID := flagValue(args[1:], "--issue")
+		targetPath := flagValue(args[1:], "--target")
+		if productID == "" || issueID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product source-issue-plan --product <product_id> --issue <issue_id> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := product.BuildSourceIssuePlan(homePath, productID, issueID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product source-issue-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := product.RecordSourceIssuePlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product source-issue-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product source-issue-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- product: %s\n", plan.ProductID)
+		fmt.Printf("- issue: %s\n", plan.IssueID)
+		fmt.Printf("- source_ref: %s\n", plan.SourceRef)
 		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
 		if plan.TargetPath != "" {
 			fmt.Printf("- target_exists: %t\n", plan.TargetExists)

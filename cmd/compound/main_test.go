@@ -1533,6 +1533,78 @@ func TestProductChangeStreamImportsSourceIssues(t *testing.T) {
 	}
 }
 
+func TestProductSourceIssuePlanUsesOpenSourceIssueWithoutClosingIt(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "product", "change-stream-candidates.md")
+	importOut := captureStdout(t, func() {
+		cmdProduct([]string{"change-stream", fixture})
+	})
+	issueID := outputValue(importOut, "- issue:")
+	if issueID == "" {
+		t.Fatalf("change-stream output missing issue:\n%s", importOut)
+	}
+	targetPath := filepath.Join(t.TempDir(), "product-review.md")
+	original := "# Product Review\n\nExisting product review notes.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdProduct([]string{"source-issue-plan", "--product", "product:focus_notes", "--issue", issueID, "--target", targetPath})
+	})
+	if !strings.Contains(out, "# product source-issue-plan psip_") ||
+		!strings.Contains(out, "- status: review_required") ||
+		!strings.Contains(out, "- product: product:focus_notes") ||
+		!strings.Contains(out, "- issue: "+issueID) ||
+		!strings.Contains(out, "- target_exists: true") ||
+		!strings.Contains(out, "- required_evidence: 4") ||
+		!strings.Contains(out, "- evidence_refs:") ||
+		!strings.Contains(out, "- plan:") ||
+		!strings.Contains(out, "- review:") {
+		t.Fatalf("source-issue-plan output missing proof:\n%s", out)
+	}
+	planPath := outputValue(out, "- plan:")
+	reviewPath := outputValue(out, "- review:")
+	var plan product.SourceIssuePlan
+	planData, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != product.SourceIssuePlanSchemaVersion || plan.IssueID != issueID || plan.ReviewDraft.ClosureCommand == "" {
+		t.Fatalf("bad source issue plan = %+v", plan)
+	}
+	reviewData, err := os.ReadFile(reviewPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(reviewData), "result: resolved|waived|false_positive") {
+		t.Fatalf("review artifact missing closure template:\n%s", string(reviewData))
+	}
+	afterTarget, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterTarget) != original {
+		t.Fatal("source-issue-plan mutated target")
+	}
+	doctor, err := product.Doctor(homePath, "product:focus_notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.SourceIssueCount != 2 {
+		t.Fatalf("source issue plan should not close issue, doctor = %+v", doctor)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source issue plan should not create promoted claims ledger: %v", err)
+	}
+}
+
 func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

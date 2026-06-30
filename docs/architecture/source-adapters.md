@@ -148,6 +148,9 @@ generated page hash/capture and each candidate's product, surface, repo, score,
 and dirty preview as product-scoped source issues backed by `NoPromoteDecision`;
 review/closure still goes through `product source-issue-review`, and durable
 changes/signals/hypotheses require their own evidence path.
+`compound product source-issue-plan --product <id> --issue <id> [--target <file>]`
+turns one open source issue into review artifacts without closing it or mutating
+the product surface.
 
 A concrete mapping for a specific operating system — real repo paths and named
 tools — belongs in that operator's private overlay (`docs_private/`), never in
