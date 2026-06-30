@@ -1,17 +1,15 @@
 package routeevidence
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 const RoutePolicyPlanSchemaVersion = "compound.route_policy_plan.v0.1"
@@ -83,16 +81,16 @@ func BuildRoutePolicyPlan(homePath, candidateID, targetPath string, now time.Tim
 	if c.Kind != string(candidates.RouteObservation) {
 		return RoutePolicyPlan{}, fmt.Errorf("candidate %s kind=%q, want %q", candidateID, c.Kind, candidates.RouteObservation)
 	}
-	evidenceRefs := uniqueRefs(c.EvidenceRefs)
-	targetExists, targetHash, err := hashPlanTarget(targetPath)
+	evidenceRefs := reviewartifact.UniqueSorted(c.EvidenceRefs)
+	targetExists, targetHash, err := reviewartifact.HashTarget(targetPath)
 	if err != nil {
 		return RoutePolicyPlan{}, err
 	}
-	key := slugifyPlan(firstPlanValue(c.Subject, c.Detail, c.Statement, c.ID))
+	key := reviewartifact.Slugify(reviewartifact.FirstNonEmpty(c.Subject, c.Detail, c.Statement, c.ID), 0)
 	if key == "" {
-		key = digestPlan12(candidateID)
+		key = reviewartifact.Digest12(candidateID)
 	}
-	statement := firstPlanValue(c.Statement, c.Subject, "reviewed routing observation")
+	statement := reviewartifact.FirstNonEmpty(c.Statement, c.Subject, "reviewed routing observation")
 	plan := RoutePolicyPlan{
 		SchemaVersion:    RoutePolicyPlanSchemaVersion,
 		ID:               idFor("rpp_", candidateID, targetPath),
@@ -110,8 +108,8 @@ func BuildRoutePolicyPlan(homePath, candidateID, targetPath string, now time.Tim
 		TargetExists:     targetExists,
 		TargetHash:       targetHash,
 		PolicyDraft: RoutePolicyDraft{
-			PolicyID:          "route_" + key + "_" + digestPlan12(candidateID+c.Statement),
-			Title:             firstPlanValue(c.Subject, statement),
+			PolicyID:          "route_" + key + "_" + reviewartifact.Digest12(candidateID+c.Statement),
+			Title:             reviewartifact.FirstNonEmpty(c.Subject, statement),
 			AppliesWhen:       "When a future work item matches this routing observation and its privacy/risk envelope.",
 			RoutePreference:   statement,
 			CostGuard:         "Use the cheapest sufficient lane only when capability, privacy, latency, and eval gates are satisfied.",
@@ -160,25 +158,8 @@ func RecordRoutePolicyPlan(homePath string, plan RoutePolicyPlan) (RoutePolicyPl
 	if plan.ID == "" {
 		return RoutePolicyPlanPaths{}, fmt.Errorf("route policy plan id required")
 	}
-	dir := filepath.Join(homePath, "reviews", "route-policy")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return RoutePolicyPlanPaths{}, err
-	}
-	paths := RoutePolicyPlanPaths{
-		PlanPath:   filepath.Join(dir, plan.ID+".json"),
-		ReviewPath: filepath.Join(dir, plan.ID+".md"),
-	}
-	data, err := json.MarshalIndent(plan, "", " ")
-	if err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
-		return paths, err
-	}
-	if err := os.WriteFile(paths.ReviewPath, []byte(RenderRoutePolicyReview(plan)), 0o644); err != nil {
-		return paths, err
-	}
-	return paths, nil
+	paths, err := reviewartifact.Write(homePath, "route-policy", plan.ID, plan, " ", RenderRoutePolicyReview(plan))
+	return RoutePolicyPlanPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
 }
 
 func RenderRoutePolicyReview(plan RoutePolicyPlan) string {
@@ -230,68 +211,4 @@ func RenderRoutePolicyReview(plan RoutePolicyPlan) string {
 	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "%s\n", plan.PolicyDraft.ReviewNote)
 	return b.String()
-}
-
-func hashPlanTarget(path string) (bool, string, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false, "", nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	sum := sha256.Sum256(data)
-	return true, hex.EncodeToString(sum[:]), nil
-}
-
-func firstPlanValue(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func slugifyPlan(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	lastDash := false
-	for _, r := range value {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if ok {
-			b.WriteRune(r)
-			lastDash = false
-			continue
-		}
-		if !lastDash && b.Len() > 0 {
-			b.WriteByte('-')
-			lastDash = true
-		}
-	}
-	return strings.Trim(b.String(), "-")
-}
-
-func digestPlan12(value string) string {
-	sum := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(sum[:])[:12]
-}
-
-func uniqueRefs(values []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
 }
