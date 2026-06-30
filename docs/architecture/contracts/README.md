@@ -16,6 +16,10 @@ Context orientation resolves repo kind by explicit flag, committed `.compound/re
 These are the typed objects every harness/hook/run flows through, hung off one root **`work_id`**. Full JSON
 schemas: `../runtime.md`.
 
+Hook adapters normalize relative `ActionIntent.target.path` values against hook `cwd` before policy evaluation,
+artifact persistence, and source-control inspection. Policy reasons, stored ActionIntent artifacts, and git evidence
+therefore refer to the same governed target.
+
 | Contract | Purpose | Lifecycle |
 |---|---|---|
 | **EffectiveContract** | the compiled "what applies right now" artifact every run references by `contract_version = sha256(...)`; kills global instruction bloat | compiled-per (harness, cwd, task) |

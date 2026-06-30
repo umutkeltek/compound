@@ -516,6 +516,22 @@ func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gotAction := res.Produced[0].(*envelope.ActionIntent)
+	wantTargetPath := filepath.Join(repo, "README.md")
+	if gotAction.Target.Path != wantTargetPath {
+		t.Fatalf("produced action target path = %q, want resolved %q", gotAction.Target.Path, wantTargetPath)
+	}
+	actionBytes, err := os.ReadFile(filepath.Join(homePath, "events", "act_dirty_relative.json"))
+	if err != nil {
+		t.Fatalf("read persisted action: %v", err)
+	}
+	var persistedAction envelope.ActionIntent
+	if err := json.Unmarshal(actionBytes, &persistedAction); err != nil {
+		t.Fatalf("parse persisted action: %v", err)
+	}
+	if persistedAction.Target.Path != wantTargetPath {
+		t.Fatalf("persisted action target path = %q, want resolved %q", persistedAction.Target.Path, wantTargetPath)
+	}
 	pd := res.Produced[1].(*envelope.PolicyDecision)
 	if res.Event.Status != "blocked" || pd.Outcome != "hold" {
 		t.Fatalf("event/policy = %q/%q reasons=%v, want blocked/hold", res.Event.Status, pd.Outcome, pd.Reasons)

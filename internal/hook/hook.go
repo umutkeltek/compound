@@ -239,13 +239,14 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if fx.WorkID != "" {
 		ai.IDs.WorkID = fx.WorkID
 	}
+	ai = normalizeActionTarget(fx, ai)
 	evalCtx := policy.EvaluationContext{}
 	var sourceControl *policy.SourceControlContext
 	sideEffects := []string(nil)
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
 		var effects []string
 		var err error
-		sourceControl, effects, err = sourceControlContextForAction(deps.HomePath, actionTargetPath(fx, ai), now)
+		sourceControl, effects, err = sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
 		if err != nil {
 			return Result{}, err
 		}
@@ -289,6 +290,13 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		summary += "; held review work " + reviewWorkID
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: summary}, nil
+}
+
+func normalizeActionTarget(fx Fixture, ai envelope.ActionIntent) envelope.ActionIntent {
+	if normalized := actionTargetPath(fx, ai); normalized != "" {
+		ai.Target.Path = normalized
+	}
+	return ai
 }
 
 func actionTargetPath(fx Fixture, ai envelope.ActionIntent) string {
