@@ -111,6 +111,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
+		f = append(f, checkHookSourceControlContract(repoRoot)...)
 		f = append(f, checkProductContractContract(repoRoot)...)
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
 	}
@@ -637,6 +638,55 @@ func checkHarnessEntrypointContract(repoRoot string) []Finding {
 		return []Finding{{"harness-entrypoint-contract", Fail, "public docs do not describe --os-entrypoints as session-start-only SourceObservation/no-promote evidence with no hook install and no inferred hook/MCP/skill capability"}}
 	}
 	return []Finding{{"harness-entrypoint-contract", Info, "OS harness entrypoints stay evidence-only session-start context"}}
+}
+
+// checkHookSourceControlContract keeps hook mutation gating from drifting back to
+// raw harness path strings. PreToolUse must normalize relative targets before
+// policy evaluation, persisted ActionIntent artifacts, and read-only git
+// inspection; otherwise one action can have two target identities.
+func checkHookSourceControlContract(repoRoot string) []Finding {
+	hasPreToolUse := false
+	hasNormalizeRelative := false
+	hasPolicyEvaluation := false
+	hasActionPersistence := false
+	hasGitInspection := false
+	hasNoMutation := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "hook pre-tool-use") || strings.Contains(low, "pretooluse") {
+			hasPreToolUse = true
+		}
+		if strings.Contains(low, "relative") && strings.Contains(low, "target") &&
+			(strings.Contains(low, "normalize") || strings.Contains(low, "cwd")) {
+			hasNormalizeRelative = true
+		}
+		if strings.Contains(low, "policy evaluation") {
+			hasPolicyEvaluation = true
+		}
+		if strings.Contains(low, "actionintent") && (strings.Contains(low, "persistence") || strings.Contains(low, "stored")) {
+			hasActionPersistence = true
+		}
+		if strings.Contains(low, "source-control inspection") || strings.Contains(low, "git snapshot") || strings.Contains(low, "read-only git") {
+			hasGitInspection = true
+		}
+		if strings.Contains(low, "inspected repos are not mutated") || strings.Contains(low, "without mutating the repo") ||
+			strings.Contains(low, "no cleanup/staging/push authority") {
+			hasNoMutation = true
+		}
+		return nil
+	})
+	if !hasPreToolUse || !hasNormalizeRelative || !hasPolicyEvaluation || !hasActionPersistence || !hasGitInspection || !hasNoMutation {
+		return []Finding{{"hook-source-control-contract", Fail, "public docs do not describe hook pre-tool-use relative target normalization before policy evaluation, ActionIntent persistence, read-only git inspection, and no repo mutation"}}
+	}
+	return []Finding{{"hook-source-control-contract", Info, "hook source-control gate normalizes target identity before policy and git inspection"}}
 }
 
 // checkProductContractContract keeps project/release source contracts from

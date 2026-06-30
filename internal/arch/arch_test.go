@@ -573,6 +573,42 @@ func TestHarnessEntrypointContractRejectsCapabilityOverclaim(t *testing.T) {
 	}
 }
 
+func TestHookSourceControlContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "hook-source-control-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("hook source-control contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected hook-source-control-contract finding")
+	}
+}
+
+func TestHookSourceControlContractFailsOnRawTargetDocs(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "`hook pre-tool-use` consumes source-control status for target paths through read-only git and does not mutate repos.\n"
+	if err := os.WriteFile(filepath.Join(docs, "runtime.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkHookSourceControlContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "relative target normalization") {
+		t.Fatalf("failure should name missing target normalization: %+v", findings)
+	}
+}
+
 func TestProductContractContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool
