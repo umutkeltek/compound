@@ -2724,6 +2724,8 @@ func cmdPolicy(args []string) {
 			os.Exit(1)
 		}
 		type placementAuthorityReport struct {
+			PlacementMode    string                                  `json:"placement_guard_mode,omitempty"`
+			PolicySource     string                                  `json:"policy_source,omitempty"`
 			AuthorityRef     string                                  `json:"authority_ref"`
 			AuthorityPath    string                                  `json:"authority_path"`
 			Installed        bool                                    `json:"installed"`
@@ -2732,7 +2734,14 @@ func cmdPolicy(args []string) {
 			SourceAuthority  []policy.PlacementSourceAuthorityRecord `json:"source_authority,omitempty"`
 			SourceRecordPath string                                  `json:"source_record_path"`
 		}
+		cfg, policySource, err := policy.LoadConfig(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 		report := placementAuthorityReport{
+			PlacementMode:    cfg.PlacementGuardMode,
+			PolicySource:     policySource,
 			AuthorityRef:     policy.PlacementRulesAuthorityRef,
 			AuthorityPath:    policy.PlacementRulesPath(homePath),
 			SourceRecordPath: policy.PlacementSourceAuthorityPath(homePath),

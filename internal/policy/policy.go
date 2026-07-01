@@ -116,7 +116,7 @@ func LoadConfig(homePath string) (Config, string, error) {
 	if homePath != "" {
 		p := filepath.Join(homePath, "config", "policy.yaml")
 		if data, err := os.ReadFile(p); err == nil {
-			var c Config
+			c := DefaultConfig()
 			if err := yaml.Unmarshal(data, &c); err != nil {
 				return Config{}, p, fmt.Errorf("parse %s: %w", p, err)
 			}

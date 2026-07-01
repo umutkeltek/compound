@@ -1258,6 +1258,8 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 	})
 	for _, want := range []string{
 		`"installed": true`,
+		`"placement_guard_mode": "block"`,
+		`"policy_source": "built-in"`,
 		`"owner_count": 1`,
 		`"source_role": "evidence_only_input_after_import"`,
 	} {

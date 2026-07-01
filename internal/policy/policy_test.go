@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,52 @@ import (
 )
 
 var fixedNow = time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+
+func TestLoadConfigOverlaysDefaultPolicy(t *testing.T) {
+	homePath := t.TempDir()
+	configDir := filepath.Join(homePath, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "policy.yaml")
+	if err := os.WriteFile(configPath, []byte("placement_guard_mode: block\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, source, err := LoadConfig(homePath)
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+	if source != configPath {
+		t.Fatalf("source = %q, want %q", source, configPath)
+	}
+	if cfg.PlacementGuardMode != "block" {
+		t.Fatalf("placement mode = %q, want block", cfg.PlacementGuardMode)
+	}
+	if len(cfg.ForbiddenPaths) == 0 || len(cfg.ClassOutcome) == 0 {
+		t.Fatalf("minimal config wiped default safety policy: forbidden=%v classes=%v", cfg.ForbiddenPaths, cfg.ClassOutcome)
+	}
+
+	pd := Evaluate(mkAction("local_reversible", "easy", "docs/x.md", "repo"), cfg, fixedNow)
+	if pd.Outcome != "allow_with_obligations" {
+		t.Fatalf("default class outcome missing after overlay, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+	pd = Evaluate(mkAction("local_reversible", "easy", ".env", "repo"), cfg, fixedNow)
+	if pd.Outcome != "deny" {
+		t.Fatalf("default forbidden path missing after overlay, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+
+	ctx := EvaluationContext{Placement: &PlacementGuardContext{
+		Confidence: "block",
+		OwnerRef:   "owner:decisions",
+		TargetRef:  "docs/x.md",
+		Reason:     "wrong owner",
+	}}
+	pd = EvaluateWithContext(mkAction("local_reversible", "easy", "docs/x.md", "repo"), cfg, ctx, fixedNow)
+	if pd.Outcome != "hold" {
+		t.Fatalf("placement_guard_mode from config should hold confidence:block placement, got %q reasons=%v", pd.Outcome, pd.Reasons)
+	}
+}
 
 // mkAction builds a valid ActionIntent for a given class/reversibility/path/blast.
 func mkAction(class, reversibility, path, blast string) envelope.ActionIntent {
