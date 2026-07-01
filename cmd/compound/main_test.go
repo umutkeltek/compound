@@ -345,6 +345,53 @@ func TestWorkImportPacketCreatesWorkEnvelopeWithoutClaims(t *testing.T) {
 	}
 }
 
+func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{
+			"create",
+			"--owner", "compound-core",
+			"--predicate", "continuation envelope preserves fields",
+			"--outcome", "continue adaptive capability OS work",
+			"--non-goal", "bulk clone,install",
+			"--non-goal", "serve marketplace skills",
+			"--evidence-ref", "compound://reviews/external-repo-intake",
+			"--evidence", "brain://session-state",
+			"--context-pack", "ctx_cli_create",
+			"--state", "ready",
+			"--risk", "tier2",
+			"--privacy", "sensitive",
+		})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("create output missing JSON:\n%s", out)
+	}
+	var w envelope.WorkEnvelope
+	if err := json.Unmarshal([]byte(out[start:]), &w); err != nil {
+		t.Fatalf("parse create work: %v\n%s", err, out)
+	}
+	if w.Owner != "compound-core" || w.State != "ready" || w.DesiredOutcome != "continue adaptive capability OS work" {
+		t.Fatalf("work core fields not wired: %+v", w)
+	}
+	if w.Privacy != "sensitive" || w.Risk != "tier2" || w.IDs.ContextPackID != "ctx_cli_create" {
+		t.Fatalf("header fields not wired: privacy=%q risk=%q context=%q", w.Privacy, w.Risk, w.IDs.ContextPackID)
+	}
+	wantNonGoals := []string{"bulk clone", "install", "serve marketplace skills"}
+	if !sameStringSlice(w.NonGoals, wantNonGoals) {
+		t.Fatalf("non_goals = %v, want %v", w.NonGoals, wantNonGoals)
+	}
+	wantEvidence := []string{"compound://reviews/external-repo-intake", "brain://session-state"}
+	if !sameStringSlice(w.EvidenceRefs, wantEvidence) {
+		t.Fatalf("evidence_refs = %v, want %v", w.EvidenceRefs, wantEvidence)
+	}
+}
+
 func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -5938,6 +5985,18 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+func sameStringSlice(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func outputValue(out, key string) string {

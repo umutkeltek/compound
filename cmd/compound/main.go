@@ -3550,6 +3550,22 @@ func splitCSV(s string) []string {
 	return out
 }
 
+func flagCSVValues(args []string, names ...string) []string {
+	nameSet := make(map[string]bool, len(names))
+	for _, name := range names {
+		nameSet[name] = true
+	}
+	var out []string
+	for i := 0; i < len(args); i++ {
+		if !nameSet[args[i]] || i+1 >= len(args) {
+			continue
+		}
+		out = append(out, splitCSV(args[i+1])...)
+		i++
+	}
+	return out
+}
+
 func cmdWorkbench(args []string) {
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -4166,9 +4182,12 @@ func cmdWork(args []string) {
 			Owner:            flag("--owner"),
 			SuccessPredicate: flag("--predicate"),
 			DesiredOutcome:   flag("--outcome"),
+			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
+			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
 			State:            flag("--state"),
 			Risk:             flag("--risk"),
+			Privacy:          flag("--privacy"),
 		}, time.Now())
 		die(err)
 		fmt.Printf("created %s (%s)\n", w.ID, w.State)

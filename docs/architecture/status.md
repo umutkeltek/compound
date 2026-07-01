@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound work create` now wires the full existing `WorkEnvelope` creation surface instead of only owner/predicate/outcome/state/risk/context. The CLI accepts repeated or CSV `--non-goal`, repeated or CSV `--evidence-ref`/`--evidence`, and `--privacy`, then passes them into `work.CreateInput`. Regression proof: `TestWorkCreateCLIWiresEnvelopeFields` covers desired outcome, non-goals, evidence refs, context pack id, risk, and privacy. Runtime cleanup: incomplete continuation `work_854676493db2` was cancelled through the lifecycle, and corrected continuation `work_7aaf5f2ad3dc` is ready with external-repo/brain evidence refs and explicit non-goals.
+
 - Job-roster authority now normalizes derived `job_count`, `enabled_count`,
   `error_count`, and `recent_errors` from the current `jobs` list whenever the
   authority is loaded or rewritten by token-governance import. This fixes stale
