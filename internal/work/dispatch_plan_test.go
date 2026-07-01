@@ -187,3 +187,112 @@ func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 		t.Fatal("blocked dispatch claim must not write lease")
 	}
 }
+
+func TestDispatchAdvanceAdvancesOwnClaimedWork(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "dispatch advance starts claimed work",
+		DesiredOutcome:   "prove dispatch advance",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(ready.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchAdvance(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "running" || result.AdvancedWorkID != ready.ID || result.AdvancedState != "running" {
+		t.Fatalf("dispatch advance result = %+v, ready=%s", result, ready.ID)
+	}
+	if result.Selected == nil || result.Selected.Action != "advance_running" || result.Selected.AdvancePolicy == nil || !result.Selected.AdvancePolicy.Allowed {
+		t.Fatalf("dispatch advance selected item missing policy: %+v", result.Selected)
+	}
+	if result.ResultPath == "" {
+		t.Fatalf("dispatch advance should record result: %+v", result)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch advance result not recorded: %v", err)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" || after.PolicyDecisionID != result.PolicyDecisionID || len(after.RunIDs) != len(claimed.RunIDs)+1 {
+		t.Fatalf("work not advanced through policy path: before=%+v after=%+v result=%+v", claimed, after, result)
+	}
+	if after.IDs.TransitionID != "" {
+		t.Fatalf("dispatch advance must not close work: %+v", after.IDs)
+	}
+}
+
+func TestDispatchAdvanceIgnoresOtherActorClaim(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "other actor claim is not advanced"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(ready.ID, "agent_a", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchAdvance(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "claimed_by_other" || result.AdvancedWorkID != "" || result.Selected != nil {
+		t.Fatalf("other-actor dispatch advance result = %+v", result)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" || len(after.RunIDs) != len(claimed.RunIDs) || after.PolicyDecisionID != claimed.PolicyDecisionID {
+		t.Fatalf("other-actor dispatch advance mutated work: %+v", after)
+	}
+}
+
+func TestDispatchAdvanceBlockedByPolicyDoesNotAdvance(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch advance"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(ready.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRuns := append([]string{}, claimed.RunIDs...)
+	baselinePolicy := claimed.PolicyDecisionID
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchAdvance(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "advance_policy_blocked" || result.AdvancedWorkID != "" || result.Selected != nil {
+		t.Fatalf("blocked dispatch advance result = %+v", result)
+	}
+	if result.ResultPath == "" {
+		t.Fatalf("blocked dispatch advance should record result: %+v", result)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
+		t.Fatalf("blocked dispatch advance mutated work: %+v", after)
+	}
+}
