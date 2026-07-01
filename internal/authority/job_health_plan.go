@@ -59,6 +59,7 @@ type JobHealthPlanReport struct {
 	PlanCount     int                    `json:"plan_count"`
 	Plans         []JobHealthPlan        `json:"plans,omitempty"`
 	Paths         []reviewartifact.Paths `json:"paths,omitempty"`
+	ReviewYAMLs   []string               `json:"review_yamls,omitempty"`
 }
 
 func BuildJobHealthPlans(homePath string, roster JobRosterAuthority, now time.Time) ([]JobHealthPlan, error) {
@@ -150,7 +151,12 @@ func RecordJobHealthPlans(homePath string, roster JobRosterAuthority, now time.T
 		if err != nil {
 			return JobHealthPlanReport{}, err
 		}
+		reviewYAMLPath, err := reviewartifact.WriteRaw(homePath, jobHealthReviewArea, plan.ID+".review.yaml", []byte(RenderJobHealthReviewYAMLDraft(plan)))
+		if err != nil {
+			return JobHealthPlanReport{}, err
+		}
 		report.Paths = append(report.Paths, paths)
+		report.ReviewYAMLs = append(report.ReviewYAMLs, reviewYAMLPath)
 	}
 	return report, nil
 }
@@ -191,6 +197,12 @@ func RenderJobHealthPlanMarkdown(plan JobHealthPlan) string {
 	for _, evidence := range plan.ReviewDraft.RequiredEvidence {
 		fmt.Fprintf(&b, "- %s\n", evidence)
 	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "## Review YAML Template")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "```yaml")
+	fmt.Fprint(&b, RenderJobHealthReviewYAMLDraft(plan))
+	fmt.Fprintln(&b, "```")
 	if len(plan.Warnings) > 0 {
 		fmt.Fprintln(&b)
 		fmt.Fprintln(&b, "## Guardrails")
