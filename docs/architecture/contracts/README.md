@@ -53,6 +53,11 @@ rows into `compound://registries/release-goal-holds`; `compound policy release-g
 is the read-only machine handoff for served HOLD backlog rows. Approve/deny writes remain with the release
 orchestrator.
 
+`compound authority import-job-roster <jobs.json>` imports a scheduler job inventory into
+`compound://registries/job-roster`; `compound authority job-roster-authority [--json]` is read-only
+machine handoff for job counts and current error summaries. The source job registry remains scheduler
+write owner and rollback/evidence input; importing does not run, pause, resume, edit, or restart jobs.
+
 | Contract | Purpose | Lifecycle |
 |---|---|---|
 | **EffectiveContract** | the compiled "what applies right now" artifact every run references by `contract_version = sha256(...)`; kills global instruction bloat | compiled-per (harness, cwd, task) |

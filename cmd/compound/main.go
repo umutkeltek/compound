@@ -232,7 +232,7 @@ compound policy <evaluate|import-placement-rules|placement-authority|import-oper
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
-  compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | resolve <token> | <entity> import/query authority through spine memory
+compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | job-roster-authority [--json] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] RuntimeBinding health/live probes + gated writeback/review artifacts
@@ -4051,10 +4051,80 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-job-roster <cron-jobs.json> | job-roster-authority [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
+	if args[0] == "import-job-roster" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority import-job-roster <cron-jobs.json>")
+			os.Exit(2)
+		}
+		report, err := authority.ImportJobRoster(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-job-roster:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+		return
+	}
+	if args[0] == "job-roster-authority" {
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound authority job-roster-authority [--json]")
+			os.Exit(2)
+		}
+		type jobRosterAuthorityReport struct {
+			AuthorityRef     string                                     `json:"authority_ref"`
+			AuthorityPath    string                                     `json:"authority_path"`
+			Installed        bool                                       `json:"installed"`
+			GeneratedAt      string                                     `json:"generated_at,omitempty"`
+			SourcePath       string                                     `json:"source_path,omitempty"`
+			SourceRevision   string                                     `json:"source_revision,omitempty"`
+			JobCount         int                                        `json:"job_count,omitempty"`
+			EnabledCount     int                                        `json:"enabled_count,omitempty"`
+			RecentRunCount   int                                        `json:"recent_run_count,omitempty"`
+			ErrorCount       int                                        `json:"error_count,omitempty"`
+			RecentErrors     []authority.JobSummary                     `json:"recent_errors,omitempty"`
+			SourceAuthority  []authority.JobRosterSourceAuthorityRecord `json:"source_authority,omitempty"`
+			SourceRecordPath string                                     `json:"source_record_path"`
+		}
+		report := jobRosterAuthorityReport{
+			AuthorityRef:     authority.JobRosterAuthorityRef,
+			AuthorityPath:    authority.JobRosterAuthorityPath(homePath),
+			SourceRecordPath: authority.JobRosterSourceAuthorityPath(homePath),
+		}
+		roster, err := authority.LoadJobRosterAuthority(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "authority job-roster-authority:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.Installed = true
+			report.GeneratedAt = roster.GeneratedAt
+			report.SourcePath = roster.SourcePath
+			report.SourceRevision = roster.SourceRevision
+			report.JobCount = roster.JobCount
+			report.EnabledCount = roster.EnabledCount
+			report.RecentRunCount = roster.RecentRunCount
+			report.ErrorCount = roster.ErrorCount
+			report.RecentErrors = roster.RecentErrors
+		}
+		records, err := authority.LoadJobRosterSourceAuthority(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority job-roster-authority:", err)
+			os.Exit(1)
+		}
+		report.SourceAuthority = records
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("job roster authority: %s\n", report.AuthorityRef)
+		fmt.Printf("installed: %t\n", report.Installed)
+		fmt.Printf("jobs: %d enabled=%d recent=%d errors=%d\n", report.JobCount, report.EnabledCount, report.RecentRunCount, report.ErrorCount)
+		return
+	}
 	if args[0] == "resolve" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound authority resolve <token>")

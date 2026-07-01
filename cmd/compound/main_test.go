@@ -631,6 +631,48 @@ func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.
 	}
 }
 
+func TestAuthorityJobRosterImportsAndReportsAuthority(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	source := filepath.Join(t.TempDir(), "cron-jobs.json")
+	writeCLIJobRosterFixture(t, source)
+
+	importOut := captureStdout(t, func() {
+		cmdAuthority([]string{"import-job-roster", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/job-roster"`,
+		`"job_count": 2`,
+		`"error_count": 1`,
+		`"source_role": "evidence_only_input_after_import"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import job roster output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	authorityOut := captureStdout(t, func() {
+		cmdAuthority([]string{"job-roster-authority", "--json"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"job_count": 2`,
+		`"enabled_count": 2`,
+		`"error_count": 1`,
+		`"name": "ibkr-exit-check-daily"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("job roster authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("job roster command must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestAuthorityGitImportsSourceControlState(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -4880,6 +4922,40 @@ func writeJSONFixture(t *testing.T, path string, v any) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeCLIJobRosterFixture(t *testing.T, path string) {
+	t.Helper()
+	data := `{
+  "version": 1,
+  "jobs": [
+    {
+      "job_id": "d422776dde1c",
+      "name": "ibkr-exit-check-daily",
+      "enabled": true,
+      "state": "scheduled",
+      "schedule": "33 19 * * 1-5",
+      "script": "ibkr_exit_check_daily.sh",
+      "lane": "no_agent_script",
+      "last_status": "error",
+      "last_error": "missing python venv",
+      "last_run_at": "2026-07-01T10:00:00Z"
+    },
+    {
+      "job_id": "digest",
+      "name": "brain digest",
+      "enabled": true,
+      "state": "scheduled",
+      "schedule": "every 6h",
+      "script": "recall_digest.ts",
+      "last_status": "ok",
+      "last_run_at": "2026-07-01T09:00:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

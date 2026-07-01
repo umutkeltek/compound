@@ -8,6 +8,12 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound authority import-job-roster <jobs.json>` now installs scheduled job inventory under
+  `compound://registries/job-roster`, with source-authority handoff and read-only
+  `job-roster-authority --json`. Umut OS `os status --json` now consumes this authority for job
+  counts and current error summaries while keeping the source job registry as scheduler write owner
+  and fallback/evidence input. No job was run, paused, resumed, edited, or restarted.
+
 - `compound reviews --json` now preflights product-review YAML drafts and exposes a sanitized `blocked_reason`
   when the reviewed-result importer would reject the draft. The product-review queue item remains review-gated,
   but now states the validation blocker instead of only showing a generic action. Umut OS `os status --json` and
