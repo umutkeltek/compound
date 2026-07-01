@@ -2639,6 +2639,22 @@ func TestCapabilityImportSkillsRecordsSourceAuthority(t *testing.T) {
 	if strings.Count(authorityOut, rec.ID) != 1 {
 		t.Fatalf("capability authority output should collapse replayed imports:\n%s", authorityOut)
 	}
+	authorityJSON := captureStdout(t, func() { cmdCapability([]string{"authority", "--json"}) })
+	var authorityReport struct {
+		SchemaVersion string                           `json:"schema_version"`
+		AuthorityRef  string                           `json:"authority_ref"`
+		Records       []capgraph.SourceAuthorityRecord `json:"records"`
+	}
+	if err := json.Unmarshal([]byte(authorityJSON), &authorityReport); err != nil {
+		t.Fatalf("parse authority json: %v\n%s", err, authorityJSON)
+	}
+	if authorityReport.SchemaVersion != capgraph.SourceAuthoritySchemaVersion ||
+		authorityReport.AuthorityRef != "compound://registries/capability-graph" ||
+		len(authorityReport.Records) != 1 ||
+		authorityReport.Records[0].ID != rec.ID ||
+		authorityReport.Records[0].SourceRole != "evidence_only_input" {
+		t.Fatalf("unexpected authority json report: %+v", authorityReport)
+	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("capability source authority must not promote claims, stat err=%v", err)
 	}

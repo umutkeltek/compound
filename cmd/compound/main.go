@@ -432,6 +432,21 @@ func cmdCapability(args []string) {
 	case "authority":
 		records, err := capgraph.LoadSourceAuthority(homePath)
 		die(err)
+		if hasFlag(rest, "--json") {
+			out := struct {
+				SchemaVersion string                           `json:"schema_version"`
+				AuthorityRef  string                           `json:"authority_ref"`
+				Records       []capgraph.SourceAuthorityRecord `json:"records"`
+			}{
+				SchemaVersion: capgraph.SourceAuthoritySchemaVersion,
+				AuthorityRef:  "compound://registries/capability-graph",
+				Records:       records,
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			die(enc.Encode(out))
+			return
+		}
 		if len(records) == 0 {
 			fmt.Println("(no capability source authority records)")
 			return
