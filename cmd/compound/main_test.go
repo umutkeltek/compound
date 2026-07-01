@@ -401,6 +401,66 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	}
 }
 
+func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "ready workbench proof"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create ready: %v", err)
+	}
+	done, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "closed workbench proof"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create done: %v", err)
+	}
+	if _, err := store.Claim(done.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim done: %v", err)
+	}
+	if _, err := store.Advance(done.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(done.ID, work.AdvanceInput{To: "verifying", ArtifactID: "artifact_workbench", VerificationID: "ver_workbench"}, cliTestNow); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	closed, err := store.Close(done.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "workbench CLI terminal proof",
+		Changed:   true,
+		ProofRefs: []string{"proof:workbench-cli"},
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("close done: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--recent", "10"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("workbench output missing JSON:\n%s", out)
+	}
+	var report work.WorkbenchReport
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse workbench report: %v\n%s", err, out)
+	}
+	if report.Counts.Open != 1 || report.Counts.Terminal != 1 || report.Counts.NeedsClaim != 1 {
+		t.Fatalf("counts = %+v", report.Counts)
+	}
+	if len(report.Open) != 1 || report.Open[0].WorkID != ready.ID || report.Open[0].NextAction != "claim before touching" {
+		t.Fatalf("open item = %+v", report.Open)
+	}
+	if len(report.Recent) != 1 || report.Recent[0].ReceiptID != closed.Receipt.ID || report.Recent[0].TransitionID != closed.Transition.ID {
+		t.Fatalf("recent item = %+v", report.Recent)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

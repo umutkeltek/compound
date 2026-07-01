@@ -100,6 +100,8 @@ Runtime and contracts:
 Execution and policy:
 
 - `compound work ...` creates, claims, advances, closes, and imports work.
+- `compound workbench` is a read-only board over open WorkEnvelopes,
+  terminal receipts, and transitions; it does not dispatch or mutate work.
 - `compound policy evaluate` turns ActionIntent into an enforceable
   PolicyDecision.
 - `compound policy import-placement-rules <placement-rules.json>` installs owner
@@ -155,7 +157,7 @@ internal/home/            COMPOUND_HOME runtime body
 internal/envelope/        typed runtime grammar
 internal/schema/          JSON Schema export + contract-aware validation
 internal/contract/        EffectiveContract + ContextPack assembly
-internal/work/            WorkEnvelope lifecycle
+internal/work/            WorkEnvelope lifecycle + read-only workbench
 internal/policy/          ActionIntent -> PolicyDecision
 internal/harness/         HarnessRegistry
 internal/hook/            lifecycle hook runner

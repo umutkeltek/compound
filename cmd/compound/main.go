@@ -85,6 +85,8 @@ func main() {
 		cmdOrient(os.Args[2:])
 	case "work":
 		cmdWork(os.Args[2:])
+	case "workbench":
+		cmdWorkbench(os.Args[2:])
 	case "policy":
 		cmdPolicy(os.Args[2:])
 	case "hook":
@@ -195,6 +197,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
 	compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
@@ -2859,6 +2862,78 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func cmdWorkbench(args []string) {
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	jsonOut := false
+	recent := 5
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--recent":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N]")
+				os.Exit(2)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "error: --recent must be a non-negative integer")
+				os.Exit(2)
+			}
+			recent = n
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N]")
+			os.Exit(2)
+		}
+	}
+	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{RecentLimit: recent})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("workbench open=%d needs_claim=%d needs_review=%d in_progress=%d terminal=%d\n",
+		report.Counts.Open, report.Counts.NeedsClaim, report.Counts.NeedsReview, report.Counts.InProgress, report.Counts.Terminal)
+	if len(report.Integrity) > 0 {
+		fmt.Println("integrity:")
+		for _, msg := range report.Integrity {
+			fmt.Println("- " + msg)
+		}
+	}
+	if len(report.Open) == 0 {
+		fmt.Println("open: none")
+	} else {
+		fmt.Println("open:")
+		for _, item := range report.Open {
+			fmt.Printf("- %s %-10s %-14s %s\n", item.WorkID, item.State, item.OpenReason, item.SuccessPredicate)
+			fmt.Printf("  next: %s\n", item.NextAction)
+			if item.ClaimedBy != "" {
+				fmt.Printf("  claimed_by: %s\n", item.ClaimedBy)
+			}
+		}
+	}
+	if len(report.Recent) > 0 {
+		fmt.Println("recent:")
+		for _, item := range report.Recent {
+			fmt.Printf("- %s %-10s receipt=%s transition=%s move=%s changed=%v\n",
+				item.WorkID, item.State, emptyDash(item.ReceiptID), emptyDash(item.TransitionID), emptyDash(item.MoveType), item.Changed)
+		}
+	}
 }
 
 // cmdWork is the lifecycle store: one work_id threads intent -> context -> action ->
