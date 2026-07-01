@@ -219,11 +219,17 @@ func jobHealthErrorJobs(roster JobRosterAuthority) []JobSummary {
 	var out []JobSummary
 	add := func(job JobSummary) {
 		key := reviewartifact.FirstNonEmpty(job.JobID, job.Name)
-		if key == "" || seen[key] || job.LastStatus != "error" {
+		if key == "" || seen[key] || job.LastStatus != "error" || !actionableJobError(job) {
 			return
 		}
 		seen[key] = true
 		out = append(out, job)
+	}
+	if len(roster.ActiveErrors) > 0 {
+		for _, job := range roster.ActiveErrors {
+			add(job)
+		}
+		return out
 	}
 	for _, job := range roster.RecentErrors {
 		add(job)

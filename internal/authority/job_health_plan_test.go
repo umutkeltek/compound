@@ -267,3 +267,29 @@ func writeJobRosterTwoErrorFixture(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 }
+
+func TestJobHealthPlanUsesOnlyActiveErrors(t *testing.T) {
+	home := t.TempDir()
+	roster := JobRosterAuthority{
+		AuthorityRef:   JobRosterAuthorityRef,
+		SourcePath:     "jobs.json",
+		SourceRevision: "sha256:active-split",
+		RecentErrors: []JobSummary{
+			{JobID: "paused", Name: "paused historical", Enabled: false, State: "paused", LastStatus: "error"},
+			{JobID: "active", Name: "active failure", Enabled: true, State: "scheduled", LastStatus: "error"},
+		},
+		ActiveErrors: []JobSummary{
+			{JobID: "active", Name: "active failure", Enabled: true, State: "scheduled", LastStatus: "error"},
+		},
+		InactiveErrors: []JobSummary{
+			{JobID: "paused", Name: "paused historical", Enabled: false, State: "paused", LastStatus: "error"},
+		},
+	}
+	report, err := RecordJobHealthPlans(home, roster, time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PlanCount != 1 || len(report.Plans) != 1 || report.Plans[0].JobName != "active failure" {
+		t.Fatalf("job-health should plan only active failures: %+v", report)
+	}
+}
