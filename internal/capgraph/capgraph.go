@@ -67,8 +67,9 @@ type Edge struct {
 type Store struct{ home string }
 
 type Stats struct {
-	NodeCount int `json:"node_count"`
-	EdgeCount int `json:"edge_count"`
+	NodeCount      int            `json:"node_count"`
+	EdgeCount      int            `json:"edge_count"`
+	EdgeKindCounts map[string]int `json:"edge_kind_counts,omitempty"`
 }
 
 func Open(homePath string) (*Store, error) {
@@ -584,7 +585,11 @@ func (s *Store) Stats() (Stats, error) {
 	if err != nil {
 		return Stats{}, err
 	}
-	return Stats{NodeCount: len(nodes), EdgeCount: len(edges)}, nil
+	edgeKindCounts := map[string]int{}
+	for _, edge := range edges {
+		edgeKindCounts[edge.Kind]++
+	}
+	return Stats{NodeCount: len(nodes), EdgeCount: len(edges), EdgeKindCounts: edgeKindCounts}, nil
 }
 
 // --- load (append-only, last-wins by id) ---

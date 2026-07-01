@@ -452,6 +452,7 @@ func cmdCapability(args []string) {
 				AuthorityRef      string                           `json:"authority_ref"`
 				NodeCount         int                              `json:"node_count"`
 				EdgeCount         int                              `json:"edge_count"`
+				EdgeKindCounts    map[string]int                   `json:"edge_kind_counts,omitempty"`
 				SourceRecordCount int                              `json:"source_record_count"`
 				SourceNodeCount   int                              `json:"source_node_count"`
 				SourceEdgeCount   int                              `json:"source_edge_count"`
@@ -461,6 +462,7 @@ func cmdCapability(args []string) {
 				AuthorityRef:      "compound://registries/capability-graph",
 				NodeCount:         stats.NodeCount,
 				EdgeCount:         stats.EdgeCount,
+				EdgeKindCounts:    stats.EdgeKindCounts,
 				SourceRecordCount: len(records),
 				SourceNodeCount:   sourceNodeCount,
 				SourceEdgeCount:   sourceEdgeCount,
@@ -476,6 +478,9 @@ func cmdCapability(args []string) {
 			return
 		}
 		fmt.Printf("compound://registries/capability-graph nodes=%d edges=%d source_records=%d source_nodes=%d source_edges=%d\n", stats.NodeCount, stats.EdgeCount, len(records), sourceNodeCount, sourceEdgeCount)
+		if len(stats.EdgeKindCounts) > 0 {
+			fmt.Printf("edge_kinds=%s\n", formatEdgeKindCounts(stats.EdgeKindCounts))
+		}
 		for _, rec := range records {
 			fmt.Printf("%s %s source=%s authority=%s nodes=%d edges=%d retires=%s\n",
 				rec.ID,
@@ -848,6 +853,19 @@ func printCapabilityConstraintRefs(label string, values []capgraph.SurfacingCons
 		refs = append(refs, ref)
 	}
 	fmt.Printf("    %s: %s\n", label, strings.Join(refs, ", "))
+}
+
+func formatEdgeKindCounts(counts map[string]int) string {
+	kinds := make([]string, 0, len(counts))
+	for kind := range counts {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, kind := range kinds {
+		parts = append(parts, fmt.Sprintf("%s=%d", kind, counts[kind]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // cmdSource imports existing-system SourceObservation records into Compound-owned

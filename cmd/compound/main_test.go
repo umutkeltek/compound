@@ -3778,13 +3778,17 @@ func TestCapabilityImportSurfacingMissesRecordsFeedbackAndSourceNoPromote(t *tes
 		cmdCapability([]string{"authority", "--json"})
 	})
 	var authority struct {
-		NodeCount         int `json:"node_count"`
-		EdgeCount         int `json:"edge_count"`
-		SourceRecordCount int `json:"source_record_count"`
-		SourceEdgeCount   int `json:"source_edge_count"`
+		NodeCount         int            `json:"node_count"`
+		EdgeCount         int            `json:"edge_count"`
+		EdgeKindCounts    map[string]int `json:"edge_kind_counts"`
+		SourceRecordCount int            `json:"source_record_count"`
+		SourceEdgeCount   int            `json:"source_edge_count"`
 	}
 	if err := json.Unmarshal([]byte(authorityJSON), &authority); err != nil {
 		t.Fatalf("capability authority --json should parse: %v\n%s", err, authorityJSON)
+	}
+	if authority.EdgeKindCounts[capgraph.EdMissedWhen] == 0 {
+		t.Fatalf("authority should expose feedback edge kind counts: %+v", authority.EdgeKindCounts)
 	}
 	if authority.NodeCount != 1 || authority.EdgeCount == 0 || authority.SourceRecordCount != 0 || authority.SourceEdgeCount != 0 {
 		t.Fatalf("authority should expose current graph feedback separately from source handoff totals: %+v", authority)

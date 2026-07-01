@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound capability authority --json` now exposes `edge_kind_counts`, and human output prints deterministic `edge_kinds=...`, so graph learning is visible by feedback kind instead of only total edges. Live proof over current capability authority reports `489` nodes / `94` edges with `false_triggered_by=20`, `missed_when=24`, `surfaces_with=47`, `validated_by=2`, `fallback_for=1`. This is observability only: no skill execution, install/serve, source-owner mutation, memory promotion, marketplace action, or route-policy change.
+
 - `compound capability import-surfacing-misses` now absorbs negative surfacing feedback too: optional `false_triggered` / `falseTriggered` entries create idempotent `false_triggered_by` context edges that lower future surfacing for matching tasks, while existing `real` miss entries still create `missed_when`. CLI output reports both positive and negative feedback counters. Source reports still enter `SourceObservation -> capability_observation candidate -> NoPromoteDecision`; no skill is installed, served, or executed.
 
 - Stale held work `work_0e83269d4534` was closed through the normal work lifecycle as `cancelled` after a temp-home rehearsal. The held action was a policy/source-control write to a private brain decision file; live close emitted valid receipt `rec_67a4c55dc2f3` and transition `tr_67a4c55dc2f3`, left the target file absent, and moved workbench to `0` open / `0` review / `0` running with no receipt/transition/integrity gaps. This is lifecycle cleanup only: no held write was performed, no brain decision file was created, no policy boundary was bypassed.
