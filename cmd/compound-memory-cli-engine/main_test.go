@@ -185,6 +185,62 @@ func TestMemoryCLIEngineCanMatchExpansionOnlyTerms(t *testing.T) {
 	}
 }
 
+func TestMemoryCLIEnginePreservesDirectQueryHitBeforeExpansion(t *testing.T) {
+	fake := &fakeMemoryCLI{output: "Expansion says beta gamma delta epsilon."}
+	responses := exchange(t, fake, []mem.Request{
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r1",
+			Op:            mem.OpIndex,
+			CorpusGen:     4,
+			Claims: []mem.ClaimText{
+				{ClaimID: "claim_query", Text: "alpha original query owner"},
+				{ClaimID: "claim_expansion", Text: "beta gamma delta epsilon expansion only"},
+			},
+		},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r2",
+			Op:            mem.OpQuery,
+			Text:          "alpha",
+			Gate:          mem.GateList,
+			Allowlist:     []string{"claim_query", "claim_expansion"},
+			K:             1,
+		},
+	})
+	if len(responses[1].Hits) != 1 || responses[1].Hits[0].ClaimID != "claim_query" {
+		t.Fatalf("direct query hit should not be displaced by expansion: %+v", responses[1].Hits)
+	}
+}
+
+func TestMemoryCLIEngineKeepsLexicalOrderAmongDirectQueryHits(t *testing.T) {
+	fake := &fakeMemoryCLI{output: "Expansion says boost boost boost."}
+	responses := exchange(t, fake, []mem.Request{
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r1",
+			Op:            mem.OpIndex,
+			CorpusGen:     5,
+			Claims: []mem.ClaimText{
+				{ClaimID: "claim_a", Text: "alpha plain"},
+				{ClaimID: "claim_z", Text: "alpha boost"},
+			},
+		},
+		{
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     "r2",
+			Op:            mem.OpQuery,
+			Text:          "alpha",
+			Gate:          mem.GateList,
+			Allowlist:     []string{"claim_a", "claim_z"},
+			K:             1,
+		},
+	})
+	if len(responses[1].Hits) != 1 || responses[1].Hits[0].ClaimID != "claim_a" {
+		t.Fatalf("direct query hits should keep lexical reference order: %+v", responses[1].Hits)
+	}
+}
+
 func TestMemoryCLIEngineGateListEmptyAllowlistFailsClosed(t *testing.T) {
 	fake := &fakeMemoryCLI{output: "Go backend"}
 	responses := exchange(t, fake, []mem.Request{

@@ -237,41 +237,65 @@ func rankClaims(claims []mem.ClaimText, query, expansion, gate string, allowlist
 	for _, id := range allowlist {
 		allow[id] = true
 	}
-	weights := termWeights(query, 2)
-	for term, weight := range termWeights(expansion, 1) {
-		if weight > weights[term] {
-			weights[term] = weight
-		}
-	}
-	if len(weights) == 0 {
+	queryTerms := strings.Fields(strings.ToLower(query))
+	expansionWeights := termWeights(expansion, 1)
+	if len(queryTerms) == 0 && len(expansionWeights) == 0 {
 		return nil
 	}
-	hits := make([]mem.Hit, 0, len(claims))
+	type scoredHit struct {
+		hit            mem.Hit
+		expansionScore float64
+	}
+	direct := make([]mem.Hit, 0, len(claims))
+	expansionOnly := make([]scoredHit, 0, len(claims))
 	for _, claim := range claims {
 		if gate != mem.GateAll && !allow[claim.ClaimID] {
 			continue
 		}
 		haystack := strings.ToLower(claim.Text)
-		var score float64
-		for term, weight := range weights {
+		var queryScore float64
+		for _, term := range queryTerms {
 			if strings.Contains(haystack, term) {
-				score += float64(weight)
+				queryScore++
 			}
 		}
-		if score > 0 {
-			hits = append(hits, mem.Hit{ClaimID: claim.ClaimID, Score: score})
+		var expansionScore float64
+		for term, weight := range expansionWeights {
+			if strings.Contains(haystack, term) {
+				expansionScore += float64(weight)
+			}
+		}
+		if queryScore > 0 {
+			direct = append(direct, mem.Hit{ClaimID: claim.ClaimID, Score: queryScore})
+			continue
+		}
+		if expansionScore > 0 {
+			expansionOnly = append(expansionOnly, scoredHit{
+				hit:            mem.Hit{ClaimID: claim.ClaimID, Score: expansionScore},
+				expansionScore: expansionScore,
+			})
 		}
 	}
-	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].Score == hits[j].Score {
-			return hits[i].ClaimID < hits[j].ClaimID
-		}
-		return hits[i].Score > hits[j].Score
+	sort.Slice(direct, func(i, j int) bool {
+		return direct[i].Score > direct[j].Score
 	})
-	if k > 0 && len(hits) > k {
-		hits = hits[:k]
+	if k > 0 && len(direct) >= k {
+		return direct[:k]
 	}
-	return hits
+	sort.Slice(expansionOnly, func(i, j int) bool {
+		if expansionOnly[i].expansionScore != expansionOnly[j].expansionScore {
+			return expansionOnly[i].expansionScore > expansionOnly[j].expansionScore
+		}
+		return expansionOnly[i].hit.ClaimID < expansionOnly[j].hit.ClaimID
+	})
+	out := append([]mem.Hit(nil), direct...)
+	for _, hit := range expansionOnly {
+		out = append(out, hit.hit)
+	}
+	if k > 0 && len(out) > k {
+		out = out[:k]
+	}
+	return out
 }
 
 func termWeights(text string, weight int) map[string]int {
