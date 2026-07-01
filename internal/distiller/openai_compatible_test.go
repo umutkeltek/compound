@@ -3,6 +3,7 @@ package distiller
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -220,5 +221,28 @@ func TestChatCompletionJSONReturnsRawContentUsageAndLatency(t *testing.T) {
 	}
 	if string(content) != `{"ok":true}` || usage.TotalTokens != 42 || latencyMS < 0 {
 		t.Fatalf("content=%s usage=%+v latency=%d", content, usage, latencyMS)
+	}
+}
+
+func TestChatCompletionJSONRetriesWithoutResponseFormat(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "response_format") {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"'response_format.type' must be 'json_schema' or 'text'"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ok\":true}"}}],"usage":{"total_tokens":7}}`))
+	}))
+	defer server.Close()
+
+	content, usage, _, err := ChatCompletionJSON(context.Background(), server.Client(), server.URL, "", "m", "s", "u")
+	if err != nil {
+		t.Fatalf("retry path failed: %v", err)
+	}
+	if string(content) != `{"ok":true}` || usage.TotalTokens != 7 || calls != 2 {
+		t.Fatalf("content=%s usage=%+v calls=%d", content, usage, calls)
 	}
 }
