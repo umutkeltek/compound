@@ -202,7 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
-  compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--evidence-ref REF...]
+  compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
@@ -3425,6 +3425,7 @@ type reviewFindingRecord struct {
 	PolicyOutcome    string                        `json:"policy_outcome"`
 	StandingGrantID  string                        `json:"standing_grant_id,omitempty"`
 	SourceArtifacts  []reviewFindingSourceArtifact `json:"source_artifacts,omitempty"`
+	SourceTraces     []reviewFindingSourceTrace    `json:"source_traces,omitempty"`
 	EvidenceRefs     []string                      `json:"evidence_refs,omitempty"`
 	Warnings         []string                      `json:"warnings,omitempty"`
 }
@@ -3435,6 +3436,15 @@ type reviewFindingSourceArtifact struct {
 	Hash         string `json:"hash"`
 }
 
+type reviewFindingSourceTrace struct {
+	ID            string   `json:"id"`
+	SourceSystem  string   `json:"source_system,omitempty"`
+	SourceKind    string   `json:"source_kind,omitempty"`
+	MutationClass string   `json:"mutation_class,omitempty"`
+	Summary       string   `json:"summary,omitempty"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+}
+
 func cmdReviewsRecordFinding(args []string) {
 	workID := valueFlag(args, "--work-id")
 	targetPath := valueFlag(args, "--target")
@@ -3443,10 +3453,11 @@ func cmdReviewsRecordFinding(args []string) {
 	capability := reviewartifact.FirstNonEmpty(valueFlag(args, "--capability"), "review.finding")
 	evidenceRefs := valuesFlag(args, "--evidence-ref")
 	sourceArtifactPaths := valuesFlag(args, "--source-artifact")
-	usage := "usage: compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--evidence-ref REF...]"
+	sourceTraceIDs := valuesFlag(args, "--source-trace")
+	usage := "usage: compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--work-id", "--target", "--summary", "--root", "--capability", "--source-artifact", "--evidence-ref":
+		case "--work-id", "--target", "--summary", "--root", "--capability", "--source-artifact", "--source-trace", "--evidence-ref":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
@@ -3508,6 +3519,11 @@ func cmdReviewsRecordFinding(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
+	sourceTraces, traceEvidenceRefs, err := reviewFindingSourceTraces(homePath, sourceTraceIDs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -3525,6 +3541,7 @@ func cmdReviewsRecordFinding(args []string) {
 	now := time.Now()
 	createdAt := reviewartifact.Timestamp(now)
 	evidenceRefs = append(evidenceRefs, sourceEvidenceRefs...)
+	evidenceRefs = append(evidenceRefs, traceEvidenceRefs...)
 	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, "work://"+workID, target))
 	actionID := reviewartifact.ID("act_", workID, capability, target, summary, createdAt)
 	ai := envelope.ActionIntent{
@@ -3571,6 +3588,7 @@ func cmdReviewsRecordFinding(args []string) {
 		PolicyOutcome:    pd.Outcome,
 		StandingGrantID:  pd.StandingGrantID,
 		SourceArtifacts:  sourceArtifacts,
+		SourceTraces:     sourceTraces,
 		EvidenceRefs:     evidenceRefs,
 		Warnings: []string{
 			"writes only under state/runs/**",
@@ -3603,6 +3621,33 @@ func cmdReviewsRecordFinding(args []string) {
 		os.Exit(1)
 	}
 	printJSON(report)
+}
+
+func reviewFindingSourceTraces(homePath string, values []string) ([]reviewFindingSourceTrace, []string, error) {
+	envs, err := distiller.LoadTraceEnvelopes(homePath, values)
+	if err != nil {
+		return nil, nil, err
+	}
+	var traces []reviewFindingSourceTrace
+	var evidenceRefs []string
+	for _, env := range envs {
+		trace, ok := env.(*envelope.TraceEnvelope)
+		if !ok {
+			return nil, nil, fmt.Errorf("source trace is %T, want TraceEnvelope", env)
+		}
+		traceRef := "trace_envelope:" + trace.ID
+		refs := reviewartifact.Unique(append([]string{traceRef}, trace.EvidenceRefs...))
+		traces = append(traces, reviewFindingSourceTrace{
+			ID:            trace.ID,
+			SourceSystem:  trace.Source.System,
+			SourceKind:    trace.Source.SourceKind,
+			MutationClass: trace.MutationClass,
+			Summary:       trace.Summary,
+			EvidenceRefs:  refs,
+		})
+		evidenceRefs = append(evidenceRefs, refs...)
+	}
+	return traces, reviewartifact.Unique(evidenceRefs), nil
 }
 
 func reviewFindingSourceArtifacts(root string, values []string) ([]reviewFindingSourceArtifact, []string, error) {
@@ -3697,6 +3742,21 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 		fmt.Fprintln(&b)
 		for _, artifact := range report.SourceArtifacts {
 			fmt.Fprintf(&b, "- %s (%s)\n", artifact.Path, artifact.Hash)
+		}
+	}
+	if len(report.SourceTraces) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Source Traces")
+		fmt.Fprintln(&b)
+		for _, trace := range report.SourceTraces {
+			fmt.Fprintf(&b, "- %s", trace.ID)
+			if trace.SourceKind != "" {
+				fmt.Fprintf(&b, " [%s]", trace.SourceKind)
+			}
+			if trace.Summary != "" {
+				fmt.Fprintf(&b, ": %s", trace.Summary)
+			}
+			fmt.Fprintln(&b)
 		}
 	}
 	if len(report.EvidenceRefs) > 0 {

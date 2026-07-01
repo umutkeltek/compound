@@ -571,6 +571,34 @@ grants:
 	if err := os.WriteFile(sourcePath, []byte(`{"finding":"agent session produced review evidence"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	sourceTrace := envelope.TraceEnvelope{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTraceEnvelope,
+			ID:            "trace_review_finding_source",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound-test"},
+			IDs:           envelope.IDs{WorkID: w.ID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{"test://trace-source"},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Source:        envelope.TraceSource{System: "test-runner", SourceKind: "session.summary"},
+		MutationClass: "read",
+		Summary:       "test trace source for review finding",
+	}
+	traceData, err := json.MarshalIndent(sourceTrace, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(homePath, "events", sourceTrace.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tracePath, append(traceData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := captureStdout(t, func() {
 		cmdReviews([]string{
 			"record-finding",
@@ -579,6 +607,7 @@ grants:
 			"--root", runRoot,
 			"--summary", "review finding recorded through standing grant",
 			"--source-artifact", sourceArtifact,
+			"--source-trace", sourceTrace.ID,
 			"--evidence-ref", "test://review-input",
 		})
 	})
@@ -601,6 +630,12 @@ grants:
 	}
 	if !strings.HasPrefix(report.SourceArtifacts[0].Hash, "sha256:") || !stringSliceContains(report.EvidenceRefs, sourceArtifact) || !stringSliceContains(report.EvidenceRefs, report.SourceArtifacts[0].Hash) {
 		t.Fatalf("source artifact evidence not recorded: source=%+v refs=%v", report.SourceArtifacts[0], report.EvidenceRefs)
+	}
+	if len(report.SourceTraces) != 1 || report.SourceTraces[0].ID != sourceTrace.ID {
+		t.Fatalf("source trace not recorded: %+v", report.SourceTraces)
+	}
+	if !stringSliceContains(report.EvidenceRefs, "trace_envelope:"+sourceTrace.ID) || !stringSliceContains(report.EvidenceRefs, "test://trace-source") {
+		t.Fatalf("source trace evidence not recorded: traces=%+v refs=%v", report.SourceTraces, report.EvidenceRefs)
 	}
 	if _, err := os.Stat(filepath.Join(runRoot, target)); err != nil {
 		t.Fatalf("finding json not written: %v", err)

@@ -21,7 +21,10 @@ This file is the current package/command map. `compound architecture doctor --st
   Follow-up source-artifact proof added `--source-artifact state/runs/...`; live `rvf_ca240d15afbb`
   attached and hashed a real OS source-reconciliation summary artifact under `state/runs/**`,
   persisted `act_e287777b0023` / `pol_e5c63484094e`, and closed `work_f7b026291d7b` through
-  `rec_622763961cee` / `tr_622763961cee`. No claims were promoted and no live job-health review was recorded.
+  `rec_622763961cee` / `tr_622763961cee`. Trace-source proof added `--source-trace <trace_id>`;
+  live `rvf_cf3d919733fe` attached an existing TraceEnvelope, persisted `act_865c32f62362` /
+  `pol_25ebf9717ebf`, and closed `work_e873347fd7ef` through `rec_9756fa9ed3ed` /
+  `tr_9756fa9ed3ed`. No claims were promoted and no live job-health review was recorded.
 
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority
