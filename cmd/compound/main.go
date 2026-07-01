@@ -6188,6 +6188,12 @@ func cmdDecisions(args []string) {
 			fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
 			os.Exit(1)
 		}
+		if !dryRun && decisions.LifecycleRepairApplyTerminal(report) {
+			if _, err := decisions.RecordAppliedLifecycleRepairPlan(homePath, plan); err != nil {
+				fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
+				os.Exit(1)
+			}
+		}
 		fmt.Printf("# decisions repair-apply\n\n")
 		fmt.Printf("- plan: %s\n", report.PlanID)
 		fmt.Printf("- dry_run: %v\n", report.DryRun)

@@ -1152,6 +1152,71 @@ status: accepted
 	}
 }
 
+func TestRecordAppliedLifecycleRepairPlanTerminalizesReviewQueue(t *testing.T) {
+	home := t.TempDir()
+	plan := LifecycleRepairPlan{
+		SchemaVersion:      RepairPlanSchemaVersion,
+		ID:                 "dlrp_done",
+		Status:             "reviewed",
+		SourceRoot:         filepath.Join(home, "decisions"),
+		RepairCount:        1,
+		MissingFieldCounts: map[string]int{"falsifier": 1},
+		Repairs: []LifecycleRepair{{
+			DecisionID: "DEC-0302",
+			SourcePath: filepath.Join(home, "decisions", "DEC-0302.md"),
+			Missing:    []string{"falsifier"},
+			Fields: []LifecycleRepairField{{
+				Name:           "falsifier",
+				SuggestedValue: "done",
+			}},
+		}},
+	}
+	paths, err := RecordAppliedLifecycleRepairPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := LoadLifecycleRepairPlan(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := reviewartifact.QueueReport{
+		Items: []reviewartifact.QueueItem{{
+			Area:        lifecycleRepairArea,
+			ID:          stored.ID,
+			Status:      stored.Status,
+			JSONPath:    paths.PlanPath,
+			RepairCount: stored.RepairCount,
+		}},
+	}
+	AnnotateLifecycleRepairQueue(&report)
+	item := report.Items[0]
+	if stored.Status != "ok" || stored.RepairCount != 0 || len(stored.Repairs) != 0 {
+		t.Fatalf("stored plan not terminal: %+v", stored)
+	}
+	if report.Counts.ReadyToApply != 0 || item.Readiness != "no_action" || len(item.Actions) != 0 {
+		t.Fatalf("terminal plan still actionable: counts=%+v item=%+v", report.Counts, item)
+	}
+	if !LifecycleRepairApplyTerminal(LifecycleRepairApplyReport{Status: "ok"}) {
+		t.Fatal("successful write report should terminalize plan")
+	}
+	if !LifecycleRepairApplyTerminal(LifecycleRepairApplyReport{
+		Status: "no_changes",
+		Skipped: []RepairApplySkip{{
+			Reason: "frontmatter field already present",
+		}},
+	}) {
+		t.Fatal("already-present fields should terminalize reviewed plan")
+	}
+	if LifecycleRepairApplyTerminal(LifecycleRepairApplyReport{
+		Status: "no_changes",
+		Skipped: []RepairApplySkip{{
+			Reason: "source path outside repair plan source_root",
+		}},
+	}) {
+		t.Fatal("unsafe skips must stay actionable")
+	}
+}
+
 func TestApplyLifecycleRepairPlanBlocksUnreviewedWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "decisions", "DEC-0301.md")

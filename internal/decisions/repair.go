@@ -252,12 +252,38 @@ func LifecycleRepairPlanReviewed(status string) bool {
 	}
 }
 
+func LifecycleRepairApplyTerminal(report LifecycleRepairApplyReport) bool {
+	if report.Status == "ok" {
+		return true
+	}
+	if report.Status != "no_changes" || len(report.Skipped) == 0 {
+		return false
+	}
+	for _, skip := range report.Skipped {
+		if skip.Reason != "frontmatter field already present" {
+			return false
+		}
+	}
+	return true
+}
+
 func RecordLifecycleRepairApplyReport(homePath string, report LifecycleRepairApplyReport) (string, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return "", fmt.Errorf("COMPOUND_HOME required")
 	}
 	name := report.PlanID + "." + report.ID + ".apply.json"
 	return reviewartifact.WriteJSON(homePath, lifecycleRepairArea, name, report, "  ")
+}
+
+// RecordAppliedLifecycleRepairPlan terminalizes a reviewed repair plan after a
+// successful writeback. The apply report keeps the before/after detail; the
+// core queue artifact should stop advertising another write action.
+func RecordAppliedLifecycleRepairPlan(homePath string, plan LifecycleRepairPlan) (RepairArtifactPaths, error) {
+	plan.Status = "ok"
+	plan.RepairCount = 0
+	plan.MissingFieldCounts = map[string]int{}
+	plan.Repairs = nil
+	return RecordLifecycleRepairPlan(homePath, plan)
 }
 
 func RenderLifecycleRepairReview(plan LifecycleRepairPlan) string {
