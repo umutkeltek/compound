@@ -8,6 +8,15 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S`
+  now gives StandingGrant a real action-side consumer. The command builds a `review.finding` or
+  `review.summary` `ActionIntent`, evaluates policy, refuses non-allowing decisions, writes only a new
+  `state/runs/**` JSON/Markdown finding, and records the action on the referenced WorkEnvelope. Temp runtime
+  proof imported `fixtures/policy/standing-grants.yaml`, created `work_91998b3acbba`, wrote
+  `state/runs/standing-grant-review/finding.json`, persisted `act_154f3ed45654` / `pol_cd617b413fb3`,
+  and the policy consumed `standing_grant_id=grant_review_finding:review-finding`. No claims were promoted
+  and no live job-health review was recorded.
+
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority
   `sgsrc_ab7074a89705`, and the status line names `compound://registries/standing-grants` while keeping

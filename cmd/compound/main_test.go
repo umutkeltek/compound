@@ -527,6 +527,90 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	}
 }
 
+func TestReviewsRecordFindingConsumesStandingGrantAndRecordsWorkAction(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
+	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
+grants:
+  - grant_id: grant_review_finding
+    capabilities:
+      - review.finding
+      - review.summary
+    target_scope: state/runs/*
+    reversibility_ceiling: reversible
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSource, cliTestNow); err != nil {
+		t.Fatalf("import standing grants: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	w, err := store.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "review finding action is governed by StandingGrant",
+		DesiredOutcome:   "review finding recorded under state/runs and linked to WorkEnvelope",
+		EvidenceRefs:     []string{"test://standing-grant-review-finding"},
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	runRoot := t.TempDir()
+	target := "state/runs/standing-grant-review/finding.json"
+	out := captureStdout(t, func() {
+		cmdReviews([]string{
+			"record-finding",
+			"--work-id", w.ID,
+			"--target", target,
+			"--root", runRoot,
+			"--summary", "review finding recorded through standing grant",
+			"--evidence-ref", "test://review-input",
+		})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("record finding output missing JSON:\n%s", out)
+	}
+	var report reviewFindingRecord
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse record finding report: %v\n%s", err, out)
+	}
+	if report.Status != "recorded" || report.WorkID != w.ID || report.TargetPath != target {
+		t.Fatalf("record finding report = %+v", report)
+	}
+	if report.PolicyOutcome != "allow" || report.StandingGrantID != "grant_review_finding:review-finding" {
+		t.Fatalf("policy did not consume standing grant: %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(runRoot, target)); err != nil {
+		t.Fatalf("finding json not written: %v", err)
+	}
+	if _, err := os.Stat(strings.TrimSuffix(filepath.Join(runRoot, target), ".json") + ".md"); err != nil {
+		t.Fatalf("finding markdown not written: %v", err)
+	}
+	got, _, err := store.Show(w.ID)
+	if err != nil {
+		t.Fatalf("show work: %v", err)
+	}
+	if len(got.RunIDs) != 1 || got.RunIDs[0] != report.ActionIntentID || got.PolicyDecisionID != report.PolicyDecisionID {
+		t.Fatalf("work action chain not recorded: runs=%v policy=%q report=%+v", got.RunIDs, got.PolicyDecisionID, report)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", report.ActionIntentID+".json")); err != nil {
+		t.Fatalf("action intent envelope not persisted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", report.PolicyDecisionID+".json")); err != nil {
+		t.Fatalf("policy decision envelope not persisted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("review finding action must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

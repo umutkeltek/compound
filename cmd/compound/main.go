@@ -202,6 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
+  compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
@@ -3333,6 +3334,10 @@ func cmdWorkbench(args []string) {
 }
 
 func cmdReviews(args []string) {
+	if len(args) > 0 && args[0] == "record-finding" {
+		cmdReviewsRecordFinding(args[1:])
+		return
+	}
 	jsonOut := hasFlag(args, "--json")
 	area := valueFlag(args, "--area")
 	for i := 0; i < len(args); i++ {
@@ -3402,6 +3407,234 @@ func cmdReviews(args []string) {
 			fmt.Println()
 		}
 	}
+}
+
+type reviewFindingRecord struct {
+	SchemaVersion    string   `json:"schema_version"`
+	ID               string   `json:"id"`
+	CreatedAt        string   `json:"created_at"`
+	Status           string   `json:"status"`
+	WorkID           string   `json:"work_id"`
+	Capability       string   `json:"capability"`
+	Summary          string   `json:"summary"`
+	TargetPath       string   `json:"target_path"`
+	ArtifactPath     string   `json:"artifact_path"`
+	MarkdownPath     string   `json:"markdown_path,omitempty"`
+	ActionIntentID   string   `json:"action_intent_id"`
+	PolicyDecisionID string   `json:"policy_decision_id"`
+	PolicyOutcome    string   `json:"policy_outcome"`
+	StandingGrantID  string   `json:"standing_grant_id,omitempty"`
+	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
+}
+
+func cmdReviewsRecordFinding(args []string) {
+	workID := valueFlag(args, "--work-id")
+	targetPath := valueFlag(args, "--target")
+	summary := valueFlag(args, "--summary")
+	root := valueFlag(args, "--root")
+	capability := reviewartifact.FirstNonEmpty(valueFlag(args, "--capability"), "review.finding")
+	evidenceRefs := valuesFlag(args, "--evidence-ref")
+	usage := "usage: compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--evidence-ref REF...]"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--work-id", "--target", "--summary", "--root", "--capability", "--evidence-ref":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			i++
+		default:
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+	}
+	if workID == "" || targetPath == "" || summary == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if capability != "review.finding" && capability != "review.summary" {
+		fmt.Fprintln(os.Stderr, "error: --capability must be review.finding or review.summary")
+		os.Exit(2)
+	}
+	target, err := normalizeRunReviewTarget(targetPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+	if root == "" {
+		root, err = os.Getwd()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	artifactPath := filepath.Join(root, filepath.FromSlash(target))
+	markdownPath := strings.TrimSuffix(artifactPath, filepath.Ext(artifactPath)) + ".md"
+	if _, err := os.Stat(artifactPath); err == nil {
+		fmt.Fprintf(os.Stderr, "error: review finding target already exists: %s\n", artifactPath)
+		os.Exit(1)
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if _, err := os.Stat(markdownPath); err == nil {
+		fmt.Fprintf(os.Stderr, "error: review finding markdown target already exists: %s\n", markdownPath)
+		os.Exit(1)
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	w, err := store.Get(workID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if w.State == "completed" || w.State == "failed" || w.State == "cancelled" {
+		fmt.Fprintf(os.Stderr, "error: work %s is %s (terminal); cannot record review finding\n", workID, w.State)
+		os.Exit(1)
+	}
+	now := time.Now()
+	createdAt := reviewartifact.Timestamp(now)
+	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, "work://"+workID, target))
+	actionID := reviewartifact.ID("act_", workID, capability, target, summary, createdAt)
+	ai := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            actionID,
+			CreatedAt:     createdAt,
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound reviews"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Owner: "compound", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  evidenceRefs,
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         "compound-cli",
+		Capability:    capability,
+		Action:        "record_review_finding",
+		Target:        envelope.ActionTarget{Kind: "path", Path: target},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "repo",
+		Preview:       summary,
+		RollbackPlan:  "remove the newly written review finding artifact and markdown sibling",
+	}
+	pd := policy.Evaluate(ai, policyConfig(), now)
+	if !policy.Allowed(pd) {
+		printJSON(pd)
+		os.Exit(gateExit(pd))
+	}
+	report := reviewFindingRecord{
+		SchemaVersion:    "compound.review_finding_record.v0.1",
+		ID:               reviewartifact.ID("rvf_", workID, capability, target, summary),
+		CreatedAt:        createdAt,
+		Status:           "recorded",
+		WorkID:           workID,
+		Capability:       capability,
+		Summary:          strings.TrimSpace(summary),
+		TargetPath:       target,
+		ArtifactPath:     artifactPath,
+		MarkdownPath:     markdownPath,
+		ActionIntentID:   ai.ID,
+		PolicyDecisionID: pd.ID,
+		PolicyOutcome:    pd.Outcome,
+		StandingGrantID:  pd.StandingGrantID,
+		EvidenceRefs:     evidenceRefs,
+		Warnings: []string{
+			"writes only under state/runs/**",
+			"requires allowing PolicyDecision before artifact write",
+			"records ActionIntent on WorkEnvelope after artifact write",
+		},
+	}
+	data, err := json.MarshalIndent(report, "", " ")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(artifactPath, append(data, '\n'), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(markdownPath, []byte(renderReviewFindingMarkdown(report)), 0o644); err != nil {
+		_ = os.Remove(artifactPath)
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if _, err := store.RecordAction(workID, ai, pd, now); err != nil {
+		_ = os.Remove(artifactPath)
+		_ = os.Remove(markdownPath)
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	printJSON(report)
+}
+
+func normalizeRunReviewTarget(target string) (string, error) {
+	target = filepath.ToSlash(strings.TrimSpace(target))
+	if target == "" {
+		return "", fmt.Errorf("target required")
+	}
+	if filepath.IsAbs(target) || strings.HasPrefix(target, "~") {
+		return "", fmt.Errorf("review finding target must be relative state/runs path, got %q", target)
+	}
+	clean := filepath.ToSlash(filepath.Clean(target))
+	if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." || strings.Contains(clean, "/../") {
+		return "", fmt.Errorf("review finding target must not escape root, got %q", target)
+	}
+	if !strings.HasPrefix(clean, "state/runs/") {
+		return "", fmt.Errorf("review finding target must be under state/runs/**, got %q", clean)
+	}
+	if !strings.HasSuffix(clean, ".json") {
+		return "", fmt.Errorf("review finding target must be a .json artifact, got %q", clean)
+	}
+	return clean, nil
+}
+
+func renderReviewFindingMarkdown(report reviewFindingRecord) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Review Finding: %s\n\n", report.ID)
+	fmt.Fprintf(&b, "- status: %s\n", report.Status)
+	fmt.Fprintf(&b, "- work_id: %s\n", report.WorkID)
+	fmt.Fprintf(&b, "- capability: %s\n", report.Capability)
+	fmt.Fprintf(&b, "- target: %s\n", report.TargetPath)
+	fmt.Fprintf(&b, "- policy_decision: %s (%s)\n", report.PolicyDecisionID, report.PolicyOutcome)
+	if report.StandingGrantID != "" {
+		fmt.Fprintf(&b, "- standing_grant: %s\n", report.StandingGrantID)
+	}
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "## Summary")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, report.Summary)
+	if len(report.EvidenceRefs) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Evidence")
+		fmt.Fprintln(&b)
+		for _, ref := range report.EvidenceRefs {
+			fmt.Fprintf(&b, "- %s\n", ref)
+		}
+	}
+	return b.String()
 }
 
 // cmdWork is the lifecycle store: one work_id threads intent -> context -> action ->
