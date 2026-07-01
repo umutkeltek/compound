@@ -9,6 +9,7 @@ This file is the current package/command map. `compound architecture doctor --st
 ## Recent Runtime Proof
 
 - `compound policy placement-authority --json` now gives operator surfaces an explicit machine-readable PlacementGuard authority handoff over `compound://registries/placement-rules`. Umut OS status calls the explicit JSON form, records `placement_rules` in `dashboard/os-status-latest.json`, and prints the owner/open-write counts while keeping the generated placement view fallback/evidence-only.
+- OS `/operate` served UI now renders the same PlacementGuard authority strip (`authority_ref`, `owner_count`, `open_write_count`, `source_authority_id`, fallback/evidence-only placement view role), so the dispatch gate prerequisite is visible beside operator autonomy rather than buried only in pulse/status JSON.
 
 - `compound policy operator-authority --json` now gives operator surfaces an explicit machine-readable authority handoff over `compound://registries/operator-state`, while preserving the existing default JSON output. Umut OS status calls the explicit JSON form, keeping `registry/operator-state.json` fallback/evidence-only after import rather than a scraped or inferred authority surface.
 
