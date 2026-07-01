@@ -2108,7 +2108,14 @@ func cmdMemory(args []string) {
 			if c.Supersedes != "" {
 				arrow = "  ->"
 			}
-			fmt.Printf("%s seq %-3d %s.%s = %s\n", arrow, c.Seq, c.Entity, c.Predicate, c.Object)
+			line := fmt.Sprintf("%s seq %-3d %s %s.%s = %s", arrow, c.Seq, c.ID, c.Entity, c.Predicate, c.Object)
+			if c.Supersedes != "" {
+				line += " supersedes=" + c.Supersedes
+			}
+			if len(c.EvidenceRefs) > 0 {
+				line += " evidence=" + strings.Join(c.EvidenceRefs, ",")
+			}
+			fmt.Println(line)
 		}
 	case "positions":
 		// the spine-native Position: current durable stance per (entity, topic) WITH the

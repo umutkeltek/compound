@@ -5570,6 +5570,72 @@ func TestMemoryImportPageCreatesEvidenceAndCandidatesWithoutClaims(t *testing.T)
 	}
 }
 
+func TestMemoryTimelinePrintsEvidenceAndSupersessionRefs(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.Capture([]mem.Candidate{{
+		Entity:          "MemoryEngine",
+		Predicate:       "authority_status",
+		Object:          "rented index",
+		ObservationDate: cliTestNow.Format(time.RFC3339),
+		Confidence:      0.9,
+		Derivation:      "deterministic",
+		ClaimType:       "architecture",
+		PromotionBasis:  candidates.BasisRuntimeProof,
+		SourceTraceRef:  "compound://runtime-proof/first",
+		SnippetHash:     "sha256:first",
+		Visibility:      "operational",
+	}}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResult, err := store.Adjudicate(first[0].ID, "promote", "work_timeline_proof", cliTestNow)
+	if err != nil {
+		t.Fatalf("promote first: %v", err)
+	}
+	second, err := store.Capture([]mem.Candidate{{
+		Entity:          "MemoryEngine",
+		Predicate:       "authority_status",
+		Object:          "rented index with reference coverage",
+		ObservationDate: cliTestNow.Format(time.RFC3339),
+		Confidence:      0.96,
+		Derivation:      "deterministic",
+		ClaimType:       "architecture",
+		PromotionBasis:  candidates.BasisRuntimeProof,
+		SourceTraceRef:  "compound://runtime-proof/second",
+		SnippetHash:     "sha256:second",
+		Visibility:      "operational",
+	}}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResult, err := store.Adjudicate(second[0].ID, "promote", "work_timeline_proof", cliTestNow)
+	if err != nil {
+		t.Fatalf("promote second: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"timeline", "MemoryEngine"})
+	})
+	for _, want := range []string{
+		firstResult.Claim.ID,
+		secondResult.Claim.ID,
+		"evidence=" + first[0].ID + ",compound://runtime-proof/first",
+		"evidence=" + second[0].ID + ",compound://runtime-proof/second",
+		"supersedes=" + firstResult.Claim.ID,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("timeline output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestMemoryCandidateRelationsRemainStructuralEdges(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
