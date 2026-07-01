@@ -106,7 +106,7 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 	return report, nil
 }
 
-func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string) (content []byte, totalTokens int, latencyMS int64, err error) {
+func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string) (content []byte, usage OpenAIUsage, latencyMS int64, err error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -129,11 +129,11 @@ func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKe
 	}
 	rawBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, OpenAIUsage{}, 0, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(rawBody))
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, OpenAIUsage{}, 0, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(apiKey) != "" {
@@ -143,24 +143,24 @@ func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKe
 	resp, err := client.Do(httpReq)
 	latencyMS = time.Since(started).Milliseconds()
 	if err != nil {
-		return nil, 0, latencyMS, err
+		return nil, OpenAIUsage{}, latencyMS, err
 	}
 	defer resp.Body.Close()
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, 0, latencyMS, err
+		return nil, OpenAIUsage{}, latencyMS, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, 0, latencyMS, fmt.Errorf("openai-compatible status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawResp)))
+		return nil, OpenAIUsage{}, latencyMS, fmt.Errorf("openai-compatible status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawResp)))
 	}
 	var chat openAIChatResponse
 	if err := json.Unmarshal(rawResp, &chat); err != nil {
-		return nil, 0, latencyMS, fmt.Errorf("parse openai-compatible response: %w", err)
+		return nil, OpenAIUsage{}, latencyMS, fmt.Errorf("parse openai-compatible response: %w", err)
 	}
 	if len(chat.Choices) == 0 || strings.TrimSpace(chat.Choices[0].Message.Content) == "" {
-		return nil, chat.Usage.TotalTokens, latencyMS, fmt.Errorf("openai-compatible response missing choice content")
+		return nil, chat.Usage, latencyMS, fmt.Errorf("openai-compatible response missing choice content")
 	}
-	return []byte(chat.Choices[0].Message.Content), chat.Usage.TotalTokens, latencyMS, nil
+	return []byte(chat.Choices[0].Message.Content), chat.Usage, latencyMS, nil
 }
 
 func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, error) {
@@ -168,12 +168,11 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 	if err != nil {
 		return LLMExtractionResponse{}, OpenAIUsage{}, err
 	}
-	content, totalTokens, _, err := ChatCompletionJSON(ctx, client, baseURL, apiKey, model, strings.Join([]string{
+	content, usage, _, err := ChatCompletionJSON(ctx, client, baseURL, apiKey, model, strings.Join([]string{
 		"Return only JSON matching compound.distiller.llm_extraction.v0.1.",
 		"Do not include promotion_basis or any authority-bearing field.",
 		"You extract candidates only; Compound owns adjudication, promotion, writeback.",
 	}, "\n"), string(packet))
-	usage := OpenAIUsage{TotalTokens: totalTokens}
 	if err != nil {
 		return LLMExtractionResponse{}, usage, err
 	}

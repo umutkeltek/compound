@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -233,5 +234,42 @@ func incrementingPanelNow() func() time.Time {
 	return func() time.Time {
 		tick++
 		return panelTestNow.Add(time.Duration(tick) * time.Second)
+	}
+}
+
+func TestApplyFailSoftTerminalizesEnvelopeOnTargetFailure(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	writePanelFixtureTarget(t, home, "mcand_example_api_dissent")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, Budget{})
+	run, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	// Break the second target after verdicts: apply must fail soft, not strand the run.
+	if err := os.Remove(filepath.Join(home, "inbox", "memory-candidates", "mcand_example_api_dissent.json")); err != nil {
+		t.Fatalf("remove candidate: %v", err)
+	}
+	got, err := Apply(home, run, fixedPanelNow)
+	if err == nil || !strings.Contains(err.Error(), "target failure") {
+		t.Fatalf("want completed-with-failures error, got %v", err)
+	}
+	if got.Status != "applied" {
+		t.Fatalf("run must not strand at running: status=%q", got.Status)
+	}
+	if got.ReceiptID == "" || got.TransitionID == "" {
+		t.Fatalf("work envelope must terminalize: receipt=%q transition=%q", got.ReceiptID, got.TransitionID)
+	}
+	var appliedOK, failedNoted bool
+	for _, f := range got.Findings {
+		if f.TargetRef == "mcand_example_api_clean" && f.Application.Applied {
+			appliedOK = true
+		}
+		if f.TargetRef == "mcand_example_api_dissent" && !f.Application.Applied && f.Application.Note != "" {
+			failedNoted = true
+		}
+	}
+	if !appliedOK || !failedNoted {
+		t.Fatalf("fail-soft accounting wrong: %+v", got.Findings)
 	}
 }

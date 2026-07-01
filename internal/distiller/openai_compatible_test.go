@@ -214,11 +214,11 @@ func TestChatCompletionJSONReturnsRawContentUsageAndLatency(t *testing.T) {
 	}))
 	defer server.Close()
 
-	content, totalTokens, latencyMS, err := ChatCompletionJSON(context.Background(), server.Client(), server.URL, "test-key", "served-model", "system-json", "user-json")
+	content, usage, latencyMS, err := ChatCompletionJSON(context.Background(), server.Client(), server.URL, "test-key", "served-model", "system-json", "user-json")
 	if err != nil {
 		t.Fatalf("chat completion: %v", err)
 	}
-	if string(content) != `{"ok":true}` || totalTokens != 42 || latencyMS < 0 {
-		t.Fatalf("content=%s total=%d latency=%d", content, totalTokens, latencyMS)
+	if string(content) != `{"ok":true}` || usage.TotalTokens != 42 || latencyMS < 0 {
+		t.Fatalf("content=%s usage=%+v latency=%d", content, usage, latencyMS)
 	}
 }

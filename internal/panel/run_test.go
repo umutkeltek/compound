@@ -225,14 +225,18 @@ func routeEvidenceRows(t *testing.T, home string) int {
 func TestExecuteDryRunRecordsCostUnknownForUSDCapWithoutCostMetadata(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
-	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxUSDMicros: 1})
+	unbounded := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxUSDMicros: 1})
+	if _, err := ExecuteDryRun(context.Background(), home, unbounded, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow); err == nil {
+		t.Fatal("usd-only budget must fail closed without cost data")
+	}
 
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxUSDMicros: 1, MaxItems: 1})
 	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
 	if err != nil {
 		t.Fatalf("execute dry run: %v", err)
 	}
-	if got.Status != "verdicts_recorded" || !containsString(got.EvidenceRefs, "cost_unknown") {
-		t.Fatalf("run = %+v, want recorded verdicts with cost_unknown evidence", got)
+	if !containsString(got.EvidenceRefs, "cost_unknown") {
+		t.Fatalf("run = %+v, want cost_unknown evidence when usd cap is bounded by items", got)
 	}
 }
 

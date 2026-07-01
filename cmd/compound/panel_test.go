@@ -174,7 +174,7 @@ func TestPanelRunCLILiveGatewayEndToEnd(t *testing.T) {
 	defer server.Close()
 
 	planOut := captureStdout(t, func() {
-		cmdPanel([]string{"plan", "--target-kind", "memory_candidate", "--target", "mcand_example_api_clean", "--state", "parked", "--not-privacy-sensitive", "synthetic fixtures", "--max-usd-micros", "1", "--json"})
+		cmdPanel([]string{"plan", "--target-kind", "memory_candidate", "--target", "mcand_example_api_clean", "--state", "parked", "--not-privacy-sensitive", "synthetic fixtures", "--max-usd-micros", "1", "--max-items", "1", "--json"})
 	})
 	var planned panel.Run
 	if err := json.Unmarshal([]byte(planOut), &planned); err != nil {

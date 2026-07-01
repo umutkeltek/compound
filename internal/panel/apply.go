@@ -98,11 +98,22 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	}
 
 	closeState := panelApplyCloseState{proofRefs: proofRefs}
+	applyFailures := 0
 	for i := range run.Findings {
 		finding := &run.Findings[i]
 		result, err := applyTargetFinding(homePath, run, finding, memStore, writebackStore, workStore, policyConfig, now)
 		if err != nil {
-			return run, err
+			// Fail-soft: one broken target must not strand the run at "running"
+			// or leave the WorkEnvelope dangling; the envelope terminalizes below.
+			applyFailures++
+			finding.Application.Applied = false
+			if strings.TrimSpace(finding.Application.Note) == "" {
+				finding.Application.Note = "apply failed: " + err.Error()
+			}
+			if saveErr := store.SaveRun(run); saveErr != nil {
+				return run, saveErr
+			}
+			continue
 		}
 		closeState.add(result)
 	}
@@ -143,6 +154,9 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	run.TransitionID = closeResult.Transition.ID
 	if err := store.SaveRun(run); err != nil {
 		return run, err
+	}
+	if applyFailures > 0 {
+		return run, fmt.Errorf("panel apply completed with %d target failure(s); run %s remains re-applyable for the failed targets", applyFailures, run.ID)
 	}
 	return run, nil
 }

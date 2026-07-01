@@ -67,6 +67,11 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		run.CountsAfter = copyCounts(run.CountsBefore)
 	}
 	if run.Budget.MaxUSDMicros > 0 {
+		// No lane cost data exists yet, so a USD cap alone cannot be enforced.
+		// Fail closed rather than running an unbounded live batch.
+		if run.Budget.MaxItems == 0 && run.Budget.MaxTotalTokens == 0 {
+			return run, fmt.Errorf("usd budget cap is unenforceable without lane cost data; bound the run with --max-items or --max-tokens")
+		}
 		run.EvidenceRefs = appendUniqueString(run.EvidenceRefs, "cost_unknown")
 	}
 	run.Status = "running"
