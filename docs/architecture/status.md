@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `affaan-m/ECC` now has focused harness-architecture capability evaluation
+  intake instead of remaining only a catalog row. The eval record preserved the
+  external-repo source receipt, compared ECC against Compound's owned runtime
+  architecture seam, and imported as evidence-only:
+  `capability_evaluations_69a41db4780a` -> eval node
+  `eval:capability-evaluation-external-affaan-m-ecc-harness-architecture-reference-20260701`.
+  Unknown capability `ecc-harness-architecture-reference` skipped graph
+  activation and produced SourceObservation `srcobs_bcf265ecb0fb`, candidate
+  `src_cand_210692220792`, no-promote `nop_d0d50b26e7deb62b`. Review artifact
+  `cep_d73400669632` is terminal `recorded` with decision `keep_needs_review`;
+  authority now reports `491` nodes / `94` edges, so only an evidence eval node
+  was added. The recorded boundary is architecture comparison only: no ECC
+  wholesale import, no skill install/serve/execute, no plugin/MCP auth, no
+  marketplace command, no route-policy change, no memory promotion.
+
 - `mvanhorn/last30days-skill` now has focused freshness-research capability
   evaluation intake instead of remaining only a catalog row. The eval record
   preserved the external-repo source receipt, compared the candidate against the
