@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `DietrichGebert/ponytail` now has subtraction-pragmatism evidence merged
+into existing `skill:karpathy-guidelines` rather than installing another
+always-on doctrine plugin. The evaluation source compared public `README.md`,
+`skills/ponytail/SKILL.md`, `skills/ponytail-review/SKILL.md`, and
+`skills/ponytail-audit/SKILL.md` against the served owner, imported
+evidence-only: `capability_evaluations_642fe20d0940` -> eval node
+`eval:capability-evaluation-external-dietrichgebert-ponytail-subtraction-pragmatism-20260701`
+with `evaluated_by:skill:karpathy-guidelines->eval:...` and
+`validated_by:skill:karpathy-guidelines->eval:...`. Unknown skipped count `0`.
+Authority now reports `498` nodes / `104` edges `evaluated_by=6`,
+`validated_by=6`. Surfacing still shows a future feedback gap for some
+over-engineering prompts, so this commit records evidence only: no plugin
+install, no lifecycle hook trust, no MCP adapter, no route-policy change,
+no memory promotion.
+
 - `nextlevelbuilder/ui-ux-pro-max-skill` now has upstream provenance/delta
 evidence merged into existing `skill:ui-ux-pro-max` rather than installing a
 duplicate design skill or CLI. The evaluation source compared the public
