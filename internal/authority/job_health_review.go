@@ -221,6 +221,7 @@ func annotateJobHealthItem(item *reviewartifact.QueueItem) {
 		return
 	}
 	if reviewedPath := jobHealthReviewedPath(*item); reviewedPath != "" {
+		item.Status = "recorded"
 		item.Readiness = "review_recorded"
 		item.NextAction = "job-health review recorded; re-import job roster to prove closure or continuing debt"
 		if report, err := LoadJobHealthReviewReport(reviewedPath); err == nil {

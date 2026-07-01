@@ -146,8 +146,12 @@ func TestJobHealthReviewQueueAndRecordSidecar(t *testing.T) {
 		t.Fatal(err)
 	}
 	AnnotateJobHealthQueue(&queue)
-	if queue.Items[0].Readiness != "review_recorded" || !strings.Contains(queue.Items[0].NextAction, "keep parked") {
+	reviewartifact.Recount(&queue)
+	if queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "review_recorded" || !strings.Contains(queue.Items[0].NextAction, "keep parked") {
 		t.Fatalf("recorded review should annotate queue: %+v", queue.Items[0])
+	}
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 {
+		t.Fatalf("recorded review should close review debt counts: %+v", queue.Counts)
 	}
 }
 
