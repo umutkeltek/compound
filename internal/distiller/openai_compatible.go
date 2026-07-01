@@ -106,10 +106,9 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 	return report, nil
 }
 
-func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, error) {
-	packet, err := json.MarshalIndent(req, "", "  ")
-	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, err
+func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string) (content []byte, usage OpenAIUsage, latencyMS int64, err error) {
+	if client == nil {
+		client = http.DefaultClient
 	}
 	body := openAIChatRequest{
 		Model:       model,
@@ -119,62 +118,75 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 		},
 		Messages: []openAIChatMessage{
 			{
-				Role: "system",
-				Content: strings.Join([]string{
-					"Return only JSON matching compound.distiller.llm_extraction.v0.1.",
-					"Do not include promotion_basis or any authority-bearing field.",
-					"You extract candidates only; Compound owns adjudication, promotion, and writeback.",
-				}, "\n"),
+				Role:    "system",
+				Content: system,
 			},
 			{
 				Role:    "user",
-				Content: string(packet),
+				Content: user,
 			},
 		},
 	}
 	rawBody, err := json.Marshal(body)
 	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, err
+		return nil, OpenAIUsage{}, 0, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(rawBody))
 	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, err
+		return nil, OpenAIUsage{}, 0, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(apiKey) != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
+	started := time.Now()
 	resp, err := client.Do(httpReq)
+	latencyMS = time.Since(started).Milliseconds()
 	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, err
+		return nil, OpenAIUsage{}, latencyMS, err
 	}
 	defer resp.Body.Close()
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, err
+		return nil, OpenAIUsage{}, latencyMS, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return LLMExtractionResponse{}, OpenAIUsage{}, fmt.Errorf("openai-compatible status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawResp)))
+		return nil, OpenAIUsage{}, latencyMS, fmt.Errorf("openai-compatible status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawResp)))
 	}
 	var chat openAIChatResponse
 	if err := json.Unmarshal(rawResp, &chat); err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, fmt.Errorf("parse openai-compatible response: %w", err)
+		return nil, OpenAIUsage{}, latencyMS, fmt.Errorf("parse openai-compatible response: %w", err)
 	}
 	if len(chat.Choices) == 0 || strings.TrimSpace(chat.Choices[0].Message.Content) == "" {
-		return LLMExtractionResponse{}, chat.Usage, fmt.Errorf("openai-compatible response missing choice content")
+		return nil, chat.Usage, latencyMS, fmt.Errorf("openai-compatible response missing choice content")
 	}
-	content := []byte(chat.Choices[0].Message.Content)
+	return []byte(chat.Choices[0].Message.Content), chat.Usage, latencyMS, nil
+}
+
+func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, error) {
+	packet, err := json.MarshalIndent(req, "", " ")
+	if err != nil {
+		return LLMExtractionResponse{}, OpenAIUsage{}, err
+	}
+	content, usage, _, err := ChatCompletionJSON(ctx, client, baseURL, apiKey, model, strings.Join([]string{
+		"Return only JSON matching compound.distiller.llm_extraction.v0.1.",
+		"Do not include promotion_basis or any authority-bearing field.",
+		"You extract candidates only; Compound owns adjudication, promotion, writeback.",
+	}, "\n"), string(packet))
+	if err != nil {
+		return LLMExtractionResponse{}, usage, err
+	}
 	var extraction LLMExtractionResponse
 	if err := json.Unmarshal(content, &extraction); err != nil {
-		return LLMExtractionResponse{}, chat.Usage, fmt.Errorf("parse llm extraction content: %w", err)
+		return LLMExtractionResponse{}, usage, fmt.Errorf("parse llm extraction content: %w", err)
 	}
 	if extraction.SchemaVersion != LLMExtractionSchemaVersion {
-		return LLMExtractionResponse{}, chat.Usage, fmt.Errorf("llm extraction schema_version=%q, want %q", extraction.SchemaVersion, LLMExtractionSchemaVersion)
+		return LLMExtractionResponse{}, usage, fmt.Errorf("llm extraction schema_version=%q, want %q", extraction.SchemaVersion, LLMExtractionSchemaVersion)
 	}
 	if _, err := NewGroundedLLMExtractor(req).Extract(content, DefaultPolicy()); err != nil {
-		return LLMExtractionResponse{}, chat.Usage, err
+		return LLMExtractionResponse{}, usage, err
 	}
-	return extraction, chat.Usage, nil
+	return extraction, usage, nil
 }
 
 func chatCompletionsURL(baseURL string) string {

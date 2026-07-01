@@ -30,15 +30,34 @@ const (
 // Classification — every internal/ package, with its job. This is enforced: see CheckClassificationTotal.
 var Classification = map[string]Class{
 	// spine (canonical runtime + spine-bound Gen-2)
-	"home": Spine, "envelope": Spine, "contract": Spine, "work": Spine,
-	"policy": Spine, "harness": Spine, "hook": Spine, "arch": Spine,
-	"distiller": Spine, "schema": Spine, "capgraph": Spine, "runtimebinding": Spine, "projection": Spine, "writeback": Spine, "product": Spine, "routeevidence": Spine,
+	"arch":           Spine,
+	"capgraph":       Spine,
+	"contract":       Spine,
+	"distiller":      Spine,
+	"envelope":       Spine,
+	"harness":        Spine,
+	"home":           Spine,
+	"hook":           Spine,
+	"panel":          Spine,
+	"policy":         Spine,
+	"product":        Spine,
+	"projection":     Spine,
+	"routeevidence":  Spine,
+	"runtimebinding": Spine,
+	"schema":         Spine,
+	"work":           Spine,
+	"writeback":      Spine,
 	// shared leaf
-	"candidates": Leaf, "reviewartifact": Leaf,
+	"candidates":     Leaf,
+	"reviewartifact": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,
 	// importers — keep, upgrade in place
-	"authority": Importer, "decisions": Importer, "sourceobs": Importer, "tooltopology": Importer, "eventsource": Importer,
+	"authority":    Importer,
+	"decisions":    Importer,
+	"eventsource":  Importer,
+	"sourceobs":    Importer,
+	"tooltopology": Importer,
 }
 
 // Severity of a finding. fail = the doctor is not OK; warn/info are reported, not fatal.
