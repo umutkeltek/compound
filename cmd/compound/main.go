@@ -232,7 +232,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+  compound capability <add|surface|observe|consume|list|authority|external-intake|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -255,7 +255,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -491,6 +491,29 @@ func cmdCapability(args []string) {
 				len(rec.EdgeIDs),
 				rec.Retires,
 			)
+		}
+	case "external-intake":
+		report, err := capgraph.ExternalRepoIntakeReportForHome(homePath)
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability external-intake %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- batches: %d\n", report.BatchCount)
+		if report.LatestBatchID != "" {
+			fmt.Printf("- latest_batch: %s\n", report.LatestBatchID)
+		}
+		fmt.Printf("- candidates: %d\n", report.CandidateCount)
+		fmt.Printf("- keep_needs_review: %d\n", report.OpenReviewCount)
+		fmt.Printf("- merge_existing: %d\n", report.MergeExistingCount)
+		fmt.Printf("- reference_only: %d\n", report.ReferenceOnlyCount)
+		if report.SourceObservationID != "" {
+			fmt.Printf("- source_observation: %s\n", report.SourceObservationID)
+		}
+		for _, row := range report.HighValue {
+			fmt.Printf("- review_next: %s decision=%s lane=%s owner=%s\n", row.Repo, row.Decision, row.Lane, row.Owner)
 		}
 	case "import-evaluations":
 		p := posn(nil)

@@ -5705,6 +5705,76 @@ func TestRouteEvidenceAuthorityCommandShowsProviderLedgerRows(t *testing.T) {
 	}
 }
 
+func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	batchDir := filepath.Join(homePath, "inbox", "external-repo-intake", "2026-07-01-test")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	if err := os.WriteFile(mapPath, []byte(`{
+  "boundaries": ["review-only", "no install"],
+  "items": [
+    {
+      "repo": "example/research",
+      "owner": "deep-research",
+      "next_review_step": "run freshness eval",
+      "not_to_do": "do not auto-run broad research"
+    }
+  ]
+}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summaryPath := filepath.Join(batchDir, "run-summary.json")
+	sourceObservationPath := filepath.Join(batchDir, "source-observation.json")
+	if err := os.WriteFile(summaryPath, []byte(`{
+  "schema_version": "compound.external_repo_intake_run.v0.1",
+  "id": "2026-07-01-test",
+  "created_at": "2026-07-01T12:00:00Z",
+  "map_path": "`+filepath.ToSlash(mapPath)+`",
+  "source_observation_path": "`+filepath.ToSlash(sourceObservationPath)+`",
+  "candidate_count": 1,
+  "source_observe_output": [
+    "# source observation srcobs_test",
+    "- source_candidate: src_cand_test",
+    "- source_no_promote: nop_test"
+  ],
+  "counts_by_decision": {"keep_needs_review": 1},
+  "counts_by_lane": {"freshness_research_skill_candidate": 1},
+  "decisions": [
+    {
+      "repo": "example/research",
+      "decision": "keep_needs_review",
+      "lane": "freshness_research_skill_candidate",
+      "status": "recorded",
+      "evidence_strength": 0.91,
+      "duplicate_risk": 0.1,
+      "review_id": "scr_test"
+    }
+  ]
+}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	jsonOut := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--json"})
+	})
+	var report capgraph.ExternalRepoIntakeReport
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("external-intake --json should parse: %v\n%s", err, jsonOut)
+	}
+	if report.Status != "ok" || report.CandidateCount != 1 || report.OpenReviewCount != 1 {
+		t.Fatalf("bad report: %+v", report)
+	}
+	if report.SourceObservationID != "srcobs_test" || len(report.NoPromoteIDs) != 1 || report.NoPromoteIDs[0] != "nop_test" {
+		t.Fatalf("source evidence not surfaced: %+v", report)
+	}
+	if len(report.HighValue) != 1 || report.HighValue[0].Owner != "deep-research" || report.HighValue[0].NextReviewStep != "run freshness eval" {
+		t.Fatalf("high-value metadata missing: %+v", report.HighValue)
+	}
+}
+
 func writeJSONFile(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fixture.json")
