@@ -1,0 +1,470 @@
+package panel
+
+import (
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"compound/internal/candidates"
+	"compound/internal/envelope"
+	"compound/internal/mem"
+	"compound/internal/policy"
+	"compound/internal/reviewartifact"
+	"compound/internal/work"
+	"compound/internal/writeback"
+)
+
+const panelApplyActor = "compound-panel"
+
+var mergeClaimRefRE = regexp.MustCompile(`claim_[A-Za-z0-9_:-]+`)
+
+// Apply is the only mutating panel step. It maps recorded panel verdicts through
+// policy and memory adjudication, then closes a WorkEnvelope proof chain.
+func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
+	if now == nil {
+		now = time.Now
+	}
+	if run.Status != "verdicts_recorded" && run.Status != "applied" {
+		return run, fmt.Errorf("panel apply requires verdicts_recorded or applied run, got %q", run.Status)
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		return run, err
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		return run, err
+	}
+	writebackStore, err := writeback.Open(homePath)
+	if err != nil {
+		return run, err
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		return run, err
+	}
+	policyConfig, _, err := policy.LoadConfig(homePath)
+	if err != nil {
+		return run, err
+	}
+	if run.Status == "applied" {
+		skippedRun, allSkipped, err := markAllSkippableApplications(homePath, run)
+		if err != nil {
+			return run, err
+		}
+		if allSkipped {
+			skippedRun.CountsAfter, err = countMemoryCandidateStates(memStore)
+			if err != nil {
+				return run, err
+			}
+			if err := store.SaveRun(skippedRun); err != nil {
+				return run, err
+			}
+			return skippedRun, nil
+		}
+		run = skippedRun
+	}
+
+	runRecordPath := store.runPath(run.ID)
+	proofRefs := panelApplyProofRefs(run, runRecordPath)
+	workEnvelope, err := workStore.Create(work.CreateInput{
+		Owner:            "compound panel",
+		Actor:            panelApplyActor,
+		SuccessPredicate: fmt.Sprintf("panel apply run %s target_kind %s records governed adjudication results", run.ID, run.TargetKind),
+		DesiredOutcome:   fmt.Sprintf("Apply recorded panel verdicts for %s", run.ID),
+		NonGoals:         []string{"call live models", "mutate owner files outside COMPOUND_HOME"},
+		EvidenceRefs:     proofRefs,
+		Risk:             "tier1",
+		Privacy:          "private",
+	}, now().UTC())
+	if err != nil {
+		return run, err
+	}
+	run.WorkID = workEnvelope.ID
+	run.Status = "running"
+	if err := store.SaveRun(run); err != nil {
+		return run, err
+	}
+	if _, err := workStore.Claim(run.WorkID, panelApplyActor, now().UTC()); err != nil {
+		return run, err
+	}
+	if _, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "running", Actor: panelApplyActor, RunID: run.ID, Note: "panel apply started"}, now().UTC()); err != nil {
+		return run, err
+	}
+
+	closeState := panelApplyCloseState{proofRefs: proofRefs}
+	for i := range run.Findings {
+		finding := &run.Findings[i]
+		result, err := applyTargetFinding(homePath, run, finding, memStore, writebackStore, workStore, policyConfig, now)
+		if err != nil {
+			return run, err
+		}
+		closeState.add(result)
+	}
+
+	countsAfter, err := countMemoryCandidateStates(memStore)
+	if err != nil {
+		return run, err
+	}
+	run.CountsAfter = countsAfter
+	run.Status = "applied"
+	run.StoppedReason = ""
+	if err := store.SaveRun(run); err != nil {
+		return run, err
+	}
+	if _, err := workStore.Advance(run.WorkID, work.AdvanceInput{To: "verifying", Actor: panelApplyActor, VerificationID: runRecordPath, Note: "panel apply run record written"}, now().UTC()); err != nil {
+		return run, err
+	}
+	moveType := "audit_only"
+	if closeState.changed {
+		moveType = "memory_delta"
+	}
+	closeResult, err := workStore.Close(run.WorkID, work.CloseInput{
+		Outcome:          "completed",
+		MoveType:         moveType,
+		Actor:            panelApplyActor,
+		Summary:          panelApplySummary(run.ID, closeState),
+		Changed:          closeState.changed,
+		ProofRefs:        proofRefs,
+		MemoryCandidates: closeState.memoryCandidates,
+		MemoryPromoted:   closeState.promoted,
+		MemoryParked:     closeState.parked,
+		MemoryRejected:   closeState.rejected,
+	}, now().UTC())
+	if err != nil {
+		return run, err
+	}
+	run.ReceiptID = closeResult.Receipt.ID
+	run.TransitionID = closeResult.Transition.ID
+	if err := store.SaveRun(run); err != nil {
+		return run, err
+	}
+	return run, nil
+}
+
+type applyTargetResult struct {
+	candidateID string
+	promoted    bool
+	parked      bool
+	rejected    bool
+	changed     bool
+}
+
+type panelApplyCloseState struct {
+	proofRefs        []string
+	memoryCandidates []string
+	promoted         []string
+	parked           []string
+	rejected         []string
+	changed          bool
+}
+
+func (s *panelApplyCloseState) add(result applyTargetResult) {
+	if result.candidateID == "" {
+		return
+	}
+	if result.changed {
+		s.changed = true
+		s.memoryCandidates = appendUniqueString(s.memoryCandidates, result.candidateID)
+	}
+	if result.promoted {
+		s.promoted = appendUniqueString(s.promoted, result.candidateID)
+	}
+	if result.parked {
+		s.parked = appendUniqueString(s.parked, result.candidateID)
+	}
+	if result.rejected {
+		s.rejected = appendUniqueString(s.rejected, result.candidateID)
+	}
+}
+
+func applyTargetFinding(homePath string, run Run, finding *TargetFinding, memStore *mem.Store, writebackStore *writeback.Store, workStore *work.Store, cfg policy.Config, now func() time.Time) (applyTargetResult, error) {
+	result := applyTargetResult{candidateID: finding.TargetRef}
+	app := finding.Application
+	if app.Applied {
+		app.Note = "already applied; skipped"
+		finding.Application = app
+		return result, nil
+	}
+	if strings.TrimSpace(finding.Synthesis.Decision) == "" {
+		app.Applied = false
+		app.Note = "no recorded synthesis; skipped"
+		finding.Application = app
+		return result, nil
+	}
+
+	cand, err := readMemoryCandidate(homePath, finding.TargetRef)
+	if err != nil {
+		return result, err
+	}
+	result.candidateID = cand.ID
+	app.CandidateRef = cand.ID
+	if terminalCandidateState(cand.State) {
+		app.Applied = false
+		app.MappedVerdict = normalizePanelPosition(finding.Synthesis.Decision)
+		app.Note = "candidate terminal state " + cand.State + "; skipped"
+		finding.Application = app
+		return result, nil
+	}
+
+	createdAt := now().UTC()
+	evidenceRefs := panelApplyEvidenceRefs(run.ID, finding.VerdictArtifact)
+	ai := panelAdjudicateAction(run.WorkID, run.ID, cand, finding.Synthesis.Decision, candidateRecordPath(homePath, cand.ID), evidenceRefs, createdAt)
+	pd := policy.Evaluate(ai, cfg, createdAt)
+	app.ActionIntentRef = ai.ID
+	app.PolicyDecisionRef = pd.ID
+	app.MappedVerdict = normalizePanelPosition(finding.Synthesis.Decision)
+	if !policy.Allowed(pd) {
+		app.Applied = false
+		app.Note = "policy " + pd.Outcome + ": " + strings.Join(pd.Reasons, "; ")
+		finding.Application = app
+		return result, nil
+	}
+	if _, err := workStore.RecordAction(run.WorkID, ai, pd, createdAt); err != nil {
+		return result, err
+	}
+
+	mapped, applied, note, adjudicated, err := applyMemoryCandidateVerdict(run, finding, cand, memStore, writebackStore, now)
+	if err != nil {
+		return result, err
+	}
+	app.MappedVerdict = mapped
+	app.Applied = applied
+	app.Note = note
+	if adjudicated.Candidate.ID != "" {
+		app.CandidateRef = adjudicated.Candidate.ID
+	}
+	if adjudicated.Claim != nil {
+		app.ClaimRef = adjudicated.Claim.ID
+	}
+	if adjudicated.Transition != nil {
+		app.TransitionRef = adjudicated.Transition.ID
+	}
+	if applied {
+		switch mapped {
+		case "promote":
+			result.promoted = adjudicated.Claim != nil
+		case "park":
+			result.parked = true
+		case "reject", "merge_existing":
+			result.rejected = true
+		}
+		result.changed = result.promoted || result.parked || result.rejected
+	}
+	if app.NoPromoteRef == "" && (mapped == "park" || mapped == "merge_existing") {
+		app.NoPromoteRef = noPromoteIDForCandidate(writebackStore, cand.ID, now)
+	}
+	finding.Application = app
+	return result, nil
+}
+
+func applyMemoryCandidateVerdict(run Run, finding *TargetFinding, cand mem.Candidate, memStore *mem.Store, writebackStore *writeback.Store, now func() time.Time) (string, bool, string, mem.AdjudicateResult, error) {
+	decision := normalizePanelPosition(finding.Synthesis.Decision)
+	evidenceRefs := panelApplyEvidenceRefs(run.ID, finding.VerdictArtifact)
+	switch decision {
+	case "promote":
+		if !candidates.ValidBasis(cand.PromotionBasis) {
+			res, err := memStore.Adjudicate(cand.ID, "park", run.WorkID, now().UTC())
+			if err != nil {
+				return "park", false, "", res, err
+			}
+			nop, _, err := writebackStore.RecordNoPromote(writeback.NoPromoteDecision{CandidateRef: cand.ID, CandidateKind: string(candidates.Memory), Basis: "panel_verdict_without_promotion_basis", EvidenceRefs: evidenceRefs}, now().UTC())
+			if err != nil {
+				return "park", false, "", res, err
+			}
+			finding.Application.NoPromoteRef = nop.ID
+			return "park", true, "downgraded promote to park: panel_verdict_without_promotion_basis", res, nil
+		}
+		res, err := memStore.Adjudicate(cand.ID, "promote", run.WorkID, now().UTC())
+		if err == nil && res.Verdict == "promote" && res.Claim != nil {
+			return "promote", true, res.Note, res, nil
+		}
+		note := "promotion rejected by memory adjudicator"
+		if err != nil {
+			note += ": " + err.Error()
+		} else if res.Note != "" {
+			note += ": " + res.Note
+		}
+		parked, parkErr := memStore.Adjudicate(cand.ID, "park", run.WorkID, now().UTC())
+		if parkErr != nil {
+			return "park", false, note, res, parkErr
+		}
+		return "park", true, note + "; fell through to park", parked, nil
+	case "park":
+		res, err := memStore.Adjudicate(cand.ID, "park", run.WorkID, now().UTC())
+		if err != nil {
+			return "park", false, "", res, err
+		}
+		nop, _, err := writebackStore.RecordNoPromote(writeback.NoPromoteDecision{CandidateRef: cand.ID, CandidateKind: string(candidates.Memory), Basis: "panel_verdict_park", EvidenceRefs: evidenceRefs}, now().UTC())
+		if err != nil {
+			return "park", false, "", res, err
+		}
+		finding.Application.NoPromoteRef = nop.ID
+		return "park", true, res.Note, res, nil
+	case "reject":
+		res, err := memStore.Adjudicate(cand.ID, "reject", run.WorkID, now().UTC())
+		return "reject", err == nil, res.Note, res, err
+	case "merge_existing":
+		res, err := memStore.Adjudicate(cand.ID, "reject", run.WorkID, now().UTC())
+		if err != nil {
+			return "merge_existing", false, "", res, err
+		}
+		nop := writeback.NoPromoteDecision{CandidateRef: cand.ID, CandidateKind: string(candidates.Memory), Basis: "panel_verdict_merge_existing", EvidenceRefs: evidenceRefs}
+		if ref := mergeTargetClaimRef(finding.Synthesis); ref != "" {
+			nop.OwnerTarget = writeback.OwnerTarget{Kind: "memory_claim", Ref: ref}
+		}
+		recorded, _, err := writebackStore.RecordNoPromote(nop, now().UTC())
+		if err != nil {
+			return "merge_existing", false, "", res, err
+		}
+		finding.Application.NoPromoteRef = recorded.ID
+		return "merge_existing", true, res.Note, res, nil
+	case "needs_human", "needs_trial":
+		return decision, false, "no mutation; verdict remains in review queue", mem.AdjudicateResult{Candidate: cand, Verdict: decision}, nil
+	default:
+		return decision, false, "", mem.AdjudicateResult{Candidate: cand, Verdict: decision}, fmt.Errorf("unsupported panel synthesis decision %q", finding.Synthesis.Decision)
+	}
+}
+
+func panelAdjudicateAction(workID, runID string, cand mem.Candidate, verdict, targetPath string, evidenceRefs []string, now time.Time) envelope.ActionIntent {
+	return envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            reviewartifact.ID("act_", workID, runID, cand.ID, verdict, now.Format(time.RFC3339Nano)),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "package", Name: "compound/internal/panel"},
+			IDs:           envelope.IDs{WorkID: workID, RunID: runID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Owner: "compound panel", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  evidenceRefs,
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         panelApplyActor,
+		Capability:    "panel.adjudicate",
+		Action:        "adjudicate_memory_candidate",
+		Target:        envelope.ActionTarget{Kind: "memory_candidate", ID: cand.ID, Path: targetPath},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("map panel verdict %q for memory candidate %s", verdict, cand.ID),
+		RollbackPlan:  "restore candidate JSON state and remove appended ledger/event rows for this work_id before depending on them",
+	}
+}
+
+func readMemoryCandidate(homePath, id string) (mem.Candidate, error) {
+	var cand mem.Candidate
+	if err := candidates.ReadCandidate(homePath, candidates.Memory, id, &cand); err != nil {
+		return mem.Candidate{}, err
+	}
+	return cand, nil
+}
+
+func candidateRecordPath(homePath, id string) string {
+	return filepath.Join(homePath, candidates.InboxDir(candidates.Memory), id+".json")
+}
+
+func countMemoryCandidateStates(store *mem.Store) (map[string]int, error) {
+	cands, err := store.AllCandidates()
+	if err != nil {
+		return nil, err
+	}
+	counts := map[string]int{}
+	for _, cand := range cands {
+		state := strings.TrimSpace(cand.State)
+		if state == "" {
+			state = "unknown"
+		}
+		counts[state]++
+	}
+	return counts, nil
+}
+
+func terminalCandidateState(state string) bool {
+	switch state {
+	case "promoted", "rejected", "no_promote":
+		return true
+	default:
+		return false
+	}
+}
+
+func panelApplyEvidenceRefs(runID, verdictArtifact string) []string {
+	refs := []string{runID}
+	if strings.TrimSpace(verdictArtifact) != "" {
+		refs = append(refs, verdictArtifact)
+	}
+	return reviewartifact.Unique(refs)
+}
+
+func panelApplyProofRefs(run Run, runRecordPath string) []string {
+	refs := []string{runRecordPath}
+	for _, finding := range run.Findings {
+		if strings.TrimSpace(finding.VerdictArtifact) != "" {
+			refs = append(refs, finding.VerdictArtifact)
+		}
+	}
+	return reviewartifact.Unique(refs)
+}
+
+func panelApplySummary(runID string, state panelApplyCloseState) string {
+	if !state.changed {
+		return "Panel apply " + runID + " completed with no memory candidate mutations"
+	}
+	return fmt.Sprintf("Panel apply %s promoted=%d parked=%d rejected=%d", runID, len(state.promoted), len(state.parked), len(state.rejected))
+}
+
+func noPromoteIDForCandidate(store *writeback.Store, candidateID string, now func() time.Time) string {
+	decision, ok, err := store.ActiveNoPromote(candidateID, now().UTC())
+	if err != nil || !ok {
+		return ""
+	}
+	return decision.ID
+}
+
+func mergeTargetClaimRef(s Synthesis) string {
+	for _, value := range []string{s.Rationale} {
+		if ref := mergeClaimRefRE.FindString(value); ref != "" {
+			return ref
+		}
+	}
+	for _, dissent := range s.Dissent {
+		if ref := mergeClaimRefRE.FindString(dissent.Note); ref != "" {
+			return ref
+		}
+	}
+	return ""
+}
+
+func markAllSkippableApplications(homePath string, run Run) (Run, bool, error) {
+	allSkipped := len(run.Findings) > 0
+	for i := range run.Findings {
+		finding := &run.Findings[i]
+		app := finding.Application
+		switch {
+		case app.Applied:
+			app.Note = "already applied; skipped"
+		case normalizePanelPosition(finding.Synthesis.Decision) == "needs_human" || normalizePanelPosition(finding.Synthesis.Decision) == "needs_trial":
+			app.MappedVerdict = normalizePanelPosition(finding.Synthesis.Decision)
+			app.Note = "no mutation; verdict remains in review queue"
+		case finding.TargetRef != "":
+			cand, err := readMemoryCandidate(homePath, finding.TargetRef)
+			if err != nil {
+				return run, false, err
+			}
+			if terminalCandidateState(cand.State) {
+				app.CandidateRef = cand.ID
+				app.MappedVerdict = normalizePanelPosition(finding.Synthesis.Decision)
+				app.Note = "candidate terminal state " + cand.State + "; skipped"
+			} else {
+				allSkipped = false
+			}
+		default:
+			allSkipped = false
+		}
+		finding.Application = app
+	}
+	return run, allSkipped, nil
+}

@@ -91,6 +91,25 @@ func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 			t.Fatalf("show output missing %q:\n%s", want, showOut)
 		}
 	}
+
+	applyOut := captureStdout(t, func() {
+		cmdPanel([]string{"run", "--plan", planned.ID, "--apply", "--json"})
+	})
+	var applied panel.Run
+	if err := json.Unmarshal([]byte(applyOut), &applied); err != nil {
+		t.Fatalf("parse apply JSON: %v\n%s", err, applyOut)
+	}
+	if applied.Status != "applied" || applied.WorkID == "" || applied.ReceiptID == "" || applied.TransitionID == "" {
+		t.Fatalf("applied run = %+v", applied)
+	}
+	applyShow := captureStdout(t, func() {
+		cmdPanel([]string{"show", planned.ID})
+	})
+	for _, want := range []string{"- status: applied", "- work:", "- receipt:", "application: mapped=promote status=applied", "claim:"} {
+		if !strings.Contains(applyShow, want) {
+			t.Fatalf("apply show output missing %q:\n%s", want, applyShow)
+		}
+	}
 }
 
 func seedPanelCLITarget(t *testing.T, homePath, id string) {

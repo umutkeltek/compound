@@ -17,6 +17,8 @@ type PlanInput struct {
 	Limit                 int      `json:"limit"`
 	PrivacySensitive      bool     `json:"privacy_sensitive"`
 	PrivacyOverrideReason string   `json:"privacy_override_reason,omitempty"`
+	Supervised            bool     `json:"supervised"`
+	Unsupervised          bool     `json:"-"`
 	Budget                Budget   `json:"budget"`
 }
 
@@ -34,12 +36,17 @@ func BuildPlan(homePath string, in PlanInput) (Run, error) {
 	if err != nil {
 		return Run{}, err
 	}
+	supervised := in.Supervised
+	if !supervised && !in.Unsupervised {
+		supervised = true
+	}
 	run := Run{
 		SchemaVersion: RunSchemaVersion,
 		ID:            newRunID(now, targetKind, targets),
 		CreatedAt:     now.Format(time.RFC3339),
 		Status:        "planned",
 		TargetKind:    targetKind,
+		Supervised:    supervised,
 		Targets:       targets,
 		LensSet:       LensSet{Included: selection.IncludedRefs, Excluded: selection.Excluded},
 		Budget:        in.Budget,
@@ -47,6 +54,9 @@ func BuildPlan(homePath string, in PlanInput) (Run, error) {
 		CountsBefore:  countsBefore,
 		CountsAfter:   copyCounts(countsBefore),
 		EvidenceRefs:  []string{},
+	}
+	if supervised {
+		run.Supervision = "operator"
 	}
 	privacySensitive := in.PrivacySensitive
 	if targetKind == "memory_candidate" && !in.PrivacySensitive {
@@ -56,7 +66,7 @@ func BuildPlan(homePath string, in PlanInput) (Run, error) {
 			run.EvidenceRefs = append(run.EvidenceRefs, "override:privacy_not_sensitive:"+strings.TrimSpace(in.PrivacyOverrideReason))
 		}
 	}
-	lanes, err := SelectLanes(homePath, privacySensitive, now)
+	lanes, err := SelectLanes(homePath, privacySensitive, supervised, now)
 	if err != nil {
 		var blocked ErrBlockedNoLane
 		if errors.As(err, &blocked) {

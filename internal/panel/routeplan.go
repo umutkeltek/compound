@@ -27,7 +27,7 @@ func (e ErrBlockedNoLane) Error() string {
 	return fmt.Sprintf("blocked_no_lane:%s", class)
 }
 
-func SelectLanes(homePath string, privacySensitive bool, now time.Time) (LanePlan, error) {
+func SelectLanes(homePath string, privacySensitive bool, supervised bool, now time.Time) (LanePlan, error) {
 	opts := routeevidence.CapabilityRoutePlanOptions{PrivacySensitive: privacySensitive}
 	lensPlan, err := routeevidence.PlanCapabilityRoute(homePath, lensCapabilityClass, opts, now)
 	if err != nil {
@@ -61,14 +61,14 @@ func SelectLanes(homePath string, privacySensitive bool, now time.Time) (LanePla
 
 	var judgeOK bool
 	for _, lane := range judgePlan.Chain {
-		if lane.GateRole == "eligible" && lane.Tier != "free" {
+		if lane.Tier != "free" && (lane.GateRole == "eligible" || (supervised && lane.GateRole == "supervised_only")) {
 			if !judgeOK {
 				plan.JudgeLane = laneRef(lane)
 				judgeOK = true
 			}
 			continue
 		}
-		reason := firstNonEmpty(lane.OmitReason, "lane not eligible for judge")
+		reason := firstNonEmpty(lane.OmitReason, judgeLaneOmitReason(lane, supervised))
 		if lane.Tier == "free" || lane.GateRole == "tripwire_only" {
 			reason = "free lane may not judge"
 		}
@@ -99,6 +99,16 @@ func appendOmittedLane(omitted []OmittedLane, modelID, reason string) []OmittedL
 		}
 	}
 	return append(omitted, OmittedLane{ModelID: modelID, Reason: reason})
+}
+
+func judgeLaneOmitReason(lane routeevidence.CapabilityRouteLane, supervised bool) string {
+	if lane.Tier == "free" {
+		return "free lane may not judge"
+	}
+	if lane.GateRole == "supervised_only" && !supervised {
+		return "supervised_only judge lane requires operator supervision"
+	}
+	return "lane not eligible for judge"
 }
 
 func firstNonEmpty(values ...string) string {

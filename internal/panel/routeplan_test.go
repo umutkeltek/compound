@@ -19,7 +19,7 @@ func TestSelectLanesEligiblePathOmitsFreeJudge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import capabilities: %v", err)
 	}
-	plan, err := SelectLanes(home, false, panelTestNow)
+	plan, err := SelectLanes(home, false, true, panelTestNow)
 	if err != nil {
 		t.Fatalf("select lanes: %v", err)
 	}
@@ -67,7 +67,7 @@ routing_defaults:
 	if err != nil {
 		t.Fatalf("import capabilities: %v", err)
 	}
-	_, err = SelectLanes(home, true, panelTestNow)
+	_, err = SelectLanes(home, true, true, panelTestNow)
 	var blocked ErrBlockedNoLane
 	if !errors.As(err, &blocked) || blocked.Class != "judge-critique" {
 		t.Fatalf("err = %v, want blocked judge-critique", err)
@@ -81,4 +81,70 @@ func omittedReason(omitted []OmittedLane, modelID, reason string) bool {
 		}
 	}
 	return false
+}
+
+func TestSelectLanesSupervisedOnlyJudgeRequiresOperatorSupervision(t *testing.T) {
+	home := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "model-capabilities.yaml")
+	body := []byte(`version: 1
+purpose: supervised judge fixture
+capability_classes:
+  - classify-extract
+  - judge-critique
+models:
+  panel/extract:
+    lane: "panel/extract"
+    tier: free
+    capabilities:
+      classify-extract:
+        level: primary
+        evidence: fixture
+  panel/supervised-judge:
+    lane: "panel/supervised-judge"
+    tier: cheap
+    capabilities:
+      judge-critique:
+        level: assumed
+        evidence: fixture
+  panel/free-judge:
+    lane: "panel/free-judge"
+    tier: free
+    capabilities:
+      judge-critique:
+        level: primary
+        evidence: fixture
+routing_defaults:
+  classify-extract:
+    - panel/extract
+  judge-critique:
+    - panel/supervised-judge
+    - panel/free-judge
+`)
+	if err := os.WriteFile(manifest, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(home, manifest, panelTestNow); err != nil {
+		t.Fatalf("import capabilities: %v", err)
+	}
+	supervised, err := SelectLanes(home, false, true, panelTestNow)
+	if err != nil {
+		t.Fatalf("supervised select lanes: %v", err)
+	}
+	if supervised.JudgeLane.ModelID != "panel/supervised-judge" || supervised.JudgeLane.GateRole != "supervised_only" {
+		t.Fatalf("supervised judge lane = %+v", supervised.JudgeLane)
+	}
+	unsupervised, err := SelectLanes(home, false, false, panelTestNow)
+	if err == nil {
+		t.Fatalf("unsupervised selected judge lane unexpectedly: %+v", unsupervised.JudgeLane)
+	}
+	var blocked ErrBlockedNoLane
+	if !errors.As(err, &blocked) || blocked.Class != judgeCapabilityClass {
+		t.Fatalf("unsupervised err = %v, want judge blocked", err)
+	}
+	if !omittedReason(unsupervised.OmittedLanes, "panel/supervised-judge", "supervised_only judge lane requires operator supervision") {
+		t.Fatalf("unsupervised omitted lanes = %+v", unsupervised.OmittedLanes)
+	}
+	if !omittedReason(unsupervised.OmittedLanes, "panel/free-judge", "free lane may not judge") {
+		t.Fatalf("free judge omission missing: %+v", unsupervised.OmittedLanes)
+	}
 }

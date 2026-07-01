@@ -23,7 +23,11 @@ type Run struct {
 	CreatedAt     string          `json:"created_at"`
 	Status        string          `json:"status"`
 	WorkID        string          `json:"work_id,omitempty"`
+	ReceiptID     string          `json:"receipt_id,omitempty"`
+	TransitionID  string          `json:"transition_id,omitempty"`
 	TargetKind    string          `json:"target_kind"`
+	Supervised    bool            `json:"supervised"`
+	Supervision   string          `json:"supervision,omitempty"`
 	Targets       []Target        `json:"targets"`
 	LensSet       LensSet         `json:"lens_set"`
 	Route         RoutePlan       `json:"route"`
@@ -136,8 +140,11 @@ type Application struct {
 	MappedVerdict     string `json:"mapped_verdict"`
 	ActionIntentRef   string `json:"action_intent_ref"`
 	PolicyDecisionRef string `json:"policy_decision_ref"`
+	ClaimRef          string `json:"claim_ref,omitempty"`
+	CandidateRef      string `json:"candidate_ref,omitempty"`
 	NoPromoteRef      string `json:"no_promote_ref"`
 	TransitionRef     string `json:"transition_ref"`
+	Note              string `json:"note,omitempty"`
 }
 
 type Store struct{ home string }
