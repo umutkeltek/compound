@@ -594,6 +594,9 @@ func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
 	if len(report.Open) != 1 || report.Open[0].WorkID != ready.ID || report.Open[0].NextAction != "claim before touching" {
 		t.Fatalf("open item = %+v", report.Open)
 	}
+	if !report.DispatchNext.CanRun || report.DispatchNext.Action != "claim" || report.DispatchNext.WorkID != ready.ID {
+		t.Fatalf("dispatch next = %+v", report.DispatchNext)
+	}
 	if len(report.Recent) != 1 || report.Recent[0].ReceiptID != closed.Receipt.ID || report.Recent[0].TransitionID != closed.Transition.ID {
 		t.Fatalf("recent item = %+v", report.Recent)
 	}
@@ -622,8 +625,42 @@ func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWorkbench([]string{"--recent", "10"})
 	})
-	if !strings.Contains(out, "dispatch_step_runs=1") || !strings.Contains(out, "wait=run_evidence") || !strings.Contains(out, run.ID) {
+	if !strings.Contains(out, "dispatch_step_runs=1") || !strings.Contains(out, "dispatch_wait: run_evidence") || !strings.Contains(out, "wait=run_evidence") || !strings.Contains(out, run.ID) {
 		t.Fatalf("workbench output missing dispatch run:\n%s", out)
+	}
+}
+
+func TestWorkbenchCommandDispatchNextUsesActor(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	created, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "actor claim workbench"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	claimed, err := store.Claim(created.ID, "claude", cliTestNow)
+	if err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--recent", "10", "--actor", "claude"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("workbench output missing JSON:\n%s", out)
+	}
+	var report work.WorkbenchReport
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse workbench report: %v\n%s", err, out)
+	}
+	if !report.DispatchNext.CanRun || report.DispatchNext.Action != "advance" || report.DispatchNext.WorkID != claimed.ID {
+		t.Fatalf("dispatch next = %+v", report.DispatchNext)
 	}
 }
 

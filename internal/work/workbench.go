@@ -13,6 +13,7 @@ import (
 // WorkbenchOptions controls the read-only workbench projection.
 type WorkbenchOptions struct {
 	RecentLimit int
+	Actor       string
 }
 
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
@@ -22,6 +23,7 @@ type WorkbenchReport struct {
 	Counts           WorkbenchCounts          `json:"counts"`
 	Open             []WorkbenchItem          `json:"open"`
 	Recent           []WorkbenchItem          `json:"recent,omitempty"`
+	DispatchNext     WorkbenchDispatchNext    `json:"dispatch_next"`
 	DispatchStepRuns []DispatchStepRunSummary `json:"dispatch_step_runs,omitempty"`
 	Integrity        []string                 `json:"integrity,omitempty"`
 }
@@ -53,6 +55,17 @@ type DispatchStepRunSummary struct {
 	ResultPath  string   `json:"result_path,omitempty"`
 	StepActions []string `json:"step_actions,omitempty"`
 	StepWorkIDs []string `json:"step_work_ids,omitempty"`
+}
+
+type WorkbenchDispatchNext struct {
+	Actor      string   `json:"actor"`
+	CanRun     bool     `json:"can_run"`
+	Command    []string `json:"command,omitempty"`
+	Action     string   `json:"action,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+	WorkID     string   `json:"work_id,omitempty"`
+	WaitReason string   `json:"wait_reason,omitempty"`
+	BlockedOn  []string `json:"blocked_on,omitempty"`
 }
 
 type WorkbenchItem struct {
@@ -149,6 +162,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		}
 		return report.Open[i].WorkID < report.Open[j].WorkID
 	})
+	report.DispatchNext = workbenchDispatchNext(report, opts.Actor)
 	sort.Slice(report.Recent, func(i, j int) bool {
 		return report.Recent[i].WorkID > report.Recent[j].WorkID
 	})
@@ -309,6 +323,51 @@ func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, 
 		out = out[:limit]
 	}
 	return out, warnings
+}
+
+func workbenchDispatchNext(report WorkbenchReport, actor string) WorkbenchDispatchNext {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	out := WorkbenchDispatchNext{Actor: actor}
+	for _, item := range report.Open {
+		if item.State == "verifying" && hasCloseProofEvidence(item) {
+			out.CanRun = true
+			out.Action = "close"
+			out.Reason = "proof_ready_close"
+			out.WorkID = item.WorkID
+			break
+		}
+	}
+	if !out.CanRun {
+		for _, item := range report.Open {
+			if item.State == "claimed" && item.ClaimedBy == actor {
+				out.CanRun = true
+				out.Action = "advance"
+				out.Reason = "actor_claimed_work"
+				out.WorkID = item.WorkID
+				break
+			}
+		}
+	}
+	if !out.CanRun {
+		for _, item := range report.Open {
+			if item.State == "ready" {
+				out.CanRun = true
+				out.Action = "claim"
+				out.Reason = "ready_work"
+				out.WorkID = item.WorkID
+				break
+			}
+		}
+	}
+	if out.CanRun {
+		out.Command = []string{"compound", "work", "dispatch-step", "--actor", actor, "--until-wait"}
+		return out
+	}
+	out.WaitReason, out.BlockedOn = dispatchStepWait(DispatchStepResult{Actor: actor}, report)
+	return out
 }
 
 func lastAttachedWithPrefix(events []Event, prefix string) string {

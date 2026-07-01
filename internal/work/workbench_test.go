@@ -146,6 +146,80 @@ func TestWorkbenchSurfacesDispatchStepRunSummaries(t *testing.T) {
 	}
 }
 
+func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work can dispatch"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := report.DispatchNext
+	if !next.CanRun || next.Action != "claim" || next.Reason != "ready_work" || next.WorkID != ready.ID {
+		t.Fatalf("ready dispatch suggestion = %+v", next)
+	}
+	want := []string{"compound", "work", "dispatch-step", "--actor", "codex", "--until-wait"}
+	if len(next.Command) != len(want) {
+		t.Fatalf("dispatch command = %v", next.Command)
+	}
+	for i := range want {
+		if next.Command[i] != want[i] {
+			t.Fatalf("dispatch command = %v", next.Command)
+		}
+	}
+}
+
+func TestWorkbenchDispatchNextWaitsForOtherActorClaim(t *testing.T) {
+	s := newStore(t)
+	created, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed by other actor"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(created.ID, "claude", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := report.DispatchNext
+	if next.CanRun || next.WaitReason != "claimed_by_other_actor" || !contains(next.BlockedOn, "work.claimed_by_other_actor:"+claimed.ID) {
+		t.Fatalf("other actor dispatch suggestion = %+v", next)
+	}
+	report, err = s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next = report.DispatchNext
+	if !next.CanRun || next.Action != "advance" || next.WorkID != claimed.ID {
+		t.Fatalf("claiming actor dispatch suggestion = %+v", next)
+	}
+}
+
+func TestWorkbenchDispatchNextPrefersProofReadyClose(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready waits behind proof close"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running := runningWork(t, s, "proof ready close first")
+	verifying, err := s.Advance(running.ID, AdvanceInput{To: "verifying", Actor: "codex", VerificationID: "ver_dispatch_next"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := report.DispatchNext
+	if !next.CanRun || next.Action != "close" || next.Reason != "proof_ready_close" || next.WorkID != verifying.ID || next.WorkID == ready.ID {
+		t.Fatalf("proof-ready dispatch suggestion = %+v", next)
+	}
+}
+
 func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "cancelled work is terminal without completion proof"}, fixedNow)
