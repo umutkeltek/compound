@@ -14,8 +14,11 @@ This file is the current package/command map. `compound architecture doctor --st
   `state/runs/**` JSON/Markdown finding, and records the action on the referenced WorkEnvelope. Temp runtime
   proof imported `fixtures/policy/standing-grants.yaml`, created `work_91998b3acbba`, wrote
   `state/runs/standing-grant-review/finding.json`, persisted `act_154f3ed45654` / `pol_cd617b413fb3`,
-  and the policy consumed `standing_grant_id=grant_review_finding:review-finding`. No claims were promoted
-  and no live job-health review was recorded.
+  and the policy consumed `standing_grant_id=grant_review_finding:review-finding`. Persistent live proof
+  recorded `rvf_c2cf355172ca` under OS `state/runs/compound-standing-grant-review-finding-2026-07-01/`,
+  persisted `act_b42203caed3d` / `pol_6a7d7783d168`, then closed `work_9e8bb4ff07e2` through
+  `rec_828163f159fd` / `tr_828163f159fd`; `compound workbench --json` reports `open=0` and `terminal=12`.
+  No claims were promoted and no live job-health review was recorded.
 
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority
