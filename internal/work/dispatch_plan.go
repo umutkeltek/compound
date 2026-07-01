@@ -50,16 +50,17 @@ type DispatchPlanSource struct {
 }
 
 type DispatchPlanItem struct {
-	WorkID           string   `json:"work_id"`
-	State            string   `json:"state"`
-	Owner            string   `json:"owner,omitempty"`
-	SuccessPredicate string   `json:"success_predicate,omitempty"`
-	DesiredOutcome   string   `json:"desired_outcome,omitempty"`
-	Action           string   `json:"action"`
-	Command          []string `json:"command,omitempty"`
-	Reason           string   `json:"reason"`
-	NextAction       string   `json:"next_action,omitempty"`
-	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
+	WorkID           string              `json:"work_id"`
+	State            string              `json:"state"`
+	Owner            string              `json:"owner,omitempty"`
+	SuccessPredicate string              `json:"success_predicate,omitempty"`
+	DesiredOutcome   string              `json:"desired_outcome,omitempty"`
+	Action           string              `json:"action"`
+	Command          []string            `json:"command,omitempty"`
+	Reason           string              `json:"reason"`
+	NextAction       string              `json:"next_action,omitempty"`
+	EvidenceRefs     []string            `json:"evidence_refs,omitempty"`
+	ClaimPolicy      *ClaimPolicySummary `json:"claim_policy,omitempty"`
 }
 
 func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
@@ -111,7 +112,6 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		Warnings: []string{
 			"does not claim work",
 			"does not execute work",
-			"does not evaluate policy",
 			"does not close work",
 			"source packet import creates only source-backed WorkEnvelope state",
 		},
@@ -119,6 +119,15 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 	}
 	for _, item := range report.Open {
 		candidate := dispatchCandidate(item, actor)
+		if candidate.Action == "claim" {
+			claimPlan, err := s.ClaimPlan(item.WorkID, now, ClaimPlanOptions{Actor: actor})
+			if err != nil {
+				candidate.Reason = strings.TrimSpace(candidate.Reason + "; claim policy plan failed: " + err.Error())
+			} else {
+				policySummary := claimPlan.Policy
+				candidate.ClaimPolicy = &policySummary
+			}
+		}
 		plan.Candidates = append(plan.Candidates, candidate)
 		if plan.Selected == nil && candidate.Action == "claim" {
 			selected := candidate

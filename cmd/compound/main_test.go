@@ -538,6 +538,9 @@ func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 	if plan.Status != "ready_to_claim" || plan.Selected == nil || plan.Selected.WorkID != ready.ID {
 		t.Fatalf("dispatch plan = %+v, ready=%s", plan, ready.ID)
 	}
+	if plan.Selected.ClaimPolicy == nil || !plan.Selected.ClaimPolicy.Allowed {
+		t.Fatalf("dispatch plan selected item missing allowed claim policy: %+v", plan.Selected)
+	}
 	if plan.PlanPath == "" {
 		t.Fatalf("dispatch plan did not record runtime artifact: %+v", plan)
 	}
@@ -553,6 +556,42 @@ func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "work", "leases", ready.ID+".json")); !os.IsNotExist(err) {
 		t.Fatalf("dispatch plan must not create lease, stat err=%v", err)
+	}
+}
+
+func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "claim plan command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"claim-plan", ready.ID, "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("claim-plan output missing JSON:\n%s", out)
+	}
+	var plan work.ClaimPlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse claim plan: %v\n%s", err, out)
+	}
+	if plan.Status != "claim_policy_allowed" || !plan.Policy.Allowed {
+		t.Fatalf("claim plan policy not allowed: %+v", plan)
+	}
+	if plan.PlanPath == "" {
+		t.Fatalf("claim plan was not recorded: %+v", plan)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "leases", ready.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("claim plan must not create lease, stat err=%v", err)
 	}
 }
 
