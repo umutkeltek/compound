@@ -210,6 +210,69 @@ func TestLoadMCPorterCatalogMapsServersAndToolsWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestDoctorBoundaryReportsNonExecutingMCPAndPluginInventory(t *testing.T) {
+	home := t.TempDir()
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []capgraph.Node{
+		{ID: "mcp:context7", Kind: "mcp", Name: "context7", Triggers: []string{"docs"}, Weight: 1},
+		{ID: "tool:agent-browser", Kind: "tool", Name: "agent-browser", Triggers: []string{"browser"}, Weight: 1},
+		{ID: "adapter:plugin:browser-openai-bundled", Kind: "adapter", Name: "browser plugin adapter", Triggers: []string{"plugin", "browser"}, Weight: 1, Retired: true},
+	} {
+		if err := store.Add(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := DoctorBoundary(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || report.MCPCount != 1 || report.ToolCount != 1 || report.PluginAdapterCount != 1 || report.PluginSurfaceCount != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if !hasBoundaryCheck(report, "plugin_adapters_not_surfacing", "ok") {
+		t.Fatalf("missing non-surfacing check: %+v", report.Checks)
+	}
+}
+
+func TestDoctorBoundaryFailsWhenPluginAdapterSurfaces(t *testing.T) {
+	home := t.TempDir()
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []capgraph.Node{
+		{ID: "mcp:context7", Kind: "mcp", Name: "context7", Triggers: []string{"docs"}, Weight: 1},
+		{ID: "tool:agent-browser", Kind: "tool", Name: "agent-browser", Triggers: []string{"browser"}, Weight: 1},
+		{ID: "adapter:plugin:unsafe", Kind: "adapter", Name: "unsafe plugin adapter", Triggers: []string{"plugin"}, Weight: 1},
+	} {
+		if err := store.Add(node); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report, err := DoctorBoundary(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "fail" || report.PluginSurfaceCount == 0 {
+		t.Fatalf("report should fail on active plugin adapter surfacing: %+v", report)
+	}
+	if !hasBoundaryCheck(report, "plugin_adapters_retired", "fail") || !hasBoundaryCheck(report, "plugin_adapters_not_surfacing", "fail") {
+		t.Fatalf("missing failed plugin checks: %+v", report.Checks)
+	}
+}
+
+func hasBoundaryCheck(report BoundaryDoctorReport, name, status string) bool {
+	for _, check := range report.Checks {
+		if check.Name == name && check.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
 func validTopology() Topology {
 	return Topology{
 		SchemaVersion: SchemaVersion,

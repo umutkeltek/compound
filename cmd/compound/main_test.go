@@ -28,6 +28,7 @@ import (
 	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
+	"compound/internal/tooltopology"
 	"compound/internal/work"
 	"gopkg.in/yaml.v3"
 )
@@ -5732,6 +5733,30 @@ func TestRouteEvidenceAuthorityCommandShowsProviderLedgerRows(t *testing.T) {
 	}
 	if report.Recent[0].ID == "" || report.Recent[0].Provider == "" {
 		t.Fatalf("recent route summary missing id/provider: %+v", report.Recent[0])
+	}
+}
+
+func TestCapabilityToolBoundaryDoctorJSON(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdCapability([]string{"import-topology", "--mcporter-json", filepath.Join("..", "..", "fixtures", "tooltopology", "mcporter-list.json")})
+	})
+	captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", "--os-plugin-board-json", filepath.Join("..", "..", "fixtures", "skills", "os-plugin-board.json")})
+	})
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"tool-boundary-doctor", "--json"})
+	})
+	var report tooltopology.BoundaryDoctorReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("tool-boundary-doctor --json should parse: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.MCPCount == 0 || report.ToolCount == 0 || report.PluginAdapterCount == 0 || report.PluginSurfaceCount != 0 {
+		t.Fatalf("bad boundary doctor report: %+v", report)
 	}
 }
 
