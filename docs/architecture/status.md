@@ -8,6 +8,12 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound reviews --area skill-candidates --json` now carries compact graph-coherence fields on queue
+  items when the review artifact has them (`graph_decision_hint`, confidence, duplicate risk, evidence strength,
+  audit risk, top overlap score), so operator surfaces can show external-skill review quality without opening
+  full review bodies. The queue annotation is read-only and does not create candidates, mutate CapabilityGraph,
+  serve skills, execute tools, or promote memory.
+
 - `compound capability skill-candidate-review ... --json` now emits the stored review plus JSON artifact paths,
   including `graph_coherence`, and `skill-candidate-decision ... --json` emits the decision report, so automation
   can consume external-skill review outcomes without scraping human Markdown/text output. These commands remain

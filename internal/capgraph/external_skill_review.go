@@ -857,6 +857,7 @@ func AnnotateSkillCandidateQueue(report *reviewartifact.QueueReport) {
 }
 
 func annotateSkillCandidateQueueItem(item *reviewartifact.QueueItem) {
+	annotateSkillCandidateQueueCoherence(item)
 	if report, ok := skillCandidateDecisionReportFromExtras(item.ExtraPaths); ok {
 		switch report.Status {
 		case "recorded", "candidate_recorded":
@@ -917,6 +918,26 @@ func annotateSkillCandidateQueueItem(item *reviewartifact.QueueItem) {
 	item.Readiness = "ready_to_record"
 	item.BlockedReason = ""
 	item.NextAction = "record reviewed skill candidate decision"
+}
+
+func annotateSkillCandidateQueueCoherence(item *reviewartifact.QueueItem) {
+	if item == nil || strings.TrimSpace(item.JSONPath) == "" {
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return
+	}
+	var review SkillCandidateReview
+	if err := json.Unmarshal(data, &review); err != nil {
+		return
+	}
+	item.GraphDecisionHint = review.GraphCoherence.DecisionHint
+	item.GraphDecisionConfidence = review.GraphCoherence.DecisionConfidence
+	item.GraphDuplicateRisk = review.GraphCoherence.DuplicateRisk
+	item.GraphEvidenceStrength = review.GraphCoherence.EvidenceStrength
+	item.GraphAuditRisk = review.GraphCoherence.AuditRisk
+	item.GraphTopOverlapScore = review.GraphCoherence.TopOverlapScore
 }
 
 func skillCandidateDecisionReportFromExtras(paths []string) (SkillCandidateDecisionReport, bool) {

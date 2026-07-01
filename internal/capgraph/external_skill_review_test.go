@@ -190,6 +190,9 @@ func TestSkillCandidateDecisionCreatesInboxCandidateOnlyAfterReview(t *testing.T
 	if len(queue.Items) != 1 || queue.Items[0].Readiness != "blocked" || !strings.Contains(queue.Items[0].BlockedReason, "skill candidate decision") {
 		t.Fatalf("queue before review = %+v", queue.Items)
 	}
+	if queue.Items[0].GraphDecisionHint != "merge_existing" || queue.Items[0].GraphDuplicateRisk <= 0 || queue.Items[0].GraphEvidenceStrength <= 0 {
+		t.Fatalf("queue should surface graph coherence before decision: %+v", queue.Items[0])
+	}
 	validReview := strings.ReplaceAll(RenderExternalSkillCandidateDecisionYAMLDraft(review), "TODO_decision_create_candidate_merge_existing_reject_reference_only_keep_needs_review", "create_candidate")
 	validReview = strings.ReplaceAll(validReview, "rationale: \"\"", "rationale: \"source reviewed and should enter normal skill-plan intake\"")
 	validReview = strings.ReplaceAll(validReview, "confidence: -1", "confidence: 0.72")
@@ -226,6 +229,9 @@ func TestSkillCandidateDecisionCreatesInboxCandidateOnlyAfterReview(t *testing.T
 	}
 	if reviewItem == nil || reviewItem.Readiness != "no_action" || !strings.Contains(reviewItem.NextAction, "skill-plan") {
 		t.Fatalf("queue after decision = %+v", queue.Items)
+	}
+	if reviewItem.GraphDecisionHint != "merge_existing" || reviewItem.GraphTopOverlapScore == 0 {
+		t.Fatalf("queue should keep graph coherence after decision: %+v", reviewItem)
 	}
 	afterNodes, err := os.ReadFile(nodesPath)
 	if err != nil {
