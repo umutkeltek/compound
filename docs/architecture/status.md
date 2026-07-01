@@ -33,6 +33,13 @@ This file is the current package/command map. `compound architecture doctor --st
   `tr_c8014a23b785`. Plain event import stays observation-only. No claims were promoted and no live
   job-health review was recorded. OS `scripts/emit_event.py --compound-review-root <repo>` now provides the first source-side producer handoff into this path; live proof wrote a control event, imported `trace_48301aa0746a`, wrote `rvf_b2bd69c32eeb`, persisted `act_b52510bbaf36` / `pol_7277b6627cc9`, and closed `work_1b71e2410978` while workbench stayed `open=0`. Existing event producers can opt in without call-site edits through `COMPOUND_REVIEW_ROOT`, `COMPOUND_REVIEW_SUMMARY`, `COMPOUND_EVENT_STREAM`, and `COMPOUND_BIN`; live env-only proof imported `trace_4cd76f324e4c`, wrote `rvf_d26334005ed3`, and closed `work_5b8ed9f3be9f`.
 
+- The OS session trace producer now routes its existing summary event through the env-only
+  Compound review mirror when the local Compound CLI is available. Live proof processed one
+  synthetic session receipt, appended session-trace review material, emitted
+  `session_trace.circulated`, imported five previously unseen control events into the
+  `session-trace` stream, and closed review-finding work including `work_b2270e4efb3e`
+  through `tr_cca01e179292`; workbench stayed `open=0`. This did not mutate scheduler
+  state or apply review decisions.
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority
   `sgsrc_ab7074a89705`, and the status line names `compound://registries/standing-grants` while keeping
