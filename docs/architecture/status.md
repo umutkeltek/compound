@@ -8,6 +8,11 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound capability skill-candidate-review ... --json` now emits the stored review plus JSON artifact paths,
+  including `graph_coherence`, and `skill-candidate-decision ... --json` emits the decision report, so automation
+  can consume external-skill review outcomes without scraping human Markdown/text output. These commands remain
+  review-gated: no skill install/serve, no graph mutation, no marketplace execution, and no memory promotion.
+
 - Skill-candidate review artifacts now include a deterministic `graph_coherence` signal beside the existing
   disposition: exact decision hint, confidence, additive fit, duplicate risk, evidence strength, audit risk,
   top overlap score, and review reasons. The score is derived only from source metadata, audit signals, target

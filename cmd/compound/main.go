@@ -590,15 +590,38 @@ func cmdCapability(args []string) {
 		fmt.Printf("- manifest: %s\n", report.ManifestPath)
 	case "skill-candidate-review":
 		targetPath := flag("--target")
+		jsonOut := hasFlag(rest, "--json")
 		p := posn(map[string]bool{"--target": true})
 		if len(p) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability skill-candidate-review <external-skill-candidate.json> [--target <file-or-dir>]")
+			fmt.Fprintln(os.Stderr, "usage: compound capability skill-candidate-review <external-skill-candidate.json> [--target <file-or-dir>] [--json]")
 			os.Exit(2)
 		}
 		review, err := capgraph.BuildExternalSkillCandidateReview(homePath, p[0], targetPath, time.Now())
 		die(err)
 		paths, err := capgraph.RecordExternalSkillCandidateReview(homePath, review)
 		die(err)
+		if jsonOut {
+			printJSON(struct {
+				Review capgraph.SkillCandidateReview `json:"review"`
+				Paths  struct {
+					PlanPath       string `json:"plan_path"`
+					ReviewPath     string `json:"review_path"`
+					ReviewYAMLPath string `json:"review_yaml_path"`
+				} `json:"paths"`
+			}{
+				Review: review,
+				Paths: struct {
+					PlanPath       string `json:"plan_path"`
+					ReviewPath     string `json:"review_path"`
+					ReviewYAMLPath string `json:"review_yaml_path"`
+				}{
+					PlanPath:       paths.PlanPath,
+					ReviewPath:     paths.ReviewPath,
+					ReviewYAMLPath: paths.ReviewYAMLPath,
+				},
+			})
+			return
+		}
 		fmt.Printf("# capability skill-candidate-review %s\n", review.ID)
 		fmt.Printf("- status: %s\n", review.Status)
 		fmt.Printf("- candidate_kind: %s\n", review.CandidateKind)
@@ -617,15 +640,20 @@ func cmdCapability(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "skill-candidate-decision":
+		jsonOut := hasFlag(rest, "--json")
 		p := posn(nil)
 		if len(p) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability skill-candidate-decision <review.yaml>")
+			fmt.Fprintln(os.Stderr, "usage: compound capability skill-candidate-decision <review.yaml> [--json]")
 			os.Exit(2)
 		}
 		decision, err := capgraph.LoadSkillCandidateDecision(p[0])
 		die(err)
 		report, err := capgraph.RecordSkillCandidateDecision(homePath, decision, p[0], time.Now())
 		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
 		fmt.Printf("# capability skill-candidate-decision %s\n", report.ID)
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- review: %s\n", report.ReviewID)

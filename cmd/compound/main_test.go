@@ -2479,6 +2479,26 @@ func TestCapabilitySkillCandidateReviewWritesReviewOnly(t *testing.T) {
 			t.Fatalf("skill-candidate-review output missing %q:\n%s", want, out)
 		}
 	}
+	jsonOut := captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-review", candidatePath, "--target", targetDir, "--json"})
+	})
+	var parsed struct {
+		Review capgraph.SkillCandidateReview `json:"review"`
+		Paths  struct {
+			PlanPath       string `json:"plan_path"`
+			ReviewPath     string `json:"review_path"`
+			ReviewYAMLPath string `json:"review_yaml_path"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &parsed); err != nil {
+		t.Fatalf("skill-candidate-review --json should parse: %v\n%s", err, jsonOut)
+	}
+	if parsed.Review.ID == "" || parsed.Review.GraphCoherence.DecisionHint != "merge_existing" {
+		t.Fatalf("json review missing graph coherence: %+v", parsed.Review)
+	}
+	if parsed.Paths.PlanPath == "" || parsed.Paths.ReviewPath == "" || parsed.Paths.ReviewYAMLPath == "" {
+		t.Fatalf("json paths missing: %+v", parsed.Paths)
+	}
 	if entries, err := os.ReadDir(filepath.Join(homePath, "reviews", "skill-candidates")); err != nil || len(entries) < 2 {
 		t.Fatalf("expected skill candidate review artifacts, entries=%v err=%v", entries, err)
 	}
@@ -2496,6 +2516,59 @@ func TestCapabilitySkillCandidateReviewWritesReviewOnly(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("skill-candidate-review must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestCapabilitySkillCandidateDecisionJSON(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	candidatePath := writeJSONFile(t, `{
+		"id": "example/skills/web-design",
+		"name": "Web Design",
+		"description": "Review web UI layout and accessibility.",
+		"source": "example/skills",
+		"url": "https://skills.sh/example/skills/web-design",
+		"files": [{"path": "SKILL.md", "contents": "---\nname: web-design\n---\n"}]
+	}`)
+	captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-review", candidatePath})
+	})
+	reviewDir := filepath.Join(homePath, "reviews", "skill-candidates")
+	var reviewYAML string
+	entries, err := os.ReadDir(reviewDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".review.yaml") {
+			reviewYAML = filepath.Join(reviewDir, entry.Name())
+		}
+	}
+	if reviewYAML == "" {
+		t.Fatal("review yaml not written")
+	}
+	body := readFile(t, reviewYAML)
+	body = strings.ReplaceAll(body, "TODO_decision_create_candidate_merge_existing_reject_reference_only_keep_needs_review", "merge_existing")
+	body = strings.ReplaceAll(body, "rationale: \"\"", "rationale: \"existing skill owner should absorb useful parts\"")
+	body = strings.ReplaceAll(body, "confidence: -1", "confidence: 0.75")
+	if err := os.WriteFile(reviewYAML, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	jsonOut := captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-decision", reviewYAML, "--json"})
+	})
+	var report capgraph.SkillCandidateDecisionReport
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("skill-candidate-decision --json should parse: %v\n%s", err, jsonOut)
+	}
+	if report.Status != "recorded" || report.Decision != "merge_existing" || report.ReviewID == "" {
+		t.Fatalf("unexpected decision report: %+v", report)
+	}
+	if report.CandidateID != "" || report.CandidatePath != "" {
+		t.Fatalf("merge_existing should not create a skill candidate: %+v", report)
 	}
 }
 
