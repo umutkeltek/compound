@@ -510,6 +510,52 @@ func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
 	}
 }
 
+func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch plan selects this work"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-plan", "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-plan output missing JSON:\n%s", out)
+	}
+	var plan work.DispatchPlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse dispatch plan: %v\n%s", err, out)
+	}
+	if plan.Status != "ready_to_claim" || plan.Selected == nil || plan.Selected.WorkID != ready.ID {
+		t.Fatalf("dispatch plan = %+v, ready=%s", plan, ready.ID)
+	}
+	if plan.PlanPath == "" {
+		t.Fatalf("dispatch plan did not record runtime artifact: %+v", plan)
+	}
+	if _, err := os.Stat(plan.PlanPath); err != nil {
+		t.Fatalf("dispatch plan artifact missing: %v", err)
+	}
+	after, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get ready work: %v", err)
+	}
+	if after.State != "ready" {
+		t.Fatalf("dispatch plan must not claim work, state=%s", after.State)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "leases", ready.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("dispatch plan must not create lease, stat err=%v", err)
+	}
+}
+
 func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
