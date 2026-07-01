@@ -202,7 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
-	compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ActionIntent -> PolicyDecision; import policy authorities
+	compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
@@ -2552,7 +2552,7 @@ func loadActionIntent(path string) envelope.ActionIntent {
 // (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -2643,6 +2643,76 @@ func cmdPolicy(args []string) {
 			os.Exit(1)
 		}
 		printJSON(report)
+	case "import-operator-prompts":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound policy import-operator-prompts <operator-decision-prompts.json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report, err := policy.ImportOperatorPrompts(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+	case "operator-prompts-authority":
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound policy operator-prompts-authority [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		type operatorPromptsAuthorityReport struct {
+			AuthorityRef      string                                        `json:"authority_ref"`
+			AuthorityPath     string                                        `json:"authority_path"`
+			Installed         bool                                          `json:"installed"`
+			GeneratedAt       string                                        `json:"generated_at,omitempty"`
+			PromptCount       int                                           `json:"prompt_count,omitempty"`
+			HighSeverityCount int                                           `json:"high_severity_count,omitempty"`
+			Prompts           []policy.OperatorPrompt                       `json:"prompts,omitempty"`
+			SourceAuthority   []policy.OperatorPromptsSourceAuthorityRecord `json:"source_authority,omitempty"`
+			SourceRecordPath  string                                        `json:"source_record_path"`
+		}
+		report := operatorPromptsAuthorityReport{
+			AuthorityRef:     policy.OperatorPromptsAuthorityRef,
+			AuthorityPath:    policy.OperatorPromptsPath(homePath),
+			SourceRecordPath: policy.OperatorPromptsSourceAuthorityPath(homePath),
+		}
+		registry, err := policy.LoadOperatorPromptsFromHome(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.Installed = true
+			report.GeneratedAt = registry.GeneratedAt
+			report.PromptCount = len(registry.Prompts)
+			report.HighSeverityCount = 0
+			for _, prompt := range registry.Prompts {
+				if strings.EqualFold(strings.TrimSpace(prompt.Severity), "high") {
+					report.HighSeverityCount++
+				}
+			}
+			report.Prompts = registry.Prompts
+		}
+		records, err := policy.LoadOperatorPromptsSourceAuthority(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.SourceAuthority = records
+		}
+		printJSON(report)
 	case "operator-authority":
 		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound policy operator-authority [--json]")
@@ -2693,7 +2763,7 @@ func cmdPolicy(args []string) {
 		}
 		printJSON(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority> ...")
 		os.Exit(2)
 	}
 }

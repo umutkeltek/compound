@@ -39,6 +39,9 @@ loads that Compound authority, records the authority ref on `PolicyDecision.evid
 public, financial, destructive, and security classes through the existing gate. `compound policy
 operator-authority [--json]` is the read-only machine handoff for operator surfaces; source views stay
 evidence/rollback inputs after import.
+`compound policy import-operator-prompts <operator-decision-prompts.json>` imports operator prompt-card registries
+into `compound://registries/operator-decision-prompts`; `compound policy operator-prompts-authority [--json]`
+is the read-only machine handoff for served prompt cards.
 
 | Contract | Purpose | Lifecycle |
 |---|---|---|

@@ -1067,6 +1067,46 @@ func TestPolicyOperatorStateAuthorityFeedsPolicyConfig(t *testing.T) {
 	}
 }
 
+func TestPolicyOperatorPromptsAuthorityReportsPromptCards(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	source := filepath.Join("..", "..", "fixtures", "policy", "operator-decision-prompts.json")
+	importOut := captureStdout(t, func() {
+		cmdPolicy([]string{"import-operator-prompts", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/operator-decision-prompts"`,
+		`"prompt_count": 1`,
+		`"high_severity_count": 1`,
+		`"authority_status": "compound_primary"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import operator prompts output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	authorityOut := captureStdout(t, func() {
+		cmdPolicy([]string{"operator-prompts-authority"})
+	})
+	authorityJSONOut := captureStdout(t, func() {
+		cmdPolicy([]string{"operator-prompts-authority", "--json"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"prompt_count": 1`,
+		`"source_role": "evidence_only_input_after_import"`,
+		`"id": "revenue-primary:fixture"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("operator prompts authority output missing %q:\n%s", want, authorityOut)
+		}
+		if !strings.Contains(authorityJSONOut, want) {
+			t.Fatalf("operator prompts authority --json output missing %q:\n%s", want, authorityJSONOut)
+		}
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound policy import-operator-prompts <operator-decision-prompts.json>` now imports operator prompt-card registries into `compound://registries/operator-decision-prompts`, records source-authority rows, and exposes `operator-prompts-authority --json` for machine consumers. Umut OS dashboard read-model now prefers this Compound authority for the `operator-decision-prompt-cards` card, and served `/operate` renders the authority/source/fallback strip next to the visible prompt card.
+
 - `compound policy placement-authority --json` now gives operator surfaces an explicit machine-readable PlacementGuard authority handoff over `compound://registries/placement-rules`. Umut OS status calls the explicit JSON form, records `placement_rules` in `dashboard/os-status-latest.json`, and prints the owner/open-write counts while keeping the generated placement view fallback/evidence-only.
 - OS `/operate` served UI now renders the same PlacementGuard authority strip (`authority_ref`, `owner_count`, `open_write_count`, `source_authority_id`, fallback/evidence-only placement view role), so the dispatch gate prerequisite is visible beside operator autonomy rather than buried only in pulse/status JSON.
 
