@@ -233,6 +233,30 @@ func TestSkillCandidateDecisionCreatesInboxCandidateOnlyAfterReview(t *testing.T
 	if reviewItem.GraphDecisionHint != "merge_existing" || reviewItem.GraphTopOverlapScore == 0 {
 		t.Fatalf("queue should keep graph coherence after decision: %+v", reviewItem)
 	}
+	reviewedYAML := readReviewTestFile(t, paths.ReviewYAMLPath)
+	refreshed, err := BuildExternalSkillCandidateReview(home, candidatePath, "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordExternalSkillCandidateReview(home, refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if got := readReviewTestFile(t, paths.ReviewYAMLPath); got != reviewedYAML || strings.Contains(got, "TODO_decision") {
+		t.Fatalf("review refresh must preserve reviewed YAML:\nbefore=%s\nafter=%s", reviewedYAML, got)
+	}
+	refreshedQueue, err := reviewartifactQueueForSkillCandidates(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewItem = nil
+	for i := range refreshedQueue.Items {
+		if refreshedQueue.Items[i].ID == review.ID {
+			reviewItem = &refreshedQueue.Items[i]
+		}
+	}
+	if reviewItem == nil || reviewItem.Readiness != "no_action" || reviewItem.Status != "candidate_recorded" {
+		t.Fatalf("queue after refresh should stay terminal: %+v", refreshedQueue.Items)
+	}
 	afterNodes, err := os.ReadFile(nodesPath)
 	if err != nil {
 		t.Fatal(err)
@@ -274,6 +298,15 @@ func writeExternalSkillCandidateRaw(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func readReviewTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func reviewartifactQueueForSkillCandidates(home string) (reviewartifact.QueueReport, error) {

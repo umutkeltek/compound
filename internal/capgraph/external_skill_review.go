@@ -161,6 +161,21 @@ func LoadExternalSkillCandidate(path string) (ExternalSkillCandidate, error) {
 	return candidate, nil
 }
 
+func LoadSkillCandidateReview(path string) (SkillCandidateReview, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SkillCandidateReview{}, fmt.Errorf("read skill candidate review %s: %w", path, err)
+	}
+	var review SkillCandidateReview
+	if err := json.Unmarshal(data, &review); err != nil {
+		return SkillCandidateReview{}, fmt.Errorf("parse skill candidate review %s: %w", path, err)
+	}
+	if strings.TrimSpace(review.ID) == "" {
+		return SkillCandidateReview{}, fmt.Errorf("skill candidate review %s missing id", path)
+	}
+	return review, nil
+}
+
 func (c ExternalSkillCandidate) Validate() error {
 	if strings.TrimSpace(c.ID) == "" && strings.TrimSpace(c.Name) == "" && strings.TrimSpace(c.Slug) == "" {
 		return fmt.Errorf("id, name, or slug required")
@@ -256,13 +271,33 @@ func RecordExternalSkillCandidateReview(homePath string, review SkillCandidateRe
 		ReviewPath:     filepath.Join(dir, review.ID+".md"),
 		ReviewYAMLPath: filepath.Join(dir, review.ID+".review.yaml"),
 	}
+	report, hasDecision := skillCandidateDecisionReportForReview(dir, review.ID)
+	if hasDecision {
+		review.Status = report.Status
+		if report.CandidateID != "" {
+			review.NextAction = "reviewed skill candidate recorded; continue with capability skill-plan"
+		} else {
+			review.NextAction = "skill candidate intake decision recorded"
+		}
+	}
 	if _, err := reviewartifact.Write(homePath, skillCandidateReviewArea, review.ID, review, " ", RenderExternalSkillCandidateReview(review)); err != nil {
 		return out, err
+	}
+	if hasDecision {
+		return out, nil
 	}
 	if _, err := reviewartifact.WriteRaw(homePath, skillCandidateReviewArea, review.ID+".review.yaml", []byte(RenderExternalSkillCandidateDecisionYAMLDraft(review))); err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+func skillCandidateDecisionReportForReview(dir, reviewID string) (SkillCandidateDecisionReport, bool) {
+	matches, err := filepath.Glob(filepath.Join(dir, reviewID+".*.decision.json"))
+	if err != nil {
+		return SkillCandidateDecisionReport{}, false
+	}
+	return skillCandidateDecisionReportFromExtras(matches)
 }
 
 func RenderExternalSkillCandidateDecisionYAMLDraft(review SkillCandidateReview) string {

@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound capability skill-candidate-review --json` now reloads the stored review artifact after write, so a refresh after `skill-candidate-decision` preserves the terminal recorded/candidate-recorded status and does not rewrite reviewed `.review.yaml` drafts back to TODO. Live proof on the `skills-sh-web-design-guidelines` review kept the reviewed YAML hash stable while returning `status=recorded`, `next_action=skill candidate intake decision recorded`. This remains review-only: no CapabilityGraph mutation, skill serving/install, marketplace execution, or memory promotion.
+
 - `compound reviews --area skill-candidates --json` now carries compact graph-coherence fields on queue
   items when the review artifact has them (`graph_decision_hint`, confidence, duplicate risk, evidence strength,
   audit risk, top overlap score), so operator surfaces can show external-skill review quality without opening

@@ -600,6 +600,9 @@ func cmdCapability(args []string) {
 		die(err)
 		paths, err := capgraph.RecordExternalSkillCandidateReview(homePath, review)
 		die(err)
+		storedReview, err := capgraph.LoadSkillCandidateReview(paths.PlanPath)
+		die(err)
+		review = storedReview
 		if jsonOut {
 			printJSON(struct {
 				Review capgraph.SkillCandidateReview `json:"review"`

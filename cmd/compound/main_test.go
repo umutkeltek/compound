@@ -2570,6 +2570,28 @@ func TestCapabilitySkillCandidateDecisionJSON(t *testing.T) {
 	if report.CandidateID != "" || report.CandidatePath != "" {
 		t.Fatalf("merge_existing should not create a skill candidate: %+v", report)
 	}
+	reviewedYAML := readFile(t, reviewYAML)
+	refreshJSONOut := captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-review", candidatePath, "--json"})
+	})
+	var refreshParsed struct {
+		Review capgraph.SkillCandidateReview `json:"review"`
+		Paths  struct {
+			ReviewYAMLPath string `json:"review_yaml_path"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(refreshJSONOut), &refreshParsed); err != nil {
+		t.Fatalf("refreshed skill-candidate-review --json should parse: %v\n%s", err, refreshJSONOut)
+	}
+	if refreshParsed.Review.Status != "recorded" || refreshParsed.Review.NextAction != "skill candidate intake decision recorded" {
+		t.Fatalf("refreshed review should keep terminal decision status: %+v", refreshParsed.Review)
+	}
+	if got := readFile(t, reviewYAML); got != reviewedYAML || strings.Contains(got, "TODO_decision") {
+		t.Fatalf("review refresh should preserve reviewed YAML:\nbefore=%s\nafter=%s", reviewedYAML, got)
+	}
+	if refreshParsed.Paths.ReviewYAMLPath != reviewYAML {
+		t.Fatalf("refreshed review yaml path = %q, want %q", refreshParsed.Paths.ReviewYAMLPath, reviewYAML)
+	}
 }
 
 func TestCapabilitySkillCandidateDecisionFeedsSkillPlan(t *testing.T) {
