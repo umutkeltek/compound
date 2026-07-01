@@ -34,6 +34,8 @@ type ExternalRepoIntakeReport struct {
 	SourceObservationID   string                       `json:"source_observation_id,omitempty"`
 	SourceCandidateIDs    []string                     `json:"source_candidate_ids,omitempty"`
 	NoPromoteIDs          []string                     `json:"no_promote_ids,omitempty"`
+	RepoQuery             string                       `json:"repo_query,omitempty"`
+	Matches               []ExternalRepoIntakeDecision `json:"matches,omitempty"`
 	HighValue             []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
 	Recent                []ExternalRepoIntakeDecision `json:"recent,omitempty"`
 	Boundaries            []string                     `json:"boundaries"`
@@ -85,7 +87,7 @@ type externalRepoIntakeSummaryFile struct {
 	created time.Time
 }
 
-func ExternalRepoIntakeReportForHome(homePath string) (ExternalRepoIntakeReport, error) {
+func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (ExternalRepoIntakeReport, error) {
 	report := ExternalRepoIntakeReport{
 		SchemaVersion: ExternalRepoIntakeReportSchemaVersion,
 		AuthorityRef:  ExternalRepoIntakeAuthorityRef,
@@ -160,6 +162,14 @@ func ExternalRepoIntakeReportForHome(homePath string) (ExternalRepoIntakeReport,
 
 	metadata := loadExternalRepoIntakeMap(latest.MapPath)
 	decisions := enrichExternalRepoDecisions(latest.Decisions, metadata)
+	query := ""
+	if len(repoQuery) > 0 {
+		query = strings.TrimSpace(repoQuery[0])
+	}
+	if query != "" {
+		report.RepoQuery = query
+		report.Matches = matchExternalRepoDecisions(decisions, query)
+	}
 	report.HighValue = filterExternalRepoDecisions(decisions, "keep_needs_review", 12)
 	report.Recent = limitExternalRepoDecisions(decisions, 12)
 	if len(metadata.Boundaries) > 0 {
@@ -217,6 +227,40 @@ func enrichExternalRepoDecisions(decisions []ExternalRepoIntakeDecision, metadat
 		out = append(out, decision)
 	}
 	return out
+}
+
+func matchExternalRepoDecisions(decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {
+	needle := normalizeExternalRepoQuery(query)
+	if needle == "" {
+		return nil
+	}
+	var out []ExternalRepoIntakeDecision
+	for _, decision := range decisions {
+		haystack := normalizeExternalRepoQuery(decision.Repo)
+		if haystack == needle || strings.Contains(haystack, needle) || strings.Contains(needle, haystack) {
+			out = append(out, decision)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Repo != out[j].Repo {
+			return out[i].Repo < out[j].Repo
+		}
+		return out[i].Lane < out[j].Lane
+	})
+	return out
+}
+
+func normalizeExternalRepoQuery(value string) string {
+	v := strings.ToLower(strings.TrimSpace(value))
+	v = strings.TrimSuffix(v, ".git")
+	for _, prefix := range []string{
+		"https://github.com/",
+		"http://github.com/",
+		"github.com/",
+	} {
+		v = strings.TrimPrefix(v, prefix)
+	}
+	return strings.Trim(v, "/")
 }
 
 func filterExternalRepoDecisions(decisions []ExternalRepoIntakeDecision, decision string, limit int) []ExternalRepoIntakeDecision {

@@ -534,7 +534,8 @@ func cmdCapability(args []string) {
 			)
 		}
 	case "external-intake":
-		report, err := capgraph.ExternalRepoIntakeReportForHome(homePath)
+		repoQuery := flagValue(rest, "--repo")
+		report, err := capgraph.ExternalRepoIntakeReportForHome(homePath, repoQuery)
 		die(err)
 		if hasFlag(rest, "--json") {
 			printJSON(report)
@@ -552,6 +553,13 @@ func cmdCapability(args []string) {
 		fmt.Printf("- reference_only: %d\n", report.ReferenceOnlyCount)
 		if report.SourceObservationID != "" {
 			fmt.Printf("- source_observation: %s\n", report.SourceObservationID)
+		}
+		if report.RepoQuery != "" {
+			fmt.Printf("- repo_query: %s matches=%d\n", report.RepoQuery, len(report.Matches))
+			for _, row := range report.Matches {
+				fmt.Printf("- repo_match: %s decision=%s lane=%s owner=%s next=%s boundary=%s\n", row.Repo, row.Decision, row.Lane, row.Owner, row.NextReviewStep, row.NotToDo)
+			}
+			return
 		}
 		for _, row := range report.HighValue {
 			fmt.Printf("- review_next: %s decision=%s lane=%s owner=%s\n", row.Repo, row.Decision, row.Lane, row.Owner)

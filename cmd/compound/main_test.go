@@ -5803,6 +5803,22 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if len(report.HighValue) != 1 || report.HighValue[0].Owner != "deep-research" || report.HighValue[0].NextReviewStep != "run freshness eval" {
 		t.Fatalf("high-value metadata missing: %+v", report.HighValue)
 	}
+	filteredJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--repo", "github.com/example/research", "--json"})
+	})
+	var filtered capgraph.ExternalRepoIntakeReport
+	if err := json.Unmarshal([]byte(filteredJSON), &filtered); err != nil {
+		t.Fatalf("external-intake --repo --json should parse: %v\n%s", err, filteredJSON)
+	}
+	if filtered.RepoQuery != "github.com/example/research" || len(filtered.Matches) != 1 || filtered.Matches[0].Repo != "example/research" {
+		t.Fatalf("filtered repo report missing match: %+v", filtered)
+	}
+	humanOut := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--repo", "research"})
+	})
+	if !strings.Contains(humanOut, "- repo_query: research matches=1") || !strings.Contains(humanOut, "- repo_match: example/research decision=keep_needs_review") {
+		t.Fatalf("human repo lookup missing match:\n%s", humanOut)
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {

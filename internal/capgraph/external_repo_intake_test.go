@@ -108,6 +108,23 @@ func TestExternalRepoIntakeReportForHome(t *testing.T) {
 	if report.HighValue[0].Owner != "deep-research" || report.HighValue[0].NextReviewStep != "run freshness eval" {
 		t.Fatalf("high value metadata = %+v", report.HighValue[0])
 	}
+	filtered, err := ExternalRepoIntakeReportForHome(home, "https://github.com/example/high-value.git")
+	if err != nil {
+		t.Fatalf("filtered report should not fail: %v", err)
+	}
+	if filtered.RepoQuery == "" || len(filtered.Matches) != 1 || filtered.Matches[0].Repo != "example/high-value" {
+		t.Fatalf("filtered matches = %+v", filtered)
+	}
+	if filtered.Matches[0].NotToDo != "do not auto-run social research" {
+		t.Fatalf("filtered metadata missing: %+v", filtered.Matches[0])
+	}
+	partial, err := ExternalRepoIntakeReportForHome(home, "merge")
+	if err != nil {
+		t.Fatalf("partial report should not fail: %v", err)
+	}
+	if len(partial.Matches) != 1 || partial.Matches[0].Repo != "example/merge" {
+		t.Fatalf("partial matches = %+v", partial.Matches)
+	}
 	if len(report.Boundaries) != 2 || report.Boundaries[1] != "no install" {
 		t.Fatalf("boundaries = %+v", report.Boundaries)
 	}
