@@ -1011,6 +1011,9 @@ func TestPolicyOperatorStateAuthorityFeedsPolicyConfig(t *testing.T) {
 	authorityOut := captureStdout(t, func() {
 		cmdPolicy([]string{"operator-authority"})
 	})
+	authorityJSONOut := captureStdout(t, func() {
+		cmdPolicy([]string{"operator-authority", "--json"})
+	})
 	for _, want := range []string{
 		`"installed": true`,
 		`"autonomy_level": "L1"`,
@@ -1018,6 +1021,9 @@ func TestPolicyOperatorStateAuthorityFeedsPolicyConfig(t *testing.T) {
 	} {
 		if !strings.Contains(authorityOut, want) {
 			t.Fatalf("operator authority output missing %q:\n%s", want, authorityOut)
+		}
+		if !strings.Contains(authorityJSONOut, want) {
+			t.Fatalf("operator authority --json output missing %q:\n%s", want, authorityJSONOut)
 		}
 	}
 

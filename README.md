@@ -109,7 +109,8 @@ Execution and policy:
   `compound policy placement-authority` reports that handoff.
 - `compound policy import-operator-state <operator-state.json>` installs the
   global autonomy ceiling into `COMPOUND_HOME/registries/operator-state.json`;
-  `compound policy operator-authority` reports handoff.
+  `compound policy operator-authority [--json]` reports the machine-readable
+  handoff for OS/operator consumers.
 - `compound hook ...` and `compound harness ...` normalize harness events into
   spine objects; `compound hook pre-tool-use --enforce ...` returns policy gate
   exit codes for wrapper enforcement.

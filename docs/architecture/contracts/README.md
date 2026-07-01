@@ -35,7 +35,9 @@ that handoff the generated source view is evidence/rollback input, and PreToolUs
 `compound policy import-operator-state <operator-state.json>` imports the global autonomy ceiling into
 `COMPOUND_HOME/registries/operator-state.json` as `compound://registries/operator-state`; policy evaluation
 loads that Compound authority, records the authority ref on `PolicyDecision.evidence_refs[]`, and still holds
-public, financial, destructive, and security classes through the existing gate.
+public, financial, destructive, and security classes through the existing gate. `compound policy
+operator-authority [--json]` is the read-only machine handoff for operator surfaces; source views stay
+evidence/rollback inputs after import.
 
 | Contract | Purpose | Lifecycle |
 |---|---|---|

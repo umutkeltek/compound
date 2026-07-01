@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound policy operator-authority --json` now gives operator surfaces an explicit machine-readable authority handoff over `compound://registries/operator-state`, while preserving the existing default JSON output. Umut OS status calls the explicit JSON form, keeping `registry/operator-state.json` fallback/evidence-only after import rather than a scraped or inferred authority surface.
+
 - `decisions repair-apply --write-reviewed` now enforces the reviewed-apply boundary at the decision owner seam: write mode fails unless the repair plan status is `reviewed`, `ready_to_apply`, or `approved`. Dry-run remains available for review, but unreviewed writes record a blocked apply report sidecar and exit nonzero without mutating owner files. Live proof against `dlrp_0557bdde37ed` exits 1, keeps the queue at 4 top-level artifacts, and records `status=blocked`, `plan_status=review_required`.
 
 - `compound reviews [--json] [--area A]` now gives actionable owner-review queue items: decision-lifecycle plans carry `readiness`, safe dry-run commands, and reviewed-write commands marked `requires_review`, while apply/review sidecar JSON files stay grouped under their source plan. Umut OS dashboard read-model emits `ready_to_apply` plus per-item actions, and served `/operate` renders readiness plus the first action command. Live proof reports 4 decision lifecycle artifacts, 3 `needs_review`, 0 `ready_to_apply`, 1 `no_action`; no owner files were mutated.
