@@ -691,6 +691,9 @@ func TestDispatchStepRecordsNoAction(t *testing.T) {
 	if result.CanContinue || len(result.ContinueCommand) != 0 {
 		t.Fatalf("dispatch step no-op should not continue: can=%v command=%v", result.CanContinue, result.ContinueCommand)
 	}
+	if result.WaitReason != "no_open_work" || !contains(result.BlockedOn, "work.ready_or_source_packet") {
+		t.Fatalf("dispatch step no-op wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
 	if _, err := os.Stat(result.ResultPath); err != nil {
 		t.Fatalf("dispatch step no-op result not recorded: %v", err)
 	}
@@ -718,5 +721,67 @@ func TestDispatchStepStopsAfterRunningOnlyAdvance(t *testing.T) {
 	}
 	if result.NextAction != "advance verifying, completed, blocked, held, or failed" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
 		t.Fatalf("running-only post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
+	}
+	if result.WaitReason != "run_evidence" || !contains(result.BlockedOn, "work.run_evidence:"+claimed.ID) {
+		t.Fatalf("running-only wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+}
+
+func TestDispatchStepWaitsForReviewWork(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "held work needs review", State: "held"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "needs_review" || result.Action != "none" || result.CanContinue {
+		t.Fatalf("dispatch step should wait for review: %+v", result)
+	}
+	if result.WaitReason != "needs_review" || !contains(result.BlockedOn, "work.review:"+held.ID) {
+		t.Fatalf("review wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+}
+
+func TestDispatchStepWaitsForCloseProof(t *testing.T) {
+	s := newStore(t)
+	running := runningWork(t, s, "verifying waits for close proof")
+	verifying, err := s.Advance(running.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "in_progress_only" || result.Action != "none" || result.CanContinue {
+		t.Fatalf("dispatch step should wait for close proof: %+v", result)
+	}
+	if result.WaitReason != "close_proof" || !contains(result.BlockedOn, "work.close_proof:"+verifying.ID) {
+		t.Fatalf("close proof wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+}
+
+func TestDispatchStepWaitsForOtherActorClaim(t *testing.T) {
+	s := newStore(t)
+	created, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "other actor claim waits"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(created.ID, "claude", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "in_progress_only" || result.Action != "none" || result.CanContinue {
+		t.Fatalf("dispatch step should wait for other actor claim: %+v", result)
+	}
+	if result.WaitReason != "claimed_by_other_actor" || !contains(result.BlockedOn, "work.claimed_by_other_actor:"+claimed.ID) {
+		t.Fatalf("other actor wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
 	}
 }

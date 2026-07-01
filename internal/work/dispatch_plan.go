@@ -212,6 +212,8 @@ type DispatchStepResult struct {
 	NextAction      string                 `json:"next_action,omitempty"`
 	CanContinue     bool                   `json:"can_continue"`
 	ContinueCommand []string               `json:"continue_command,omitempty"`
+	WaitReason      string                 `json:"wait_reason,omitempty"`
+	BlockedOn       []string               `json:"blocked_on,omitempty"`
 	NoAction        string                 `json:"no_action,omitempty"`
 	Warnings        []string               `json:"warnings,omitempty"`
 	Integrity       []string               `json:"integrity,omitempty"`
@@ -925,6 +927,9 @@ func (s *Store) recordDispatchStep(now time.Time, result DispatchStepResult) (Di
 	result.PostCounts = &post.Counts
 	result.NextAction = dispatchStepNextAction(result, post)
 	result.CanContinue, result.ContinueCommand = dispatchStepContinuation(result, post)
+	if !result.CanContinue {
+		result.WaitReason, result.BlockedOn = dispatchStepWait(result, post)
+	}
 	result.Integrity = mergeUnique(result.Integrity, post.Integrity)
 	path, err := s.RecordDispatchStep(result)
 	if err != nil {
@@ -972,6 +977,58 @@ func dispatchStepContinuation(result DispatchStepResult, post WorkbenchReport) (
 		}
 	}
 	return false, nil
+}
+
+func dispatchStepWait(result DispatchStepResult, post WorkbenchReport) (string, []string) {
+	if post.Counts.Open == 0 {
+		return "no_open_work", []string{"work.ready_or_source_packet"}
+	}
+	actor := strings.TrimSpace(result.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	var review []string
+	var runEvidence []string
+	var closeProof []string
+	var claimedOther []string
+	var readyState []string
+	var unknown []string
+	for _, item := range post.Open {
+		switch item.State {
+		case "held", "blocked":
+			review = append(review, "work.review:"+item.WorkID)
+		case "running":
+			runEvidence = append(runEvidence, "work.run_evidence:"+item.WorkID)
+		case "verifying":
+			if !hasCloseProofEvidence(item) {
+				closeProof = append(closeProof, "work.close_proof:"+item.WorkID)
+			}
+		case "claimed":
+			if item.ClaimedBy != actor {
+				claimedOther = append(claimedOther, "work.claimed_by_other_actor:"+item.WorkID)
+			}
+		case "proposed", "admitted":
+			readyState = append(readyState, "work.ready_state:"+item.WorkID)
+		case "ready":
+			// dispatchStepContinuation would have returned true for ready work.
+		default:
+			unknown = append(unknown, "work.state:"+item.WorkID)
+		}
+	}
+	switch {
+	case len(review) > 0 || result.Status == "needs_review":
+		return "needs_review", mergeUnique(review, runEvidence, closeProof, claimedOther, readyState, unknown)
+	case len(runEvidence) > 0:
+		return "run_evidence", mergeUnique(runEvidence, closeProof, claimedOther, readyState, unknown)
+	case len(closeProof) > 0:
+		return "close_proof", mergeUnique(closeProof, claimedOther, readyState, unknown)
+	case len(claimedOther) > 0:
+		return "claimed_by_other_actor", mergeUnique(claimedOther, readyState, unknown)
+	case len(readyState) > 0:
+		return "not_ready", mergeUnique(readyState, unknown)
+	default:
+		return "no_dispatchable_work", mergeUnique(unknown)
+	}
 }
 
 func (s *Store) RecordDispatchStep(result DispatchStepResult) (string, error) {
