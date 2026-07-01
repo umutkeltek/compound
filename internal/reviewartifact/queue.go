@@ -31,6 +31,7 @@ type QueueReport struct {
 type QueueCounts struct {
 	Total          int            `json:"total"`
 	ReviewRequired int            `json:"review_required"`
+	ReadyToApply   int            `json:"ready_to_apply"`
 	OK             int            `json:"ok"`
 	ByArea         map[string]int `json:"by_area"`
 	ByStatus       map[string]int `json:"by_status"`
@@ -53,6 +54,19 @@ type QueueItem struct {
 	CandidateID  string   `json:"candidate_id,omitempty"`
 	RepairCount  int      `json:"repair_count,omitempty"`
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	Readiness    string   `json:"readiness,omitempty"`
+	NextAction   string   `json:"next_action,omitempty"`
+	Actions      []Action `json:"actions,omitempty"`
+}
+
+// Action is a non-mutating operator hint attached by the domain owner that
+// knows how a review artifact is safely consumed.
+type Action struct {
+	ID             string   `json:"id"`
+	Label          string   `json:"label"`
+	Command        string   `json:"command"`
+	Argv           []string `json:"argv,omitempty"`
+	RequiresReview bool     `json:"requires_review,omitempty"`
 }
 
 // Queue scans COMPOUND_HOME/reviews for review artifacts. It never mutates
@@ -89,6 +103,9 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 		if filepath.Ext(path) != ".json" {
 			return nil
 		}
+		if !coreReviewJSON(path) {
+			return nil
+		}
 		item, err := queueItem(root, path)
 		if err != nil {
 			return err
@@ -112,6 +129,9 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 		report.Counts.Total++
 		report.Counts.ByArea[item.Area]++
 		report.Counts.ByStatus[item.Status]++
+		if item.Readiness == "ready_to_apply" {
+			report.Counts.ReadyToApply++
+		}
 		switch item.Status {
 		case "ok", "applied", "resolved", "accepted":
 			report.Counts.OK++
@@ -178,6 +198,16 @@ func queueItem(root, path string) (QueueItem, error) {
 	}
 	item.ExtraPaths = extras
 	return item, nil
+}
+
+func coreReviewJSON(path string) bool {
+	name := filepath.Base(path)
+	for _, suffix := range []string{".apply.json", ".reviewed.json"} {
+		if strings.HasSuffix(name, suffix) {
+			return false
+		}
+	}
+	return true
 }
 
 func queueExtraPaths(dir, stem, jsonPath, mdPath string) ([]string, error) {

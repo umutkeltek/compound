@@ -238,7 +238,8 @@ func RecordLifecycleRepairApplyReport(homePath string, report LifecycleRepairApp
 	if strings.TrimSpace(homePath) == "" {
 		return "", fmt.Errorf("COMPOUND_HOME required")
 	}
-	return reviewartifact.WriteJSON(homePath, "decision-lifecycle-repairs", report.ID+".apply.json", report, "  ")
+	name := report.PlanID + "." + report.ID + ".apply.json"
+	return reviewartifact.WriteJSON(homePath, lifecycleRepairArea, name, report, "  ")
 }
 
 func RenderLifecycleRepairReview(plan LifecycleRepairPlan) string {

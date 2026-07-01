@@ -2982,11 +2982,12 @@ func cmdReviews(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	decisions.AnnotateLifecycleRepairQueue(&report)
 	if jsonOut {
 		printJSON(report)
 		return
 	}
-	fmt.Printf("reviews total=%d review_required=%d ok=%d\n", report.Counts.Total, report.Counts.ReviewRequired, report.Counts.OK)
+	fmt.Printf("reviews total=%d review_required=%d ready_to_apply=%d ok=%d\n", report.Counts.Total, report.Counts.ReviewRequired, report.Counts.ReadyToApply, report.Counts.OK)
 	if len(report.Counts.ByArea) > 0 {
 		fmt.Println("areas:")
 		for _, area := range sortedMapKeys(report.Counts.ByArea) {
@@ -3005,10 +3006,21 @@ func cmdReviews(args []string) {
 	}
 	fmt.Println("items:")
 	for _, item := range report.Items {
-		fmt.Printf("- %s/%s status=%s repairs=%d\n", item.Area, item.ID, item.Status, item.RepairCount)
+		fmt.Printf("- %s/%s status=%s repairs=%d", item.Area, item.ID, item.Status, item.RepairCount)
+		if item.Readiness != "" {
+			fmt.Printf(" readiness=%s", item.Readiness)
+		}
+		fmt.Println()
 		fmt.Printf(" json: %s\n", item.JSONPath)
 		if item.MarkdownPath != "" {
 			fmt.Printf(" review: %s\n", item.MarkdownPath)
+		}
+		for _, action := range item.Actions {
+			fmt.Printf(" action:%s %s", action.ID, action.Command)
+			if action.RequiresReview {
+				fmt.Print(" (requires review)")
+			}
+			fmt.Println()
 		}
 	}
 }

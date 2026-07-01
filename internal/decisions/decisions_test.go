@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 	"compound/internal/writeback"
 )
 
@@ -1036,6 +1037,60 @@ Required front matter:
 	}
 	if report.Status != SourceFormatDoctorOK {
 		t.Fatalf("report = %+v", report)
+	}
+}
+
+func TestAnnotateLifecycleRepairQueueAddsApplyActions(t *testing.T) {
+	report := reviewartifact.QueueReport{
+		Counts: reviewartifact.QueueCounts{},
+		Items: []reviewartifact.QueueItem{
+			{
+				Area:        lifecycleRepairArea,
+				ID:          "dlrp_review",
+				Status:      "review_required",
+				JSONPath:    "/tmp/plan with space.json",
+				RepairCount: 2,
+			},
+			{
+				Area:        lifecycleRepairArea,
+				ID:          "dlrp_ok",
+				Status:      "ok",
+				JSONPath:    "/tmp/ok.json",
+				RepairCount: 0,
+			},
+			{
+				Area:        lifecycleRepairArea,
+				ID:          "dlrp_ready",
+				Status:      "reviewed",
+				JSONPath:    "/tmp/ready.json",
+				RepairCount: 1,
+			},
+			{
+				Area:     "route-policy",
+				ID:       "rpp_other",
+				Status:   "review_required",
+				JSONPath: "/tmp/route.json",
+			},
+		},
+	}
+	AnnotateLifecycleRepairQueue(&report)
+
+	review := report.Items[0]
+	if review.Readiness != "needs_review" || len(review.Actions) != 2 {
+		t.Fatalf("review-required item not actionable: %+v", review)
+	}
+	if !review.Actions[1].RequiresReview || !strings.Contains(review.Actions[1].Command, "'/tmp/plan with space.json'") {
+		t.Fatalf("write action should stay review-gated and shell-safe: %+v", review.Actions[1])
+	}
+	if report.Items[1].Readiness != "no_action" || len(report.Items[1].Actions) != 0 {
+		t.Fatalf("ok zero-repair item should have no action: %+v", report.Items[1])
+	}
+	ready := report.Items[2]
+	if report.Counts.ReadyToApply != 1 || ready.Readiness != "ready_to_apply" || ready.Actions[1].RequiresReview {
+		t.Fatalf("reviewed item should be ready to apply: counts=%+v item=%+v", report.Counts, ready)
+	}
+	if report.Items[3].Readiness != "" || len(report.Items[3].Actions) != 0 {
+		t.Fatalf("non-decision area should stay generic: %+v", report.Items[3])
 	}
 }
 

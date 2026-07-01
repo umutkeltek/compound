@@ -292,6 +292,13 @@ func TestQueueSummarizesReviewArtifacts(t *testing.T) {
 	if _, err := WriteRaw(home, "decision-lifecycle-repairs", "dlrp_a.review.yaml", []byte("status: pending\n")); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := WriteJSON(home, "decision-lifecycle-repairs", "dlrp_a.dlra_1.apply.json", map[string]any{
+		"id":      "dlra_1",
+		"plan_id": "dlrp_a",
+		"status":  "ok",
+	}, " "); err != nil {
+		t.Fatal(err)
+	}
 	_, err = Write(home, "decision-lifecycle-repairs", "dlrp_ok", map[string]any{
 		"id":     "dlrp_ok",
 		"status": "ok",
@@ -324,7 +331,7 @@ func TestQueueSummarizesReviewArtifacts(t *testing.T) {
 	if report.Items[0].ID != "dlrp_a" || report.Items[0].Status != "review_required" {
 		t.Fatalf("review-required item should sort first: %+v", report.Items)
 	}
-	if report.Items[0].MarkdownPath == "" || len(report.Items[0].ExtraPaths) != 1 {
+	if report.Items[0].MarkdownPath == "" || len(report.Items[0].ExtraPaths) != 2 {
 		t.Fatalf("expected markdown and draft sibling: %+v", report.Items[0])
 	}
 	if strings.Join(report.Items[0].EvidenceRefs, ",") != "e1,e2" {
