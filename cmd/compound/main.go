@@ -199,7 +199,7 @@ usage:
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
@@ -4131,7 +4131,7 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -4448,10 +4448,65 @@ func cmdWork(args []string) {
 		w, err := store.RecordAction(workID, ai, pd, time.Now())
 		die(err)
 		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
+	case "close-plan":
+		usage := "usage: compound work close-plan <work_id> --outcome completed|failed|cancelled --move-type <type> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--json", "--dry-run":
+			case "--outcome", "--move-type", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				if strings.HasPrefix(rest[i], "-") {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+			}
+		}
+		if pos() == "" || flag("--outcome") == "" || flag("--move-type") == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		plan, err := store.ClosePlan(pos(), time.Now(), work.ClosePlanOptions{
+			Actor:         flag("--actor"),
+			Outcome:       flag("--outcome"),
+			MoveType:      flag("--move-type"),
+			Capability:    flag("--capability"),
+			Action:        flag("--action"),
+			MutationClass: flag("--mutation-class"),
+			Reversibility: flag("--reversibility"),
+			BlastRadius:   flag("--blast-radius"),
+			TargetKind:    flag("--target-kind"),
+			TargetID:      flag("--target-id"),
+			TargetPath:    flag("--target-path"),
+			Record:        !has("--dry-run"),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(plan)
+			return
+		}
+		fmt.Printf("close-plan %s status=%s work=%s outcome=%s move_type=%s policy=%s allowed=%v\n", plan.ID, plan.Status, plan.WorkID, plan.Outcome, plan.MoveType, plan.Policy.Outcome, plan.Policy.Allowed)
+		if plan.Policy.StandingGrantID != "" {
+			fmt.Printf("standing_grant: %s\n", plan.Policy.StandingGrantID)
+		}
+		if len(plan.CloseCommand) > 0 {
+			fmt.Printf("command: %s\n", strings.Join(plan.CloseCommand, " "))
+		}
+		if plan.NoAction != "" {
+			fmt.Printf("no_action: %s\n", plan.NoAction)
+		}
+		if plan.PlanPath != "" {
+			fmt.Printf("plan: %s\n", plan.PlanPath)
+		}
 	case "close":
 		res, err := store.Close(pos(), work.CloseInput{
 			Outcome:                    flag("--outcome"),
 			MoveType:                   flag("--move-type"),
+			Actor:                      firstNonEmpty(flag("--by"), flag("--actor")),
 			Summary:                    flag("--summary"),
 			Changed:                    has("--changed"),
 			MissedCapabilities:         splitCSV(flag("--missed")),
@@ -4463,12 +4518,12 @@ func cmdWork(args []string) {
 			MemoryRejected:             splitCSV(flag("--memory-rejected")),
 		}, time.Now())
 		die(err)
-		fmt.Printf("%s closed: %s  move_type=%s  receipt=%s  transition=%s\n",
-			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Receipt.ID, res.Transition.ID)
+		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
+			res.Work.ID, res.Work.State, res.Receipt.MoveType, res.Work.PolicyDecisionID, res.Receipt.ID, res.Transition.ID)
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 }

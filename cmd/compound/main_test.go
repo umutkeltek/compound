@@ -694,6 +694,62 @@ func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "close plan command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(ready.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(ready.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow); err != nil {
+		t.Fatalf("advance work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", ready.ID, "--outcome", "completed", "--move-type", "control_plane_repair", "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("close-plan output missing JSON:\n%s", out)
+	}
+	var plan work.ClosePlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse close plan: %v\n%s", err, out)
+	}
+	if plan.Status != "close_policy_allowed" || !plan.Policy.Allowed || plan.PlanPath == "" {
+		t.Fatalf("close plan policy not allowed/recorded: %+v", plan)
+	}
+	afterPlan, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get after plan: %v", err)
+	}
+	if afterPlan.State != "running" || afterPlan.IDs.TransitionID != "" {
+		t.Fatalf("close plan must not mutate work: %+v", afterPlan)
+	}
+	out = captureStdout(t, func() {
+		cmdWork([]string{"close", ready.ID, "--outcome", "completed", "--move-type", "control_plane_repair", "--summary", "close proof", "--proof", "proof:cli-close", "--by", "codex"})
+	})
+	if !strings.Contains(out, "policy=") {
+		t.Fatalf("close output missing policy id:\n%s", out)
+	}
+	closed, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get closed work: %v", err)
+	}
+	if closed.State != "completed" || closed.PolicyDecisionID == "" || closed.IDs.TransitionID == "" {
+		t.Fatalf("close command did not record policy/transition: %+v", closed)
+	}
+}
+
 func TestWorkDispatchPlanCommandImportsSourcePacket(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -1,0 +1,213 @@
+package work
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"compound/internal/envelope"
+	"compound/internal/policy"
+)
+
+const ClosePlanSchemaVersion = "compound.work_close_plan.v0.1"
+
+type ClosePlanOptions struct {
+	Actor         string
+	Outcome       string
+	MoveType      string
+	Capability    string
+	Action        string
+	MutationClass string
+	Reversibility string
+	BlastRadius   string
+	TargetKind    string
+	TargetID      string
+	TargetPath    string
+	Record        bool
+}
+
+type ClosePolicySummary struct {
+	ActionIntentID   string   `json:"action_intent_id"`
+	PolicyDecisionID string   `json:"policy_decision_id"`
+	PolicySource     string   `json:"policy_source,omitempty"`
+	Outcome          string   `json:"outcome"`
+	Allowed          bool     `json:"allowed"`
+	StandingGrantID  string   `json:"standing_grant_id,omitempty"`
+	ExpiresAt        string   `json:"expires_at,omitempty"`
+	Reasons          []string `json:"reasons,omitempty"`
+	Obligations      []string `json:"obligations,omitempty"`
+	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
+}
+
+type ClosePlan struct {
+	SchemaVersion string                  `json:"schema_version"`
+	ID            string                  `json:"id"`
+	GeneratedAt   string                  `json:"generated_at"`
+	Status        string                  `json:"status"`
+	Mode          string                  `json:"mode"`
+	Actor         string                  `json:"actor"`
+	WorkID        string                  `json:"work_id"`
+	WorkState     string                  `json:"work_state"`
+	Outcome       string                  `json:"outcome"`
+	MoveType      string                  `json:"move_type"`
+	WorkOwner     string                  `json:"work_owner,omitempty"`
+	PlanPath      string                  `json:"plan_path,omitempty"`
+	CloseCommand  []string                `json:"close_command,omitempty"`
+	Policy        ClosePolicySummary      `json:"policy"`
+	ActionIntent  envelope.ActionIntent   `json:"action_intent"`
+	Decision      envelope.PolicyDecision `json:"policy_decision"`
+	NoAction      string                  `json:"no_action,omitempty"`
+	Warnings      []string                `json:"warnings,omitempty"`
+}
+
+func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (ClosePlan, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return ClosePlan{}, fmt.Errorf("close-plan requires <work_id>")
+	}
+	outcome := strings.TrimSpace(opts.Outcome)
+	if outcome == "" {
+		return ClosePlan{}, fmt.Errorf("close-plan requires --outcome <state>")
+	}
+	moveType := strings.TrimSpace(opts.MoveType)
+	if moveType == "" {
+		return ClosePlan{}, fmt.Errorf("close-plan requires --move-type <type>")
+	}
+	w, err := s.Get(workID)
+	if err != nil {
+		return ClosePlan{}, err
+	}
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	ai := s.closeActionIntent(w, actor, outcome, moveType, now, opts)
+	if err := ai.Validate(); err != nil {
+		return ClosePlan{}, err
+	}
+	cfg, source, err := policy.LoadConfig(s.home)
+	if err != nil {
+		return ClosePlan{}, err
+	}
+	pd := policy.Evaluate(ai, cfg, now)
+	if err := pd.Validate(); err != nil {
+		return ClosePlan{}, err
+	}
+	plan := ClosePlan{
+		SchemaVersion: ClosePlanSchemaVersion,
+		ID:            idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Status:        "not_closeable",
+		Mode:          "proposal_only",
+		Actor:         actor,
+		WorkID:        w.ID,
+		WorkState:     w.State,
+		Outcome:       outcome,
+		MoveType:      moveType,
+		WorkOwner:     w.Owner,
+		Policy:        summarizeClosePolicy(pd, source),
+		ActionIntent:  ai,
+		Decision:      pd,
+		Warnings: []string{
+			"does not close work",
+			"does not emit receipt or transition",
+			"does not enforce policy; it reports close gate decision",
+		},
+	}
+	switch {
+	case !terminalStates[outcome]:
+		plan.NoAction = fmt.Sprintf("invalid close outcome %q", outcome)
+	case !oneOf(moveType, envelope.MoveTypes):
+		plan.NoAction = fmt.Sprintf("invalid move_type %q", moveType)
+	case w.State == outcome || canTransition(w.State, outcome):
+		plan.CloseCommand = []string{"compound", "work", "close", w.ID, "--outcome", outcome, "--move-type", moveType, "--by", actor}
+		if policy.Allowed(pd) {
+			plan.Status = "close_policy_allowed"
+		} else {
+			plan.Status = "close_policy_blocked"
+			plan.NoAction = "close lifecycle-ready but policy does not allow it"
+		}
+	default:
+		plan.NoAction = fmt.Sprintf("cannot close from state %q to %q", w.State, outcome)
+	}
+	if opts.Record {
+		path, err := s.RecordClosePlan(plan)
+		if err != nil {
+			return ClosePlan{}, err
+		}
+		plan.PlanPath = path
+	}
+	return plan, nil
+}
+
+func (s *Store) RecordClosePlan(plan ClosePlan) (string, error) {
+	if strings.TrimSpace(plan.ID) == "" {
+		return "", os.ErrInvalid
+	}
+	dir := filepath.Join(s.home, "close-plans")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, plan.ID+".json")
+	if err := s.writeJSON(path, &plan); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) closeActionIntent(w envelope.WorkEnvelope, actor, outcome, moveType string, now time.Time, opts ClosePlanOptions) envelope.ActionIntent {
+	targetID := strings.TrimSpace(opts.TargetID)
+	if targetID == "" {
+		targetID = w.ID
+	}
+	targetPath := strings.TrimSpace(opts.TargetPath)
+	if targetPath == "" {
+		targetPath = s.workPath(w.ID)
+	}
+	capability := orDefault(opts.Capability, "work.close")
+	action := orDefault(opts.Action, "close_work_as_"+outcome)
+	targetKind := orDefault(opts.TargetKind, "work")
+	mutationClass := orDefault(opts.MutationClass, "local_reversible")
+	reversibility := orDefault(opts.Reversibility, "manual")
+	blastRadius := orDefault(opts.BlastRadius, "local")
+	return envelope.ActionIntent{
+		Header: newHeader(
+			envelope.SVActionIntent,
+			idFor("act_", capability, action, targetKind, targetID, targetPath, mutationClass, reversibility, blastRadius, actor, outcome, moveType, ts(now)),
+			now,
+			w.ID,
+			w.IDs.ContextPackID,
+			w.Privacy,
+			w.Risk,
+		),
+		Actor:         actor,
+		Capability:    capability,
+		Action:        action,
+		Target:        envelope.ActionTarget{Kind: targetKind, ID: targetID, Path: targetPath},
+		MutationClass: mutationClass,
+		Reversibility: reversibility,
+		BlastRadius:   blastRadius,
+		Preview:       fmt.Sprintf("close work %s from %s to %s move_type %s actor %s", w.ID, w.State, outcome, moveType, actor),
+		RollbackPlan:  fmt.Sprintf("reopen work from %s if receipt/transition proof is invalid", outcome),
+	}
+}
+
+func summarizeClosePolicy(pd envelope.PolicyDecision, source string) ClosePolicySummary {
+	if strings.TrimSpace(source) == "" {
+		source = "builtin:default"
+	}
+	return ClosePolicySummary{
+		ActionIntentID:   pd.ActionIntentID,
+		PolicyDecisionID: pd.ID,
+		PolicySource:     source,
+		Outcome:          pd.Outcome,
+		Allowed:          policy.Allowed(pd),
+		StandingGrantID:  pd.StandingGrantID,
+		ExpiresAt:        pd.ExpiresAt,
+		Reasons:          append([]string{}, pd.Reasons...),
+		Obligations:      append([]string{}, pd.Obligations...),
+		EvidenceRefs:     append([]string{}, pd.EvidenceRefs...),
+	}
+}

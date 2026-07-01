@@ -355,6 +355,7 @@ func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelop
 type CloseInput struct {
 	Outcome                    string // completed | failed | cancelled
 	MoveType                   string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
+	Actor                      string
 	Summary                    string
 	Changed                    bool
 	MissedCapabilities         []string
@@ -393,6 +394,15 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
 		return res, fmt.Errorf("close --move-type must be one of %v, got %q", envelope.MoveTypes, in.MoveType)
 	}
+	plan, err := s.ClosePlan(workID, now, ClosePlanOptions{Actor: in.Actor, Outcome: in.Outcome, MoveType: in.MoveType})
+	if err != nil {
+		return res, err
+	}
+	if !plan.Policy.Allowed {
+		return res, fmt.Errorf("cannot close work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
+	}
+	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.PolicyDecisionID = plan.Decision.ID
 	capabilityRefs, err := s.capabilityRefsForContextPack(w.IDs.ContextPackID)
 	if err != nil {
 		return res, err
@@ -463,6 +473,12 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	}
 
 	// Persist the emitted envelopes, then land the work terminal and link the transition.
+	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+		return res, err
+	}
+	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+		return res, err
+	}
 	if err := s.writeJSON(s.envPath(rec.ID), &rec); err != nil {
 		return res, err
 	}
@@ -475,7 +491,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return res, err
 	}
-	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType, Attached: []string{rec.ID, tr.ID}}); err != nil {
+	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}}); err != nil {
 		return res, err
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
@@ -543,7 +559,7 @@ func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
 
 func internalLifecycleCapability(capability string) bool {
 	switch capability {
-	case "work.claim", "work.advance":
+	case "work.claim", "work.advance", "work.close":
 		return true
 	default:
 		return false
