@@ -2306,6 +2306,13 @@ func cmdMemory(args []string) {
 		} else {
 			r = store.Doctor()
 		}
+		if has("--json") {
+			printJSON(r)
+			if !r.OK {
+				os.Exit(1)
+			}
+			return
+		}
 		for _, h := range r.Hops {
 			fmt.Printf("%-15s %-8s %s\n", h.Name, h.Status, h.Detail)
 		}

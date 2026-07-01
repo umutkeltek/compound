@@ -4817,6 +4817,23 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 	if !strings.Contains(out, "sync/embedding") || !strings.Contains(out, "ok       reference") || !strings.Contains(out, "ledger_unchanged=true") {
 		t.Fatalf("memory doctor should prove configured engine hop:\n%s", out)
 	}
+	jsonOut := captureStdout(t, func() { cmdMemory([]string{"doctor", "--json"}) })
+	var report mem.Report
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("memory doctor --json should parse: %v\n%s", err, jsonOut)
+	}
+	if !report.OK {
+		t.Fatalf("memory doctor --json should be ok: %+v", report)
+	}
+	var foundEngineHop bool
+	for _, hop := range report.Hops {
+		if hop.Name == "sync/embedding" && hop.Status == "ok" && strings.Contains(hop.Detail, "ledger_unchanged=true") {
+			foundEngineHop = true
+		}
+	}
+	if !foundEngineHop {
+		t.Fatalf("memory doctor --json missing configured engine hop: %+v", report.Hops)
+	}
 }
 
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
