@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Umut OS dashboard/read-model and `/operate` now surface Compound's read-only skill-source doctor as an operator card, not just a CLI status field. The generated card `compound-skill-source-doctor` reports authority `compound://registries/capability-graph#tool:compound.skill-source-doctor`, `status=ok`, `root_count=3`, `skill_file_count=174`, `error_count=0`, and per-root counts OS `62`, Codex `57`, Claude `55`. Verification: refreshed `os status --json`, rebuilt dashboard read model, checked generated card JSON, and built the skills console. Boundary: dashboard/status remain read-only projections; no external repo cloned, no skill installed or served, no hook/MCP/plugin activated, no CapabilityGraph mutation from the dashboard, no project-registry mutation, no memory promotion.
+
 - Umut OS `os status --json` now consumes Compound's
 `tool:compound.skill-source-doctor` as an operator-visible skill-source health
 reader. The status snapshot emits `skill_source_doctor` with authority ref
