@@ -10,25 +10,43 @@ import (
 const DispatchPlanSchemaVersion = "compound.work_dispatch_plan.v0.1"
 
 type DispatchPlanOptions struct {
-	Actor       string
-	Record      bool
-	RecentLimit int
+	Actor                 string
+	Record                bool
+	RecentLimit           int
+	SourcePacketPath      string
+	SourcePacketState     string
+	SourcePacketOwner     string
+	SourcePacketRisk      string
+	SourcePacketPrivacy   string
+	SourcePacketContextID string
 }
 
 type DispatchPlan struct {
-	SchemaVersion string             `json:"schema_version"`
-	ID            string             `json:"id"`
-	GeneratedAt   string             `json:"generated_at"`
-	Status        string             `json:"status"`
-	Mode          string             `json:"mode"`
-	Actor         string             `json:"actor"`
-	PlanPath      string             `json:"plan_path,omitempty"`
-	Counts        WorkbenchCounts    `json:"counts"`
-	Selected      *DispatchPlanItem  `json:"selected,omitempty"`
-	Candidates    []DispatchPlanItem `json:"candidates"`
-	NoAction      string             `json:"no_action,omitempty"`
-	Warnings      []string           `json:"warnings,omitempty"`
-	Integrity     []string           `json:"integrity,omitempty"`
+	SchemaVersion string              `json:"schema_version"`
+	ID            string              `json:"id"`
+	GeneratedAt   string              `json:"generated_at"`
+	Status        string              `json:"status"`
+	Mode          string              `json:"mode"`
+	Actor         string              `json:"actor"`
+	PlanPath      string              `json:"plan_path,omitempty"`
+	Source        *DispatchPlanSource `json:"source,omitempty"`
+	Counts        WorkbenchCounts     `json:"counts"`
+	Selected      *DispatchPlanItem   `json:"selected,omitempty"`
+	Candidates    []DispatchPlanItem  `json:"candidates"`
+	NoAction      string              `json:"no_action,omitempty"`
+	Warnings      []string            `json:"warnings,omitempty"`
+	Integrity     []string            `json:"integrity,omitempty"`
+}
+
+type DispatchPlanSource struct {
+	Kind         string `json:"kind"`
+	Path         string `json:"path"`
+	Created      bool   `json:"created"`
+	WorkID       string `json:"work_id"`
+	State        string `json:"state"`
+	PacketTitle  string `json:"packet_title,omitempty"`
+	EvidenceRef  string `json:"evidence_ref,omitempty"`
+	SourceDigest string `json:"source_digest,omitempty"`
 }
 
 type DispatchPlanItem struct {
@@ -49,6 +67,33 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 	if actor == "" {
 		actor = "codex"
 	}
+	var source *DispatchPlanSource
+	if strings.TrimSpace(opts.SourcePacketPath) != "" {
+		state := strings.TrimSpace(opts.SourcePacketState)
+		if state == "" {
+			state = "ready"
+		}
+		imported, err := s.ImportPacket(opts.SourcePacketPath, PacketImportOptions{
+			Owner:         opts.SourcePacketOwner,
+			State:         state,
+			Risk:          opts.SourcePacketRisk,
+			Privacy:       opts.SourcePacketPrivacy,
+			ContextPackID: opts.SourcePacketContextID,
+		}, now)
+		if err != nil {
+			return DispatchPlan{}, err
+		}
+		source = &DispatchPlanSource{
+			Kind:         "packet",
+			Path:         opts.SourcePacketPath,
+			Created:      imported.Created,
+			WorkID:       imported.Work.ID,
+			State:        imported.Work.State,
+			PacketTitle:  imported.PacketTitle,
+			EvidenceRef:  imported.EvidenceRef,
+			SourceDigest: imported.SourceDigest,
+		}
+	}
 	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: opts.RecentLimit})
 	if err != nil {
 		return DispatchPlan{}, err
@@ -60,6 +105,7 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		Status:        "no_open_work",
 		Mode:          "proposal_only",
 		Actor:         actor,
+		Source:        source,
 		Counts:        report.Counts,
 		Candidates:    []DispatchPlanItem{},
 		Warnings: []string{
@@ -67,6 +113,7 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 			"does not execute work",
 			"does not evaluate policy",
 			"does not close work",
+			"source packet import creates only source-backed WorkEnvelope state",
 		},
 		Integrity: append([]string{}, report.Integrity...),
 	}

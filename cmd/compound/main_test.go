@@ -556,6 +556,35 @@ func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 	}
 }
 
+func TestWorkDispatchPlanCommandImportsSourcePacket(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-plan", "--actor", "codex", "--source-packet", packetPath, "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-plan output missing JSON:\n%s", out)
+	}
+	var plan work.DispatchPlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse dispatch plan: %v\n%s", err, out)
+	}
+	if plan.Source == nil || plan.Source.Kind != "packet" || !plan.Source.Created {
+		t.Fatalf("dispatch plan source missing: %+v", plan.Source)
+	}
+	if plan.Status != "ready_to_claim" || plan.Selected == nil || plan.Selected.WorkID != plan.Source.WorkID {
+		t.Fatalf("dispatch plan did not select packet work: %+v", plan)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "leases", plan.Source.WorkID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("dispatch plan must not create lease, stat err=%v", err)
+	}
+}
+
 func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

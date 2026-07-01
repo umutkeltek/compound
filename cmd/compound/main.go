@@ -4223,23 +4223,34 @@ func cmdWork(args []string) {
 			fmt.Printf("%s  %-10s %s\n", w.ID, w.State, w.SuccessPredicate)
 		}
 	case "dispatch-plan":
+		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run":
-			case "--actor":
+			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy":
 				if i+1 >= len(rest) {
-					fmt.Fprintln(os.Stderr, "usage: compound work dispatch-plan [--actor A] [--json] [--dry-run]")
+					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
 				}
 				i++
 			default:
-				fmt.Fprintln(os.Stderr, "usage: compound work dispatch-plan [--actor A] [--json] [--dry-run]")
+				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
 		}
+		if has("--dry-run") && flag("--source-packet") != "" {
+			fmt.Fprintln(os.Stderr, "usage: --dry-run cannot be combined with --source-packet because packet import writes source-backed work; use a temp COMPOUND_HOME for preview")
+			os.Exit(2)
+		}
 		plan, err := store.DispatchPlan(time.Now(), work.DispatchPlanOptions{
-			Actor:  flag("--actor"),
-			Record: !has("--dry-run"),
+			Actor:                 flag("--actor"),
+			Record:                !has("--dry-run"),
+			SourcePacketPath:      flag("--source-packet"),
+			SourcePacketState:     flag("--source-state"),
+			SourcePacketOwner:     flag("--source-owner"),
+			SourcePacketRisk:      flag("--source-risk"),
+			SourcePacketPrivacy:   flag("--source-privacy"),
+			SourcePacketContextID: flag("--source-context-pack"),
 		})
 		die(err)
 		if has("--json") {
