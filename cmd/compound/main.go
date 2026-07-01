@@ -240,7 +240,7 @@ compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | p
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
-compound event import-os <events.ndjson>                       OS-style append-only events -> TraceEnvelope evidence
+compound event import-os <events.ndjson> | event authority [--json] OS-style append-only events -> TraceEnvelope evidence
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
@@ -797,8 +797,47 @@ func cmdSource(args []string) {
 }
 
 func cmdEvent(args []string) {
+	if len(args) >= 1 && args[0] == "authority" {
+		jsonOut := false
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--json":
+				jsonOut = true
+			default:
+				fmt.Fprintln(os.Stderr, "event authority: unknown arg", arg)
+				os.Exit(2)
+			}
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		report, err := eventsource.LoadAuthority(homePath, 5)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# event trace authority\n\n")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- traces: %d\n", report.TraceCount)
+		if len(report.SourceAuthority) > 0 {
+			latest := report.SourceAuthority[len(report.SourceAuthority)-1]
+			fmt.Printf("- source_authority: %s\n", latest.ID)
+			fmt.Printf("- source: %s\n", latest.SourcePath)
+		}
+		for _, trace := range report.RecentTraces {
+			fmt.Printf("- trace: %s %s %s\n", trace.ID, trace.SourceKind, trace.Summary)
+		}
+		return
+	}
 	if len(args) < 2 || args[0] != "import-os" {
-		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME]")
+		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] | event authority [--json]")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")

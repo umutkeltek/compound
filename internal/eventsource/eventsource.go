@@ -35,8 +35,30 @@ type ImportReport struct {
 	TraceIDs          []string              `json:"trace_ids"`
 }
 
+type AuthorityReport struct {
+	SchemaVersion       string                  `json:"schema_version"`
+	Status              string                  `json:"status"`
+	Installed           bool                    `json:"installed"`
+	AuthorityRef        string                  `json:"authority_ref"`
+	TraceCount          int                     `json:"trace_count"`
+	SourceAuthorityPath string                  `json:"source_authority_path"`
+	SourceAuthority     []SourceAuthorityRecord `json:"source_authority"`
+	RecentTraces        []TraceSummary          `json:"recent_traces"`
+}
+
+type TraceSummary struct {
+	ID            string `json:"id"`
+	CreatedAt     string `json:"created_at"`
+	Stream        string `json:"stream,omitempty"`
+	SourceKind    string `json:"source_kind,omitempty"`
+	EventClass    string `json:"event_class,omitempty"`
+	MutationClass string `json:"mutation_class,omitempty"`
+	Summary       string `json:"summary,omitempty"`
+}
+
 const (
 	TraceEventsAuthorityRef    = "compound://events/trace-envelopes"
+	TraceAuthorityReportSchema = "compound.event_trace_authority_report.v0.1"
 	SourceAuthoritySchema      = "compound.event_source_authority.v0.1"
 	eventSourceAuthorityFile   = "event-source-authority.jsonl"
 	eventSourceImportCommand   = "event import-os"
@@ -425,6 +447,104 @@ func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
 		records = append(records, rec)
 	}
 	return records, nil
+}
+
+func LoadAuthority(homePath string, recentLimit int) (AuthorityReport, error) {
+	if recentLimit < 0 {
+		recentLimit = 0
+	}
+	records, err := LoadSourceAuthority(homePath)
+	if err != nil {
+		return AuthorityReport{}, err
+	}
+	traceCount, err := countTraceFiles(homePath)
+	if err != nil {
+		return AuthorityReport{}, err
+	}
+	recent, err := loadRecentTraceSummaries(homePath, recentLimit)
+	if err != nil {
+		return AuthorityReport{}, err
+	}
+	installed := traceCount > 0 || len(records) > 0
+	status := "missing"
+	if installed {
+		status = "ok"
+	}
+	return AuthorityReport{
+		SchemaVersion:       TraceAuthorityReportSchema,
+		Status:              status,
+		Installed:           installed,
+		AuthorityRef:        TraceEventsAuthorityRef,
+		TraceCount:          traceCount,
+		SourceAuthorityPath: SourceAuthorityPath(homePath),
+		SourceAuthority:     records,
+		RecentTraces:        recent,
+	}, nil
+}
+
+func countTraceFiles(homePath string) (int, error) {
+	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), "trace_") && strings.HasSuffix(entry.Name(), ".json") {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func loadRecentTraceSummaries(homePath string, limit int) ([]TraceSummary, error) {
+	if limit == 0 {
+		return nil, nil
+	}
+	path := filepath.Join(homePath, "events", "traces.ndjson")
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	var lines []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) > limit {
+			lines = lines[1:]
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	summaries := make([]TraceSummary, 0, len(lines))
+	for i, line := range lines {
+		var trace envelope.TraceEnvelope
+		if err := json.Unmarshal([]byte(line), &trace); err != nil {
+			return nil, fmt.Errorf("parse trace summary line %d: %w", i+1, err)
+		}
+		summaries = append(summaries, TraceSummary{
+			ID:            trace.ID,
+			CreatedAt:     trace.CreatedAt,
+			Stream:        trace.Source.Stream,
+			SourceKind:    trace.Source.SourceKind,
+			EventClass:    trace.Source.EventClass,
+			MutationClass: trace.MutationClass,
+			Summary:       trace.Summary,
+		})
+	}
+	return summaries, nil
 }
 
 func appendSourceAuthority(homePath string, rec SourceAuthorityRecord) error {

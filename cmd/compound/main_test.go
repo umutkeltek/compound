@@ -3288,6 +3288,22 @@ func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 		authority[0].AuthorityStatus != "compound_primary" {
 		t.Fatalf("event source authority = %+v", authority)
 	}
+	authorityOut := captureStdout(t, func() {
+		cmdEvent([]string{"authority", "--json"})
+	})
+	var authorityReport eventsource.AuthorityReport
+	if err := json.Unmarshal([]byte(authorityOut), &authorityReport); err != nil {
+		t.Fatalf("parse event authority: %v\n%s", err, authorityOut)
+	}
+	if authorityReport.AuthorityRef != eventsource.TraceEventsAuthorityRef || !authorityReport.Installed || authorityReport.TraceCount != 2 {
+		t.Fatalf("event authority report = %+v", authorityReport)
+	}
+	if len(authorityReport.SourceAuthority) != 1 || authorityReport.SourceAuthority[0].ID == "" {
+		t.Fatalf("event authority source rows = %+v", authorityReport.SourceAuthority)
+	}
+	if len(authorityReport.RecentTraces) != 2 || authorityReport.RecentTraces[0].ID == "" {
+		t.Fatalf("event authority recent traces = %+v", authorityReport.RecentTraces)
+	}
 	tracePath := filepath.Join(homePath, "events", "traces.ndjson")
 	lines := splitJSONLines(readFile(t, tracePath))
 	if len(lines) != 2 {
