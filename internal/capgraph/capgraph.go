@@ -66,6 +66,11 @@ type Edge struct {
 
 type Store struct{ home string }
 
+type Stats struct {
+	NodeCount int `json:"node_count"`
+	EdgeCount int `json:"edge_count"`
+}
+
 func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
@@ -569,6 +574,18 @@ func (s *Store) addEdgeOnce(edge Edge, existing map[string]bool, now time.Time) 
 }
 
 func (s *Store) List() ([]Node, error) { return s.loadNodes() }
+
+func (s *Store) Stats() (Stats, error) {
+	nodes, err := s.loadNodes()
+	if err != nil {
+		return Stats{}, err
+	}
+	edges, err := s.loadEdges()
+	if err != nil {
+		return Stats{}, err
+	}
+	return Stats{NodeCount: len(nodes), EdgeCount: len(edges)}, nil
+}
 
 // --- load (append-only, last-wins by id) ---
 

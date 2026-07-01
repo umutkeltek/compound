@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound capability import-surfacing-misses` imported the live OS skill-audit report `skill-surfacing-proposals.json` into the persistent CapabilityGraph: `golang-testing` received eight `missed_when` feedback edges from receipt `2026-07-01-compound-session-trace-producer-proof`, backed by SourceObservation `srcobs_060613eaef0f` and no-promote `nop_0f831712ef4849b8`. Surfacing for `tests essential prove routing checklist coverage` now ranks `skill:golang-testing` at `7.4` via `trigger x weight=2.0 + missed_when=5.4`. `capability authority --json` now exposes current graph totals separately from source-handoff totals, and Umut OS `os status` plus dashboard read-model consume current graph `489` nodes / `58` edges while preserving source totals `504` / `48`. This changes visibility/learning only: no skill execution, install/serve, source-owner mutation, claim promotion, or marketplace action.
+
 - `compound capability skill-candidate-review --json` now reloads the stored review artifact after write, so a refresh after `skill-candidate-decision` preserves the terminal recorded/candidate-recorded status and does not rewrite reviewed `.review.yaml` drafts back to TODO. Live proof on the `skills-sh-web-design-guidelines` review kept the reviewed YAML hash stable while returning `status=recorded`, `next_action=skill candidate intake decision recorded`. This remains review-only: no CapabilityGraph mutation, skill serving/install, marketplace execution, or memory promotion.
 
 - `compound reviews --area skill-candidates --json` now carries compact graph-coherence fields on queue

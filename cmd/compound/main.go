@@ -438,15 +438,33 @@ func cmdCapability(args []string) {
 	case "authority":
 		records, err := capgraph.LoadSourceAuthority(homePath)
 		die(err)
+		stats, err := store.Stats()
+		die(err)
+		sourceNodeCount := 0
+		sourceEdgeCount := 0
+		for _, rec := range records {
+			sourceNodeCount += len(rec.NodeIDs)
+			sourceEdgeCount += len(rec.EdgeIDs)
+		}
 		if hasFlag(rest, "--json") {
 			out := struct {
-				SchemaVersion string                           `json:"schema_version"`
-				AuthorityRef  string                           `json:"authority_ref"`
-				Records       []capgraph.SourceAuthorityRecord `json:"records"`
+				SchemaVersion     string                           `json:"schema_version"`
+				AuthorityRef      string                           `json:"authority_ref"`
+				NodeCount         int                              `json:"node_count"`
+				EdgeCount         int                              `json:"edge_count"`
+				SourceRecordCount int                              `json:"source_record_count"`
+				SourceNodeCount   int                              `json:"source_node_count"`
+				SourceEdgeCount   int                              `json:"source_edge_count"`
+				Records           []capgraph.SourceAuthorityRecord `json:"records"`
 			}{
-				SchemaVersion: capgraph.SourceAuthoritySchemaVersion,
-				AuthorityRef:  "compound://registries/capability-graph",
-				Records:       records,
+				SchemaVersion:     capgraph.SourceAuthoritySchemaVersion,
+				AuthorityRef:      "compound://registries/capability-graph",
+				NodeCount:         stats.NodeCount,
+				EdgeCount:         stats.EdgeCount,
+				SourceRecordCount: len(records),
+				SourceNodeCount:   sourceNodeCount,
+				SourceEdgeCount:   sourceEdgeCount,
+				Records:           records,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -457,6 +475,7 @@ func cmdCapability(args []string) {
 			fmt.Println("(no capability source authority records)")
 			return
 		}
+		fmt.Printf("compound://registries/capability-graph nodes=%d edges=%d source_records=%d source_nodes=%d source_edges=%d\n", stats.NodeCount, stats.EdgeCount, len(records), sourceNodeCount, sourceEdgeCount)
 		for _, rec := range records {
 			fmt.Printf("%s %s source=%s authority=%s nodes=%d edges=%d retires=%s\n",
 				rec.ID,
