@@ -605,6 +605,9 @@ func TestDispatchStepClaimsReadyWork(t *testing.T) {
 	if result.NextAction != "advance running or release to ready" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
 		t.Fatalf("dispatch step post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
 	}
+	if !result.CanContinue || len(result.ContinueCommand) != 5 || result.ContinueCommand[2] != "dispatch-step" || result.ContinueCommand[4] != "codex" {
+		t.Fatalf("dispatch step continuation not surfaced: can=%v command=%v", result.CanContinue, result.ContinueCommand)
+	}
 	after, err := s.Get(ready.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -641,6 +644,9 @@ func TestDispatchStepImportsSourcePacketAndClaimsIt(t *testing.T) {
 	}
 	if result.NextAction != "advance running or release to ready" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
 		t.Fatalf("source packet dispatch step post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
+	}
+	if !result.CanContinue || len(result.ContinueCommand) != 5 || result.ContinueCommand[2] != "dispatch-step" || result.ContinueCommand[4] != "codex" {
+		t.Fatalf("source packet dispatch step continuation not surfaced: can=%v command=%v", result.CanContinue, result.ContinueCommand)
 	}
 	after, err := s.Get(source.WorkID)
 	if err != nil {
@@ -682,7 +688,35 @@ func TestDispatchStepRecordsNoAction(t *testing.T) {
 	if result.NextAction != "workbench has no open work" || result.PostCounts == nil || result.PostCounts.Open != 0 {
 		t.Fatalf("dispatch step no-op post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
 	}
+	if result.CanContinue || len(result.ContinueCommand) != 0 {
+		t.Fatalf("dispatch step no-op should not continue: can=%v command=%v", result.CanContinue, result.ContinueCommand)
+	}
 	if _, err := os.Stat(result.ResultPath); err != nil {
 		t.Fatalf("dispatch step no-op result not recorded: %v", err)
+	}
+}
+
+func TestDispatchStepStopsAfterRunningOnlyAdvance(t *testing.T) {
+	s := newStore(t)
+	claimedCandidate, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed advances then waits for run evidence"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(claimedCandidate.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "running" || result.Action != "advance" || result.WorkID != claimed.ID {
+		t.Fatalf("dispatch step should advance claimed work: %+v", result)
+	}
+	if result.CanContinue || len(result.ContinueCommand) != 0 {
+		t.Fatalf("running-only post-state should stop for external run evidence: can=%v command=%v", result.CanContinue, result.ContinueCommand)
+	}
+	if result.NextAction != "advance verifying, completed, blocked, held, or failed" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
+		t.Fatalf("running-only post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
 	}
 }

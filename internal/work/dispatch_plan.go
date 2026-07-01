@@ -210,6 +210,8 @@ type DispatchStepResult struct {
 	DispatchAdvance *DispatchAdvanceResult `json:"dispatch_advance,omitempty"`
 	DispatchClaim   *DispatchClaimResult   `json:"dispatch_claim,omitempty"`
 	NextAction      string                 `json:"next_action,omitempty"`
+	CanContinue     bool                   `json:"can_continue"`
+	ContinueCommand []string               `json:"continue_command,omitempty"`
 	NoAction        string                 `json:"no_action,omitempty"`
 	Warnings        []string               `json:"warnings,omitempty"`
 	Integrity       []string               `json:"integrity,omitempty"`
@@ -922,6 +924,7 @@ func (s *Store) recordDispatchStep(now time.Time, result DispatchStepResult) (Di
 	}
 	result.PostCounts = &post.Counts
 	result.NextAction = dispatchStepNextAction(result, post)
+	result.CanContinue, result.ContinueCommand = dispatchStepContinuation(result, post)
 	result.Integrity = mergeUnique(result.Integrity, post.Integrity)
 	path, err := s.RecordDispatchStep(result)
 	if err != nil {
@@ -951,6 +954,24 @@ func dispatchStepNextAction(result DispatchStepResult, post WorkbenchReport) str
 		return "workbench has no open work"
 	}
 	return "run dispatch-step again for next open work"
+}
+
+func dispatchStepContinuation(result DispatchStepResult, post WorkbenchReport) (bool, []string) {
+	actor := strings.TrimSpace(result.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	for _, item := range post.Open {
+		switch {
+		case item.State == "verifying" && hasCloseProofEvidence(item):
+			return true, []string{"compound", "work", "dispatch-step", "--actor", actor}
+		case item.State == "claimed" && item.ClaimedBy == actor:
+			return true, []string{"compound", "work", "dispatch-step", "--actor", actor}
+		case item.State == "ready":
+			return true, []string{"compound", "work", "dispatch-step", "--actor", actor}
+		}
+	}
+	return false, nil
 }
 
 func (s *Store) RecordDispatchStep(result DispatchStepResult) (string, error) {

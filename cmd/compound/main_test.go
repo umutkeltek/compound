@@ -870,6 +870,9 @@ func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
 	if result.NextAction != "advance running or release to ready" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
 		t.Fatalf("dispatch step JSON missing post-state: %+v", result)
 	}
+	if !result.CanContinue || len(result.ContinueCommand) != 5 || result.ContinueCommand[2] != "dispatch-step" || result.ContinueCommand[4] != "codex" {
+		t.Fatalf("dispatch step JSON missing continuation: %+v", result)
+	}
 	after, err := store.Get(ready.ID)
 	if err != nil {
 		t.Fatalf("get claimed work: %v", err)
