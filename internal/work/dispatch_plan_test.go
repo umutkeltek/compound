@@ -611,6 +611,59 @@ func TestDispatchStepClaimsReadyWork(t *testing.T) {
 	}
 }
 
+func TestDispatchStepImportsSourcePacketAndClaimsIt(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	before, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{
+		Actor:            "codex",
+		SourcePacketPath: packetPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "claimed" || result.Action != "claim" || result.DispatchClaim == nil {
+		t.Fatalf("dispatch step should import and claim source packet: %+v", result)
+	}
+	source := result.DispatchClaim.Plan.Source
+	if source == nil || source.Kind != "packet" || !source.Created {
+		t.Fatalf("dispatch claim source missing: %+v", source)
+	}
+	if result.WorkID != source.WorkID || result.DispatchClaim.ClaimedWorkID != source.WorkID {
+		t.Fatalf("claimed work mismatch: result=%+v source=%+v", result, source)
+	}
+	after, err := s.Get(source.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" || after.Authority.Owner != "codex" {
+		t.Fatalf("packet work not claimed through policy path: %+v", after)
+	}
+	if _, err := s.readLease(source.WorkID); err != nil {
+		t.Fatalf("dispatch step source packet claim must write lease: %v", err)
+	}
+	if _, err := os.Stat(result.DispatchClaim.DispatchPlanPath); err != nil {
+		t.Fatalf("dispatch claim plan not recorded: %v", err)
+	}
+	if _, err := os.Stat(result.DispatchClaim.ResultPath); err != nil {
+		t.Fatalf("dispatch claim result not recorded: %v", err)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch step result not recorded: %v", err)
+	}
+	afterPacket, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterPacket) != string(before) {
+		t.Fatalf("source packet was mutated")
+	}
+}
+
 func TestDispatchStepRecordsNoAction(t *testing.T) {
 	s := newStore(t)
 	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})

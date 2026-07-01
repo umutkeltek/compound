@@ -182,11 +182,17 @@ type DispatchCloseResult struct {
 }
 
 type DispatchStepOptions struct {
-	Actor       string
-	RecentLimit int
-	Outcome     string
-	MoveType    string
-	Summary     string
+	Actor                 string
+	RecentLimit           int
+	Outcome               string
+	MoveType              string
+	Summary               string
+	SourcePacketPath      string
+	SourcePacketState     string
+	SourcePacketOwner     string
+	SourcePacketRisk      string
+	SourcePacketPrivacy   string
+	SourcePacketContextID string
 }
 
 type DispatchStepResult struct {
@@ -858,22 +864,38 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 			return s.recordDispatchStep(result)
 		}
 	}
+	readyToClaim := false
 	for _, item := range report.Open {
 		if item.State == "ready" {
-			claimed, err := s.DispatchClaim(now, DispatchPlanOptions{Actor: actor, RecentLimit: opts.RecentLimit})
-			if err != nil {
-				return DispatchStepResult{}, err
-			}
-			result.Action = "claim"
-			result.Status = claimed.Status
-			result.WorkID = claimed.ClaimedWorkID
-			if result.WorkID == "" && claimed.Selected != nil {
-				result.WorkID = claimed.Selected.WorkID
-			}
-			result.DispatchClaim = &claimed
-			result.NoAction = claimed.NoAction
-			return s.recordDispatchStep(result)
+			readyToClaim = true
+			break
 		}
+	}
+	if readyToClaim || strings.TrimSpace(opts.SourcePacketPath) != "" {
+		claimed, err := s.DispatchClaim(now, DispatchPlanOptions{
+			Actor:                 actor,
+			RecentLimit:           opts.RecentLimit,
+			SourcePacketPath:      opts.SourcePacketPath,
+			SourcePacketState:     opts.SourcePacketState,
+			SourcePacketOwner:     opts.SourcePacketOwner,
+			SourcePacketRisk:      opts.SourcePacketRisk,
+			SourcePacketPrivacy:   opts.SourcePacketPrivacy,
+			SourcePacketContextID: opts.SourcePacketContextID,
+		})
+		if err != nil {
+			return DispatchStepResult{}, err
+		}
+		result.Action = "claim"
+		result.Status = claimed.Status
+		result.Counts = claimed.Plan.Counts
+		result.Integrity = append([]string{}, claimed.Plan.Integrity...)
+		result.WorkID = claimed.ClaimedWorkID
+		if result.WorkID == "" && claimed.Selected != nil {
+			result.WorkID = claimed.Selected.WorkID
+		}
+		result.DispatchClaim = &claimed
+		result.NoAction = claimed.NoAction
+		return s.recordDispatchStep(result)
 	}
 	switch {
 	case report.Counts.Open == 0:

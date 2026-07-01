@@ -876,6 +876,44 @@ func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
 	}
 }
 
+func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-step", "--actor", "codex", "--source-packet", packetPath, "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-step output missing JSON:\n%s", out)
+	}
+	var result work.DispatchStepResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse dispatch step result: %v\n%s", err, out)
+	}
+	if result.Status != "claimed" || result.Action != "claim" || result.DispatchClaim == nil {
+		t.Fatalf("dispatch step result = %+v", result)
+	}
+	source := result.DispatchClaim.Plan.Source
+	if source == nil || source.Kind != "packet" || !source.Created || result.WorkID != source.WorkID {
+		t.Fatalf("dispatch step source = %+v result=%+v", source, result)
+	}
+	claimed, err := store.Get(source.WorkID)
+	if err != nil {
+		t.Fatalf("get packet work: %v", err)
+	}
+	if claimed.State != "claimed" || claimed.Authority.Owner != "codex" {
+		t.Fatalf("dispatch step did not claim packet work: %+v", claimed)
+	}
+}
+
 func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

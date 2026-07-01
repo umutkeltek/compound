@@ -4474,11 +4474,11 @@ func cmdWork(args []string) {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "dispatch-step":
-		usage := "usage: compound work dispatch-step [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--json]"
+		usage := "usage: compound work dispatch-step [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--json]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json":
-			case "--actor", "--outcome", "--move-type", "--summary":
+			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy", "--outcome", "--move-type", "--summary":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -4490,10 +4490,16 @@ func cmdWork(args []string) {
 			}
 		}
 		result, err := store.DispatchStep(time.Now(), work.DispatchStepOptions{
-			Actor:    flag("--actor"),
-			Outcome:  flag("--outcome"),
-			MoveType: flag("--move-type"),
-			Summary:  flag("--summary"),
+			Actor:                 flag("--actor"),
+			Outcome:               flag("--outcome"),
+			MoveType:              flag("--move-type"),
+			Summary:               flag("--summary"),
+			SourcePacketPath:      flag("--source-packet"),
+			SourcePacketState:     flag("--source-state"),
+			SourcePacketOwner:     flag("--source-owner"),
+			SourcePacketRisk:      flag("--source-risk"),
+			SourcePacketPrivacy:   flag("--source-privacy"),
+			SourcePacketContextID: flag("--source-context-pack"),
 		})
 		die(err)
 		if has("--json") {
