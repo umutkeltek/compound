@@ -35,6 +35,11 @@ type verdictArtifactPayload struct {
 	EvidenceRefs  []string      `json:"evidence_refs"`
 }
 
+// ExecuteDryRun resumes at target granularity. Completed target findings and
+// run-scoped verdict artifacts are skipped. If a crash leaves partial route
+// evidence without a verdict artifact, the target re-executes fully; route
+// evidence recording is RequestID-idempotent, so existing lens/judge rows are
+// reused instead of appended.
 func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCaller, now func() time.Time) (Run, error) {
 	if caller == nil {
 		return run, fmt.Errorf("no caller configured")
@@ -62,6 +67,9 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 	}
 	if run.CountsAfter == nil {
 		run.CountsAfter = copyCounts(run.CountsBefore)
+	}
+	if run.Budget.MaxUSDMicros > 0 {
+		run.EvidenceRefs = appendUniqueString(run.EvidenceRefs, "cost_unknown")
 	}
 	run.Status = "running"
 	if err := store.SaveRun(run); err != nil {
@@ -264,6 +272,11 @@ func decodeLensResponse(data []byte) (decodedLensResponse, error) {
 }
 
 func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requestID, clientProfile string, lane LaneRef, result CallResult, status string) (string, error) {
+	if existing, ok, err := routeevidence.LookupRequestID(homePath, requestID); err != nil {
+		return "", err
+	} else if ok {
+		return existing.ID, nil
+	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{CreatedAt: createdAt, RequestID: requestID, WorkID: workID, ClientProfile: clientProfile, Protocol: "panel-lane", Provider: "compound-route-plan", Model: lane.ModelID, Usage: routeevidence.Usage{TotalTokens: result.TotalTokens}, LatencyMS: result.LatencyMS, Status: status, EvidenceRefs: []string{routeevidence.ModelCapabilitiesAuthorityRef}})
 	if err != nil {
 		return "", err

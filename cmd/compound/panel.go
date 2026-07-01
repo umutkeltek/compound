@@ -16,7 +16,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--apply) [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -103,11 +103,9 @@ func cmdPanel(args []string) {
 			run, err = panel.Apply(homePath, run, time.Now)
 			die(err)
 		} else {
-			if strings.TrimSpace(parsed.fixtures) == "" {
-				fmt.Fprintln(os.Stderr, "no caller configured (live gateway lands in later slice)")
-				os.Exit(2)
-			}
-			run, err = panel.ExecuteDryRun(context.Background(), homePath, run, panel.FixtureCaller{Dir: parsed.fixtures}, time.Now)
+			caller, evidenceRefs := panelRunCaller(parsed)
+			run.EvidenceRefs = appendPanelEvidenceRefs(run.EvidenceRefs, evidenceRefs...)
+			run, err = panel.ExecuteDryRun(context.Background(), homePath, run, caller, time.Now)
 			if err != nil {
 				var blocked panel.ErrBlockedNoLane
 				if errors.As(err, &blocked) {
@@ -195,10 +193,14 @@ func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {
 }
 
 type panelRunArgs struct {
-	planID   string
-	fixtures string
-	apply    bool
-	jsonOut  bool
+	planID              string
+	fixtures            string
+	apply               bool
+	jsonOut             bool
+	openAICompatibleURL string
+	apiKeyEnv           string
+	modelOverrides      map[string]string
+	gatewayFlags        bool
 }
 
 func parsePanelRunArgs(args []string) panelRunArgs {
@@ -209,24 +211,119 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 			parsed.planID = requirePanelValue(args, &i, "panel run")
 		case "--fixtures":
 			parsed.fixtures = requirePanelValue(args, &i, "panel run")
+		case "--openai-compatible-url":
+			parsed.openAICompatibleURL = requirePanelValue(args, &i, "panel run")
+			parsed.gatewayFlags = true
+		case "--api-key-env":
+			parsed.apiKeyEnv = requirePanelValue(args, &i, "panel run")
+			parsed.gatewayFlags = true
+		case "--model-override":
+			lane, model := parsePanelModelOverride(requirePanelValue(args, &i, "panel run"))
+			if parsed.modelOverrides == nil {
+				parsed.modelOverrides = map[string]string{}
+			}
+			parsed.modelOverrides[lane] = model
+			parsed.gatewayFlags = true
 		case "--apply":
 			parsed.apply = true
 		case "--json":
 			parsed.jsonOut = true
 		default:
-			fmt.Fprintf(os.Stderr, "unknown panel run arg %q\n", args[i])
+			fmt.Fprintf(os.Stderr, "unknown panel run arg %q", args[i])
+			fmt.Fprintln(os.Stderr)
 			os.Exit(2)
 		}
 	}
-	if strings.TrimSpace(parsed.planID) == "" || (!parsed.apply && strings.TrimSpace(parsed.fixtures) == "") {
-		fmt.Fprintln(os.Stderr, "usage: compound panel run --plan <run_id> (--fixtures <dir>|--apply) [--json]")
+	fixtureSet := strings.TrimSpace(parsed.fixtures) != ""
+	effectiveBaseURL := firstNonEmptyString(parsed.openAICompatibleURL, os.Getenv("COMPOUND_PANEL_BASE_URL"))
+	if strings.TrimSpace(parsed.planID) == "" || (!parsed.apply && !fixtureSet && strings.TrimSpace(effectiveBaseURL) == "") {
+		fmt.Fprintln(os.Stderr, panelRunUsage())
 		os.Exit(2)
 	}
-	if parsed.apply && strings.TrimSpace(parsed.fixtures) != "" {
-		fmt.Fprintln(os.Stderr, "usage: compound panel run --plan <run_id> (--fixtures <dir>|--apply) [--json]")
+	if parsed.apply && (fixtureSet || parsed.gatewayFlags) {
+		fmt.Fprintln(os.Stderr, panelRunUsage())
+		os.Exit(2)
+	}
+	if fixtureSet && parsed.gatewayFlags {
+		fmt.Fprintln(os.Stderr, panelRunUsage())
 		os.Exit(2)
 	}
 	return parsed
+}
+
+func panelRunUsage() string {
+	return "usage: compound panel run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--json]"
+}
+
+func parsePanelModelOverride(value string) (string, string) {
+	parts := strings.SplitN(value, "=", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		fmt.Fprintf(os.Stderr, "invalid --model-override %q, want lane=model", value)
+		fmt.Fprintln(os.Stderr)
+		os.Exit(2)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+}
+
+func panelRunCaller(parsed panelRunArgs) (panel.LensCaller, []string) {
+	if strings.TrimSpace(parsed.fixtures) != "" {
+		return panel.FixtureCaller{Dir: parsed.fixtures}, nil
+	}
+	apiKeyEnv := firstNonEmptyString(parsed.apiKeyEnv, os.Getenv("COMPOUND_PANEL_API_KEY_ENV"))
+	apiKey := ""
+	if apiKeyEnv != "" {
+		apiKey = os.Getenv(apiKeyEnv)
+	}
+	overrides := parsed.modelOverrides
+	refs := panelModelOverrideEvidence(overrides)
+	return panel.GatewayCaller{
+		BaseURL: firstNonEmptyString(parsed.openAICompatibleURL, os.Getenv("COMPOUND_PANEL_BASE_URL")),
+		APIKey:  apiKey,
+		ModelResolver: func(lane panel.LaneRef) string {
+			if overrides != nil {
+				if model := strings.TrimSpace(overrides[lane.ModelID]); model != "" {
+					return model
+				}
+			}
+			return lane.ModelID
+		},
+	}, refs
+}
+
+func panelModelOverrideEvidence(overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return nil
+	}
+	lanes := make([]string, 0, len(overrides))
+	for lane := range overrides {
+		lanes = append(lanes, lane)
+	}
+	sort.Strings(lanes)
+	refs := make([]string, 0, len(lanes))
+	for _, lane := range lanes {
+		refs = append(refs, "override:model:"+lane+"="+overrides[lane])
+	}
+	return refs
+}
+
+func appendPanelEvidenceRefs(values []string, refs ...string) []string {
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		found := false
+		for _, existing := range values {
+			if existing == ref {
+				found = true
+				break
+			}
+		}
+		if !found {
+			values = append(values, ref)
+		}
+	}
+	return values
 }
 
 func requirePanelValue(args []string, i *int, command string) string {

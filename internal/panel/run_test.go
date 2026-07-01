@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"compound/internal/reviewartifact"
+	"compound/internal/routeevidence"
 )
 
 type failingLensCaller struct {
@@ -218,4 +220,83 @@ func routeEvidenceRows(t *testing.T, home string) int {
 		return 0
 	}
 	return strings.Count(trimmed, "\n") + 1
+}
+
+func TestExecuteDryRunRecordsCostUnknownForUSDCapWithoutCostMetadata(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxUSDMicros: 1})
+
+	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("execute dry run: %v", err)
+	}
+	if got.Status != "verdicts_recorded" || !containsString(got.EvidenceRefs, "cost_unknown") {
+		t.Fatalf("run = %+v, want recorded verdicts with cost_unknown evidence", got)
+	}
+}
+
+func TestExecuteDryRunSkipsDuplicateRouteEvidenceOnResume(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     requestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.lens",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.LensLane.ModelID,
+		Usage:         routeevidence.Usage{TotalTokens: 7},
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatalf("build route evidence: %v", err)
+	}
+	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
+		t.Fatalf("preseed route evidence: %v", err)
+	}
+
+	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("execute dry run: %v", err)
+	}
+	if got.Status != "verdicts_recorded" {
+		t.Fatalf("run status = %s", got.Status)
+	}
+	if rows := routeEvidenceRequestRows(t, home, requestID); rows != 1 {
+		t.Fatalf("request_id rows = %d, want 1", rows)
+	}
+	if got.Findings[0].LensFindings[0].RouteEvidenceRef != ev.ID {
+		t.Fatalf("route evidence ref = %q, want preseeded %q", got.Findings[0].LensFindings[0].RouteEvidenceRef, ev.ID)
+	}
+}
+
+func routeEvidenceRequestRows(t *testing.T, home, requestID string) int {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, "ledger", "execution-route-evidence.jsonl"))
+	if err != nil {
+		t.Fatalf("read route evidence ledger: %v", err)
+	}
+	rows := 0
+	for i, raw := range strings.Split(string(data), string([]byte{10})) {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		var row struct {
+			RequestID string `json:"request_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("parse route evidence line %d: %v", i+1, err)
+		}
+		if row.RequestID == requestID {
+			rows++
+		}
+	}
+	return rows
 }

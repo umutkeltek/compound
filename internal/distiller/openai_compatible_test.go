@@ -135,10 +135,10 @@ func TestOpenAICompatibleExtractionRequiresEvalCorpus(t *testing.T) {
 }
 
 func TestChatCompletionsURL(t *testing.T) {
-	if got := chatCompletionsURL("http://localhost:18765/v1/"); got != "http://localhost:18765/v1/chat/completions" {
+	if got := chatCompletionsURL("https://gateway.example/v1/"); got != "https://gateway.example/v1/chat/completions" {
 		t.Fatalf("url = %q", got)
 	}
-	if got := chatCompletionsURL("http://localhost:18765/v1/chat/completions"); got != "http://localhost:18765/v1/chat/completions" {
+	if got := chatCompletionsURL("https://gateway.example/v1/chat/completions"); got != "https://gateway.example/v1/chat/completions" {
 		t.Fatalf("url = %q", got)
 	}
 }
@@ -184,5 +184,41 @@ func TestOpenAICompatibleExtractionBlocksFailingCorpus(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("provider calls = %d, want 0", calls)
+	}
+}
+
+func TestChatCompletionJSONReturnsRawContentUsageAndLatency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("authorization = %q", got)
+		}
+		var body openAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.Model != "served-model" || body.ResponseFormat["type"] != "json_object" {
+			t.Fatalf("request body = %+v", body)
+		}
+		if len(body.Messages) != 2 || body.Messages[0].Content != "system-json" || body.Messages[1].Content != "user-json" {
+			t.Fatalf("messages = %+v", body.Messages)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": `{"ok":true}`},
+			}},
+			"usage": map[string]int{"total_tokens": 42},
+		})
+	}))
+	defer server.Close()
+
+	content, totalTokens, latencyMS, err := ChatCompletionJSON(context.Background(), server.Client(), server.URL, "test-key", "served-model", "system-json", "user-json")
+	if err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	if string(content) != `{"ok":true}` || totalTokens != 42 || latencyMS < 0 {
+		t.Fatalf("content=%s total=%d latency=%d", content, totalTokens, latencyMS)
 	}
 }

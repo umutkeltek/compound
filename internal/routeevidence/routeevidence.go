@@ -127,6 +127,43 @@ func Decode(data []byte) (Evidence, error) {
 	return ev, nil
 }
 
+// LookupRequestID scans the execution-route-evidence JSONL ledger linearly and
+// returns the first row with request_id. The ledger is append-only and currently
+// small enough that a linear scan is the cheapest idempotency check.
+func LookupRequestID(homePath, requestID string) (Evidence, bool, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return Evidence{}, false, nil
+	}
+	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Evidence{}, false, nil
+		}
+		return Evidence{}, false, err
+	}
+	for i, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		var ev Evidence
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return Evidence{}, false, fmt.Errorf("parse execution route evidence line %d: %w", i+1, err)
+		}
+		if ev.RequestID == requestID {
+			return ev, true, nil
+		}
+	}
+	return Evidence{}, false, nil
+}
+
+func HasRequestID(homePath, requestID string) (bool, error) {
+	_, ok, err := LookupRequestID(homePath, requestID)
+	return ok, err
+}
+
 func ImportFile(homePath, path string) (ImportResult, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
