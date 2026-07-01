@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `steipete/agent-scripts` now has focused deterministic-helper capability
+  evaluation intake instead of remaining only a catalog row. The eval record
+  preserved the external-repo source receipt, compared the repo against
+  Compound's execution/tool-policy seam, and imported as evidence-only:
+  `capability_evaluations_afbb84588a58` -> eval node
+  `eval:capability-evaluation-external-steipete-agent-scripts-tool-policy-20260701`.
+  Unknown capability `portable-agent-script-tool-policy-reference` skipped graph
+  activation and produced SourceObservation `srcobs_25637f066bc8`, candidate
+  `src_cand_8ead51afec1a`, no-promote `nop_e8bb8950ec15a5f2`. Review artifact
+  `cep_1729027bf77c` is terminal `recorded` with decision `keep_needs_review`;
+  authority now reports `492` nodes / `94` edges, so only an evidence eval node
+  was added. Boundary: review one helper script/check at a time; no vendoring,
+  hook execution, skill serving, plugin/MCP auth, route-policy change, or memory
+  promotion.
+
 - `affaan-m/ECC` now has focused harness-architecture capability evaluation
   intake instead of remaining only a catalog row. The eval record preserved the
   external-repo source receipt, compared ECC against Compound's owned runtime
