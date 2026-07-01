@@ -8,6 +8,22 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `code-yeongyu/oh-my-openagent` now has multi-harness reference evidence
+attached to existing `procedure:agent-harness-doctrine` as index-only
+comparative material for future Agent Workbench / harness-adapter design,
+rather than replacing Compound's runtime spine. The evaluation source compared
+public `README.md`, `AGENTS.md`, `.agents/skills/codex-qa/SKILL.md`, and
+`.agents/skills/pre-publish-review/SKILL.md` against current harness doctrine,
+imported evidence-only: `capability_evaluations_093d341b5eec` -> eval node
+`eval:capability-evaluation-external-code-yeongyu-oh-my-openagent-harness-reference-20260701`
+with `evaluated_by:procedure:agent-harness-doctrine->eval:...`. Verdict
+`downgrade_to_index` intentionally creates no `validated_by` edge. Unknown
+skipped count `0`. Authority now reports `500` nodes / `106` edges
+`evaluated_by=8`, `validated_by=6`; harness/workbench surfacing keeps
+`procedure:agent-harness-doctrine` first. No installer run, no Codex/OpenCode
+home mutation, no provider auth, no autonomous permission change, no hook/MCP
+activation, no copied skills, no route-policy change, no memory promotion.
+
 - `ComposioHQ/awesome-claude-skills` now has catalog/discovery evidence
 attached to existing `procedure:skill-ops` as index-only reference evidence,
 rather than ingesting child skills or connecting app-action plugins. The
