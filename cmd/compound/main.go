@@ -4857,6 +4857,14 @@ func cmdDecisions(args []string) {
 		dryRun := !hasFlag(args[1:], "--write-reviewed")
 		report, err := decisions.ApplyLifecycleRepairPlan(plan, decisions.RepairApplyOptions{DryRun: dryRun}, time.Now())
 		if err != nil {
+			if report.ID != "" {
+				reportPath, recordErr := decisions.RecordLifecycleRepairApplyReport(homePath, report)
+				if recordErr == nil {
+					fmt.Fprintf(os.Stderr, "decisions repair-apply report: %s\n", reportPath)
+				} else {
+					fmt.Fprintf(os.Stderr, "decisions repair-apply report: %v\n", recordErr)
+				}
+			}
 			fmt.Fprintln(os.Stderr, "decisions repair-apply:", err)
 			os.Exit(1)
 		}

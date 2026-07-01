@@ -4499,6 +4499,18 @@ When ReleaseX ships or is externally blocked, execute the parked spec.
 	if planPath == "" {
 		t.Fatalf("missing plan path:\n%s", planOut)
 	}
+	plan, err := decisions.LoadLifecycleRepairPlan(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Status = "reviewed"
+	planData, err := json.MarshalIndent(plan, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(planPath, append(planData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	applyOut := captureStdout(t, func() {
 		cmdDecisions([]string{"repair-apply", "--plan", planPath, "--write-reviewed"})
 	})

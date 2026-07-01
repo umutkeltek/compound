@@ -1125,6 +1125,7 @@ status: accepted
 		t.Fatalf("dry run report=%+v body=%s", dry, body)
 	}
 
+	plan.Status = "reviewed"
 	written, err := ApplyLifecycleRepairPlan(plan, RepairApplyOptions{DryRun: false}, time.Date(2026, 6, 29, 23, 2, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
@@ -1151,6 +1152,40 @@ status: accepted
 	}
 }
 
+func TestApplyLifecycleRepairPlanBlocksUnreviewedWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "decisions", "DEC-0301.md")
+	writeFile(t, path, `---
+id: DEC-0301
+title: Needs reviewed write
+status: accepted
+---
+
+# DEC-0301: Needs reviewed write
+`)
+	plan, err := BuildLifecycleRepairPlan(dir, time.Date(2026, 6, 29, 23, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := ApplyLifecycleRepairPlan(plan, RepairApplyOptions{DryRun: false}, time.Date(2026, 6, 29, 23, 2, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("expected unreviewed write to fail")
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(body), "falsifier:") || strings.Contains(string(body), "review_trigger:") {
+		t.Fatalf("unreviewed write mutated source:\n%s", body)
+	}
+	if report.Status != "blocked" || report.PlanStatus != "review_required" || len(report.Skipped) != 1 {
+		t.Fatalf("blocked report = %+v", report)
+	}
+	if !strings.Contains(report.Skipped[0].Reason, "not reviewed") {
+		t.Fatalf("blocked reason = %+v", report.Skipped[0])
+	}
+}
+
 func TestApplyLifecycleRepairPlanRejectsPathsOutsideSourceRoot(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "DEC-0400.md")
@@ -1165,6 +1200,7 @@ status: accepted
 	plan := LifecycleRepairPlan{
 		SchemaVersion: RepairPlanSchemaVersion,
 		ID:            "dlrp_outside",
+		Status:        "reviewed",
 		SourceRoot:    dir,
 		Repairs: []LifecycleRepair{{
 			DecisionID: "DEC-0400",

@@ -35,8 +35,8 @@ func annotateLifecycleRepairItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "repair plan path missing"
 		return
 	}
-	switch strings.TrimSpace(item.Status) {
-	case "ok":
+	switch {
+	case strings.TrimSpace(item.Status) == "ok":
 		if item.RepairCount == 0 {
 			item.Readiness = "no_action"
 			item.NextAction = "no lifecycle repairs required"
@@ -44,12 +44,12 @@ func annotateLifecycleRepairItem(item *reviewartifact.QueueItem) {
 		}
 		item.Readiness = "needs_review"
 		item.NextAction = "review unexpected ok repair plan before applying"
-	case "reviewed", "ready_to_apply", "approved":
+	case LifecycleRepairPlanReviewed(item.Status):
 		item.Readiness = "ready_to_apply"
 		item.NextAction = "run reviewed writeback apply"
 	default:
 		item.Readiness = "needs_review"
-		item.NextAction = "review markdown artifact; dry-run is safe, write-reviewed only after source-owner review"
+		item.NextAction = "review markdown artifact; dry-run safe, write-reviewed only after source-owner review"
 	}
 	item.Actions = lifecycleRepairActions(item.JSONPath, item.Readiness)
 }

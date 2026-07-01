@@ -59,6 +59,7 @@ type LifecycleRepairApplyReport struct {
 	ID            string            `json:"id"`
 	CreatedAt     string            `json:"created_at"`
 	PlanID        string            `json:"plan_id"`
+	PlanStatus    string            `json:"plan_status,omitempty"`
 	SourceRoot    string            `json:"source_root"`
 	DryRun        bool              `json:"dry_run"`
 	Status        string            `json:"status"`
@@ -181,10 +182,18 @@ func ApplyLifecycleRepairPlan(plan LifecycleRepairPlan, opts RepairApplyOptions,
 		ID:            "dlra_" + digest12(plan.ID+"\n"+mode+"\n"+createdAt),
 		CreatedAt:     createdAt,
 		PlanID:        plan.ID,
+		PlanStatus:    strings.TrimSpace(plan.Status),
 		SourceRoot:    plan.SourceRoot,
 		DryRun:        opts.DryRun,
 		Status:        "ok",
 		EvidenceRefs:  append([]string(nil), plan.EvidenceRefs...),
+	}
+	if !opts.DryRun && !LifecycleRepairPlanReviewed(plan.Status) {
+		report.Status = "blocked"
+		report.Skipped = append(report.Skipped, RepairApplySkip{
+			Reason: "repair plan status is not reviewed; set status to reviewed, ready_to_apply, or approved after source-owner review",
+		})
+		return report, fmt.Errorf("repair plan %s status %q is not reviewed", plan.ID, plan.Status)
 	}
 	rootClean, err := filepath.Abs(plan.SourceRoot)
 	if err != nil {
@@ -232,6 +241,15 @@ func ApplyLifecycleRepairPlan(plan LifecycleRepairPlan, opts RepairApplyOptions,
 		report.Status = "no_changes"
 	}
 	return report, nil
+}
+
+func LifecycleRepairPlanReviewed(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "reviewed", "ready_to_apply", "approved":
+		return true
+	default:
+		return false
+	}
 }
 
 func RecordLifecycleRepairApplyReport(homePath string, report LifecycleRepairApplyReport) (string, error) {
