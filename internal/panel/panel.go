@@ -127,6 +127,7 @@ type Synthesis struct {
 	Dissent               []Dissent `json:"dissent"`
 	GuardrailsApplied     []string  `json:"guardrails_applied"`
 	JudgeRouteEvidenceRef string    `json:"judge_route_evidence_ref"`
+	JudgeUsage            Usage     `json:"judge_usage"`
 }
 
 type Dissent struct {
@@ -171,7 +172,12 @@ func (s *Store) SaveRun(run Run) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.runPath(run.ID), append(data, '\n'), 0o644)
+	// The run record is the resume anchor; a torn write would strand the run.
+	tmp := s.runPath(run.ID) + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.runPath(run.ID))
 }
 
 func (s *Store) LoadRun(id string) (Run, error) {

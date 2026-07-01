@@ -22,8 +22,8 @@ type PlanInput struct {
 	Budget                Budget   `json:"budget"`
 }
 
-func BuildPlan(homePath string, in PlanInput) (Run, error) {
-	now := time.Now().UTC()
+func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, error) {
+	now := nowFn().UTC()
 	targetKind := strings.TrimSpace(in.TargetKind)
 	if targetKind == "" {
 		return Run{}, fmt.Errorf("target kind required")

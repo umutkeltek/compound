@@ -15,7 +15,7 @@ func TestBuildPlanTargetsLensesLanesCountsAndPrivacyOverride(t *testing.T) {
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	writePanelFixtureTarget(t, home, "mcand_example_api_dissent")
 
-	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, States: []string{"parked"}, Limit: 2, PrivacyOverrideReason: "synthetic fixtures", Budget: Budget{MaxItems: 2}})
+	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, States: []string{"parked"}, Limit: 2, PrivacyOverrideReason: "synthetic fixtures", Budget: Budget{MaxItems: 2}}, fixedPanelNow)
 	if err != nil {
 		t.Fatalf("build plan: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestBuildPlanTargetsLensesLanesCountsAndPrivacyOverride(t *testing.T) {
 func TestBuildPlanDefaultsMemoryCandidatesToPrivacySensitive(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
-	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: []string{"mcand_example_api_clean"}, States: []string{"parked"}})
+	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: []string{"mcand_example_api_clean"}, States: []string{"parked"}}, fixedPanelNow)
 	var blocked ErrBlockedNoLane
 	if !errors.As(err, &blocked) {
 		t.Fatalf("err = %v, want blocked no lane", err)

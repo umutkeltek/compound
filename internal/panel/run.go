@@ -79,7 +79,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		if err != nil {
 			return run, err
 		}
-		artifactID := verdictArtifactID(target.Ref)
+		artifactID := verdictArtifactID(run.ID, target.Ref)
 		if path, ok, err := verdictArtifactExists(homePath, artifactID); err != nil {
 			return run, err
 		} else if ok {
@@ -178,11 +178,19 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 	tokensUsed += judgeTokens
 	synthesis := Synthesize(outputs, judge, Guardrails{})
 	synthesis.JudgeRouteEvidenceRef = judgeRouteRef
+	synthesis.JudgeUsage = Usage{TotalTokens: judgeTokens}
 	if malformed {
 		synthesis.Decision = "needs_human"
 		synthesis.GuardrailsApplied = appendUniqueString(synthesis.GuardrailsApplied, "judge_json_malformed")
 		if strings.TrimSpace(synthesis.Rationale) == "" {
 			synthesis.Rationale = "judge response was malformed twice; human review required"
+		}
+	}
+	if run.Route.JudgeLane.ModelID != "" && run.Route.JudgeLane.ModelID == run.Route.LensLane.ModelID {
+		// A model graded its own lens findings; trust may only go down.
+		synthesis.GuardrailsApplied = appendUniqueString(synthesis.GuardrailsApplied, "self_judgment")
+		if synthesis.Decision == "promote" {
+			synthesis.Decision = "park"
 		}
 	}
 	artifactPath, err := writeVerdictArtifact(homePath, run, target, lensFindings, synthesis, now().UTC())
@@ -351,8 +359,10 @@ func readPrompt(path string) (string, error) {
 	return string(data), nil
 }
 
-func verdictArtifactID(targetRef string) string {
-	return "panel_verdict_" + targetDigest(targetRef)
+// verdictArtifactID is scoped to the run so a fresh run re-judges a target even when an
+// earlier run left an artifact; only intra-run crash resume reuses a verdict.
+func verdictArtifactID(runID, targetRef string) string {
+	return "panel_verdict_" + targetDigest(runID) + "_" + targetDigest(targetRef)
 }
 
 func verdictArtifactExists(homePath, id string) (string, bool, error) {
@@ -371,7 +381,7 @@ func verdictArtifactExists(homePath, id string) (string, bool, error) {
 }
 
 func writeVerdictArtifact(homePath string, run Run, target TargetInput, lensFindings []LensFinding, synthesis Synthesis, createdAt time.Time) (string, error) {
-	id := verdictArtifactID(target.Ref)
+	id := verdictArtifactID(run.ID, target.Ref)
 	evidenceRefs := []string{}
 	for _, finding := range lensFindings {
 		if finding.RouteEvidenceRef != "" {
@@ -441,6 +451,7 @@ func totalRunTokens(run Run) int {
 		for _, lens := range target.LensFindings {
 			total += lens.Usage.TotalTokens
 		}
+		total += target.Synthesis.JudgeUsage.TotalTokens
 	}
 	return total
 }

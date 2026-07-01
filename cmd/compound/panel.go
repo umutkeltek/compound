@@ -72,7 +72,7 @@ func cmdPanel(args []string) {
 		in, jsonOut := parsePanelPlanArgs(args[1:])
 		homePath, err := home.Resolve("")
 		die(err)
-		run, err := panel.BuildPlan(homePath, in)
+		run, err := panel.BuildPlan(homePath, in, time.Now)
 		if err != nil {
 			var blocked panel.ErrBlockedNoLane
 			if errors.As(err, &blocked) && run.ID != "" {

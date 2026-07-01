@@ -127,10 +127,10 @@ func TestExecuteDryRunResumeSkipsExistingVerdictArtifact(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	writePanelFixtureTarget(t, home, "mcand_example_api_dissent")
-	if _, err := reviewartifact.Write(home, "panel-verdicts", verdictArtifactID("mcand_example_api_clean"), map[string]string{"id": "preexisting"}, " ", "preexisting\n"); err != nil {
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, Budget{})
+	if _, err := reviewartifact.Write(home, "panel-verdicts", verdictArtifactID(run.ID, "mcand_example_api_clean"), map[string]string{"id": "preexisting"}, " ", "preexisting\n"); err != nil {
 		t.Fatalf("write preexisting verdict: %v", err)
 	}
-	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, Budget{})
 	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
 	if err != nil {
 		t.Fatalf("execute dry run: %v", err)
@@ -143,9 +143,59 @@ func TestExecuteDryRunResumeSkipsExistingVerdictArtifact(t *testing.T) {
 	}
 }
 
+func TestExecuteDryRunReJudgesTargetFromDifferentRun(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	if _, err := reviewartifact.Write(home, "panel-verdicts", verdictArtifactID("prun_other_run", "mcand_example_api_clean"), map[string]string{"id": "stale"}, " ", "stale\n"); err != nil {
+		t.Fatalf("write stale verdict: %v", err)
+	}
+	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("execute dry run: %v", err)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].Synthesis.Decision == "" || got.Findings[0].LensFindings[0].Status == "skipped" {
+		t.Fatalf("target was not re-judged despite artifact from another run: %+v", got.Findings)
+	}
+}
+
+func TestExecuteDryRunSelfJudgmentGuardrail(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	run.Route.JudgeLane.ModelID = run.Route.LensLane.ModelID
+	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("execute dry run: %v", err)
+	}
+	syn := got.Findings[0].Synthesis
+	if syn.Decision == "promote" {
+		t.Fatalf("self-judgment must not promote: %+v", syn)
+	}
+	found := false
+	for _, g := range syn.GuardrailsApplied {
+		if g == "self_judgment" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("self_judgment guardrail missing: %+v", syn.GuardrailsApplied)
+	}
+}
+
+func TestTotalRunTokensIncludesJudgeUsage(t *testing.T) {
+	run := Run{Findings: []TargetFinding{{
+		LensFindings: []LensFinding{{Usage: Usage{TotalTokens: 10}}, {Usage: Usage{TotalTokens: 5}}},
+		Synthesis:    Synthesis{JudgeUsage: Usage{TotalTokens: 7}},
+	}}}
+	if got := totalRunTokens(run); got != 22 {
+		t.Fatalf("totalRunTokens = %d, want 22 (judge usage must count)", got)
+	}
+}
+
 func buildRunnablePlan(t *testing.T, home string, refs []string, budget Budget) Run {
 	t.Helper()
-	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: refs, States: []string{"parked"}, PrivacyOverrideReason: "synthetic fixtures", Budget: budget})
+	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: refs, States: []string{"parked"}, PrivacyOverrideReason: "synthetic fixtures", Budget: budget}, fixedPanelNow)
 	if err != nil {
 		t.Fatalf("build runnable plan: %v", err)
 	}

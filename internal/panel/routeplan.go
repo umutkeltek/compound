@@ -59,13 +59,10 @@ func SelectLanes(homePath string, privacySensitive bool, supervised bool, now ti
 		return plan, ErrBlockedNoLane{Class: lensCapabilityClass}
 	}
 
-	var judgeOK bool
+	var judgeCandidates []routeevidence.CapabilityRouteLane
 	for _, lane := range judgePlan.Chain {
 		if lane.Tier != "free" && (lane.GateRole == "eligible" || (supervised && lane.GateRole == "supervised_only")) {
-			if !judgeOK {
-				plan.JudgeLane = laneRef(lane)
-				judgeOK = true
-			}
+			judgeCandidates = append(judgeCandidates, lane)
 			continue
 		}
 		reason := firstNonEmpty(lane.OmitReason, judgeLaneOmitReason(lane, supervised))
@@ -73,6 +70,26 @@ func SelectLanes(homePath string, privacySensitive bool, supervised bool, now ti
 			reason = "free lane may not judge"
 		}
 		plan.OmittedLanes = appendOmittedLane(plan.OmittedLanes, lane.ModelID, reason)
+	}
+	// Prefer a judge model distinct from the lens model: a model must not grade its own findings.
+	var judgeOK bool
+	for _, lane := range judgeCandidates {
+		if lane.ModelID != plan.LensLane.ModelID {
+			plan.JudgeLane = laneRef(lane)
+			judgeOK = true
+			break
+		}
+	}
+	if !judgeOK && len(judgeCandidates) > 0 {
+		// Self-judgment unavoidable on this chain; ExecuteDryRun records the guardrail.
+		plan.JudgeLane = laneRef(judgeCandidates[0])
+		judgeOK = true
+	} else if judgeOK {
+		for _, lane := range judgeCandidates {
+			if lane.ModelID == plan.LensLane.ModelID && lane.ModelID != plan.JudgeLane.ModelID {
+				plan.OmittedLanes = appendOmittedLane(plan.OmittedLanes, lane.ModelID, "same model as lens lane; distinct judge preferred")
+			}
+		}
 	}
 	for _, lane := range judgePlan.Omitted {
 		plan.OmittedLanes = appendOmittedLane(plan.OmittedLanes, lane.ModelID, firstNonEmpty(lane.OmitReason, "lane omitted from judge plan"))

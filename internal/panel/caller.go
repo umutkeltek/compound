@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type CallRequest struct {
@@ -52,12 +51,12 @@ func (f FixtureCaller) Call(ctx context.Context, req CallRequest) (CallResult, e
 	} else {
 		path = filepath.Join(f.Dir, "lens-responses", req.LensID, digest+".json")
 	}
-	start := time.Now()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return CallResult{}, fmt.Errorf("read fixture response %s: %w", path, err)
 	}
-	return CallResult{Content: data, TotalTokens: tokenCount(req.System) + tokenCount(req.User) + tokenCount(string(data)), LatencyMS: time.Since(start).Milliseconds()}, nil
+	// Fixture latency is pinned to zero so persisted runs/artifacts stay deterministic.
+	return CallResult{Content: data, TotalTokens: tokenCount(req.System) + tokenCount(req.User) + tokenCount(string(data)), LatencyMS: 0}, nil
 }
 
 func fixtureTargetRef(req CallRequest) string {
