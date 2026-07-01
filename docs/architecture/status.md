@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+ - `colbymchenry/codegraph` now has focused repo-understanding capability
+evaluation evidence attached to existing `tool:codegraph` instead of creating
+a duplicate code-graph node. The evaluation source preserved the external-repo
+intake receipt, compared CodeGraph against `tool:codegraph`, `skill:graphify`,
+and existing code-index tools, imported evidence-only:
+`capability_evaluations_bb70023f4734` -> eval node
+`eval:capability-evaluation-external-colbymchenry-codegraph-repo-understanding-20260701`
+with `evaluated_by:tool:codegraph->eval:...`. Unknown skipped count was `0`,
+so no evaluation-plan duplicate was needed. Authority now reports `493` nodes /
+`95` edges with `evaluated_by=1`; surfacing for code-graph repo understanding
+still ranks existing owners (`tool:codegraph`, existing code-index tools,
+`understand-anything`, `context7`) rather than installing or serving anything
+new. No `codegraph init`, no MCP/agent installer, no global agent config
+mutation, no plugin/auth action, no skill serving, no memory promotion.
+
 - `steipete/agent-scripts` now has focused deterministic-helper capability
   evaluation intake instead of remaining only a catalog row. The eval record
   preserved the external-repo source receipt, compared the repo against
