@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound policy placement-authority --json` now gives operator surfaces an explicit machine-readable PlacementGuard authority handoff over `compound://registries/placement-rules`. Umut OS status calls the explicit JSON form, records `placement_rules` in `dashboard/os-status-latest.json`, and prints the owner/open-write counts while keeping the generated placement view fallback/evidence-only.
+
 - `compound policy operator-authority --json` now gives operator surfaces an explicit machine-readable authority handoff over `compound://registries/operator-state`, while preserving the existing default JSON output. Umut OS status calls the explicit JSON form, keeping `registry/operator-state.json` fallback/evidence-only after import rather than a scraped or inferred authority surface.
 
 - `decisions repair-apply --write-reviewed` now enforces the reviewed-apply boundary at the decision owner seam: write mode fails unless the repair plan status is `reviewed`, `ready_to_apply`, or `approved`. Dry-run remains available for review, but unreviewed writes record a blocked apply report sidecar and exit nonzero without mutating owner files. Live proof against `dlrp_0557bdde37ed` exits 1, keeps the queue at 4 top-level artifacts, and records `status=blocked`, `plan_status=review_required`.

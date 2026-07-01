@@ -32,6 +32,7 @@ can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fa
 `compound policy import-placement-rules <placement-rules.json>` imports generated owner placement rules
 into `COMPOUND_HOME/registries/placement-rules.json` as `compound://registries/placement-rules`; after
 that handoff the generated source view is evidence/rollback input, and PreToolUse reads the Compound copy.
+`compound policy placement-authority [--json]` is the read-only machine handoff for operator surfaces.
 `compound policy import-operator-state <operator-state.json>` imports the global autonomy ceiling into
 `COMPOUND_HOME/registries/operator-state.json` as `compound://registries/operator-state`; policy evaluation
 loads that Compound authority, records the authority ref on `PolicyDecision.evidence_refs[]`, and still holds

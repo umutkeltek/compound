@@ -106,7 +106,8 @@ Execution and policy:
   PolicyDecision.
 - `compound policy import-placement-rules <placement-rules.json>` installs owner
   placement rules into `COMPOUND_HOME/registries/placement-rules.json`;
-  `compound policy placement-authority` reports that handoff.
+  `compound policy placement-authority [--json]` reports the machine-readable
+  handoff for OS/operator consumers.
 - `compound policy import-operator-state <operator-state.json>` installs the
   global autonomy ceiling into `COMPOUND_HOME/registries/operator-state.json`;
   `compound policy operator-authority [--json]` reports the machine-readable

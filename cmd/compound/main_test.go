@@ -933,6 +933,9 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 	authorityOut := captureStdout(t, func() {
 		cmdPolicy([]string{"placement-authority"})
 	})
+	authorityJSONOut := captureStdout(t, func() {
+		cmdPolicy([]string{"placement-authority", "--json"})
+	})
 	for _, want := range []string{
 		`"installed": true`,
 		`"owner_count": 1`,
@@ -940,6 +943,9 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 	} {
 		if !strings.Contains(authorityOut, want) {
 			t.Fatalf("placement authority output missing %q:\n%s", want, authorityOut)
+		}
+		if !strings.Contains(authorityJSONOut, want) {
+			t.Fatalf("placement authority --json output missing %q:\n%s", want, authorityJSONOut)
 		}
 	}
 

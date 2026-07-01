@@ -2586,8 +2586,8 @@ func cmdPolicy(args []string) {
 		}
 		printJSON(report)
 	case "placement-authority":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound policy placement-authority")
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound policy placement-authority [--json]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
