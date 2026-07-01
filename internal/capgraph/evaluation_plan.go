@@ -1,6 +1,7 @@
 package capgraph
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,6 +80,8 @@ type CapabilityEvaluationReviewReport struct {
 	NodeID       string `json:"node_id"`
 	NodeStatus   string `json:"node_status"`
 	ManifestPath string `json:"manifest_path"`
+	PlanPath     string `json:"plan_path,omitempty"`
+	ReviewedPath string `json:"reviewed_path,omitempty"`
 }
 
 func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet, selector, targetPath string, now time.Time) (CapabilityEvaluationPlan, error) {
@@ -290,14 +293,55 @@ func RecordCapabilityEvaluationReview(homePath string, review CapabilityEvaluati
 	if err != nil {
 		return CapabilityEvaluationReviewReport{}, err
 	}
-	return CapabilityEvaluationReviewReport{
+	report := CapabilityEvaluationReviewReport{
 		Status:       "manifest_ready",
 		ReviewID:     review.ReviewID,
 		Decision:     review.Decision,
 		NodeID:       review.NodeDraft.NodeID,
 		NodeStatus:   nodeStatus,
 		ManifestPath: manifestPath,
-	}, nil
+	}
+	report, err = recordCapabilityEvaluationReviewedPlan(homePath, review, report)
+	if err != nil {
+		return CapabilityEvaluationReviewReport{}, err
+	}
+	return report, nil
+}
+
+func recordCapabilityEvaluationReviewedPlan(homePath string, review CapabilityEvaluationReview, report CapabilityEvaluationReviewReport) (CapabilityEvaluationReviewReport, error) {
+	dir, err := reviewartifact.Dir(homePath, "capability-evaluation-intake")
+	if err != nil {
+		return report, err
+	}
+	reviewedData, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return report, err
+	}
+	reviewedPath, err := reviewartifact.WriteRaw(homePath, "capability-evaluation-intake", review.PlanID+".reviewed.json", append(reviewedData, '\n'))
+	if err != nil {
+		return report, err
+	}
+	report.ReviewedPath = reviewedPath
+
+	planPath := filepath.Join(dir, review.PlanID+".json")
+	data, err := os.ReadFile(planPath)
+	if os.IsNotExist(err) {
+		return report, nil
+	}
+	if err != nil {
+		return report, fmt.Errorf("read capability evaluation plan %s: %w", planPath, err)
+	}
+	var plan CapabilityEvaluationPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return report, fmt.Errorf("parse capability evaluation plan %s: %w", planPath, err)
+	}
+	plan.Status = "recorded"
+	paths, err := reviewartifact.Write(homePath, "capability-evaluation-intake", plan.ID, plan, "  ", RenderCapabilityEvaluationPlanReview(plan))
+	if err != nil {
+		return report, err
+	}
+	report.PlanPath = paths.PlanPath
+	return report, nil
 }
 
 func CapabilityEvaluationPlanSkillManifest(plan CapabilityEvaluationPlan) (SkillManifest, error) {

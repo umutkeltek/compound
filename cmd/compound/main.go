@@ -637,6 +637,12 @@ func cmdCapability(args []string) {
 		fmt.Printf("- node: %s\n", report.NodeID)
 		fmt.Printf("- node_status: %s\n", report.NodeStatus)
 		fmt.Printf("- manifest: %s\n", report.ManifestPath)
+		if report.PlanPath != "" {
+			fmt.Printf("- plan: %s\n", report.PlanPath)
+		}
+		if report.ReviewedPath != "" {
+			fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
+		}
 	case "skill-candidate-review":
 		targetPath := flag("--target")
 		jsonOut := hasFlag(rest, "--json")

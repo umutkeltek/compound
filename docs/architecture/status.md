@@ -8,6 +8,20 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `mvanhorn/last30days-skill` now has focused freshness-research capability
+  evaluation intake instead of remaining only a catalog row. The eval record
+  preserved the external-repo source receipt, compared the candidate against the
+  owned `deep-research` lane, and imported as evidence-only:
+  `capability_evaluations_e376ac9312e1` -> eval node
+  `eval:capability-evaluation-external-mvanhorn-last30days-freshness-research-20260701`.
+  Unknown capability `last30days-freshness-research` skipped graph activation
+  and produced SourceObservation `srcobs_4e8f10850e71`, candidate
+  `src_cand_4bc3f77d1082`, no-promote `nop_0ab33ed7097b1d3c`. Review artifact
+  `cep_b54ba5aef06f` is terminal `recorded` with decision `keep_needs_review`;
+  authority now reports `490` nodes / `94` edges, so only an evidence eval node
+  was added. No skill installed/served/executed, no plugin/MCP auth, no
+  marketplace command, no route-policy change, no memory promotion.
+
 - External skill/repo intake now has a governed runtime map for a 51-repo public GitHub shortlist spanning skills,
   agent harnesses, scripts, design references, memory tools, and framework/project candidates. The batch wrote
   review-only `skill-candidates` artifacts and recorded conservative intake decisions: `26` keep-needs-review,

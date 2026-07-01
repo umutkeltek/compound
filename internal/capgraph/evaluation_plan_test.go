@@ -83,6 +83,23 @@ func TestCapabilityEvaluationPlanRecordsReviewArtifactsWithoutMutatingGraph(t *t
 	if reviewReport.Status != "manifest_ready" || reviewReport.NodeStatus != "active" || reviewReport.ManifestPath == "" {
 		t.Fatalf("review report = %+v", reviewReport)
 	}
+	if reviewReport.PlanPath == "" || reviewReport.ReviewedPath == "" {
+		t.Fatalf("review report did not close plan artifacts: %+v", reviewReport)
+	}
+	var reviewedPlan CapabilityEvaluationPlan
+	data, err = os.ReadFile(paths.PlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &reviewedPlan); err != nil {
+		t.Fatal(err)
+	}
+	if reviewedPlan.Status != "recorded" {
+		t.Fatalf("reviewed plan status = %q, want recorded", reviewedPlan.Status)
+	}
+	if _, err := os.Stat(reviewReport.ReviewedPath); err != nil {
+		t.Fatalf("reviewed sidecar missing: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(home, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation-review must not mutate capability nodes, stat err=%v", err)
 	}
