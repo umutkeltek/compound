@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Umut OS operator surfaces now consume Compound capability feedback edge-kind counts. `os status --json` carries `capability_authority.edge_kind_counts`, the dashboard read-model card `compound-capability-authority` carries the same map, and the skills-console data reader exposes it to UI pages. Live proof reports `489` nodes / `94` edges with `false_triggered_by=20`, `missed_when=24`, `surfaces_with=47`, `validated_by=2`, `fallback_for=1`. This is a read-only consumer path: no skill execution, install/serve, source-owner mutation, memory promotion, marketplace action, or route-policy change.
+
 - `compound capability authority --json` now exposes `edge_kind_counts`, and human output prints deterministic `edge_kinds=...`, so graph learning is visible by feedback kind instead of only total edges. Live proof over current capability authority reports `489` nodes / `94` edges with `false_triggered_by=20`, `missed_when=24`, `surfaces_with=47`, `validated_by=2`, `fallback_for=1`. This is observability only: no skill execution, install/serve, source-owner mutation, memory promotion, marketplace action, or route-policy change.
 
 - `compound capability import-surfacing-misses` now absorbs negative surfacing feedback too: optional `false_triggered` / `falseTriggered` entries create idempotent `false_triggered_by` context edges that lower future surfacing for matching tasks, while existing `real` miss entries still create `missed_when`. CLI output reports both positive and negative feedback counters. Source reports still enter `SourceObservation -> capability_observation candidate -> NoPromoteDecision`; no skill is installed, served, or executed.
