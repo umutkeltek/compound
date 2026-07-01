@@ -8,6 +8,12 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Skill-candidate review artifacts now include a deterministic `graph_coherence` signal beside the existing
+  disposition: exact decision hint, confidence, additive fit, duplicate risk, evidence strength, audit risk,
+  top overlap score, and review reasons. The score is derived only from source metadata, audit signals, target
+  snapshot presence, and current CapabilityGraph overlaps. It does not install or serve skills, create inbox
+  candidates, mutate graph nodes/edges, execute marketplace tools, or promote memory.
+
 - `compound capability skill-candidate-review <external-skill-candidate.json> [--target <file-or-dir>]` now turns skills.sh/GitHub-style external skill metadata, file snapshots, and audit signals into owner-review artifacts under `COMPOUND_HOME/reviews/skill-candidates/`. The review includes `candidate_kind=skill`, proposed classification, staged lifecycle, recommended disposition, overlap refs from the current CapabilityGraph, required evidence, and eval fixture suggestions. It is review-only: no CapabilityGraph node/edge mutation, no skill inbox write, no skill install/serve, no marketplace CLI execution, and no memory promotion.
 
 - `compound capability skill-candidate-decision <review.yaml>` now records the reviewed external-skill intake decision. Only `decision: create_candidate` writes a normal `inbox/skill-candidates/<id>.json` record for the existing `capability skill-plan` command; `merge_existing`, `reject`, `reference_only`, and `keep_needs_review` record sidecars only. The command still does not mutate CapabilityGraph, install/serve skill files, execute MCP/tools, call marketplace CLIs, or promote memory.

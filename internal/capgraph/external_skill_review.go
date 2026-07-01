@@ -76,12 +76,24 @@ type SkillCandidateReview struct {
 	LifecycleStage         string                  `json:"lifecycle_stage"`
 	RecommendedDisposition string                  `json:"recommended_disposition"`
 	DispositionReason      string                  `json:"disposition_reason"`
+	GraphCoherence         SkillCandidateCoherence `json:"graph_coherence"`
 	OverlapRefs            []SkillCandidateOverlap `json:"overlap_refs,omitempty"`
 	AuditSignals           []SkillCandidateAudit   `json:"audit_signals,omitempty"`
 	EvidenceRequired       []string                `json:"evidence_required"`
 	EvalFixtureSuggestions []string                `json:"eval_fixture_suggestions"`
 	NextAction             string                  `json:"next_action"`
 	Warnings               []string                `json:"warnings"`
+}
+
+type SkillCandidateCoherence struct {
+	DecisionHint       string   `json:"decision_hint"`
+	DecisionConfidence float64  `json:"decision_confidence"`
+	AdditiveFit        float64  `json:"additive_fit"`
+	DuplicateRisk      float64  `json:"duplicate_risk"`
+	EvidenceStrength   float64  `json:"evidence_strength"`
+	AuditRisk          string   `json:"audit_risk"`
+	TopOverlapScore    int      `json:"top_overlap_score,omitempty"`
+	Reasons            []string `json:"reasons,omitempty"`
 }
 
 type SkillCandidateOverlap struct {
@@ -184,6 +196,7 @@ func BuildExternalSkillCandidateReview(homePath, candidatePath, targetPath strin
 	}
 	classification := classifyExternalSkillCandidate(candidate)
 	disposition, reason := recommendExternalSkillCandidateDisposition(candidate, overlaps)
+	auditSignals := externalSkillAuditSignals(candidate)
 	candidateID := externalSkillCandidateID(candidate)
 	review := SkillCandidateReview{
 		SchemaVersion:          SkillCandidateReviewSchemaVersion,
@@ -203,8 +216,9 @@ func BuildExternalSkillCandidateReview(homePath, candidatePath, targetPath strin
 		LifecycleStage:         "staged_candidate",
 		RecommendedDisposition: disposition,
 		DispositionReason:      reason,
+		GraphCoherence:         skillCandidateCoherence(candidate, overlaps, auditSignals, targetExists),
 		OverlapRefs:            overlaps,
-		AuditSignals:           externalSkillAuditSignals(candidate),
+		AuditSignals:           auditSignals,
 		EvidenceRequired: []string{
 			"source provenance and license reviewed",
 			"duplicate scan against existing CapabilityGraph and served skill roots",
@@ -388,6 +402,16 @@ func RenderExternalSkillCandidateReview(review SkillCandidateReview) string {
 	fmt.Fprintf(&b, "- lifecycle_stage: `%s`\n", review.LifecycleStage)
 	fmt.Fprintf(&b, "- recommended_disposition: `%s`\n", review.RecommendedDisposition)
 	fmt.Fprintf(&b, "- reason: %s\n", review.DispositionReason)
+	if review.GraphCoherence.DecisionHint != "" {
+		fmt.Fprintf(&b, "- graph_decision_hint: `%s` confidence=%.2f additive_fit=%.2f duplicate_risk=%.2f evidence=%.2f audit_risk=%s\n",
+			review.GraphCoherence.DecisionHint,
+			review.GraphCoherence.DecisionConfidence,
+			review.GraphCoherence.AdditiveFit,
+			review.GraphCoherence.DuplicateRisk,
+			review.GraphCoherence.EvidenceStrength,
+			review.GraphCoherence.AuditRisk,
+		)
+	}
 	if review.External.Installs > 0 {
 		fmt.Fprintf(&b, "- installs: %d\n", review.External.Installs)
 	}
@@ -399,6 +423,14 @@ func RenderExternalSkillCandidateReview(review SkillCandidateReview) string {
 	}
 	if review.TargetPath != "" {
 		fmt.Fprintf(&b, "- target: %s\n", review.TargetPath)
+	}
+	if len(review.GraphCoherence.Reasons) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Graph Coherence")
+		fmt.Fprintln(&b)
+		for _, reason := range review.GraphCoherence.Reasons {
+			fmt.Fprintf(&b, "- %s\n", reason)
+		}
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## Overlap Scan")
@@ -492,6 +524,152 @@ func recommendExternalSkillCandidateDisposition(c ExternalSkillCandidate, overla
 		return "merge", "candidate overlaps existing CapabilityGraph capability; adapt useful parts into owner instead of serving a duplicate"
 	}
 	return "park", "external marketplace evidence is not runtime proof; keep staged until eval and review pass"
+}
+
+func skillCandidateCoherence(c ExternalSkillCandidate, overlaps []SkillCandidateOverlap, audits []SkillCandidateAudit, targetExists bool) SkillCandidateCoherence {
+	topOverlap := 0
+	if len(overlaps) > 0 {
+		topOverlap = overlaps[0].Score
+	}
+	auditRisk, auditRiskScore := skillCandidateAuditRisk(audits)
+	reasons := []string{}
+
+	evidence := 0.10 // candidate file parsed and validated.
+	if strings.TrimSpace(c.Description) != "" {
+		evidence += 0.10
+	}
+	if hasSkillMD(c) {
+		evidence += 0.20
+		reasons = append(reasons, "candidate includes SKILL.md")
+	}
+	if strings.TrimSpace(firstEvalNonEmpty(c.RepositoryURL, c.InstallURL, c.URL, c.Source)) != "" {
+		evidence += 0.10
+	}
+	if c.Official {
+		evidence += 0.10
+		reasons = append(reasons, "source marked official")
+	}
+	switch {
+	case c.Installs >= 100000:
+		evidence += 0.10
+		reasons = append(reasons, "high install count is popularity evidence, not runtime proof")
+	case c.Installs >= 1000:
+		evidence += 0.05
+		reasons = append(reasons, "install count is weak popularity evidence")
+	}
+	if len(audits) > 0 {
+		evidence += 0.10
+		reasons = append(reasons, "external audit signal supplied")
+	}
+	if len(audits) > 0 && auditRiskScore <= 0.20 {
+		evidence += 0.10
+		reasons = append(reasons, "audit signals are low risk")
+	}
+	if targetExists {
+		evidence += 0.10
+		reasons = append(reasons, "local target snapshot captured")
+	}
+	evidence = clamp01(evidence)
+
+	duplicateRisk := 0.05
+	switch {
+	case c.IsDuplicate:
+		duplicateRisk = 1
+		reasons = append(reasons, "source marks candidate duplicate")
+	case topOverlap >= 5:
+		duplicateRisk = 0.95
+	case topOverlap >= 3:
+		duplicateRisk = 0.80
+	case topOverlap >= 2:
+		duplicateRisk = 0.65
+	case topOverlap == 1:
+		duplicateRisk = 0.35
+	}
+	if topOverlap > 0 {
+		reasons = append(reasons, fmt.Sprintf("top overlap score %d against existing CapabilityGraph node", topOverlap))
+	}
+
+	additiveFit := clamp01(evidence*(1-duplicateRisk*0.70) - auditRiskScore*0.30)
+	decisionHint := "keep_needs_review"
+	decisionConfidence := 0.45
+	switch {
+	case auditRiskScore >= 0.85:
+		decisionHint = "reject"
+		decisionConfidence = auditRiskScore
+		reasons = append(reasons, "audit risk is high enough to reject before graph intake")
+	case c.IsDuplicate:
+		decisionHint = "reference_only"
+		decisionConfidence = duplicateRisk
+	case duplicateRisk >= 0.60:
+		decisionHint = "merge_existing"
+		decisionConfidence = duplicateRisk
+	case additiveFit >= 0.65 && evidence >= 0.70 && auditRiskScore <= 0.40:
+		decisionHint = "create_candidate"
+		decisionConfidence = additiveFit
+	default:
+		reasons = append(reasons, "needs eval evidence before graph or served-skill intake")
+	}
+
+	return SkillCandidateCoherence{
+		DecisionHint:       decisionHint,
+		DecisionConfidence: roundScore(decisionConfidence),
+		AdditiveFit:        roundScore(additiveFit),
+		DuplicateRisk:      roundScore(duplicateRisk),
+		EvidenceStrength:   roundScore(evidence),
+		AuditRisk:          auditRisk,
+		TopOverlapScore:    topOverlap,
+		Reasons:            reviewartifact.Unique(reasons),
+	}
+}
+
+func skillCandidateAuditRisk(audits []SkillCandidateAudit) (string, float64) {
+	if len(audits) == 0 {
+		return "unknown", 0.45
+	}
+	label := "low"
+	score := 0.10
+	for _, audit := range audits {
+		status := strings.ToLower(strings.TrimSpace(audit.Status))
+		risk := strings.ToLower(strings.TrimSpace(audit.RiskLevel))
+		curLabel, curScore := skillCandidateAuditRiskValue(status, risk)
+		if curScore > score {
+			label = curLabel
+			score = curScore
+		}
+	}
+	return label, score
+}
+
+func skillCandidateAuditRiskValue(status, risk string) (string, float64) {
+	switch {
+	case status == "fail" || risk == "critical":
+		return "critical", 1
+	case risk == "high":
+		return "high", 0.90
+	case status == "warn" || risk == "medium" || risk == "med":
+		return "medium", 0.60
+	case status == "pending" || status == "unknown" || risk == "unknown":
+		return "unknown", 0.45
+	case status == "pass" || status == "safe" || risk == "low":
+		return "low", 0.10
+	default:
+		return "unknown", 0.45
+	}
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func roundScore(v float64) float64 {
+	v = clamp01(v)
+	return float64(int(v*100+0.5)) / 100
 }
 
 func externalSkillAuditSignals(c ExternalSkillCandidate) []SkillCandidateAudit {

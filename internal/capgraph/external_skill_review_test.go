@@ -67,6 +67,9 @@ func TestExternalSkillCandidateReviewWritesReviewOnlyWithOverlapScan(t *testing.
 	if review.RecommendedDisposition != "merge" {
 		t.Fatalf("disposition = %s reason=%s overlaps=%+v", review.RecommendedDisposition, review.DispositionReason, review.OverlapRefs)
 	}
+	if review.GraphCoherence.DecisionHint != "merge_existing" || review.GraphCoherence.DuplicateRisk < 0.60 || review.GraphCoherence.EvidenceStrength <= 0 {
+		t.Fatalf("graph coherence = %+v", review.GraphCoherence)
+	}
 	if len(review.OverlapRefs) == 0 || review.OverlapRefs[0].NodeID != "skill:react-best-practices" {
 		t.Fatalf("overlaps = %+v", review.OverlapRefs)
 	}
@@ -94,6 +97,8 @@ func TestExternalSkillCandidateReviewWritesReviewOnlyWithOverlapScan(t *testing.
 	}
 	for _, want := range []string{
 		"Skill Candidate Intake: React Best Practices",
+		"graph_decision_hint: `merge_existing`",
+		"Graph Coherence",
 		"Overlap Scan",
 		"`skill:react-best-practices`",
 		"does not mutate CapabilityGraph",
@@ -115,6 +120,39 @@ func TestExternalSkillCandidateReviewWritesReviewOnlyWithOverlapScan(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("review must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestExternalSkillCandidateReviewCoherenceRejectsHighRiskAudit(t *testing.T) {
+	home, store := newStore(t)
+	if err := store.Add(Node{
+		ID:       "skill:image-edit",
+		Kind:     "skill",
+		Name:     "Image Edit",
+		Triggers: []string{"image", "edit"},
+		Weight:   1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := writeExternalSkillCandidate(t, ExternalSkillCandidate{
+		ID:          "example/high-risk-image-edit",
+		Name:        "Image Edit",
+		Description: "Image editing workflow",
+		Source:      "example/skills",
+		URL:         "https://skills.sh/example/skills/image-edit",
+		Installs:    200000,
+		Files:       []ExternalSkillFile{{Path: "SKILL.md", Contents: "# Image Edit\n"}},
+		Audits:      []ExternalSkillAudit{{Provider: "Socket", Status: "pass", RiskLevel: "High"}},
+	})
+	review, err := BuildExternalSkillCandidateReview(home, candidatePath, "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.RecommendedDisposition != "reject" {
+		t.Fatalf("disposition = %s reason=%s", review.RecommendedDisposition, review.DispositionReason)
+	}
+	if review.GraphCoherence.DecisionHint != "reject" || review.GraphCoherence.AuditRisk != "high" || review.GraphCoherence.DecisionConfidence < 0.85 {
+		t.Fatalf("graph coherence = %+v", review.GraphCoherence)
 	}
 }
 
