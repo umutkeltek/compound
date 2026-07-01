@@ -31,7 +31,7 @@ This file is the current package/command map. `compound architecture doctor --st
   the same auto-work, StandingGrant-backed review findings; live proof imported `trace_a8d31e392b7d`,
   wrote `rvf_c3ca19386926`, and closed `work_d197361d1be5` through `rec_c8014a23b785` /
   `tr_c8014a23b785`. Plain event import stays observation-only. No claims were promoted and no live
-  job-health review was recorded. OS `scripts/emit_event.py --compound-review-root <repo>` now provides the first source-side producer handoff into this path; live proof wrote a control event, imported `trace_48301aa0746a`, wrote `rvf_b2bd69c32eeb`, persisted `act_b52510bbaf36` / `pol_7277b6627cc9`, and closed `work_1b71e2410978` while workbench stayed `open=0`.
+  job-health review was recorded. OS `scripts/emit_event.py --compound-review-root <repo>` now provides the first source-side producer handoff into this path; live proof wrote a control event, imported `trace_48301aa0746a`, wrote `rvf_b2bd69c32eeb`, persisted `act_b52510bbaf36` / `pol_7277b6627cc9`, and closed `work_1b71e2410978` while workbench stayed `open=0`. Existing event producers can opt in without call-site edits through `COMPOUND_REVIEW_ROOT`, `COMPOUND_REVIEW_SUMMARY`, `COMPOUND_EVENT_STREAM`, and `COMPOUND_BIN`; live env-only proof imported `trace_4cd76f324e4c`, wrote `rvf_d26334005ed3`, and closed `work_5b8ed9f3be9f`.
 
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority
