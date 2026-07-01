@@ -19,6 +19,16 @@ This file is the current package/command map. `compound architecture doctor --st
   No scheduler file mutation, job execution, enable/disable change, or memory
   promotion.
 
+- `skills.sh` is now represented through the existing governed external-intake
+  path rather than a new marketplace registry. Runtime evidence
+  `capability-evaluation.external.skills-sh-marketplace.20260701` imported as an
+  evidence-only eval node on `procedure:skill-ops`; explicit lookup
+  `compound capability external-intake --repo skills.sh --json` returns
+  `reference_only`, owner `procedure:skill-ops`, graph hint
+  `downgrade_to_index`, and the no-wholesale-install boundary. No marketplace
+  command ran, no child skill was installed/served, no MCP/plugin/auth surface
+  activated, no CapabilityGraph offer was promoted, and no memory was promoted.
+
 - `compound capability external-intake --repo <source>` now also finds matching reference-only external source evaluations, not only rows from the repo-intake batch. This closes the non-repo source gap without widening the repo-intake schema or creating a second registry: evaluation signals with `external_repo` / `external_url` appear only for explicit matching queries as `reference_only` evidence rows. Live proof: querying a gist-style Karpathy source returns owner `procedure:skill-ops`, decision `reference_only`, graph hint `downgrade_to_index`, and the existing no-install boundary; `compound orient --harness codex --task "<task naming the source>"` and `os capability "<task naming the source>"` both include the same external-intake boundary. No clone/install/serve, no hook/MCP/plugin activation, no project-registry mutation, no CapabilityGraph offer promotion, no memory promotion.
 
 - Memory delta (`delta_recipient=memory`): model-router authority is now a promoted Compound memory claim, so routing work can recall the already-landed owner instead of re-reading generated source views. Candidate `cand_3f804906bb2b` promoted to `claim_5a8d544a0603` at seq `143` with transition `tr_00a4adbec6a1`: `model-router.route_authority = Compound owns model-router authority at compound://registries/model-router; source model-capabilities YAML is evidence-only after import; route plan consumes Compound authority and privacy-sensitive filtering can block non-local lanes.` The runtime relation `model-router -supports-> route-planning` was recorded at seq `142`. Live proof: `compound route plan --capability-class build-implement` reads source authority `mrcsrc_05e5725f9dcf`; `compound memory recall model-router` returns the claim; `compound memory graph model-router --depth 1` returns the relation; `compound orient --harness codex --task "Check model-router route planning"` includes `claim://claim_5a8d544a0603` in `active_memory`.
