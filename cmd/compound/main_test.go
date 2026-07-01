@@ -2499,6 +2499,84 @@ func TestCapabilitySkillCandidateReviewWritesReviewOnly(t *testing.T) {
 	}
 }
 
+func TestCapabilitySkillCandidateDecisionFeedsSkillPlan(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	nodesPath := filepath.Join(homePath, "registries", "capability-nodes.jsonl")
+	beforeNodes, err := os.ReadFile(nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := writeJSONFile(t, `{
+ "id": "example/skills/pricing",
+ "name": "Pricing",
+ "slug": "pricing",
+ "description": "Review pricing and paywall packaging decisions.",
+ "source": "example/skills",
+ "source_type": "github",
+ "url": "https://skills.sh/example/skills/pricing",
+ "files": [{"path": "SKILL.md", "contents": "---\nname: pricing\n---\n"}]
+}`)
+	captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-review", candidatePath})
+	})
+	reviewDir := filepath.Join(homePath, "reviews", "skill-candidates")
+	var reviewYAML string
+	entries, err := os.ReadDir(reviewDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".review.yaml") {
+			reviewYAML = filepath.Join(reviewDir, entry.Name())
+		}
+	}
+	if reviewYAML == "" {
+		t.Fatal("review yaml not written")
+	}
+	body := readFile(t, reviewYAML)
+	body = strings.ReplaceAll(body, "TODO_decision_create_candidate_merge_existing_reject_reference_only_keep_needs_review", "create_candidate")
+	body = strings.ReplaceAll(body, "rationale: \"\"", "rationale: \"reviewed source should enter skill-plan intake\"")
+	body = strings.ReplaceAll(body, "confidence: -1", "confidence: 0.8")
+	if err := os.WriteFile(reviewYAML, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-decision", reviewYAML})
+	})
+	for _, want := range []string{
+		"# capability skill-candidate-decision scdr_",
+		"- status: candidate_recorded",
+		"- decision: create_candidate",
+		"- candidate: example-skills-pricing",
+		"- candidate_path: ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("skill-candidate-decision output missing %q:\n%s", want, out)
+		}
+	}
+	planOut := captureStdout(t, func() {
+		cmdCapability([]string{"skill-plan", "--candidate", "example-skills-pricing"})
+	})
+	if !strings.Contains(planOut, "# capability skill-plan skp_") || !strings.Contains(planOut, "- candidate: example-skills-pricing") {
+		t.Fatalf("skill-plan did not consume reviewed candidate:\n%s", planOut)
+	}
+	afterNodes, err := os.ReadFile(nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterNodes) != string(beforeNodes) {
+		t.Fatalf("skill-candidate decision/plan must not mutate graph nodes")
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("skill-candidate decision/plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

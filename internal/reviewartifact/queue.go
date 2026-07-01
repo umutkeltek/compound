@@ -134,7 +134,7 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 			report.Counts.ReadyToApply++
 		}
 		switch item.Status {
-		case "ok", "applied", "resolved", "accepted":
+		case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
 			report.Counts.OK++
 		default:
 			report.Counts.ReviewRequired++
@@ -255,7 +255,7 @@ func statusPriority(status string) int {
 		return 0
 	case "held", "blocked":
 		return 1
-	case "ok", "applied", "resolved", "accepted":
+	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
 		return 3
 	default:
 		return 2

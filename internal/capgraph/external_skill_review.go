@@ -11,9 +11,14 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/reviewartifact"
+	"gopkg.in/yaml.v3"
 )
 
-const SkillCandidateReviewSchemaVersion = "compound.capability.skill_candidate_review.v0.1"
+const (
+	SkillCandidateReviewSchemaVersion   = "compound.capability.skill_candidate_review.v0.1"
+	SkillCandidateDecisionSchemaVersion = "compound.capability.skill_candidate_decision.v0.1"
+	skillCandidateReviewArea            = "skill-candidates"
+)
 
 // ExternalSkillCandidate is a source-catalog skill record before it becomes a
 // Compound inbox candidate, graph node, staged skill, or served adapter.
@@ -97,8 +102,36 @@ type SkillCandidateAudit struct {
 }
 
 type SkillCandidateReviewPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath       string
+	ReviewPath     string
+	ReviewYAMLPath string
+}
+
+type SkillCandidateDecision struct {
+	SchemaVersion    string   `json:"schema_version" yaml:"schema_version"`
+	ID               string   `json:"id" yaml:"id"`
+	ReviewID         string   `json:"review_id" yaml:"review_id"`
+	Decision         string   `json:"decision" yaml:"decision"`
+	Rationale        string   `json:"rationale" yaml:"rationale"`
+	Confidence       float64  `json:"confidence" yaml:"confidence"`
+	CandidateVerdict string   `json:"candidate_verdict,omitempty" yaml:"candidate_verdict,omitempty"`
+	EvidenceRefs     []string `json:"evidence_refs" yaml:"evidence_refs"`
+	ReviewedAt       string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
+}
+
+type SkillCandidateDecisionReport struct {
+	SchemaVersion string   `json:"schema_version"`
+	ID            string   `json:"id"`
+	CreatedAt     string   `json:"created_at"`
+	Status        string   `json:"status"`
+	ReviewID      string   `json:"review_id"`
+	DecisionID    string   `json:"decision_id"`
+	Decision      string   `json:"decision"`
+	CandidateID   string   `json:"candidate_id,omitempty"`
+	CandidatePath string   `json:"candidate_path,omitempty"`
+	ReviewPath    string   `json:"review_path,omitempty"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 func LoadExternalSkillCandidate(path string) (ExternalSkillCandidate, error) {
@@ -200,11 +233,148 @@ func RecordExternalSkillCandidateReview(homePath string, review SkillCandidateRe
 	if strings.TrimSpace(review.ID) == "" {
 		return SkillCandidateReviewPaths{}, fmt.Errorf("skill candidate review id required")
 	}
-	paths, err := reviewartifact.Write(homePath, "skill-candidates", review.ID, review, " ", RenderExternalSkillCandidateReview(review))
+	dir, err := reviewartifact.Dir(homePath, skillCandidateReviewArea)
 	if err != nil {
 		return SkillCandidateReviewPaths{}, err
 	}
-	return SkillCandidateReviewPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, nil
+	out := SkillCandidateReviewPaths{
+		PlanPath:       filepath.Join(dir, review.ID+".json"),
+		ReviewPath:     filepath.Join(dir, review.ID+".md"),
+		ReviewYAMLPath: filepath.Join(dir, review.ID+".review.yaml"),
+	}
+	if _, err := reviewartifact.Write(homePath, skillCandidateReviewArea, review.ID, review, " ", RenderExternalSkillCandidateReview(review)); err != nil {
+		return out, err
+	}
+	if _, err := reviewartifact.WriteRaw(homePath, skillCandidateReviewArea, review.ID+".review.yaml", []byte(RenderExternalSkillCandidateDecisionYAMLDraft(review))); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func RenderExternalSkillCandidateDecisionYAMLDraft(review SkillCandidateReview) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "schema_version: %s\n", SkillCandidateDecisionSchemaVersion)
+	fmt.Fprintf(&b, "id: decision_%s\n", review.ID)
+	fmt.Fprintf(&b, "review_id: %s\n", review.ID)
+	fmt.Fprintln(&b, "decision: TODO_decision_create_candidate_merge_existing_reject_reference_only_keep_needs_review")
+	fmt.Fprintln(&b, "rationale: \"\"")
+	fmt.Fprintln(&b, "confidence: -1")
+	fmt.Fprintln(&b, "candidate_verdict: park")
+	fmt.Fprintln(&b, "evidence_refs:")
+	for _, ref := range externalSkillCandidateDecisionEvidence(review) {
+		fmt.Fprintf(&b, " - %s\n", ref)
+	}
+	return b.String()
+}
+
+func LoadSkillCandidateDecision(path string) (SkillCandidateDecision, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SkillCandidateDecision{}, fmt.Errorf("read skill candidate decision %s: %w", path, err)
+	}
+	var decision SkillCandidateDecision
+	if err := yaml.Unmarshal(data, &decision); err != nil {
+		return SkillCandidateDecision{}, fmt.Errorf("parse skill candidate decision %s: %w", path, err)
+	}
+	if err := ValidateSkillCandidateDecision(decision); err != nil {
+		return SkillCandidateDecision{}, fmt.Errorf("validate skill candidate decision %s: %w", path, err)
+	}
+	return decision, nil
+}
+
+func ValidateSkillCandidateDecision(decision SkillCandidateDecision) error {
+	if strings.TrimSpace(decision.SchemaVersion) != SkillCandidateDecisionSchemaVersion {
+		return fmt.Errorf("schema_version must be %s", SkillCandidateDecisionSchemaVersion)
+	}
+	if strings.TrimSpace(decision.ID) == "" {
+		return fmt.Errorf("skill candidate decision id required")
+	}
+	if strings.TrimSpace(decision.ReviewID) == "" {
+		return fmt.Errorf("skill candidate decision review_id required")
+	}
+	if !skillCandidateDecisionOK(decision.Decision) {
+		return fmt.Errorf("skill candidate decision must be create_candidate|merge_existing|reject|reference_only|keep_needs_review")
+	}
+	if strings.TrimSpace(decision.Rationale) == "" {
+		return fmt.Errorf("skill candidate decision rationale required")
+	}
+	if decision.Confidence < 0 || decision.Confidence > 1 {
+		return fmt.Errorf("skill candidate decision confidence must be between 0 and 1")
+	}
+	if len(reviewartifact.Unique(decision.EvidenceRefs)) == 0 {
+		return fmt.Errorf("skill candidate decision evidence_refs required")
+	}
+	if strings.TrimSpace(decision.CandidateVerdict) == "" {
+		decision.CandidateVerdict = candidates.Park
+	}
+	if decision.Decision == "create_candidate" && !skillCandidateVerdictOK(decision.CandidateVerdict) {
+		return fmt.Errorf("candidate_verdict must be park or operationalize for create_candidate")
+	}
+	return nil
+}
+
+func RecordSkillCandidateDecision(homePath string, decision SkillCandidateDecision, sourcePath string, now time.Time) (SkillCandidateDecisionReport, error) {
+	createdAt := reviewartifact.Timestamp(now)
+	report := SkillCandidateDecisionReport{
+		SchemaVersion: "compound.capability.skill_candidate_decision_report.v0.1",
+		ID:            reviewartifact.ID("scdr_", decision.ReviewID, decision.ID, decision.Decision, createdAt),
+		CreatedAt:     createdAt,
+		Status:        "recorded",
+		ReviewID:      decision.ReviewID,
+		DecisionID:    decision.ID,
+		Decision:      decision.Decision,
+		ReviewPath:    strings.TrimSpace(sourcePath),
+		EvidenceRefs:  reviewartifact.Unique(decision.EvidenceRefs),
+		Warnings: []string{
+			"does not mutate CapabilityGraph",
+			"does not install or serve skill files",
+			"does not execute tools, MCPs, or marketplace CLIs",
+			"does not promote memory claims",
+		},
+	}
+	if err := ValidateSkillCandidateDecision(decision); err != nil {
+		report.Status = "blocked"
+		return report, err
+	}
+	review, err := loadSkillCandidateReviewForDecision(sourcePath, decision.ReviewID)
+	if err != nil {
+		report.Status = "blocked"
+		return report, err
+	}
+	if decision.Decision == "create_candidate" {
+		candidate := skillCandidate{
+			ID:           review.CandidateID,
+			Kind:         string(candidates.Skill),
+			Subject:      review.External.displayName(),
+			Statement:    firstEvalNonEmpty(review.External.Description, review.External.displayName()),
+			Detail:       firstEvalNonEmpty(review.ProposedClassification, review.RecommendedDisposition),
+			Confidence:   decision.Confidence,
+			EvidenceRefs: reviewartifact.Unique(append(externalSkillCandidateDecisionEvidence(review), decision.EvidenceRefs...)),
+			Verdict:      firstEvalNonEmpty(decision.CandidateVerdict, candidates.Park),
+		}
+		if err := candidates.WriteCandidate(homePath, candidates.Skill, candidate.ID, candidate); err != nil {
+			report.Status = "blocked"
+			return report, err
+		}
+		report.Status = "candidate_recorded"
+		report.CandidateID = candidate.ID
+		report.CandidatePath = filepath.Join(homePath, candidates.InboxDir(candidates.Skill), candidate.ID+".json")
+	}
+	report.EvidenceRefs = reviewartifact.Unique(append(report.EvidenceRefs, "skill_candidate_review:"+review.ID))
+	name := decision.ReviewID + "." + decision.ID + ".decision.json"
+	if _, err := reviewartifact.WriteJSON(homePath, skillCandidateReviewArea, name, report, " "); err != nil {
+		return report, err
+	}
+	review.Status = report.Status
+	if report.CandidateID != "" {
+		review.NextAction = "reviewed skill candidate recorded; continue with capability skill-plan"
+	} else {
+		review.NextAction = "skill candidate intake decision recorded"
+	}
+	if _, err := reviewartifact.WriteJSON(homePath, skillCandidateReviewArea, review.ID+".json", review, " "); err != nil {
+		return report, err
+	}
+	return report, nil
 }
 
 func RenderExternalSkillCandidateReview(review SkillCandidateReview) string {
@@ -433,6 +603,204 @@ func sameSlug(a, b string) bool {
 	as := reviewartifact.Slugify(a, 0)
 	bs := reviewartifact.Slugify(b, 0)
 	return as != "" && as == bs
+}
+
+func loadSkillCandidateReviewForDecision(reviewPath, reviewID string) (SkillCandidateReview, error) {
+	if strings.TrimSpace(reviewID) == "" || reviewID != filepath.Base(reviewID) {
+		return SkillCandidateReview{}, fmt.Errorf("skill candidate review_id must be bare id, got %q", reviewID)
+	}
+	dir := filepath.Dir(reviewPath)
+	if strings.TrimSpace(dir) == "" || dir == "." {
+		return SkillCandidateReview{}, fmt.Errorf("skill candidate decision source path required")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, reviewID+".json"))
+	if err != nil {
+		return SkillCandidateReview{}, err
+	}
+	var review SkillCandidateReview
+	if err := json.Unmarshal(data, &review); err != nil {
+		return SkillCandidateReview{}, err
+	}
+	if review.ID != reviewID {
+		return SkillCandidateReview{}, fmt.Errorf("skill candidate decision review_id %q does not match review %q", reviewID, review.ID)
+	}
+	return review, nil
+}
+
+func skillCandidateDecisionOK(decision string) bool {
+	switch strings.TrimSpace(decision) {
+	case "create_candidate", "merge_existing", "reject", "reference_only", "keep_needs_review":
+		return true
+	default:
+		return false
+	}
+}
+
+func skillCandidateVerdictOK(verdict string) bool {
+	switch strings.TrimSpace(verdict) {
+	case candidates.Park, candidates.Operationalize:
+		return true
+	default:
+		return false
+	}
+}
+
+func externalSkillCandidateDecisionEvidence(review SkillCandidateReview) []string {
+	refs := []string{
+		"skill_candidate_review:" + review.ID,
+		"external_skill:" + review.CandidateID,
+	}
+	if review.SourceHash != "" {
+		refs = append(refs, "sha256:"+review.SourceHash)
+	}
+	if review.External.URL != "" {
+		refs = append(refs, review.External.URL)
+	}
+	if review.External.InstallURL != "" {
+		refs = append(refs, review.External.InstallURL)
+	}
+	return reviewartifact.Unique(refs)
+}
+
+// AnnotateSkillCandidateQueue attaches capability-owned review hints to generic
+// external skill candidate review artifacts. It never creates candidates,
+// mutates graph state, installs skill files, or executes tools.
+func AnnotateSkillCandidateQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != skillCandidateReviewArea {
+			continue
+		}
+		annotateSkillCandidateQueueItem(item)
+	}
+}
+
+func annotateSkillCandidateQueueItem(item *reviewartifact.QueueItem) {
+	if report, ok := skillCandidateDecisionReportFromExtras(item.ExtraPaths); ok {
+		switch report.Status {
+		case "recorded", "candidate_recorded":
+			item.Readiness = "no_action"
+			item.BlockedReason = ""
+			if report.CandidateID != "" {
+				item.NextAction = "reviewed skill candidate recorded; continue with capability skill-plan"
+			} else {
+				item.NextAction = "skill candidate intake decision recorded"
+			}
+			item.Actions = nil
+			return
+		case "blocked":
+			item.Readiness = "blocked"
+			item.BlockedReason = "skill candidate decision blocked"
+			item.NextAction = "fix reviewed skill candidate decision"
+			item.Actions = nil
+			return
+		}
+	}
+	switch strings.TrimSpace(item.Status) {
+	case "ok", "applied", "resolved", "accepted", "candidate_recorded", "recorded":
+		item.Readiness = "no_action"
+		item.NextAction = "skill candidate review artifact terminal"
+		return
+	default:
+		item.Readiness = "needs_review"
+		item.NextAction = "fill review YAML after source/eval review, then record skill candidate decision"
+	}
+	reviewYAML := skillCandidateDecisionYAMLPath(*item)
+	if reviewYAML == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "review YAML draft missing"
+		item.NextAction = "review YAML draft missing; regenerate skill-candidate-review"
+		return
+	}
+	argv := []string{"compound", "capability", "skill-candidate-decision", reviewYAML}
+	item.Actions = []reviewartifact.Action{{
+		ID:             "record_skill_candidate_decision",
+		Label:          "Record skill candidate decision",
+		Command:        skillCandidateShellJoin(argv),
+		Argv:           argv,
+		RequiresReview: true,
+	}}
+	decision, err := LoadSkillCandidateDecision(reviewYAML)
+	if err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "review YAML draft unreadable: " + skillCandidateQueueError(err)
+		item.NextAction = "fix review YAML draft before recording skill candidate decision"
+		return
+	}
+	if err := ValidateSkillCandidateDecision(decision); err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = skillCandidateQueueError(err)
+		item.NextAction = "fill valid review YAML before recording skill candidate decision"
+		return
+	}
+	item.Readiness = "ready_to_record"
+	item.BlockedReason = ""
+	item.NextAction = "record reviewed skill candidate decision"
+}
+
+func skillCandidateDecisionReportFromExtras(paths []string) (SkillCandidateDecisionReport, bool) {
+	var found SkillCandidateDecisionReport
+	for _, path := range paths {
+		if !strings.HasSuffix(path, ".decision.json") {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var report SkillCandidateDecisionReport
+		if err := json.Unmarshal(data, &report); err != nil {
+			continue
+		}
+		if strings.TrimSpace(report.ID) == "" {
+			continue
+		}
+		if found.ID == "" || report.CreatedAt > found.CreatedAt {
+			found = report
+		}
+	}
+	return found, found.ID != ""
+}
+
+func skillCandidateDecisionYAMLPath(item reviewartifact.QueueItem) string {
+	if strings.TrimSpace(item.JSONPath) == "" {
+		return ""
+	}
+	return strings.TrimSuffix(item.JSONPath, ".json") + ".review.yaml"
+}
+
+func skillCandidateQueueError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	if len(msg) > 240 {
+		msg = msg[:237] + "..."
+	}
+	return msg
+}
+
+func skillCandidateShellJoin(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		parts = append(parts, skillCandidateShellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func skillCandidateShellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if strings.IndexFunc(arg, func(r rune) bool {
+		return !(r == '/' || r == '-' || r == '_' || r == '.' || r == ':' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	}) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
 
 func hashCandidateTarget(path string) (bool, string, error) {

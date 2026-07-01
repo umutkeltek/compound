@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 )
 
 func TestExternalSkillCandidateReviewWritesReviewOnlyWithOverlapScan(t *testing.T) {
@@ -117,6 +118,89 @@ func TestExternalSkillCandidateReviewWritesReviewOnlyWithOverlapScan(t *testing.
 	}
 }
 
+func TestSkillCandidateDecisionCreatesInboxCandidateOnlyAfterReview(t *testing.T) {
+	home, store := newStore(t)
+	if err := store.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}}); err != nil {
+		t.Fatal(err)
+	}
+	nodesPath := filepath.Join(home, "registries", "capability-nodes.jsonl")
+	beforeNodes, err := os.ReadFile(nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := writeExternalSkillCandidate(t, ExternalSkillCandidate{
+		ID:          "example/skills/pricing",
+		Name:        "Pricing",
+		Slug:        "pricing",
+		Description: "Review pricing and paywall packaging decisions.",
+		Source:      "example/skills",
+		URL:         "https://skills.sh/example/skills/pricing",
+		Files:       []ExternalSkillFile{{Path: "SKILL.md", Contents: "---\nname: pricing\n---\n"}},
+	})
+	review, err := BuildExternalSkillCandidateReview(home, candidatePath, "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordExternalSkillCandidateReview(home, review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := reviewartifactQueueForSkillCandidates(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Items) != 1 || queue.Items[0].Readiness != "blocked" || !strings.Contains(queue.Items[0].BlockedReason, "skill candidate decision") {
+		t.Fatalf("queue before review = %+v", queue.Items)
+	}
+	validReview := strings.ReplaceAll(RenderExternalSkillCandidateDecisionYAMLDraft(review), "TODO_decision_create_candidate_merge_existing_reject_reference_only_keep_needs_review", "create_candidate")
+	validReview = strings.ReplaceAll(validReview, "rationale: \"\"", "rationale: \"source reviewed and should enter normal skill-plan intake\"")
+	validReview = strings.ReplaceAll(validReview, "confidence: -1", "confidence: 0.72")
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(validReview), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := LoadSkillCandidateDecision(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := RecordSkillCandidateDecision(home, decision, paths.ReviewYAMLPath, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "candidate_recorded" || report.CandidateID != review.CandidateID {
+		t.Fatalf("decision report = %+v", report)
+	}
+	var candidate skillCandidate
+	if err := candidates.ReadCandidate(home, candidates.Skill, review.CandidateID, &candidate); err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Subject != "Pricing" || candidate.Verdict != candidates.Park || len(candidate.EvidenceRefs) == 0 {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	queue, err = reviewartifactQueueForSkillCandidates(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviewItem *reviewartifact.QueueItem
+	for i := range queue.Items {
+		if queue.Items[i].ID == review.ID {
+			reviewItem = &queue.Items[i]
+		}
+	}
+	if reviewItem == nil || reviewItem.Readiness != "no_action" || !strings.Contains(reviewItem.NextAction, "skill-plan") {
+		t.Fatalf("queue after decision = %+v", queue.Items)
+	}
+	afterNodes, err := os.ReadFile(nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterNodes) != string(beforeNodes) {
+		t.Fatalf("decision must not mutate graph nodes")
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("decision must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestExternalSkillCandidateReviewRejectsUnsafeFilePaths(t *testing.T) {
 	path := writeExternalSkillCandidateRaw(t, `{
  "id": "bad",
@@ -146,4 +230,13 @@ func writeExternalSkillCandidateRaw(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func reviewartifactQueueForSkillCandidates(home string) (reviewartifact.QueueReport, error) {
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: skillCandidateReviewArea}, t0)
+	if err != nil {
+		return queue, err
+	}
+	AnnotateSkillCandidateQueue(&queue)
+	return queue, nil
 }
