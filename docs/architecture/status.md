@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound product authority [--json]` now exposes the existing product feedback loop as a read-only authority report over `compound://ledger/product-feedback`: product-domain promoted claims, `ledger/product-signals.jsonl`, product hypothesis candidates, product transitions, reviews, source-issue reviews, and signal-source no-promote rows. Persistent `~/.compound` now has two real product-contract imports as deterministic product facts; `compound orient` for a matching product task consumes those claims through `ContextPack.active_memory`, so the product contract is live agent context rather than temp-only proof. This does not call analytics providers, infer causality, mutate product surfaces, or apply experiments.
+
 - `os status --json` now consumes the same Compound workbench served in `/operate`. The status snapshot records total/open/terminal/needs-claim/needs-review/in-progress/proof-gap counts plus recent work ids/receipt/transition refs, omitting predicates and bodies. Live proof currently reports 11 terminal work items, 0 open, 0 missing receipts/transitions, and 0 workbench integrity notes after `work_169f6fbb06ed` was append-only reclosed through valid receipt `rec_4d5991cc0406` and transition `tr_4d5991cc0406`.
 
 - `os status --json` now consumes the Compound owner-review queue from `COMPOUND_HOME/reviews`, matching the queue already served in `/operate`. The status snapshot records total/review-required/ready-to-apply/ok counts, by-area/by-status summaries, and recent item ids/readiness without including apply commands or artifact bodies; current live proof reports 4 total, 3 `needs_review`, 0 `ready_to_apply`.
@@ -245,6 +247,8 @@ Capability evaluation status note: `compound capability import-evaluations <capa
 Product command status note: `compound product hypothesis-plan --candidate <id> [--target <file>]` is the reviewed candidate-to-product-experiment draft path; it also writes a gated `.signal.yaml` ProductSignal draft for the later evidence import step. `compound product doctor <product_id>` reports signal-backed `review_ready` pairs and prints the exact review-plan command; `compound product review-plan --hypothesis <id> --signal <id> [--target <file>]` bridges imported ProductSignal evidence into gated review artifacts; `product review` remains the only evidence result application path.
 
 Capability surfacing status note: `compound capability import-surfacing-misses <skill-surfacing-proposals.json>` consumes generated propose-only miss reports as graph feedback for already-known capability nodes, records the source as no-promote evidence, and reports unknown capabilities as review debt rather than installing them.
+
+Product authority status note: `compound product authority [--json]` is the read-only product feedback authority report over existing ledgers and candidate stores.
 
 | Family | Verbs | Status |
 |---|---|---|

@@ -4295,7 +4295,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -4364,6 +4364,39 @@ func cmdProduct(args []string) {
 	}
 	store, homePath := openMemStore()
 	switch args[0] {
+	case "authority":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound product authority [--json]")
+			os.Exit(2)
+		}
+		report, err := product.Authority(homePath, store)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product authority:", err)
+			os.Exit(1)
+		}
+		if len(args) == 2 && args[1] == "--json" {
+			b, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "product authority:", err)
+				os.Exit(1)
+			}
+			fmt.Println(string(b))
+			return
+		}
+		fmt.Printf("# product authority\n\n")
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- products: %d\n", report.ProductCount)
+		fmt.Printf("- signals: %d\n", report.SignalCount)
+		fmt.Printf("- hypotheses: %d\n", report.HypothesisCount)
+		fmt.Printf("- review_ready: %d\n", report.ReviewReadyCount)
+		fmt.Printf("- source_issues: %d\n", report.SourceIssueCount)
+		for _, item := range report.Products {
+			fmt.Printf("- product %s: %s (%d signal, %d hypothesis, %d transition)\n", item.ProductID, item.Status, item.SignalCount, item.HypothesisCount, item.TransitionCount)
+			for _, command := range item.ReviewPlanCommands {
+				fmt.Printf("  review_plan: %s\n", command)
+			}
+		}
 	case "import":
 		var bundle product.Bundle
 		sourcePath := ""

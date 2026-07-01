@@ -204,6 +204,66 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	}
 }
 
+func TestAuthoritySummarizesProductFeedbackState(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(home, store, bundle, "fixtures/product/market-loop.yaml", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	sourceBundle, err := LoadProjectContractBundle("../../fixtures/product/project-contract.yaml", "../../fixtures/product/release-contract.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(home, store, sourceBundle, "fixtures/product/project-contract.yaml", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	signalDoc, err := LoadSignal("../../fixtures/product/signal.asc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySignal(home, store, signalDoc, "fixtures/product/signal.asc.yaml", tProduct.Add(14*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Authority(home, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.AuthorityRef != AuthorityRef || report.Status != "needs_review" {
+		t.Fatalf("authority header = %+v", report)
+	}
+	if report.ProductCount != 2 || report.SignalCount != 2 || report.HypothesisCount != 1 || report.ReviewReadyCount != 2 || report.TransitionCount != 1 {
+		t.Fatalf("authority counts = %+v", report)
+	}
+	focus := findAuthorityProduct(report.Products, "product:focus-notes")
+	if focus.ProductID == "" || focus.Status != "needs_review" || focus.LatestSignalID != "sig_focus_conversion_14d_20260713" {
+		t.Fatalf("focus authority = %+v", focus)
+	}
+	if len(focus.ReviewPlanCommands) != 2 || !strings.Contains(focus.ReviewPlanCommands[0], "compound product review-plan") {
+		t.Fatalf("review commands = %+v", focus.ReviewPlanCommands)
+	}
+	sourceContract := findAuthorityProduct(report.Products, "product:source_contract_demo")
+	if sourceContract.ProductID == "" || sourceContract.SignalCount != 0 || sourceContract.HypothesisCount != 0 {
+		t.Fatalf("source contract authority = %+v", sourceContract)
+	}
+}
+
+func findAuthorityProduct(items []ProductAuthorityItem, id string) ProductAuthorityItem {
+	for _, item := range items {
+		if item.ProductID == id {
+			return item
+		}
+	}
+	return ProductAuthorityItem{}
+}
+
 func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	bundle, err := LoadProjectContractBundle("../../fixtures/product/project-contract.yaml", "../../fixtures/product/release-contract.yaml")
 	if err != nil {

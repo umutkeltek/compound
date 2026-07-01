@@ -2181,6 +2181,16 @@ func TestProductImportProjectContractPromotesSourceInPlaceIdentity(t *testing.T)
 	if !strings.Contains(resolved, "status: resolved") || !strings.Contains(resolved, "entity: product:source_contract_demo") {
 		t.Fatalf("app store identifier did not resolve to product entity:\n%s", resolved)
 	}
+	authJSON := captureStdout(t, func() {
+		cmdProduct([]string{"authority", "--json"})
+	})
+	var auth product.AuthorityReport
+	if err := json.Unmarshal([]byte(authJSON), &auth); err != nil {
+		t.Fatalf("parse product authority JSON: %v\n%s", err, authJSON)
+	}
+	if auth.AuthorityRef != product.AuthorityRef || auth.ProductCount != 1 || auth.Products[0].ProductID != "product:source_contract_demo" {
+		t.Fatalf("product authority = %+v", auth)
+	}
 }
 
 func TestProductSignalImportsASCDatapointsSourceInPlace(t *testing.T) {
