@@ -206,7 +206,7 @@ func queueItem(root, path string) (QueueItem, error) {
 
 func coreReviewJSON(path string) bool {
 	name := filepath.Base(path)
-	for _, suffix := range []string{".apply.json", ".reviewed.json"} {
+	for _, suffix := range []string{".apply.json", ".decision.json", ".reviewed.json"} {
 		if strings.HasSuffix(name, suffix) {
 			return false
 		}
