@@ -37,6 +37,8 @@ func annotateProductReviewItem(item *reviewartifact.QueueItem) {
 	}
 	reviewYAML := productReviewYAMLPath(*item)
 	if reviewYAML == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "review YAML draft missing"
 		item.NextAction = "review YAML draft missing; regenerate product review-plan"
 		return
 	}
@@ -48,6 +50,20 @@ func annotateProductReviewItem(item *reviewartifact.QueueItem) {
 		Argv:           argv,
 		RequiresReview: true,
 	}}
+	review, err := LoadReview(reviewYAML)
+	if err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "review YAML draft unreadable: " + productReviewQueueError(err)
+		item.NextAction = "fix review YAML draft before recording product review"
+		return
+	}
+	if err := ValidateReview(review); err != nil {
+		item.BlockedReason = productReviewQueueError(err)
+		item.NextAction = "fill valid review YAML before recording product review"
+		return
+	}
+	item.Readiness = "ready_to_record"
+	item.NextAction = "record product review"
 }
 
 func productReviewYAMLPath(item reviewartifact.QueueItem) string {
@@ -81,4 +97,15 @@ func shellQuote(arg string) string {
 		return arg
 	}
 	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+}
+
+func productReviewQueueError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	if len(msg) > 240 {
+		msg = msg[:237] + "..."
+	}
+	return msg
 }

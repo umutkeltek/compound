@@ -150,14 +150,31 @@ func TestReviewPlanRecordsGatedReviewArtifactsWithoutResolvingHypothesis(t *test
 }
 
 func TestAnnotateReviewQueueAddsProductReviewAction(t *testing.T) {
+	reviewDir := filepath.Join(t.TempDir(), "product review")
+	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reviewYAML := filepath.Join(reviewDir, "prp_review.review.yaml")
+	if err := os.WriteFile(reviewYAML, []byte(`schema_version: compound.product_review.v0.1
+id: review_focus
+product_id: product:focus-notes
+hypothesis_id: hyp_focus
+result: TODO_result_supported_refuted_or_inconclusive
+rationale: ""
+confidence: -1
+evidence_refs:
+ - product_signal:sig_focus
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	report := reviewartifact.QueueReport{
 		Items: []reviewartifact.QueueItem{
 			{
 				Area:       productReviewArea,
 				ID:         "prp_review",
 				Status:     "review_required",
-				JSONPath:   "/tmp/product review/prp_review.json",
-				ExtraPaths: []string{"/tmp/product review/prp_review.review.yaml"},
+				JSONPath:   filepath.Join(reviewDir, "prp_review.json"),
+				ExtraPaths: []string{reviewYAML},
 			},
 			{
 				Area:     productReviewArea,
@@ -178,8 +195,11 @@ func TestAnnotateReviewQueueAddsProductReviewAction(t *testing.T) {
 	if review.Readiness != "needs_review" || review.NextAction == "" || len(review.Actions) != 1 {
 		t.Fatalf("product review item not actionable: %+v", review)
 	}
+	if !strings.Contains(review.BlockedReason, "review result must be supported|refuted|inconclusive") {
+		t.Fatalf("product review item should expose validation blocker: %+v", review)
+	}
 	action := review.Actions[0]
-	if !action.RequiresReview || action.ID != "record_product_review" || !strings.Contains(action.Command, "'/tmp/product review/prp_review.review.yaml'") {
+	if !action.RequiresReview || action.ID != "record_product_review" || !strings.Contains(action.Command, "'"+reviewYAML+"'") {
 		t.Fatalf("review action should stay review-gated shell-safe: %+v", action)
 	}
 	if len(action.Argv) != 4 || action.Argv[0] != "compound" || action.Argv[1] != "product" || action.Argv[2] != "review" {

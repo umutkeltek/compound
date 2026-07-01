@@ -8,6 +8,12 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound reviews --json` now preflights product-review YAML drafts and exposes a sanitized `blocked_reason`
+  when the reviewed-result importer would reject the draft. The product-review queue item remains review-gated,
+  but now states the validation blocker instead of only showing a generic action. Umut OS `os status --json` and
+  `/operate` carry the same blocker through their read-only review queue summaries. No product review was applied,
+  no product hypothesis/surface/claim/release changed, and verdict values remain `supported|refuted|inconclusive`.
+
 - OS `/operate` now serves a Compound product feedback card from the dashboard read model, backed by `compound product authority --json`. The card shows product/signal/hypothesis/review-ready counts, authority `compound://ledger/product-feedback`, and recent review-relevant product refs while keeping the raw app-data metrics card separate as provider/canonical evidence. This is read-only: no product review is applied, no provider call is made, no causality is inferred, and product surfaces remain untouched.
 
 - `os status --json` now consumes `compound product authority --json` as the daily front-door product feedback authority. The status snapshot records `compound://ledger/product-feedback`, product/signal/hypothesis/review-ready counts, and recent review-relevant product IDs while omitting review-plan command bodies; it also exposes a compact `product_feedback` summary for dashboard readers. This is read-only: no product review is applied, no provider call is made, no causality is inferred, and product surfaces remain untouched.

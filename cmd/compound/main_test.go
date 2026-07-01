@@ -518,6 +518,9 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	if productItem.ID == "" || productItem.Readiness != "needs_review" || len(productItem.Actions) != 1 || !productItem.Actions[0].RequiresReview {
 		t.Fatalf("product review queue item should be review-gated actionable: %+v", productItem)
 	}
+	if !strings.Contains(productItem.BlockedReason, "review id product_id hypothesis_id required") {
+		t.Fatalf("product review queue item should expose validation blocker: %+v", productItem)
+	}
 	textOut := captureStdout(t, func() { cmdReviews([]string{"--area", "decision-lifecycle-repairs"}) })
 	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {
 		t.Fatalf("filtered reviews output =\n%s", textOut)
