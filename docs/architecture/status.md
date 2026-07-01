@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `os status --json` now consumes the Compound owner-review queue from `COMPOUND_HOME/reviews`, matching the queue already served in `/operate`. The status snapshot records total/review-required/ready-to-apply/ok counts, by-area/by-status summaries, and recent item ids/readiness without including apply commands or artifact bodies; current live proof reports 4 total, 3 `needs_review`, 0 `ready_to_apply`.
+
 - `os status --json` now consumes the same Compound capability graph authority served in `/mcp`: `compound://registries/capability-graph`. The status snapshot records source-handoff count, total node/edge counts, and per-source summaries for skill manifest, tool resolver, plugin board, and live mcporter catalog while keeping OS skill/tool/plugin generated views fallback/evidence-only and not executing MCP tools.
 
 - `os status --json` now consumes the same Compound event TraceEnvelope authority served in `/operate`: `compound://events/trace-envelopes`. The status snapshot records `event_trace_authority.status=ok`, trace count, source-authority id/count, recent traces, and the OS `events/control-events.ndjson` fallback/evidence-only role without executing webhooks or mutating source event streams.
