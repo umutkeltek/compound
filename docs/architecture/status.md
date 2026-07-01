@@ -25,9 +25,13 @@ This file is the current package/command map. `compound architecture doctor --st
   evidence-only eval node on `procedure:skill-ops`; explicit lookup
   `compound capability external-intake --repo skills.sh --json` returns
   `reference_only`, owner `procedure:skill-ops`, graph hint
-  `downgrade_to_index`, and the no-wholesale-install boundary. No marketplace
-  command ran, no child skill was installed/served, no MCP/plugin/auth surface
-  activated, no CapabilityGraph offer was promoted, and no memory was promoted.
+  `downgrade_to_index`, and the no-wholesale-install boundary. `os capability
+  "Evaluate skills.sh marketplace without blind adoption"` consumes the same
+  Compound boundary before route selection, and
+  `TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences` now covers
+  marketplace-domain evaluation references. No marketplace command ran, no child
+  skill was installed/served, no MCP/plugin/auth surface activated, no
+  CapabilityGraph offer was promoted, and no memory was promoted.
 
 - `compound capability external-intake --repo <source>` now also finds matching reference-only external source evaluations, not only rows from the repo-intake batch. This closes the non-repo source gap without widening the repo-intake schema or creating a second registry: evaluation signals with `external_repo` / `external_url` appear only for explicit matching queries as `reference_only` evidence rows. Live proof: querying a gist-style Karpathy source returns owner `procedure:skill-ops`, decision `reference_only`, graph hint `downgrade_to_index`, and the existing no-install boundary; `compound orient --harness codex --task "<task naming the source>"` and `os capability "<task naming the source>"` both include the same external-intake boundary. No clone/install/serve, no hook/MCP/plugin activation, no project-registry mutation, no CapabilityGraph offer promotion, no memory promotion.
 

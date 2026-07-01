@@ -187,6 +187,29 @@ func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing
 		},
 	})
 
+	writeJSON(t, filepath.Join(evalDir, "skills-sh-marketplace.json"), map[string]any{
+		"schema_version":    1,
+		"id":                "capability-evaluation.external.skills-sh-marketplace.20260701",
+		"created_at":        "2026-07-01T15:41:40Z",
+		"source_receipt":    "compound://reviews/external-repo-intake/2026-07-01-external-skill-repo-map#skills-sh-marketplace",
+		"capability":        "procedure:skill-ops",
+		"verdict":           "downgrade_to_index",
+		"local_state_only":  true,
+		"rubric_normalized": 0.66,
+		"signals": map[string]any{
+			"kind":                "external_catalog_reference",
+			"cluster":             "skill-catalog-source-discovery",
+			"external_repo":       "skills.sh marketplace",
+			"external_url":        "https://www.skills.sh",
+			"existing_owner":      "procedure:skill-ops",
+			"required_next_proof": "review child skills individually through capability intake",
+			"main_risks":          "do not bulk install marketplace skills",
+			"distinctive_claim":   "marketplace catalog source, not runtime authority",
+			"owned_gap_observed":  "query coverage for marketplace source itself",
+			"comparison_scope":    "Marketplace catalog lookup and child-skill candidate triage",
+		},
+	})
+
 	report, err := ExternalRepoIntakeReportForHome(home, "gist.github.com/karpathy/442a6bf555914893e9891c11519de94f")
 	if err != nil {
 		t.Fatalf("report should include evaluation references: %v", err)
@@ -214,6 +237,16 @@ func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing
 	}
 	if len(repoReport.Matches) != 1 || repoReport.Matches[0].Repo != "example/repo" {
 		t.Fatalf("repo matches = %+v", repoReport.Matches)
+	}
+	marketplaceReport, err := ExternalRepoIntakeReportForHome(home, "skills.sh")
+	if err != nil {
+		t.Fatalf("marketplace report should not fail: %v", err)
+	}
+	if len(marketplaceReport.Matches) != 1 || marketplaceReport.Matches[0].Repo != "skills.sh marketplace" {
+		t.Fatalf("marketplace matches = %+v", marketplaceReport.Matches)
+	}
+	if marketplaceReport.Matches[0].Decision != "reference_only" || marketplaceReport.Matches[0].GraphHint != "downgrade_to_index" {
+		t.Fatalf("marketplace decision should stay index-only: %+v", marketplaceReport.Matches[0])
 	}
 }
 
