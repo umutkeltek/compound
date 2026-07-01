@@ -129,14 +129,15 @@ func TestIllegalTransitionRejected(t *testing.T) {
 func TestClaimConflict(t *testing.T) {
 	s := newStore(t)
 	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	beforeRuns := len(w.RunIDs)
 	claimed, err := s.Claim(w.ID, "agent_a", fixedNow)
 	if err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	if claimed.PolicyDecisionID == "" || len(claimed.RunIDs) != 1 {
+	if claimed.PolicyDecisionID == "" || len(claimed.RunIDs) != beforeRuns+1 {
 		t.Fatalf("claim must record policy/action chain: runs=%v policy=%q", claimed.RunIDs, claimed.PolicyDecisionID)
 	}
-	if _, err := os.Stat(s.envPath(claimed.RunIDs[0])); err != nil {
+	if _, err := os.Stat(s.envPath(claimed.RunIDs[beforeRuns])); err != nil {
 		t.Fatalf("claim action envelope missing: %v", err)
 	}
 	if _, err := os.Stat(s.envPath(claimed.PolicyDecisionID)); err != nil {
@@ -157,6 +158,12 @@ func TestClaimConflict(t *testing.T) {
 
 func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
 	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRuns := append([]string{}, w.RunIDs...)
+	baselinePolicy := w.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +174,6 @@ func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
 	if _, err := s.Claim(w.ID, "agent_a", fixedNow); err == nil {
 		t.Fatal("claim should be blocked by policy hold")
 	}
@@ -175,7 +181,7 @@ func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "ready" || len(after.RunIDs) != 0 || after.PolicyDecisionID != "" {
+	if after.State != "ready" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
 		t.Fatalf("blocked claim mutated work: %+v", after)
 	}
 	if _, err := s.readLease(w.ID); err == nil {
@@ -371,6 +377,9 @@ func TestRecordActionGate(t *testing.T) {
 	}
 	if contains(closed.Receipt.Skills.Used, "work.claim") {
 		t.Fatalf("internal claim capability leaked into used skills: %v", closed.Receipt.Skills.Used)
+	}
+	if contains(closed.Receipt.Skills.Used, "work.create") {
+		t.Fatalf("internal create capability leaked into used skills: %v", closed.Receipt.Skills.Used)
 	}
 	if len(closed.Receipt.Skills.Candidate) != 0 {
 		t.Fatalf("no context pack offers in this test, got candidates %v", closed.Receipt.Skills.Candidate)

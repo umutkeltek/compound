@@ -87,6 +87,7 @@ type Lease struct {
 
 type CreateInput struct {
 	Owner            string
+	Actor            string
 	SuccessPredicate string
 	DesiredOutcome   string
 	NonGoals         []string
@@ -116,24 +117,18 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 	return w
 }
 
-// Create writes a new WorkEnvelope and its first lifecycle event, returning the work.
+// Create writes a new WorkEnvelope and its first lifecycle event only after the
+// admission ActionIntent is allowed by policy.
 func (s *Store) Create(in CreateInput, now time.Time) (envelope.WorkEnvelope, error) {
-	w := BuildWork(in, now)
-	state := w.State
-	if err := w.Validate(); err != nil {
-		return w, err
-	}
-	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {
-		return w, err
+	plan, err := s.CreatePlan(in, now, CreatePlanOptions{Actor: in.Actor})
+	if err != nil {
+		return plan.Work, err
 	}
 	attached := []string(nil)
 	if in.ContextPackID != "" {
-		attached = []string{in.ContextPackID}
+		attached = append(attached, in.ContextPackID)
 	}
-	if err := s.appendEvent(Event{TS: ts(now), WorkID: w.ID, From: "", To: state, Note: "created", Attached: attached}); err != nil {
-		return w, err
-	}
-	return w, nil
+	return s.admitWork(plan, now, "created", attached)
 }
 
 // --- show / list ---
@@ -559,7 +554,7 @@ func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
 
 func internalLifecycleCapability(capability string) bool {
 	switch capability {
-	case "work.claim", "work.advance", "work.close":
+	case "work.create", "work.claim", "work.advance", "work.close":
 		return true
 	default:
 		return false

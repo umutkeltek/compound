@@ -16,6 +16,7 @@ const packetEvidencePrefix = "packet_sha256:"
 
 type PacketImportOptions struct {
 	Owner         string
+	Actor         string
 	State         string
 	Risk          string
 	Privacy       string
@@ -74,6 +75,7 @@ func (s *Store) ImportPacket(path string, opts PacketImportOptions, now time.Tim
 	}
 	w := BuildWork(CreateInput{
 		Owner:            owner,
+		Actor:            opts.Actor,
 		SuccessPredicate: src.SuccessPredicate,
 		DesiredOutcome:   src.Objective,
 		NonGoals:         src.NonGoals,
@@ -89,21 +91,15 @@ func (s *Store) ImportPacket(path string, opts PacketImportOptions, now time.Tim
 	w.Authority.SourceRevision = "sha256:" + src.Digest
 	w.Authority.Status = "current"
 	w.Uncertainty = envelope.Uncertainty{Level: "inferred", Reason: "parsed from markdown packet; packet is source evidence, not canon"}
-	if err := w.Validate(); err != nil {
+	plan, err := s.createPlanForWork(w, now, CreatePlanOptions{Actor: opts.Actor})
+	if err != nil {
 		return PacketImportReport{}, err
 	}
-	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {
+	created, err := s.admitWork(plan, now, "imported packet: "+src.Title, []string{src.EvidenceRef})
+	if err != nil {
 		return PacketImportReport{}, err
 	}
-	if err := s.appendEvent(Event{
-		TS:       ts(now),
-		WorkID:   w.ID,
-		To:       state,
-		Note:     "imported packet: " + src.Title,
-		Attached: []string{src.EvidenceRef},
-	}); err != nil {
-		return PacketImportReport{}, err
-	}
+	w = created
 	return PacketImportReport{
 		Created:      true,
 		PacketTitle:  src.Title,

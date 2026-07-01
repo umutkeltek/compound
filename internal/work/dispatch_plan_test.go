@@ -150,6 +150,12 @@ func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
 
 func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch claim"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRuns := append([]string{}, ready.RunIDs...)
+	baselinePolicy := ready.PolicyDecisionID
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -158,10 +164,6 @@ func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
     outcome: hold
 `)
 	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch claim"}, fixedNow)
-	if err != nil {
 		t.Fatal(err)
 	}
 	result, err := s.DispatchClaim(fixedNow, DispatchPlanOptions{Actor: "codex"})
@@ -178,7 +180,7 @@ func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.State != "ready" || len(after.RunIDs) != 0 || after.PolicyDecisionID != "" {
+	if after.State != "ready" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy {
 		t.Fatalf("blocked dispatch claim mutated work: %+v", after)
 	}
 	if _, err := s.readLease(ready.ID); err == nil {

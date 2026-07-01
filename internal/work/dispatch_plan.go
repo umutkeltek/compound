@@ -97,6 +97,7 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		}
 		imported, err := s.ImportPacket(opts.SourcePacketPath, PacketImportOptions{
 			Owner:         opts.SourcePacketOwner,
+			Actor:         actor,
 			State:         state,
 			Risk:          opts.SourcePacketRisk,
 			Privacy:       opts.SourcePacketPrivacy,

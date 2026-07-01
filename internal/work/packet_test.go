@@ -101,6 +101,35 @@ func TestImportPacketCreatesIdempotentProposedWork(t *testing.T) {
 	}
 }
 
+func TestImportPacketBlockedByPolicyDoesNotCreateWork(t *testing.T) {
+	home := t.TempDir()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	if _, err := store.ImportPacket(packetPath, PacketImportOptions{Actor: "codex"}, fixedNow); err == nil {
+		t.Fatal("packet import should be blocked by policy hold")
+	}
+	list, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("blocked packet import wrote work entries: %+v", list)
+	}
+}
+
 func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
 	home := t.TempDir()
 	store, err := Open(home)

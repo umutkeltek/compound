@@ -1,0 +1,116 @@
+package work
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"compound/internal/envelope"
+)
+
+func TestCreatePlanRecordsPolicyWithoutCreatingWork(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create plan stays proposal-only",
+		DesiredOutcome:   "show admission readiness",
+		EvidenceRefs:     []string{"test://create-plan"},
+	}, fixedNow, CreatePlanOptions{Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "create_policy_allowed" || !plan.Policy.Allowed {
+		t.Fatalf("plan policy not allowed: %+v", plan)
+	}
+	if plan.ActionIntent.Capability != "work.create" || plan.Decision.ActionIntentID != plan.ActionIntent.ID {
+		t.Fatalf("intent/decision not threaded: intent=%s decision=%s", plan.ActionIntent.ID, plan.Decision.ActionIntentID)
+	}
+	if plan.PlanPath == "" {
+		t.Fatalf("missing recorded plan path: %+v", plan)
+	}
+	if _, err := os.Stat(plan.PlanPath); err != nil {
+		t.Fatalf("recorded plan missing: %v", err)
+	}
+	if _, err := s.Get(plan.WorkID); err == nil {
+		t.Fatalf("create-plan must not write work %s", plan.WorkID)
+	}
+	events, err := s.eventsFor(plan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("create-plan must not write lifecycle events: %+v", events)
+	}
+}
+
+func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create records policy chain",
+		ContextPackID:    "ctx_create",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.PolicyDecisionID == "" || len(w.RunIDs) != 1 {
+		t.Fatalf("created work missing admission policy/action: %+v", w)
+	}
+	var ai envelope.ActionIntent
+	if err := s.readJSON(s.envPath(w.RunIDs[0]), &ai); err != nil {
+		t.Fatalf("admission action missing: %v", err)
+	}
+	if ai.Capability != "work.create" || ai.IDs.WorkID != w.ID {
+		t.Fatalf("admission action not bound to work: %+v", ai)
+	}
+	if _, err := os.Stat(s.envPath(w.PolicyDecisionID)); err != nil {
+		t.Fatalf("admission policy missing: %v", err)
+	}
+	_, events, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || !contains(events[0].Attached, ai.ID) || !contains(events[0].Attached, w.PolicyDecisionID) || !contains(events[0].Attached, "ctx_create") {
+		t.Fatalf("create event missing policy/context attachments: %+v", events)
+	}
+}
+
+func TestCreateBlockedByPolicyDoesNotMutate(t *testing.T) {
+	s := newStore(t)
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, err := s.Create(CreateInput{Owner: "compound-core", Actor: "codex", SuccessPredicate: "held create"}, fixedNow)
+	if err == nil {
+		t.Fatal("create should be blocked by policy hold")
+	}
+	if w.ID == "" {
+		t.Fatal("blocked create should return candidate work id for diagnostics")
+	}
+	if _, err := s.Get(w.ID); err == nil {
+		t.Fatalf("blocked create wrote work %s", w.ID)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("blocked create wrote work entries: %+v", list)
+	}
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("blocked create wrote lifecycle events: %+v", events)
+	}
+}

@@ -392,6 +392,47 @@ func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
 	}
 }
 
+func TestWorkCreatePlanCLIRecordsPolicyWithoutCreating(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{
+			"create-plan",
+			"--owner", "compound-core",
+			"--by", "codex",
+			"--predicate", "cli create plan stays proposal-only",
+			"--outcome", "show create gate",
+			"--context-pack", "ctx_cli_create_plan",
+			"--json",
+		})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("create-plan output missing JSON:\n%s", out)
+	}
+	var plan work.CreatePlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse create plan: %v\n%s", err, out)
+	}
+	if plan.Status != "create_policy_allowed" || !plan.Policy.Allowed || plan.PlanPath == "" {
+		t.Fatalf("create plan not allowed/recorded: %+v", plan)
+	}
+	if _, err := os.Stat(plan.PlanPath); err != nil {
+		t.Fatalf("create plan artifact missing: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	if _, err := store.Get(plan.WorkID); err == nil {
+		t.Fatalf("create-plan must not write work %s", plan.WorkID)
+	}
+}
+
 func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

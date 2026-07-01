@@ -199,7 +199,7 @@ usage:
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
@@ -4131,7 +4131,7 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -4177,9 +4177,52 @@ func cmdWork(args []string) {
 	}
 
 	switch sub {
+	case "create-plan":
+		plan, err := store.CreatePlan(work.CreateInput{
+			Owner:            flag("--owner"),
+			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
+			SuccessPredicate: flag("--predicate"),
+			DesiredOutcome:   flag("--outcome"),
+			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
+			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
+			ContextPackID:    flag("--context-pack"),
+			State:            flag("--state"),
+			Risk:             flag("--risk"),
+			Privacy:          flag("--privacy"),
+		}, time.Now(), work.CreatePlanOptions{
+			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
+			Capability:    flag("--capability"),
+			Action:        flag("--action"),
+			MutationClass: flag("--mutation-class"),
+			Reversibility: flag("--reversibility"),
+			BlastRadius:   flag("--blast-radius"),
+			TargetKind:    flag("--target-kind"),
+			TargetID:      flag("--target-id"),
+			TargetPath:    flag("--target-path"),
+			Record:        !has("--dry-run"),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(plan)
+			return
+		}
+		fmt.Printf("create-plan %s status=%s work=%s policy=%s allowed=%v\n", plan.ID, plan.Status, plan.WorkID, plan.Policy.Outcome, plan.Policy.Allowed)
+		if plan.Policy.StandingGrantID != "" {
+			fmt.Printf("standing_grant: %s\n", plan.Policy.StandingGrantID)
+		}
+		if len(plan.CreateCommand) > 0 {
+			fmt.Printf("command: %s\n", strings.Join(plan.CreateCommand, " "))
+		}
+		if plan.NoAction != "" {
+			fmt.Printf("no_action: %s\n", plan.NoAction)
+		}
+		if plan.PlanPath != "" {
+			fmt.Printf("plan: %s\n", plan.PlanPath)
+		}
 	case "create":
 		w, err := store.Create(work.CreateInput{
 			Owner:            flag("--owner"),
+			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
 			SuccessPredicate: flag("--predicate"),
 			DesiredOutcome:   flag("--outcome"),
 			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
@@ -4195,11 +4238,12 @@ func cmdWork(args []string) {
 	case "import-packet":
 		packetPath := pos()
 		if packetPath == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound work import-packet <packet.md> [--owner O] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]")
+			fmt.Fprintln(os.Stderr, "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]")
 			os.Exit(2)
 		}
 		report, err := store.ImportPacket(packetPath, work.PacketImportOptions{
 			Owner:         flag("--owner"),
+			Actor:         firstNonEmpty(flag("--by"), flag("--actor")),
 			State:         flag("--state"),
 			Risk:          flag("--risk"),
 			Privacy:       flag("--privacy"),
