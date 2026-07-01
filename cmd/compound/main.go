@@ -202,7 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
-	compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority> ActionIntent -> PolicyDecision; import policy authorities
+compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
@@ -2552,7 +2552,7 @@ func loadActionIntent(path string) envelope.ActionIntent {
 // (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -2791,6 +2791,92 @@ func cmdPolicy(args []string) {
 			report.SourceAuthority = records
 		}
 		printJSON(report)
+	case "import-release-goal-holds":
+		sourcePath := ""
+		gateLive := policy.DefaultReleaseGoalHoldsGateLive
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--gate-live":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound policy import-release-goal-holds <release-orchestrator-state.sqlite> [--gate-live TS]")
+					os.Exit(2)
+				}
+				gateLive = args[i+1]
+				i++
+			default:
+				if sourcePath != "" {
+					fmt.Fprintln(os.Stderr, "usage: compound policy import-release-goal-holds <release-orchestrator-state.sqlite> [--gate-live TS]")
+					os.Exit(2)
+				}
+				sourcePath = args[i]
+			}
+		}
+		if sourcePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound policy import-release-goal-holds <release-orchestrator-state.sqlite> [--gate-live TS]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report, err := policy.ImportReleaseGoalHolds(homePath, sourcePath, gateLive, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+	case "release-goal-holds-authority":
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound policy release-goal-holds-authority [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		type releaseGoalHoldsAuthorityReport struct {
+			AuthorityRef     string                                         `json:"authority_ref"`
+			AuthorityPath    string                                         `json:"authority_path"`
+			Installed        bool                                           `json:"installed"`
+			GeneratedAt      string                                         `json:"generated_at,omitempty"`
+			SourceDB         string                                         `json:"source_db,omitempty"`
+			GateLive         string                                         `json:"gate_live,omitempty"`
+			HoldCount        int                                            `json:"hold_count,omitempty"`
+			Holds            []policy.ReleaseGoalHold                       `json:"holds,omitempty"`
+			SourceAuthority  []policy.ReleaseGoalHoldsSourceAuthorityRecord `json:"source_authority,omitempty"`
+			SourceRecordPath string                                         `json:"source_record_path"`
+		}
+		report := releaseGoalHoldsAuthorityReport{
+			AuthorityRef:     policy.ReleaseGoalHoldsAuthorityRef,
+			AuthorityPath:    policy.ReleaseGoalHoldsPath(homePath),
+			SourceRecordPath: policy.ReleaseGoalHoldsSourceAuthorityPath(homePath),
+		}
+		authority, err := policy.LoadReleaseGoalHoldsFromHome(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.Installed = true
+			report.GeneratedAt = authority.GeneratedAt
+			report.SourceDB = authority.SourceDB
+			report.GateLive = authority.GateLive
+			report.HoldCount = authority.HoldCount
+			report.Holds = authority.Holds
+		}
+		records, err := policy.LoadReleaseGoalHoldsSourceAuthority(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.SourceAuthority = records
+		}
+		printJSON(report)
 	case "operator-authority":
 		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound policy operator-authority [--json]")
@@ -2841,7 +2927,7 @@ func cmdPolicy(args []string) {
 		}
 		printJSON(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ...")
 		os.Exit(2)
 	}
 }

@@ -1148,6 +1148,43 @@ func TestPolicyOperatorApprovalFrontierAuthorityReportsDeferredFamilies(t *testi
 	}
 }
 
+func TestPolicyReleaseGoalHoldsAuthorityReportsHoldBacklog(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 not installed")
+	}
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	dbPath := filepath.Join(t.TempDir(), "release-orchestrator-state.sqlite")
+	createReleaseGoalHoldsDB(t, dbPath)
+
+	importOut := captureStdout(t, func() {
+		cmdPolicy([]string{"import-release-goal-holds", dbPath})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/release-goal-holds"`,
+		`"hold_count": 1`,
+		`"authority_status": "compound_primary"`,
+		`"source_role": "evidence_only_input_after_import"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import release-goal holds output missing %q:\n%s", want, importOut)
+		}
+	}
+	authorityOut := captureStdout(t, func() {
+		cmdPolicy([]string{"release-goal-holds-authority", "--json"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"hold_count": 1`,
+		`"goal_id": "release-hold-fixture"`,
+		`"app_id": "phone-cleaner"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("release-goal holds authority output missing %q:\n%s", want, authorityOut)
+		}
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -4838,6 +4875,45 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func createReleaseGoalHoldsDB(t *testing.T, dbPath string) {
+	t.Helper()
+	stmt := `
+create table goals (
+  goal_id text primary key,
+  app_id text not null,
+  objective text not null,
+  state text not null,
+  artifact_dir text not null,
+  created_at text not null,
+  updated_at text not null
+);
+create table packets (
+  packet_id text primary key,
+  goal_id text not null,
+  lane text not null,
+  state text not null,
+  packet_json text not null,
+  updated_at text not null
+);
+create table events (
+  id integer primary key autoincrement,
+  goal_id text not null,
+  event_type text not null,
+  payload_json text not null,
+  created_at text not null
+);
+insert into goals(goal_id, app_id, objective, state, artifact_dir, created_at, updated_at) values
+  ('release-hold-fixture', 'phone-cleaner', 'Keep phone-cleaner release current', 'HOLD', '/tmp/release-hold-fixture', '2026-07-01T00:00:00', '2026-07-01T00:00:00'),
+  ('release-hold-before-gate', 'old-app', 'Old hold', 'HOLD', '/tmp/old-hold', '2026-06-10T11:00:00', '2026-06-10T11:00:00'),
+  ('release-approved-fixture', 'approved-app', 'Approved release', 'APPROVED', '/tmp/approved', '2026-07-01T00:00:00', '2026-07-01T00:00:00');
+`
+	cmd := exec.Command("sqlite3", dbPath)
+	cmd.Stdin = strings.NewReader(stmt)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create release-goal sqlite fixture: %v\n%s", err, out)
+	}
 }
 
 func captureStdout(t *testing.T, fn func()) string {

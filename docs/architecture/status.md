@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `compound policy import-release-goal-holds <release-orchestrator-state.sqlite>` now imports current HOLD rows into `compound://registries/release-goal-holds`, records source-authority rows, and exposes `release-goal-holds-authority --json`. Umut OS dashboard read-model emits a `release-goal-holds` card, and served `/operate` now renders authority/source/fallback metadata above the same approve/deny controls; the release orchestrator remains the write owner for approve/deny.
+
 - `compound policy import-operator-approval-frontier <operator-approval-frontier-summary.json>` now imports approval-frontier run summaries into `compound://registries/operator-approval-frontier`, records source-authority rows, and exposes `operator-approval-frontier-authority --json`. Umut OS dashboard read-model now prefers Compound authority for the `operator-approval-frontier` card, and served `/operate` renders authority/source/fallback while preserving the existing phrase list; this does not consume approvals or execute gated work.
 
 - `compound policy import-operator-prompts <operator-decision-prompts.json>` now imports operator prompt-card registries into `compound://registries/operator-decision-prompts`, records source-authority rows, and exposes `operator-prompts-authority --json` for machine consumers. Umut OS dashboard read-model now prefers this Compound authority for the `operator-decision-prompt-cards` card, and served `/operate` renders the authority/source/fallback strip next to the visible prompt card.

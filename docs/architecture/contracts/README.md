@@ -46,6 +46,10 @@ is the read-only machine handoff for served prompt cards.
 run summaries into `compound://registries/operator-approval-frontier`; `compound policy
 operator-approval-frontier-authority [--json]` is the read-only machine handoff for served approval-frontier phrase
 lists and does not consume approvals or execute gated work.
+`compound policy import-release-goal-holds <release-orchestrator-state.sqlite>` imports current release-goal HOLD
+rows into `compound://registries/release-goal-holds`; `compound policy release-goal-holds-authority [--json]`
+is the read-only machine handoff for served HOLD backlog rows. Approve/deny writes remain with the release
+orchestrator.
 
 | Contract | Purpose | Lifecycle |
 |---|---|---|
