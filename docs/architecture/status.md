@@ -8,6 +8,16 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- External skill/repo intake now has a governed runtime map for a 51-repo public GitHub shortlist spanning skills,
+  agent harnesses, scripts, design references, memory tools, and framework/project candidates. The batch wrote
+  review-only `skill-candidates` artifacts and recorded conservative intake decisions: `26` keep-needs-review,
+  `10` merge-existing, `15` reference-only. Aggregate source observation `srcobs_external_skill_repo_shortlist_20260701`
+  created no-promote capability observation `src_cand_5f80cac2a397` / `nop_ad08ed1b2a9a8ef8`. Queue proof:
+  `compound reviews --area skill-candidates --json` reports `53` total / `53` recorded / `0` review_required.
+  CapabilityGraph authority stayed unchanged at `489` nodes / `94` edges, so this remains intake evidence only:
+  no clone/install/serve/plugin execution/MCP auth, no graph mutation, no skill inbox candidate creation, and no
+  memory promotion.
+
 - Product feedback loop now records a real governed product review through `compound product review` and closes the corresponding owner-review artifact. private product hypothesis `private-appstore-conversion` was reviewed against ProductSignal `product_signal:<private>` as `inconclusive` because the App Store conversion signal is a neutral snapshot (neutral before-after value) with explicit no-causality confounders. Runtime proof: review evidence `review_evidence:<private>`, product transition `product_transition:<private>`, `product doctor product:private` status `ok`, `compound product authority --json` pending/review-ready `0/0`, review queue `10 total / 6 review_required / 4 ok` with `product_review:<private>` terminal `recorded`. This does not mutate App Store assets, product strategy, external accounts, release state, spend, or memory claims.
 
 - Umut OS operator surfaces now consume Compound capability feedback edge-kind counts. `os status --json` carries `capability_authority.edge_kind_counts`, the dashboard read-model card `compound-capability-authority` carries the same map, and the skills-console data reader exposes it to UI pages. Live proof reports `489` nodes / `94` edges with `false_triggered_by=20`, `missed_when=24`, `surfaces_with=47`, `validated_by=2`, `fallback_for=1`. This is a read-only consumer path: no skill execution, install/serve, source-owner mutation, memory promotion, marketplace action, or route-policy change.
