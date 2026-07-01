@@ -202,7 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
-  compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--evidence-ref REF...]
+  compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
@@ -3410,22 +3410,29 @@ func cmdReviews(args []string) {
 }
 
 type reviewFindingRecord struct {
-	SchemaVersion    string   `json:"schema_version"`
-	ID               string   `json:"id"`
-	CreatedAt        string   `json:"created_at"`
-	Status           string   `json:"status"`
-	WorkID           string   `json:"work_id"`
-	Capability       string   `json:"capability"`
-	Summary          string   `json:"summary"`
-	TargetPath       string   `json:"target_path"`
-	ArtifactPath     string   `json:"artifact_path"`
-	MarkdownPath     string   `json:"markdown_path,omitempty"`
-	ActionIntentID   string   `json:"action_intent_id"`
-	PolicyDecisionID string   `json:"policy_decision_id"`
-	PolicyOutcome    string   `json:"policy_outcome"`
-	StandingGrantID  string   `json:"standing_grant_id,omitempty"`
-	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
-	Warnings         []string `json:"warnings,omitempty"`
+	SchemaVersion    string                        `json:"schema_version"`
+	ID               string                        `json:"id"`
+	CreatedAt        string                        `json:"created_at"`
+	Status           string                        `json:"status"`
+	WorkID           string                        `json:"work_id"`
+	Capability       string                        `json:"capability"`
+	Summary          string                        `json:"summary"`
+	TargetPath       string                        `json:"target_path"`
+	ArtifactPath     string                        `json:"artifact_path"`
+	MarkdownPath     string                        `json:"markdown_path,omitempty"`
+	ActionIntentID   string                        `json:"action_intent_id"`
+	PolicyDecisionID string                        `json:"policy_decision_id"`
+	PolicyOutcome    string                        `json:"policy_outcome"`
+	StandingGrantID  string                        `json:"standing_grant_id,omitempty"`
+	SourceArtifacts  []reviewFindingSourceArtifact `json:"source_artifacts,omitempty"`
+	EvidenceRefs     []string                      `json:"evidence_refs,omitempty"`
+	Warnings         []string                      `json:"warnings,omitempty"`
+}
+
+type reviewFindingSourceArtifact struct {
+	Path         string `json:"path"`
+	ArtifactPath string `json:"artifact_path"`
+	Hash         string `json:"hash"`
 }
 
 func cmdReviewsRecordFinding(args []string) {
@@ -3435,10 +3442,11 @@ func cmdReviewsRecordFinding(args []string) {
 	root := valueFlag(args, "--root")
 	capability := reviewartifact.FirstNonEmpty(valueFlag(args, "--capability"), "review.finding")
 	evidenceRefs := valuesFlag(args, "--evidence-ref")
-	usage := "usage: compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--evidence-ref REF...]"
+	sourceArtifactPaths := valuesFlag(args, "--source-artifact")
+	usage := "usage: compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--evidence-ref REF...]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--work-id", "--target", "--summary", "--root", "--capability", "--evidence-ref":
+		case "--work-id", "--target", "--summary", "--root", "--capability", "--source-artifact", "--evidence-ref":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
@@ -3476,6 +3484,11 @@ func cmdReviewsRecordFinding(args []string) {
 	}
 	artifactPath := filepath.Join(root, filepath.FromSlash(target))
 	markdownPath := strings.TrimSuffix(artifactPath, filepath.Ext(artifactPath)) + ".md"
+	sourceArtifacts, sourceEvidenceRefs, err := reviewFindingSourceArtifacts(root, sourceArtifactPaths)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 	if _, err := os.Stat(artifactPath); err == nil {
 		fmt.Fprintf(os.Stderr, "error: review finding target already exists: %s\n", artifactPath)
 		os.Exit(1)
@@ -3511,6 +3524,7 @@ func cmdReviewsRecordFinding(args []string) {
 	}
 	now := time.Now()
 	createdAt := reviewartifact.Timestamp(now)
+	evidenceRefs = append(evidenceRefs, sourceEvidenceRefs...)
 	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, "work://"+workID, target))
 	actionID := reviewartifact.ID("act_", workID, capability, target, summary, createdAt)
 	ai := envelope.ActionIntent{
@@ -3556,6 +3570,7 @@ func cmdReviewsRecordFinding(args []string) {
 		PolicyDecisionID: pd.ID,
 		PolicyOutcome:    pd.Outcome,
 		StandingGrantID:  pd.StandingGrantID,
+		SourceArtifacts:  sourceArtifacts,
 		EvidenceRefs:     evidenceRefs,
 		Warnings: []string{
 			"writes only under state/runs/**",
@@ -3588,6 +3603,56 @@ func cmdReviewsRecordFinding(args []string) {
 		os.Exit(1)
 	}
 	printJSON(report)
+}
+
+func reviewFindingSourceArtifacts(root string, values []string) ([]reviewFindingSourceArtifact, []string, error) {
+	var artifacts []reviewFindingSourceArtifact
+	var evidenceRefs []string
+	seen := map[string]bool{}
+	for _, value := range values {
+		source, err := normalizeRunReviewSourceArtifact(value)
+		if err != nil {
+			return nil, nil, err
+		}
+		if seen[source] {
+			continue
+		}
+		seen[source] = true
+		artifactPath := filepath.Join(root, filepath.FromSlash(source))
+		exists, hash, err := reviewartifact.HashFileTarget(artifactPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("source artifact %q: %w", source, err)
+		}
+		if !exists {
+			return nil, nil, fmt.Errorf("source artifact does not exist: %s", source)
+		}
+		hashRef := "sha256:" + hash
+		artifacts = append(artifacts, reviewFindingSourceArtifact{
+			Path:         source,
+			ArtifactPath: artifactPath,
+			Hash:         hashRef,
+		})
+		evidenceRefs = append(evidenceRefs, source, hashRef)
+	}
+	return artifacts, reviewartifact.Unique(evidenceRefs), nil
+}
+
+func normalizeRunReviewSourceArtifact(source string) (string, error) {
+	source = filepath.ToSlash(strings.TrimSpace(source))
+	if source == "" {
+		return "", fmt.Errorf("source artifact path required")
+	}
+	if filepath.IsAbs(source) || strings.HasPrefix(source, "~") {
+		return "", fmt.Errorf("source artifact must be relative state/runs path, got %q", source)
+	}
+	clean := filepath.ToSlash(filepath.Clean(source))
+	if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." || strings.Contains(clean, "/../") {
+		return "", fmt.Errorf("source artifact must not escape root, got %q", source)
+	}
+	if !strings.HasPrefix(clean, "state/runs/") {
+		return "", fmt.Errorf("source artifact must be under state/runs/**, got %q", clean)
+	}
+	return clean, nil
 }
 
 func normalizeRunReviewTarget(target string) (string, error) {
@@ -3626,6 +3691,14 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 	fmt.Fprintln(&b, "## Summary")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, report.Summary)
+	if len(report.SourceArtifacts) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Source Artifacts")
+		fmt.Fprintln(&b)
+		for _, artifact := range report.SourceArtifacts {
+			fmt.Fprintf(&b, "- %s (%s)\n", artifact.Path, artifact.Hash)
+		}
+	}
 	if len(report.EvidenceRefs) > 0 {
 		fmt.Fprintln(&b)
 		fmt.Fprintln(&b, "## Evidence")

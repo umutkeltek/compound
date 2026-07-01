@@ -18,7 +18,10 @@ This file is the current package/command map. `compound architecture doctor --st
   recorded `rvf_c2cf355172ca` under OS `state/runs/compound-standing-grant-review-finding-2026-07-01/`,
   persisted `act_b42203caed3d` / `pol_6a7d7783d168`, then closed `work_9e8bb4ff07e2` through
   `rec_828163f159fd` / `tr_828163f159fd`; `compound workbench --json` reports `open=0` and `terminal=12`.
-  No claims were promoted and no live job-health review was recorded.
+  Follow-up source-artifact proof added `--source-artifact state/runs/...`; live `rvf_ca240d15afbb`
+  attached and hashed a real OS source-reconciliation summary artifact under `state/runs/**`,
+  persisted `act_e287777b0023` / `pol_e5c63484094e`, and closed `work_f7b026291d7b` through
+  `rec_622763961cee` / `tr_622763961cee`. No claims were promoted and no live job-health review was recorded.
 
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority

@@ -563,6 +563,14 @@ grants:
 	}
 	runRoot := t.TempDir()
 	target := "state/runs/standing-grant-review/finding.json"
+	sourceArtifact := "state/runs/agent-session/session-summary.json"
+	sourcePath := filepath.Join(runRoot, filepath.FromSlash(sourceArtifact))
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(`{"finding":"agent session produced review evidence"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	out := captureStdout(t, func() {
 		cmdReviews([]string{
 			"record-finding",
@@ -570,6 +578,7 @@ grants:
 			"--target", target,
 			"--root", runRoot,
 			"--summary", "review finding recorded through standing grant",
+			"--source-artifact", sourceArtifact,
 			"--evidence-ref", "test://review-input",
 		})
 	})
@@ -586,6 +595,12 @@ grants:
 	}
 	if report.PolicyOutcome != "allow" || report.StandingGrantID != "grant_review_finding:review-finding" {
 		t.Fatalf("policy did not consume standing grant: %+v", report)
+	}
+	if len(report.SourceArtifacts) != 1 || report.SourceArtifacts[0].Path != sourceArtifact {
+		t.Fatalf("source artifact not recorded: %+v", report.SourceArtifacts)
+	}
+	if !strings.HasPrefix(report.SourceArtifacts[0].Hash, "sha256:") || !stringSliceContains(report.EvidenceRefs, sourceArtifact) || !stringSliceContains(report.EvidenceRefs, report.SourceArtifacts[0].Hash) {
+		t.Fatalf("source artifact evidence not recorded: source=%+v refs=%v", report.SourceArtifacts[0], report.EvidenceRefs)
 	}
 	if _, err := os.Stat(filepath.Join(runRoot, target)); err != nil {
 		t.Fatalf("finding json not written: %v", err)
