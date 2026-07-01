@@ -3614,6 +3614,9 @@ func cmdWorkbench(args []string) {
 	if report.Counts.RunObservations > 0 {
 		fmt.Printf("run_observations=%d\n", report.Counts.RunObservations)
 	}
+	if report.Counts.DispatchStepRuns > 0 {
+		fmt.Printf("dispatch_step_runs=%d\n", report.Counts.DispatchStepRuns)
+	}
 	if len(report.Integrity) > 0 {
 		fmt.Println("integrity:")
 		for _, msg := range report.Integrity {
@@ -3641,6 +3644,13 @@ func cmdWorkbench(args []string) {
 		for _, item := range report.Recent {
 			fmt.Printf("- %s %-10s receipt=%s transition=%s move=%s changed=%v\n",
 				item.WorkID, item.State, emptyDash(item.ReceiptID), emptyDash(item.TransitionID), emptyDash(item.MoveType), item.Changed)
+		}
+	}
+	if len(report.DispatchStepRuns) > 0 {
+		fmt.Println("dispatch_step_runs:")
+		for _, run := range report.DispatchStepRuns {
+			fmt.Printf("- %s status=%s steps=%d wait=%s next=%s\n",
+				run.ID, run.Status, run.StepCount, emptyDash(run.WaitReason), emptyDash(run.NextAction))
 		}
 	}
 }

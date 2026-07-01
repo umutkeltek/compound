@@ -111,6 +111,41 @@ func TestWorkbenchSurfacesRunObservationEvidence(t *testing.T) {
 	}
 }
 
+func TestWorkbenchSurfacesDispatchStepRunSummaries(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "workbench sees dispatch run"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+		DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
+		MaxSteps:            5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.DispatchStepRuns != 1 || len(report.DispatchStepRuns) != 1 {
+		t.Fatalf("dispatch step run summaries missing: counts=%+v runs=%+v", report.Counts, report.DispatchStepRuns)
+	}
+	summary := report.DispatchStepRuns[0]
+	if summary.ID != run.ID || summary.Status != "waiting" || summary.StepCount != 2 || summary.WaitReason != "run_evidence" {
+		t.Fatalf("dispatch step run summary = %+v run=%+v", summary, run)
+	}
+	if len(summary.StepActions) != 2 || summary.StepActions[0] != "claim" || summary.StepActions[1] != "advance" {
+		t.Fatalf("dispatch step run actions = %+v", summary.StepActions)
+	}
+	if !contains(summary.StepWorkIDs, ready.ID) || !contains(summary.BlockedOn, "work.run_evidence:"+ready.ID) {
+		t.Fatalf("dispatch step run refs missing: %+v", summary)
+	}
+	if summary.ResultPath != run.ResultPath {
+		t.Fatalf("dispatch step run path = %q, want %q", summary.ResultPath, run.ResultPath)
+	}
+}
+
 func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "cancelled work is terminal without completion proof"}, fixedNow)

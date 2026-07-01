@@ -18,11 +18,12 @@ type WorkbenchOptions struct {
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
 // state. It does not dispatch, claim, close, or repair work.
 type WorkbenchReport struct {
-	GeneratedAt string          `json:"generated_at"`
-	Counts      WorkbenchCounts `json:"counts"`
-	Open        []WorkbenchItem `json:"open"`
-	Recent      []WorkbenchItem `json:"recent,omitempty"`
-	Integrity   []string        `json:"integrity,omitempty"`
+	GeneratedAt      string                   `json:"generated_at"`
+	Counts           WorkbenchCounts          `json:"counts"`
+	Open             []WorkbenchItem          `json:"open"`
+	Recent           []WorkbenchItem          `json:"recent,omitempty"`
+	DispatchStepRuns []DispatchStepRunSummary `json:"dispatch_step_runs,omitempty"`
+	Integrity        []string                 `json:"integrity,omitempty"`
 }
 
 type WorkbenchCounts struct {
@@ -33,9 +34,25 @@ type WorkbenchCounts struct {
 	NeedsReview       int            `json:"needs_review"`
 	InProgress        int            `json:"in_progress"`
 	RunObservations   int            `json:"run_observations"`
+	DispatchStepRuns  int            `json:"dispatch_step_runs"`
 	MissingReceipt    int            `json:"missing_receipt"`
 	MissingTransition int            `json:"missing_transition"`
 	ByState           map[string]int `json:"by_state"`
+}
+
+type DispatchStepRunSummary struct {
+	ID          string   `json:"id"`
+	GeneratedAt string   `json:"generated_at"`
+	Status      string   `json:"status"`
+	Actor       string   `json:"actor"`
+	StepCount   int      `json:"step_count"`
+	CanContinue bool     `json:"can_continue"`
+	WaitReason  string   `json:"wait_reason,omitempty"`
+	BlockedOn   []string `json:"blocked_on,omitempty"`
+	NextAction  string   `json:"next_action,omitempty"`
+	ResultPath  string   `json:"result_path,omitempty"`
+	StepActions []string `json:"step_actions,omitempty"`
+	StepWorkIDs []string `json:"step_work_ids,omitempty"`
 }
 
 type WorkbenchItem struct {
@@ -118,6 +135,12 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 			report.Counts.InProgress++
 		}
 		report.Open = append(report.Open, item)
+	}
+	runs, warnings := s.workbenchDispatchStepRuns(opts.RecentLimit)
+	report.DispatchStepRuns = runs
+	report.Counts.DispatchStepRuns = len(runs)
+	for _, warning := range warnings {
+		report.Integrity = append(report.Integrity, warning)
 	}
 	sort.Slice(report.Open, func(i, j int) bool {
 		pi, pj := statePriority(report.Open[i].State), statePriority(report.Open[j].State)
@@ -232,6 +255,59 @@ func (s *Store) workbenchRunObservations(workID string) ([]RunObservationSummary
 		}
 		return out[i].ID > out[j].ID
 	})
+	return out, warnings
+}
+
+func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, []string) {
+	dir := filepath.Join(s.home, "dispatch-step-runs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{"dispatch-step-runs unreadable: " + err.Error()}
+	}
+	var out []DispatchStepRunSummary
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var result DispatchStepRunResult
+		if err := s.readJSON(path, &result); err != nil {
+			warnings = append(warnings, "dispatch step run "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		summary := DispatchStepRunSummary{
+			ID:          result.ID,
+			GeneratedAt: result.GeneratedAt,
+			Status:      result.Status,
+			Actor:       result.Actor,
+			StepCount:   result.StepCount,
+			CanContinue: result.CanContinue,
+			WaitReason:  result.WaitReason,
+			BlockedOn:   append([]string{}, result.BlockedOn...),
+			NextAction:  result.NextAction,
+			ResultPath:  path,
+		}
+		for _, step := range result.Steps {
+			summary.StepActions = append(summary.StepActions, step.Action)
+			if step.WorkID != "" {
+				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
+			}
+		}
+		out = append(out, summary)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].GeneratedAt != out[j].GeneratedAt {
+			return out[i].GeneratedAt > out[j].GeneratedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, warnings
 }
 
