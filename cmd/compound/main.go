@@ -202,7 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
-compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
+  compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
@@ -2627,7 +2627,7 @@ func loadActionIntent(path string) envelope.ActionIntent {
 // (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -2702,6 +2702,74 @@ func cmdPolicy(args []string) {
 		}
 		report.SourceAuthority = records
 		printJSON(report)
+	case "import-standing-grants":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound policy import-standing-grants <standing-grants.yaml|json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report, err := policy.ImportStandingGrants(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+	case "standing-grants-authority":
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound policy standing-grants-authority [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		type standingGrantsAuthorityReport struct {
+			AuthorityRef     string                                       `json:"authority_ref"`
+			AuthorityPath    string                                       `json:"authority_path"`
+			Installed        bool                                         `json:"installed"`
+			GeneratedAt      string                                       `json:"generated_at,omitempty"`
+			GrantCount       int                                          `json:"grant_count,omitempty"`
+			CapabilityCount  int                                          `json:"capability_count,omitempty"`
+			Grants           []policy.StandingGrant                       `json:"grants,omitempty"`
+			SourceAuthority  []policy.StandingGrantsSourceAuthorityRecord `json:"source_authority,omitempty"`
+			SourceRecordPath string                                       `json:"source_record_path"`
+		}
+		report := standingGrantsAuthorityReport{
+			AuthorityRef:     policy.StandingGrantsAuthorityRef,
+			AuthorityPath:    policy.StandingGrantsPath(homePath),
+			SourceRecordPath: policy.StandingGrantsSourceAuthorityPath(homePath),
+		}
+		registry, err := policy.LoadStandingGrantsFromHome(homePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+		} else {
+			report.Installed = true
+			report.GeneratedAt = registry.GeneratedAt
+			report.GrantCount = len(registry.Grants)
+			report.CapabilityCount = len(registry.Grants)
+			report.Grants = registry.Grants
+		}
+		records, err := policy.LoadStandingGrantsSourceAuthority(homePath)
+		if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report.SourceAuthority = records
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("standing grants authority: %s\n", report.AuthorityRef)
+		fmt.Printf("installed: %t\n", report.Installed)
+		fmt.Printf("grants: %d capabilities=%d\n", report.GrantCount, report.CapabilityCount)
 	case "import-operator-state":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound policy import-operator-state <operator-state.json>")

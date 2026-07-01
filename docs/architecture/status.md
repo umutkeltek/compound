@@ -8,6 +8,16 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- StandingGrant now has Compound-owned authority instead of config-only policy state. `compound policy
+  import-standing-grants <standing-grants.yaml|json>` normalizes OS pipeline-style `grant_id`,
+  `capabilities[]`, `target_scope`, `reversibility_ceiling` grants into
+  `COMPOUND_HOME/registries/standing-grants.json` at `compound://registries/standing-grants`, records
+  source-authority evidence, and `policy evaluate` consumes the registry through `LoadConfig`. Persistent
+  `~/.compound` proof imported `fixtures/policy/standing-grants.yaml` as source authority
+  `sgsrc_ab7074a89705`; a matching `review.finding` ActionIntent exited 0 with `outcome=allow`,
+  `standing_grant_id=grant_review_finding:review-finding`, and `compound://registries/standing-grants`
+  evidence. Out-of-envelope actions still fall through the same PolicyDecision gate.
+
 - Job-health owner review now has a reviewed-result seam without scheduler mutation. `compound authority
   job-health-plan` writes adjacent `.review.yaml` drafts, `compound reviews --json --area job-health`
   validates those drafts and exposes `blocked_reason` plus the reviewed `compound authority job-health-review
