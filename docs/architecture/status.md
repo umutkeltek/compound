@@ -8,6 +8,20 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `nexu-io/open-design` now has focused design-workbench evidence attached
+to existing `mcp:open-design` rather than installing Open Design or serving
+its skills/plugins as default design authority. The evaluation source compared
+the public workbench claims against current `tool:open-design.*`,
+`design-direction`, UI taste, and visual verification owners, imported
+evidence-only: `capability_evaluations_013a279f95a7` -> eval node
+`eval:capability-evaluation-external-nexu-io-open-design-workbench-20260701`
+with `evaluated_by:mcp:open-design->eval:...`. Unknown skipped count was `0`,
+so no review-plan duplicate was needed. Authority now reports `495` nodes /
+`98` edges with `evaluated_by=3`; design-workbench surfacing ranks existing
+Open Design tools first. No MCP install, no daemon/project run, no model-router
+or API-key setup, no skills/plugins serving, no global agent config mutation,
+no memory promotion.
+
  - `mattpocock/skills` now has focused subskill evidence merged into existing
 `skill:codebase-design` rather than installing the external pack. The evaluation
 source compared upstream `skills/engineering/codebase-design/SKILL.md` plus
