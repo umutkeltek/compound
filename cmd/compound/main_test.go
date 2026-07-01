@@ -654,6 +654,21 @@ func TestAuthorityJobRosterImportsAndReportsAuthority(t *testing.T) {
 		}
 	}
 
+	usage := filepath.Join(t.TempDir(), "cron-token-usage.json")
+	writeCLIJobTokenUsageFixture(t, usage)
+	tokenOut := captureStdout(t, func() {
+		cmdAuthority([]string{"import-job-token-governance", usage})
+	})
+	for _, want := range []string{
+		`"token_sessions_count": 8`,
+		`"enabled_agent_count": 1`,
+		`"high_token_enabled_count": 1`,
+	} {
+		if !strings.Contains(tokenOut, want) {
+			t.Fatalf("import job token governance output missing %q:\n%s", want, tokenOut)
+		}
+	}
+
 	authorityOut := captureStdout(t, func() {
 		cmdAuthority([]string{"job-roster-authority", "--json"})
 	})
@@ -4952,6 +4967,31 @@ func writeCLIJobRosterFixture(t *testing.T, path string) {
       "script": "recall_digest.ts",
       "last_status": "ok",
       "last_run_at": "2026-07-01T09:00:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeCLIJobTokenUsageFixture(t *testing.T, path string) {
+	t.Helper()
+	data := `{
+  "version": 1,
+  "generated_at": "2026-07-01T12:00:00Z",
+  "metric": "all_tokens",
+  "sessions_count": 8,
+  "jobs": [
+    {
+      "job_id": "digest",
+      "name": "brain digest",
+      "enabled": true,
+      "no_agent": false,
+      "runs": 4,
+      "total_tokens": 1200000,
+      "avg_tokens_per_run": 300000,
+      "risk_class": "high_token_agent_job"
     }
   ]
 }`

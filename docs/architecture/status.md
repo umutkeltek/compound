@@ -8,6 +8,12 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Job token-governance now lands as an overlay on `compound://registries/job-roster`, not a parallel
+  registry: `compound authority import-job-token-governance <cron-token-usage.json>` records token
+  source authority, session counts, enabled-agent counts, and high-token enabled job summaries on the
+  existing job roster authority. The source token usage view is fallback/evidence input after import;
+  no scheduler job is run, paused, resumed, edited, restarted, or rescheduled.
+
 - Umut OS `/operate` now serves the same `compound://registries/job-roster` authority used by
   `os status --json`: job count, enabled count, recent-run count, source-authority id, fallback/evidence
   role, and current error summaries render from the Compound dashboard read model. The source scheduler

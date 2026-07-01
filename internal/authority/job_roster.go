@@ -20,8 +20,11 @@ const (
 	jobRosterFile                = "job-roster.json"
 	jobRosterSourceAuthorityFile = "job-roster-source-authority.jsonl"
 	jobRosterImportedVia         = "authority import-job-roster"
+	jobTokenImportedVia          = "authority import-job-token-governance"
 	jobRosterRetirement          = "job status reads compound://registries/job-roster; source job registry remains scheduler write owner and rollback/evidence input"
 	jobRosterRollback            = "re-import source job registry or remove COMPOUND_HOME registries/job-roster.json after review"
+	jobTokenRetirement           = "job token governance reads compound://registries/job-roster; source token usage view remains rollback/evidence input"
+	jobTokenRollback             = "re-import source token usage view or remove token fields from COMPOUND_HOME registries/job-roster.json after review"
 )
 
 type JobRosterAuthority struct {
@@ -36,6 +39,14 @@ type JobRosterAuthority struct {
 	ErrorCount     int          `json:"error_count"`
 	Jobs           []JobSummary `json:"jobs"`
 	RecentErrors   []JobSummary `json:"recent_errors,omitempty"`
+
+	TokenUsageSourcePath     string       `json:"token_usage_source_path,omitempty"`
+	TokenUsageSourceRevision string       `json:"token_usage_source_revision,omitempty"`
+	TokenMetric              string       `json:"token_metric,omitempty"`
+	TokenSessionsCount       int          `json:"token_sessions_count"`
+	EnabledAgentCount        int          `json:"enabled_agent_count"`
+	HighTokenEnabledCount    int          `json:"high_token_enabled_count"`
+	TokenRiskJobs            []JobSummary `json:"token_risk_jobs,omitempty"`
 }
 
 type JobSummary struct {
@@ -52,26 +63,33 @@ type JobSummary struct {
 	LastError         string `json:"last_error,omitempty"`
 	LastRunAt         string `json:"last_run_at,omitempty"`
 	RecommendedAction string `json:"recommended_action,omitempty"`
+	RunsObserved      int    `json:"runs_observed,omitempty"`
+	TotalTokens       int64  `json:"total_tokens,omitempty"`
+	AvgTokensPerRun   int64  `json:"avg_tokens_per_run,omitempty"`
+	RiskClass         string `json:"risk_class,omitempty"`
 }
 
 type JobRosterSourceAuthorityRecord struct {
-	SchemaVersion       string   `json:"schema_version"`
-	ID                  string   `json:"id"`
-	CreatedAt           string   `json:"created_at"`
-	SourcePath          string   `json:"source_path"`
-	SourceRevision      string   `json:"source_revision"`
-	ImportedVia         string   `json:"imported_via"`
-	AuthorityRef        string   `json:"authority_ref"`
-	AuthorityStatus     string   `json:"authority_status"`
-	SourceRole          string   `json:"source_role"`
-	Retires             string   `json:"retires"`
-	RetirementCondition string   `json:"retirement_condition"`
-	Rollback            string   `json:"rollback"`
-	JobCount            int      `json:"job_count"`
-	EnabledCount        int      `json:"enabled_count"`
-	ErrorCount          int      `json:"error_count"`
-	JobIDs              []string `json:"job_ids,omitempty"`
-	EvidenceRefs        []string `json:"evidence_refs"`
+	SchemaVersion         string   `json:"schema_version"`
+	ID                    string   `json:"id"`
+	CreatedAt             string   `json:"created_at"`
+	SourcePath            string   `json:"source_path"`
+	SourceRevision        string   `json:"source_revision"`
+	ImportedVia           string   `json:"imported_via"`
+	AuthorityRef          string   `json:"authority_ref"`
+	AuthorityStatus       string   `json:"authority_status"`
+	SourceRole            string   `json:"source_role"`
+	Retires               string   `json:"retires"`
+	RetirementCondition   string   `json:"retirement_condition"`
+	Rollback              string   `json:"rollback"`
+	JobCount              int      `json:"job_count"`
+	EnabledCount          int      `json:"enabled_count"`
+	ErrorCount            int      `json:"error_count"`
+	JobIDs                []string `json:"job_ids,omitempty"`
+	TokenSessionsCount    int      `json:"token_sessions_count,omitempty"`
+	EnabledAgentCount     int      `json:"enabled_agent_count,omitempty"`
+	HighTokenEnabledCount int      `json:"high_token_enabled_count,omitempty"`
+	EvidenceRefs          []string `json:"evidence_refs"`
 }
 
 type JobRosterImportReport struct {
@@ -84,6 +102,17 @@ type JobRosterImportReport struct {
 	RecentRunCount    int                            `json:"recent_run_count"`
 	ErrorCount        int                            `json:"error_count"`
 	RecentErrors      []JobSummary                   `json:"recent_errors,omitempty"`
+}
+
+type JobTokenGovernanceImportReport struct {
+	AuthorityRef          string                         `json:"authority_ref"`
+	AuthorityPath         string                         `json:"authority_path"`
+	SourceAuthorityID     string                         `json:"source_authority_id"`
+	SourceAuthority       JobRosterSourceAuthorityRecord `json:"source_authority"`
+	TokenSessionsCount    int                            `json:"token_sessions_count"`
+	EnabledAgentCount     int                            `json:"enabled_agent_count"`
+	HighTokenEnabledCount int                            `json:"high_token_enabled_count"`
+	TokenRiskJobs         []JobSummary                   `json:"token_risk_jobs,omitempty"`
 }
 
 func ImportJobRoster(homePath, sourcePath string, now time.Time) (JobRosterImportReport, error) {
@@ -178,6 +207,151 @@ func ImportJobRoster(homePath, sourcePath string, now time.Time) (JobRosterImpor
 	}, nil
 }
 
+func ImportJobTokenGovernance(homePath, sourcePath string, now time.Time) (JobTokenGovernanceImportReport, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return JobTokenGovernanceImportReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return JobTokenGovernanceImportReport{}, fmt.Errorf("job token governance source path required")
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return JobTokenGovernanceImportReport{}, fmt.Errorf("read job token governance %s: %w", sourcePath, err)
+	}
+	var doc struct {
+		Metric        string `json:"metric"`
+		SessionsCount int    `json:"sessions_count"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return JobTokenGovernanceImportReport{}, fmt.Errorf("parse job token governance metadata %s: %w", sourcePath, err)
+	}
+	usageJobs, err := parseJobRoster(data)
+	if err != nil {
+		return JobTokenGovernanceImportReport{}, fmt.Errorf("parse job token governance %s: %w", sourcePath, err)
+	}
+	revision := "sha256:" + digestBytes(data)
+	authority, err := LoadJobRosterAuthority(homePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return JobTokenGovernanceImportReport{}, err
+		}
+		authority = JobRosterAuthority{
+			SchemaVersion:  JobRosterAuthoritySchema,
+			AuthorityRef:   JobRosterAuthorityRef,
+			SourcePath:     sourcePath,
+			SourceRevision: revision,
+			Jobs:           usageJobs,
+		}
+	}
+	authority.GeneratedAt = now.UTC().Format(time.RFC3339)
+	authority.TokenUsageSourcePath = sourcePath
+	authority.TokenUsageSourceRevision = revision
+	authority.TokenMetric = strings.TrimSpace(doc.Metric)
+	authority.TokenSessionsCount = doc.SessionsCount
+	mergeJobTokenUsage(&authority, usageJobs)
+	sort.Slice(authority.Jobs, func(i, j int) bool {
+		if authority.Jobs[i].Name != authority.Jobs[j].Name {
+			return authority.Jobs[i].Name < authority.Jobs[j].Name
+		}
+		return authority.Jobs[i].JobID < authority.Jobs[j].JobID
+	})
+	authorityPath := JobRosterAuthorityPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(authorityPath), 0o755); err != nil {
+		return JobTokenGovernanceImportReport{}, err
+	}
+	body, err := json.MarshalIndent(authority, "", "  ")
+	if err != nil {
+		return JobTokenGovernanceImportReport{}, err
+	}
+	if err := os.WriteFile(authorityPath, append(body, '\n'), 0o644); err != nil {
+		return JobTokenGovernanceImportReport{}, err
+	}
+	rec := JobRosterSourceAuthorityRecord{
+		SchemaVersion:         JobRosterSourceAuthoritySchema,
+		ID:                    jobRosterSourceAuthorityID(sourcePath, revision),
+		CreatedAt:             now.UTC().Format(time.RFC3339),
+		SourcePath:            sourcePath,
+		SourceRevision:        revision,
+		ImportedVia:           jobTokenImportedVia,
+		AuthorityRef:          JobRosterAuthorityRef,
+		AuthorityStatus:       "compound_primary",
+		SourceRole:            "evidence_only_input_after_import",
+		Retires:               "cron_token_governance_read_authority:" + sourcePath,
+		RetirementCondition:   jobTokenRetirement,
+		Rollback:              jobTokenRollback,
+		JobCount:              authority.JobCount,
+		EnabledCount:          authority.EnabledCount,
+		ErrorCount:            authority.ErrorCount,
+		TokenSessionsCount:    authority.TokenSessionsCount,
+		EnabledAgentCount:     authority.EnabledAgentCount,
+		HighTokenEnabledCount: authority.HighTokenEnabledCount,
+		JobIDs:                jobIDs(usageJobs),
+		EvidenceRefs:          []string{revision, JobRosterAuthorityRef},
+	}
+	if err := appendJobRosterSourceAuthority(homePath, rec); err != nil {
+		return JobTokenGovernanceImportReport{}, err
+	}
+	return JobTokenGovernanceImportReport{
+		AuthorityRef:          JobRosterAuthorityRef,
+		AuthorityPath:         authorityPath,
+		SourceAuthorityID:     rec.ID,
+		SourceAuthority:       rec,
+		TokenSessionsCount:    authority.TokenSessionsCount,
+		EnabledAgentCount:     authority.EnabledAgentCount,
+		HighTokenEnabledCount: authority.HighTokenEnabledCount,
+		TokenRiskJobs:         authority.TokenRiskJobs,
+	}, nil
+}
+
+func mergeJobTokenUsage(authority *JobRosterAuthority, usageJobs []JobSummary) {
+	appendMissing := len(authority.Jobs) == 0
+	byKey := make(map[string]int, len(authority.Jobs)*2)
+	for i, job := range authority.Jobs {
+		if job.JobID != "" {
+			byKey["id:"+job.JobID] = i
+		}
+		byKey["name:"+job.Name] = i
+	}
+	authority.EnabledAgentCount = 0
+	authority.HighTokenEnabledCount = 0
+	authority.TokenRiskJobs = nil
+	for _, usage := range usageJobs {
+		if usage.Enabled && !usage.NoAgent {
+			authority.EnabledAgentCount++
+		}
+		if usage.Enabled && !usage.NoAgent && usage.RiskClass == "high_token_agent_job" {
+			authority.HighTokenEnabledCount++
+			authority.TokenRiskJobs = append(authority.TokenRiskJobs, usage)
+		}
+		idx, ok := byKey["id:"+usage.JobID]
+		if !ok {
+			idx, ok = byKey["name:"+usage.Name]
+		}
+		if ok {
+			mergeJobTokenFields(&authority.Jobs[idx], usage)
+			continue
+		}
+		if !appendMissing {
+			continue
+		}
+		authority.Jobs = append(authority.Jobs, usage)
+		idx = len(authority.Jobs) - 1
+		if usage.JobID != "" {
+			byKey["id:"+usage.JobID] = idx
+		}
+		byKey["name:"+usage.Name] = idx
+	}
+	authority.JobCount = len(authority.Jobs)
+}
+
+func mergeJobTokenFields(dst *JobSummary, src JobSummary) {
+	dst.RunsObserved = src.RunsObserved
+	dst.TotalTokens = src.TotalTokens
+	dst.AvgTokensPerRun = src.AvgTokensPerRun
+	dst.RiskClass = src.RiskClass
+}
+
 func LoadJobRosterAuthority(homePath string) (JobRosterAuthority, error) {
 	data, err := os.ReadFile(JobRosterAuthorityPath(homePath))
 	if err != nil {
@@ -262,6 +436,10 @@ func parseJobRoster(data []byte) ([]JobSummary, error) {
 			LastError:         firstJSONText(row, "last_error"),
 			LastRunAt:         firstJSONText(row, "last_run_at", "last_ran_at"),
 			RecommendedAction: firstJSONText(row, "recommended_action"),
+			RunsObserved:      jsonInt(row["runs"], row["runs_observed"]),
+			TotalTokens:       jsonInt64(row["total_tokens"], row["token_total_observed"]),
+			AvgTokensPerRun:   jsonInt64(row["avg_tokens_per_run"]),
+			RiskClass:         firstJSONText(row, "risk_class"),
 		}
 		if strings.TrimSpace(job.Name) == "" {
 			continue
@@ -333,6 +511,38 @@ func firstJSONText(row map[string]any, keys ...string) string {
 func jsonBool(v any) bool {
 	b, _ := v.(bool)
 	return b
+}
+
+func jsonInt(values ...any) int {
+	for _, value := range values {
+		switch v := value.(type) {
+		case float64:
+			return int(v)
+		case int:
+			return v
+		case json.Number:
+			i, _ := v.Int64()
+			return int(i)
+		}
+	}
+	return 0
+}
+
+func jsonInt64(values ...any) int64 {
+	for _, value := range values {
+		switch v := value.(type) {
+		case float64:
+			return int64(v)
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		case json.Number:
+			i, _ := v.Int64()
+			return i
+		}
+	}
+	return 0
 }
 
 func digestBytes(data []byte) string {

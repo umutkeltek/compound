@@ -232,7 +232,7 @@ compound policy <evaluate|import-placement-rules|placement-authority|import-oper
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
-compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | job-roster-authority [--json] | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] RuntimeBinding health/live probes + gated writeback/review artifacts
@@ -4051,7 +4051,7 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-job-roster <cron-jobs.json> | job-roster-authority [--json] | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -4068,25 +4068,45 @@ func cmdAuthority(args []string) {
 		printJSON(report)
 		return
 	}
+	if args[0] == "import-job-token-governance" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority import-job-token-governance <cron-token-usage.json>")
+			os.Exit(2)
+		}
+		report, err := authority.ImportJobTokenGovernance(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-job-token-governance:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+		return
+	}
 	if args[0] == "job-roster-authority" {
 		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound authority job-roster-authority [--json]")
 			os.Exit(2)
 		}
 		type jobRosterAuthorityReport struct {
-			AuthorityRef     string                                     `json:"authority_ref"`
-			AuthorityPath    string                                     `json:"authority_path"`
-			Installed        bool                                       `json:"installed"`
-			GeneratedAt      string                                     `json:"generated_at,omitempty"`
-			SourcePath       string                                     `json:"source_path,omitempty"`
-			SourceRevision   string                                     `json:"source_revision,omitempty"`
-			JobCount         int                                        `json:"job_count,omitempty"`
-			EnabledCount     int                                        `json:"enabled_count,omitempty"`
-			RecentRunCount   int                                        `json:"recent_run_count,omitempty"`
-			ErrorCount       int                                        `json:"error_count,omitempty"`
-			RecentErrors     []authority.JobSummary                     `json:"recent_errors,omitempty"`
-			SourceAuthority  []authority.JobRosterSourceAuthorityRecord `json:"source_authority,omitempty"`
-			SourceRecordPath string                                     `json:"source_record_path"`
+			AuthorityRef             string                                     `json:"authority_ref"`
+			AuthorityPath            string                                     `json:"authority_path"`
+			Installed                bool                                       `json:"installed"`
+			GeneratedAt              string                                     `json:"generated_at,omitempty"`
+			SourcePath               string                                     `json:"source_path,omitempty"`
+			SourceRevision           string                                     `json:"source_revision,omitempty"`
+			JobCount                 int                                        `json:"job_count,omitempty"`
+			EnabledCount             int                                        `json:"enabled_count,omitempty"`
+			RecentRunCount           int                                        `json:"recent_run_count,omitempty"`
+			ErrorCount               int                                        `json:"error_count,omitempty"`
+			RecentErrors             []authority.JobSummary                     `json:"recent_errors,omitempty"`
+			TokenUsageSourcePath     string                                     `json:"token_usage_source_path,omitempty"`
+			TokenUsageSourceRevision string                                     `json:"token_usage_source_revision,omitempty"`
+			TokenMetric              string                                     `json:"token_metric,omitempty"`
+			TokenSessionsCount       int                                        `json:"token_sessions_count"`
+			EnabledAgentCount        int                                        `json:"enabled_agent_count"`
+			HighTokenEnabledCount    int                                        `json:"high_token_enabled_count"`
+			TokenRiskJobs            []authority.JobSummary                     `json:"token_risk_jobs,omitempty"`
+			SourceAuthority          []authority.JobRosterSourceAuthorityRecord `json:"source_authority,omitempty"`
+			SourceRecordPath         string                                     `json:"source_record_path"`
 		}
 		report := jobRosterAuthorityReport{
 			AuthorityRef:     authority.JobRosterAuthorityRef,
@@ -4109,6 +4129,13 @@ func cmdAuthority(args []string) {
 			report.RecentRunCount = roster.RecentRunCount
 			report.ErrorCount = roster.ErrorCount
 			report.RecentErrors = roster.RecentErrors
+			report.TokenUsageSourcePath = roster.TokenUsageSourcePath
+			report.TokenUsageSourceRevision = roster.TokenUsageSourceRevision
+			report.TokenMetric = roster.TokenMetric
+			report.TokenSessionsCount = roster.TokenSessionsCount
+			report.EnabledAgentCount = roster.EnabledAgentCount
+			report.HighTokenEnabledCount = roster.HighTokenEnabledCount
+			report.TokenRiskJobs = roster.TokenRiskJobs
 		}
 		records, err := authority.LoadJobRosterSourceAuthority(homePath)
 		if err != nil {
