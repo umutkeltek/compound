@@ -8,6 +8,11 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Umut OS `/operate` now serves the same `compound://registries/job-roster` authority used by
+  `os status --json`: job count, enabled count, recent-run count, source-authority id, fallback/evidence
+  role, and current error summaries render from the Compound dashboard read model. The source scheduler
+  registry remains write owner; no job was run, paused, resumed, edited, or restarted.
+
 - `compound authority import-job-roster <jobs.json>` now installs scheduled job inventory under
   `compound://registries/job-roster`, with source-authority handoff and read-only
   `job-roster-authority --json`. Umut OS `os status --json` now consumes this authority for job
