@@ -8,12 +8,15 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 	"compound/internal/writeback"
+
+	"gopkg.in/yaml.v3"
 )
 
 const panelApplyActor = "compound-panel"
@@ -55,7 +58,7 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 			return run, err
 		}
 		if allSkipped {
-			skippedRun.CountsAfter, err = countMemoryCandidateStates(memStore)
+			skippedRun.CountsAfter, err = countPanelTargetStates(homePath, run.TargetKind, memStore)
 			if err != nil {
 				return run, err
 			}
@@ -104,7 +107,7 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 		closeState.add(result)
 	}
 
-	countsAfter, err := countMemoryCandidateStates(memStore)
+	countsAfter, err := countPanelTargetStates(homePath, run.TargetKind, memStore)
 	if err != nil {
 		return run, err
 	}
@@ -195,6 +198,10 @@ func applyTargetFinding(homePath string, run Run, finding *TargetFinding, memSto
 		return result, nil
 	}
 
+	if run.TargetKind != "memory_candidate" {
+		return applyNonMemoryTargetFinding(homePath, run, finding, writebackStore, workStore, cfg, now)
+	}
+
 	cand, err := readMemoryCandidate(homePath, finding.TargetRef)
 	if err != nil {
 		return result, err
@@ -258,6 +265,160 @@ func applyTargetFinding(homePath string, run Run, finding *TargetFinding, memSto
 	}
 	finding.Application = app
 	return result, nil
+}
+
+func applyNonMemoryTargetFinding(homePath string, run Run, finding *TargetFinding, writebackStore *writeback.Store, workStore *work.Store, cfg policy.Config, now func() time.Time) (applyTargetResult, error) {
+	result := applyTargetResult{candidateID: finding.TargetRef}
+	app := finding.Application
+	target, err := LoadTargetInput(homePath, run.TargetKind, finding.TargetRef)
+	if err != nil {
+		return result, err
+	}
+	createdAt := now().UTC()
+	evidenceRefs := panelDecisionEvidenceRefs(run.ID, finding.VerdictArtifact)
+	ai := panelAdjudicateTargetAction(run.WorkID, run.ID, target, finding.Synthesis.Decision, panelTargetPath(homePath, run.TargetKind, finding.TargetRef), evidenceRefs, createdAt)
+	pd := policy.Evaluate(ai, cfg, createdAt)
+	app.ActionIntentRef = ai.ID
+	app.PolicyDecisionRef = pd.ID
+	app.MappedVerdict = normalizePanelPosition(finding.Synthesis.Decision)
+	if !policy.Allowed(pd) {
+		app.Applied = false
+		app.Note = "policy " + pd.Outcome + ": " + strings.Join(pd.Reasons, "; ")
+		finding.Application = app
+		return result, nil
+	}
+	if _, err := workStore.RecordAction(run.WorkID, ai, pd, createdAt); err != nil {
+		return result, err
+	}
+
+	switch run.TargetKind {
+	case "skill_candidate":
+		mapped, applied, note, candidateRef, changed, err := applySkillCandidateVerdict(homePath, run, finding, now)
+		if err != nil {
+			return result, err
+		}
+		app.MappedVerdict = mapped
+		app.Applied = applied
+		app.Note = note
+		app.CandidateRef = candidateRef
+		result.candidateID = firstNonEmptyString(candidateRef, finding.TargetRef)
+		result.changed = changed
+	case "capability_observation":
+		mapped, applied, note, noPromoteRef, changed, err := applyCapabilityObservationVerdict(homePath, run, finding, writebackStore, now)
+		if err != nil {
+			return result, err
+		}
+		app.MappedVerdict = mapped
+		app.Applied = applied
+		app.Note = note
+		app.CandidateRef = finding.TargetRef
+		app.NoPromoteRef = noPromoteRef
+		result.changed = changed
+	case "memory_candidate":
+		return result, fmt.Errorf("memory_candidate reached non-memory apply path")
+	default:
+		return result, fmt.Errorf("unsupported target kind %q", run.TargetKind)
+	}
+	finding.Application = app
+	return result, nil
+}
+
+func applySkillCandidateVerdict(homePath string, run Run, finding *TargetFinding, now func() time.Time) (mapped string, applied bool, note string, candidateRef string, changed bool, err error) {
+	reviewPath := panelTargetPath(homePath, "skill_candidate", finding.TargetRef)
+	review, err := capgraph.LoadSkillCandidateReview(reviewPath)
+	if err != nil {
+		return "", false, "", "", false, err
+	}
+	candidateRef = review.CandidateID
+	mapped = mapSkillCandidateDecision(finding.Synthesis.Decision)
+	switch mapped {
+	case "needs_human", "needs_trial":
+		return mapped, false, "no mutation; verdict remains in review queue", candidateRef, false, nil
+	}
+	decision := capgraph.SkillCandidateDecision{
+		SchemaVersion:    capgraph.SkillCandidateDecisionSchemaVersion,
+		ID:               "decision_" + review.ID,
+		ReviewID:         review.ID,
+		Decision:         mapped,
+		Rationale:        finding.Synthesis.Rationale,
+		Confidence:       finding.Synthesis.Confidence,
+		CandidateVerdict: candidates.Park,
+		EvidenceRefs:     panelDecisionEvidenceRefs(run.ID, finding.VerdictArtifact),
+		ReviewedAt:       reviewartifact.Timestamp(now().UTC()),
+	}
+	data, err := yaml.Marshal(decision)
+	if err != nil {
+		return mapped, false, "", candidateRef, false, err
+	}
+	yamlPath, err := reviewartifact.WriteRaw(homePath, "skill-candidates", finding.TargetRef+".review.yaml", data)
+	if err != nil {
+		return mapped, false, "", candidateRef, false, err
+	}
+	report, err := capgraph.RecordSkillCandidateDecision(homePath, decision, yamlPath, now().UTC())
+	if err != nil {
+		return mapped, false, "record skill candidate decision failed: " + err.Error(), candidateRef, false, nil
+	}
+	if report.CandidateID != "" {
+		candidateRef = report.CandidateID
+	}
+	return mapped, true, "skill candidate decision recorded: " + report.ID, candidateRef, true, nil
+}
+
+func applyCapabilityObservationVerdict(homePath string, run Run, finding *TargetFinding, writebackStore *writeback.Store, now func() time.Time) (mapped string, applied bool, note string, noPromoteRef string, changed bool, err error) {
+	var obs capabilityObservationTarget
+	if err := candidates.ReadCandidate(homePath, candidates.CapabilityObs, finding.TargetRef, &obs); err != nil {
+		return "", false, "", "", false, err
+	}
+	mapped = normalizePanelPosition(finding.Synthesis.Decision)
+	switch mapped {
+	case "promote":
+		obs.Verdict = candidates.Operationalize
+		if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, finding.TargetRef, obs); err != nil {
+			return mapped, false, "", "", false, err
+		}
+		store, err := capgraph.Open(homePath)
+		if err != nil {
+			return mapped, false, "", "", false, err
+		}
+		appliedEdges, err := store.Consume(homePath, now().UTC())
+		if err != nil {
+			return mapped, false, "", "", false, err
+		}
+		return mapped, true, fmt.Sprintf("capability observation operationalized; consumed=%d", appliedEdges), "", true, nil
+	case "park", "reject", "merge_existing":
+		obs.Verdict = candidates.Park
+		if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, finding.TargetRef, obs); err != nil {
+			return mapped, false, "", "", false, err
+		}
+		recorded, _, err := writebackStore.RecordNoPromote(writeback.NoPromoteDecision{CandidateRef: finding.TargetRef, CandidateKind: string(candidates.CapabilityObs), Basis: "panel_verdict_park", EvidenceRefs: panelDecisionEvidenceRefs(run.ID, finding.VerdictArtifact)}, now().UTC())
+		if err != nil {
+			return mapped, false, "", "", false, err
+		}
+		return mapped, true, "capability observation parked; no-promote recorded", recorded.ID, true, nil
+	case "needs_human", "needs_trial":
+		return mapped, false, "no mutation; verdict remains in review queue", "", false, nil
+	default:
+		return mapped, false, "", "", false, fmt.Errorf("unsupported panel synthesis decision %q", finding.Synthesis.Decision)
+	}
+}
+
+func mapSkillCandidateDecision(decision string) string {
+	switch normalizePanelPosition(decision) {
+	case "promote":
+		return "create_candidate"
+	case "merge_existing":
+		return "merge_existing"
+	case "reject":
+		return "reject"
+	case "park":
+		return "keep_needs_review"
+	case "needs_human":
+		return "needs_human"
+	case "needs_trial":
+		return "needs_trial"
+	default:
+		return normalizePanelPosition(decision)
+	}
 }
 
 func applyMemoryCandidateVerdict(run Run, finding *TargetFinding, cand mem.Candidate, memStore *mem.Store, writebackStore *writeback.Store, now func() time.Time) (string, bool, string, mem.AdjudicateResult, error) {
@@ -366,6 +527,35 @@ func candidateRecordPath(homePath, id string) string {
 	return filepath.Join(homePath, candidates.InboxDir(candidates.Memory), id+".json")
 }
 
+func countPanelTargetStates(homePath, targetKind string, memStore *mem.Store) (map[string]int, error) {
+	switch targetKind {
+	case "memory_candidate":
+		return countMemoryCandidateStates(memStore)
+	case "skill_candidate":
+		inputs, err := LoadSkillCandidateTargets(homePath, 0)
+		if err != nil {
+			return nil, err
+		}
+		return countTargetInputStates(inputs), nil
+	case "capability_observation":
+		inputs, err := LoadCapabilityObservationTargets(homePath, 0)
+		if err != nil {
+			return nil, err
+		}
+		return countTargetInputStates(inputs), nil
+	default:
+		return nil, fmt.Errorf("unsupported target kind %q", targetKind)
+	}
+}
+
+func countTargetInputStates(inputs []TargetInput) map[string]int {
+	counts := map[string]int{}
+	for _, input := range inputs {
+		counts[targetState(input.Payload)]++
+	}
+	return counts
+}
+
 func countMemoryCandidateStates(store *mem.Store) (map[string]int, error) {
 	cands, err := store.AllCandidates()
 	if err != nil {
@@ -388,6 +578,53 @@ func terminalCandidateState(state string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func panelDecisionEvidenceRefs(runID, verdictArtifact string) []string {
+	refs := []string{"panel_run:" + runID}
+	if strings.TrimSpace(verdictArtifact) != "" {
+		refs = append(refs, "panel_verdict:"+verdictArtifact)
+	}
+	return reviewartifact.Unique(refs)
+}
+
+func panelTargetPath(homePath, targetKind, ref string) string {
+	switch targetKind {
+	case "memory_candidate":
+		return candidateRecordPath(homePath, ref)
+	case "skill_candidate":
+		return filepath.Join(homePath, "reviews", "skill-candidates", ref+".json")
+	case "capability_observation":
+		return filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs), ref+".json")
+	default:
+		return ""
+	}
+}
+
+func panelAdjudicateTargetAction(workID, runID string, target TargetInput, verdict, targetPath string, evidenceRefs []string, now time.Time) envelope.ActionIntent {
+	return envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent,
+			ID:            reviewartifact.ID("act_", workID, runID, target.Kind, target.Ref, verdict, now.Format(time.RFC3339Nano)),
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "package", Name: "compound/internal/panel"},
+			IDs:           envelope.IDs{WorkID: workID, RunID: runID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Owner: "compound panel", Status: "current"},
+			EvidenceRefs:  evidenceRefs,
+			Privacy:       "public",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Actor:         panelApplyActor,
+		Capability:    "panel.adjudicate",
+		Action:        "adjudicate_" + target.Kind,
+		Target:        envelope.ActionTarget{Kind: target.Kind, ID: target.Ref, Path: targetPath},
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		Preview:       fmt.Sprintf("map panel verdict %q %s %s", verdict, target.Kind, target.Ref),
+		RollbackPlan:  "restore target JSON/YAML sidecar and remove appended ledger/event rows for this work_id before depending on them",
 	}
 }
 
@@ -438,7 +675,30 @@ func mergeTargetClaimRef(s Synthesis) string {
 	return ""
 }
 
+func markAllSkippableNonMemoryApplications(run Run) Run {
+	for i := range run.Findings {
+		finding := &run.Findings[i]
+		app := finding.Application
+		mapped := normalizePanelPosition(finding.Synthesis.Decision)
+		if run.TargetKind == "skill_candidate" {
+			mapped = mapSkillCandidateDecision(finding.Synthesis.Decision)
+		}
+		app.MappedVerdict = mapped
+		switch {
+		case app.Applied:
+			app.Note = "already applied; skipped"
+		case mapped == "needs_human" || mapped == "needs_trial":
+			app.Note = "no mutation; verdict remains in review queue"
+		}
+		finding.Application = app
+	}
+	return run
+}
+
 func markAllSkippableApplications(homePath string, run Run) (Run, bool, error) {
+	if run.TargetKind != "memory_candidate" {
+		return markAllSkippableNonMemoryApplications(run), len(run.Findings) > 0, nil
+	}
 	allSkipped := len(run.Findings) > 0
 	for i := range run.Findings {
 		finding := &run.Findings[i]

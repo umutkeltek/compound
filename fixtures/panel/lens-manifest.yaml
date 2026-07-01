@@ -44,6 +44,7 @@ lenses:
     name: Contradiction With Existing Memory
     triggers:
       - memory_candidate
+      - skill_candidate
     weight: 1.0
     prompt: |
       You are the contradiction-with-existing-memory lens for a Compound panel run.

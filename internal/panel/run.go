@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"compound/internal/candidates"
-	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 )
@@ -289,18 +287,7 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 }
 
 func loadRunTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
-	if targetKind != "memory_candidate" {
-		return TargetInput{}, fmt.Errorf("unsupported target kind %q", targetKind)
-	}
-	raw, err := os.ReadFile(filepath.Join(homePath, candidates.InboxDir(candidates.Memory), ref+".json"))
-	if err != nil {
-		return TargetInput{}, err
-	}
-	var cand mem.Candidate
-	if err := json.Unmarshal(raw, &cand); err != nil {
-		return TargetInput{}, err
-	}
-	return TargetInput{Kind: "memory_candidate", Ref: cand.ID, Visibility: cand.Visibility, Summary: memoryCandidateSummary(cand), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
+	return LoadTargetInput(homePath, targetKind, ref)
 }
 
 func targetUserPrompt(target TargetInput) (string, error) {

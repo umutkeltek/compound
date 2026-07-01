@@ -52,8 +52,8 @@ func DecodeJudge(data []byte) (JudgeOutput, error) {
 }
 
 func Synthesize(outputs []LensOutput, judge JudgeOutput, g Guardrails) Synthesis {
-	g = g.withDefaults()
 	successful := successfulLensOutputsForSynthesis(outputs)
+	g = g.withDefaults(len(successful))
 	var guardrails []string
 	forcedPark := false
 	if len(successful) < g.MinLensFindings {
@@ -90,12 +90,12 @@ func Synthesize(outputs []LensOutput, judge JudgeOutput, g Guardrails) Synthesis
 	}
 }
 
-func (g Guardrails) withDefaults() Guardrails {
+func (g Guardrails) withDefaults(usableLensCount int) Guardrails {
 	if g.MinConfidence == 0 {
 		g.MinConfidence = 0.7
 	}
 	if g.MinLensFindings == 0 {
-		g.MinLensFindings = 3
+		g.MinLensFindings = minInt(3, usableLensCount)
 	}
 	if g.DisagreementSpread == 0 {
 		g.DisagreementSpread = 0.5
@@ -158,4 +158,11 @@ func dissentContradicting(finalDecision string, dissent []Dissent) []Dissent {
 
 func normalizePanelPosition(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

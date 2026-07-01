@@ -41,7 +41,11 @@ func TestSynthesizeGuardrails(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := Synthesize(tt.outputs, tt.judge, Guardrails{})
+			guardrails := Guardrails{}
+			if tt.name == "lens_quorum_not_met" {
+				guardrails.MinLensFindings = 3
+			}
+			got := Synthesize(tt.outputs, tt.judge, guardrails)
 			if got.SchemaVersion != SynthesisSchemaVersion {
 				t.Fatalf("schema version = %q", got.SchemaVersion)
 			}

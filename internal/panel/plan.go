@@ -23,6 +23,9 @@ type PlanInput struct {
 }
 
 func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, error) {
+	if nowFn == nil {
+		nowFn = time.Now
+	}
 	now := nowFn().UTC()
 	targetKind := strings.TrimSpace(in.TargetKind)
 	if targetKind == "" {
@@ -58,14 +61,23 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 	if supervised {
 		run.Supervision = "operator"
 	}
+
 	privacySensitive := in.PrivacySensitive
+	privacyReason := strings.TrimSpace(in.PrivacyOverrideReason)
 	if targetKind == "memory_candidate" && !in.PrivacySensitive {
-		if strings.TrimSpace(in.PrivacyOverrideReason) == "" {
+		if privacyReason == "" {
 			privacySensitive = true
 		} else {
-			run.EvidenceRefs = append(run.EvidenceRefs, "override:privacy_not_sensitive:"+strings.TrimSpace(in.PrivacyOverrideReason))
+			run.EvidenceRefs = append(run.EvidenceRefs, "override:privacy_not_sensitive:"+privacyReason)
+		}
+	} else if targetKind != "memory_candidate" && !in.PrivacySensitive {
+		if privacyReason != "" {
+			run.EvidenceRefs = append(run.EvidenceRefs, "override:privacy_not_sensitive:"+privacyReason)
+		} else {
+			run.EvidenceRefs = append(run.EvidenceRefs, "privacy_default:not_sensitive:"+targetKind)
 		}
 	}
+
 	lanes, err := SelectLanes(homePath, privacySensitive, supervised, now)
 	if err != nil {
 		var blocked ErrBlockedNoLane
@@ -75,13 +87,14 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 			run.StoppedReason = "blocked_no_lane:" + blocked.Class
 			store, openErr := Open(homePath)
 			if openErr != nil {
-				return run, openErr
+				return Run{}, openErr
 			}
 			if saveErr := store.SaveRun(run); saveErr != nil {
-				return run, saveErr
+				return Run{}, saveErr
 			}
+			return run, err
 		}
-		return run, err
+		return Run{}, err
 	}
 	run.Route = RoutePlan(lanes)
 	store, err := Open(homePath)
@@ -95,14 +108,12 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 }
 
 func resolvePlanTargets(homePath, targetKind string, refs, states []string, limit int) ([]Target, map[string]int, error) {
-	if targetKind != "memory_candidate" {
-		return nil, nil, fmt.Errorf("unsupported target kind %q", targetKind)
-	}
-	inputs, err := LoadMemoryCandidateTargets(homePath, states, 0)
+	inputs, err := loadPlanTargetInputs(homePath, targetKind, states)
 	if err != nil {
 		return nil, nil, err
 	}
 	wanted := stringSet(refs)
+	stateFilter := stringSet(states)
 	counts := map[string]int{}
 	targets := []Target{}
 	seen := map[string]bool{}
@@ -111,6 +122,9 @@ func resolvePlanTargets(homePath, targetKind string, refs, states []string, limi
 			continue
 		}
 		state := targetState(input.Payload)
+		if len(stateFilter) > 0 && !stateFilter[state] {
+			continue
+		}
 		counts[state]++
 		seen[input.Ref] = true
 		if limit > 0 && len(targets) >= limit {
@@ -120,24 +134,44 @@ func resolvePlanTargets(homePath, targetKind string, refs, states []string, limi
 	}
 	for ref := range wanted {
 		if !seen[ref] {
-			return nil, nil, fmt.Errorf("target %q not found for kind %s and states %s", ref, targetKind, strings.Join(cleanStrings(states), ","))
+			return nil, nil, fmt.Errorf("target %q not found kind %s states %s", ref, targetKind, strings.Join(cleanStrings(states), ","))
 		}
 	}
 	return targets, counts, nil
 }
 
+func loadPlanTargetInputs(homePath, targetKind string, states []string) ([]TargetInput, error) {
+	switch targetKind {
+	case "memory_candidate":
+		return LoadMemoryCandidateTargets(homePath, states, 0)
+	case "skill_candidate":
+		return LoadSkillCandidateTargets(homePath, 0)
+	case "capability_observation":
+		return LoadCapabilityObservationTargets(homePath, 0)
+	default:
+		return nil, fmt.Errorf("unsupported target kind %q", targetKind)
+	}
+}
+
 func targetState(payload json.RawMessage) string {
 	var obj struct {
-		State string `json:"state"`
+		Kind    string `json:"kind"`
+		State   string `json:"state"`
+		Status  string `json:"status"`
+		Verdict string `json:"verdict"`
 	}
 	if err := json.Unmarshal(payload, &obj); err != nil {
 		return "unknown"
 	}
-	state := strings.TrimSpace(obj.State)
-	if state == "" {
-		return "unknown"
+	for _, value := range []string{obj.State, obj.Status, obj.Verdict} {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
 	}
-	return state
+	if obj.Kind == "capability_observation" {
+		return "awaiting_verdict"
+	}
+	return "unknown"
 }
 
 func stringSet(values []string) map[string]bool {
