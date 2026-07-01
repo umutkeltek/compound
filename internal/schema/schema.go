@@ -17,6 +17,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
+	"compound/internal/panel"
 	"compound/internal/product"
 	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
@@ -44,6 +45,8 @@ func Contracts() []Contract {
 		{Name: "decision_lifecycle", Description: "decision lifecycle object", Type: reflect.TypeOf(decisions.Lifecycle{}), Validate: validateDecisionLifecycle},
 		{Name: "capability_node", Description: "CapabilityGraph node", Type: reflect.TypeOf(capgraph.Node{}), Validate: validateCapabilityNode},
 		{Name: "product_signal", Description: "product signal document", Type: reflect.TypeOf(product.SignalDocument{}), Validate: validateProductSignal},
+		{Name: "panel_run", Description: "perspective panel run record", Type: reflect.TypeOf(panel.Run{}), Validate: validatePanelRun},
+
 		{Name: "route_evidence", Description: "execution route evidence", Type: reflect.TypeOf(routeevidence.Evidence{}), Validate: validateRouteEvidence},
 	}
 	sort.Slice(contracts, func(i, j int) bool { return contracts[i].Name < contracts[j].Name })
@@ -256,6 +259,14 @@ func validateProductSignal(path string, _ []byte) error {
 		return fmt.Errorf("product signal doctor status=%s", report.Status)
 	}
 	return nil
+}
+
+func validatePanelRun(_ string, data []byte) error {
+	run, err := panel.Decode(data)
+	if err != nil {
+		return err
+	}
+	return run.Validate()
 }
 
 func validateRouteEvidence(_ string, data []byte) error {
