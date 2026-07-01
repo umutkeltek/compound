@@ -3810,6 +3810,36 @@ func TestCapabilityImportSurfacingMissesRecordsFeedbackAndSourceNoPromote(t *tes
 	}
 }
 
+func TestCapabilitySkillSourceDoctorReportsRawSkillSource(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "skills", "pricing")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: pricing
+description: "Pricing workflow"
+---
+# pricing
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"skill-source-doctor", root, "--json"})
+	})
+	for _, want := range []string{`"schema_version": "compound.skill_source_doctor.v0.1"`, `"status": "ok"`, `"skill_file_count": 1`, `"path": "skills/pricing/SKILL.md"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("skill-source-doctor output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestCapabilityEvaluationPlanUsesUnknownEvaluationWithoutMutatingGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

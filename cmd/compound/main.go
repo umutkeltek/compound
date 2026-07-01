@@ -232,7 +232,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|external-intake|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+  compound capability <add|surface|observe|consume|list|authority|external-intake|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -255,7 +255,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -299,6 +299,47 @@ func cmdCapability(args []string) {
 	}
 
 	switch sub {
+	case "skill-source-doctor":
+		jsonOut := hasFlag(rest, "--json")
+		p := posn(map[string]bool{})
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability skill-source-doctor <skill-root-or-SKILL.md> [--json]")
+			os.Exit(2)
+		}
+		report, err := capgraph.DoctorSkillSource(p[0])
+		die(err)
+		if jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", " ")
+			die(enc.Encode(report))
+			if report.Status != "ok" {
+				os.Exit(1)
+			}
+			return
+		}
+		fmt.Printf("# capability skill-source-doctor %s\n\n", report.Root)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- skill_files: %d\n", report.SkillFileCount)
+		fmt.Printf("- errors: %d\n", report.ErrorCount)
+		for _, check := range report.Checks {
+			fmt.Printf("- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		for _, file := range report.Files {
+			if file.Status == "ok" {
+				continue
+			}
+			fmt.Printf("- file: %s\n", file.Path)
+			for _, msg := range file.Errors {
+				fmt.Printf("  - %s\n", msg)
+			}
+		}
+		if report.Status != "ok" {
+			os.Exit(1)
+		}
 	case "import-topology":
 		now := time.Now()
 		osResolverPath := flag("--os-resolver-json")
@@ -852,7 +893,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 }

@@ -8,6 +8,29 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `steipete/agent-scripts` `scripts/validate-skills` is now adapted as
+  Compound's read-only raw skill-source doctor rather than vendored or enabled
+  as an external hook. `compound capability skill-source-doctor
+  <skill-root-or-SKILL.md> [--json]` validates raw `SKILL.md` source
+  frontmatter before manifest import: opening `---`, YAML mapping, non-empty
+  `name`/`description`, and duplicate skill names. Runtime evaluation
+  `capability_evaluations_22c9f81dd52e` imported
+  `eval:capability-evaluation-external-steipete-agent-scripts-validate-skills-doctor-20260701`
+  with `evaluated_by` and `validated_by` on `procedure:skill-ops`, plus source
+  observation `srcobs_8d50254051cc`, source candidate
+  `src_cand_9da28cd34a20`, and no-promote
+  `nop_5b255cd87251c327`. The internal tool manifest imported
+  `tool:compound.skill-source-doctor` with source authority
+  `capsrc_d0a01ae8bd93`; skill-source validation surfacing now ranks that tool
+  first with validation evidence. Dogfood caught one invalid generated
+  `stitch-design-taste` skill frontmatter description; after quoting it, the
+  OS, Codex, and Claude skill roots reported `62`, `57`, and `55` skill files
+  with `0` errors. Authority now reports `503` nodes / `112` edges:
+  `evaluated_by=10`, `validated_by=8`, `surfaces_with=49`. No upstream script
+  vendored, no hook enabled, no global AGENTS/CLAUDE pointer copied, no skill
+  served, no plugin/MCP/auth activated, no route-policy change, no memory
+  promotion.
+
 - `JuliusBrussee/caveman` now has token-economy compression reference
 evidence attached to existing `procedure:token-economy` as index-only
 material, rather than serving a global communication skill. The evaluation
@@ -565,7 +588,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 Decision source hardening: `compound decisions import --source <md>` / `--source-dir <dir> --source-kind note`, `--policy <DEC.md>`, and `--policy-dir <dir>` record markdown sources as evidence-backed `DecisionLifecycle`, preserve supersedes/replaced_by transitions for policy records, give each decision a stable entity, promote only accepted decisions with complete lifecycle proof, and park incomplete or non-accepted lifecycle records. `decisions authority ...` audits source-authority coverage from `registries/decision-source-authority.jsonl`; `decisions candidate-plan --candidate <id> [--target <file>]` turns parked distiller `decision` candidates into reviewed lifecycle drafts; `decisions source-doctor --template <md> [--format-doc <md>]` catches templates/docs that would regenerate lifecycle debt; `decisions repair-plan --policy-dir <dir>` / `--source-dir <dir>` emits reviewable owner-source repair artifacts under `COMPOUND_HOME`; and `decisions repair-apply --plan <json> --write-reviewed` applies those fields only when the plan status is reviewed. The legacy policy directory env var routes through the same adapter, not the candidate-only parser.
 
-Capability command status note: `compound capability skill-plan --candidate <id> [--target <file>]` is the reviewed candidate-to-node-draft path; `import-skills` remains the explicit graph import path.
+Capability command status note: `compound capability skill-source-doctor <skill-root-or-SKILL.md> [--json]` validates raw `SKILL.md` frontmatter/source trees read-only before manifest import; `compound capability skill-plan --candidate <id> [--target <file>]` is the reviewed candidate-to-node-draft path; `import-skills` remains the explicit graph import path.
 Capability evaluation status note: `compound capability import-evaluations <capability-evaluation.json|dir>` imports scored capability-evaluation records as graph evidence for already-known capabilities; eval nodes are evidence-only and never surface as agent offers. Unknown capabilities are reported as review debt (`status: review`, `skipped_unknown_count`) rather than installed or silently treated as fully applied. `compound capability evaluation-plan <capability-evaluation.json|dir> --capability <id-or-name> [--target file]` converts one unknown evaluated capability into reviewed artifacts plus a `needs_review` skill-manifest draft and gated review YAML; `compound capability evaluation-review <review.yaml>` emits a reviewed manifest only after an edited decision/rationale/confidence. Neither command installs active skills, retires existing skills, executes capabilities, mutates source owners, surfaces offers, or promotes claims.
 
 Product command status note: `compound product hypothesis-plan --candidate <id> [--target <file>]` is the reviewed candidate-to-product-experiment draft path; it also writes a gated `.signal.yaml` ProductSignal draft for the later evidence import step. `compound product doctor <product_id>` reports signal-backed `review_ready` pairs and prints the exact review-plan command; `compound product review-plan --hypothesis <id> --signal <id> [--target <file>]` bridges imported ProductSignal evidence into gated review artifacts; `product review` remains the only evidence result application path.
