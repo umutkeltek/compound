@@ -285,6 +285,7 @@ func TestQueueSummarizesReviewArtifacts(t *testing.T) {
 		"source_root":   "owner-root",
 		"repair_count":  2,
 		"evidence_refs": []string{"e2", "e1", "e1"},
+		"next_action":   "review owner repair",
 	}, " ", "# Review\n")
 	if err != nil {
 		t.Fatal(err)
@@ -330,6 +331,9 @@ func TestQueueSummarizesReviewArtifacts(t *testing.T) {
 	}
 	if report.Items[0].ID != "dlrp_a" || report.Items[0].Status != "review_required" {
 		t.Fatalf("review-required item should sort first: %+v", report.Items)
+	}
+	if report.Items[0].NextAction != "review owner repair" {
+		t.Fatalf("next_action not surfaced: %+v", report.Items[0])
 	}
 	if report.Items[0].MarkdownPath == "" || len(report.Items[0].ExtraPaths) != 2 {
 		t.Fatalf("expected markdown and draft sibling: %+v", report.Items[0])

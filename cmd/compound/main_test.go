@@ -683,6 +683,19 @@ func TestAuthorityJobRosterImportsAndReportsAuthority(t *testing.T) {
 			t.Fatalf("job roster authority output missing %q:\n%s", want, authorityOut)
 		}
 	}
+	healthOut := captureStdout(t, func() {
+		cmdAuthority([]string{"job-health-plan"})
+	})
+	for _, want := range []string{
+		`"schema_version": "compound.job_health_plan_report.v0.1"`,
+		`"plan_count": 1`,
+		`"job_name": "ibkr-exit-check-daily"`,
+		`"PlanPath":`,
+	} {
+		if !strings.Contains(healthOut, want) {
+			t.Fatalf("job health plan output missing %q:\n%s", want, healthOut)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("job roster command must not promote claims, stat err=%v", err)
 	}
