@@ -42,6 +42,10 @@ evidence/rollback inputs after import.
 `compound policy import-operator-prompts <operator-decision-prompts.json>` imports operator prompt-card registries
 into `compound://registries/operator-decision-prompts`; `compound policy operator-prompts-authority [--json]`
 is the read-only machine handoff for served prompt cards.
+`compound policy import-operator-approval-frontier <operator-approval-frontier-summary.json>` imports approval-frontier
+run summaries into `compound://registries/operator-approval-frontier`; `compound policy
+operator-approval-frontier-authority [--json]` is the read-only machine handoff for served approval-frontier phrase
+lists and does not consume approvals or execute gated work.
 
 | Contract | Purpose | Lifecycle |
 |---|---|---|

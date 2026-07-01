@@ -1107,6 +1107,47 @@ func TestPolicyOperatorPromptsAuthorityReportsPromptCards(t *testing.T) {
 	}
 }
 
+func TestPolicyOperatorApprovalFrontierAuthorityReportsDeferredFamilies(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	source := filepath.Join("..", "..", "fixtures", "policy", "operator-approval-frontier-summary.json")
+	importOut := captureStdout(t, func() {
+		cmdPolicy([]string{"import-operator-approval-frontier", source})
+	})
+	for _, want := range []string{
+		`"authority_ref": "compound://registries/operator-approval-frontier"`,
+		`"family_count": 2`,
+		`"deferred_count": 2`,
+		`"authority_status": "compound_primary"`,
+	} {
+		if !strings.Contains(importOut, want) {
+			t.Fatalf("import operator approval frontier output missing %q:\n%s", want, importOut)
+		}
+	}
+
+	authorityOut := captureStdout(t, func() {
+		cmdPolicy([]string{"operator-approval-frontier-authority"})
+	})
+	authorityJSONOut := captureStdout(t, func() {
+		cmdPolicy([]string{"operator-approval-frontier-authority", "--json"})
+	})
+	for _, want := range []string{
+		`"installed": true`,
+		`"family_count": 2`,
+		`"deferred_count": 2`,
+		`"source_role": "evidence_only_input_after_import"`,
+		`"id": "operator-decision-prompt-cards"`,
+	} {
+		if !strings.Contains(authorityOut, want) {
+			t.Fatalf("operator approval frontier authority output missing %q:\n%s", want, authorityOut)
+		}
+		if !strings.Contains(authorityJSONOut, want) {
+			t.Fatalf("operator approval frontier authority --json output missing %q:\n%s", want, authorityJSONOut)
+		}
+	}
+}
+
 func TestImportedSkillOfferCanBecomeValidatedSessionEndFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
