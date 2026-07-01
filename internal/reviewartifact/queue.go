@@ -132,6 +132,20 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 	sort.Slice(report.Items, func(i, j int) bool {
 		return queueItemLess(report.Items[i], report.Items[j])
 	})
+	Recount(&report)
+	return report, nil
+}
+
+// Recount refreshes queue counters after domain annotators adjust item status or
+// readiness. The queue is read-only; this mutates only the projection.
+func Recount(report *QueueReport) {
+	if report == nil {
+		return
+	}
+	report.Counts = QueueCounts{
+		ByArea:   map[string]int{},
+		ByStatus: map[string]int{},
+	}
 	for _, item := range report.Items {
 		report.Counts.Total++
 		report.Counts.ByArea[item.Area]++
@@ -146,7 +160,6 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 			report.Counts.ReviewRequired++
 		}
 	}
-	return report, nil
 }
 
 func queueItem(root, path string) (QueueItem, error) {

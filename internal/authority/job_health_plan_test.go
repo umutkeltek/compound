@@ -151,6 +151,61 @@ func TestJobHealthReviewQueueAndRecordSidecar(t *testing.T) {
 	}
 }
 
+func TestJobHealthQueueDemotesSupersededRosterErrors(t *testing.T) {
+	home := t.TempDir()
+	sourceDir := t.TempDir()
+	source := filepath.Join(sourceDir, "cron-jobs.json")
+	writeJobRosterTwoErrorFixture(t, source)
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	if _, err := ImportJobRoster(home, source, now); err != nil {
+		t.Fatal(err)
+	}
+	roster, err := LoadJobRosterAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := RecordJobHealthPlans(home, roster, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PlanCount != 2 {
+		t.Fatalf("expected two job-health plans, got %+v", report)
+	}
+	planIDByName := map[string]string{}
+	for _, plan := range report.Plans {
+		planIDByName[plan.JobName] = plan.ID
+	}
+
+	current := filepath.Join(sourceDir, "cron-jobs-current.json")
+	writeJobRosterFixture(t, current)
+	if _, err := ImportJobRoster(home, current, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: jobHealthReviewArea}, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateJobHealthQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.Total != 2 || queue.Counts.ReviewRequired != 1 || queue.Counts.OK != 1 {
+		t.Fatalf("queue counts should reflect current roster authority: %+v", queue.Counts)
+	}
+	for _, item := range queue.Items {
+		switch item.ID {
+		case planIDByName["stale auth job"]:
+			if item.Status != "resolved" || item.Readiness != "no_action" || len(item.Actions) != 0 {
+				t.Fatalf("stale job should be terminal projection: %+v", item)
+			}
+		case planIDByName["ibkr-exit-check-daily"]:
+			if item.Status != "review_required" || item.Readiness != "needs_review" || !strings.Contains(item.BlockedReason, "decision") {
+				t.Fatalf("current failing job should still need review: %+v", item)
+			}
+		default:
+			t.Fatalf("unexpected queue item: %+v", item)
+		}
+	}
+}
+
 func TestJobHealthPlanNoopsWhenRosterHealthy(t *testing.T) {
 	home := t.TempDir()
 	roster := JobRosterAuthority{
@@ -171,5 +226,40 @@ func TestJobHealthPlanNoopsWhenRosterHealthy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "reviews", "job-health")); !os.IsNotExist(err) {
 		t.Fatalf("healthy roster should not create review dir, stat err=%v", err)
+	}
+}
+
+func writeJobRosterTwoErrorFixture(t *testing.T, path string) {
+	t.Helper()
+	data := `{
+  "version": 1,
+  "generated_at": "2026-07-01T11:00:00Z",
+  "jobs": [
+    {
+      "job_id": "d422776dde1c",
+      "name": "ibkr-exit-check-daily",
+      "enabled": true,
+      "state": "scheduled",
+      "schedule": "33 19 * * 1-5",
+      "script": "ibkr_exit_check_daily.sh",
+      "last_status": "error",
+      "last_error": "missing python venv",
+      "last_run_at": "2026-07-01T10:00:00Z"
+    },
+    {
+      "job_id": "stale-auth",
+      "name": "stale auth job",
+      "enabled": true,
+      "state": "scheduled",
+      "schedule": "every 6h",
+      "script": "auth_refresh.sh",
+      "last_status": "error",
+      "last_error": "old token consumed",
+      "last_run_at": "2026-06-30T10:00:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

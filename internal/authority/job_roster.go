@@ -144,23 +144,9 @@ func ImportJobRoster(homePath, sourcePath string, now time.Time) (JobRosterImpor
 		AuthorityRef:   JobRosterAuthorityRef,
 		SourcePath:     sourcePath,
 		SourceRevision: revision,
-		JobCount:       len(jobs),
 		Jobs:           jobs,
 	}
-	for _, job := range jobs {
-		if job.Enabled {
-			authority.EnabledCount++
-			if job.LastStatus == "error" {
-				authority.ErrorCount++
-				authority.RecentErrors = append(authority.RecentErrors, job)
-			}
-			if job.LastRunAt != "" {
-				if t, err := time.Parse(time.RFC3339, job.LastRunAt); err == nil && now.Sub(t) < 48*time.Hour {
-					authority.RecentRunCount++
-				}
-			}
-		}
-	}
+	normalizeJobRosterDerivedFields(&authority, &now)
 	authorityPath := JobRosterAuthorityPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(authorityPath), 0o755); err != nil {
 		return JobRosterImportReport{}, err
@@ -256,6 +242,7 @@ func ImportJobTokenGovernance(homePath, sourcePath string, now time.Time) (JobTo
 		}
 		return authority.Jobs[i].JobID < authority.Jobs[j].JobID
 	})
+	normalizeJobRosterDerivedFields(&authority, nil)
 	authorityPath := JobRosterAuthorityPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(authorityPath), 0o755); err != nil {
 		return JobTokenGovernanceImportReport{}, err
@@ -342,7 +329,33 @@ func mergeJobTokenUsage(authority *JobRosterAuthority, usageJobs []JobSummary) {
 		}
 		byKey["name:"+usage.Name] = idx
 	}
+}
+
+func normalizeJobRosterDerivedFields(authority *JobRosterAuthority, now *time.Time) {
+	if authority == nil {
+		return
+	}
 	authority.JobCount = len(authority.Jobs)
+	authority.EnabledCount = 0
+	authority.ErrorCount = 0
+	authority.RecentErrors = nil
+	if now != nil {
+		authority.RecentRunCount = 0
+	}
+	for _, job := range authority.Jobs {
+		if job.Enabled {
+			authority.EnabledCount++
+			if now != nil && job.LastRunAt != "" {
+				if t, err := time.Parse(time.RFC3339, job.LastRunAt); err == nil && now.Sub(t) < 48*time.Hour {
+					authority.RecentRunCount++
+				}
+			}
+		}
+		if job.LastStatus == "error" {
+			authority.ErrorCount++
+			authority.RecentErrors = append(authority.RecentErrors, job)
+		}
+	}
 }
 
 func mergeJobTokenFields(dst *JobSummary, src JobSummary) {
@@ -361,6 +374,7 @@ func LoadJobRosterAuthority(homePath string) (JobRosterAuthority, error) {
 	if err := json.Unmarshal(data, &authority); err != nil {
 		return JobRosterAuthority{}, err
 	}
+	normalizeJobRosterDerivedFields(&authority, nil)
 	return authority, nil
 }
 

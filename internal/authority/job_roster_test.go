@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -59,6 +60,38 @@ func TestImportJobRosterWritesAuthorityAndSourceRecord(t *testing.T) {
 	}
 }
 
+func TestLoadJobRosterAuthorityNormalizesStoredDerivedFields(t *testing.T) {
+	home := t.TempDir()
+	writeJobRosterAuthorityFixture(t, home, JobRosterAuthority{
+		SchemaVersion:  JobRosterAuthoritySchema,
+		AuthorityRef:   JobRosterAuthorityRef,
+		SourcePath:     "jobs.json",
+		SourceRevision: "sha256:stale",
+		JobCount:       1,
+		EnabledCount:   1,
+		ErrorCount:     1,
+		RecentErrors: []JobSummary{
+			{JobID: "enabled-error", Name: "enabled failing", Enabled: true, LastStatus: "error"},
+		},
+		Jobs: []JobSummary{
+			{JobID: "disabled-error", Name: "disabled failing", Enabled: false, LastStatus: "error"},
+			{JobID: "enabled-error", Name: "enabled failing", Enabled: true, LastStatus: "error"},
+			{JobID: "ok", Name: "healthy", Enabled: true, LastStatus: "ok"},
+		},
+	})
+
+	authority, err := LoadJobRosterAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.JobCount != 3 || authority.EnabledCount != 2 || authority.ErrorCount != 2 {
+		t.Fatalf("derived counters should reflect jobs, got %+v", authority)
+	}
+	if len(authority.RecentErrors) != 2 || authority.RecentErrors[0].Name != "disabled failing" || authority.RecentErrors[1].Name != "enabled failing" {
+		t.Fatalf("recent errors should be rebuilt from current jobs: %+v", authority.RecentErrors)
+	}
+}
+
 func TestImportJobTokenGovernanceOverlaysRosterAuthority(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join(t.TempDir(), "cron-jobs.json")
@@ -69,6 +102,13 @@ func TestImportJobTokenGovernanceOverlaysRosterAuthority(t *testing.T) {
 	if _, err := ImportJobRoster(home, source, now); err != nil {
 		t.Fatal(err)
 	}
+	stale, err := LoadJobRosterAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.ErrorCount = 0
+	stale.RecentErrors = nil
+	writeJobRosterAuthorityFixture(t, home, stale)
 
 	report, err := ImportJobTokenGovernance(home, usage, now.Add(time.Minute))
 	if err != nil {
@@ -87,6 +127,10 @@ func TestImportJobTokenGovernanceOverlaysRosterAuthority(t *testing.T) {
 	if authority.TokenMetric != "all_tokens" || authority.TokenSessionsCount != 12 || authority.HighTokenEnabledCount != 1 {
 		t.Fatalf("authority token fields = %+v", authority)
 	}
+	stored := readRawJobRosterAuthority(t, home)
+	if stored.ErrorCount != 1 || len(stored.RecentErrors) != 1 || stored.RecentErrors[0].Name != "ibkr-exit-check-daily" {
+		t.Fatalf("stored authority counters should be normalized after token overlay: %+v", stored)
+	}
 	var digest JobSummary
 	for _, job := range authority.Jobs {
 		if job.JobID == "digest" {
@@ -103,6 +147,34 @@ func TestImportJobTokenGovernanceOverlaysRosterAuthority(t *testing.T) {
 	if len(records) != 2 || records[1].ImportedVia != jobTokenImportedVia || records[1].HighTokenEnabledCount != 1 {
 		t.Fatalf("source authority records = %+v", records)
 	}
+}
+
+func writeJobRosterAuthorityFixture(t *testing.T, home string, authority JobRosterAuthority) {
+	t.Helper()
+	path := JobRosterAuthorityPath(home)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.MarshalIndent(authority, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readRawJobRosterAuthority(t *testing.T, home string) JobRosterAuthority {
+	t.Helper()
+	data, err := os.ReadFile(JobRosterAuthorityPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var authority JobRosterAuthority
+	if err := json.Unmarshal(data, &authority); err != nil {
+		t.Fatal(err)
+	}
+	return authority
 }
 
 func writeJobRosterFixture(t *testing.T, path string) {

@@ -228,6 +228,14 @@ func annotateJobHealthItem(item *reviewartifact.QueueItem) {
 		}
 		return
 	}
+	if jobHealthPlanSupersededByCurrentRoster(*item) {
+		item.Status = "resolved"
+		item.Readiness = "no_action"
+		item.BlockedReason = ""
+		item.NextAction = "job-health artifact superseded by current compound://registries/job-roster; rerun job-health-plan only if the failure returns"
+		item.Actions = nil
+		return
+	}
 	reviewYAML := jobHealthReviewYAMLPath(*item)
 	if reviewYAML == "" {
 		item.Readiness = "blocked"
@@ -258,6 +266,49 @@ func annotateJobHealthItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed job-health disposition"
+}
+
+func jobHealthPlanSupersededByCurrentRoster(item reviewartifact.QueueItem) bool {
+	if item.JSONPath == "" || item.SourceKind != "job_roster_error" {
+		return false
+	}
+	plan, err := loadJobHealthPlanFile(item.JSONPath)
+	if err != nil {
+		return false
+	}
+	if plan.SourceKind != "job_roster_error" || (strings.TrimSpace(plan.JobID) == "" && strings.TrimSpace(plan.JobName) == "") {
+		return false
+	}
+	homePath := filepath.Clean(filepath.Join(filepath.Dir(item.JSONPath), "..", ".."))
+	roster, err := LoadJobRosterAuthority(homePath)
+	if err != nil {
+		return false
+	}
+	return !jobHealthRosterHasCurrentError(roster, plan)
+}
+
+func loadJobHealthPlanFile(path string) (JobHealthPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return JobHealthPlan{}, err
+	}
+	var plan JobHealthPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return JobHealthPlan{}, err
+	}
+	return plan, nil
+}
+
+func jobHealthRosterHasCurrentError(roster JobRosterAuthority, plan JobHealthPlan) bool {
+	for _, job := range jobHealthErrorJobs(roster) {
+		if strings.TrimSpace(plan.JobID) != "" && plan.JobID == job.JobID {
+			return true
+		}
+		if strings.TrimSpace(plan.JobName) != "" && plan.JobName == job.Name {
+			return true
+		}
+	}
+	return false
 }
 
 func jobHealthReviewYAMLPath(item reviewartifact.QueueItem) string {
