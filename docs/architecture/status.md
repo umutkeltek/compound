@@ -8,7 +8,7 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
-- `os status --json` now consumes the same Compound workbench served in `/operate`. The status snapshot records total/open/terminal/needs-claim/needs-review/in-progress/proof-gap counts plus recent work ids/receipt/transition refs, omitting predicates and bodies. Live proof currently reports 11 terminal work items, 0 open, 0 missing receipts/transitions, and 1 workbench integrity note.
+- `os status --json` now consumes the same Compound workbench served in `/operate`. The status snapshot records total/open/terminal/needs-claim/needs-review/in-progress/proof-gap counts plus recent work ids/receipt/transition refs, omitting predicates and bodies. Live proof currently reports 11 terminal work items, 0 open, 0 missing receipts/transitions, and 0 workbench integrity notes after `work_169f6fbb06ed` was append-only reclosed through valid receipt `rec_4d5991cc0406` and transition `tr_4d5991cc0406`.
 
 - `os status --json` now consumes the Compound owner-review queue from `COMPOUND_HOME/reviews`, matching the queue already served in `/operate`. The status snapshot records total/review-required/ready-to-apply/ok counts, by-area/by-status summaries, and recent item ids/readiness without including apply commands or artifact bodies; current live proof reports 4 total, 3 `needs_review`, 0 `ready_to_apply`.
 
