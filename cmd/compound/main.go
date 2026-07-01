@@ -202,7 +202,7 @@ usage:
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
-  compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
+  compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
@@ -3454,9 +3454,11 @@ func cmdReviewsRecordFinding(args []string) {
 	evidenceRefs := valuesFlag(args, "--evidence-ref")
 	sourceArtifactPaths := valuesFlag(args, "--source-artifact")
 	sourceTraceIDs := valuesFlag(args, "--source-trace")
-	usage := "usage: compound reviews record-finding --work-id W --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]"
+	autoWork := hasFlag(args, "--auto-work")
+	usage := "usage: compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--auto-work":
 		case "--work-id", "--target", "--summary", "--root", "--capability", "--source-artifact", "--source-trace", "--evidence-ref":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, usage)
@@ -3468,8 +3470,16 @@ func cmdReviewsRecordFinding(args []string) {
 			os.Exit(2)
 		}
 	}
-	if workID == "" || targetPath == "" || summary == "" {
+	if (workID == "" && !autoWork) || targetPath == "" || summary == "" {
 		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if workID != "" && autoWork {
+		fmt.Fprintln(os.Stderr, "error: --work-id and --auto-work are mutually exclusive")
+		os.Exit(2)
+	}
+	if autoWork && len(sourceArtifactPaths) == 0 && len(sourceTraceIDs) == 0 {
+		fmt.Fprintln(os.Stderr, "error: --auto-work requires --source-artifact or --source-trace")
 		os.Exit(2)
 	}
 	if capability != "review.finding" && capability != "review.summary" {
@@ -3529,19 +3539,35 @@ func cmdReviewsRecordFinding(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	w, err := store.Get(workID)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
-	if w.State == "completed" || w.State == "failed" || w.State == "cancelled" {
-		fmt.Fprintf(os.Stderr, "error: work %s is %s (terminal); cannot record review finding\n", workID, w.State)
-		os.Exit(1)
-	}
 	now := time.Now()
 	createdAt := reviewartifact.Timestamp(now)
 	evidenceRefs = append(evidenceRefs, sourceEvidenceRefs...)
 	evidenceRefs = append(evidenceRefs, traceEvidenceRefs...)
+	if autoWork {
+		created, err := store.Create(work.CreateInput{
+			Owner:            "compound reviews",
+			SuccessPredicate: "governed review finding recorded at " + target,
+			DesiredOutcome:   strings.TrimSpace(summary),
+			EvidenceRefs:     reviewartifact.Unique(append(append([]string{}, evidenceRefs...), target)),
+			Risk:             "tier1",
+			Privacy:          "private",
+		}, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		workID = created.ID
+	} else {
+		w, err := store.Get(workID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if w.State == "completed" || w.State == "failed" || w.State == "cancelled" {
+			fmt.Fprintf(os.Stderr, "error: work %s is %s (terminal); cannot record review finding\n", workID, w.State)
+			os.Exit(1)
+		}
+	}
 	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, "work://"+workID, target))
 	actionID := reviewartifact.ID("act_", workID, capability, target, summary, createdAt)
 	ai := envelope.ActionIntent{
@@ -3619,6 +3645,30 @@ func cmdReviewsRecordFinding(args []string) {
 		_ = os.Remove(markdownPath)
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+	if autoWork {
+		if _, err := store.Claim(workID, "compound reviews", now); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if _, err := store.Advance(workID, work.AdvanceInput{To: "running", Note: "review finding recorded"}, now); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if _, err := store.Advance(workID, work.AdvanceInput{To: "verifying", VerificationID: target, Note: "review finding artifact written"}, now); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if _, err := store.Close(workID, work.CloseInput{
+			Outcome:   "completed",
+			MoveType:  "control_plane_repair",
+			Summary:   "Review finding recorded through StandingGrant",
+			Changed:   true,
+			ProofRefs: []string{target},
+		}, now); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	}
 	printJSON(report)
 }

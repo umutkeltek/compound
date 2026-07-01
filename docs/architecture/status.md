@@ -24,7 +24,10 @@ This file is the current package/command map. `compound architecture doctor --st
   `rec_622763961cee` / `tr_622763961cee`. Trace-source proof added `--source-trace <trace_id>`;
   live `rvf_cf3d919733fe` attached an existing TraceEnvelope, persisted `act_865c32f62362` /
   `pol_25ebf9717ebf`, and closed `work_e873347fd7ef` through `rec_9756fa9ed3ed` /
-  `tr_9756fa9ed3ed`. No claims were promoted and no live job-health review was recorded.
+  `tr_9756fa9ed3ed`. Producer-facing proof added `--auto-work`, so a trace-backed finding can
+  create, record, verify, and close its own WorkEnvelope; live `rvf_550d25ff32d8` closed
+  `work_721f7fee1351` through `tr_4def6ba1ec8f`, and workbench stayed `open=0`. No claims were
+  promoted and no live job-health review was recorded.
 
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority

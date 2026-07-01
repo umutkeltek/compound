@@ -661,6 +661,97 @@ grants:
 	}
 }
 
+func TestReviewsRecordFindingAutoWorkClosesWorkEnvelope(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
+	if err := os.WriteFile(grantSource, []byte(`
+generated_at: "2026-07-01T12:00:00Z"
+grants:
+  - grant_id: grant_review_finding
+    capabilities:
+      - review.finding
+    target_scope: state/runs/*
+    reversibility_ceiling: reversible
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSource, cliTestNow); err != nil {
+		t.Fatalf("import standing grants: %v", err)
+	}
+	sourceTrace := envelope.TraceEnvelope{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTraceEnvelope,
+			ID:            "trace_auto_review_finding_source",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound-test"},
+			IDs:           envelope.IDs{},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{"test://auto-trace-source"},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Source:        envelope.TraceSource{System: "test-runner", SourceKind: "session.summary"},
+		MutationClass: "read",
+		Summary:       "auto-work trace source for review finding",
+	}
+	traceData, err := json.MarshalIndent(sourceTrace, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(homePath, "events", sourceTrace.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tracePath, append(traceData, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runRoot := t.TempDir()
+	target := "state/runs/auto-review/finding.json"
+	out := captureStdout(t, func() {
+		cmdReviews([]string{
+			"record-finding",
+			"--auto-work",
+			"--target", target,
+			"--root", runRoot,
+			"--summary", "auto-work review finding recorded through standing grant",
+			"--source-trace", sourceTrace.ID,
+		})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("record finding output missing JSON:\n%s", out)
+	}
+	var report reviewFindingRecord
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse record finding report: %v\n%s", err, out)
+	}
+	if report.WorkID == "" || report.PolicyOutcome != "allow" || report.StandingGrantID == "" {
+		t.Fatalf("auto-work report did not consume grant: %+v", report)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	got, _, err := store.Show(report.WorkID)
+	if err != nil {
+		t.Fatalf("show auto work: %v", err)
+	}
+	if got.State != "completed" || got.IDs.TransitionID == "" || len(got.RunIDs) != 1 || got.RunIDs[0] != report.ActionIntentID {
+		t.Fatalf("auto work not closed through action chain: work=%+v report=%+v", got, report)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", got.IDs.TransitionID+".json")); err != nil {
+		t.Fatalf("transition envelope not persisted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runRoot, target)); err != nil {
+		t.Fatalf("finding json not written: %v", err)
+	}
+}
+
 func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
