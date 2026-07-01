@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `ComposioHQ/awesome-claude-skills` now has catalog/discovery evidence
+attached to existing `procedure:skill-ops` as index-only reference evidence,
+rather than ingesting child skills or connecting app-action plugins. The
+evaluation source compared public `README.md`, `connect-apps-plugin/README.md`,
+and `mcp-builder/SKILL.md` against the capability-intake owner, imported
+evidence-only: `capability_evaluations_da6f341b2294` -> eval node
+`eval:capability-evaluation-external-composiohq-awesome-claude-skills-catalog-20260701`
+with `evaluated_by:procedure:skill-ops->eval:...`. Verdict
+`downgrade_to_index` intentionally creates no `validated_by` edge. Unknown
+skipped count `0`. Authority now reports `499` nodes / `105` edges
+`evaluated_by=7`, `validated_by=6`; skill-catalog adoption surfacing keeps
+`procedure:skill-ops` first. No child-skill bulk import, no plugin install,
+no API-key/auth setup, no MCP adapter activation, no route-policy change,
+no memory promotion.
+
 - `DietrichGebert/ponytail` now has subtraction-pragmatism evidence merged
 into existing `skill:karpathy-guidelines` rather than installing another
 always-on doctrine plugin. The evaluation source compared public `README.md`,
