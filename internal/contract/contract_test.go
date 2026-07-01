@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -385,6 +386,65 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	}
 	if pack.SummaryMD == "" || !containsText(pack.SummaryMD, "capability offer(s) surfaced") {
 		t.Fatalf("summary should report surfaced offers, got %q", pack.SummaryMD)
+	}
+}
+
+func TestPackWithCapabilitiesBoundsCapabilityOffers(t *testing.T) {
+	home := t.TempDir()
+	total := maxContextCapabilityOffers + 3
+	skills := make([]capgraph.SkillManifestEntry, 0, total)
+	for i := 0; i < total; i++ {
+		skills = append(skills, capgraph.SkillManifestEntry{
+			ID:       fmt.Sprintf("skill:budget-%02d", i),
+			Name:     fmt.Sprintf("Budget %02d", i),
+			Status:   "active",
+			Triggers: []string{"budgeted"},
+			Weight:   float64(total - i),
+		})
+	}
+	manifest := capgraph.SkillManifest{
+		SchemaVersion: capgraph.SkillManifestSchemaVersion,
+		ID:            "skill_manifest_budget_fixture",
+		AdapterID:     "fixture.skill-manifest",
+		SourceSystem:  "fixture-os",
+		ObservedAt:    "2026-06-29T00:00:00Z",
+		SourceRef: capgraph.SkillSourceRef{
+			Path:        "fixtures/skills/budgeted-skill-manifest.yaml",
+			Kind:        "generated_view",
+			Owner:       "capability-fixture",
+			SourceClass: "generated",
+			Revision:    "rev_budget_fixture",
+		},
+		EvidenceRefs: []string{"artifact_sha256:skill-budget-fixture"},
+		Skills:       skills,
+	}
+	if _, err := capgraph.ApplySkillManifest(home, manifest, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	in := mkInput("product")
+	in.Harness = "codex"
+	in.Task = "budgeted capability review"
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(pack.CapabilityOffers); got != maxContextCapabilityOffers {
+		t.Fatalf("capability offers = %d, want %d", got, maxContextCapabilityOffers)
+	}
+	if got := countCapabilityIncluded(pack); got != maxContextCapabilityOffers {
+		t.Fatalf("capability included refs = %d, want %d", got, maxContextCapabilityOffers)
+	}
+	if findCapabilityOffer(pack, "capability://skill:budget-00") == nil || !hasIncluded(pack, "capability://skill:budget-00") {
+		t.Fatalf("highest-ranked offer should be retained; offers=%v included=%v", pack.CapabilityOffers, pack.Included)
+	}
+	if findCapabilityOffer(pack, "capability://skill:budget-14") != nil || hasIncluded(pack, "capability://skill:budget-14") {
+		t.Fatalf("lowest-ranked offer should be omitted from context budget; offers=%v included=%v", pack.CapabilityOffers, pack.Included)
+	}
+	if !containsText(pack.SummaryMD, "12 of 15 capability offer(s) surfaced") || !containsText(pack.SummaryMD, "3 omitted from context budget") {
+		t.Fatalf("summary should report context budget omission, got %q", pack.SummaryMD)
 	}
 }
 
@@ -829,6 +889,16 @@ func countIncluded(pack envelope.ContextPack, ref string) int {
 	n := 0
 	for _, inc := range pack.Included {
 		if inc.Ref == ref {
+			n++
+		}
+	}
+	return n
+}
+
+func countCapabilityIncluded(pack envelope.ContextPack) int {
+	n := 0
+	for _, inc := range pack.Included {
+		if strings.HasPrefix(inc.Ref, "capability://") {
 			n++
 		}
 	}

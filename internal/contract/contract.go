@@ -440,6 +440,10 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		if err != nil {
 			return pack, err
 		}
+		surfacedTotal := len(surfaced)
+		if len(surfaced) > maxContextCapabilityOffers {
+			surfaced = surfaced[:maxContextCapabilityOffers]
+		}
 		for _, hit := range surfaced {
 			pack.CapabilityOffers = append(pack.CapabilityOffers, capabilityOffer(hit))
 			pack.Included = append(pack.Included, envelope.IncludedRef{
@@ -450,8 +454,12 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 				Status:      "current",
 			})
 		}
-		if len(surfaced) > 0 {
-			pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
+		if surfacedTotal > 0 {
+			if surfacedTotal > len(surfaced) {
+				pack.SummaryMD += fmt.Sprintf(" %d of %d capability offer(s) surfaced; %d omitted from context budget; offers are not execution.", len(surfaced), surfacedTotal, surfacedTotal-len(surfaced))
+			} else {
+				pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
+			}
 		}
 	}
 	records, err := projection.LoadContext(homePath, in.RepoKind)
@@ -504,7 +512,10 @@ func capabilityOfferConstraints(values []capgraph.SurfacingConstraint) []envelop
 	return out
 }
 
-const maxContextMemoryRefs = 5
+const (
+	maxContextMemoryRefs       = 5
+	maxContextCapabilityOffers = 12
+)
 
 type contextMemoryRef struct {
 	Ref        string
