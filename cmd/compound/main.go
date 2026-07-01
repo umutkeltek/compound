@@ -4323,7 +4323,7 @@ func cmdWork(args []string) {
 	case "claim":
 		w, err := store.Claim(pos(), flag("--by"), time.Now())
 		die(err)
-		fmt.Printf("%s claimed by %s (%s)\n", w.ID, w.Authority.Owner, w.State)
+		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
 	case "advance":
 		w, err := store.Advance(pos(), work.AdvanceInput{
 			To:             flag("--to"),

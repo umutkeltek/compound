@@ -175,8 +175,10 @@ func (s *Store) List() ([]envelope.WorkEnvelope, error) {
 
 // --- claim ---
 
-// Claim moves a ready work to claimed and writes a lease. A second claimant is rejected
-// (claim-before-you-touch prevents parallel agents colliding on the same surface).
+// Claim moves a ready work to claimed only after policy allows the claim
+// ActionIntent, then writes the claim envelopes and lease. A second claimant is
+// rejected (claim-before-you-touch prevents parallel agents colliding on the
+// same surface).
 func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, error) {
 	w, err := s.Get(workID)
 	if err != nil {
@@ -194,16 +196,39 @@ func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, 
 	if !canTransition(w.State, "claimed") {
 		return w, fmt.Errorf("cannot claim from state %q (must be ready)", w.State)
 	}
+	plan, err := s.ClaimPlan(workID, now, ClaimPlanOptions{Actor: by})
+	if err != nil {
+		return w, err
+	}
+	if !plan.Policy.Allowed {
+		return w, fmt.Errorf("cannot claim work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
+	}
 	from := w.State
 	w.State = "claimed"
 	w.Authority.Owner = by
+	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.PolicyDecisionID = plan.Decision.ID
+	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+		return w, err
+	}
+	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+		return w, err
+	}
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return w, err
 	}
 	if err := s.writeJSON(s.leasePath(workID), &Lease{WorkID: workID, By: by, ClaimAt: ts(now)}); err != nil {
 		return w, err
 	}
-	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: "claimed", By: by, Note: "claimed"})
+	return w, s.appendEvent(Event{
+		TS:       ts(now),
+		WorkID:   workID,
+		From:     from,
+		To:       "claimed",
+		By:       by,
+		Note:     "claimed (policy " + plan.Policy.Outcome + ")",
+		Attached: []string{plan.ActionIntent.ID, plan.Decision.ID},
+	})
 }
 
 // --- advance ---
@@ -485,13 +510,17 @@ func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
 		if err := ai.Validate(); err != nil {
 			return nil, fmt.Errorf("action intent %s invalid: %w", runID, err)
 		}
-		if strings.TrimSpace(ai.Capability) == "" || seen[ai.Capability] {
+		if strings.TrimSpace(ai.Capability) == "" || internalLifecycleCapability(ai.Capability) || seen[ai.Capability] {
 			continue
 		}
 		seen[ai.Capability] = true
 		used = append(used, ai.Capability)
 	}
 	return used, nil
+}
+
+func internalLifecycleCapability(capability string) bool {
+	return capability == "work.claim"
 }
 
 func mergeUnique(groups ...[]string) []string {

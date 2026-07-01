@@ -809,7 +809,7 @@ grants:
 	if err != nil {
 		t.Fatalf("show work: %v", err)
 	}
-	if len(got.RunIDs) != 1 || got.RunIDs[0] != report.ActionIntentID || got.PolicyDecisionID != report.PolicyDecisionID {
+	if !stringSliceContains(got.RunIDs, report.ActionIntentID) || got.PolicyDecisionID != report.PolicyDecisionID {
 		t.Fatalf("work action chain not recorded: runs=%v policy=%q report=%+v", got.RunIDs, got.PolicyDecisionID, report)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events", report.ActionIntentID+".json")); err != nil {
@@ -903,7 +903,7 @@ grants:
 	if err != nil {
 		t.Fatalf("show auto work: %v", err)
 	}
-	if got.State != "completed" || got.IDs.TransitionID == "" || len(got.RunIDs) != 1 || got.RunIDs[0] != report.ActionIntentID {
+	if got.State != "completed" || got.IDs.TransitionID == "" || !stringSliceContains(got.RunIDs, report.ActionIntentID) {
 		t.Fatalf("auto work not closed through action chain: work=%+v report=%+v", got, report)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events", got.IDs.TransitionID+".json")); err != nil {
@@ -4264,7 +4264,7 @@ grants:
 			}
 		}
 	}
-	if got.State != "completed" || got.IDs.TransitionID == "" || !receiptSeen || got.PolicyDecisionID != report.PolicyDecisionID {
+	if got.State != "completed" || got.IDs.TransitionID == "" || !receiptSeen || !stringSliceContains(got.RunIDs, report.ActionIntentID) {
 		t.Fatalf("auto review work not closed: work=%+v report=%+v", got, report)
 	}
 }

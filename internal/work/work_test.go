@@ -129,15 +129,57 @@ func TestIllegalTransitionRejected(t *testing.T) {
 func TestClaimConflict(t *testing.T) {
 	s := newStore(t)
 	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
-	if _, err := s.Claim(w.ID, "agent_a", fixedNow); err != nil {
+	claimed, err := s.Claim(w.ID, "agent_a", fixedNow)
+	if err != nil {
 		t.Fatalf("first claim: %v", err)
+	}
+	if claimed.PolicyDecisionID == "" || len(claimed.RunIDs) != 1 {
+		t.Fatalf("claim must record policy/action chain: runs=%v policy=%q", claimed.RunIDs, claimed.PolicyDecisionID)
+	}
+	if _, err := os.Stat(s.envPath(claimed.RunIDs[0])); err != nil {
+		t.Fatalf("claim action envelope missing: %v", err)
+	}
+	if _, err := os.Stat(s.envPath(claimed.PolicyDecisionID)); err != nil {
+		t.Fatalf("claim policy envelope missing: %v", err)
 	}
 	if _, err := s.Claim(w.ID, "agent_b", fixedNow); err == nil {
 		t.Error("expected second claimant to be rejected (claim before you touch)")
 	}
 	// Same actor re-claims idempotently.
-	if _, err := s.Claim(w.ID, "agent_a", fixedNow); err != nil {
+	reclaimed, err := s.Claim(w.ID, "agent_a", fixedNow)
+	if err != nil {
 		t.Errorf("idempotent re-claim by same actor should succeed: %v", err)
+	}
+	if len(reclaimed.RunIDs) != len(claimed.RunIDs) || reclaimed.PolicyDecisionID != claimed.PolicyDecisionID {
+		t.Errorf("idempotent re-claim should not append policy/action records: before=%+v after=%+v", claimed, reclaimed)
+	}
+}
+
+func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
+	s := newStore(t)
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	if _, err := s.Claim(w.ID, "agent_a", fixedNow); err == nil {
+		t.Fatal("claim should be blocked by policy hold")
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "ready" || len(after.RunIDs) != 0 || after.PolicyDecisionID != "" {
+		t.Fatalf("blocked claim mutated work: %+v", after)
+	}
+	if _, err := s.readLease(w.ID); err == nil {
+		t.Fatal("blocked claim must not write lease")
 	}
 }
 
@@ -259,6 +301,12 @@ func TestRecordActionGate(t *testing.T) {
 	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
 		t.Fatal(err)
 	}
+	baseline, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRuns := append([]string{}, baseline.RunIDs...)
+	baselinePolicy := baseline.PolicyDecisionID
 
 	mkAI := func(id string) envelope.ActionIntent {
 		return envelope.ActionIntent{
@@ -290,7 +338,8 @@ func TestRecordActionGate(t *testing.T) {
 	if _, err := s.RecordAction(w.ID, denyAI, mkPD("pol_deny", "act_deny", "deny", nil), fixedNow); err == nil {
 		t.Error("denied action should be refused")
 	}
-	if w2, _ := s.Get(w.ID); len(w2.RunIDs) != 0 || w2.PolicyDecisionID != "" {
+	w2, _ := s.Get(w.ID)
+	if len(w2.RunIDs) != len(baselineRuns) || w2.PolicyDecisionID != baselinePolicy || contains(w2.RunIDs, "act_deny") {
 		t.Errorf("denied action must not be recorded; runs=%v policy=%q", w2.RunIDs, w2.PolicyDecisionID)
 	}
 	// Held action is also refused.
@@ -319,6 +368,9 @@ func TestRecordActionGate(t *testing.T) {
 	}
 	if contains(closed.Receipt.Skills.Used, "filesystem.delete") {
 		t.Fatalf("denied capability leaked into used skills: %v", closed.Receipt.Skills.Used)
+	}
+	if contains(closed.Receipt.Skills.Used, "work.claim") {
+		t.Fatalf("internal claim capability leaked into used skills: %v", closed.Receipt.Skills.Used)
 	}
 	if len(closed.Receipt.Skills.Candidate) != 0 {
 		t.Fatalf("no context pack offers in this test, got candidates %v", closed.Receipt.Skills.Candidate)
