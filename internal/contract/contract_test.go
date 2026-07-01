@@ -126,6 +126,90 @@ func TestPackWithCapabilitiesIncludesProjectionContextByRepoKind(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesIncludesExternalRepoIntakeMatches(t *testing.T) {
+	home := t.TempDir()
+	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	if err := os.WriteFile(mapPath, []byte(`{
+  "boundaries": ["review-only", "no install"],
+  "items": [
+    {
+      "repo": "affaan-m/ECC",
+      "owner": "Compound architecture / hooks / memory / skill graph",
+      "next_review_step": "review one hook or MCP pattern against Compound adapters",
+      "not_to_do": "do not import ECC wholesale or create a parallel operating system"
+    }
+  ]
+}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summaryPath := filepath.Join(batchDir, "run-summary.json")
+	sourceObservationPath := filepath.Join(batchDir, "source-observation.json")
+	if err := os.WriteFile(summaryPath, []byte(`{
+  "schema_version": "compound.external_repo_intake_run.v0.1",
+  "id": "2026-07-01-test",
+  "created_at": "2026-07-01T12:00:00Z",
+  "map_path": "`+filepath.ToSlash(mapPath)+`",
+  "source_observation_path": "`+filepath.ToSlash(sourceObservationPath)+`",
+  "candidate_count": 1,
+  "counts_by_decision": {"keep_needs_review": 1},
+  "counts_by_lane": {"harness_operating_system_reference": 1},
+  "decisions": [
+    {
+      "repo": "affaan-m/ECC",
+      "decision": "keep_needs_review",
+      "lane": "harness_operating_system_reference",
+      "status": "open",
+      "evidence_strength": 0.83
+    }
+  ]
+}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	in := mkInput("control-plane")
+	in.Task = "Should we adopt https://github.com/affaan-m/ECC hooks and MCP plugins?"
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("pack invalid: %v", err)
+	}
+	ref, ok := findIncludedRef(pack, externalRepoIntakeRef("affaan-m/ECC"))
+	if !ok {
+		t.Fatalf("pack should include external repo intake match: %+v", pack.Included)
+	}
+	if ref.SourceClass != "generated" || ref.Status != "current" || ref.Confidence != 0.83 {
+		t.Fatalf("external intake ref should stay generated/current evidence, got %+v", ref)
+	}
+	for _, want := range []string{
+		"external_repo_intake repo=affaan-m/ECC decision=keep_needs_review",
+		"owner=Compound architecture / hooks / memory / skill graph",
+		"next_review_step=review one hook or MCP pattern against Compound adapters",
+		"boundary=do not import ECC wholesale or create a parallel operating system",
+	} {
+		if !strings.Contains(ref.Reason, want) {
+			t.Fatalf("external intake reason missing %q: %s", want, ref.Reason)
+		}
+	}
+	if !strings.Contains(pack.SummaryMD, "1 external repo intake match(es) included") {
+		t.Fatalf("summary missing external intake count: %s", pack.SummaryMD)
+	}
+
+	in.Task = "Should we adopt a repository that has not been reviewed?"
+	unmatched, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := findIncludedRef(unmatched, externalRepoIntakeRef("affaan-m/ECC")); ok {
+		t.Fatalf("unmatched task should not include ECC intake ref: %+v", unmatched.Included)
+	}
+}
+
 func findIncludedRef(pack envelope.ContextPack, ref string) (envelope.IncludedRef, bool) {
 	for _, included := range pack.Included {
 		if included.Ref == ref {

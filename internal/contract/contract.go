@@ -462,6 +462,30 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			}
 		}
 	}
+	externalIntake, err := capgraph.ExternalRepoIntakeReportForHome(homePath, in.Task)
+	if err != nil {
+		return pack, err
+	}
+	if len(externalIntake.Matches) > 0 {
+		matches := externalIntake.Matches
+		if len(matches) > maxContextExternalRepoIntakeRefs {
+			matches = matches[:maxContextExternalRepoIntakeRefs]
+		}
+		for _, match := range matches {
+			pack.Included = append(pack.Included, envelope.IncludedRef{
+				Ref:         externalRepoIntakeRef(match.Repo),
+				SourceClass: "generated",
+				Reason:      externalRepoIntakeReason(match),
+				Confidence:  externalRepoIntakeConfidence(match),
+				Status:      "current",
+			})
+		}
+		if len(externalIntake.Matches) > len(matches) {
+			pack.SummaryMD += fmt.Sprintf(" %d of %d external repo intake match(es) included; intake is review evidence, not adoption.", len(matches), len(externalIntake.Matches))
+		} else {
+			pack.SummaryMD += fmt.Sprintf(" %d external repo intake match(es) included; intake is review evidence, not adoption.", len(matches))
+		}
+	}
 	records, err := projection.LoadContext(homePath, in.RepoKind)
 	if err != nil {
 		return pack, err
@@ -513,9 +537,55 @@ func capabilityOfferConstraints(values []capgraph.SurfacingConstraint) []envelop
 }
 
 const (
-	maxContextMemoryRefs       = 5
-	maxContextCapabilityOffers = 12
+	maxContextMemoryRefs             = 5
+	maxContextCapabilityOffers       = 12
+	maxContextExternalRepoIntakeRefs = 5
 )
+
+func externalRepoIntakeRef(repo string) string {
+	slug := strings.ToLower(strings.TrimSpace(repo))
+	slug = strings.TrimSuffix(slug, ".git")
+	slug = strings.Trim(slug, "/")
+	if slug == "" {
+		slug = "unknown"
+	}
+	return capgraph.ExternalRepoIntakeAuthorityRef + "/" + slug
+}
+
+func externalRepoIntakeReason(match capgraph.ExternalRepoIntakeDecision) string {
+	parts := []string{
+		fmt.Sprintf("external_repo_intake repo=%s decision=%s", match.Repo, match.Decision),
+	}
+	if match.Lane != "" {
+		parts = append(parts, "lane="+match.Lane)
+	}
+	if match.Owner != "" {
+		parts = append(parts, "owner="+match.Owner)
+	}
+	if match.NextReviewStep != "" {
+		parts = append(parts, "next_review_step="+match.NextReviewStep)
+	}
+	if match.NotToDo != "" {
+		parts = append(parts, "boundary="+match.NotToDo)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func externalRepoIntakeConfidence(match capgraph.ExternalRepoIntakeDecision) float64 {
+	if match.EvidenceStrength > 0 {
+		return match.EvidenceStrength
+	}
+	switch match.Decision {
+	case "keep_needs_review":
+		return 0.72
+	case "merge_existing":
+		return 0.66
+	case "reference_only":
+		return 0.58
+	default:
+		return 0.5
+	}
+}
 
 type contextMemoryRef struct {
 	Ref        string
