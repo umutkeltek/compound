@@ -199,7 +199,7 @@ usage:
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create|import-packet|show|list|dispatch-plan|claim-plan|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
@@ -4131,7 +4131,7 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|claim-plan|claim|advance|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -4267,6 +4267,47 @@ func cmdWork(args []string) {
 		}
 		if plan.PlanPath != "" {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
+		}
+	case "dispatch-claim":
+		usage := "usage: compound work dispatch-claim [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json]"
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--json":
+			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+		}
+		result, err := store.DispatchClaim(time.Now(), work.DispatchPlanOptions{
+			Actor:                 flag("--actor"),
+			SourcePacketPath:      flag("--source-packet"),
+			SourcePacketState:     flag("--source-state"),
+			SourcePacketOwner:     flag("--source-owner"),
+			SourcePacketRisk:      flag("--source-risk"),
+			SourcePacketPrivacy:   flag("--source-privacy"),
+			SourcePacketContextID: flag("--source-context-pack"),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(result)
+			return
+		}
+		if result.ClaimedWorkID != "" {
+			fmt.Printf("dispatch-claim %s status=%s claimed=%s policy=%s\n", result.ID, result.Status, result.ClaimedWorkID, result.PolicyDecisionID)
+		} else {
+			fmt.Printf("dispatch-claim %s status=%s no_action=%s\n", result.ID, result.Status, result.NoAction)
+		}
+		if result.DispatchPlanPath != "" {
+			fmt.Printf("plan: %s\n", result.DispatchPlanPath)
+		}
+		if result.ResultPath != "" {
+			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "claim-plan":
 		usage := "usage: compound work claim-plan <work_id> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"

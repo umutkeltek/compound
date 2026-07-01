@@ -103,3 +103,85 @@ func TestDispatchPlanImportsSourcePacketAndSelectsReadyWork(t *testing.T) {
 		t.Fatalf("recorded packet plan missing path: %+v", plan)
 	}
 }
+
+func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "dispatch claim selects work",
+		DesiredOutcome:   "prove dispatch claim",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClaim(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "claimed" || result.ClaimedWorkID != ready.ID || result.PolicyDecisionID == "" || result.ActionIntentID == "" {
+		t.Fatalf("dispatch claim result = %+v, ready=%s", result, ready.ID)
+	}
+	if result.DispatchPlanPath == "" || result.ResultPath == "" {
+		t.Fatalf("dispatch claim must record plan and result: %+v", result)
+	}
+	if _, err := os.Stat(result.DispatchPlanPath); err != nil {
+		t.Fatalf("dispatch plan not recorded: %v", err)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch claim result not recorded: %v", err)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" || after.Authority.Owner != "codex" || after.PolicyDecisionID != result.PolicyDecisionID {
+		t.Fatalf("work not claimed through policy path: %+v result=%+v", after, result)
+	}
+	if _, err := s.readLease(ready.ID); err != nil {
+		t.Fatalf("dispatch claim must write lease: %v", err)
+	}
+	if _, err := os.Stat(s.envPath(result.ActionIntentID)); err != nil {
+		t.Fatalf("claim action envelope missing: %v", err)
+	}
+	if _, err := os.Stat(s.envPath(result.PolicyDecisionID)); err != nil {
+		t.Fatalf("claim policy envelope missing: %v", err)
+	}
+}
+
+func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
+	s := newStore(t)
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch claim"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClaim(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "claim_policy_blocked" || result.ClaimedWorkID != "" || result.Selected != nil {
+		t.Fatalf("blocked dispatch claim result = %+v", result)
+	}
+	if result.ResultPath == "" || result.DispatchPlanPath == "" {
+		t.Fatalf("blocked dispatch claim should record plan/result evidence: %+v", result)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "ready" || len(after.RunIDs) != 0 || after.PolicyDecisionID != "" {
+		t.Fatalf("blocked dispatch claim mutated work: %+v", after)
+	}
+	if _, err := s.readLease(ready.ID); err == nil {
+		t.Fatal("blocked dispatch claim must not write lease")
+	}
+}

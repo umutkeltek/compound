@@ -8,6 +8,7 @@ import (
 )
 
 const DispatchPlanSchemaVersion = "compound.work_dispatch_plan.v0.1"
+const DispatchClaimSchemaVersion = "compound.work_dispatch_claim.v0.1"
 
 type DispatchPlanOptions struct {
 	Actor                 string
@@ -61,6 +62,26 @@ type DispatchPlanItem struct {
 	NextAction       string              `json:"next_action,omitempty"`
 	EvidenceRefs     []string            `json:"evidence_refs,omitempty"`
 	ClaimPolicy      *ClaimPolicySummary `json:"claim_policy,omitempty"`
+}
+
+type DispatchClaimResult struct {
+	SchemaVersion    string            `json:"schema_version"`
+	ID               string            `json:"id"`
+	GeneratedAt      string            `json:"generated_at"`
+	Status           string            `json:"status"`
+	Actor            string            `json:"actor"`
+	ResultPath       string            `json:"result_path,omitempty"`
+	DispatchPlanID   string            `json:"dispatch_plan_id"`
+	DispatchPlanPath string            `json:"dispatch_plan_path,omitempty"`
+	Selected         *DispatchPlanItem `json:"selected,omitempty"`
+	ClaimedWorkID    string            `json:"claimed_work_id,omitempty"`
+	ClaimedState     string            `json:"claimed_state,omitempty"`
+	ClaimedBy        string            `json:"claimed_by,omitempty"`
+	ActionIntentID   string            `json:"action_intent_id,omitempty"`
+	PolicyDecisionID string            `json:"policy_decision_id,omitempty"`
+	NoAction         string            `json:"no_action,omitempty"`
+	Warnings         []string          `json:"warnings,omitempty"`
+	Plan             DispatchPlan      `json:"dispatch_plan"`
 }
 
 func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
@@ -117,19 +138,25 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		},
 		Integrity: append([]string{}, report.Integrity...),
 	}
+	policyBlocked := false
 	for _, item := range report.Open {
 		candidate := dispatchCandidate(item, actor)
 		if candidate.Action == "claim" {
 			claimPlan, err := s.ClaimPlan(item.WorkID, now, ClaimPlanOptions{Actor: actor})
 			if err != nil {
 				candidate.Reason = strings.TrimSpace(candidate.Reason + "; claim policy plan failed: " + err.Error())
+				policyBlocked = true
 			} else {
 				policySummary := claimPlan.Policy
 				candidate.ClaimPolicy = &policySummary
+				if !policySummary.Allowed {
+					candidate.Reason = strings.TrimSpace(candidate.Reason + "; claim policy " + policySummary.Outcome)
+					policyBlocked = true
+				}
 			}
 		}
 		plan.Candidates = append(plan.Candidates, candidate)
-		if plan.Selected == nil && candidate.Action == "claim" {
+		if plan.Selected == nil && candidate.Action == "claim" && candidate.ClaimPolicy != nil && candidate.ClaimPolicy.Allowed {
 			selected := candidate
 			plan.Selected = &selected
 			plan.Status = "ready_to_claim"
@@ -139,6 +166,9 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		switch {
 		case len(plan.Candidates) == 0:
 			plan.NoAction = "workbench has no open work"
+		case policyBlocked:
+			plan.Status = "claim_policy_blocked"
+			plan.NoAction = "ready work exists but claim policy does not allow dispatch"
 		case report.Counts.NeedsReview > 0:
 			plan.Status = "needs_review"
 			plan.NoAction = "open work exists but requires review before dispatch"
@@ -170,6 +200,92 @@ func (s *Store) RecordDispatchPlan(plan DispatchPlan) (string, error) {
 	}
 	path := filepath.Join(dir, plan.ID+".json")
 	if err := s.writeJSON(path, &plan); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) DispatchClaim(now time.Time, opts DispatchPlanOptions) (DispatchClaimResult, error) {
+	opts.Record = true
+	plan, err := s.DispatchPlan(now, opts)
+	if err != nil {
+		return DispatchClaimResult{}, err
+	}
+	result := DispatchClaimResult{
+		SchemaVersion:    DispatchClaimSchemaVersion,
+		ID:               idFor("wdc_", plan.ID, ts(now)),
+		GeneratedAt:      now.UTC().Format(time.RFC3339),
+		Status:           plan.Status,
+		Actor:            plan.Actor,
+		DispatchPlanID:   plan.ID,
+		DispatchPlanPath: plan.PlanPath,
+		Selected:         plan.Selected,
+		NoAction:         plan.NoAction,
+		Warnings: []string{
+			"claims at most one selected ready work item",
+			"does not execute work",
+			"does not close work",
+		},
+		Plan: plan,
+	}
+	if plan.Selected == nil {
+		path, err := s.RecordDispatchClaim(result)
+		if err != nil {
+			return DispatchClaimResult{}, err
+		}
+		result.ResultPath = path
+		return result, nil
+	}
+	if plan.Selected.Action != "claim" {
+		result.NoAction = "selected work is not claimable"
+		path, err := s.RecordDispatchClaim(result)
+		if err != nil {
+			return DispatchClaimResult{}, err
+		}
+		result.ResultPath = path
+		return result, nil
+	}
+	if plan.Selected.ClaimPolicy == nil || !plan.Selected.ClaimPolicy.Allowed {
+		result.Status = "claim_policy_blocked"
+		result.NoAction = "selected work claim policy does not allow dispatch"
+		path, err := s.RecordDispatchClaim(result)
+		if err != nil {
+			return DispatchClaimResult{}, err
+		}
+		result.ResultPath = path
+		return result, nil
+	}
+	claimed, err := s.Claim(plan.Selected.WorkID, plan.Actor, now)
+	if err != nil {
+		return DispatchClaimResult{}, err
+	}
+	result.Status = "claimed"
+	result.NoAction = ""
+	result.ClaimedWorkID = claimed.ID
+	result.ClaimedState = claimed.State
+	result.ClaimedBy = claimed.Authority.Owner
+	result.PolicyDecisionID = claimed.PolicyDecisionID
+	if len(claimed.RunIDs) > 0 {
+		result.ActionIntentID = claimed.RunIDs[len(claimed.RunIDs)-1]
+	}
+	path, err := s.RecordDispatchClaim(result)
+	if err != nil {
+		return DispatchClaimResult{}, err
+	}
+	result.ResultPath = path
+	return result, nil
+}
+
+func (s *Store) RecordDispatchClaim(result DispatchClaimResult) (string, error) {
+	if strings.TrimSpace(result.ID) == "" {
+		return "", os.ErrInvalid
+	}
+	dir := filepath.Join(s.home, "dispatch-claims")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, result.ID+".json")
+	if err := s.writeJSON(path, &result); err != nil {
 		return "", err
 	}
 	return path, nil
