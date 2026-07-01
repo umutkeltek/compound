@@ -8,6 +8,13 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
+  `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority
+  `sgsrc_ab7074a89705`, and the status line names `compound://registries/standing-grants` while keeping
+  `policy.yaml standing_grants` fallback/evidence-only. `scripts/build_dashboard_read_model.py` emits a
+  `standing-grants` card, and `/operate` renders its authority/source/count strip under Autonomy. This is
+  read-only: no grant import, policy change, review write, scheduler mutation, or autonomous dispatch.
+
 - StandingGrant now has Compound-owned authority instead of config-only policy state. `compound policy
   import-standing-grants <standing-grants.yaml|json>` normalizes OS pipeline-style `grant_id`,
   `capabilities[]`, `target_scope`, `reversibility_ceiling` grants into
