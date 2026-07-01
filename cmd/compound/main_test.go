@@ -481,6 +481,18 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	}, " ", "# OK\n"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := reviewartifact.Write(homePath, "product-reviews", "prp_cli", map[string]any{
+		"id":            "prp_cli",
+		"status":        "review_required",
+		"product_id":    "product:focus-notes",
+		"hypothesis_id": "hyp_focus",
+		"signal_id":     "sig_focus",
+	}, " ", "# Product review\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.WriteRaw(homePath, "product-reviews", "prp_cli.review.yaml", []byte("schema_version: compound.product_review.v0.1\n")); err != nil {
+		t.Fatal(err)
+	}
 	out := captureStdout(t, func() { cmdReviews([]string{"--json"}) })
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -490,11 +502,21 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
 		t.Fatalf("parse reviews report: %v\n%s", err, out)
 	}
-	if report.SchemaVersion != reviewartifact.QueueSchemaVersion || report.Counts.Total != 2 || report.Counts.ReviewRequired != 1 || report.Counts.OK != 1 {
+	if report.SchemaVersion != reviewartifact.QueueSchemaVersion || report.Counts.Total != 3 || report.Counts.ReviewRequired != 2 || report.Counts.OK != 1 {
 		t.Fatalf("reviews report = %+v", report)
 	}
 	if report.Items[0].ID != "dlrp_cli" || report.Items[0].RepairCount != 3 {
 		t.Fatalf("first review item = %+v", report.Items[0])
+	}
+	var productItem reviewartifact.QueueItem
+	for _, item := range report.Items {
+		if item.ID == "prp_cli" {
+			productItem = item
+			break
+		}
+	}
+	if productItem.ID == "" || productItem.Readiness != "needs_review" || len(productItem.Actions) != 1 || !productItem.Actions[0].RequiresReview {
+		t.Fatalf("product review queue item should be review-gated actionable: %+v", productItem)
 	}
 	textOut := captureStdout(t, func() { cmdReviews([]string{"--area", "decision-lifecycle-repairs"}) })
 	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {

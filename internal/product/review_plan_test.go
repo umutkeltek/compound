@@ -9,6 +9,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 )
 
 func TestReviewPlanRecordsGatedReviewArtifactsWithoutResolvingHypothesis(t *testing.T) {
@@ -145,6 +146,50 @@ func TestReviewPlanRecordsGatedReviewArtifactsWithoutResolvingHypothesis(t *test
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("review plan must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestAnnotateReviewQueueAddsProductReviewAction(t *testing.T) {
+	report := reviewartifact.QueueReport{
+		Items: []reviewartifact.QueueItem{
+			{
+				Area:       productReviewArea,
+				ID:         "prp_review",
+				Status:     "review_required",
+				JSONPath:   "/tmp/product review/prp_review.json",
+				ExtraPaths: []string{"/tmp/product review/prp_review.review.yaml"},
+			},
+			{
+				Area:     productReviewArea,
+				ID:       "prp_ok",
+				Status:   "ok",
+				JSONPath: "/tmp/prp_ok.json",
+			},
+			{
+				Area:     "decision-lifecycle-repairs",
+				ID:       "dlrp_other",
+				Status:   "review_required",
+				JSONPath: "/tmp/decision.json",
+			},
+		},
+	}
+	AnnotateReviewQueue(&report)
+	review := report.Items[0]
+	if review.Readiness != "needs_review" || review.NextAction == "" || len(review.Actions) != 1 {
+		t.Fatalf("product review item not actionable: %+v", review)
+	}
+	action := review.Actions[0]
+	if !action.RequiresReview || action.ID != "record_product_review" || !strings.Contains(action.Command, "'/tmp/product review/prp_review.review.yaml'") {
+		t.Fatalf("review action should stay review-gated shell-safe: %+v", action)
+	}
+	if len(action.Argv) != 4 || action.Argv[0] != "compound" || action.Argv[1] != "product" || action.Argv[2] != "review" {
+		t.Fatalf("review action argv = %+v", action.Argv)
+	}
+	if report.Items[1].Readiness != "no_action" || len(report.Items[1].Actions) != 0 {
+		t.Fatalf("terminal product review should not be actionable: %+v", report.Items[1])
+	}
+	if report.Items[2].Readiness != "" || len(report.Items[2].Actions) != 0 {
+		t.Fatalf("non-product area should stay generic: %+v", report.Items[2])
 	}
 }
 

@@ -3292,6 +3292,7 @@ func cmdReviews(args []string) {
 		os.Exit(1)
 	}
 	decisions.AnnotateLifecycleRepairQueue(&report)
+	product.AnnotateReviewQueue(&report)
 	if jsonOut {
 		printJSON(report)
 		return
