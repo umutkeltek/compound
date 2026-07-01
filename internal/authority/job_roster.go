@@ -28,17 +28,21 @@ const (
 )
 
 type JobRosterAuthority struct {
-	SchemaVersion  string       `json:"schema_version"`
-	GeneratedAt    string       `json:"generated_at"`
-	AuthorityRef   string       `json:"authority_ref"`
-	SourcePath     string       `json:"source_path"`
-	SourceRevision string       `json:"source_revision"`
-	JobCount       int          `json:"job_count"`
-	EnabledCount   int          `json:"enabled_count"`
-	RecentRunCount int          `json:"recent_run_count"`
-	ErrorCount     int          `json:"error_count"`
-	Jobs           []JobSummary `json:"jobs"`
-	RecentErrors   []JobSummary `json:"recent_errors,omitempty"`
+	SchemaVersion      string       `json:"schema_version"`
+	GeneratedAt        string       `json:"generated_at"`
+	AuthorityRef       string       `json:"authority_ref"`
+	SourcePath         string       `json:"source_path"`
+	SourceRevision     string       `json:"source_revision"`
+	JobCount           int          `json:"job_count"`
+	EnabledCount       int          `json:"enabled_count"`
+	RecentRunCount     int          `json:"recent_run_count"`
+	ErrorCount         int          `json:"error_count"`
+	ActiveErrorCount   int          `json:"active_error_count"`
+	InactiveErrorCount int          `json:"inactive_error_count,omitempty"`
+	Jobs               []JobSummary `json:"jobs"`
+	RecentErrors       []JobSummary `json:"recent_errors,omitempty"`
+	ActiveErrors       []JobSummary `json:"active_errors,omitempty"`
+	InactiveErrors     []JobSummary `json:"inactive_errors,omitempty"`
 
 	TokenUsageSourcePath     string       `json:"token_usage_source_path,omitempty"`
 	TokenUsageSourceRevision string       `json:"token_usage_source_revision,omitempty"`
@@ -335,6 +339,10 @@ func normalizeJobRosterDerivedFields(authority *JobRosterAuthority, now *time.Ti
 	if authority == nil {
 		return
 	}
+	defer classifyJobRosterErrors(authority)
+	if authority == nil {
+		return
+	}
 	authority.JobCount = len(authority.Jobs)
 	authority.EnabledCount = 0
 	authority.ErrorCount = 0
@@ -356,6 +364,30 @@ func normalizeJobRosterDerivedFields(authority *JobRosterAuthority, now *time.Ti
 			authority.RecentErrors = append(authority.RecentErrors, job)
 		}
 	}
+}
+
+func classifyJobRosterErrors(authority *JobRosterAuthority) {
+	authority.ActiveErrorCount = 0
+	authority.InactiveErrorCount = 0
+	authority.ActiveErrors = nil
+	authority.InactiveErrors = nil
+	for _, job := range authority.RecentErrors {
+		if actionableJobError(job) {
+			authority.ActiveErrorCount++
+			authority.ActiveErrors = append(authority.ActiveErrors, job)
+			continue
+		}
+		authority.InactiveErrorCount++
+		authority.InactiveErrors = append(authority.InactiveErrors, job)
+	}
+}
+
+func actionableJobError(job JobSummary) bool {
+	if !job.Enabled {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(job.State))
+	return state != "paused" && state != "disabled" && state != "archived"
 }
 
 func mergeJobTokenFields(dst *JobSummary, src JobSummary) {

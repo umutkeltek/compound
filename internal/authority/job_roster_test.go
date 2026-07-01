@@ -90,6 +90,12 @@ func TestLoadJobRosterAuthorityNormalizesStoredDerivedFields(t *testing.T) {
 	if len(authority.RecentErrors) != 2 || authority.RecentErrors[0].Name != "disabled failing" || authority.RecentErrors[1].Name != "enabled failing" {
 		t.Fatalf("recent errors should be rebuilt from current jobs: %+v", authority.RecentErrors)
 	}
+	if authority.ActiveErrorCount != 1 || len(authority.ActiveErrors) != 1 || authority.ActiveErrors[0].Name != "enabled failing" {
+		t.Fatalf("active errors should include only actionable enabled failures: %+v", authority)
+	}
+	if authority.InactiveErrorCount != 1 || len(authority.InactiveErrors) != 1 || authority.InactiveErrors[0].Name != "disabled failing" {
+		t.Fatalf("inactive errors should preserve disabled historical failures: %+v", authority)
+	}
 }
 
 func TestImportJobTokenGovernanceOverlaysRosterAuthority(t *testing.T) {
@@ -130,6 +136,9 @@ func TestImportJobTokenGovernanceOverlaysRosterAuthority(t *testing.T) {
 	stored := readRawJobRosterAuthority(t, home)
 	if stored.ErrorCount != 1 || len(stored.RecentErrors) != 1 || stored.RecentErrors[0].Name != "ibkr-exit-check-daily" {
 		t.Fatalf("stored authority counters should be normalized after token overlay: %+v", stored)
+	}
+	if stored.ActiveErrorCount != 1 || len(stored.ActiveErrors) != 1 || stored.InactiveErrorCount != 0 {
+		t.Fatalf("stored active error counters should be normalized after token overlay: %+v", stored)
 	}
 	var digest JobSummary
 	for _, job := range authority.Jobs {
