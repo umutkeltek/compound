@@ -4875,6 +4875,36 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 	}
 }
 
+func TestRouteEvidenceAuthorityCommandShowsProviderLedgerRows(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls.ndjson")
+	captureStdout(t, func() {
+		cmdRoute([]string{"import-provider-ledger", fixture, "--tail", "2"})
+	})
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"evidence-authority", "--json", "--recent", "1"})
+	})
+	var report routeevidence.AuthorityReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse route evidence authority: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != routeevidence.RouteEvidenceAuthorityReportSchema ||
+		report.AuthorityRef != routeevidence.RouteEvidenceAuthorityRef ||
+		report.Status != "ok" ||
+		report.RouteEvidenceCount != 2 ||
+		report.ProviderLedgerEvidenceCount != 2 ||
+		len(report.Recent) != 1 {
+		t.Fatalf("bad route evidence authority report: %+v", report)
+	}
+	if report.Recent[0].ID == "" || report.Recent[0].Provider == "" {
+		t.Fatalf("recent route summary missing id/provider: %+v", report.Recent[0])
+	}
+}
+
 func writeJSONFile(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fixture.json")

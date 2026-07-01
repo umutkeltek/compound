@@ -245,6 +245,43 @@ func fixtureEvidence() Evidence {
 	return ev
 }
 
+func TestLoadAuthoritySummarizesExecutionRouteEvidence(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(t.TempDir(), "provider-calls.ndjson")
+	rows := strings.Join([]string{
+		`{"request_id":"req_old","ts_start":"2026-06-29T09:00:00Z","caller":"codex","project":"product-x","purpose":"old","route_alias":"cheap.classify","provider":"fixture-provider","model":"fixture-small","transport":"chat_completions","input_tokens":1,"output_tokens":2,"status":"ok"}`,
+		`{"request_id":"req_new","run_id":"run_new","ts_start":"2026-06-29T10:00:00Z","caller":"codex","project":"product-x","purpose":"new","route_alias":"premium.reasoning","provider":"fixture-provider","model":"fixture-large","transport":"responses","input_tokens":100,"output_tokens":50,"estimated_cost_usd":0.01,"latency_ms":55,"status":"ok"}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(ledgerPath, []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportProviderLedgerFile(home, ledgerPath, ProviderLedgerImportOptions{}); err != nil {
+		t.Fatalf("import provider ledger: %v", err)
+	}
+	report, err := LoadAuthority(home, 1)
+	if err != nil {
+		t.Fatalf("load authority: %v", err)
+	}
+	if report.SchemaVersion != RouteEvidenceAuthorityReportSchema ||
+		report.AuthorityRef != RouteEvidenceAuthorityRef ||
+		report.Status != "ok" ||
+		!report.Installed ||
+		report.RouteEvidenceCount != 2 ||
+		report.ProviderLedgerEvidenceCount != 2 ||
+		report.TokenUsageRows != 2 ||
+		report.CostKnownRows != 1 ||
+		len(report.Recent) != 1 {
+		t.Fatalf("bad authority report: %+v", report)
+	}
+	if report.Recent[0].Provider != "fixture-provider" || report.Recent[0].RequestID != "req_new" {
+		t.Fatalf("recent summary = %+v, want newest provider ledger row", report.Recent[0])
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("route evidence authority must not promote claims, stat err=%v", err)
+	}
+}
+
 func writeEvidenceFile(t *testing.T, dir string, ev Evidence) string {
 	t.Helper()
 	data, err := json.MarshalIndent(ev, "", "  ")

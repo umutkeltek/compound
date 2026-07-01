@@ -109,6 +109,8 @@ Plugin serving inventories are capability evidence, not executable offers. `comp
 
 Product source issue note: `product change-stream <candidates.md>` imports mined change-stream promotion candidate pages as product-scoped source issues through idempotent `NoPromoteDecision` rows. These records preserve source hash/capture, product, surface, repo, score, and dirty-preview evidence, and they are visible through `product timeline` / `product doctor`; they are not durable product changes, product signals, hypotheses, metric claims, or source mutations. `product source-issue-plan --product <id> --issue <id> [--target <file>]` writes JSON/Markdown closure-planning artifacts plus a gated `.review.yaml` draft under `COMPOUND_HOME/reviews/product-source-issues/` without closing the issue. The YAML draft carries original evidence and an invalid placeholder result so it cannot pass `product source-issue-review <review.yaml>` until a reviewer explicitly selects `resolved|waived|false_positive`; optional reviewed `follow_up` is candidate-only and enters the existing ProductHypothesis review path.
 
+Execution route evidence authority note: `compound route evidence-authority --json [--recent N]` reports `compound://ledger/execution-route-evidence` from `COMPOUND_HOME/ledger/execution-route-evidence.jsonl` with route row counts, provider-ledger evidence counts, token/cost coverage, and recent route summaries. This is metadata-only route evidence, not task success, billing truth, provider ranking, or provider/gateway config mutation.
+
 ## Distillation & capability-growth contracts (the compounding layer — P6 continuation + P8)
 
 These turn traces into *adjudicated, versioned* knowledge and grow capability from evidence. They **extend**

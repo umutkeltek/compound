@@ -208,6 +208,7 @@ compound policy <evaluate|import-placement-rules|placement-authority|import-oper
   compound transition show <id>                                 inspect a Transition or envelope
   compound route import <execution-route-evidence.json>          import route metadata -> Transition projection
   compound route import-model-capabilities <model-capabilities.yaml> OS model router YAML -> Compound route authority
+  compound route evidence-authority [--json] [--recent N] read-only route evidence authority
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
@@ -2106,13 +2107,48 @@ func cmdTransition(args []string) {
 
 func cmdRoute(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
+	}
+	if args[0] == "evidence-authority" {
+		recent := 6
+		if v := flagValue(args[1:], "--recent"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "route evidence-authority: --recent must be a non-negative integer")
+				os.Exit(2)
+			}
+			recent = n
+		}
+		report, err := routeevidence.LoadAuthority(homePath, recent)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route evidence-authority:", err)
+			os.Exit(1)
+		}
+		if hasFlag(args[1:], "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Println("# route evidence-authority")
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- authority_path: %s\n", report.AuthorityPath)
+		fmt.Printf("- route_evidence_count: %d\n", report.RouteEvidenceCount)
+		fmt.Printf("- provider_ledger_evidence_count: %d\n", report.ProviderLedgerEvidenceCount)
+		fmt.Printf("- token_usage_rows: %d\n", report.TokenUsageRows)
+		fmt.Printf("- cost_known_rows: %d\n", report.CostKnownRows)
+		if len(report.Recent) > 0 {
+			last := report.Recent[len(report.Recent)-1]
+			fmt.Printf("- latest_route_evidence: %s\n", last.ID)
+			fmt.Printf("- latest_selected_target: %s/%s (%s)\n", last.Provider, last.Model, last.Protocol)
+		}
+		fmt.Println("- verdict: metadata_only_not_task_success")
+		return
 	}
 	if args[0] == "plan" {
 		candidateID := flagValue(args[1:], "--candidate")
@@ -2364,7 +2400,7 @@ func cmdRoute(args []string) {
 		return
 	}
 	if len(args) != 2 || args[0] != "import" {
-		fmt.Fprintln(os.Stderr, "usage: compound route <import <execution-route-evidence.json>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|plan --candidate C [--target file]>")
+		fmt.Fprintln(os.Stderr, "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>")
 		os.Exit(2)
 	}
 	result, err := routeevidence.ImportFile(homePath, args[1])
