@@ -199,7 +199,7 @@ usage:
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|claim-plan|claim|advance-plan|advance|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
@@ -4131,7 +4131,7 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|claim-plan|claim|advance-plan|advance|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -4504,6 +4504,26 @@ func cmdWork(args []string) {
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
+	case "observe-run":
+		workID := pos()
+		if workID == "" || flag("--trace") == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound work observe-run <work_id> --trace <trace_id> [--actor A] [--note N] [--json]")
+			os.Exit(2)
+		}
+		result, err := store.ObserveRun(workID, work.ObserveRunInput{
+			Actor:   firstNonEmpty(flag("--by"), flag("--actor")),
+			TraceID: flag("--trace"),
+			Note:    flag("--note"),
+		}, time.Now())
+		die(err)
+		if has("--json") {
+			printJSON(result)
+			return
+		}
+		fmt.Printf("%s observed trace=%s state=%s policy=%s\n", result.WorkID, result.TraceID, result.State, result.PolicyDecisionID)
+		if result.ResultPath != "" {
+			fmt.Printf("result: %s\n", result.ResultPath)
+		}
 	case "act":
 		workID := pos()
 		intentFile := flag("--intent")
@@ -4597,7 +4617,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|claim-plan|claim|advance-plan|advance|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 }

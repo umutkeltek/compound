@@ -781,6 +781,83 @@ func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkObserveRunCommandAttachesTrace(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "observe run command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	trace := envelope.TraceEnvelope{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTraceEnvelope,
+			ID:            "trace_cli_observe",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: w.ID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Source:          envelope.TraceSource{System: "test", SourceKind: "cli", EventClass: "observe_run"},
+		Actor:           "codex",
+		MutationClass:   "local_reversible",
+		Summary:         "observed CLI run",
+		ToolsModelsUsed: []string{},
+		FilesTouched:    []string{},
+		Outputs:         []string{"trace-output:cli"},
+	}
+	if err := trace.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	traceBytes, err := json.MarshalIndent(trace, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(homePath, "events", trace.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tracePath, append(traceBytes, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"observe-run", w.ID, "--trace", trace.ID, "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("observe-run output missing JSON:\n%s", out)
+	}
+	var result work.RunObservationResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse observe-run result: %v\n%s", err, out)
+	}
+	if result.Status != "observed" || result.WorkID != w.ID || result.TraceID != trace.ID || result.PolicyDecisionID == "" {
+		t.Fatalf("observe-run result = %+v", result)
+	}
+	after, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatalf("get observed work: %v", err)
+	}
+	if after.State != "verifying" || !stringSliceContains(after.VerificationIDs, trace.ID) || after.IDs.TransitionID != "" {
+		t.Fatalf("observe-run did not attach trace without closing: %+v", after)
+	}
+}
+
 func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
