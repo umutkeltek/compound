@@ -3611,6 +3611,9 @@ func cmdWorkbench(args []string) {
 	}
 	fmt.Printf("workbench open=%d needs_claim=%d needs_review=%d in_progress=%d terminal=%d\n",
 		report.Counts.Open, report.Counts.NeedsClaim, report.Counts.NeedsReview, report.Counts.InProgress, report.Counts.Terminal)
+	if report.Counts.RunObservations > 0 {
+		fmt.Printf("run_observations=%d\n", report.Counts.RunObservations)
+	}
 	if len(report.Integrity) > 0 {
 		fmt.Println("integrity:")
 		for _, msg := range report.Integrity {
@@ -3626,6 +3629,10 @@ func cmdWorkbench(args []string) {
 			fmt.Printf("  next: %s\n", item.NextAction)
 			if item.ClaimedBy != "" {
 				fmt.Printf("  claimed_by: %s\n", item.ClaimedBy)
+			}
+			if len(item.RunObservations) > 0 {
+				latest := item.RunObservations[0]
+				fmt.Printf("  observed_run: %s trace=%s policy=%s\n", latest.ID, latest.TraceID, latest.PolicyDecisionID)
 			}
 		}
 	}

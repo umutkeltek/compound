@@ -24,6 +24,7 @@ type RunObservationResult struct {
 	GeneratedAt      string                 `json:"generated_at"`
 	Status           string                 `json:"status"`
 	Actor            string                 `json:"actor"`
+	Note             string                 `json:"note,omitempty"`
 	ResultPath       string                 `json:"result_path,omitempty"`
 	WorkID           string                 `json:"work_id"`
 	FromState        string                 `json:"from_state"`
@@ -84,6 +85,7 @@ func (s *Store) ObserveRun(workID string, in ObserveRunInput, now time.Time) (Ru
 		GeneratedAt:      now.UTC().Format(time.RFC3339),
 		Status:           "observed",
 		Actor:            actor,
+		Note:             strings.TrimSpace(in.Note),
 		WorkID:           workID,
 		FromState:        from,
 		State:            advanced.State,

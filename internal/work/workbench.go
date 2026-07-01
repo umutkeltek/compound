@@ -1,6 +1,8 @@
 package work
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -30,33 +32,47 @@ type WorkbenchCounts struct {
 	NeedsClaim        int            `json:"needs_claim"`
 	NeedsReview       int            `json:"needs_review"`
 	InProgress        int            `json:"in_progress"`
+	RunObservations   int            `json:"run_observations"`
 	MissingReceipt    int            `json:"missing_receipt"`
 	MissingTransition int            `json:"missing_transition"`
 	ByState           map[string]int `json:"by_state"`
 }
 
 type WorkbenchItem struct {
-	WorkID             string   `json:"work_id"`
-	State              string   `json:"state"`
-	Owner              string   `json:"owner,omitempty"`
-	ClaimedBy          string   `json:"claimed_by,omitempty"`
-	ClaimedAt          string   `json:"claimed_at,omitempty"`
-	SuccessPredicate   string   `json:"success_predicate"`
-	DesiredOutcome     string   `json:"desired_outcome,omitempty"`
-	CanonicalSurface   string   `json:"canonical_surface,omitempty"`
-	ContextPackID      string   `json:"context_pack_id,omitempty"`
-	PolicyDecisionID   string   `json:"policy_decision_id,omitempty"`
-	ReceiptID          string   `json:"receipt_id,omitempty"`
-	TransitionID       string   `json:"transition_id,omitempty"`
-	MoveType           string   `json:"move_type,omitempty"`
-	Changed            bool     `json:"changed,omitempty"`
-	ReviewTrigger      string   `json:"review_trigger,omitempty"`
-	NextAction         string   `json:"next_action"`
-	OpenReason         string   `json:"open_reason,omitempty"`
-	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
-	ArtifactIDs        []string `json:"artifact_ids,omitempty"`
-	VerificationIDs    []string `json:"verification_ids,omitempty"`
-	MemoryCandidateIDs []string `json:"memory_candidate_ids,omitempty"`
+	WorkID             string                    `json:"work_id"`
+	State              string                    `json:"state"`
+	Owner              string                    `json:"owner,omitempty"`
+	ClaimedBy          string                    `json:"claimed_by,omitempty"`
+	ClaimedAt          string                    `json:"claimed_at,omitempty"`
+	SuccessPredicate   string                    `json:"success_predicate"`
+	DesiredOutcome     string                    `json:"desired_outcome,omitempty"`
+	CanonicalSurface   string                    `json:"canonical_surface,omitempty"`
+	ContextPackID      string                    `json:"context_pack_id,omitempty"`
+	PolicyDecisionID   string                    `json:"policy_decision_id,omitempty"`
+	ReceiptID          string                    `json:"receipt_id,omitempty"`
+	TransitionID       string                    `json:"transition_id,omitempty"`
+	MoveType           string                    `json:"move_type,omitempty"`
+	Changed            bool                      `json:"changed,omitempty"`
+	ReviewTrigger      string                    `json:"review_trigger,omitempty"`
+	NextAction         string                    `json:"next_action"`
+	OpenReason         string                    `json:"open_reason,omitempty"`
+	EvidenceRefs       []string                  `json:"evidence_refs,omitempty"`
+	ArtifactIDs        []string                  `json:"artifact_ids,omitempty"`
+	VerificationIDs    []string                  `json:"verification_ids,omitempty"`
+	MemoryCandidateIDs []string                  `json:"memory_candidate_ids,omitempty"`
+	RunObservations    []WorkbenchRunObservation `json:"run_observations,omitempty"`
+}
+
+type WorkbenchRunObservation struct {
+	ID               string `json:"id"`
+	GeneratedAt      string `json:"generated_at,omitempty"`
+	Actor            string `json:"actor,omitempty"`
+	Note             string `json:"note,omitempty"`
+	TraceID          string `json:"trace_id"`
+	State            string `json:"state"`
+	ActionIntentID   string `json:"action_intent_id,omitempty"`
+	PolicyDecisionID string `json:"policy_decision_id,omitempty"`
+	ResultPath       string `json:"result_path,omitempty"`
 }
 
 func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport, error) {
@@ -79,6 +95,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 			return report, err
 		}
 		item := s.workbenchItem(w, events, &report)
+		report.Counts.RunObservations += len(item.RunObservations)
 		report.Counts.ByState[w.State]++
 		if terminalStates[w.State] {
 			report.Counts.Terminal++
@@ -136,6 +153,12 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		VerificationIDs:    append([]string{}, w.VerificationIDs...),
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
 	}
+	if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
+		item.RunObservations = observations
+		for _, warning := range warnings {
+			report.Integrity = append(report.Integrity, w.ID+": "+warning)
+		}
+	}
 	if lease, err := s.readLease(w.ID); err == nil {
 		item.ClaimedBy = lease.By
 		item.ClaimedAt = lease.ClaimAt
@@ -165,6 +188,51 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		}
 	}
 	return item
+}
+
+func (s *Store) workbenchRunObservations(workID string) ([]WorkbenchRunObservation, []string) {
+	dir := filepath.Join(s.home, "run-observations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{"run observations unreadable: " + err.Error()}
+	}
+	out := []WorkbenchRunObservation{}
+	warnings := []string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var result RunObservationResult
+		if err := s.readJSON(path, &result); err != nil {
+			warnings = append(warnings, "run observation "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		if result.WorkID != workID {
+			continue
+		}
+		out = append(out, WorkbenchRunObservation{
+			ID:               result.ID,
+			GeneratedAt:      result.GeneratedAt,
+			Actor:            result.Actor,
+			Note:             result.Note,
+			TraceID:          result.TraceID,
+			State:            result.State,
+			ActionIntentID:   result.ActionIntentID,
+			PolicyDecisionID: result.PolicyDecisionID,
+			ResultPath:       path,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].GeneratedAt != out[j].GeneratedAt {
+			return out[i].GeneratedAt > out[j].GeneratedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, warnings
 }
 
 func lastAttachedWithPrefix(events []Event, prefix string) string {

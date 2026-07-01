@@ -73,6 +73,44 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 }
 
+func TestWorkbenchSurfacesRunObservationEvidence(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "observed run gets verified")
+	trace := writeTrace(t, s, "trace_workbench_observed", w.ID)
+	result, err := s.ObserveRun(w.ID, ObserveRunInput{
+		Actor:   "codex",
+		TraceID: trace.ID,
+		Note:    "workbench should surface this trace",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Open != 1 || report.Counts.InProgress != 1 || report.Counts.RunObservations != 1 {
+		t.Fatalf("workbench counts missing observed run: %+v", report.Counts)
+	}
+	item := findWorkbenchItem(t, report.Open, w.ID)
+	if item.State != "verifying" || item.NextAction != "close completed or failed, or return running" {
+		t.Fatalf("observed workbench item has wrong state/action: %+v", item)
+	}
+	if !contains(item.VerificationIDs, trace.ID) || item.TransitionID != "" {
+		t.Fatalf("observed workbench item should expose verification without close proof: %+v", item)
+	}
+	if len(item.RunObservations) != 1 {
+		t.Fatalf("run observations = %+v", item.RunObservations)
+	}
+	observed := item.RunObservations[0]
+	if observed.ID != result.ID || observed.TraceID != trace.ID || observed.PolicyDecisionID == "" || observed.ActionIntentID == "" {
+		t.Fatalf("run observation summary = %+v result=%+v", observed, result)
+	}
+	if observed.Note != "workbench should surface this trace" || observed.ResultPath == "" {
+		t.Fatalf("run observation summary missing note/path: %+v", observed)
+	}
+}
+
 func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "cancelled work is terminal without completion proof"}, fixedNow)
@@ -92,6 +130,17 @@ func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	if len(report.Recent) != 1 || report.Recent[0].WorkID != w.ID || report.Recent[0].State != "cancelled" {
 		t.Fatalf("recent cancelled work missing: %+v", report.Recent)
 	}
+}
+
+func findWorkbenchItem(t *testing.T, items []WorkbenchItem, workID string) WorkbenchItem {
+	t.Helper()
+	for _, item := range items {
+		if item.WorkID == workID {
+			return item
+		}
+	}
+	t.Fatalf("missing workbench item %s in %+v", workID, items)
+	return WorkbenchItem{}
 }
 
 func assertWorkbenchItem(t *testing.T, items []WorkbenchItem, workID, reason, next string) {
