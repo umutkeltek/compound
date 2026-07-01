@@ -232,7 +232,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
+  compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -255,7 +255,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -588,6 +588,33 @@ func cmdCapability(args []string) {
 		fmt.Printf("- node: %s\n", report.NodeID)
 		fmt.Printf("- node_status: %s\n", report.NodeStatus)
 		fmt.Printf("- manifest: %s\n", report.ManifestPath)
+	case "skill-candidate-review":
+		targetPath := flag("--target")
+		p := posn(map[string]bool{"--target": true})
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability skill-candidate-review <external-skill-candidate.json> [--target <file-or-dir>]")
+			os.Exit(2)
+		}
+		review, err := capgraph.BuildExternalSkillCandidateReview(homePath, p[0], targetPath, time.Now())
+		die(err)
+		paths, err := capgraph.RecordExternalSkillCandidateReview(homePath, review)
+		die(err)
+		fmt.Printf("# capability skill-candidate-review %s\n", review.ID)
+		fmt.Printf("- status: %s\n", review.Status)
+		fmt.Printf("- candidate_kind: %s\n", review.CandidateKind)
+		fmt.Printf("- candidate: %s\n", review.CandidateID)
+		fmt.Printf("- classification: %s\n", review.ProposedClassification)
+		fmt.Printf("- lifecycle_stage: %s\n", review.LifecycleStage)
+		fmt.Printf("- disposition: %s\n", review.RecommendedDisposition)
+		fmt.Printf("- overlaps: %d\n", len(review.OverlapRefs))
+		fmt.Printf("- evidence_required: %d\n", len(review.EvidenceRequired))
+		fmt.Printf("- eval_suggestions: %d\n", len(review.EvalFixtureSuggestions))
+		if review.TargetPath != "" {
+			fmt.Printf("- target: %s\n", review.TargetPath)
+			fmt.Printf("- target_exists: %t\n", review.TargetExists)
+		}
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
 	case "skill-plan":
 		candidateID := flag("--candidate")
 		targetPath := flag("--target")

@@ -2432,6 +2432,73 @@ func TestCapabilitySkillPlanUsesSkillCandidateWithoutMutatingGraphOrTarget(t *te
 	}
 }
 
+func TestCapabilitySkillCandidateReviewWritesReviewOnly(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "skill-manifest.yaml")})
+	nodesPath := filepath.Join(homePath, "registries", "capability-nodes.jsonl")
+	beforeNodes, err := os.ReadFile(nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidatePath := writeJSONFile(t, `{
+ "id": "example/skills/pricing",
+ "name": "Pricing",
+ "slug": "pricing",
+ "description": "Review pricing and paywall packaging decisions.",
+ "source": "example/skills",
+ "source_type": "github",
+ "install_url": "https://github.com/example/skills",
+ "url": "https://skills.sh/example/skills/pricing",
+ "installs": 428400,
+ "official": true,
+ "files": [{"path": "SKILL.md", "contents": "---\nname: pricing\n---\n"}],
+ "audits": [{"provider": "Socket", "status": "pass", "summary": "No alerts", "risk_level": "LOW"}]
+}`)
+	targetDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(targetDir, "SKILL.md"), []byte("# staged only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"skill-candidate-review", candidatePath, "--target", targetDir})
+	})
+	for _, want := range []string{
+		"# capability skill-candidate-review scr_",
+		"- candidate_kind: skill",
+		"- classification: shared_skill",
+		"- lifecycle_stage: staged_candidate",
+		"- disposition: merge",
+		"- overlaps: ",
+		"- plan: ",
+		"- review: ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("skill-candidate-review output missing %q:\n%s", want, out)
+		}
+	}
+	if entries, err := os.ReadDir(filepath.Join(homePath, "reviews", "skill-candidates")); err != nil || len(entries) < 2 {
+		t.Fatalf("expected skill candidate review artifacts, entries=%v err=%v", entries, err)
+	}
+	afterNodes, err := os.ReadFile(nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterNodes) != string(beforeNodes) {
+		t.Fatalf("skill-candidate-review must not mutate graph nodes")
+	}
+	if entries, err := os.ReadDir(filepath.Join(homePath, candidates.InboxDir(candidates.Skill))); err == nil && len(entries) != 0 {
+		t.Fatalf("skill-candidate-review must not write skill inbox candidate, entries=%v", entries)
+	} else if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read skill inbox: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("skill-candidate-review must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestRuntimeFeedbackReachesDistillerRequestAndGraph(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
