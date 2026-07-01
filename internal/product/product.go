@@ -33,6 +33,37 @@ const (
 	SourceIssueReviewSchemaVersion = "compound.product_source_issue_review.v0.1"
 )
 
+var signalExportProviderAllowlist = map[string]struct{}{
+	"app_store_connect":     {},
+	"revenuecat":            {},
+	"posthog":               {},
+	"google_search_console": {},
+	"google_analytics":      {},
+	"google_adsense":        {},
+}
+
+// canonicalSignalMetricNames is the conservative alias table for source-export
+// metrics. Keys are normalized "<source_kind>:<metric_name>"; values are the
+// ProductSignal metric names stored in the ledger.
+var canonicalSignalMetricNames = map[string]string{
+	"app_store_connect:product_page_conversion_rate": "app_store_product_page_conversion",
+	"app_store_connect:conversion_rate":              "app_store_product_page_conversion",
+	"revenuecat:active_subscriptions":                "revenuecat_active_subscriptions",
+	"revenuecat:active_subscribers":                  "revenuecat_active_subscriptions",
+	"revenuecat:mrr":                                 "revenuecat_mrr",
+	"posthog:activation_rate":                        "posthog_activation_rate",
+	"google_search_console:clicks":                   "gsc_clicks",
+	"google_search_console:impressions":              "gsc_impressions",
+	"google_search_console:ctr":                      "gsc_ctr",
+	"google_search_console:avg_position":             "gsc_avg_position",
+	"google_analytics:active_users":                  "ga4_active_users",
+	"google_analytics:sessions":                      "ga4_sessions",
+	"google_analytics:conversions":                   "ga4_conversions",
+	"google_adsense:estimated_earnings":              "adsense_estimated_earnings",
+	"google_adsense:page_rpm":                        "adsense_page_rpm",
+	"google_adsense:impressions":                     "adsense_impressions",
+}
+
 type Bundle struct {
 	SchemaVersion string       `json:"schema_version" yaml:"schema_version"`
 	Product       Product      `json:"product" yaml:"product"`
@@ -1153,7 +1184,7 @@ func ValidateSignalExportDocument(doc SignalExportDocument) error {
 	if strings.TrimSpace(doc.Source.Kind) == "" || strings.TrimSpace(doc.Source.Ref) == "" {
 		return fmt.Errorf("signal export source kind ref required")
 	}
-	if !oneOf(doc.Source.Kind, []string{"app_store_connect", "revenuecat", "posthog"}) {
+	if _, ok := signalExportProviderAllowlist[strings.TrimSpace(doc.Source.Kind)]; !ok {
 		return fmt.Errorf("signal export source kind %q unsupported", doc.Source.Kind)
 	}
 	if strings.TrimSpace(doc.ProductID) == "" || strings.TrimSpace(doc.Surface) == "" || strings.TrimSpace(doc.ChangeEvent) == "" {
@@ -2031,15 +2062,8 @@ func sourceKindRef(kind string) string {
 func canonicalMetricName(sourceKind, metricName string) string {
 	sourceKind = normalizeIDPart(sourceKind)
 	metricName = normalizeIDPart(metricName)
-	switch sourceKind + ":" + metricName {
-	case "app_store_connect:product_page_conversion_rate", "app_store_connect:conversion_rate":
-		return "app_store_product_page_conversion"
-	case "revenuecat:active_subscriptions", "revenuecat:active_subscribers":
-		return "revenuecat_active_subscriptions"
-	case "revenuecat:mrr":
-		return "revenuecat_mrr"
-	case "posthog:activation_rate":
-		return "posthog_activation_rate"
+	if canonical, ok := canonicalSignalMetricNames[sourceKind+":"+metricName]; ok {
+		return canonical
 	}
 	if sourceKind == "" {
 		return metricName

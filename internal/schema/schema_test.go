@@ -52,6 +52,38 @@ func TestValidateContextPackUsesEnvelopeSemantics(t *testing.T) {
 	}
 }
 
+func TestProductSignalExportContractValidatesSourceExport(t *testing.T) {
+	doc, err := Export("product_signal_export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["$id"] != "compound://schemas/product_signal_export" {
+		t.Fatalf("schema id = %v", doc["$id"])
+	}
+	if err := Validate("product_signal_export", "../../fixtures/product/source-export.gsc.yaml"); err != nil {
+		t.Fatal(err)
+	}
+
+	badPath := writeSchemaFixture(t, "bad-product-signal-export.yaml", []byte(`schema_version: compound.product_signal_export.v0.1
+source:
+  kind: spreadsheet
+  ref: fixture:spreadsheet
+product_id: product:example-site
+surface: provider-ingress
+change_event: Provider metric snapshot observed.
+metric:
+  name: clicks
+  before: {value: 1, ref: fixture:before}
+  after: {value: 1, ref: fixture:after}
+window: neutral snapshot
+confidence: 0.5
+evidence_refs: [fixture:bad-export]
+`))
+	if err := Validate("product_signal_export", badPath); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("expected unsupported provider validation error, got %v", err)
+	}
+}
+
 func TestValidateCandidateSetRejectsUnknownKind(t *testing.T) {
 	path := writeSchemaFixture(t, "candidate-set.json", []byte(`{
 		"trace_ref": "trace_bad",

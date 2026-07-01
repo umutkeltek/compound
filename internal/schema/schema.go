@@ -44,6 +44,7 @@ func Contracts() []Contract {
 		{Name: "decision_lifecycle", Description: "decision lifecycle object", Type: reflect.TypeOf(decisions.Lifecycle{}), Validate: validateDecisionLifecycle},
 		{Name: "capability_node", Description: "CapabilityGraph node", Type: reflect.TypeOf(capgraph.Node{}), Validate: validateCapabilityNode},
 		{Name: "product_signal", Description: "product signal document", Type: reflect.TypeOf(product.SignalDocument{}), Validate: validateProductSignal},
+		{Name: "product_signal_export", Description: "product signal source-export document", Type: reflect.TypeOf(product.SignalExportDocument{}), Validate: validateProductSignalExport},
 		{Name: "route_evidence", Description: "execution route evidence", Type: reflect.TypeOf(routeevidence.Evidence{}), Validate: validateRouteEvidence},
 	}
 	sort.Slice(contracts, func(i, j int) bool { return contracts[i].Name < contracts[j].Name })
@@ -256,6 +257,14 @@ func validateProductSignal(path string, _ []byte) error {
 		return fmt.Errorf("product signal doctor status=%s", report.Status)
 	}
 	return nil
+}
+
+func validateProductSignalExport(path string, data []byte) error {
+	var doc product.SignalExportDocument
+	if err := decodeJSONOrYAML(path, data, &doc); err != nil {
+		return err
+	}
+	return product.ValidateSignalExportDocument(doc)
 }
 
 func validateRouteEvidence(_ string, data []byte) error {
