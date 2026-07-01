@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `os status --json` now consumes the same Compound event TraceEnvelope authority served in `/operate`: `compound://events/trace-envelopes`. The status snapshot records `event_trace_authority.status=ok`, trace count, source-authority id/count, recent traces, and the OS `events/control-events.ndjson` fallback/evidence-only role without executing webhooks or mutating source event streams.
+
 - `os status --json` now consumes the same Compound route evidence authority served in `/operate`: `compound://ledger/execution-route-evidence`. The status snapshot records `route_evidence.status=ok`, route/provider-ledger counts, token/cost coverage, and the OS provider-call ledger fallback/evidence-only role. This is metadata-only route evidence, not task success, billing truth, route policy review, provider ranking, or provider/gateway config mutation.
 
 - `compound route evidence-authority --json` now exposes the Compound-owned execution route ledger at `compound://ledger/execution-route-evidence` as a read-only authority report. Persistent proof currently has 6 route evidence rows, 5 imported from provider-call ledger rows. Umut OS dashboard read-model marks `provider-call-count` owner `compound`, keeps raw `provider-calls.ndjson` fallback/evidence-only, and served `/operate` renders route/provider/raw/cost counts plus the authority ref without mutating provider/gateway config or claiming task success.
