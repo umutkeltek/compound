@@ -8,6 +8,20 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+ - `mattpocock/skills` now has focused subskill evidence merged into existing
+`skill:codebase-design` rather than installing the external pack. The evaluation
+source compared upstream `skills/engineering/codebase-design/SKILL.md` plus
+`DEEPENING.md` and `DESIGN-IT-TWICE.md` references against the served owner,
+imported evidence-only: `capability_evaluations_4953a8802e17` -> eval node
+`eval:capability-evaluation-external-mattpocock-codebase-design-20260701`
+with `evaluated_by:skill:codebase-design->eval:...` and
+`validated_by:skill:codebase-design->eval:...`. Unknown skipped count was `0`,
+so no review-plan duplicate was needed. Authority now reports `494` nodes /
+`97` edges with `evaluated_by=2`, `validated_by=3`; surfacing a deep-module
+design task ranks `skill:codebase-design` first. No skills.sh install, no
+external pack serving, no issue-tracker setup flow, no global agent config
+mutation, no memory promotion.
+
  - `colbymchenry/codegraph` now has focused repo-understanding capability
 evaluation evidence attached to existing `tool:codegraph` instead of creating
 a duplicate code-graph node. The evaluation source preserved the external-repo
