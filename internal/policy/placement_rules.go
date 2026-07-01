@@ -221,6 +221,21 @@ func (rules PlacementRules) PlacementContext(targetPath string) *PlacementGuardC
 	return nil
 }
 
+func (rules PlacementRules) BlockOwnerIDs() []string {
+	ids := make([]string, 0, len(rules.Owners))
+	for _, owner := range rules.Owners {
+		if strings.TrimSpace(owner.Confidence) != "block" {
+			continue
+		}
+		id := strings.TrimSpace(owner.ID)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 func (owner PlacementOwnerRule) placementContext(targetPath, rule string) *PlacementGuardContext {
 	confidence := strings.TrimSpace(owner.Confidence)
 	if confidence == "" {

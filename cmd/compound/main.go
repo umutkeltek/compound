@@ -2730,6 +2730,8 @@ func cmdPolicy(args []string) {
 			AuthorityPath    string                                  `json:"authority_path"`
 			Installed        bool                                    `json:"installed"`
 			OwnerCount       int                                     `json:"owner_count,omitempty"`
+			BlockOwnerCount  int                                     `json:"block_owner_count,omitempty"`
+			BlockOwnerIDs    []string                                `json:"block_owner_ids,omitempty"`
 			OpenWriteCount   int                                     `json:"open_write_count,omitempty"`
 			SourceAuthority  []policy.PlacementSourceAuthorityRecord `json:"source_authority,omitempty"`
 			SourceRecordPath string                                  `json:"source_record_path"`
@@ -2755,6 +2757,8 @@ func cmdPolicy(args []string) {
 		} else {
 			report.Installed = true
 			report.OwnerCount = len(rules.Owners)
+			report.BlockOwnerIDs = rules.BlockOwnerIDs()
+			report.BlockOwnerCount = len(report.BlockOwnerIDs)
 			report.OpenWriteCount = len(rules.OpenWriteGlobs)
 		}
 		records, err := policy.LoadPlacementSourceAuthority(homePath)

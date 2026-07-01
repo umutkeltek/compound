@@ -1261,6 +1261,10 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 		`"placement_guard_mode": "block"`,
 		`"policy_source": "built-in"`,
 		`"owner_count": 1`,
+		`"block_owner_count": 1`,
+		`"block_owner_ids": [
+    "docs"
+  ]`,
 		`"source_role": "evidence_only_input_after_import"`,
 	} {
 		if !strings.Contains(authorityOut, want) {
@@ -1269,6 +1273,43 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 		if !strings.Contains(authorityJSONOut, want) {
 			t.Fatalf("placement authority --json output missing %q:\n%s", want, authorityJSONOut)
 		}
+	}
+
+	canonicalTarget := filepath.Join(userHome, "compound-owners", "docs", "DOC-0001.md")
+	canonicalFixture := writeHookFixture(t, hook.Fixture{
+		Harness: "codex",
+		WorkID:  "work_placement_authority_canonical",
+		Action: &envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            "act_placement_authority_canonical",
+				CreatedAt:     cliTestNow.Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
+				IDs:           envelope.IDs{WorkID: "work_placement_authority_canonical"},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier2",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         "codex",
+			Capability:    "filesystem.write",
+			Action:        "write_file",
+			Target:        envelope.ActionTarget{Kind: "file", Path: canonicalTarget},
+			MutationClass: "local_reversible",
+			Reversibility: "easy",
+			BlastRadius:   "repo",
+		},
+	})
+	var canonicalCode int
+	canonicalOut := captureStdout(t, func() {
+		canonicalCode = runHookCommand([]string{"pre-tool-use", "--enforce", canonicalFixture})
+	})
+	if canonicalCode != 0 {
+		t.Fatalf("canonical placement hook exit = %d, want 0\n%s", canonicalCode, canonicalOut)
+	}
+	if strings.Contains(canonicalOut, "placement-owner:docs") {
+		t.Fatalf("canonical owner home should not emit placement context:\n%s", canonicalOut)
 	}
 
 	target := filepath.Join(userHome, "outside", "DOC-0001.md")

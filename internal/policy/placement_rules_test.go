@@ -36,6 +36,9 @@ func TestPlacementRulesContext(t *testing.T) {
 	if wrongHome == nil || wrongHome.Reason != "canon-filename-outside-owner-home" || wrongHome.OwnerRef != "placement-owner:decisions" {
 		t.Fatalf("canon filename outside owner home should trigger owner context, got %+v", wrongHome)
 	}
+	if got := rules.BlockOwnerIDs(); len(got) != 1 || got[0] != "decisions" {
+		t.Fatalf("block owner ids = %v, want [decisions]", got)
+	}
 
 	deny := rules.PlacementContext(filepath.Join(homeRoot, "Desktop", "decisions", "draft.md"))
 	if deny == nil || deny.Reason != "deny-zone" {
