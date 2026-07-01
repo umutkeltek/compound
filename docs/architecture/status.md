@@ -8,6 +8,19 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- Umut OS `os status --json` now consumes Compound's
+`tool:compound.skill-source-doctor` as an operator-visible skill-source health
+reader. The status snapshot emits `skill_source_doctor` with authority ref
+`compound://registries/capability-graph#tool:compound.skill-source-doctor`,
+root counts, per-root counts, and failing file samples; the human status line
+reports `skill source doctor 3 roots/174 skills ... 0 errors`. Live proof over
+the current machine reports OS/Codex/Claude roots as `62`, `57`, and `55`
+skills with `0` errors. Focused OS test
+`bun test exec-lane/os.capability-packet.test.ts` covers the Compound command
+fixture, aggregate snapshot fields, and human line. This is read-only: no skill
+served, no root mutation, no hook activation, no graph mutation from OS status,
+no route-policy change, no memory promotion.
+
 - `steipete/agent-scripts` `scripts/validate-skills` is now adapted as
   Compound's read-only raw skill-source doctor rather than vendored or enabled
   as an external hook. `compound capability skill-source-doctor
