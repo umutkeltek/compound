@@ -16,27 +16,32 @@ const ReviewPlanSchemaVersion = "compound.product_review_plan.v0.1"
 // evidence into review artifacts. It does not resolve the hypothesis, infer
 // causality, create claims, or mutate a product surface.
 type ReviewPlan struct {
-	SchemaVersion    string          `json:"schema_version"`
-	ID               string          `json:"id"`
-	CreatedAt        string          `json:"created_at"`
-	Status           string          `json:"status"`
-	ProductID        string          `json:"product_id"`
-	HypothesisID     string          `json:"hypothesis_id"`
-	SignalID         string          `json:"signal_id"`
-	ChangeEvent      string          `json:"change_event"`
-	ExpectedEffect   string          `json:"expected_effect"`
-	MetricName       string          `json:"metric_name"`
-	Before           float64         `json:"before"`
-	After            float64         `json:"after"`
-	Window           string          `json:"window"`
-	SignalConfidence float64         `json:"signal_confidence"`
-	Confounders      []string        `json:"confounders,omitempty"`
-	EvidenceRefs     []string        `json:"evidence_refs"`
-	TargetPath       string          `json:"target_path,omitempty"`
-	TargetExists     bool            `json:"target_exists"`
-	TargetHash       string          `json:"target_hash,omitempty"`
-	ReviewDraft      ReviewPlanDraft `json:"review_draft"`
-	Warnings         []string        `json:"warnings,omitempty"`
+	SchemaVersion      string          `json:"schema_version"`
+	ID                 string          `json:"id"`
+	CreatedAt          string          `json:"created_at"`
+	Status             string          `json:"status"`
+	ProductID          string          `json:"product_id"`
+	HypothesisID       string          `json:"hypothesis_id"`
+	SignalID           string          `json:"signal_id"`
+	ChangeEvent        string          `json:"change_event"`
+	ExpectedEffect     string          `json:"expected_effect"`
+	MetricName         string          `json:"metric_name"`
+	Before             float64         `json:"before"`
+	After              float64         `json:"after"`
+	Window             string          `json:"window"`
+	SignalConfidence   float64         `json:"signal_confidence"`
+	Confounders        []string        `json:"confounders,omitempty"`
+	EvidenceRefs       []string        `json:"evidence_refs"`
+	TargetPath         string          `json:"target_path,omitempty"`
+	TargetExists       bool            `json:"target_exists"`
+	TargetHash         string          `json:"target_hash,omitempty"`
+	ReviewDraft        ReviewPlanDraft `json:"review_draft"`
+	ReviewedAt         string          `json:"reviewed_at,omitempty"`
+	ReviewID           string          `json:"review_id,omitempty"`
+	ReviewResult       string          `json:"review_result,omitempty"`
+	ReviewEvidenceID   string          `json:"review_evidence_id,omitempty"`
+	ReviewTransitionID string          `json:"review_transition_id,omitempty"`
+	Warnings           []string        `json:"warnings,omitempty"`
 }
 
 type ReviewPlanDraft struct {

@@ -3317,12 +3317,11 @@ signal:
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_result_supported_refuted_or_inconclusive", "supported")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: \"\"", "rationale: \"signal moved in the expected direction after confounder review\"")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: -1", "confidence: 0.61")
-	reviewPath := filepath.Join(t.TempDir(), "review.yaml")
-	if err := os.WriteFile(reviewPath, []byte(reviewYAML), 0o644); err != nil {
+	if err := os.WriteFile(reviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	reviewOut := captureStdout(t, func() {
-		cmdProduct([]string{"review", reviewPath})
+		cmdProduct([]string{"review", reviewYAMLPath})
 	})
 	if !strings.Contains(reviewOut, "# product review "+plan.ReviewDraft.ReviewID) ||
 		!strings.Contains(reviewOut, "- status: updated") ||
@@ -3335,6 +3334,19 @@ signal:
 	}
 	if doctor.Status != "ok" || doctor.PendingReviewCount != 0 {
 		t.Fatalf("review should clear pending hypothesis debt: %+v", doctor)
+	}
+	reviewsOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "product-reviews", "--json"})
+	})
+	var queue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(reviewsOut), &queue); err != nil {
+		t.Fatalf("parse review queue: %v\n%s", err, reviewsOut)
+	}
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 {
+		t.Fatalf("review queue should treat recorded product review terminal: %+v", queue.Counts)
+	}
+	if len(queue.Items) != 1 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "no_action" || len(queue.Items[0].Actions) != 0 {
+		t.Fatalf("product review queue item should be terminal: %+v", queue.Items)
 	}
 	afterDoctorOut := captureStdout(t, func() {
 		cmdProduct([]string{"doctor", "product:focus_notes"})

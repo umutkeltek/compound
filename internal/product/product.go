@@ -18,6 +18,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/envelope"
 	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 	"compound/internal/writeback"
 
 	"gopkg.in/yaml.v3"
@@ -277,6 +278,22 @@ type ReviewReport struct {
 	EvidenceID   string   `json:"evidence_id"`
 	EvidenceRefs []string `json:"evidence_refs"`
 	TransitionID string   `json:"transition_id,omitempty"`
+}
+
+type ReviewArtifactRecord struct {
+	SchemaVersion string   `json:"schema_version"`
+	ID            string   `json:"id"`
+	CreatedAt     string   `json:"created_at"`
+	Status        string   `json:"status"`
+	ProductID     string   `json:"product_id"`
+	HypothesisID  string   `json:"hypothesis_id"`
+	ReviewID      string   `json:"review_id"`
+	Result        string   `json:"result"`
+	EvidenceID    string   `json:"evidence_id"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+	TransitionID  string   `json:"transition_id,omitempty"`
+	ReviewPath    string   `json:"review_path"`
+	Warnings      []string `json:"warnings,omitempty"`
 }
 
 type SourceIssueReviewReport struct {
@@ -730,7 +747,7 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 	if err := RecordTransition(homePath, tr); err != nil {
 		return ReviewReport{}, err
 	}
-	return ReviewReport{
+	report := ReviewReport{
 		Status:       "updated",
 		ProductID:    review.ProductID,
 		HypothesisID: review.HypothesisID,
@@ -739,7 +756,79 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 		EvidenceID:   evidence.ID,
 		EvidenceRefs: candidate.EvidenceRefs,
 		TransitionID: tr.ID,
-	}, nil
+	}
+	if err := recordReviewArtifactResult(homePath, review, sourcePath, report, now); err != nil {
+		return ReviewReport{}, err
+	}
+	return report, nil
+}
+
+func recordReviewArtifactResult(homePath string, review Review, sourcePath string, report ReviewReport, now time.Time) error {
+	stem := reviewArtifactStem(sourcePath)
+	if stem == "" {
+		return nil
+	}
+	record := ReviewArtifactRecord{
+		SchemaVersion: "compound.product_review_record.v0.1",
+		ID:            reviewartifact.ID("prr_", stem, report.ReviewID, report.EvidenceID, report.TransitionID),
+		CreatedAt:     reviewartifact.Timestamp(now),
+		Status:        "recorded",
+		ProductID:     report.ProductID,
+		HypothesisID:  report.HypothesisID,
+		ReviewID:      report.ReviewID,
+		Result:        report.Result,
+		EvidenceID:    report.EvidenceID,
+		EvidenceRefs:  reviewartifact.Unique(report.EvidenceRefs),
+		TransitionID:  report.TransitionID,
+		ReviewPath:    strings.TrimSpace(sourcePath),
+		Warnings: []string{
+			"does not declare causality",
+			"does not mutate product surfaces",
+			"does not promote memory claims",
+		},
+	}
+	if _, err := reviewartifact.WriteJSON(homePath, "product-reviews", stem+"."+record.ID+".reviewed.json", record, " "); err != nil {
+		return err
+	}
+	plan, err := loadReviewPlanArtifact(homePath, stem)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	plan.Status = "recorded"
+	plan.ReviewedAt = record.CreatedAt
+	plan.ReviewID = report.ReviewID
+	plan.ReviewResult = report.Result
+	plan.ReviewEvidenceID = report.EvidenceID
+	plan.ReviewTransitionID = report.TransitionID
+	_, err = reviewartifact.Write(homePath, "product-reviews", plan.ID, plan, " ", RenderReviewPlan(plan))
+	return err
+}
+
+func reviewArtifactStem(sourcePath string) string {
+	base := filepath.Base(strings.TrimSpace(sourcePath))
+	if !strings.HasSuffix(base, ".review.yaml") {
+		return ""
+	}
+	return strings.TrimSuffix(base, ".review.yaml")
+}
+
+func loadReviewPlanArtifact(homePath, stem string) (ReviewPlan, error) {
+	path := filepath.Join(homePath, "reviews", "product-reviews", stem+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ReviewPlan{}, err
+	}
+	var plan ReviewPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return ReviewPlan{}, err
+	}
+	if plan.ID == "" {
+		return ReviewPlan{}, fmt.Errorf("product review plan %s missing id", path)
+	}
+	return plan, nil
 }
 
 func ApplySourceIssueReview(homePath string, store *mem.Store, review SourceIssueReview, sourcePath string, now time.Time) (SourceIssueReviewReport, error) {

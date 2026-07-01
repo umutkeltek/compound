@@ -1,6 +1,8 @@
 package product
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -26,8 +28,16 @@ func AnnotateReviewQueue(report *reviewartifact.QueueReport) {
 }
 
 func annotateProductReviewItem(item *reviewartifact.QueueItem) {
+	if record, ok := productReviewRecordFromExtras(item.ExtraPaths); ok {
+		item.Status = record.Status
+		item.Readiness = "no_action"
+		item.BlockedReason = ""
+		item.NextAction = "product review recorded"
+		item.Actions = nil
+		return
+	}
 	switch strings.TrimSpace(item.Status) {
-	case "ok", "applied", "resolved", "accepted":
+	case "ok", "applied", "resolved", "accepted", "recorded":
 		item.Readiness = "no_action"
 		item.NextAction = "product review artifact is terminal"
 		return
@@ -77,6 +87,30 @@ func productReviewYAMLPath(item reviewartifact.QueueItem) string {
 	}
 	path := strings.TrimSuffix(item.JSONPath, ".json") + ".review.yaml"
 	return path
+}
+
+func productReviewRecordFromExtras(paths []string) (ReviewArtifactRecord, bool) {
+	var found ReviewArtifactRecord
+	for _, path := range paths {
+		if !strings.HasSuffix(path, ".reviewed.json") {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var record ReviewArtifactRecord
+		if err := json.Unmarshal(data, &record); err != nil {
+			continue
+		}
+		if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.Status) == "" {
+			continue
+		}
+		if found.ID == "" || record.CreatedAt > found.CreatedAt {
+			found = record
+		}
+	}
+	return found, found.ID != ""
 }
 
 func shellJoin(argv []string) string {
