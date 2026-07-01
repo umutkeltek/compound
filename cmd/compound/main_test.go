@@ -35,6 +35,54 @@ import (
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
+func writeCLITrace(t *testing.T, homePath, id, workID string) envelope.TraceEnvelope {
+	t.Helper()
+	trace := envelope.TraceEnvelope{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVTraceEnvelope,
+			ID:            id,
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: workID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Source:          envelope.TraceSource{System: "test", SourceKind: "cli", EventClass: "observe_run"},
+		Actor:           "codex",
+		MutationClass:   "local_reversible",
+		Summary:         "observed CLI run",
+		ToolsModelsUsed: []string{},
+		FilesTouched:    []string{},
+		Outputs:         []string{"trace-output:cli"},
+	}
+	if err := trace.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	traceBytes, err := json.MarshalIndent(trace, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracePath := filepath.Join(homePath, "events", trace.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tracePath, append(traceBytes, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return trace
+}
+
+func containsString(set []string, v string) bool {
+	for _, item := range set {
+		if item == v {
+			return true
+		}
+	}
+	return false
+}
+
 func TestSchemaCLIExportAndValidate(t *testing.T) {
 	listOut := captureStdout(t, func() {
 		cmdSchema([]string{"list"})
@@ -689,6 +737,57 @@ func TestWorkDispatchAdvanceCommandStartsClaimedWork(t *testing.T) {
 	}
 	if after.IDs.TransitionID != "" {
 		t.Fatalf("dispatch advance must not close work: %+v", after.IDs)
+	}
+}
+
+func TestWorkDispatchClosePlanCommandRecordsClosePlanWithoutClosing(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch close-plan command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(ready.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	running, err := store.Advance(ready.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	trace := writeCLITrace(t, homePath, "trace_cli_dispatch_close_plan", running.ID)
+	if _, err := store.ObserveRun(running.ID, work.ObserveRunInput{Actor: "codex", TraceID: trace.ID}, cliTestNow); err != nil {
+		t.Fatalf("observe run: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-close-plan", "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-close-plan output missing JSON:\n%s", out)
+	}
+	var result work.DispatchClosePlanResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse dispatch close-plan result: %v\n%s", err, out)
+	}
+	if result.Status != "close_policy_allowed" || result.Selected == nil || result.Selected.WorkID != ready.ID {
+		t.Fatalf("dispatch close-plan result = %+v, ready=%s", result, ready.ID)
+	}
+	if result.ClosePlan == nil || result.ClosePlanPath == "" || result.ResultPath == "" || !containsString(result.ClosePlan.ProofRefs, trace.ID) {
+		t.Fatalf("dispatch close-plan missing recorded proof plan: %+v", result)
+	}
+	after, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get close-planned work: %v", err)
+	}
+	if after.State != "verifying" || after.IDs.TransitionID != "" {
+		t.Fatalf("dispatch close-plan must not close work: %+v", after)
 	}
 }
 

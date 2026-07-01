@@ -10,6 +10,7 @@ import (
 const DispatchPlanSchemaVersion = "compound.work_dispatch_plan.v0.1"
 const DispatchClaimSchemaVersion = "compound.work_dispatch_claim.v0.1"
 const DispatchAdvanceSchemaVersion = "compound.work_dispatch_advance.v0.1"
+const DispatchClosePlanSchemaVersion = "compound.work_dispatch_close_plan.v0.1"
 
 type DispatchPlanOptions struct {
 	Actor                 string
@@ -64,6 +65,7 @@ type DispatchPlanItem struct {
 	EvidenceRefs     []string              `json:"evidence_refs,omitempty"`
 	ClaimPolicy      *ClaimPolicySummary   `json:"claim_policy,omitempty"`
 	AdvancePolicy    *AdvancePolicySummary `json:"advance_policy,omitempty"`
+	ClosePolicy      *ClosePolicySummary   `json:"close_policy,omitempty"`
 }
 
 type DispatchClaimResult struct {
@@ -105,6 +107,42 @@ type DispatchAdvanceResult struct {
 	NoAction         string             `json:"no_action,omitempty"`
 	Warnings         []string           `json:"warnings,omitempty"`
 	Integrity        []string           `json:"integrity,omitempty"`
+}
+
+type DispatchClosePlanOptions struct {
+	Actor         string
+	RecentLimit   int
+	Outcome       string
+	MoveType      string
+	Capability    string
+	Action        string
+	MutationClass string
+	Reversibility string
+	BlastRadius   string
+	TargetKind    string
+	TargetID      string
+	TargetPath    string
+}
+
+type DispatchClosePlanResult struct {
+	SchemaVersion string             `json:"schema_version"`
+	ID            string             `json:"id"`
+	GeneratedAt   string             `json:"generated_at"`
+	Status        string             `json:"status"`
+	Mode          string             `json:"mode"`
+	Actor         string             `json:"actor"`
+	Outcome       string             `json:"outcome"`
+	MoveType      string             `json:"move_type"`
+	ResultPath    string             `json:"result_path,omitempty"`
+	Counts        WorkbenchCounts    `json:"counts"`
+	Selected      *DispatchPlanItem  `json:"selected,omitempty"`
+	Candidates    []DispatchPlanItem `json:"candidates"`
+	ClosePlanID   string             `json:"close_plan_id,omitempty"`
+	ClosePlanPath string             `json:"close_plan_path,omitempty"`
+	ClosePlan     *ClosePlan         `json:"close_plan,omitempty"`
+	NoAction      string             `json:"no_action,omitempty"`
+	Warnings      []string           `json:"warnings,omitempty"`
+	Integrity     []string           `json:"integrity,omitempty"`
 }
 
 func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
@@ -442,6 +480,155 @@ func (s *Store) RecordDispatchAdvance(result DispatchAdvanceResult) (string, err
 	return path, nil
 }
 
+func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) (DispatchClosePlanResult, error) {
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	outcome := strings.TrimSpace(opts.Outcome)
+	if outcome == "" {
+		outcome = "completed"
+	}
+	moveType := strings.TrimSpace(opts.MoveType)
+	if moveType == "" {
+		moveType = "control_plane_repair"
+	}
+	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: opts.RecentLimit})
+	if err != nil {
+		return DispatchClosePlanResult{}, err
+	}
+	result := DispatchClosePlanResult{
+		SchemaVersion: DispatchClosePlanSchemaVersion,
+		ID:            idFor("wdcp_", actor, outcome, moveType, ts(now)),
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Status:        "no_open_work",
+		Mode:          "proposal_only",
+		Actor:         actor,
+		Outcome:       outcome,
+		MoveType:      moveType,
+		Counts:        report.Counts,
+		Candidates:    []DispatchPlanItem{},
+		Warnings: []string{
+			"records close-plan readiness only",
+			"does not close work",
+			"does not emit receipt or transition",
+			"does not promote memory",
+		},
+		Integrity: append([]string{}, report.Integrity...),
+	}
+	policyBlocked := false
+	awaitingProof := false
+	var blocked *DispatchPlanItem
+	for _, item := range report.Open {
+		candidate := dispatchClosePlanCandidate(item, actor, outcome, moveType)
+		if candidate.Action == "plan_close" {
+			closePlan, err := s.dispatchClosePlan(item.WorkID, now, opts, actor, outcome, moveType, false)
+			if err != nil {
+				candidate.Reason = strings.TrimSpace(candidate.Reason + "; close policy plan failed: " + err.Error())
+				policyBlocked = true
+			} else {
+				policySummary := closePlan.Policy
+				candidate.ClosePolicy = &policySummary
+				candidate.Command = append([]string{}, closePlan.CloseCommand...)
+				candidate.EvidenceRefs = mergeUnique(candidate.EvidenceRefs, closePlan.ProofRefs)
+				if !policySummary.Allowed || closePlan.NoAction != "" {
+					policyBlocked = true
+					candidate.Reason = strings.TrimSpace(candidate.Reason + "; close policy " + policySummary.Outcome)
+					if blocked == nil {
+						copyCandidate := candidate
+						blocked = &copyCandidate
+					}
+				}
+			}
+		}
+		if candidate.Action == "await_proof" {
+			awaitingProof = true
+		}
+		result.Candidates = append(result.Candidates, candidate)
+		if result.Selected == nil && candidate.Action == "plan_close" && candidate.ClosePolicy != nil && candidate.ClosePolicy.Allowed {
+			selected := candidate
+			result.Selected = &selected
+			result.Status = "close_policy_allowed"
+		}
+	}
+	if result.Selected == nil && blocked != nil {
+		result.Selected = blocked
+	}
+	if result.Selected != nil {
+		closePlan, err := s.dispatchClosePlan(result.Selected.WorkID, now, opts, actor, outcome, moveType, true)
+		if err != nil {
+			return DispatchClosePlanResult{}, err
+		}
+		result.ClosePlan = &closePlan
+		result.ClosePlanID = closePlan.ID
+		result.ClosePlanPath = closePlan.PlanPath
+		result.Status = closePlan.Status
+		if !closePlan.Policy.Allowed || closePlan.NoAction != "" {
+			result.NoAction = "selected work close policy does not allow dispatch"
+		}
+		path, err := s.RecordDispatchClosePlan(result)
+		if err != nil {
+			return DispatchClosePlanResult{}, err
+		}
+		result.ResultPath = path
+		return result, nil
+	}
+	switch {
+	case len(result.Candidates) == 0:
+		result.NoAction = "workbench has no open work"
+	case policyBlocked:
+		result.Status = "close_policy_blocked"
+		result.NoAction = "verifying work exists but close policy does not allow dispatch"
+	case awaitingProof:
+		result.Status = "awaiting_proof"
+		result.NoAction = "verifying work exists without artifact, verification, or observed-run evidence"
+	case report.Counts.InProgress > 0:
+		result.Status = "in_progress_only"
+		result.NoAction = "open work is not verifying with proof evidence"
+	default:
+		result.Status = "no_closeable_work"
+		result.NoAction = "open work is not ready for close planning"
+	}
+	path, err := s.RecordDispatchClosePlan(result)
+	if err != nil {
+		return DispatchClosePlanResult{}, err
+	}
+	result.ResultPath = path
+	return result, nil
+}
+
+func (s *Store) dispatchClosePlan(workID string, now time.Time, opts DispatchClosePlanOptions, actor, outcome, moveType string, record bool) (ClosePlan, error) {
+	return s.ClosePlan(workID, now, ClosePlanOptions{
+		Actor:         actor,
+		Outcome:       outcome,
+		MoveType:      moveType,
+		Capability:    opts.Capability,
+		Action:        opts.Action,
+		MutationClass: opts.MutationClass,
+		Reversibility: opts.Reversibility,
+		BlastRadius:   opts.BlastRadius,
+		TargetKind:    opts.TargetKind,
+		TargetID:      opts.TargetID,
+		TargetPath:    opts.TargetPath,
+		Record:        record,
+	})
+}
+
+func (s *Store) RecordDispatchClosePlan(result DispatchClosePlanResult) (string, error) {
+	if strings.TrimSpace(result.ID) == "" {
+		return "", os.ErrInvalid
+	}
+	dir := filepath.Join(s.home, "dispatch-close-plans")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, result.ID+".json")
+	if err := s.writeJSON(path, &result); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 	out := DispatchPlanItem{
 		WorkID:           item.WorkID,
@@ -467,6 +654,39 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		out.Action = "inspect"
 	}
 	return out
+}
+
+func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType string) DispatchPlanItem {
+	out := dispatchCandidate(item, actor)
+	out.Command = nil
+	switch item.State {
+	case "verifying":
+		if hasCloseProofEvidence(item) {
+			out.Action = "plan_close"
+			out.Command = []string{"compound", "work", "close-plan", item.WorkID, "--outcome", outcome, "--move-type", moveType, "--actor", actor}
+			out.Reason = "verifying with proof evidence"
+			out.EvidenceRefs = mergeUnique(out.EvidenceRefs, item.ArtifactIDs, item.VerificationIDs)
+		} else {
+			out.Action = "await_proof"
+			out.Reason = "verifying without artifact, verification, or observed-run evidence"
+		}
+	case "running":
+		out.Action = "observe"
+		out.Reason = "running work needs observed-run proof before close planning"
+	case "claimed":
+		out.Action = "advance_running"
+	case "ready":
+		out.Action = "claim_first"
+	case "proposed", "admitted":
+		out.Action = "prepare"
+	case "held", "blocked":
+		out.Action = "review"
+	}
+	return out
+}
+
+func hasCloseProofEvidence(item WorkbenchItem) bool {
+	return len(item.ArtifactIDs) > 0 || len(item.VerificationIDs) > 0 || len(item.RunObservations) > 0
 }
 
 func dispatchAdvanceCandidate(item WorkbenchItem, actor string) DispatchPlanItem {

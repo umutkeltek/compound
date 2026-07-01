@@ -296,3 +296,111 @@ func TestDispatchAdvanceBlockedByPolicyDoesNotAdvance(t *testing.T) {
 		t.Fatalf("blocked dispatch advance mutated work: %+v", after)
 	}
 }
+
+func TestDispatchClosePlanRecordsClosePlanWithoutClosing(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "dispatch close-plan uses observed proof")
+	trace := writeTrace(t, s, "trace_dispatch_close_plan_observed", w.ID)
+	observed, err := s.ObserveRun(w.ID, ObserveRunInput{
+		Actor:   "codex",
+		TraceID: trace.ID,
+		Note:    "ready for close planning",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClosePlan(fixedNow, DispatchClosePlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "close_policy_allowed" || result.Selected == nil || result.Selected.WorkID != w.ID {
+		t.Fatalf("dispatch close-plan result = %+v, work=%s", result, w.ID)
+	}
+	if result.Selected.ClosePolicy == nil || !result.Selected.ClosePolicy.Allowed {
+		t.Fatalf("selected item missing allowed close policy: %+v", result.Selected)
+	}
+	if result.ClosePlan == nil || result.ClosePlanID == "" || result.ClosePlanPath == "" || result.ResultPath == "" {
+		t.Fatalf("dispatch close-plan did not record close plan/result: %+v", result)
+	}
+	if _, err := os.Stat(result.ClosePlanPath); err != nil {
+		t.Fatalf("close plan not recorded: %v", err)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch close-plan result not recorded: %v", err)
+	}
+	if !contains(result.ClosePlan.ProofRefs, trace.ID) || len(result.ClosePlan.RunObservations) != 1 || result.ClosePlan.RunObservations[0].ID != observed.ID {
+		t.Fatalf("close plan missing observed proof: proof=%v observations=%+v", result.ClosePlan.ProofRefs, result.ClosePlan.RunObservations)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" || after.IDs.TransitionID != "" {
+		t.Fatalf("dispatch close-plan must not close work: %+v", after)
+	}
+}
+
+func TestDispatchClosePlanRequiresProofEvidence(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "dispatch close-plan waits for proof")
+	verifying, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClosePlan(fixedNow, DispatchClosePlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "awaiting_proof" || result.Selected != nil || result.ClosePlan != nil {
+		t.Fatalf("dispatch close-plan should wait for proof: %+v", result)
+	}
+	if result.ResultPath == "" {
+		t.Fatalf("awaiting-proof dispatch close-plan should record result: %+v", result)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" || len(after.RunIDs) != len(verifying.RunIDs) || after.IDs.TransitionID != "" {
+		t.Fatalf("awaiting-proof dispatch close-plan mutated work: %+v", after)
+	}
+}
+
+func TestDispatchClosePlanBlockedByPolicyRecordsPlanWithoutClosing(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "dispatch close-plan policy hold")
+	trace := writeTrace(t, s, "trace_dispatch_close_plan_blocked", w.ID)
+	observed, err := s.ObserveRun(w.ID, ObserveRunInput{Actor: "codex", TraceID: trace.ID}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRuns := append([]string{}, observed.Work.RunIDs...)
+	baselinePolicy := observed.Work.PolicyDecisionID
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClosePlan(fixedNow, DispatchClosePlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "close_policy_blocked" || result.Selected == nil || result.ClosePlan == nil || result.ClosePlan.Policy.Allowed {
+		t.Fatalf("blocked dispatch close-plan result = %+v", result)
+	}
+	if result.ClosePlanPath == "" || result.ResultPath == "" {
+		t.Fatalf("blocked dispatch close-plan should record close plan/result: %+v", result)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || after.IDs.TransitionID != "" {
+		t.Fatalf("blocked dispatch close-plan mutated work: %+v", after)
+	}
+}
