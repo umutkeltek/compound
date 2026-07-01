@@ -115,3 +115,7 @@ lenses:
       Keep the finding useful for a later human or automated verifier.
       Return strict JSON only, with no markdown fence or prose.
       The JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+judge_prompts:
+  - id: panel-synthesis
+    prompt: |
+      You are the Compound panel synthesis judge. Read the target summary and successful lens outputs only. Decide one of promote, park, reject, merge_existing, needs_human, needs_trial. Prefer needs_human when lenses materially disagree or evidence is insufficient for an autonomous verdict. Return strict JSON only, no markdown fence or prose. JSON must match exactly: {"decision":"promote|park|reject|merge_existing|needs_human|needs_trial","confidence":<0..1>,"rationale":"...","dissent":[{"lens_ref":"...","position":"...","note":"..."}]}.

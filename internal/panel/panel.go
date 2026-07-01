@@ -61,6 +61,7 @@ type ExcludedLens struct {
 type RoutePlan struct {
 	AuthorityRef string        `json:"authority_ref"`
 	LensPlanID   string        `json:"lens_plan_id"`
+	LensLane     LaneRef       `json:"lens_lane"`
 	JudgePlanID  string        `json:"judge_plan_id"`
 	JudgeLane    LaneRef       `json:"judge_lane"`
 	OmittedLanes []OmittedLane `json:"omitted_lanes"`
@@ -101,6 +102,7 @@ type LensFinding struct {
 	Usage            Usage     `json:"usage"`
 	Findings         []Finding `json:"findings"`
 	Status           string    `json:"status"`
+	Error            string    `json:"error,omitempty"`
 }
 
 type Usage struct {

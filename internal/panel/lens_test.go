@@ -104,8 +104,8 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
-	if !first.Changed || first.NodesChanged != 6 || first.PromptsChanged != 6 || !first.AuthorityAppended {
-		t.Fatalf("first import result = %+v, want all content changed", first)
+	if !first.Changed || first.NodesChanged != 6 || first.PromptsChanged != 7 || !first.AuthorityAppended {
+		t.Fatalf("first import result = %+v, want lens and judge prompt content changed", first)
 	}
 	nodesBefore := readTestFile(t, filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
 	authorityBefore := readTestFile(t, filepath.Join(homePath, "registries", "lens-source-authority.jsonl"))

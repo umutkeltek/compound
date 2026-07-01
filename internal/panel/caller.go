@@ -47,7 +47,7 @@ func (f FixtureCaller) Call(ctx context.Context, req CallRequest) (CallResult, e
 	}
 	digest := targetDigest(targetRef)
 	var path string
-	if req.LensID == "judge" {
+	if req.LensID == "judge" || strings.HasPrefix(req.LensID, "judge:") {
 		path = filepath.Join(f.Dir, "judge-responses", digest+".json")
 	} else {
 		path = filepath.Join(f.Dir, "lens-responses", req.LensID, digest+".json")

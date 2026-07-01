@@ -21,8 +21,9 @@ const LensManifestSchemaVersion = "compound.lens_manifest.v0.1"
 const LensSourceAuthoritySchemaVersion = "compound.lens_source_authority.v0.1"
 
 type lensManifest struct {
-	SchemaVersion string              `yaml:"schema_version"`
-	Lenses        []lensManifestEntry `yaml:"lenses"`
+	SchemaVersion string                     `yaml:"schema_version"`
+	Lenses        []lensManifestEntry        `yaml:"lenses"`
+	JudgePrompts  []judgePromptManifestEntry `yaml:"judge_prompts"`
 }
 
 type lensManifestEntry struct {
@@ -31,6 +32,11 @@ type lensManifestEntry struct {
 	Triggers []string `yaml:"triggers"`
 	Weight   float64  `yaml:"weight"`
 	Prompt   string   `yaml:"prompt"`
+}
+
+type judgePromptManifestEntry struct {
+	ID     string `yaml:"id"`
+	Prompt string `yaml:"prompt"`
 }
 
 type ImportResult struct {
@@ -146,6 +152,28 @@ func ImportLensManifest(homePath, manifestPath string, now time.Time) (ImportRes
 		result.NodeIDs = append(result.NodeIDs, nodeID)
 		result.PromptSHA256[nodeID] = sha256HexString(promptBody)
 	}
+	for _, entry := range manifest.JudgePrompts {
+		promptID := "judge:" + entry.ID
+		promptBody := []byte(entry.Prompt)
+		promptPath := filepath.Join(promptDir, promptID+".md")
+		existing, err := os.ReadFile(promptPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return ImportResult{}, err
+			}
+			if err := os.WriteFile(promptPath, promptBody, 0o644); err != nil {
+				return ImportResult{}, err
+			}
+			result.PromptsChanged++
+		} else if !bytes.Equal(existing, promptBody) {
+			if err := os.WriteFile(promptPath, promptBody, 0o644); err != nil {
+				return ImportResult{}, err
+			}
+			result.PromptsChanged++
+		}
+		result.PromptSHA256[promptID] = sha256HexString(promptBody)
+	}
+
 	sort.Strings(result.NodeIDs)
 
 	rec := LensSourceAuthorityRecord{
@@ -216,6 +244,19 @@ func decodeLensManifest(data []byte) (lensManifest, error) {
 		}
 		if lens.Weight < 0 {
 			return lensManifest{}, fmt.Errorf("lenses[%d].weight must be >= 0", i)
+		}
+	}
+	seenJudgePrompts := map[string]bool{}
+	for i, prompt := range manifest.JudgePrompts {
+		if !lensSlugRE.MatchString(prompt.ID) {
+			return lensManifest{}, fmt.Errorf("judge_prompts[%d].id must be slug, got %q", i, prompt.ID)
+		}
+		if seenJudgePrompts[prompt.ID] {
+			return lensManifest{}, fmt.Errorf("duplicate judge prompt id %q", prompt.ID)
+		}
+		seenJudgePrompts[prompt.ID] = true
+		if strings.TrimSpace(prompt.Prompt) == "" {
+			return lensManifest{}, fmt.Errorf("judge_prompts[%d].prompt required", i)
 		}
 	}
 	return manifest, nil
