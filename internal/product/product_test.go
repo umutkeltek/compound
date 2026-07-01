@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -341,6 +342,158 @@ func TestValidateSignalExportRejectsUnsupportedSource(t *testing.T) {
 	doc.Source.Kind = "spreadsheet"
 	if _, err := AdaptSignalExport(doc); err == nil {
 		t.Fatal("unsupported signal export source should be rejected")
+	}
+}
+
+func TestSignalExportProviderAllowlistAndCanonicalMetricMapDriveImport(t *testing.T) {
+	type metricCase struct {
+		metricName    string
+		canonicalName string
+	}
+
+	metricByProvider := map[string]metricCase{}
+	metricKeys := make([]string, 0, len(canonicalSignalMetricNames))
+	for key := range canonicalSignalMetricNames {
+		metricKeys = append(metricKeys, key)
+	}
+	sort.Strings(metricKeys)
+	for _, key := range metricKeys {
+		provider, metricName, ok := strings.Cut(key, ":")
+		if !ok {
+			t.Fatalf("canonical metric key %q must be provider:metric", key)
+		}
+		canonicalName := canonicalSignalMetricNames[key]
+		if _, ok := signalExportProviderAllowlist[provider]; !ok {
+			t.Fatalf("canonical metric %q is wired for unsupported provider %q", key, provider)
+		}
+		if got := canonicalMetricName(provider, metricName); got != canonicalName {
+			t.Fatalf("canonicalMetricName(%q, %q) = %q; want %q", provider, metricName, got, canonicalName)
+		}
+		if _, exists := metricByProvider[provider]; !exists {
+			metricByProvider[provider] = metricCase{metricName: metricName, canonicalName: canonicalName}
+		}
+	}
+
+	for _, provider := range []string{"google_search_console", "google_analytics", "google_adsense"} {
+		if _, ok := signalExportProviderAllowlist[provider]; !ok {
+			t.Fatalf("new Google provider %q missing from signal export allowlist", provider)
+		}
+	}
+
+	providers := make([]string, 0, len(signalExportProviderAllowlist))
+	for provider := range signalExportProviderAllowlist {
+		providers = append(providers, provider)
+	}
+	sort.Strings(providers)
+	for _, provider := range providers {
+		provider := provider
+		metric, ok := metricByProvider[provider]
+		if !ok {
+			t.Fatalf("provider %q missing canonical metric map entry", provider)
+		}
+
+		t.Run(provider, func(t *testing.T) {
+			home := t.TempDir()
+			store, err := mem.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			doc := SignalExportDocument{
+				SchemaVersion: SignalExportSchemaVersion,
+				Source:        SignalSource{Kind: provider, Ref: "fixture:" + provider + ":example.com:2026-07-01"},
+				ProductID:     "product:example-site",
+				Surface:       "provider-ingress",
+				ChangeEvent:   "Provider metric snapshot observed.",
+				Metric: ExportMetric{
+					Name: metric.metricName,
+					Before: ExportMetricPoint{
+						Value:  100,
+						Period: "2026-06-01/2026-06-30",
+						Ref:    "fixture:" + provider + ":before",
+					},
+					After: ExportMetricPoint{
+						Value:  100,
+						Period: "2026-06-01/2026-06-30",
+						Ref:    "fixture:" + provider + ":after",
+					},
+				},
+				Window:     "neutral snapshot 2026-07-01",
+				Confidence: 0.5,
+				Confounders: []string{
+					"neutral provider snapshot; no causal movement implied",
+				},
+				Interpretations: []Interpretation{{
+					Lens:  "provider_snapshot",
+					Claim: "records provider metric observation only",
+				}},
+				NextAction:   "Review alongside product context before taking action.",
+				EvidenceRefs: []string{"fixture:" + provider + ":source-export"},
+				ObservedAt:   "2026-07-01T00:00:00Z",
+			}
+			data, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), provider+".json")
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			loaded, err := LoadSignal(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if loaded.Signal.MetricName != metric.canonicalName || loaded.Signal.Before != loaded.Signal.After {
+				t.Fatalf("loaded signal = %+v; want metric %q with neutral movement", loaded.Signal, metric.canonicalName)
+			}
+
+			report, err := ApplySignal(home, store, loaded, path, tProduct)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Status != "ok" || len(report.SignalIDs) != 1 || len(report.EvidenceIDs) != 1 || len(report.TransitionIDs) != 1 {
+				t.Fatalf("report = %+v", report)
+			}
+			if len(report.ClaimIDs) != 0 || len(report.HypothesisIDs) != 0 {
+				t.Fatalf("signal import promoted claims or hypotheses: %+v", report)
+			}
+
+			signals, err := loadSignals(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(signals) != 1 || signals[0].MetricName != metric.canonicalName || signals[0].Before != signals[0].After {
+				t.Fatalf("stored signals = %+v; want one neutral %s signal", signals, metric.canonicalName)
+			}
+			if signals[0].ChangeEvent != "Provider metric snapshot observed." || !hasString(signals[0].Confounders, "neutral provider snapshot; no causal movement implied") {
+				t.Fatalf("stored signal should remain neutral observation: %+v", signals[0])
+			}
+			for _, interpretation := range signals[0].Interpretations {
+				if strings.Contains(strings.ToLower(interpretation.Claim), "caus") {
+					t.Fatalf("interpretation claim should not assert causality: %+v", interpretation)
+				}
+			}
+
+			hypotheses, err := loadHypotheses(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(hypotheses) != 0 {
+				t.Fatalf("hypotheses = %+v, want none", hypotheses)
+			}
+			claims, err := os.ReadFile(filepath.Join(home, "ledger", "claims.jsonl"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(claims)) != "" {
+				t.Fatalf("claims ledger should be empty, got %s", string(claims))
+			}
+			transition := readTransition(t, home, report.TransitionIDs[0])
+			if !strings.Contains(transition.StateDelta, "no product surface changed") {
+				t.Fatalf("transition should not imply product change: %+v", transition)
+			}
+		})
 	}
 }
 

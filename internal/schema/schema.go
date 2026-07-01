@@ -47,6 +47,9 @@ func Contracts() []Contract {
 		{Name: "product_signal", Description: "product signal document", Type: reflect.TypeOf(product.SignalDocument{}), Validate: validateProductSignal},
 		{Name: "panel_run", Description: "perspective panel run record", Type: reflect.TypeOf(panel.Run{}), Validate: validatePanelRun},
 
+		{Name: "product_signal_export", Description: "product signal source-export document", Type: reflect.TypeOf(product.SignalExportDocument{}), Validate: validateProductSignalExport},
+
+		{Name: "product_loops", Description: "product feedback loop read model", Type: reflect.TypeOf(product.LoopModel{}), Validate: validateProductLoops},
 		{Name: "route_evidence", Description: "execution route evidence", Type: reflect.TypeOf(routeevidence.Evidence{}), Validate: validateRouteEvidence},
 	}
 	sort.Slice(contracts, func(i, j int) bool { return contracts[i].Name < contracts[j].Name })
@@ -267,6 +270,22 @@ func validatePanelRun(_ string, data []byte) error {
 		return err
 	}
 	return run.Validate()
+}
+
+func validateProductSignalExport(path string, data []byte) error {
+	var doc product.SignalExportDocument
+	if err := decodeJSONOrYAML(path, data, &doc); err != nil {
+		return err
+	}
+	return product.ValidateSignalExportDocument(doc)
+}
+
+func validateProductLoops(path string, data []byte) error {
+	var model product.LoopModel
+	if err := decodeStrictJSON(path, data, &model); err != nil {
+		return err
+	}
+	return model.Validate()
 }
 
 func validateRouteEvidence(_ string, data []byte) error {

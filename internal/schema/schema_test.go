@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/product"
 )
 
 func TestExportContextPackSchemaIncludesCapabilityOffers(t *testing.T) {
@@ -49,6 +50,38 @@ func TestValidateContextPackUsesEnvelopeSemantics(t *testing.T) {
 	badPath := writeSchemaFixture(t, "bad-context-pack.json", data)
 	if err := Validate("context_pack", badPath); err == nil || !strings.Contains(err.Error(), "excluded") {
 		t.Fatalf("expected excluded validation error, got %v", err)
+	}
+}
+
+func TestProductSignalExportContractValidatesSourceExport(t *testing.T) {
+	doc, err := Export("product_signal_export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["$id"] != "compound://schemas/product_signal_export" {
+		t.Fatalf("schema id = %v", doc["$id"])
+	}
+	if err := Validate("product_signal_export", "../../fixtures/product/source-export.gsc.yaml"); err != nil {
+		t.Fatal(err)
+	}
+
+	badPath := writeSchemaFixture(t, "bad-product-signal-export.yaml", []byte(`schema_version: compound.product_signal_export.v0.1
+source:
+  kind: spreadsheet
+  ref: fixture:spreadsheet
+product_id: product:example-site
+surface: provider-ingress
+change_event: Provider metric snapshot observed.
+metric:
+  name: clicks
+  before: {value: 1, ref: fixture:before}
+  after: {value: 1, ref: fixture:after}
+window: neutral snapshot
+confidence: 0.5
+evidence_refs: [fixture:bad-export]
+`))
+	if err := Validate("product_signal_export", badPath); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("expected unsupported provider validation error, got %v", err)
 	}
 }
 
@@ -120,4 +153,45 @@ func writeSchemaFixture(t *testing.T, name string, data []byte) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestProductLoopsContractValidatesReadModel(t *testing.T) {
+	doc, err := Export("product_loops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["$id"] != "compound://schemas/product_loops" {
+		t.Fatalf("schema id = %v", doc["$id"])
+	}
+	model := product.LoopModel{
+		SchemaVersion: product.LoopModelSchemaVersion,
+		GeneratedAt:   "2026-07-02T12:00:00Z",
+		Products: []product.ProductLoop{{
+			ProductID: "product:schema-loop",
+			Name:      "product:schema-loop",
+			SignalsByMetric: map[string][]product.LoopSignal{
+				"gsc_clicks": {{
+					SignalID:   "sig_schema_gsc",
+					Provider:   "google_search_console",
+					Metric:     "gsc_clicks",
+					Before:     1,
+					After:      2,
+					ObservedAt: "2026-07-02T11:00:00Z",
+				}},
+			},
+			OpenSourceIssues: product.LoopSourceIssues{},
+			Freshness: product.LoopFreshness{
+				LatestSignalAt: "2026-07-02T11:00:00Z",
+				Stale:          false,
+			},
+		}},
+	}
+	data, err := json.Marshal(model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeSchemaFixture(t, "product-loops.json", data)
+	if err := Validate("product-loops", path); err != nil {
+		t.Fatal(err)
+	}
 }
