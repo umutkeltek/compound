@@ -8,6 +8,23 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `JuliusBrussee/caveman` now has token-economy compression reference
+evidence attached to existing `procedure:token-economy` as index-only
+material, rather than serving a global communication skill. The evaluation
+source compared public `README.md`, `skills/caveman/SKILL.md`,
+`skills/caveman-compress/SKILL.md`, and `evals/README.md` against the
+token-economy owner, imported evidence-only:
+`capability_evaluations_4e701ffec733` eval node
+`eval:capability-evaluation-external-juliusbrussee-caveman-token-economy-reference-20260701`
+with `evaluated_by:procedure:token-economy->eval:...`. Verdict
+`downgrade_to_index` intentionally creates no `validated_by` edge. Unknown
+skipped count `0`. Authority now reports `501` nodes / `107` edges
+`evaluated_by=9`, `validated_by=6`; token-economy prompts keep `tool:headroom`
+and `procedure:token-economy` as current owners. No installer run, no global
+communication-style change, no hook/plugin/MCP activation, no memory-file
+compression, no AGENTS/CLAUDE rewrite, no route-policy change, no memory
+promotion.
+
 - `code-yeongyu/oh-my-openagent` now has multi-harness reference evidence
 attached to existing `procedure:agent-harness-doctrine` as index-only
 comparative material for future Agent Workbench / harness-adapter design,
