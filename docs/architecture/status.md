@@ -8,6 +8,8 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `os status --json` now consumes the same Compound capability graph authority served in `/mcp`: `compound://registries/capability-graph`. The status snapshot records source-handoff count, total node/edge counts, and per-source summaries for skill manifest, tool resolver, plugin board, and live mcporter catalog while keeping OS skill/tool/plugin generated views fallback/evidence-only and not executing MCP tools.
+
 - `os status --json` now consumes the same Compound event TraceEnvelope authority served in `/operate`: `compound://events/trace-envelopes`. The status snapshot records `event_trace_authority.status=ok`, trace count, source-authority id/count, recent traces, and the OS `events/control-events.ndjson` fallback/evidence-only role without executing webhooks or mutating source event streams.
 
 - `os status --json` now consumes the same Compound route evidence authority served in `/operate`: `compound://ledger/execution-route-evidence`. The status snapshot records `route_evidence.status=ok`, route/provider-ledger counts, token/cost coverage, and the OS provider-call ledger fallback/evidence-only role. This is metadata-only route evidence, not task success, billing truth, route policy review, provider ranking, or provider/gateway config mutation.
