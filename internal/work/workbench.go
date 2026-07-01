@@ -82,10 +82,10 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		report.Counts.ByState[w.State]++
 		if terminalStates[w.State] {
 			report.Counts.Terminal++
-			if item.ReceiptID == "" {
+			if terminalProofRequired(w.State) && item.ReceiptID == "" {
 				report.Counts.MissingReceipt++
 			}
-			if item.TransitionID == "" {
+			if terminalProofRequired(w.State) && item.TransitionID == "" {
 				report.Counts.MissingTransition++
 			}
 			report.Recent = append(report.Recent, item)
@@ -214,6 +214,10 @@ func openReason(state string) string {
 	default:
 		return ""
 	}
+}
+
+func terminalProofRequired(state string) bool {
+	return state == "completed" || state == "failed"
 }
 
 func statePriority(state string) int {

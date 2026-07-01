@@ -73,6 +73,27 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 }
 
+func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "cancelled work is terminal without completion proof"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Summary: "cancel test artifact"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Terminal != 1 || report.Counts.MissingReceipt != 0 || report.Counts.MissingTransition != 0 {
+		t.Fatalf("cancelled work should not count as missing completion proof: %+v", report.Counts)
+	}
+	if len(report.Recent) != 1 || report.Recent[0].WorkID != w.ID || report.Recent[0].State != "cancelled" {
+		t.Fatalf("recent cancelled work missing: %+v", report.Recent)
+	}
+}
+
 func assertWorkbenchItem(t *testing.T, items []WorkbenchItem, workID, reason, next string) {
 	t.Helper()
 	for _, item := range items {
