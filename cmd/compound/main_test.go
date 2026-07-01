@@ -24,6 +24,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
+	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
 	"compound/internal/sourceobs"
@@ -458,6 +459,46 @@ func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
 	}
 	if len(report.Recent) != 1 || report.Recent[0].ReceiptID != closed.Receipt.ID || report.Recent[0].TransitionID != closed.Transition.ID {
 		t.Fatalf("recent item = %+v", report.Recent)
+	}
+}
+
+func TestReviewsCommandShowsReviewQueue(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "decision-lifecycle-repairs", "dlrp_cli", map[string]any{
+		"id":           "dlrp_cli",
+		"status":       "review_required",
+		"repair_count": 3,
+	}, " ", "# Review\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.Write(homePath, "route-policy", "rpp_cli", map[string]any{
+		"id":     "rpp_cli",
+		"status": "ok",
+	}, " ", "# OK\n"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { cmdReviews([]string{"--json"}) })
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("reviews output missing JSON:\n%s", out)
+	}
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != reviewartifact.QueueSchemaVersion || report.Counts.Total != 2 || report.Counts.ReviewRequired != 1 || report.Counts.OK != 1 {
+		t.Fatalf("reviews report = %+v", report)
+	}
+	if report.Items[0].ID != "dlrp_cli" || report.Items[0].RepairCount != 3 {
+		t.Fatalf("first review item = %+v", report.Items[0])
+	}
+	textOut := captureStdout(t, func() { cmdReviews([]string{"--area", "decision-lifecycle-repairs"}) })
+	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {
+		t.Fatalf("filtered reviews output =\n%s", textOut)
 	}
 }
 

@@ -274,3 +274,81 @@ func TestWriteRaw(t *testing.T) {
 		t.Fatalf("WriteRaw altered bytes: %q != %q", string(b), string(body))
 	}
 }
+
+func TestQueueSummarizesReviewArtifacts(t *testing.T) {
+	home := t.TempDir()
+	_, err := Write(home, "decision-lifecycle-repairs", "dlrp_a", map[string]any{
+		"id":            "dlrp_a",
+		"status":        "review_required",
+		"created_at":    "2026-07-01T00:00:00Z",
+		"source_kind":   "note",
+		"source_root":   "owner-root",
+		"repair_count":  2,
+		"evidence_refs": []string{"e2", "e1", "e1"},
+	}, " ", "# Review\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteRaw(home, "decision-lifecycle-repairs", "dlrp_a.review.yaml", []byte("status: pending\n")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Write(home, "decision-lifecycle-repairs", "dlrp_ok", map[string]any{
+		"id":     "dlrp_ok",
+		"status": "ok",
+	}, " ", "# OK\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Write(home, "route-policy", "rpp_b", map[string]any{
+		"id":          "rpp_b",
+		"status":      "held",
+		"repairs":     []string{"one", "two", "three"},
+		"target_path": "target.md",
+	}, " ", "# Route\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := Queue(home, QueueOptions{}, time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SchemaVersion != QueueSchemaVersion || report.GeneratedAt != "2026-07-01T01:00:00Z" {
+		t.Fatalf("bad report identity: %+v", report)
+	}
+	if report.Counts.Total != 3 || report.Counts.ReviewRequired != 2 || report.Counts.OK != 1 {
+		t.Fatalf("bad counts: %+v", report.Counts)
+	}
+	if report.Counts.ByArea["decision-lifecycle-repairs"] != 2 || report.Counts.ByArea["route-policy"] != 1 {
+		t.Fatalf("bad area counts: %+v", report.Counts.ByArea)
+	}
+	if report.Items[0].ID != "dlrp_a" || report.Items[0].Status != "review_required" {
+		t.Fatalf("review-required item should sort first: %+v", report.Items)
+	}
+	if report.Items[0].MarkdownPath == "" || len(report.Items[0].ExtraPaths) != 1 {
+		t.Fatalf("expected markdown and draft sibling: %+v", report.Items[0])
+	}
+	if strings.Join(report.Items[0].EvidenceRefs, ",") != "e1,e2" {
+		t.Fatalf("evidence refs not unique/sorted: %+v", report.Items[0].EvidenceRefs)
+	}
+	if report.Items[1].RepairCount != 3 {
+		t.Fatalf("repair count should fall back to repairs length: %+v", report.Items[1])
+	}
+	filtered, err := Queue(home, QueueOptions{Area: "route-policy"}, time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filtered.Counts.Total != 1 || filtered.Items[0].Area != "route-policy" {
+		t.Fatalf("area filter failed: %+v", filtered)
+	}
+}
+
+func TestQueueEmptyReviews(t *testing.T) {
+	home := t.TempDir()
+	report, err := Queue(home, QueueOptions{}, time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Total != 0 || len(report.Items) != 0 {
+		t.Fatalf("empty queue = %+v", report)
+	}
+}

@@ -36,6 +36,7 @@ import (
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
+	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 	"compound/internal/runtimebinding"
 	"compound/internal/schema"
@@ -87,6 +88,8 @@ func main() {
 		cmdWork(os.Args[2:])
 	case "workbench":
 		cmdWorkbench(os.Args[2:])
+	case "reviews":
+		cmdReviews(os.Args[2:])
 	case "policy":
 		cmdPolicy(os.Args[2:])
 	case "hook":
@@ -198,6 +201,7 @@ usage:
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create|import-packet|show|list|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
+  compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
 	compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
@@ -2947,6 +2951,64 @@ func cmdWorkbench(args []string) {
 		for _, item := range report.Recent {
 			fmt.Printf("- %s %-10s receipt=%s transition=%s move=%s changed=%v\n",
 				item.WorkID, item.State, emptyDash(item.ReceiptID), emptyDash(item.TransitionID), emptyDash(item.MoveType), item.Changed)
+		}
+	}
+}
+
+func cmdReviews(args []string) {
+	jsonOut := hasFlag(args, "--json")
+	area := valueFlag(args, "--area")
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+		case "--area":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound reviews [--json] [--area A]")
+				os.Exit(2)
+			}
+			i++
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound reviews [--json] [--area A]")
+			os.Exit(2)
+		}
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area}, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("reviews total=%d review_required=%d ok=%d\n", report.Counts.Total, report.Counts.ReviewRequired, report.Counts.OK)
+	if len(report.Counts.ByArea) > 0 {
+		fmt.Println("areas:")
+		for _, area := range sortedMapKeys(report.Counts.ByArea) {
+			fmt.Printf("- %s: %d\n", area, report.Counts.ByArea[area])
+		}
+	}
+	if len(report.Counts.ByStatus) > 0 {
+		fmt.Println("statuses:")
+		for _, status := range sortedMapKeys(report.Counts.ByStatus) {
+			fmt.Printf("- %s: %d\n", status, report.Counts.ByStatus[status])
+		}
+	}
+	if len(report.Items) == 0 {
+		fmt.Println("review_required: none")
+		return
+	}
+	fmt.Println("items:")
+	for _, item := range report.Items {
+		fmt.Printf("- %s/%s status=%s repairs=%d\n", item.Area, item.ID, item.Status, item.RepairCount)
+		fmt.Printf(" json: %s\n", item.JSONPath)
+		if item.MarkdownPath != "" {
+			fmt.Printf(" review: %s\n", item.MarkdownPath)
 		}
 	}
 }
