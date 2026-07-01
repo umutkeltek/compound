@@ -205,9 +205,11 @@ type DispatchStepResult struct {
 	WorkID          string                 `json:"work_id,omitempty"`
 	ResultPath      string                 `json:"result_path,omitempty"`
 	Counts          WorkbenchCounts        `json:"counts"`
+	PostCounts      *WorkbenchCounts       `json:"post_counts,omitempty"`
 	DispatchClose   *DispatchCloseResult   `json:"dispatch_close,omitempty"`
 	DispatchAdvance *DispatchAdvanceResult `json:"dispatch_advance,omitempty"`
 	DispatchClaim   *DispatchClaimResult   `json:"dispatch_claim,omitempty"`
+	NextAction      string                 `json:"next_action,omitempty"`
 	NoAction        string                 `json:"no_action,omitempty"`
 	Warnings        []string               `json:"warnings,omitempty"`
 	Integrity       []string               `json:"integrity,omitempty"`
@@ -844,7 +846,7 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 			}
 			result.DispatchClose = &closed
 			result.NoAction = closed.NoAction
-			return s.recordDispatchStep(result)
+			return s.recordDispatchStep(now, result)
 		}
 	}
 	for _, item := range report.Open {
@@ -861,7 +863,7 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 			}
 			result.DispatchAdvance = &advanced
 			result.NoAction = advanced.NoAction
-			return s.recordDispatchStep(result)
+			return s.recordDispatchStep(now, result)
 		}
 	}
 	readyToClaim := false
@@ -895,7 +897,7 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 		}
 		result.DispatchClaim = &claimed
 		result.NoAction = claimed.NoAction
-		return s.recordDispatchStep(result)
+		return s.recordDispatchStep(now, result)
 	}
 	switch {
 	case report.Counts.Open == 0:
@@ -910,16 +912,45 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 		result.Status = "no_dispatchable_work"
 		result.NoAction = "open work has no dispatchable lifecycle step"
 	}
-	return s.recordDispatchStep(result)
+	return s.recordDispatchStep(now, result)
 }
 
-func (s *Store) recordDispatchStep(result DispatchStepResult) (DispatchStepResult, error) {
+func (s *Store) recordDispatchStep(now time.Time, result DispatchStepResult) (DispatchStepResult, error) {
+	post, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 0})
+	if err != nil {
+		return DispatchStepResult{}, err
+	}
+	result.PostCounts = &post.Counts
+	result.NextAction = dispatchStepNextAction(result, post)
+	result.Integrity = mergeUnique(result.Integrity, post.Integrity)
 	path, err := s.RecordDispatchStep(result)
 	if err != nil {
 		return DispatchStepResult{}, err
 	}
 	result.ResultPath = path
 	return result, nil
+}
+
+func dispatchStepNextAction(result DispatchStepResult, post WorkbenchReport) string {
+	if strings.TrimSpace(result.WorkID) != "" {
+		for _, item := range post.Open {
+			if item.WorkID == result.WorkID {
+				return item.NextAction
+			}
+		}
+		for _, item := range post.Recent {
+			if item.WorkID == result.WorkID {
+				return item.NextAction
+			}
+		}
+	}
+	if strings.TrimSpace(result.NoAction) != "" {
+		return result.NoAction
+	}
+	if post.Counts.Open == 0 {
+		return "workbench has no open work"
+	}
+	return "run dispatch-step again for next open work"
 }
 
 func (s *Store) RecordDispatchStep(result DispatchStepResult) (string, error) {

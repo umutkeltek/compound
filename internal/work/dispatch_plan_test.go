@@ -602,6 +602,9 @@ func TestDispatchStepClaimsReadyWork(t *testing.T) {
 	if result.Status != "claimed" || result.Action != "claim" || result.DispatchClaim == nil || result.WorkID != ready.ID {
 		t.Fatalf("dispatch step should claim ready work: %+v", result)
 	}
+	if result.NextAction != "advance running or release to ready" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
+		t.Fatalf("dispatch step post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
+	}
 	after, err := s.Get(ready.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -635,6 +638,9 @@ func TestDispatchStepImportsSourcePacketAndClaimsIt(t *testing.T) {
 	}
 	if result.WorkID != source.WorkID || result.DispatchClaim.ClaimedWorkID != source.WorkID {
 		t.Fatalf("claimed work mismatch: result=%+v source=%+v", result, source)
+	}
+	if result.NextAction != "advance running or release to ready" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
+		t.Fatalf("source packet dispatch step post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
 	}
 	after, err := s.Get(source.WorkID)
 	if err != nil {
@@ -672,6 +678,9 @@ func TestDispatchStepRecordsNoAction(t *testing.T) {
 	}
 	if result.Status != "no_open_work" || result.Action != "none" || result.ResultPath == "" {
 		t.Fatalf("dispatch step no-op result = %+v", result)
+	}
+	if result.NextAction != "workbench has no open work" || result.PostCounts == nil || result.PostCounts.Open != 0 {
+		t.Fatalf("dispatch step no-op post-state not surfaced: next=%q post=%+v", result.NextAction, result.PostCounts)
 	}
 	if _, err := os.Stat(result.ResultPath); err != nil {
 		t.Fatalf("dispatch step no-op result not recorded: %v", err)

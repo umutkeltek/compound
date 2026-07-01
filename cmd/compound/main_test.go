@@ -867,6 +867,9 @@ func TestWorkDispatchStepCommandClaimsReadyWork(t *testing.T) {
 	if result.Status != "claimed" || result.Action != "claim" || result.WorkID != ready.ID {
 		t.Fatalf("dispatch step result = %+v, ready=%s", result, ready.ID)
 	}
+	if result.NextAction != "advance running or release to ready" || result.PostCounts == nil || result.PostCounts.InProgress != 1 {
+		t.Fatalf("dispatch step JSON missing post-state: %+v", result)
+	}
 	after, err := store.Get(ready.ID)
 	if err != nil {
 		t.Fatalf("get claimed work: %v", err)
