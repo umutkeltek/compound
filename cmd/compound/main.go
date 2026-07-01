@@ -238,7 +238,7 @@ compound policy <evaluate|import-placement-rules|placement-authority|import-oper
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] RuntimeBinding health/live probes + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
 compound event import-os <events.ndjson> | event authority [--json] OS-style append-only events -> TraceEnvelope evidence
@@ -4295,7 +4295,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -4447,6 +4447,50 @@ func cmdProduct(args []string) {
 		fmt.Printf("- evidence: %s\n", report.EvidenceIDs[0])
 		if len(report.TransitionIDs) > 0 {
 			fmt.Printf("- transition: %s\n", report.TransitionIDs[0])
+		}
+	case "canonical-metrics":
+		productID := flagValue(args[1:], "--product")
+		var sourcePath string
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--product":
+				i++
+			case strings.HasPrefix(args[i], "-"):
+				fmt.Fprintln(os.Stderr, "usage: compound product canonical-metrics <json> --product <id>")
+				os.Exit(2)
+			case sourcePath == "":
+				sourcePath = args[i]
+			default:
+				fmt.Fprintln(os.Stderr, "usage: compound product canonical-metrics <json> --product <id>")
+				os.Exit(2)
+			}
+		}
+		if sourcePath == "" || productID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product canonical-metrics <json> --product <id>")
+			os.Exit(2)
+		}
+		report, err := product.ApplyCanonicalMetrics(homePath, store, sourcePath, product.CanonicalMetricsOptions{ProductID: productID}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product canonical-metrics:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product canonical-metrics %s\n\n", report.SourceRef)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- source_hash: %s\n", report.SourceHash)
+		fmt.Printf("- ideas_read: %d\n", report.IdeasRead)
+		fmt.Printf("- signals_created: %d\n", report.SignalsCreated)
+		fmt.Printf("- signals_existing: %d\n", report.SignalsExisting)
+		fmt.Printf("- hypotheses_created: %d\n", report.HypothesesCreated)
+		fmt.Printf("- hypotheses_existing: %d\n", report.HypothesesExisting)
+		for _, id := range report.SignalIDs {
+			fmt.Printf("- signal: %s\n", id)
+		}
+		for _, id := range report.HypothesisIDs {
+			fmt.Printf("- hypothesis: %s\n", id)
+		}
+		for _, id := range report.TransitionIDs {
+			fmt.Printf("- transition: %s\n", id)
 		}
 	case "signal-doctor":
 		if len(args) < 2 || len(args) > 3 || (len(args) == 3 && args[2] != "--record") {

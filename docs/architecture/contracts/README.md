@@ -9,6 +9,8 @@ vertical slice needs it (`../../roadmap/phases.md`).
 > carrying personal paths, credentials, accounts, or private bodies live in the private overlay
 > (`docs_private/`, gitignored) or an out-of-repo adapter — never a tracked file.
 
+Product feedback contract note: `compound product canonical-metrics <json> --product <id>` adapts canonical latest metric records into the existing `ProductSignal` and `ProductHypothesis` stores. It records neutral snapshot signals, parks idea-backed hypotheses only if absent, and leaves review/application to `product doctor`, `product review-plan`, and `product review`; it does not call providers, infer causality, mutate product surfaces, or promote memory truth.
+
 ## Envelope-spine contracts (first-order — the runtime grammar)
 
 Context orientation resolves repo kind by explicit flag, committed `.compound/repo.yaml`, private `COMPOUND_HOME/config/repo-kinds.yaml`, then product default. Product repos exclude control-plane governance refs with recorded reasons; control-plane repos include them.

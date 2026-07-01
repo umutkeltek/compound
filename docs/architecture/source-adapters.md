@@ -16,6 +16,8 @@ external source or generated view
   -> optional OwnerWritebackGate
 ```
 
+Product canonical metrics records enter through `compound product canonical-metrics <json> --product <id>`. The adapter treats canonical latest ideas as source observations for the product loop: numeric idea evidence becomes neutral snapshot ProductSignals, the idea becomes a parked ProductHypothesis if absent, and the next action remains a governed review artifact. It does not call analytics providers, infer causality, mutate product surfaces, or promote claims.
+
 ## Rule
 
 ```text

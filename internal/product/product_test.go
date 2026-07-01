@@ -377,6 +377,105 @@ func TestLoadASCDatapointsSignalAdaptsProviderSnapshot(t *testing.T) {
 	}
 }
 
+func TestApplyCanonicalMetricsCreatesReviewReadyHypothesis(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := ApplyCanonicalMetrics(home, store, "../../fixtures/product/canonical-latest.json", CanonicalMetricsOptions{
+		ProductID: "product:focus-notes",
+	}, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || report.IdeasRead != 1 || report.SignalsCreated != 2 || report.HypothesesCreated != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.SourceRef != "product_metrics:canonical_latest:focus_notes:2026_07_13" || report.SourceHash == "" {
+		t.Fatalf("source = %s hash=%s", report.SourceRef, report.SourceHash)
+	}
+	if !hasString(report.HypothesisIDs, "focus-notes.appstore-low-conversion") {
+		t.Fatalf("hypotheses = %+v", report.HypothesisIDs)
+	}
+	tl, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Signals) != 2 || len(tl.Hypotheses) != 1 {
+		t.Fatalf("timeline = %+v", tl)
+	}
+	h := tl.Hypotheses[0]
+	if h.ID != "focus-notes.appstore-low-conversion" || h.Verdict != candidates.Park || h.Result != "unknown" {
+		t.Fatalf("hypothesis = %+v", h)
+	}
+	if !hasString(h.Metrics, "app.conversion_rate") || !hasString(h.EvidenceRefs, "product_metrics:metric:app_conversion_rate") {
+		t.Fatalf("hypothesis metrics/evidence = %+v %+v", h.Metrics, h.EvidenceRefs)
+	}
+	var conversion Signal
+	for _, signal := range tl.Signals {
+		if signal.MetricName == "app.conversion_rate" {
+			conversion = signal
+			break
+		}
+	}
+	if conversion.ID == "" || conversion.Before != 0.0135 || conversion.After != 0.0135 || conversion.Surface != "app_store" {
+		t.Fatalf("conversion signal = %+v", conversion)
+	}
+	if !hasString(conversion.Confounders, "canonical metrics snapshot; no causal movement is implied") {
+		t.Fatalf("confounders = %+v", conversion.Confounders)
+	}
+	doctor, err := Doctor(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.PendingReviewCount != 1 || doctor.ReviewReadyCount != 2 {
+		t.Fatalf("doctor = %+v", doctor)
+	}
+	if !strings.Contains(doctor.ReviewReady[0].ReviewPlanCommand, "compound product review-plan --hypothesis focus-notes.appstore-low-conversion --signal ") {
+		t.Fatalf("review ready = %+v", doctor.ReviewReady)
+	}
+}
+
+func TestApplyCanonicalMetricsReplayDoesNotOverwriteExistingHypothesis(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := "../../fixtures/product/canonical-latest.json"
+	first, err := ApplyCanonicalMetrics(home, store, fixture, CanonicalMetricsOptions{ProductID: "product:focus-notes"}, tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.HypothesesCreated != 1 {
+		t.Fatalf("first import = %+v", first)
+	}
+	candidate, err := loadHypothesisCandidate(home, "focus-notes.appstore-low-conversion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate.Result = "supported"
+	candidate.Verdict = "supported"
+	if err := writeHypothesisCandidate(home, candidate); err != nil {
+		t.Fatal(err)
+	}
+	second, err := ApplyCanonicalMetrics(home, store, fixture, CanonicalMetricsOptions{ProductID: "product:focus-notes"}, tProduct.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.HypothesesCreated != 0 || second.HypothesesExisting != 1 || second.SignalsCreated != 0 || second.SignalsExisting != 2 {
+		t.Fatalf("second import = %+v", second)
+	}
+	kept, err := loadHypothesisCandidate(home, "focus-notes.appstore-low-conversion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Result != "supported" || kept.Verdict != "supported" {
+		t.Fatalf("replay overwrote reviewed candidate: %+v", kept)
+	}
+}
+
 func TestLoadASCDatapointsSignalRejectsMissingApp(t *testing.T) {
 	_, err := LoadASCDatapointsSignal("../../fixtures/product/asc-datapoints.json", ASCDatapointsSignalOptions{
 		ProductID: "product:focus-notes",

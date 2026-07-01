@@ -2470,6 +2470,31 @@ follow_up:
 	}
 }
 
+func TestProductCanonicalMetricsCLI(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	fixture := filepath.Join("..", "..", "fixtures", "product", "canonical-latest.json")
+	out := captureStdout(t, func() {
+		cmdProduct([]string{"canonical-metrics", fixture, "--product", "product:focus-notes"})
+	})
+	if !strings.Contains(out, "# product canonical-metrics product_metrics:canonical_latest:focus_notes:2026_07_13") ||
+		!strings.Contains(out, "- signals_created: 2") ||
+		!strings.Contains(out, "- hypotheses_created: 1") ||
+		!strings.Contains(out, "- hypothesis: focus-notes.appstore-low-conversion") {
+		t.Fatalf("canonical-metrics output missing proof:\n%s", out)
+	}
+	doctor, err := product.Doctor(homePath, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doctor.Status != "needs_review" || doctor.ReviewReadyCount != 2 {
+		t.Fatalf("doctor = %+v", doctor)
+	}
+}
+
 func TestProductHypothesisPlanUsesDistillerCandidateWithoutMutatingTarget(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
