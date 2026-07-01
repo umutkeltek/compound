@@ -13,17 +13,18 @@ import (
 )
 
 type SkillSurfacingMisses struct {
-	ID         string
-	SourcePath string
-	Revision   string
-	Generated  string
-	Scanned    int
-	Skipped    int
-	LaneFails  int
-	Remaining  int
-	Proposals  []SkillSurfacingMissSummary `json:"proposals"`
-	AllMisses  []SkillSurfacingMissSummary `json:"all_misses"`
-	PerReceipt []SkillSurfacingMissReceipt `json:"perReceipt"`
+	ID            string
+	SourcePath    string
+	Revision      string
+	Generated     string
+	Scanned       int
+	Skipped       int
+	LaneFails     int
+	Remaining     int
+	Proposals     []SkillSurfacingMissSummary `json:"proposals"`
+	AllMisses     []SkillSurfacingMissSummary `json:"all_misses"`
+	FalseTriggers []SkillSurfacingMissSummary `json:"false_triggers"`
+	PerReceipt    []SkillSurfacingMissReceipt `json:"perReceipt"`
 }
 
 type SkillSurfacingMissSummary struct {
@@ -35,10 +36,12 @@ type SkillSurfacingMissSummary struct {
 }
 
 type SkillSurfacingMissReceipt struct {
-	Dir   string                    `json:"dir"`
-	Kind  string                    `json:"kind"`
-	Lanes string                    `json:"lanes"`
-	Real  []SkillSurfacingMissEntry `json:"real"`
+	Dir                 string                    `json:"dir"`
+	Kind                string                    `json:"kind"`
+	Lanes               string                    `json:"lanes"`
+	Real                []SkillSurfacingMissEntry `json:"real"`
+	FalseTriggered      []SkillSurfacingMissEntry `json:"false_triggered"`
+	FalseTriggeredCamel []SkillSurfacingMissEntry `json:"falseTriggered"`
 }
 
 type SkillSurfacingMissEntry struct {
@@ -51,7 +54,9 @@ type SkillSurfacingMissesReport struct {
 	Status                string   `json:"status"`
 	ReportID              string   `json:"report_id"`
 	MissesRead            int      `json:"misses_read"`
+	FalseTriggersRead     int      `json:"false_triggers_read"`
 	AppliedMisses         int      `json:"applied_misses"`
+	AppliedFalseTriggers  int      `json:"applied_false_triggers"`
 	AppliedEdges          int      `json:"applied_edges"`
 	SkippedUnknown        []string `json:"skipped_unknown,omitempty"`
 	SkippedMissingContext []string `json:"skipped_missing_context,omitempty"`
@@ -81,19 +86,22 @@ func (m SkillSurfacingMisses) Validate() error {
 	if strings.TrimSpace(m.Generated) == "" {
 		return fmt.Errorf("generated required")
 	}
-	if len(m.AllMisses) == 0 && len(m.PerReceipt) == 0 {
-		return fmt.Errorf("all_misses or perReceipt required")
+	if len(m.AllMisses) == 0 && len(m.FalseTriggers) == 0 && len(m.PerReceipt) == 0 {
+		return fmt.Errorf("all_misses, false_triggers, or perReceipt required")
 	}
 	for _, receipt := range m.PerReceipt {
-		if strings.TrimSpace(receipt.Dir) == "" && len(receipt.Real) > 0 {
-			return fmt.Errorf("receipt dir required for real misses")
+		falseTriggers := receipt.falseTriggered()
+		if strings.TrimSpace(receipt.Dir) == "" && (len(receipt.Real) > 0 || len(falseTriggers) > 0) {
+			return fmt.Errorf("receipt dir required for real misses or false triggers")
 		}
 		for _, miss := range receipt.Real {
-			if strings.TrimSpace(miss.Skill) == "" {
-				return fmt.Errorf("miss skill required")
+			if err := validateSkillSurfacingEntry("miss", miss); err != nil {
+				return err
 			}
-			if miss.Confidence <= 0 || miss.Confidence > 1 {
-				return fmt.Errorf("miss confidence must be > 0 and <= 1")
+		}
+		for _, trigger := range falseTriggers {
+			if err := validateSkillSurfacingEntry("false-trigger", trigger); err != nil {
+				return err
 			}
 		}
 	}
@@ -127,55 +135,13 @@ func ApplySkillSurfacingMisses(homePath string, misses SkillSurfacingMisses, now
 	unknown := map[string]bool{}
 	missingContext := map[string]bool{}
 	for _, receipt := range misses.PerReceipt {
-		for _, miss := range receipt.Real {
-			report.MissesRead++
-			nodeID := resolveCapabilityNode(nodes, miss.Skill)
-			if nodeID == "" {
-				nodeID = capabilityNodeID(miss.Skill)
-			}
-			if nodeID == "" || !capabilityNodeKnown(nodes, nodeID) {
-				if !unknown[miss.Skill] {
-					report.SkippedUnknown = append(report.SkippedUnknown, miss.Skill)
-					unknown[miss.Skill] = true
-				}
-				continue
-			}
-			context := strings.TrimSpace(miss.Reason)
-			if context == "" {
-				context = strings.TrimSpace(receipt.Dir)
-			}
-			tokens := skillSurfacingContextTokens(context)
-			if len(tokens) == 0 {
-				key := firstEvalNonEmpty(receipt.Dir, miss.Skill)
-				if !missingContext[key] {
-					report.SkippedMissingContext = append(report.SkippedMissingContext, key)
-					missingContext[key] = true
-				}
-				continue
-			}
-			appliedForMiss := false
-			for _, tok := range tokens {
-				edge := Edge{
-					Kind:       EdMissedWhen,
-					From:       "context:" + tok,
-					To:         nodeID,
-					Confidence: miss.Confidence,
-					CreatedAt:  now.UTC().Format(time.RFC3339),
-				}
-				added, err := store.addEdgeOnce(edge, existingEdges, now)
-				if err != nil {
-					report.Status = "fail"
-					return report, err
-				}
-				if added {
-					report.AppliedEdges++
-					report.EdgeIDs = append(report.EdgeIDs, edgeID(edge))
-					appliedForMiss = true
-				}
-			}
-			if appliedForMiss {
-				report.AppliedMisses++
-			}
+		if err := applySkillSurfacingFeedback(store, nodes, existingEdges, unknown, missingContext, receipt, receipt.Real, EdMissedWhen, now, &report); err != nil {
+			report.Status = "fail"
+			return report, err
+		}
+		if err := applySkillSurfacingFeedback(store, nodes, existingEdges, unknown, missingContext, receipt, receipt.falseTriggered(), EdFalseTriggeredBy, now, &report); err != nil {
+			report.Status = "fail"
+			return report, err
 		}
 	}
 	sort.Strings(report.SkippedUnknown)
@@ -185,6 +151,67 @@ func ApplySkillSurfacingMisses(homePath string, misses SkillSurfacingMisses, now
 		report.Status = "review"
 	}
 	return report, nil
+}
+
+func applySkillSurfacingFeedback(store *Store, nodes []Node, existingEdges, unknown, missingContext map[string]bool, receipt SkillSurfacingMissReceipt, entries []SkillSurfacingMissEntry, edgeKind string, now time.Time, report *SkillSurfacingMissesReport) error {
+	for _, entry := range entries {
+		if edgeKind == EdFalseTriggeredBy {
+			report.FalseTriggersRead++
+		} else {
+			report.MissesRead++
+		}
+		nodeID := resolveCapabilityNode(nodes, entry.Skill)
+		if nodeID == "" {
+			nodeID = capabilityNodeID(entry.Skill)
+		}
+		if nodeID == "" || !capabilityNodeKnown(nodes, nodeID) {
+			if !unknown[entry.Skill] {
+				report.SkippedUnknown = append(report.SkippedUnknown, entry.Skill)
+				unknown[entry.Skill] = true
+			}
+			continue
+		}
+		context := strings.TrimSpace(entry.Reason)
+		if context == "" {
+			context = strings.TrimSpace(receipt.Dir)
+		}
+		tokens := skillSurfacingContextTokens(context)
+		if len(tokens) == 0 {
+			key := firstEvalNonEmpty(receipt.Dir, entry.Skill)
+			if !missingContext[key] {
+				report.SkippedMissingContext = append(report.SkippedMissingContext, key)
+				missingContext[key] = true
+			}
+			continue
+		}
+		applied := false
+		for _, tok := range tokens {
+			edge := Edge{
+				Kind:       edgeKind,
+				From:       "context:" + tok,
+				To:         nodeID,
+				Confidence: entry.Confidence,
+				CreatedAt:  now.UTC().Format(time.RFC3339),
+			}
+			added, err := store.addEdgeOnce(edge, existingEdges, now)
+			if err != nil {
+				return err
+			}
+			if added {
+				report.AppliedEdges++
+				report.EdgeIDs = append(report.EdgeIDs, edgeID(edge))
+				applied = true
+			}
+		}
+		if applied {
+			if edgeKind == EdFalseTriggeredBy {
+				report.AppliedFalseTriggers++
+			} else {
+				report.AppliedMisses++
+			}
+		}
+	}
+	return nil
 }
 
 func skillSurfacingEvidenceRefs(misses SkillSurfacingMisses) []string {
@@ -201,6 +228,26 @@ func skillSurfacingEvidenceRefs(misses SkillSurfacingMisses) []string {
 		}
 	}
 	return refs
+}
+
+func validateSkillSurfacingEntry(kind string, entry SkillSurfacingMissEntry) error {
+	if strings.TrimSpace(entry.Skill) == "" {
+		return fmt.Errorf("%s skill required", kind)
+	}
+	if entry.Confidence <= 0 || entry.Confidence > 1 {
+		return fmt.Errorf("%s confidence must be > 0 and <= 1", kind)
+	}
+	return nil
+}
+
+func (r SkillSurfacingMissReceipt) falseTriggered() []SkillSurfacingMissEntry {
+	if len(r.FalseTriggeredCamel) == 0 {
+		return r.FalseTriggered
+	}
+	out := make([]SkillSurfacingMissEntry, 0, len(r.FalseTriggered)+len(r.FalseTriggeredCamel))
+	out = append(out, r.FalseTriggered...)
+	out = append(out, r.FalseTriggeredCamel...)
+	return out
 }
 
 func capabilityNodeKnown(nodes []Node, nodeID string) bool {

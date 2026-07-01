@@ -232,7 +232,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing miss reports
+  compound capability <add|surface|observe|consume|list|authority|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; import-topology/import-skills/import-evaluations/import-surfacing-misses accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
@@ -527,7 +527,7 @@ func cmdCapability(args []string) {
 	case "import-surfacing-misses":
 		p := posn(nil)
 		if len(p) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-surfacing-misses <skill-surfacing-proposals.json>")
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-surfacing-misses <skill-surfacing-feedback.json>")
 			os.Exit(2)
 		}
 		now := time.Now()
@@ -543,7 +543,9 @@ func cmdCapability(args []string) {
 		fmt.Printf("# capability import-surfacing-misses %s\n", report.ReportID)
 		fmt.Printf("- status: %s\n", report.Status)
 		fmt.Printf("- misses_read: %d\n", report.MissesRead)
+		fmt.Printf("- false_triggers_read: %d\n", report.FalseTriggersRead)
 		fmt.Printf("- applied_misses: %d\n", report.AppliedMisses)
+		fmt.Printf("- applied_false_triggers: %d\n", report.AppliedFalseTriggers)
 		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
 		fmt.Printf("- skipped_unknown_count: %d\n", len(report.SkippedUnknown))
 		for _, id := range report.EdgeIDs {
