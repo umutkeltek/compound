@@ -235,6 +235,7 @@ func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, 
 
 type AdvanceInput struct {
 	To             string
+	Actor          string
 	RunID          string
 	ArtifactID     string
 	VerificationID string
@@ -258,9 +259,18 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	if in.To != w.State && !canTransition(w.State, in.To) {
 		return w, fmt.Errorf("illegal transition %s -> %s (allowed: %s)", w.State, in.To, strings.Join(transitions[w.State], ", "))
 	}
+	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
+	if err != nil {
+		return w, err
+	}
+	if !plan.Policy.Allowed {
+		return w, fmt.Errorf("cannot advance work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
+	}
 	from := w.State
 	w.State = in.To
-	var attached []string
+	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
+	w.PolicyDecisionID = plan.Decision.ID
+	attached := []string{plan.ActionIntent.ID, plan.Decision.ID}
 	if in.RunID != "" {
 		w.RunIDs = append(w.RunIDs, in.RunID)
 		attached = append(attached, in.RunID)
@@ -277,10 +287,22 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 		w.IDs.ContextPackID = in.ContextPackID
 		attached = append(attached, in.ContextPackID)
 	}
+	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
+		return w, err
+	}
+	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
+		return w, err
+	}
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return w, err
 	}
-	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: in.Note, Attached: attached})
+	note := strings.TrimSpace(in.Note)
+	if note == "" {
+		note = "advanced (policy " + plan.Policy.Outcome + ")"
+	} else {
+		note += " (policy " + plan.Policy.Outcome + ")"
+	}
+	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: note, Attached: attached})
 }
 
 // --- act (governed mutation) ---
@@ -520,7 +542,12 @@ func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
 }
 
 func internalLifecycleCapability(capability string) bool {
-	return capability == "work.claim"
+	switch capability {
+	case "work.claim", "work.advance":
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeUnique(groups ...[]string) []string {

@@ -199,7 +199,7 @@ usage:
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
@@ -4131,7 +4131,7 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -4365,9 +4365,63 @@ func cmdWork(args []string) {
 		w, err := store.Claim(pos(), flag("--by"), time.Now())
 		die(err)
 		fmt.Printf("%s claimed by %s (%s) policy=%s\n", w.ID, w.Authority.Owner, w.State, w.PolicyDecisionID)
+	case "advance-plan":
+		usage := "usage: compound work advance-plan <work_id> --to <state> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--json", "--dry-run":
+			case "--to", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				if strings.HasPrefix(rest[i], "-") {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+			}
+		}
+		if pos() == "" || flag("--to") == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		plan, err := store.AdvancePlan(pos(), time.Now(), work.AdvancePlanOptions{
+			Actor:         flag("--actor"),
+			To:            flag("--to"),
+			Capability:    flag("--capability"),
+			Action:        flag("--action"),
+			MutationClass: flag("--mutation-class"),
+			Reversibility: flag("--reversibility"),
+			BlastRadius:   flag("--blast-radius"),
+			TargetKind:    flag("--target-kind"),
+			TargetID:      flag("--target-id"),
+			TargetPath:    flag("--target-path"),
+			Record:        !has("--dry-run"),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(plan)
+			return
+		}
+		fmt.Printf("advance-plan %s status=%s work=%s to=%s policy=%s allowed=%v\n", plan.ID, plan.Status, plan.WorkID, plan.ToState, plan.Policy.Outcome, plan.Policy.Allowed)
+		if plan.Policy.StandingGrantID != "" {
+			fmt.Printf("standing_grant: %s\n", plan.Policy.StandingGrantID)
+		}
+		if len(plan.AdvanceCommand) > 0 {
+			fmt.Printf("command: %s\n", strings.Join(plan.AdvanceCommand, " "))
+		}
+		if plan.NoAction != "" {
+			fmt.Printf("no_action: %s\n", plan.NoAction)
+		}
+		if plan.PlanPath != "" {
+			fmt.Printf("plan: %s\n", plan.PlanPath)
+		}
 	case "advance":
 		w, err := store.Advance(pos(), work.AdvanceInput{
 			To:             flag("--to"),
+			Actor:          firstNonEmpty(flag("--by"), flag("--actor")),
 			RunID:          flag("--run"),
 			ArtifactID:     flag("--artifact"),
 			VerificationID: flag("--verification"),
@@ -4375,7 +4429,7 @@ func cmdWork(args []string) {
 			Note:           flag("--note"),
 		}, time.Now())
 		die(err)
-		fmt.Printf("%s -> %s\n", w.ID, w.State)
+		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)
 	case "act":
 		workID := pos()
 		intentFile := flag("--intent")
@@ -4414,9 +4468,18 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|claim-plan|claim|advance|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create|import-packet|show|list|dispatch-plan|dispatch-claim|claim-plan|claim|advance-plan|advance|close|act> ...")
 		os.Exit(2)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func emptyDash(s string) string {

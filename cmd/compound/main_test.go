@@ -641,6 +641,59 @@ func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
 	}
 }
 
+func TestWorkAdvancePlanAndAdvanceCommandRecordPolicy(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "advance plan command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(ready.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"advance-plan", ready.ID, "--to", "running", "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("advance-plan output missing JSON:\n%s", out)
+	}
+	var plan work.AdvancePlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse advance plan: %v\n%s", err, out)
+	}
+	if plan.Status != "advance_policy_allowed" || !plan.Policy.Allowed || plan.PlanPath == "" {
+		t.Fatalf("advance plan policy not allowed/recorded: %+v", plan)
+	}
+	afterPlan, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get after plan: %v", err)
+	}
+	if afterPlan.State != "claimed" {
+		t.Fatalf("advance plan must not mutate work: %+v", afterPlan)
+	}
+	out = captureStdout(t, func() {
+		cmdWork([]string{"advance", ready.ID, "--to", "running", "--by", "codex", "--run", "run_cli"})
+	})
+	if !strings.Contains(out, "policy=") {
+		t.Fatalf("advance output missing policy id:\n%s", out)
+	}
+	afterAdvance, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get after advance: %v", err)
+	}
+	if afterAdvance.State != "running" || afterAdvance.PolicyDecisionID == "" || !stringSliceContains(afterAdvance.RunIDs, "run_cli") {
+		t.Fatalf("advance command did not record policy/run chain: %+v", afterAdvance)
+	}
+}
+
 func TestWorkDispatchPlanCommandImportsSourcePacket(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
