@@ -4597,6 +4597,12 @@ func cmdWork(args []string) {
 		if len(plan.CloseCommand) > 0 {
 			fmt.Printf("command: %s\n", strings.Join(plan.CloseCommand, " "))
 		}
+		if len(plan.ProofRefs) > 0 {
+			fmt.Printf("proof_refs: %s\n", strings.Join(plan.ProofRefs, ","))
+		}
+		if len(plan.RunObservations) > 0 {
+			fmt.Printf("run_observations: %d\n", len(plan.RunObservations))
+		}
 		if plan.NoAction != "" {
 			fmt.Printf("no_action: %s\n", plan.NoAction)
 		}

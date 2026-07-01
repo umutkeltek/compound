@@ -42,24 +42,28 @@ type ClosePolicySummary struct {
 }
 
 type ClosePlan struct {
-	SchemaVersion string                  `json:"schema_version"`
-	ID            string                  `json:"id"`
-	GeneratedAt   string                  `json:"generated_at"`
-	Status        string                  `json:"status"`
-	Mode          string                  `json:"mode"`
-	Actor         string                  `json:"actor"`
-	WorkID        string                  `json:"work_id"`
-	WorkState     string                  `json:"work_state"`
-	Outcome       string                  `json:"outcome"`
-	MoveType      string                  `json:"move_type"`
-	WorkOwner     string                  `json:"work_owner,omitempty"`
-	PlanPath      string                  `json:"plan_path,omitempty"`
-	CloseCommand  []string                `json:"close_command,omitempty"`
-	Policy        ClosePolicySummary      `json:"policy"`
-	ActionIntent  envelope.ActionIntent   `json:"action_intent"`
-	Decision      envelope.PolicyDecision `json:"policy_decision"`
-	NoAction      string                  `json:"no_action,omitempty"`
-	Warnings      []string                `json:"warnings,omitempty"`
+	SchemaVersion   string                  `json:"schema_version"`
+	ID              string                  `json:"id"`
+	GeneratedAt     string                  `json:"generated_at"`
+	Status          string                  `json:"status"`
+	Mode            string                  `json:"mode"`
+	Actor           string                  `json:"actor"`
+	WorkID          string                  `json:"work_id"`
+	WorkState       string                  `json:"work_state"`
+	Outcome         string                  `json:"outcome"`
+	MoveType        string                  `json:"move_type"`
+	WorkOwner       string                  `json:"work_owner,omitempty"`
+	PlanPath        string                  `json:"plan_path,omitempty"`
+	CloseCommand    []string                `json:"close_command,omitempty"`
+	ProofRefs       []string                `json:"proof_refs,omitempty"`
+	ArtifactIDs     []string                `json:"artifact_ids,omitempty"`
+	VerificationIDs []string                `json:"verification_ids,omitempty"`
+	RunObservations []RunObservationSummary `json:"run_observations,omitempty"`
+	Policy          ClosePolicySummary      `json:"policy"`
+	ActionIntent    envelope.ActionIntent   `json:"action_intent"`
+	Decision        envelope.PolicyDecision `json:"policy_decision"`
+	NoAction        string                  `json:"no_action,omitempty"`
+	Warnings        []string                `json:"warnings,omitempty"`
 }
 
 func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (ClosePlan, error) {
@@ -95,26 +99,38 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	if err := pd.Validate(); err != nil {
 		return ClosePlan{}, err
 	}
+	observations, observationWarnings := s.workbenchRunObservations(w.ID)
+	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs)
 	plan := ClosePlan{
-		SchemaVersion: ClosePlanSchemaVersion,
-		ID:            idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
-		GeneratedAt:   now.UTC().Format(time.RFC3339),
-		Status:        "not_closeable",
-		Mode:          "proposal_only",
-		Actor:         actor,
-		WorkID:        w.ID,
-		WorkState:     w.State,
-		Outcome:       outcome,
-		MoveType:      moveType,
-		WorkOwner:     w.Owner,
-		Policy:        summarizeClosePolicy(pd, source),
-		ActionIntent:  ai,
-		Decision:      pd,
+		SchemaVersion:   ClosePlanSchemaVersion,
+		ID:              idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
+		GeneratedAt:     now.UTC().Format(time.RFC3339),
+		Status:          "not_closeable",
+		Mode:            "proposal_only",
+		Actor:           actor,
+		WorkID:          w.ID,
+		WorkState:       w.State,
+		Outcome:         outcome,
+		MoveType:        moveType,
+		WorkOwner:       w.Owner,
+		ProofRefs:       proofRefs,
+		ArtifactIDs:     append([]string{}, w.ArtifactIDs...),
+		VerificationIDs: append([]string{}, w.VerificationIDs...),
+		RunObservations: observations,
+		Policy:          summarizeClosePolicy(pd, source),
+		ActionIntent:    ai,
+		Decision:        pd,
 		Warnings: []string{
 			"does not close work",
 			"does not emit receipt or transition",
 			"does not enforce policy; it reports close gate decision",
 		},
+	}
+	for _, warning := range observationWarnings {
+		plan.Warnings = append(plan.Warnings, "run observation: "+warning)
+	}
+	if (outcome == "completed" || outcome == "failed") && len(proofRefs) == 0 && len(observations) == 0 {
+		plan.Warnings = append(plan.Warnings, "no artifact, verification, or observed-run evidence attached")
 	}
 	switch {
 	case !terminalStates[outcome]:
@@ -123,6 +139,9 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.NoAction = fmt.Sprintf("invalid move_type %q", moveType)
 	case w.State == outcome || canTransition(w.State, outcome):
 		plan.CloseCommand = []string{"compound", "work", "close", w.ID, "--outcome", outcome, "--move-type", moveType, "--by", actor}
+		if len(proofRefs) > 0 {
+			plan.CloseCommand = append(plan.CloseCommand, "--proof", strings.Join(proofRefs, ","))
+		}
 		if policy.Allowed(pd) {
 			plan.Status = "close_policy_allowed"
 		} else {

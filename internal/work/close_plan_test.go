@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,51 @@ func TestClosePlanEvaluatesPolicyWithoutClosing(t *testing.T) {
 	}
 	if after.State != "running" {
 		t.Fatalf("close plan must not mutate work: %+v", after)
+	}
+}
+
+func TestClosePlanSurfacesObservedRunEvidenceWithoutClosing(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "close plan uses observed evidence")
+	trace := writeTrace(t, s, "trace_close_plan_observed", w.ID)
+	observed, err := s.ObserveRun(w.ID, ObserveRunInput{
+		Actor:   "codex",
+		TraceID: trace.ID,
+		Note:    "close plan should show this observation",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.ClosePlan(w.ID, fixedNow, ClosePlanOptions{
+		Actor:    "codex",
+		Outcome:  "completed",
+		MoveType: "control_plane_repair",
+		Record:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "close_policy_allowed" || !plan.Policy.Allowed || plan.PlanPath == "" {
+		t.Fatalf("close plan not allowed/recorded: %+v", plan)
+	}
+	if !contains(plan.ProofRefs, trace.ID) || !contains(plan.VerificationIDs, trace.ID) {
+		t.Fatalf("close plan missing verification proof: %+v", plan)
+	}
+	if len(plan.RunObservations) != 1 {
+		t.Fatalf("run observations = %+v", plan.RunObservations)
+	}
+	if plan.RunObservations[0].ID != observed.ID || plan.RunObservations[0].TraceID != trace.ID || plan.RunObservations[0].Note != "close plan should show this observation" {
+		t.Fatalf("run observation summary = %+v observed=%+v", plan.RunObservations[0], observed)
+	}
+	if !commandHasFlagValue(plan.CloseCommand, "--proof", trace.ID) {
+		t.Fatalf("close command missing proof ref: %+v", plan.CloseCommand)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" || after.IDs.TransitionID != "" {
+		t.Fatalf("close plan must not close observed work: %+v", after)
 	}
 }
 
@@ -107,6 +153,20 @@ func TestCloseBlockedByPolicyDoesNotMutate(t *testing.T) {
 	if after.State != "running" || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID || after.IDs.TransitionID != "" {
 		t.Fatalf("blocked close mutated work: before=%+v after=%+v", before, after)
 	}
+}
+
+func commandHasFlagValue(command []string, flag, value string) bool {
+	for i := 0; i+1 < len(command); i++ {
+		if command[i] != flag {
+			continue
+		}
+		for _, part := range strings.Split(command[i+1], ",") {
+			if part == value {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func readyRunningWork(t *testing.T, s *Store) string {

@@ -39,31 +39,31 @@ type WorkbenchCounts struct {
 }
 
 type WorkbenchItem struct {
-	WorkID             string                    `json:"work_id"`
-	State              string                    `json:"state"`
-	Owner              string                    `json:"owner,omitempty"`
-	ClaimedBy          string                    `json:"claimed_by,omitempty"`
-	ClaimedAt          string                    `json:"claimed_at,omitempty"`
-	SuccessPredicate   string                    `json:"success_predicate"`
-	DesiredOutcome     string                    `json:"desired_outcome,omitempty"`
-	CanonicalSurface   string                    `json:"canonical_surface,omitempty"`
-	ContextPackID      string                    `json:"context_pack_id,omitempty"`
-	PolicyDecisionID   string                    `json:"policy_decision_id,omitempty"`
-	ReceiptID          string                    `json:"receipt_id,omitempty"`
-	TransitionID       string                    `json:"transition_id,omitempty"`
-	MoveType           string                    `json:"move_type,omitempty"`
-	Changed            bool                      `json:"changed,omitempty"`
-	ReviewTrigger      string                    `json:"review_trigger,omitempty"`
-	NextAction         string                    `json:"next_action"`
-	OpenReason         string                    `json:"open_reason,omitempty"`
-	EvidenceRefs       []string                  `json:"evidence_refs,omitempty"`
-	ArtifactIDs        []string                  `json:"artifact_ids,omitempty"`
-	VerificationIDs    []string                  `json:"verification_ids,omitempty"`
-	MemoryCandidateIDs []string                  `json:"memory_candidate_ids,omitempty"`
-	RunObservations    []WorkbenchRunObservation `json:"run_observations,omitempty"`
+	WorkID             string                  `json:"work_id"`
+	State              string                  `json:"state"`
+	Owner              string                  `json:"owner,omitempty"`
+	ClaimedBy          string                  `json:"claimed_by,omitempty"`
+	ClaimedAt          string                  `json:"claimed_at,omitempty"`
+	SuccessPredicate   string                  `json:"success_predicate"`
+	DesiredOutcome     string                  `json:"desired_outcome,omitempty"`
+	CanonicalSurface   string                  `json:"canonical_surface,omitempty"`
+	ContextPackID      string                  `json:"context_pack_id,omitempty"`
+	PolicyDecisionID   string                  `json:"policy_decision_id,omitempty"`
+	ReceiptID          string                  `json:"receipt_id,omitempty"`
+	TransitionID       string                  `json:"transition_id,omitempty"`
+	MoveType           string                  `json:"move_type,omitempty"`
+	Changed            bool                    `json:"changed,omitempty"`
+	ReviewTrigger      string                  `json:"review_trigger,omitempty"`
+	NextAction         string                  `json:"next_action"`
+	OpenReason         string                  `json:"open_reason,omitempty"`
+	EvidenceRefs       []string                `json:"evidence_refs,omitempty"`
+	ArtifactIDs        []string                `json:"artifact_ids,omitempty"`
+	VerificationIDs    []string                `json:"verification_ids,omitempty"`
+	MemoryCandidateIDs []string                `json:"memory_candidate_ids,omitempty"`
+	RunObservations    []RunObservationSummary `json:"run_observations,omitempty"`
 }
 
-type WorkbenchRunObservation struct {
+type RunObservationSummary struct {
 	ID               string `json:"id"`
 	GeneratedAt      string `json:"generated_at,omitempty"`
 	Actor            string `json:"actor,omitempty"`
@@ -190,7 +190,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	return item
 }
 
-func (s *Store) workbenchRunObservations(workID string) ([]WorkbenchRunObservation, []string) {
+func (s *Store) workbenchRunObservations(workID string) ([]RunObservationSummary, []string) {
 	dir := filepath.Join(s.home, "run-observations")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -199,7 +199,7 @@ func (s *Store) workbenchRunObservations(workID string) ([]WorkbenchRunObservati
 		}
 		return nil, []string{"run observations unreadable: " + err.Error()}
 	}
-	out := []WorkbenchRunObservation{}
+	out := []RunObservationSummary{}
 	warnings := []string{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -214,7 +214,7 @@ func (s *Store) workbenchRunObservations(workID string) ([]WorkbenchRunObservati
 		if result.WorkID != workID {
 			continue
 		}
-		out = append(out, WorkbenchRunObservation{
+		out = append(out, RunObservationSummary{
 			ID:               result.ID,
 			GeneratedAt:      result.GeneratedAt,
 			Actor:            result.Actor,
