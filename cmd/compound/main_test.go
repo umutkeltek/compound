@@ -791,6 +791,54 @@ func TestWorkDispatchClosePlanCommandRecordsClosePlanWithoutClosing(t *testing.T
 	}
 }
 
+func TestWorkDispatchCloseCommandClosesProofReadyWork(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch close command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(ready.ID, "codex", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	running, err := store.Advance(ready.ID, work.AdvanceInput{To: "running", Actor: "codex"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	trace := writeCLITrace(t, homePath, "trace_cli_dispatch_close", running.ID)
+	if _, err := store.ObserveRun(running.ID, work.ObserveRunInput{Actor: "codex", TraceID: trace.ID}, cliTestNow); err != nil {
+		t.Fatalf("observe run: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-close", "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-close output missing JSON:\n%s", out)
+	}
+	var result work.DispatchCloseResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse dispatch close result: %v\n%s", err, out)
+	}
+	if result.Status != "closed" || result.ClosedWorkID != ready.ID || result.ReceiptID == "" || result.TransitionID == "" {
+		t.Fatalf("dispatch close result = %+v, ready=%s", result, ready.ID)
+	}
+	after, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get closed work: %v", err)
+	}
+	if after.State != "completed" || after.IDs.TransitionID != result.TransitionID {
+		t.Fatalf("dispatch close did not terminalize work: %+v", after)
+	}
+}
+
 func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

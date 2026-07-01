@@ -404,3 +404,101 @@ func TestDispatchClosePlanBlockedByPolicyRecordsPlanWithoutClosing(t *testing.T)
 		t.Fatalf("blocked dispatch close-plan mutated work: %+v", after)
 	}
 }
+
+func TestDispatchCloseClosesProofReadyWork(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "dispatch close terminalizes observed proof")
+	trace := writeTrace(t, s, "trace_dispatch_close_observed", w.ID)
+	observed, err := s.ObserveRun(w.ID, ObserveRunInput{Actor: "codex", TraceID: trace.ID}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClose(fixedNow, DispatchCloseOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "closed" || result.ClosedWorkID != w.ID || result.FinalState != "completed" {
+		t.Fatalf("dispatch close result = %+v, work=%s", result, w.ID)
+	}
+	if result.DispatchClosePlanID == "" || result.DispatchClosePlanPath == "" || result.ResultPath == "" {
+		t.Fatalf("dispatch close did not record plan/result: %+v", result)
+	}
+	if result.ClosePlanID == "" || result.ReceiptID == "" || result.TransitionID == "" {
+		t.Fatalf("dispatch close missing close proof ids: %+v", result)
+	}
+	if result.CloseResult == nil || !contains(result.CloseResult.Receipt.StateDelta.Verification, trace.ID) {
+		t.Fatalf("dispatch close missing receipt verification proof: %+v", result.CloseResult)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "completed" || after.IDs.TransitionID != result.TransitionID || len(after.RunIDs) != len(observed.Work.RunIDs)+1 {
+		t.Fatalf("dispatch close did not terminalize through work close: %+v", after)
+	}
+}
+
+func TestDispatchCloseRequiresProofEvidence(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "dispatch close waits for proof")
+	verifying, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClose(fixedNow, DispatchCloseOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "awaiting_proof" || result.ClosedWorkID != "" || result.CloseResult != nil {
+		t.Fatalf("dispatch close should wait for proof: %+v", result)
+	}
+	if result.DispatchClosePlanPath == "" || result.ResultPath == "" {
+		t.Fatalf("dispatch close should record no-op plan/result: %+v", result)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" || len(after.RunIDs) != len(verifying.RunIDs) || after.IDs.TransitionID != "" {
+		t.Fatalf("awaiting-proof dispatch close mutated work: %+v", after)
+	}
+}
+
+func TestDispatchCloseBlockedByPolicyDoesNotClose(t *testing.T) {
+	s := newStore(t)
+	w := runningWork(t, s, "dispatch close policy hold")
+	trace := writeTrace(t, s, "trace_dispatch_close_blocked", w.ID)
+	observed, err := s.ObserveRun(w.ID, ObserveRunInput{Actor: "codex", TraceID: trace.ID}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRuns := append([]string{}, observed.Work.RunIDs...)
+	baselinePolicy := observed.Work.PolicyDecisionID
+	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	policyYAML := []byte(`class_outcome:
+  local_reversible:
+    outcome: hold
+`)
+	if err := os.WriteFile(filepath.Join(s.home, "config", "policy.yaml"), policyYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClose(fixedNow, DispatchCloseOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "close_policy_blocked" || result.ClosedWorkID != "" || result.CloseResult != nil {
+		t.Fatalf("blocked dispatch close result = %+v", result)
+	}
+	if result.ClosePlanID == "" || result.DispatchClosePlanPath == "" || result.ResultPath == "" {
+		t.Fatalf("blocked dispatch close should record close-plan and result: %+v", result)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "verifying" || len(after.RunIDs) != len(baselineRuns) || after.PolicyDecisionID != baselinePolicy || after.IDs.TransitionID != "" {
+		t.Fatalf("blocked dispatch close mutated work: %+v", after)
+	}
+}

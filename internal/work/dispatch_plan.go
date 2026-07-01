@@ -11,6 +11,7 @@ const DispatchPlanSchemaVersion = "compound.work_dispatch_plan.v0.1"
 const DispatchClaimSchemaVersion = "compound.work_dispatch_claim.v0.1"
 const DispatchAdvanceSchemaVersion = "compound.work_dispatch_advance.v0.1"
 const DispatchClosePlanSchemaVersion = "compound.work_dispatch_close_plan.v0.1"
+const DispatchCloseSchemaVersion = "compound.work_dispatch_close.v0.1"
 
 type DispatchPlanOptions struct {
 	Actor                 string
@@ -66,6 +67,7 @@ type DispatchPlanItem struct {
 	ClaimPolicy      *ClaimPolicySummary   `json:"claim_policy,omitempty"`
 	AdvancePolicy    *AdvancePolicySummary `json:"advance_policy,omitempty"`
 	ClosePolicy      *ClosePolicySummary   `json:"close_policy,omitempty"`
+	ClosePlanReady   bool                  `json:"close_plan_ready,omitempty"`
 }
 
 type DispatchClaimResult struct {
@@ -143,6 +145,39 @@ type DispatchClosePlanResult struct {
 	NoAction      string             `json:"no_action,omitempty"`
 	Warnings      []string           `json:"warnings,omitempty"`
 	Integrity     []string           `json:"integrity,omitempty"`
+}
+
+type DispatchCloseOptions struct {
+	Actor       string
+	RecentLimit int
+	Outcome     string
+	MoveType    string
+	Summary     string
+}
+
+type DispatchCloseResult struct {
+	SchemaVersion         string                   `json:"schema_version"`
+	ID                    string                   `json:"id"`
+	GeneratedAt           string                   `json:"generated_at"`
+	Status                string                   `json:"status"`
+	Actor                 string                   `json:"actor"`
+	Outcome               string                   `json:"outcome"`
+	MoveType              string                   `json:"move_type"`
+	ResultPath            string                   `json:"result_path,omitempty"`
+	DispatchClosePlanID   string                   `json:"dispatch_close_plan_id,omitempty"`
+	DispatchClosePlanPath string                   `json:"dispatch_close_plan_path,omitempty"`
+	DispatchClosePlan     *DispatchClosePlanResult `json:"dispatch_close_plan,omitempty"`
+	Selected              *DispatchPlanItem        `json:"selected,omitempty"`
+	ClosePlanID           string                   `json:"close_plan_id,omitempty"`
+	ClosePlanPath         string                   `json:"close_plan_path,omitempty"`
+	ClosedWorkID          string                   `json:"closed_work_id,omitempty"`
+	FinalState            string                   `json:"final_state,omitempty"`
+	ReceiptID             string                   `json:"receipt_id,omitempty"`
+	TransitionID          string                   `json:"transition_id,omitempty"`
+	CloseResult           *CloseResult             `json:"close_result,omitempty"`
+	NoAction              string                   `json:"no_action,omitempty"`
+	Warnings              []string                 `json:"warnings,omitempty"`
+	Integrity             []string                 `json:"integrity,omitempty"`
 }
 
 func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
@@ -538,6 +573,8 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 						copyCandidate := candidate
 						blocked = &copyCandidate
 					}
+				} else {
+					candidate.ClosePlanReady = true
 				}
 			}
 		}
@@ -545,7 +582,7 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 			awaitingProof = true
 		}
 		result.Candidates = append(result.Candidates, candidate)
-		if result.Selected == nil && candidate.Action == "plan_close" && candidate.ClosePolicy != nil && candidate.ClosePolicy.Allowed {
+		if result.Selected == nil && candidate.Action == "plan_close" && candidate.ClosePlanReady {
 			selected := candidate
 			result.Selected = &selected
 			result.Status = "close_policy_allowed"
@@ -619,6 +656,106 @@ func (s *Store) RecordDispatchClosePlan(result DispatchClosePlanResult) (string,
 		return "", os.ErrInvalid
 	}
 	dir := filepath.Join(s.home, "dispatch-close-plans")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, result.ID+".json")
+	if err := s.writeJSON(path, &result); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) DispatchClose(now time.Time, opts DispatchCloseOptions) (DispatchCloseResult, error) {
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	outcome := strings.TrimSpace(opts.Outcome)
+	if outcome == "" {
+		outcome = "completed"
+	}
+	moveType := strings.TrimSpace(opts.MoveType)
+	if moveType == "" {
+		moveType = "control_plane_repair"
+	}
+	plan, err := s.DispatchClosePlan(now, DispatchClosePlanOptions{
+		Actor:       actor,
+		RecentLimit: opts.RecentLimit,
+		Outcome:     outcome,
+		MoveType:    moveType,
+	})
+	if err != nil {
+		return DispatchCloseResult{}, err
+	}
+	result := DispatchCloseResult{
+		SchemaVersion:         DispatchCloseSchemaVersion,
+		ID:                    idFor("wdcl_", actor, outcome, moveType, ts(now)),
+		GeneratedAt:           now.UTC().Format(time.RFC3339),
+		Status:                plan.Status,
+		Actor:                 actor,
+		Outcome:               outcome,
+		MoveType:              moveType,
+		DispatchClosePlanID:   plan.ID,
+		DispatchClosePlanPath: plan.ResultPath,
+		DispatchClosePlan:     &plan,
+		Selected:              plan.Selected,
+		ClosePlanID:           plan.ClosePlanID,
+		ClosePlanPath:         plan.ClosePlanPath,
+		NoAction:              plan.NoAction,
+		Warnings: []string{
+			"closes at most one proof-ready verifying work item",
+			"does not execute task commands",
+			"does not promote memory",
+		},
+		Integrity: append([]string{}, plan.Integrity...),
+	}
+	if plan.Selected == nil || plan.ClosePlan == nil || plan.Status != "close_policy_allowed" || plan.ClosePlan.NoAction != "" || !plan.ClosePlan.Policy.Allowed {
+		if result.NoAction == "" {
+			result.NoAction = "no proof-ready close plan selected"
+		}
+		path, err := s.RecordDispatchClose(result)
+		if err != nil {
+			return DispatchCloseResult{}, err
+		}
+		result.ResultPath = path
+		return result, nil
+	}
+	summary := strings.TrimSpace(opts.Summary)
+	if summary == "" {
+		summary = "dispatch close"
+	}
+	closed, err := s.Close(plan.Selected.WorkID, CloseInput{
+		Outcome:   outcome,
+		MoveType:  moveType,
+		Actor:     actor,
+		Summary:   summary,
+		Changed:   true,
+		ProofRefs: append([]string{}, plan.ClosePlan.ProofRefs...),
+	}, now)
+	if err != nil {
+		return DispatchCloseResult{}, err
+	}
+	result.Status = "closed"
+	result.NoAction = ""
+	result.ClosedWorkID = closed.Work.ID
+	result.FinalState = closed.Work.State
+	result.ReceiptID = closed.Receipt.ID
+	result.TransitionID = closed.Transition.ID
+	result.CloseResult = &closed
+	path, err := s.RecordDispatchClose(result)
+	if err != nil {
+		return DispatchCloseResult{}, err
+	}
+	result.ResultPath = path
+	return result, nil
+}
+
+func (s *Store) RecordDispatchClose(result DispatchCloseResult) (string, error) {
+	if strings.TrimSpace(result.ID) == "" {
+		return "", os.ErrInvalid
+	}
+	dir := filepath.Join(s.home, "dispatch-closes")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
