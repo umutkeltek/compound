@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `addyosmani/agent-skills` now has focused security-hardening subskill
+evidence merged into existing `skill:security-review` rather than installing
+the external pack. The evaluation source compared upstream
+`skills/security-and-hardening/SKILL.md` plus `references/security-checklist.md`
+against the served owner, imported evidence-only:
+`capability_evaluations_e6d69466814a` -> eval node
+`eval:capability-evaluation-external-addyosmani-security-hardening-20260701`
+with `evaluated_by:skill:security-review->eval:...` and
+`validated_by:skill:security-review->eval:...`. Unknown skipped count was `0`,
+so no review-plan duplicate was needed. Authority now reports `496` nodes /
+`100` edges with `evaluated_by=4`, `validated_by=4`; security-hardening
+surfacing ranks `skill:security-review` first. No plugin install, no external
+pack serving, no slash-command/runtime hook adoption, no global agent config
+mutation, no memory promotion.
+
 - `nexu-io/open-design` now has focused design-workbench evidence attached
 to existing `mcp:open-design` rather than installing Open Design or serving
 its skills/plugins as default design authority. The evaluation source compared
