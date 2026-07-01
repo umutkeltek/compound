@@ -502,3 +502,125 @@ func TestDispatchCloseBlockedByPolicyDoesNotClose(t *testing.T) {
 		t.Fatalf("blocked dispatch close mutated work: %+v", after)
 	}
 }
+
+func TestDispatchStepClosesBeforeAdvanceOrClaim(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready waits behind close"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedCandidate, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed waits behind close"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(claimedCandidate.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeCandidate := runningWork(t, s, "dispatch step closes first")
+	trace := writeTrace(t, s, "trace_dispatch_step_close", closeCandidate.ID)
+	if _, err := s.ObserveRun(closeCandidate.ID, ObserveRunInput{Actor: "codex", TraceID: trace.ID}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "closed" || result.Action != "close" || result.DispatchClose == nil || result.WorkID != closeCandidate.ID {
+		t.Fatalf("dispatch step should close proof-ready work first: %+v", result)
+	}
+	afterClose, err := s.Get(closeCandidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterClose.State != "completed" || afterClose.IDs.TransitionID == "" {
+		t.Fatalf("close candidate not completed: %+v", afterClose)
+	}
+	afterClaimed, err := s.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterClaimed.State != "claimed" {
+		t.Fatalf("claimed work should wait behind close: %+v", afterClaimed)
+	}
+	afterReady, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReady.State != "ready" {
+		t.Fatalf("ready work should wait behind close: %+v", afterReady)
+	}
+}
+
+func TestDispatchStepAdvancesBeforeClaim(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready waits behind advance"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedCandidate, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "claimed advances first"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(claimedCandidate.ID, "codex", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "running" || result.Action != "advance" || result.DispatchAdvance == nil || result.WorkID != claimed.ID {
+		t.Fatalf("dispatch step should advance claimed work before claim: %+v", result)
+	}
+	afterClaimed, err := s.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterClaimed.State != "running" {
+		t.Fatalf("claimed work not advanced: %+v", afterClaimed)
+	}
+	afterReady, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReady.State != "ready" {
+		t.Fatalf("ready work should remain ready: %+v", afterReady)
+	}
+}
+
+func TestDispatchStepClaimsReadyWork(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch step claims ready"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "claimed" || result.Action != "claim" || result.DispatchClaim == nil || result.WorkID != ready.ID {
+		t.Fatalf("dispatch step should claim ready work: %+v", result)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" || after.Authority.Owner != "codex" {
+		t.Fatalf("ready work not claimed: %+v", after)
+	}
+}
+
+func TestDispatchStepRecordsNoAction(t *testing.T) {
+	s := newStore(t)
+	result, err := s.DispatchStep(fixedNow, DispatchStepOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "no_open_work" || result.Action != "none" || result.ResultPath == "" {
+		t.Fatalf("dispatch step no-op result = %+v", result)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch step no-op result not recorded: %v", err)
+	}
+}

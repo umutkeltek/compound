@@ -12,6 +12,7 @@ const DispatchClaimSchemaVersion = "compound.work_dispatch_claim.v0.1"
 const DispatchAdvanceSchemaVersion = "compound.work_dispatch_advance.v0.1"
 const DispatchClosePlanSchemaVersion = "compound.work_dispatch_close_plan.v0.1"
 const DispatchCloseSchemaVersion = "compound.work_dispatch_close.v0.1"
+const DispatchStepSchemaVersion = "compound.work_dispatch_step.v0.1"
 
 type DispatchPlanOptions struct {
 	Actor                 string
@@ -178,6 +179,32 @@ type DispatchCloseResult struct {
 	NoAction              string                   `json:"no_action,omitempty"`
 	Warnings              []string                 `json:"warnings,omitempty"`
 	Integrity             []string                 `json:"integrity,omitempty"`
+}
+
+type DispatchStepOptions struct {
+	Actor       string
+	RecentLimit int
+	Outcome     string
+	MoveType    string
+	Summary     string
+}
+
+type DispatchStepResult struct {
+	SchemaVersion   string                 `json:"schema_version"`
+	ID              string                 `json:"id"`
+	GeneratedAt     string                 `json:"generated_at"`
+	Status          string                 `json:"status"`
+	Actor           string                 `json:"actor"`
+	Action          string                 `json:"action"`
+	WorkID          string                 `json:"work_id,omitempty"`
+	ResultPath      string                 `json:"result_path,omitempty"`
+	Counts          WorkbenchCounts        `json:"counts"`
+	DispatchClose   *DispatchCloseResult   `json:"dispatch_close,omitempty"`
+	DispatchAdvance *DispatchAdvanceResult `json:"dispatch_advance,omitempty"`
+	DispatchClaim   *DispatchClaimResult   `json:"dispatch_claim,omitempty"`
+	NoAction        string                 `json:"no_action,omitempty"`
+	Warnings        []string               `json:"warnings,omitempty"`
+	Integrity       []string               `json:"integrity,omitempty"`
 }
 
 func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
@@ -756,6 +783,128 @@ func (s *Store) RecordDispatchClose(result DispatchCloseResult) (string, error) 
 		return "", os.ErrInvalid
 	}
 	dir := filepath.Join(s.home, "dispatch-closes")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, result.ID+".json")
+	if err := s.writeJSON(path, &result); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchStepResult, error) {
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: opts.RecentLimit})
+	if err != nil {
+		return DispatchStepResult{}, err
+	}
+	result := DispatchStepResult{
+		SchemaVersion: DispatchStepSchemaVersion,
+		ID:            idFor("wds_", actor, ts(now)),
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Status:        "no_open_work",
+		Actor:         actor,
+		Action:        "none",
+		Counts:        report.Counts,
+		Warnings: []string{
+			"dispatches at most one lifecycle step",
+			"does not execute task commands",
+			"does not observe or synthesize traces",
+			"does not promote memory",
+		},
+		Integrity: append([]string{}, report.Integrity...),
+	}
+	for _, item := range report.Open {
+		if item.State == "verifying" && hasCloseProofEvidence(item) {
+			closed, err := s.DispatchClose(now, DispatchCloseOptions{
+				Actor:       actor,
+				RecentLimit: opts.RecentLimit,
+				Outcome:     opts.Outcome,
+				MoveType:    opts.MoveType,
+				Summary:     opts.Summary,
+			})
+			if err != nil {
+				return DispatchStepResult{}, err
+			}
+			result.Action = "close"
+			result.Status = closed.Status
+			result.WorkID = closed.ClosedWorkID
+			if result.WorkID == "" && closed.Selected != nil {
+				result.WorkID = closed.Selected.WorkID
+			}
+			result.DispatchClose = &closed
+			result.NoAction = closed.NoAction
+			return s.recordDispatchStep(result)
+		}
+	}
+	for _, item := range report.Open {
+		if item.State == "claimed" && item.ClaimedBy == actor {
+			advanced, err := s.DispatchAdvance(now, DispatchPlanOptions{Actor: actor, RecentLimit: opts.RecentLimit})
+			if err != nil {
+				return DispatchStepResult{}, err
+			}
+			result.Action = "advance"
+			result.Status = advanced.Status
+			result.WorkID = advanced.AdvancedWorkID
+			if result.WorkID == "" && advanced.Selected != nil {
+				result.WorkID = advanced.Selected.WorkID
+			}
+			result.DispatchAdvance = &advanced
+			result.NoAction = advanced.NoAction
+			return s.recordDispatchStep(result)
+		}
+	}
+	for _, item := range report.Open {
+		if item.State == "ready" {
+			claimed, err := s.DispatchClaim(now, DispatchPlanOptions{Actor: actor, RecentLimit: opts.RecentLimit})
+			if err != nil {
+				return DispatchStepResult{}, err
+			}
+			result.Action = "claim"
+			result.Status = claimed.Status
+			result.WorkID = claimed.ClaimedWorkID
+			if result.WorkID == "" && claimed.Selected != nil {
+				result.WorkID = claimed.Selected.WorkID
+			}
+			result.DispatchClaim = &claimed
+			result.NoAction = claimed.NoAction
+			return s.recordDispatchStep(result)
+		}
+	}
+	switch {
+	case report.Counts.Open == 0:
+		result.NoAction = "workbench has no open work"
+	case report.Counts.NeedsReview > 0:
+		result.Status = "needs_review"
+		result.NoAction = "open work requires review before dispatch"
+	case report.Counts.InProgress > 0:
+		result.Status = "in_progress_only"
+		result.NoAction = "open work is not ready for a safe dispatch step"
+	default:
+		result.Status = "no_dispatchable_work"
+		result.NoAction = "open work has no dispatchable lifecycle step"
+	}
+	return s.recordDispatchStep(result)
+}
+
+func (s *Store) recordDispatchStep(result DispatchStepResult) (DispatchStepResult, error) {
+	path, err := s.RecordDispatchStep(result)
+	if err != nil {
+		return DispatchStepResult{}, err
+	}
+	result.ResultPath = path
+	return result, nil
+}
+
+func (s *Store) RecordDispatchStep(result DispatchStepResult) (string, error) {
+	if strings.TrimSpace(result.ID) == "" {
+		return "", os.ErrInvalid
+	}
+	dir := filepath.Join(s.home, "dispatch-steps")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
