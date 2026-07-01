@@ -242,7 +242,7 @@ compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | p
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
-compound event import-os <events.ndjson> | event authority [--json] OS-style append-only events -> TraceEnvelope evidence
+compound event import-os <events.ndjson> | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; optional trace-backed review finding producer
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
@@ -839,7 +839,7 @@ func cmdEvent(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "import-os" {
-		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] | event authority [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] [--review-root DIR] [--review-summary TEXT] | event authority [--json]")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -849,6 +849,8 @@ func cmdEvent(args []string) {
 	}
 	path := args[1]
 	opts := eventsource.ImportOptions{}
+	reviewRoot := ""
+	reviewSummary := ""
 	for i := 2; i < len(args); i++ {
 		switch args[i] {
 		case "--limit":
@@ -870,10 +872,28 @@ func cmdEvent(args []string) {
 			}
 			i++
 			opts.Stream = args[i]
+		case "--review-root":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "event import-os: --review-root needs value")
+				os.Exit(2)
+			}
+			i++
+			reviewRoot = args[i]
+		case "--review-summary":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "event import-os: --review-summary needs value")
+				os.Exit(2)
+			}
+			i++
+			reviewSummary = args[i]
 		default:
 			fmt.Fprintln(os.Stderr, "event import-os: unknown arg", args[i])
 			os.Exit(2)
 		}
+	}
+	if strings.TrimSpace(reviewSummary) != "" && strings.TrimSpace(reviewRoot) == "" {
+		fmt.Fprintln(os.Stderr, "event import-os: --review-summary requires --review-root")
+		os.Exit(2)
 	}
 	report, err := eventsource.ImportOSEvents(homePath, path, opts, time.Now())
 	if err != nil {
@@ -894,6 +914,38 @@ func cmdEvent(args []string) {
 	for _, id := range report.TraceIDs {
 		fmt.Printf("- trace: %s\n", id)
 	}
+	if strings.TrimSpace(reviewRoot) != "" {
+		fmt.Printf("- review_findings: %d\n", len(report.TraceIDs))
+		for _, id := range report.TraceIDs {
+			cmdReviewsRecordFinding([]string{
+				"--auto-work",
+				"--target", eventReviewFindingTarget(report.Stream, id),
+				"--root", reviewRoot,
+				"--summary", eventReviewFindingSummary(report.Stream, id, reviewSummary),
+				"--source-trace", id,
+				"--evidence-ref", eventsource.TraceEventsAuthorityRef,
+			})
+		}
+	}
+}
+
+func eventReviewFindingTarget(stream, traceID string) string {
+	streamSlug := reviewartifact.Slugify(reviewartifact.FirstNonEmpty(stream, "event-import"), 80)
+	if streamSlug == "" {
+		streamSlug = "event-import"
+	}
+	traceSlug := reviewartifact.Slugify(traceID, 96)
+	if traceSlug == "" {
+		traceSlug = reviewartifact.Digest12(traceID)
+	}
+	return filepath.ToSlash(filepath.Join("state", "runs", "compound-event-trace-reviews", streamSlug, traceSlug+".json"))
+}
+
+func eventReviewFindingSummary(stream, traceID, override string) string {
+	if strings.TrimSpace(override) != "" {
+		return strings.TrimSpace(override)
+	}
+	return fmt.Sprintf("Imported OS event trace %s from %s; record trace-backed review finding.", traceID, reviewartifact.FirstNonEmpty(stream, "event-import"))
 }
 
 // cmdDistiller is the P6 distillation front-end: trace → prior state → candidate set → critic →

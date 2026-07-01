@@ -26,8 +26,12 @@ This file is the current package/command map. `compound architecture doctor --st
   `pol_25ebf9717ebf`, and closed `work_e873347fd7ef` through `rec_9756fa9ed3ed` /
   `tr_9756fa9ed3ed`. Producer-facing proof added `--auto-work`, so a trace-backed finding can
   create, record, verify, and close its own WorkEnvelope; live `rvf_550d25ff32d8` closed
-  `work_721f7fee1351` through `tr_4def6ba1ec8f`, and workbench stayed `open=0`. No claims were
-  promoted and no live job-health review was recorded.
+  `work_721f7fee1351` through `tr_4def6ba1ec8f`, and workbench stayed `open=0`. `compound event
+  import-os --review-root <repo>` now lets event producers turn newly imported TraceEnvelopes into
+  the same auto-work, StandingGrant-backed review findings; live proof imported `trace_a8d31e392b7d`,
+  wrote `rvf_c3ca19386926`, and closed `work_d197361d1be5` through `rec_c8014a23b785` /
+  `tr_c8014a23b785`. Plain event import stays observation-only. No claims were promoted and no live
+  job-health review was recorded.
 
 - Umut OS now serves StandingGrant authority in daily operator front doors. `os status --json` includes
   `standing_grants.status=ok`, `grant_count=2`, `capability_count=2`, source authority

@@ -3691,6 +3691,76 @@ func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	}
 }
 
+func TestEventImportOSCanProduceTraceBackedReviewFinding(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	grantSource := filepath.Join(t.TempDir(), "standing-grants.yaml")
+	if err := os.WriteFile(grantSource, []byte(`generated_at: "2026-07-01T12:00:00Z"
+grants:
+  - grant_id: grant_review_finding
+    capabilities:
+      - review.finding
+      - review.summary
+    target_scope: state/runs/*
+    reversibility_ceiling: reversible
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.ImportStandingGrants(homePath, grantSource, cliTestNow); err != nil {
+		t.Fatalf("import standing grants: %v", err)
+	}
+	runRoot := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	out := captureStdout(t, func() {
+		cmdEvent([]string{
+			"import-os", fixture,
+			"--stream", "control-events",
+			"--limit", "1",
+			"--review-root", runRoot,
+			"--review-summary", "event import producer review finding",
+		})
+	})
+	if !strings.Contains(out, "imported: 1") || !strings.Contains(out, "- review_findings: 1") {
+		t.Fatalf("event review import output =\n%s", out)
+	}
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("missing review finding JSON:\n%s", out)
+	}
+	var report reviewFindingRecord
+	if err := json.Unmarshal([]byte(out[start:]), &report); err != nil {
+		t.Fatalf("parse review finding report: %v\n%s", err, out)
+	}
+	if report.PolicyOutcome != "allow" || report.StandingGrantID == "" || len(report.SourceTraces) != 1 {
+		t.Fatalf("review finding report = %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(runRoot, filepath.FromSlash(report.TargetPath))); err != nil {
+		t.Fatalf("review finding artifact missing: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	got, events, err := store.Show(report.WorkID)
+	if err != nil {
+		t.Fatalf("show work: %v", err)
+	}
+	receiptSeen := false
+	for _, ev := range events {
+		for _, ref := range ev.Attached {
+			if strings.HasPrefix(ref, "rec_") {
+				receiptSeen = true
+			}
+		}
+	}
+	if got.State != "completed" || got.IDs.TransitionID == "" || !receiptSeen || got.PolicyDecisionID != report.PolicyDecisionID {
+		t.Fatalf("auto review work not closed: work=%+v report=%+v", got, report)
+	}
+}
+
 func TestDistillerRequestLoadsImportedEventTraces(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
