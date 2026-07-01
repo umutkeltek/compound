@@ -169,6 +169,7 @@ func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (Exte
 	if query != "" {
 		report.RepoQuery = query
 		report.Matches = matchExternalRepoDecisions(decisions, query)
+		report.Matches = append(report.Matches, matchExternalRepoEvaluationReferences(homePath, query, report.Matches)...)
 	}
 	report.HighValue = filterExternalRepoDecisions(decisions, "keep_needs_review", 12)
 	report.Recent = limitExternalRepoDecisions(decisions, 12)
@@ -250,6 +251,108 @@ func matchExternalRepoDecisions(decisions []ExternalRepoIntakeDecision, query st
 	return out
 }
 
+func matchExternalRepoEvaluationReferences(homePath, query string, existing []ExternalRepoIntakeDecision) []ExternalRepoIntakeDecision {
+	needle := normalizeExternalRepoQuery(query)
+	if needle == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, decision := range existing {
+		seen[normalizeExternalRepoQuery(decision.Repo)] = true
+	}
+	dir := filepath.Join(homePath, "inbox", "capability-evaluations")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []ExternalRepoIntakeDecision
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		eval, _, err := loadCapabilityEvaluationFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		decision, ok := externalRepoDecisionFromEvaluation(eval, needle)
+		if !ok {
+			continue
+		}
+		key := normalizeExternalRepoQuery(decision.Repo)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, decision)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].EvidenceStrength != out[j].EvidenceStrength {
+			return out[i].EvidenceStrength > out[j].EvidenceStrength
+		}
+		return out[i].Repo < out[j].Repo
+	})
+	return out
+}
+
+func externalRepoDecisionFromEvaluation(eval CapabilityEvaluation, needle string) (ExternalRepoIntakeDecision, bool) {
+	if len(eval.Signals) == 0 {
+		return ExternalRepoIntakeDecision{}, false
+	}
+	repo := signalString(eval.Signals, "external_repo")
+	url := signalString(eval.Signals, "external_url")
+	if repo == "" && url == "" {
+		return ExternalRepoIntakeDecision{}, false
+	}
+	if !externalRepoQueryMatches(needle, repo) && !externalRepoQueryMatches(needle, url) && !externalRepoQueryMatches(needle, eval.SourceReceipt) {
+		return ExternalRepoIntakeDecision{}, false
+	}
+	decision := ExternalRepoIntakeDecision{
+		Repo:             firstExternalRepoString(repo, url),
+		Decision:         externalRepoDecisionForEvaluationVerdict(eval.Verdict),
+		Lane:             firstExternalRepoString(signalString(eval.Signals, "cluster"), signalString(eval.Signals, "kind"), "capability-evaluation"),
+		Status:           "recorded",
+		Owner:            signalString(eval.Signals, "existing_owner"),
+		NextReviewStep:   signalString(eval.Signals, "required_next_proof"),
+		NotToDo:          signalString(eval.Signals, "main_risks"),
+		GraphHint:        eval.Verdict,
+		EvidenceStrength: evaluationConfidence(eval),
+		ReviewID:         eval.ID,
+		ReviewPath:       "capability_evaluation:" + eval.ID,
+	}
+	if decision.Owner == "" {
+		decision.Owner = eval.Capability
+	}
+	return decision, decision.Repo != ""
+}
+
+func externalRepoDecisionForEvaluationVerdict(verdict string) string {
+	switch strings.TrimSpace(verdict) {
+	case "useful", "keep", "adapt", "merge", "publicize_candidate":
+		return "merge_existing"
+	case "evaluate_further", "needs_improvement":
+		return "keep_needs_review"
+	default:
+		return "reference_only"
+	}
+}
+
+func externalRepoQueryMatches(needle, value string) bool {
+	haystack := normalizeExternalRepoQuery(value)
+	if needle == "" || haystack == "" {
+		return false
+	}
+	return haystack == needle || strings.Contains(haystack, needle) || strings.Contains(needle, haystack)
+}
+
+func firstExternalRepoString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func normalizeExternalRepoQuery(value string) string {
 	v := strings.ToLower(strings.TrimSpace(value))
 	v = strings.TrimSuffix(v, ".git")
@@ -257,6 +360,9 @@ func normalizeExternalRepoQuery(value string) string {
 		"https://github.com/",
 		"http://github.com/",
 		"github.com/",
+		"https://gist.github.com/",
+		"http://gist.github.com/",
+		"gist.github.com/",
 	} {
 		v = strings.TrimPrefix(v, prefix)
 	}

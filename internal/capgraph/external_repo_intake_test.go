@@ -130,6 +130,93 @@ func TestExternalRepoIntakeReportForHome(t *testing.T) {
 	}
 }
 
+func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing.T) {
+	home := t.TempDir()
+	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	writeJSON(t, mapPath, map[string]any{
+		"items": []map[string]any{
+			{"repo": "example/repo"},
+		},
+	})
+	writeJSON(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
+		"schema_version":  "compound.external_repo_intake_run.v0.1",
+		"id":              "2026-07-01-test",
+		"created_at":      "2026-07-01T12:00:00Z",
+		"map_path":        mapPath,
+		"candidate_count": 1,
+		"decisions": []map[string]any{
+			{
+				"repo":              "example/repo",
+				"decision":          "merge_existing",
+				"lane":              "external_skill_candidate",
+				"evidence_strength": 0.6,
+			},
+		},
+		"counts_by_decision": map[string]any{"merge_existing": 1},
+		"counts_by_lane":     map[string]any{"external_skill_candidate": 1},
+	})
+
+	evalDir := filepath.Join(home, "inbox", "capability-evaluations")
+	if err := os.MkdirAll(evalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(evalDir, "karpathy-gist.json"), map[string]any{
+		"schema_version":    1,
+		"id":                "capability-evaluation.external.karpathy.gist.20260701",
+		"created_at":        "2026-07-01T15:14:30Z",
+		"source_receipt":    "file:///tmp/repos.md#gist.github.com/karpathy/442a6bf555914893e9891c11519de94f",
+		"capability":        "procedure:skill-ops",
+		"verdict":           "downgrade_to_index",
+		"local_state_only":  true,
+		"rubric_normalized": 0.38,
+		"signals": map[string]any{
+			"kind":                "external_reference_only_source",
+			"cluster":             "skill-source-intake",
+			"external_repo":       "gist:karpathy/442a6bf555914893e9891c11519de94f",
+			"external_url":        "https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f",
+			"existing_owner":      "procedure:skill-ops",
+			"required_next_proof": "revisit only if a concrete task cites the gist",
+			"main_risks":          "do not treat gist notes as installable repos",
+			"distinctive_claim":   "reference-only source",
+			"owned_gap_observed":  "no runtime adoption gap",
+			"comparison_scope":    "Desktop source list coverage",
+		},
+	})
+
+	report, err := ExternalRepoIntakeReportForHome(home, "gist.github.com/karpathy/442a6bf555914893e9891c11519de94f")
+	if err != nil {
+		t.Fatalf("report should include evaluation references: %v", err)
+	}
+	if len(report.Matches) != 1 {
+		t.Fatalf("matches = %+v", report.Matches)
+	}
+	match := report.Matches[0]
+	if match.Repo != "gist:karpathy/442a6bf555914893e9891c11519de94f" {
+		t.Fatalf("repo = %q", match.Repo)
+	}
+	if match.Decision != "reference_only" || match.Lane != "skill-source-intake" {
+		t.Fatalf("decision/lane = %+v", match)
+	}
+	if match.Owner != "procedure:skill-ops" || match.GraphHint != "downgrade_to_index" {
+		t.Fatalf("owner/hint = %+v", match)
+	}
+	if match.EvidenceStrength != 0.38 {
+		t.Fatalf("evidence strength = %.2f", match.EvidenceStrength)
+	}
+
+	repoReport, err := ExternalRepoIntakeReportForHome(home, "example/repo")
+	if err != nil {
+		t.Fatalf("repo report should still work: %v", err)
+	}
+	if len(repoReport.Matches) != 1 || repoReport.Matches[0].Repo != "example/repo" {
+		t.Fatalf("repo matches = %+v", repoReport.Matches)
+	}
+}
+
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	data, err := json.MarshalIndent(v, "", "  ")
