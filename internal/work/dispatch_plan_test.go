@@ -785,3 +785,123 @@ func TestDispatchStepWaitsForOtherActorClaim(t *testing.T) {
 		t.Fatalf("other actor wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
 	}
 }
+
+func TestDispatchStepRunClaimsAndAdvancesUntilRunEvidenceWait(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "loop claims then advances"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+		DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
+		MaxSteps:            5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "waiting" || result.StepCount != 2 || result.CanContinue {
+		t.Fatalf("dispatch step run should stop after claim+advance: %+v", result)
+	}
+	if result.Steps[0].Action != "claim" || result.Steps[1].Action != "advance" {
+		t.Fatalf("dispatch step run actions = %+v", result.Steps)
+	}
+	if result.WaitReason != "run_evidence" || !contains(result.BlockedOn, "work.run_evidence:"+ready.ID) {
+		t.Fatalf("dispatch step run wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+	if result.NextAction != "advance verifying, completed, blocked, held, or failed" {
+		t.Fatalf("dispatch step run next action = %q", result.NextAction)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch step run result not recorded: %v", err)
+	}
+	for _, step := range result.Steps {
+		if _, err := os.Stat(step.ResultPath); err != nil {
+			t.Fatalf("dispatch step result not recorded: %v", err)
+		}
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" || after.IDs.TransitionID != "" {
+		t.Fatalf("dispatch step run should stop at running without terminal proof: %+v", after)
+	}
+}
+
+func TestDispatchStepRunStopsAtMaxStepsWithContinuation(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "loop bounded by max"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+		DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
+		MaxSteps:            1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "max_steps_reached" || result.StepCount != 1 || !result.CanContinue {
+		t.Fatalf("dispatch step run should stop at max with continuation: %+v", result)
+	}
+	if len(result.ContinueCommand) != 8 || result.ContinueCommand[4] != "codex" || result.ContinueCommand[5] != "--until-wait" || result.ContinueCommand[7] != "1" {
+		t.Fatalf("dispatch step run continuation = %v", result.ContinueCommand)
+	}
+	if result.WaitReason != "" || len(result.BlockedOn) != 0 {
+		t.Fatalf("max-step run should not claim a wait: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+	after, err := s.Get(ready.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" {
+		t.Fatalf("dispatch step run should stop after one claim: %+v", after)
+	}
+}
+
+func TestDispatchStepRunImportsSourcePacketOnceThenAdvances(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	before, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+		DispatchStepOptions: DispatchStepOptions{
+			Actor:            "codex",
+			SourcePacketPath: packetPath,
+		},
+		MaxSteps: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "waiting" || result.StepCount != 2 || result.Steps[0].DispatchClaim == nil || result.Steps[1].DispatchAdvance == nil {
+		t.Fatalf("source packet dispatch run should claim then advance: %+v", result)
+	}
+	source := result.Steps[0].DispatchClaim.Plan.Source
+	if source == nil || !source.Created || result.Steps[0].WorkID != source.WorkID || result.Steps[1].WorkID != source.WorkID {
+		t.Fatalf("source packet dispatch run source mismatch: source=%+v result=%+v", source, result)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("source packet should be imported once, work count=%d", len(list))
+	}
+	after, err := s.Get(source.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" {
+		t.Fatalf("source packet dispatch run should stop at running: %+v", after)
+	}
+	afterPacket, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterPacket) != string(before) {
+		t.Fatalf("source packet was mutated")
+	}
+}

@@ -920,6 +920,49 @@ func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
 	}
 }
 
+func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch step run command"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-step", "--actor", "codex", "--until-wait", "--max-steps", "5", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-step run output missing JSON:\n%s", out)
+	}
+	var result work.DispatchStepRunResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse dispatch step run result: %v\n%s", err, out)
+	}
+	if result.Status != "waiting" || result.StepCount != 2 || result.WaitReason != "run_evidence" {
+		t.Fatalf("dispatch step run result = %+v", result)
+	}
+	if len(result.Steps) != 2 || result.Steps[0].Action != "claim" || result.Steps[1].Action != "advance" {
+		t.Fatalf("dispatch step run steps = %+v", result.Steps)
+	}
+	if _, err := os.Stat(result.ResultPath); err != nil {
+		t.Fatalf("dispatch step run result not recorded: %v", err)
+	}
+	after, err := store.Get(ready.ID)
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	if after.State != "running" {
+		t.Fatalf("dispatch step run should stop at running: %+v", after)
+	}
+}
+
 func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

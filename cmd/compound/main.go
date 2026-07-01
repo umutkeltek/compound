@@ -4474,11 +4474,11 @@ func cmdWork(args []string) {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "dispatch-step":
-		usage := "usage: compound work dispatch-step [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--json]"
+		usage := "usage: compound work dispatch-step [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
-			case "--json":
-			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy", "--outcome", "--move-type", "--summary":
+			case "--json", "--until-wait":
+			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy", "--outcome", "--move-type", "--summary", "--max-steps":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -4489,7 +4489,7 @@ func cmdWork(args []string) {
 				os.Exit(2)
 			}
 		}
-		result, err := store.DispatchStep(time.Now(), work.DispatchStepOptions{
+		stepOpts := work.DispatchStepOptions{
 			Actor:                 flag("--actor"),
 			Outcome:               flag("--outcome"),
 			MoveType:              flag("--move-type"),
@@ -4500,7 +4500,38 @@ func cmdWork(args []string) {
 			SourcePacketRisk:      flag("--source-risk"),
 			SourcePacketPrivacy:   flag("--source-privacy"),
 			SourcePacketContextID: flag("--source-context-pack"),
-		})
+		}
+		maxSteps := 0
+		if raw := strings.TrimSpace(flag("--max-steps")); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			maxSteps = n
+		}
+		if maxSteps > 0 && !has("--until-wait") {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if has("--until-wait") {
+			result, err := store.DispatchStepRun(time.Now(), work.DispatchStepRunOptions{DispatchStepOptions: stepOpts, MaxSteps: maxSteps})
+			die(err)
+			if has("--json") {
+				printJSON(result)
+				return
+			}
+			fmt.Printf("dispatch-step-run %s status=%s steps=%d", result.ID, result.Status, result.StepCount)
+			if result.WaitReason != "" {
+				fmt.Printf(" wait=%s", result.WaitReason)
+			}
+			fmt.Println()
+			if result.ResultPath != "" {
+				fmt.Printf("result: %s\n", result.ResultPath)
+			}
+			return
+		}
+		result, err := store.DispatchStep(time.Now(), stepOpts)
 		die(err)
 		if has("--json") {
 			printJSON(result)

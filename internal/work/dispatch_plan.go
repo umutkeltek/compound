@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,6 +14,9 @@ const DispatchAdvanceSchemaVersion = "compound.work_dispatch_advance.v0.1"
 const DispatchClosePlanSchemaVersion = "compound.work_dispatch_close_plan.v0.1"
 const DispatchCloseSchemaVersion = "compound.work_dispatch_close.v0.1"
 const DispatchStepSchemaVersion = "compound.work_dispatch_step.v0.1"
+const DispatchStepRunSchemaVersion = "compound.work_dispatch_step_run.v0.1"
+
+const defaultDispatchStepRunMaxSteps = 10
 
 type DispatchPlanOptions struct {
 	Actor                 string
@@ -217,6 +221,30 @@ type DispatchStepResult struct {
 	NoAction        string                 `json:"no_action,omitempty"`
 	Warnings        []string               `json:"warnings,omitempty"`
 	Integrity       []string               `json:"integrity,omitempty"`
+}
+
+type DispatchStepRunOptions struct {
+	DispatchStepOptions
+	MaxSteps int
+}
+
+type DispatchStepRunResult struct {
+	SchemaVersion   string               `json:"schema_version"`
+	ID              string               `json:"id"`
+	GeneratedAt     string               `json:"generated_at"`
+	Status          string               `json:"status"`
+	Actor           string               `json:"actor"`
+	ResultPath      string               `json:"result_path,omitempty"`
+	MaxSteps        int                  `json:"max_steps"`
+	StepCount       int                  `json:"step_count"`
+	Steps           []DispatchStepResult `json:"steps"`
+	CanContinue     bool                 `json:"can_continue"`
+	ContinueCommand []string             `json:"continue_command,omitempty"`
+	WaitReason      string               `json:"wait_reason,omitempty"`
+	BlockedOn       []string             `json:"blocked_on,omitempty"`
+	NextAction      string               `json:"next_action,omitempty"`
+	Warnings        []string             `json:"warnings,omitempty"`
+	Integrity       []string             `json:"integrity,omitempty"`
 }
 
 func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
@@ -919,6 +947,63 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 	return s.recordDispatchStep(now, result)
 }
 
+func (s *Store) DispatchStepRun(now time.Time, opts DispatchStepRunOptions) (DispatchStepRunResult, error) {
+	stepOpts := opts.DispatchStepOptions
+	actor := strings.TrimSpace(stepOpts.Actor)
+	if actor == "" {
+		actor = "codex"
+		stepOpts.Actor = actor
+	}
+	maxSteps := opts.MaxSteps
+	if maxSteps <= 0 {
+		maxSteps = defaultDispatchStepRunMaxSteps
+	}
+	result := DispatchStepRunResult{
+		SchemaVersion: DispatchStepRunSchemaVersion,
+		ID:            idFor("wdsr_", actor, ts(now)),
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Status:        "waiting",
+		Actor:         actor,
+		MaxSteps:      maxSteps,
+		Warnings: []string{
+			"dispatches repeated safe lifecycle steps only while dispatch-step can continue",
+			"does not execute task commands",
+			"does not observe or synthesize traces",
+			"does not promote memory",
+		},
+	}
+	for i := 0; i < maxSteps; i++ {
+		step, err := s.DispatchStep(now.Add(time.Duration(i)*time.Nanosecond), stepOpts)
+		if err != nil {
+			return DispatchStepRunResult{}, err
+		}
+		result.Steps = append(result.Steps, step)
+		result.StepCount = len(result.Steps)
+		result.NextAction = step.NextAction
+		result.WaitReason = step.WaitReason
+		result.BlockedOn = append([]string{}, step.BlockedOn...)
+		result.Integrity = mergeUnique(result.Integrity, step.Integrity)
+		stepOpts.SourcePacketPath = ""
+		stepOpts.SourcePacketState = ""
+		stepOpts.SourcePacketOwner = ""
+		stepOpts.SourcePacketRisk = ""
+		stepOpts.SourcePacketPrivacy = ""
+		stepOpts.SourcePacketContextID = ""
+		if !step.CanContinue {
+			result.Status = "waiting"
+			result.CanContinue = false
+			result.ContinueCommand = nil
+			return s.recordDispatchStepRun(result)
+		}
+	}
+	result.Status = "max_steps_reached"
+	result.CanContinue = true
+	result.WaitReason = ""
+	result.BlockedOn = nil
+	result.ContinueCommand = dispatchStepRunContinuation(actor, maxSteps)
+	return s.recordDispatchStepRun(result)
+}
+
 func (s *Store) recordDispatchStep(now time.Time, result DispatchStepResult) (DispatchStepResult, error) {
 	post, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 0})
 	if err != nil {
@@ -934,6 +1019,15 @@ func (s *Store) recordDispatchStep(now time.Time, result DispatchStepResult) (Di
 	path, err := s.RecordDispatchStep(result)
 	if err != nil {
 		return DispatchStepResult{}, err
+	}
+	result.ResultPath = path
+	return result, nil
+}
+
+func (s *Store) recordDispatchStepRun(result DispatchStepRunResult) (DispatchStepRunResult, error) {
+	path, err := s.RecordDispatchStepRun(result)
+	if err != nil {
+		return DispatchStepRunResult{}, err
 	}
 	result.ResultPath = path
 	return result, nil
@@ -1031,11 +1125,37 @@ func dispatchStepWait(result DispatchStepResult, post WorkbenchReport) (string, 
 	}
 }
 
+func dispatchStepRunContinuation(actor string, maxSteps int) []string {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	if maxSteps <= 0 {
+		maxSteps = defaultDispatchStepRunMaxSteps
+	}
+	return []string{"compound", "work", "dispatch-step", "--actor", actor, "--until-wait", "--max-steps", strconv.Itoa(maxSteps)}
+}
+
 func (s *Store) RecordDispatchStep(result DispatchStepResult) (string, error) {
 	if strings.TrimSpace(result.ID) == "" {
 		return "", os.ErrInvalid
 	}
 	dir := filepath.Join(s.home, "dispatch-steps")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, result.ID+".json")
+	if err := s.writeJSON(path, &result); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *Store) RecordDispatchStepRun(result DispatchStepRunResult) (string, error) {
+	if strings.TrimSpace(result.ID) == "" {
+		return "", os.ErrInvalid
+	}
+	dir := filepath.Join(s.home, "dispatch-step-runs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
