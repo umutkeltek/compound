@@ -8,6 +8,21 @@ This file is the current package/command map. `compound architecture doctor --st
 
 ## Recent Runtime Proof
 
+- `nextlevelbuilder/ui-ux-pro-max-skill` now has upstream provenance/delta
+evidence merged into existing `skill:ui-ux-pro-max` rather than installing a
+duplicate design skill or CLI. The evaluation source compared the public
+`README.md` and `.claude/skills/ui-ux-pro-max/SKILL.md` against the served
+owner, imported evidence-only: `capability_evaluations_4bc9e764b67c` ->
+eval node
+`eval:capability-evaluation-external-nextlevelbuilder-ui-ux-pro-max-20260701`
+with `evaluated_by:skill:ui-ux-pro-max->eval:...` and
+`validated_by:skill:ui-ux-pro-max->eval:...`. Unknown skipped count `0`,
+so no review-plan duplicate needed. Authority now reports `497` nodes /
+`102` edges `evaluated_by=5`, `validated_by=5`; broad UI/UX surfacing keeps
+`skill:ui-ux-pro-max` first and precise design owners adjacent. No CLI
+install, no marketplace package serving, no plugin activation, no route-policy
+change, no memory promotion.
+
 - `addyosmani/agent-skills` now has focused security-hardening subskill
 evidence merged into existing `skill:security-review` rather than installing
 the external pack. The evaluation source compared upstream
