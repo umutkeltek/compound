@@ -1344,6 +1344,44 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	}
 }
 
+func TestReviewsCommandAnnotatesRoutePromotionHold(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "route-promotions", "route_promotion_cli", map[string]any{
+		"schema_version":   "compound.route_promotion_review.v0.1",
+		"id":               "route_promotion_cli",
+		"status":           "review_required",
+		"recommendation":   "hold_insufficient_evidence",
+		"reason":           "samples 2 below min_samples 10",
+		"lane_id":          "auto/judge",
+		"capability_class": "classify-extract",
+		"evidence_refs":    []string{"route_a", "route_b"},
+	}, " ", "# Route promotion\n"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { cmdReviews([]string{"--area", "route-promotions", "--json"}) })
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 1 || report.Counts.OK != 0 {
+		t.Fatalf("route promotion review should remain review debt: %+v", report.Counts)
+	}
+	if len(report.Items) != 1 || report.Items[0].Readiness != "needs_review" {
+		t.Fatalf("route promotion item should be annotated needs_review: %+v", report.Items)
+	}
+	item := report.Items[0]
+	if len(item.Actions) != 0 || !strings.Contains(item.NextAction, "hold lane promotion") {
+		t.Fatalf("route promotion item should expose hold/no-mutation next action: %+v", item)
+	}
+	if len(item.EvidenceRefs) != 2 {
+		t.Fatalf("route promotion item should preserve evidence refs: %+v", item)
+	}
+}
+
 func TestReviewsRecordFindingConsumesStandingGrantAndRecordsWorkAction(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

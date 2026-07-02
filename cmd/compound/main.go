@@ -3722,6 +3722,7 @@ func cmdReviews(args []string) {
 	product.AnnotateReviewQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
+	routeevidence.AnnotatePromotionReviewQueue(&report)
 	reviewartifact.Recount(&report)
 	if jsonOut {
 		printJSON(report)
