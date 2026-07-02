@@ -39,11 +39,19 @@ Rules: strict decode (unknown fields rejected); `source.kind` is a lowercase slu
 
 ## What `compound knowledge import <export.json>` does per item
 
+Current implementation note: deterministic reference metadata is field-level.
+An imported item can emit separate proposed candidates for title, authors,
+published date, topics, and URL; all share the same evidence ref and normalized
+`knowledge:<kind>:<ref-without-leading-kind-prefix>` entity id. This keeps
+field changes independently supersedable while preserving candidate-only intake.
+
 1. **Evidence** — a content-addressed `EvidenceItem` (source kind/id + bounded quote).
    Evidence is citable raw material, never truth.
 2. **One proposed candidate** — a reference/metadata claim about the item
    (`knowledge:<kind>:<ref>`), state `proposed`. **No import path writes promoted
    claims; adjudication is the only birthplace of a claim.**
+   Current behavior fans deterministic metadata out to field-level candidates,
+   not one opaque metadata row.
 3. **An extraction request** — `inbox/knowledge-extractions/kx_*.json` (state `pending`),
    consumed later by the gated extraction bridge (rented model proposes meaning
    candidates from the content; code decides; candidate-only).

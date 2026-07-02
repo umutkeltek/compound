@@ -31,7 +31,7 @@ func TestImportRecordsEvidenceCandidateExtractionAndSource(t *testing.T) {
 	if report.Items != 3 || report.Imported != 3 || report.Echoes != 0 || report.Reused != 0 {
 		t.Fatalf("report counts = %+v", report)
 	}
-	if len(report.EvidenceIDs) != 3 || len(report.CandidateIDs) != 3 || len(report.ExtractionIDs) != 3 {
+	if len(report.EvidenceIDs) != 3 || len(report.CandidateIDs) != 15 || len(report.ExtractionIDs) != 3 {
 		t.Fatalf("report ids = %+v", report)
 	}
 
@@ -50,8 +50,8 @@ func TestImportRecordsEvidenceCandidateExtractionAndSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 3 {
-		t.Fatalf("candidate rows = %d; want 3", len(candidates))
+	if len(candidates) != 15 {
+		t.Fatalf("candidate rows = %d; want 15", len(candidates))
 	}
 	if candidates[0].State != "proposed" || candidates[0].Qualifiers["source"] != "knowledge_import" {
 		t.Fatalf("candidate[0] = %+v", candidates[0])
@@ -75,8 +75,78 @@ func TestImportRecordsEvidenceCandidateExtractionAndSource(t *testing.T) {
 
 	var sources []SourceRegistryRow
 	readJSONLRows(t, filepath.Join(homePath, "registries", "knowledge-sources.jsonl"), &sources)
-	if len(sources) != 1 || sources[0].SourceID != "source:arxiv:arxiv:cs.AI+cs.CL" || sources[0].TrustPosterior != 0.5 {
+	if len(sources) != 1 || sources[0].SourceID != "source:arxiv:cs.AI+cs.CL" || sources[0].TrustPosterior != 0.5 {
 		t.Fatalf("sources = %+v", sources)
+	}
+}
+
+func TestImportNormalizesKnowledgeEntityAndSplitsMetadataCandidates(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	export := Export{
+		SchemaVersion: ExportSchemaVersion,
+		Source: Source{
+			Kind:       "arxiv",
+			Ref:        "arxiv:cs.AI",
+			CapturedAt: testNow.Format(time.RFC3339),
+		},
+		Privacy: "public",
+		Items: []Item{{
+			Ref:         "arxiv:2506.12345v1",
+			URL:         "https://arxiv.org/abs/2506.12345",
+			Title:       "Synthetic Agents Learn Evidence Discipline",
+			Authors:     []string{"A. Researcher", "B. Builder"},
+			PublishedAt: "2026-06-30",
+			Topics:      []string{"cs.AI", "cs.CL"},
+			Content:     "Captured artifacts become evidence before any memory claim is promoted.",
+		}},
+	}
+	report, err := Import(homePath, store, export, "digest-a", testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 1 || len(report.CandidateIDs) != 5 || len(report.ExtractionIDs) != 1 {
+		t.Fatalf("report = %+v, want one item, five metadata candidates, one extraction", report)
+	}
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 5 {
+		t.Fatalf("candidate rows = %d; want 5", len(candidates))
+	}
+	wantObjects := map[string]string{
+		"reference_title":        "Synthetic Agents Learn Evidence Discipline",
+		"reference_authors":      "A. Researcher; B. Builder",
+		"reference_published_at": "2026-06-30",
+		"reference_topics":       "cs.AI; cs.CL",
+		"reference_url":          "https://arxiv.org/abs/2506.12345",
+	}
+	for _, candidate := range candidates {
+		if candidate.Entity != "knowledge:arxiv:2506.12345v1" {
+			t.Fatalf("candidate entity = %q, want normalized knowledge entity", candidate.Entity)
+		}
+		want, ok := wantObjects[candidate.Predicate]
+		if !ok {
+			t.Fatalf("unexpected predicate %q in %+v", candidate.Predicate, candidates)
+		}
+		if candidate.Object != want {
+			t.Fatalf("%s object = %q, want %q", candidate.Predicate, candidate.Object, want)
+		}
+		if candidate.SourceTraceRef != report.EvidenceIDs[0] {
+			t.Fatalf("candidate %s source trace = %q, want shared evidence %q", candidate.ID, candidate.SourceTraceRef, report.EvidenceIDs[0])
+		}
+		delete(wantObjects, candidate.Predicate)
+	}
+	if len(wantObjects) != 0 {
+		t.Fatalf("missing metadata predicates: %+v", wantObjects)
+	}
+	if got := knowledgeEntity("arxiv", "2506.12345v1"); got != "knowledge:arxiv:2506.12345v1" {
+		t.Fatalf("bare ref entity = %q", got)
 	}
 }
 
@@ -106,7 +176,7 @@ func TestImportFoldsEchoAcrossSourceKinds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 3 {
+	if len(candidates) != 15 {
 		t.Fatalf("echo created duplicate candidates: %+v", candidates)
 	}
 
@@ -150,7 +220,7 @@ func TestImportDedupSurvivesBackupRestore(t *testing.T) {
 	if reimport.Imported != 0 || reimport.Echoes != 0 || reimport.Reused != 3 {
 		t.Fatalf("reimport after restore = %+v", reimport)
 	}
-	assertCandidateCount(t, restoredStore, 3)
+	assertCandidateCount(t, restoredStore, 15)
 
 	echo, err := ImportFile(restoredHome, restoredStore, fixturePath("web-echo-export.json"), testNow.Add(24*time.Hour))
 	if err != nil {
@@ -159,11 +229,11 @@ func TestImportDedupSurvivesBackupRestore(t *testing.T) {
 	if echo.Imported != 0 || echo.Echoes != 1 || echo.Reused != 0 {
 		t.Fatalf("echo after restore = %+v", echo)
 	}
-	assertCandidateCount(t, restoredStore, 3)
+	assertCandidateCount(t, restoredStore, 15)
 	assertDistributionCount(t, restoredHome, 1)
 	assertImportRows(t, filepath.Join(restoredHome, "ledger", "knowledge-imports.jsonl"), 4)
 	assertImportRows(t, filepath.Join(restoredHome, "indexes", "knowledge-imports.jsonl"), 4)
-	t.Logf("backup_restore: reimport imported=%d reused=%d echoes=%d; echo imported=%d reused=%d echoes=%d; candidates=3 import_rows=4", reimport.Imported, reimport.Reused, reimport.Echoes, echo.Imported, echo.Reused, echo.Echoes)
+	t.Logf("backup_restore: reimport imported=%d reused=%d echoes=%d; echo imported=%d reused=%d echoes=%d; candidates=15 import_rows=4", reimport.Imported, reimport.Reused, reimport.Echoes, echo.Imported, echo.Reused, echo.Echoes)
 }
 
 func TestImportDedupSurvivesRebuildableCompact(t *testing.T) {
@@ -190,7 +260,7 @@ func TestImportDedupSurvivesRebuildableCompact(t *testing.T) {
 	if reimport.Imported != 0 || reimport.Echoes != 0 || reimport.Reused != 3 {
 		t.Fatalf("reimport after compact = %+v", reimport)
 	}
-	assertCandidateCount(t, store, 3)
+	assertCandidateCount(t, store, 15)
 
 	echo, err := ImportFile(homePath, store, fixturePath("web-echo-export.json"), testNow.Add(24*time.Hour))
 	if err != nil {
@@ -199,11 +269,11 @@ func TestImportDedupSurvivesRebuildableCompact(t *testing.T) {
 	if echo.Imported != 0 || echo.Echoes != 1 || echo.Reused != 0 {
 		t.Fatalf("echo after compact = %+v", echo)
 	}
-	assertCandidateCount(t, store, 3)
+	assertCandidateCount(t, store, 15)
 	assertDistributionCount(t, homePath, 1)
 	assertImportRows(t, filepath.Join(homePath, "ledger", "knowledge-imports.jsonl"), 4)
 	assertImportRows(t, filepath.Join(homePath, "indexes", "knowledge-imports.jsonl"), 4)
-	t.Logf("compact_rebuildable: reimport imported=%d reused=%d echoes=%d; echo imported=%d reused=%d echoes=%d; candidates=3 import_rows=4", reimport.Imported, reimport.Reused, reimport.Echoes, echo.Imported, echo.Reused, echo.Echoes)
+	t.Logf("compact_rebuildable: reimport imported=%d reused=%d echoes=%d; echo imported=%d reused=%d echoes=%d; candidates=15 import_rows=4", reimport.Imported, reimport.Reused, reimport.Echoes, echo.Imported, echo.Reused, echo.Echoes)
 }
 
 func TestImportIndexMigratesToLedgerOnLoad(t *testing.T) {
@@ -230,7 +300,7 @@ func TestImportIndexMigratesToLedgerOnLoad(t *testing.T) {
 		t.Fatalf("legacy index migration import = %+v", reimport)
 	}
 	assertImportRows(t, filepath.Join(homePath, "ledger", "knowledge-imports.jsonl"), 3)
-	assertCandidateCount(t, store, 2)
+	assertCandidateCount(t, store, 10)
 }
 
 func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) {
@@ -583,7 +653,7 @@ func TestNewMediumImportsWithoutCoreChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Items != 1 || report.Imported != 1 || len(report.CandidateIDs) != 1 {
+	if report.Items != 1 || report.Imported != 1 || len(report.CandidateIDs) != 4 {
 		t.Fatalf("podcast report = %+v", report)
 	}
 	evidence, err := store.Evidence()
@@ -745,7 +815,7 @@ func TestExtractionPromptCarriesCandidateShape(t *testing.T) {
 	req := ExtractionRequest{ID: "kx_x", ItemRef: "arxiv:1234.5678v1", SourceKind: "arxiv", Title: "T", EvidenceRef: "ev_1"}
 	llmReq := buildKnowledgeExtractionRequest(req, mem.EvidenceItem{ID: "ev_1", QuoteText: "quote"})
 	joined := strings.Join(llmReq.Instructions, "\n")
-	for _, want := range []string{"knowledge:arxiv:arxiv:1234.5678v1", "trace_ref must be knowledge_extraction:kx_x", `Candidate kind must be "memory"`, "entity, predicate, and object", "snake_case", "falsifiable"} {
+	for _, want := range []string{"knowledge:arxiv:1234.5678v1", "trace_ref must be knowledge_extraction:kx_x", `Candidate kind must be "memory"`, "entity, predicate, and object", "snake_case", "falsifiable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("instructions missing %q:\n%s", want, joined)
 		}

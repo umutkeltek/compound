@@ -308,9 +308,12 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 			continue
 		}
 
-		candidate := candidateForItem(export, item, evidence.ID, now)
-		if _, err := store.RecordStableCandidate(candidate); err != nil {
-			return report, err
+		candidates := candidatesForItem(export, item, evidence.ID, now)
+		for _, candidate := range candidates {
+			if _, err := store.RecordStableCandidate(candidate); err != nil {
+				return report, err
+			}
+			report.CandidateIDs = append(report.CandidateIDs, candidate.ID)
 		}
 		extraction, err := writeExtractionRequest(homePath, export, item, evidence.ID, now)
 		if err != nil {
@@ -321,7 +324,6 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 		}
 		imports = append(imports, row)
 		report.Imported++
-		report.CandidateIDs = append(report.CandidateIDs, candidate.ID)
 		report.ExtractionIDs = append(report.ExtractionIDs, extraction.ID)
 	}
 	return report, nil
@@ -524,21 +526,106 @@ func ensureSourceRegistry(homePath string, source Source, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	kind := strings.TrimSpace(source.Kind)
+	ref := normalizeKindRef(kind, source.Ref)
+	sourceID := knowledgeSourceID(kind, source.Ref)
 	for _, row := range rows {
-		if row.Kind == source.Kind && row.Ref == source.Ref {
+		if row.SourceID == sourceID || (strings.TrimSpace(row.Kind) == kind && normalizeKindRef(kind, row.Ref) == ref) {
 			return nil
 		}
 	}
 	return appendJSONL(path, SourceRegistryRow{
-		SourceID:       "source:" + source.Kind + ":" + source.Ref,
-		Kind:           source.Kind,
-		Ref:            source.Ref,
+		SourceID:       sourceID,
+		Kind:           kind,
+		Ref:            ref,
 		FirstSeen:      rfc3339(now),
 		TrustPosterior: 0.5,
 	})
 }
 
-func candidateForItem(export Export, item Item, evidenceID string, now time.Time) mem.Candidate {
+type metadataCandidateField struct {
+	qualifier string
+	predicate string
+	object    string
+}
+
+func candidatesForItem(export Export, item Item, evidenceID string, now time.Time) []mem.Candidate {
+	entity := knowledgeEntity(export.Source.Kind, item.Ref)
+	sourceKind := strings.TrimSpace(export.Source.Kind)
+	sourceRef := normalizeKindRef(sourceKind, export.Source.Ref)
+	itemRef := normalizeKindRef(sourceKind, item.Ref)
+	fields := metadataFields(item)
+	if len(fields) == 0 {
+		fields = append(fields, metadataCandidateField{
+			qualifier: "ref",
+			predicate: "reference_ref",
+			object:    itemRef,
+		})
+	}
+
+	candidates := make([]mem.Candidate, 0, len(fields))
+	for _, field := range fields {
+		candidates = append(candidates, mem.Candidate{
+			ID:              "cand_" + shortDigest(entity, evidenceID, field.predicate, field.object),
+			Entity:          entity,
+			Predicate:       field.predicate,
+			Object:          field.object,
+			ObservationDate: firstNonEmpty(item.PublishedAt, rfc3339(now)),
+			Confidence:      0.8,
+			Derivation:      "deterministic",
+			// Metadata claims are deterministic source output. LLM-extracted meaning
+			// candidates from the extraction bridge must earn promotion separately.
+			PromotionBasis: "trusted_deterministic_import",
+			Qualifiers: map[string]string{
+				"source":         "knowledge_import",
+				"source_kind":    sourceKind,
+				"source_ref":     sourceRef,
+				"item_ref":       itemRef,
+				"canonical":      canonicalRef(item),
+				"metadata_field": field.qualifier,
+			},
+			SourceTraceRef: evidenceID,
+			SnippetHash:    shortDigest(item.Content, item.ContentRef, evidenceID, field.predicate, field.object),
+			Visibility:     candidateVisibility(export.Privacy),
+			State:          "proposed",
+			CreatedAt:      rfc3339(now),
+		})
+	}
+	return candidates
+}
+
+func metadataFields(item Item) []metadataCandidateField {
+	fields := []metadataCandidateField{}
+	if title := strings.TrimSpace(item.Title); title != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "title", predicate: "reference_title", object: title})
+	}
+	if authors := joinTrimmed(item.Authors, "; "); authors != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "authors", predicate: "reference_authors", object: authors})
+	}
+	if publishedAt := strings.TrimSpace(item.PublishedAt); publishedAt != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "published_at", predicate: "reference_published_at", object: publishedAt})
+	}
+	if topics := joinTrimmed(item.Topics, "; "); topics != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "topics", predicate: "reference_topics", object: topics})
+	}
+	if url := strings.TrimSpace(item.URL); url != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "url", predicate: "reference_url", object: url})
+	}
+	return fields
+}
+
+func joinTrimmed(values []string, sep string) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			parts = append(parts, value)
+		}
+	}
+	return strings.Join(parts, sep)
+}
+
+func legacyCandidateForItem(export Export, item Item, evidenceID string, now time.Time) mem.Candidate {
 	entity := knowledgeEntity(export.Source.Kind, item.Ref)
 	return mem.Candidate{
 		ID:              "cand_" + shortDigest(entity, evidenceID, item.Title, strings.Join(item.Authors, "\x00"), strings.Join(item.Topics, "\x00")),
@@ -954,5 +1041,27 @@ func rfc3339(t time.Time) string {
 
 // knowledgeEntity is the canonical entity id for an imported knowledge item.
 func knowledgeEntity(sourceKind, itemRef string) string {
-	return "knowledge:" + sourceKind + ":" + itemRef
+	kind := strings.TrimSpace(sourceKind)
+	return "knowledge:" + kind + ":" + normalizeKindRef(kind, itemRef)
+}
+
+func knowledgeSourceID(sourceKind, sourceRef string) string {
+	kind := strings.TrimSpace(sourceKind)
+	return "source:" + kind + ":" + normalizeKindRef(kind, sourceRef)
+}
+
+func normalizeKindRef(kind, ref string) string {
+	kind = strings.TrimSpace(kind)
+	ref = strings.TrimSpace(ref)
+	if kind == "" {
+		return ref
+	}
+	prefix := strings.ToLower(kind) + ":"
+	for {
+		trimmed := strings.TrimSpace(ref)
+		if !strings.HasPrefix(strings.ToLower(trimmed), prefix) {
+			return trimmed
+		}
+		ref = strings.TrimSpace(trimmed[len(kind)+1:])
+	}
 }
