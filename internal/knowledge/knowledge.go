@@ -317,6 +317,11 @@ func candidateForItem(export Export, item Item, evidenceID string, now time.Time
 		ObservationDate: item.PublishedAt,
 		Confidence:      0.8,
 		Derivation:      "deterministic",
+		// Metadata claims are deterministic tool output from the medium's
+		// authoritative API — the definition of a trusted deterministic import.
+		// LLM-extracted meaning candidates (extraction bridge) must NOT carry
+		// a basis; adjudication earns theirs.
+		PromotionBasis: "trusted_deterministic_import",
 		Qualifiers: map[string]string{
 			"source":      "knowledge_import",
 			"source_kind": export.Source.Kind,

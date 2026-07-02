@@ -52,6 +52,9 @@ func TestImportRecordsEvidenceCandidateExtractionAndSource(t *testing.T) {
 	if candidates[0].State != "proposed" || candidates[0].Qualifiers["source"] != "knowledge_import" {
 		t.Fatalf("candidate[0] = %+v", candidates[0])
 	}
+	if candidates[0].PromotionBasis != "trusted_deterministic_import" {
+		t.Fatalf("metadata candidate basis = %q, want trusted_deterministic_import (deterministic tool import)", candidates[0].PromotionBasis)
+	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("knowledge import must not create promoted claims, stat err=%v", err)
 	}
