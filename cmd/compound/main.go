@@ -203,7 +203,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
-  compound workbench [--json] [--recent N] [--actor A] read-only open work / receipt / transition board; no dispatch
+  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
@@ -3735,13 +3735,25 @@ func cmdWorkbench(args []string) {
 	jsonOut := false
 	recent := 5
 	actor := "codex"
+	activePacketSurface := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
+		case "--active-packet-surface":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
+				os.Exit(2)
+			}
+			i++
+			activePacketSurface = strings.TrimSpace(args[i])
+			if activePacketSurface == "" {
+				fmt.Fprintln(os.Stderr, "error: --active-packet-surface must be non-empty")
+				os.Exit(2)
+			}
 		case "--actor":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A]")
+				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
 				os.Exit(2)
 			}
 			i++
@@ -3752,7 +3764,7 @@ func cmdWorkbench(args []string) {
 			}
 		case "--recent":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A]")
+				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
 				os.Exit(2)
 			}
 			i++
@@ -3763,11 +3775,15 @@ func cmdWorkbench(args []string) {
 			}
 			recent = n
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A]")
+			fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
 			os.Exit(2)
 		}
 	}
-	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{RecentLimit: recent, Actor: actor})
+	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{
+		RecentLimit:         recent,
+		Actor:               actor,
+		ActivePacketSurface: activePacketSurface,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -3784,10 +3800,22 @@ func cmdWorkbench(args []string) {
 	if report.Counts.DispatchStepRuns > 0 {
 		fmt.Printf("dispatch_step_runs=%d\n", report.Counts.DispatchStepRuns)
 	}
+	if report.ActivePacketProof != nil {
+		fmt.Printf("active_packet_proof status=%s work=%s context=%s receipt=%s transition=%s\n",
+			report.ActivePacketProof.Status,
+			report.ActivePacketProof.WorkID,
+			report.ActivePacketProof.ContextPackID,
+			report.ActivePacketProof.ReceiptID,
+			report.ActivePacketProof.TransitionID)
+	}
 	if report.DispatchNext.CanRun {
 		fmt.Printf("dispatch_next: %s\n", strings.Join(report.DispatchNext.Command, " "))
 	} else if report.DispatchNext.WaitReason != "" {
-		fmt.Printf("dispatch_wait: %s\n", report.DispatchNext.WaitReason)
+		fmt.Printf("dispatch_wait: %s", report.DispatchNext.WaitReason)
+		if report.DispatchNext.WorkID != "" {
+			fmt.Printf(" work=%s", report.DispatchNext.WorkID)
+		}
+		fmt.Println()
 	}
 	if len(report.Integrity) > 0 {
 		fmt.Println("integrity:")

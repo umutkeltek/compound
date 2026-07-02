@@ -747,6 +747,34 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 	if !report.Checks["work_completed"] || !report.Checks["receipt_work_matches"] || !report.Checks["transition_work_matches"] {
 		t.Fatalf("active packet proof checks = %+v", report.Checks)
 	}
+
+	workbenchOut := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--recent", "10", "--active-packet-surface", imported.Work.CanonicalSurface})
+	})
+	var workbenchReport work.WorkbenchReport
+	if err := json.Unmarshal([]byte(workbenchOut), &workbenchReport); err != nil {
+		t.Fatalf("parse workbench report: %v\n%s", err, workbenchOut)
+	}
+	if workbenchReport.ActivePacketProof == nil ||
+		workbenchReport.ActivePacketProof.Status != "ok" ||
+		workbenchReport.ActivePacketProof.WorkID != imported.Work.ID ||
+		workbenchReport.ActivePacketProof.ReceiptID != closed.Receipt.ID ||
+		workbenchReport.ActivePacketProof.TransitionID != closed.Transition.ID {
+		t.Fatalf("workbench active packet proof = %+v", workbenchReport.ActivePacketProof)
+	}
+	if workbenchReport.DispatchNext.CanRun ||
+		workbenchReport.DispatchNext.WaitReason != "source_packet_terminal" ||
+		workbenchReport.DispatchNext.WorkID != imported.Work.ID {
+		t.Fatalf("workbench dispatch next = %+v", workbenchReport.DispatchNext)
+	}
+
+	humanOut := captureStdout(t, func() {
+		cmdWorkbench([]string{"--recent", "10", "--active-packet-surface", imported.Work.CanonicalSurface})
+	})
+	if !strings.Contains(humanOut, "active_packet_proof status=ok") ||
+		!strings.Contains(humanOut, "dispatch_wait: source_packet_terminal work="+imported.Work.ID) {
+		t.Fatalf("workbench human output missing active packet terminal proof:\n%s", humanOut)
+	}
 }
 
 func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {

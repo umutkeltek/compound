@@ -12,20 +12,22 @@ import (
 
 // WorkbenchOptions controls the read-only workbench projection.
 type WorkbenchOptions struct {
-	RecentLimit int
-	Actor       string
+	RecentLimit         int
+	Actor               string
+	ActivePacketSurface string
 }
 
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
 // state. It does not dispatch, claim, close, or repair work.
 type WorkbenchReport struct {
-	GeneratedAt      string                   `json:"generated_at"`
-	Counts           WorkbenchCounts          `json:"counts"`
-	Open             []WorkbenchItem          `json:"open"`
-	Recent           []WorkbenchItem          `json:"recent,omitempty"`
-	DispatchNext     WorkbenchDispatchNext    `json:"dispatch_next"`
-	DispatchStepRuns []DispatchStepRunSummary `json:"dispatch_step_runs,omitempty"`
-	Integrity        []string                 `json:"integrity,omitempty"`
+	GeneratedAt       string                   `json:"generated_at"`
+	Counts            WorkbenchCounts          `json:"counts"`
+	Open              []WorkbenchItem          `json:"open"`
+	Recent            []WorkbenchItem          `json:"recent,omitempty"`
+	ActivePacketProof *ActivePacketProofReport `json:"active_packet_proof,omitempty"`
+	DispatchNext      WorkbenchDispatchNext    `json:"dispatch_next"`
+	DispatchStepRuns  []DispatchStepRunSummary `json:"dispatch_step_runs,omitempty"`
+	Integrity         []string                 `json:"integrity,omitempty"`
 }
 
 type WorkbenchCounts struct {
@@ -155,6 +157,11 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	for _, warning := range warnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
+	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface)
+	report.ActivePacketProof = activePacket
+	for _, warning := range activeWarnings {
+		report.Integrity = append(report.Integrity, warning)
+	}
 	sort.Slice(report.Open, func(i, j int) bool {
 		pi, pj := statePriority(report.Open[i].State), statePriority(report.Open[j].State)
 		if pi != pj {
@@ -170,6 +177,17 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		report.Recent = report.Recent[:opts.RecentLimit]
 	}
 	return report, nil
+}
+
+func (s *Store) workbenchActivePacketProof(now time.Time, surface string) (*ActivePacketProofReport, []string) {
+	proof, err := s.ActivePacketProof(now, surface)
+	if err != nil {
+		return nil, []string{"active-packet-proof unreadable: " + err.Error()}
+	}
+	if strings.TrimSpace(proof.WorkID) == "" {
+		return nil, nil
+	}
+	return &proof, nil
 }
 
 func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport) WorkbenchItem {
@@ -365,6 +383,22 @@ func workbenchDispatchNext(report WorkbenchReport, actor string) WorkbenchDispat
 	if out.CanRun {
 		out.Command = []string{"compound", "work", "dispatch-step", "--actor", actor, "--until-wait"}
 		return out
+	}
+	if report.Counts.Open == 0 && report.ActivePacketProof != nil {
+		out.Action = "none"
+		out.WorkID = report.ActivePacketProof.WorkID
+		switch report.ActivePacketProof.Status {
+		case "ok":
+			out.Reason = "active_packet_terminal"
+			out.WaitReason = "source_packet_terminal"
+			out.BlockedOn = []string{"work.terminal", "work.terminal:" + report.ActivePacketProof.WorkID}
+			return out
+		case "risk":
+			out.Reason = "active_packet_proof_risk"
+			out.WaitReason = "active_packet_proof_risk"
+			out.BlockedOn = []string{"active_packet_proof:" + report.ActivePacketProof.WorkID}
+			return out
+		}
 	}
 	out.WaitReason, out.BlockedOn = dispatchStepWait(DispatchStepResult{Actor: actor}, report)
 	return out

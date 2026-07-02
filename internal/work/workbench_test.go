@@ -1,6 +1,10 @@
 package work
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	s := newStore(t)
@@ -168,6 +172,68 @@ func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
 		if next.Command[i] != want[i] {
 			t.Fatalf("dispatch command = %v", next.Command)
 		}
+	}
+}
+
+func TestWorkbenchSurfacesTerminalActivePacketProof(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
+		Owner:         "compound-core",
+		State:         "ready",
+		ContextPackID: "ctx_packet",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	writeContextPack(t, s, "ctx_packet")
+	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet work: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running", RunID: "run_packet"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	closed, err := s.Close(imported.Work.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "active packet workbench proof complete",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:active-packet-lifecycle"},
+	}, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("close packet work: %v", err)
+	}
+
+	report, err := s.Workbench(fixedNow.Add(5*time.Second), WorkbenchOptions{
+		RecentLimit:         10,
+		Actor:               "codex",
+		ActivePacketSurface: imported.Work.CanonicalSurface,
+	})
+	if err != nil {
+		t.Fatalf("workbench: %v", err)
+	}
+	if report.Counts.Open != 0 || report.Counts.Terminal != 1 {
+		t.Fatalf("workbench counts = %+v", report.Counts)
+	}
+	if report.ActivePacketProof == nil {
+		t.Fatal("workbench missing active packet proof")
+	}
+	if report.ActivePacketProof.Status != "ok" ||
+		report.ActivePacketProof.WorkID != imported.Work.ID ||
+		report.ActivePacketProof.ContextPackID != "ctx_packet" ||
+		report.ActivePacketProof.ReceiptID != closed.Receipt.ID ||
+		report.ActivePacketProof.TransitionID != closed.Transition.ID {
+		t.Fatalf("active packet proof = %+v", report.ActivePacketProof)
+	}
+	next := report.DispatchNext
+	if next.CanRun || next.WaitReason != "source_packet_terminal" || next.Reason != "active_packet_terminal" || next.WorkID != imported.Work.ID {
+		t.Fatalf("dispatch next = %+v", next)
+	}
+	if !contains(next.BlockedOn, "work.terminal") || !contains(next.BlockedOn, "work.terminal:"+imported.Work.ID) {
+		t.Fatalf("dispatch next blocked_on = %+v", next.BlockedOn)
 	}
 }
 
