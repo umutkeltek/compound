@@ -104,6 +104,8 @@ func main() {
 		cmdRoute(os.Args[2:])
 	case "memory":
 		cmdMemory(os.Args[2:])
+	case "synthesis":
+		cmdSynthesis(os.Args[2:])
 	case "knowledge":
 		cmdKnowledge(os.Args[2:])
 	case "distiller":
@@ -225,7 +227,9 @@ usage:
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
   compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
-                                                                 spine memory: candidates, claims, positions, patterns, evidence
+                spine memory: candidates, claims, positions, patterns, evidence
+  compound synthesis sweep [--stage cluster,contradict] [--json]
+                proposal-only memory synthesis reports + run proof
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller improvement-plan --candidate C [--target file] method_upgrade/policy_patch -> reviewed distiller improvement draft
