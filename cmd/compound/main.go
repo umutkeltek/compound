@@ -33,6 +33,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/mem"
+	"compound/internal/panel"
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
@@ -3722,6 +3723,7 @@ func cmdReviews(args []string) {
 	product.AnnotateReviewQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
+	panel.AnnotateVerdictQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)
 	reviewartifact.Recount(&report)
 	if jsonOut {

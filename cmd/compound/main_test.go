@@ -1382,6 +1382,66 @@ func TestReviewsCommandAnnotatesRoutePromotionHold(t *testing.T) {
 	}
 }
 
+func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_cli", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_verdict_cli",
+		"run_id":         "prun_cli",
+		"target": map[string]any{
+			"kind":    "memory_candidate",
+			"ref":     "cand_panel_cli",
+			"summary": "candidate needs human adjudication",
+		},
+		"lens_findings": []map[string]any{
+			{
+				"lens_ref":           "lens:evidence-strength",
+				"route_evidence_ref": "route_a",
+				"status":             "ok",
+			},
+			{
+				"lens_ref":           "lens:privacy",
+				"route_evidence_ref": "route_b",
+				"status":             "failed",
+			},
+		},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "needs_human",
+			"confidence":     0.62,
+			"rationale":      "privacy lens failed",
+		},
+		"evidence_refs": []string{"route_b", "route_a", "route_a"},
+	}, " ", "# Panel verdict\n"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { cmdReviews([]string{"--area", "panel-verdicts", "--json"}) })
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 1 || report.Counts.ReadyToApply != 0 || report.Counts.OK != 0 {
+		t.Fatalf("panel verdict should remain review debt: %+v", report.Counts)
+	}
+	if len(report.Items) != 1 || report.Items[0].Readiness != "needs_review" {
+		t.Fatalf("panel verdict item should be annotated needs_review: %+v", report.Items)
+	}
+	item := report.Items[0]
+	if len(item.Actions) != 0 {
+		t.Fatalf("panel verdict queue must not expose mutating apply actions: %+v", item)
+	}
+	if !strings.Contains(item.NextAction, "panel requested human decision") || !strings.Contains(item.NextAction, "memory_candidate/cand_panel_cli") || !strings.Contains(item.NextAction, "failed_lenses=1") {
+		t.Fatalf("panel verdict item should expose owner-review context: %+v", item)
+	}
+	if len(item.EvidenceRefs) != 2 {
+		t.Fatalf("panel verdict item should preserve de-duplicated evidence refs: %+v", item)
+	}
+}
+
 func TestReviewsRecordFindingConsumesStandingGrantAndRecordsWorkAction(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
