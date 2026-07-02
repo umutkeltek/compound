@@ -244,7 +244,7 @@ usage:
                                                                  conversation corpus coverage -> SourceObservation/no-promote; no row import, Dream execution, or memory promotion
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
-  compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
+  compound distiller run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
@@ -1801,19 +1801,40 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response] <trace.json> | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
 	extractor := distiller.Extractor(distiller.ReferenceExtractor{})
 	tracePath := args[1]
 	if args[1] == "--llm-response" {
-		if len(args) != 3 {
-			fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json>")
+		if len(args) != 3 && len(args) != 5 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json> [--request <request.json>]")
 			os.Exit(2)
 		}
-		extractor = distiller.LLMExtractor{}
 		tracePath = args[2]
+		extractor = distiller.LLMExtractor{}
+		if len(args) == 5 {
+			if args[3] != "--request" || strings.TrimSpace(args[4]) == "" {
+				fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json> [--request <request.json>]")
+				os.Exit(2)
+			}
+			reqData, err := os.ReadFile(args[4])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "distiller run request:", err)
+				os.Exit(1)
+			}
+			var req distiller.LLMExtractionRequest
+			if err := json.Unmarshal(reqData, &req); err != nil {
+				fmt.Fprintln(os.Stderr, "distiller run request:", err)
+				os.Exit(1)
+			}
+			if req.SchemaVersion != distiller.LLMExtractionSchemaVersion {
+				fmt.Fprintf(os.Stderr, "distiller run request: schema_version=%q, want %q\n", req.SchemaVersion, distiller.LLMExtractionSchemaVersion)
+				os.Exit(1)
+			}
+			extractor = distiller.NewGroundedLLMExtractor(req)
+		}
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {

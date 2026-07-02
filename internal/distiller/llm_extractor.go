@@ -370,7 +370,8 @@ type LLMExtractor struct {
 	RequireEvidenceRefs bool
 }
 
-// NewGroundedLLMExtractor returns a request-bound extractor for eval/live extraction.
+// NewGroundedLLMExtractor returns a request-bound extractor for eval/live extraction
+// and offline replay with a saved request packet.
 // Standalone `distiller run --llm-response` intentionally uses the zero-value extractor
 // because it has no request packet to define the evidence allowlist.
 func NewGroundedLLMExtractor(req LLMExtractionRequest) LLMExtractor {

@@ -6527,6 +6527,84 @@ func TestMemoryWritePlanUsesParkedDistillerCandidateWithoutMutatingBrain(t *test
 	}
 }
 
+func TestDistillerRunGroundsLLMResponseWithRequest(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	request := distiller.LLMExtractionRequest{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "runtime:work_receipt_proof",
+		SourceRefs: []string{
+			"receipt:rec_receipt_proof",
+			"context_injection:hook_receipt_proof.md",
+			"proof:hook-readiness",
+		},
+		Policy: distiller.DefaultPolicy(),
+	}
+	confidence := 0.91
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "runtime:work_receipt_proof",
+		Extractor:     "fixture-offline",
+		Model:         "offline-fixture",
+		Candidates: []distiller.LLMCandidate{{
+			Kind:         distiller.KindMethodUpgrade,
+			Subject:      "distiller.receipt-proof-learning",
+			Statement:    "Offline distiller runs should bind response evidence to saved request source refs.",
+			Confidence:   &confidence,
+			EvidenceRefs: []string{"proof:hook-readiness", "context_injection:hook_receipt_proof.md"},
+		}},
+	}
+
+	requestPath := filepath.Join(t.TempDir(), "request.json")
+	requestData, err := json.MarshalIndent(request, "", " ")
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if err := os.WriteFile(requestPath, append(requestData, '\n'), 0o644); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	responsePath := filepath.Join(t.TempDir(), "response.json")
+	responseData, err := json.MarshalIndent(response, "", " ")
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if err := os.WriteFile(responsePath, append(responseData, '\n'), 0o644); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"run", "--llm-response", responsePath, "--request", requestPath})
+	})
+	if !strings.Contains(out, "method_upgrade") || !strings.Contains(out, "park") {
+		t.Fatalf("distiller output missing parked method upgrade:\n%s", out)
+	}
+
+	rows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade)))
+	if len(rows) != 1 {
+		t.Fatalf("method upgrade candidates = %d, want 1", len(rows))
+	}
+	got := rows[0]
+	if got.Verdict != distiller.Park {
+		t.Fatalf("candidate verdict = %q, want park", got.Verdict)
+	}
+	for _, want := range []string{"proof:hook-readiness", "context_injection:hook_receipt_proof.md"} {
+		found := false
+		for _, ref := range got.EvidenceRefs {
+			if ref == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("candidate evidence refs missing %q: %+v", want, got.EvidenceRefs)
+		}
+	}
+}
+
 func TestMemoryImportPageCreatesEvidenceAndCandidatesWithoutClaims(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
