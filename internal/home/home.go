@@ -151,14 +151,19 @@ type Report struct {
 	Manifest      Manifest
 	Dirs          []CheckItem
 	DirsOK        int
-	InsideGitRepo bool // a global home inside a git repo is a "generated-state-in-source" smell
+	InsideGitRepo bool        // a global home inside a git repo is a "generated-state-in-source" smell
+	Hygiene       []CheckItem // operational hygiene: terminal work swept, leases live-only
+	HygieneOK     bool
 	OK            bool
 }
 
 // Doctor inspects a home: manifest present + parseable, every habitat dir present,
-// and whether the home sits inside a git repo (generated state must not be tracked).
-// OK is gated on manifest + dirs only; the git check is reported, not fatal (a
-// workspace-local home is legitimately inside a repo but must be gitignored).
+// whether the home sits inside a git repo (generated state must not be tracked),
+// and operational hygiene (no terminal work hot, no stale leases — the sweep in
+// `home archive-history` is the remedy). OK is gated on manifest + dirs only; the
+// git and hygiene checks are reported, not fatal (a workspace-local home is
+// legitimately inside a repo but must be gitignored, and the archive sweep must
+// still be allowed to run on a hygiene-dirty home to clean it).
 func Doctor(homePath string) Report {
 	r := Report{Home: homePath}
 	if b, err := os.ReadFile(filepath.Join(homePath, ManifestName)); err == nil {
@@ -175,6 +180,7 @@ func Doctor(homePath string) Report {
 		r.Dirs = append(r.Dirs, CheckItem{Name: d, OK: ok})
 	}
 	r.InsideGitRepo = underGitRepo(homePath)
+	r.Hygiene, r.HygieneOK = hygieneChecks(homePath)
 	r.OK = r.ManifestOK && r.DirsOK == len(Dirs)
 	return r
 }

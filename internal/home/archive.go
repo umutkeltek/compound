@@ -500,6 +500,13 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 		}
 		out = append(out, candidates...)
 	}
+	if kinds["lease"] {
+		candidates, err := staleLeaseCandidates(homePath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidates...)
+	}
 	if kinds["review"] {
 		candidates, err := terminalReviewCandidates(homePath)
 		if err != nil {
@@ -521,7 +528,7 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 }
 
 func operationalArchiveKinds(values []string) (map[string]bool, error) {
-	allowed := map[string]bool{"work": true, "review": true, "comparison": true}
+	allowed := map[string]bool{"work": true, "lease": true, "review": true, "comparison": true}
 	out := map[string]bool{}
 	for _, value := range values {
 		for _, part := range strings.Split(value, ",") {
@@ -536,6 +543,7 @@ func operationalArchiveKinds(values []string) (map[string]bool, error) {
 	}
 	if len(out) == 0 {
 		out["work"] = true
+		out["lease"] = true
 		out["review"] = true
 		out["comparison"] = true
 	}
@@ -566,6 +574,125 @@ func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
 		}
 	}
 	return out, nil
+}
+
+// staleLeaseCandidates finds work/leases/*.json whose work_id no longer maps to
+// a live WorkEnvelope: the hot work is terminal, already archived, or missing
+// entirely (an orphan). Leases for live (non-terminal, hot) work are never
+// candidates. Claim leases are not otherwise swept on close or archive, so this
+// is the continuous cleanup path for the lease lifecycle.
+func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
+	dir := filepath.Join(homePath, "work", "leases")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var archivedWork map[string]bool
+	var out []operationalCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		workID := strings.TrimSuffix(entry.Name(), ".json")
+		rel := filepath.ToSlash(filepath.Join("work", "leases", entry.Name()))
+		state, err := jsonStringField(filepath.Join(homePath, "work", "work", workID+".json"), "state")
+		switch {
+		case err == nil && !terminalWorkStatus(state):
+			continue // live work: its lease must survive the sweep
+		case err == nil:
+			out = append(out, operationalCandidate{Kind: "lease", Status: state, OriginalPath: rel})
+		case os.IsNotExist(err):
+			if archivedWork == nil {
+				ids, idsErr := archivedWorkIDs(homePath)
+				if idsErr != nil {
+					return nil, idsErr
+				}
+				archivedWork = ids
+			}
+			status := "orphaned"
+			if archivedWork[workID] {
+				status = "work_archived"
+			}
+			out = append(out, operationalCandidate{Kind: "lease", Status: status, OriginalPath: rel})
+		default:
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// archivedWorkIDs lists work_ids whose WorkEnvelope already moved into the
+// operational archive — their leftover leases are stale by definition.
+func archivedWorkIDs(homePath string) (map[string]bool, error) {
+	entries, err := LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, entry := range entries {
+		if entry.Kind != "work" || !strings.HasPrefix(entry.OriginalPath, "work/work/") || !strings.HasSuffix(entry.OriginalPath, ".json") {
+			continue
+		}
+		out[strings.TrimSuffix(strings.TrimPrefix(entry.OriginalPath, "work/work/"), ".json")] = true
+	}
+	return out, nil
+}
+
+// OperationalHygieneReport is the swept-state doctor view: terminal work must
+// not sit hot in work/work, and work/leases must only hold leases for live
+// work. Both lists reuse the sweep's own candidate predicates, so the doctor
+// and `home archive-history` can never disagree about what counts as dirty.
+type OperationalHygieneReport struct {
+	Home            string
+	TerminalHotWork []string // hot work/work envelopes in a terminal state
+	StaleLeases     []string // leases without a live (non-terminal, hot) work item
+	OK              bool
+}
+
+// OperationalHygiene inspects the hot work surfaces without mutating anything.
+// It deliberately does not require a healthy home: it feeds Doctor, and the
+// archive sweep that remedies a dirty home must still be allowed to run.
+func OperationalHygiene(homePath string) (OperationalHygieneReport, error) {
+	homePath, err := filepath.Abs(expandUser(homePath))
+	if err != nil {
+		return OperationalHygieneReport{}, err
+	}
+	report := OperationalHygieneReport{Home: homePath}
+	workCandidates, err := terminalWorkCandidates(homePath)
+	if err != nil {
+		return report, err
+	}
+	for _, cand := range workCandidates {
+		report.TerminalHotWork = append(report.TerminalHotWork, cand.OriginalPath)
+	}
+	leaseCandidates, err := staleLeaseCandidates(homePath)
+	if err != nil {
+		return report, err
+	}
+	for _, cand := range leaseCandidates {
+		report.StaleLeases = append(report.StaleLeases, cand.OriginalPath)
+	}
+	report.OK = len(report.TerminalHotWork) == 0 && len(report.StaleLeases) == 0
+	return report, nil
+}
+
+// hygieneChecks folds OperationalHygiene into doctor CheckItems. Hygiene is
+// reported, not fatal: Report.OK must keep gating on manifest+dirs only,
+// because the archive sweep that cleans a dirty home refuses to run on an
+// unhealthy home — gating OK on hygiene would deadlock the remedy. A scan
+// error reads as not-OK (dirty until proven swept); Doctor has no error path.
+func hygieneChecks(homePath string) ([]CheckItem, bool) {
+	hygiene, err := OperationalHygiene(homePath)
+	if err != nil {
+		return []CheckItem{{Name: "hygiene:scan", OK: false}}, false
+	}
+	return []CheckItem{
+		{Name: "hygiene:no-terminal-work-hot", OK: len(hygiene.TerminalHotWork) == 0},
+		{Name: "hygiene:no-stale-leases", OK: len(hygiene.StaleLeases) == 0},
+	}, hygiene.OK
 }
 
 func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {

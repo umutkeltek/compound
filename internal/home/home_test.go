@@ -3,6 +3,8 @@ package home
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -337,6 +339,246 @@ func TestOperationalArchiveKeepsOperatorPendingPanelVerdictsHot(t *testing.T) {
 	}
 	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_legacy_reviewed.reviewed.json"); !strings.Contains(got, "pvr_legacy") {
 		t.Fatalf("review sidecar without reviewed_by should remain hot, got %q", got)
+	}
+}
+
+func TestArchiveHistoryDrainsAllTerminalWorkInOnePass(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, h, "work/work/work_completed.json", `{"id":"work_completed","state":"completed"}`)
+	writeHomeFile(t, h, "work/work/work_failed.json", `{"id":"work_failed","state":"failed"}`)
+	writeHomeFile(t, h, "work/work/work_cancelled.json", `{"id":"work_cancelled","state":"cancelled"}`)
+	running := `{"id":"work_running","state":"running"}`
+	writeHomeFile(t, h, "work/work/work_running.json", running)
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"work"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 3 || report.Counts["work"] != 3 {
+		t.Fatalf("archive report = %+v, want one pass to drain all 3 terminal works", report)
+	}
+	entries, err := os.ReadDir(filepath.Join(h, "work", "work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "work_running.json" {
+		t.Fatalf("hot work dir after sweep = %v, want only work_running.json", entries)
+	}
+	if got := mustReadHomeFile(t, h, "work/work/work_running.json"); got != running {
+		t.Fatalf("running work mutated by sweep: %q", got)
+	}
+	active, err := LoadOperationalArchiveIndex(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 3 {
+		t.Fatalf("archive index rows = %d (%+v), want exactly 3", len(active), active)
+	}
+	for _, entry := range active {
+		if entry.Kind != "work" {
+			t.Fatalf("archive index row kind = %+v, want work", entry)
+		}
+	}
+}
+
+func TestArchiveHistorySweepsStaleLeasesAndKeepsLiveLeases(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	// live work (non-terminal, hot): its lease must survive the sweep.
+	writeHomeFile(t, h, "work/work/work_running.json", `{"id":"work_running","state":"running"}`)
+	writeHomeFile(t, h, "work/leases/work_running.json", `{"work_id":"work_running","by":"codex","claimed_at":"1"}`)
+	writeHomeFile(t, h, "work/work/work_ready.json", `{"id":"work_ready","state":"ready"}`)
+	writeHomeFile(t, h, "work/leases/work_ready.json", `{"work_id":"work_ready","by":"codex","claimed_at":"2"}`)
+	// terminal-but-hot work: the work and its lease archive in the same pass.
+	writeHomeFile(t, h, "work/work/work_done.json", `{"id":"work_done","state":"completed"}`)
+	writeHomeFile(t, h, "work/leases/work_done.json", `{"work_id":"work_done","by":"codex","claimed_at":"3"}`)
+	// orphan lease: no work file at all.
+	writeHomeFile(t, h, "work/leases/work_ghost.json", `{"work_id":"work_ghost","by":"codex","claimed_at":"4"}`)
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 3 || report.Counts["work"] != 1 || report.Counts["lease"] != 2 {
+		t.Fatalf("archive report = %+v, want 1 terminal work + 2 stale leases", report)
+	}
+	assertMissing(t, filepath.Join(h, "work/work/work_done.json"))
+	assertMissing(t, filepath.Join(h, "work/leases/work_done.json"))
+	assertMissing(t, filepath.Join(h, "work/leases/work_ghost.json"))
+	if got := mustReadHomeFile(t, h, "work/leases/work_running.json"); !strings.Contains(got, "work_running") {
+		t.Fatalf("lease for running work must survive sweep, got %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "work/leases/work_ready.json"); !strings.Contains(got, "work_ready") {
+		t.Fatalf("lease for ready work must survive sweep, got %q", got)
+	}
+	active, err := LoadOperationalArchiveIndex(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusByPath := map[string]string{}
+	for _, entry := range active {
+		statusByPath[entry.OriginalPath] = entry.Status
+	}
+	if statusByPath["work/leases/work_done.json"] != "completed" {
+		t.Fatalf("terminal-work lease status = %q, want completed", statusByPath["work/leases/work_done.json"])
+	}
+	if statusByPath["work/leases/work_ghost.json"] != "orphaned" {
+		t.Fatalf("orphan lease status = %q, want orphaned", statusByPath["work/leases/work_ghost.json"])
+	}
+}
+
+func TestArchiveHistoryLeaseKindSweepsLeaseForArchivedWork(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, h, "work/work/work_done.json", `{"id":"work_done","state":"completed"}`)
+	writeHomeFile(t, h, "work/leases/work_done.json", `{"work_id":"work_done","by":"codex","claimed_at":"1"}`)
+
+	// explicit --kind work stays exact: it archives work envelopes only, so the
+	// CLI contract (main_test archive-history --kind work --kind review counts)
+	// is unchanged. The lease is left behind — the verified live gap.
+	first, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"work"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ArchivedCount != 1 || first.Counts["work"] != 1 || first.Counts["lease"] != 0 {
+		t.Fatalf("work-kind report = %+v, want exactly the work envelope", first)
+	}
+	if got := mustReadHomeFile(t, h, "work/leases/work_done.json"); !strings.Contains(got, "work_done") {
+		t.Fatalf("explicit work-kind pass must not touch leases, got %q", got)
+	}
+
+	// the standalone lease sweep drains the lease whose work is already archived.
+	second, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"lease"}}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ArchivedCount != 1 || second.Counts["lease"] != 1 {
+		t.Fatalf("lease-kind report = %+v, want the leftover lease", second)
+	}
+	assertMissing(t, filepath.Join(h, "work/leases/work_done.json"))
+	active, err := LoadOperationalArchiveIndex(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lease OperationalArchiveEntry
+	for _, entry := range active {
+		if entry.OriginalPath == "work/leases/work_done.json" {
+			lease = entry
+		}
+	}
+	if lease.Kind != "lease" || lease.Status != "work_archived" || lease.SHA256 == "" {
+		t.Fatalf("lease archive entry = %+v, want kind=lease status=work_archived with sha256", lease)
+	}
+	if lease.ArchivePath != "archives/operational/files/work/leases/work_done.json" {
+		t.Fatalf("lease archive path = %q", lease.ArchivePath)
+	}
+}
+
+func TestDoctorOperationalHygieneFailsDirtyAndPassesAfterSweep(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, h, "work/work/work_done.json", `{"id":"work_done","state":"completed"}`)
+	writeHomeFile(t, h, "work/leases/work_done.json", `{"work_id":"work_done","by":"codex","claimed_at":"1"}`)
+	writeHomeFile(t, h, "work/leases/work_ghost.json", `{"work_id":"work_ghost","by":"codex","claimed_at":"2"}`)
+	writeHomeFile(t, h, "work/work/work_running.json", `{"id":"work_running","state":"running"}`)
+	writeHomeFile(t, h, "work/leases/work_running.json", `{"work_id":"work_running","by":"codex","claimed_at":"3"}`)
+
+	dirty := Doctor(h)
+	if !dirty.OK {
+		t.Fatalf("hygiene must not gate doctor OK (the sweep needs a healthy home to run): %+v", dirty)
+	}
+	if dirty.HygieneOK {
+		t.Fatal("dirty home reported hygiene OK")
+	}
+	hygiene, err := OperationalHygiene(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hygiene.OK || len(hygiene.TerminalHotWork) != 1 || len(hygiene.StaleLeases) != 2 {
+		t.Fatalf("hygiene report = %+v, want 1 terminal hot work + 2 stale leases", hygiene)
+	}
+	if hygiene.TerminalHotWork[0] != "work/work/work_done.json" {
+		t.Fatalf("terminal hot work = %v", hygiene.TerminalHotWork)
+	}
+
+	if _, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	swept := Doctor(h)
+	if !swept.OK || !swept.HygieneOK {
+		t.Fatalf("swept home doctor = OK %v HygieneOK %v, want both true", swept.OK, swept.HygieneOK)
+	}
+	for _, item := range swept.Hygiene {
+		if !item.OK {
+			t.Fatalf("hygiene check %s still failing after sweep", item.Name)
+		}
+	}
+	if got := mustReadHomeFile(t, h, "work/work/work_running.json"); !strings.Contains(got, "running") {
+		t.Fatalf("running work must stay hot, got %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "work/leases/work_running.json"); !strings.Contains(got, "work_running") {
+		t.Fatalf("running work lease must stay hot, got %q", got)
+	}
+}
+
+func TestRestoreHistoryRestoresSweptLeaseByteIdentical(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	leaseBody := `{"work_id":"work_ghost","by":"codex","claimed_at":"archive-fixture"}` + "\n"
+	writeHomeFile(t, h, "work/leases/work_ghost.json", leaseBody)
+	wantSum := sha256.Sum256([]byte(leaseBody))
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"lease"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 1 || len(report.Entries) != 1 {
+		t.Fatalf("lease sweep report = %+v", report)
+	}
+	entry := report.Entries[0]
+	if entry.SHA256 != hex.EncodeToString(wantSum[:]) {
+		t.Fatalf("archived lease sha256 = %q, want %q", entry.SHA256, hex.EncodeToString(wantSum[:]))
+	}
+	assertMissing(t, filepath.Join(h, "work/leases/work_ghost.json"))
+
+	restore, err := RestoreOperationalArchive(h, OperationalRestoreOptions{IDs: []string{entry.ID}}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore.RestoredCount != 1 {
+		t.Fatalf("restore report = %+v", restore)
+	}
+	got := mustReadHomeFile(t, h, "work/leases/work_ghost.json")
+	if got != leaseBody {
+		t.Fatalf("restored lease not byte-identical:\n got %q\nwant %q", got, leaseBody)
+	}
+	gotSum := sha256.Sum256([]byte(got))
+	if hex.EncodeToString(gotSum[:]) != entry.SHA256 {
+		t.Fatalf("restored lease sha256 = %q, want %q", hex.EncodeToString(gotSum[:]), entry.SHA256)
+	}
+	active, err := LoadOperationalArchiveIndex(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active archive entries after restore = %+v, want none", active)
 	}
 }
 
