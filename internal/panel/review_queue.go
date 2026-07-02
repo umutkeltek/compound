@@ -18,17 +18,18 @@ func AnnotateVerdictQueue(report *reviewartifact.QueueReport) {
 	if report == nil {
 		return
 	}
+	homePath := homeFromReviewRoot(report.ReviewRoot)
 	applications := verdictApplicationsByArtifact(report.ReviewRoot)
 	for i := range report.Items {
 		item := &report.Items[i]
 		if item.Area != verdictReviewArea {
 			continue
 		}
-		annotateVerdictQueueItem(item, applications)
+		annotateVerdictQueueItem(item, applications, homePath)
 	}
 }
 
-func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[string]verdictApplication) {
+func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[string]verdictApplication, homePath string) {
 	verdict, ok := verdictFromQueueItem(*item)
 	if !ok {
 		item.Status = "blocked"
@@ -60,6 +61,13 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.BlockedReason = ""
 		target := panelVerdictTarget(verdict.Target)
 		item.NextAction = fmt.Sprintf("panel verdict already applied by %s (target=%s decision=%s mapped=%s)", app.RunID, target, strings.TrimSpace(verdict.Synthesis.Decision), app.Application.MappedVerdict)
+		return
+	}
+	if nextAction, ok := resolvedPanelVerdictTarget(homePath, verdict); ok {
+		item.Status = "resolved"
+		item.Readiness = "no_action"
+		item.BlockedReason = ""
+		item.NextAction = nextAction
 		return
 	}
 
@@ -202,6 +210,31 @@ func terminalPanelApplication(app Application, decision string) bool {
 		mapped = normalizePanelPosition(decision)
 	}
 	return mapped != "needs_human" && mapped != "needs_trial"
+}
+
+func resolvedPanelVerdictTarget(homePath string, verdict verdictArtifactPayload) (string, bool) {
+	if strings.TrimSpace(homePath) == "" {
+		return "", false
+	}
+	if strings.TrimSpace(verdict.Target.Kind) != "comparison" || strings.TrimSpace(verdict.Target.Ref) == "" {
+		return "", false
+	}
+	path := comparisonCandidatePath(homePath, verdict.Target.Ref)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	candidate, err := decodeComparisonCandidate(data, path)
+	if err != nil || candidate.State != comparisonStateJudged {
+		return "", false
+	}
+	target := panelVerdictTarget(verdict.Target)
+	verdictText := reviewartifact.FirstNonEmpty(candidate.Verdict, "unknown")
+	source := strings.TrimSpace(candidate.VerdictArtifact)
+	if source == "" {
+		return fmt.Sprintf("comparison target already judged; no panel action needed (target=%s verdict=%s)", target, verdictText), true
+	}
+	return fmt.Sprintf("comparison target already judged; no panel action needed (target=%s verdict=%s source=%s)", target, verdictText, filepath.Base(source)), true
 }
 
 func verdictFromQueueItem(item reviewartifact.QueueItem) (verdictArtifactPayload, bool) {

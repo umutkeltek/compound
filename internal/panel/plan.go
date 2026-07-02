@@ -22,6 +22,18 @@ type PlanInput struct {
 	Budget                Budget   `json:"budget"`
 }
 
+type ErrBlockedNoLenses struct {
+	TargetKind string
+}
+
+func (e ErrBlockedNoLenses) Error() string {
+	targetKind := strings.TrimSpace(e.TargetKind)
+	if targetKind == "" {
+		targetKind = "unknown"
+	}
+	return fmt.Sprintf("blocked_no_lenses:%s", targetKind)
+}
+
 func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, error) {
 	if nowFn == nil {
 		nowFn = time.Now
@@ -76,6 +88,20 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 		} else {
 			run.EvidenceRefs = append(run.EvidenceRefs, "privacy_default:not_sensitive:"+targetKind)
 		}
+	}
+
+	if len(selection.IncludedRefs) == 0 {
+		err := ErrBlockedNoLenses{TargetKind: targetKind}
+		run.Status = "blocked"
+		run.StoppedReason = err.Error()
+		store, openErr := Open(homePath)
+		if openErr != nil {
+			return Run{}, openErr
+		}
+		if saveErr := store.SaveRun(run); saveErr != nil {
+			return Run{}, saveErr
+		}
+		return run, err
 	}
 
 	lanes, err := SelectLanes(homePath, privacySensitive, supervised, now)

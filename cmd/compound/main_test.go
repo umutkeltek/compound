@@ -1872,6 +1872,78 @@ func TestReviewsCommandAnnotatesAppliedPanelVerdictNoAction(t *testing.T) {
 	}
 }
 
+func TestReviewsCommandResolvesJudgedComparisonPanelVerdict(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_stale_comparison_cli", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_verdict_stale_comparison_cli",
+		"run_id":         "prun_stale_comparison_cli",
+		"target": map[string]any{
+			"kind":    "comparison",
+			"ref":     "cmp_stale_comparison_cli",
+			"summary": "duplicate comparison verdict after target was judged",
+		},
+		"lens_findings": []map[string]any{},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "park",
+			"confidence":     0.1,
+			"rationale":      "insufficient evidence",
+		},
+		"evidence_refs": []string{"route_stale"},
+	}, " ", "# Panel verdict\n"); err != nil {
+		t.Fatal(err)
+	}
+	comparisonDir := filepath.Join(homePath, "inbox", "comparisons")
+	if err := os.MkdirAll(comparisonDir, 0o755); err != nil {
+		t.Fatalf("create comparison inbox: %v", err)
+	}
+	candidate := map[string]any{
+		"schema_version":   panel.ComparisonCandidateSchemaVersion,
+		"id":               "cmp_stale_comparison_cli",
+		"capability_class": "judge-critique",
+		"input_summary":    "same input",
+		"input_digest":     "sha256:cmp-stale-comparison-cli",
+		"baseline":         map[string]any{"lane_id": "baseline", "output": "baseline answer", "total_tokens": 100, "latency_ms": 1000},
+		"candidate":        map[string]any{"lane_id": "candidate", "output": "candidate answer", "total_tokens": 90, "latency_ms": 900},
+		"state":            "judged",
+		"verdict":          "inconclusive",
+		"verdict_artifact": filepath.Join(homePath, "reviews", "panel-verdicts", "panel_verdict_sibling_comparison_cli.json"),
+		"created_at":       cliTestNow.Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		t.Fatalf("marshal comparison candidate: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(comparisonDir, "cmp_stale_comparison_cli.json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write comparison candidate: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "panel-verdicts", "--json"})
+	})
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 0 || report.Counts.OK != 1 {
+		t.Fatalf("resolved comparison panel verdict should be terminal: %+v", report.Counts)
+	}
+	if report.Counts.ByStatus["resolved"] != 1 {
+		t.Fatalf("resolved comparison status missing: %+v", report.Counts.ByStatus)
+	}
+	item := report.Items[0]
+	if item.Status != "resolved" || item.Readiness != "no_action" || len(item.Actions) != 0 {
+		t.Fatalf("resolved comparison panel verdict should expose no action: %+v", item)
+	}
+	if !strings.Contains(item.NextAction, "comparison target already judged") || !strings.Contains(item.NextAction, "inconclusive") {
+		t.Fatalf("resolved comparison panel verdict should explain terminal target: %+v", item)
+	}
+}
+
 func TestReviewsCommandAnnotatesCapabilityEvaluationRecorded(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
