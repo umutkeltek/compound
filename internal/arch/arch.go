@@ -48,6 +48,7 @@ var Classification = map[string]Class{
 	"work":           Spine,
 	"writeback":      Spine,
 	// shared leaf
+	"breadth":        Leaf,
 	"candidates":     Leaf,
 	"reviewartifact": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
