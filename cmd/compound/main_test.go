@@ -4910,22 +4910,18 @@ func TestCapabilitySurfaceJSONFiltersByHarness(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdCapability([]string{"surface", "--harness", "codex", "--json", "pricing"})
 	})
-	var report struct {
-		SchemaVersion string `json:"schema_version"`
-		AuthorityRef  string `json:"authority_ref"`
-		Task          string `json:"task"`
-		Harness       string `json:"harness"`
-		Offers        []struct {
-			Node capgraph.Node `json:"node"`
-		} `json:"offers"`
-	}
+	var report capgraph.SurfaceReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("surface JSON did not parse: %v\n%s", err, out)
 	}
-	if report.SchemaVersion != "compound.capability_surface.v0.1" ||
-		report.AuthorityRef != "compound://registries/capability-graph" ||
+	if report.SchemaVersion != capgraph.SurfaceSchemaVersion ||
+		report.AuthorityRef != capgraph.CapabilityGraphAuthorityRef ||
+		report.Status != "ok" ||
 		report.Task != "pricing" ||
-		report.Harness != "codex" {
+		report.Harness != "codex" ||
+		report.NodeCount == 0 ||
+		report.OfferCount != len(report.Offers) ||
+		len(report.OfferSummaries) != len(report.Offers) {
 		t.Fatalf("unexpected surface metadata: %+v", report)
 	}
 	var ids []string
@@ -4937,6 +4933,16 @@ func TestCapabilitySurfaceJSONFiltersByHarness(t *testing.T) {
 	}
 	if stringSliceContains(ids, "skill:claude-pricing") {
 		t.Fatalf("claude-only offer leaked into codex surface: %+v", ids)
+	}
+	var summaryIDs []string
+	for _, offer := range report.OfferSummaries {
+		summaryIDs = append(summaryIDs, offer.ID)
+		if offer.ID == "skill:codex-pricing" && (offer.Kind != "skill" || offer.Name == "" || offer.CostRiskNote == "") {
+			t.Fatalf("codex summary missing flat fields: %+v", offer)
+		}
+	}
+	if !stringSliceContains(summaryIDs, "skill:codex-pricing") || stringSliceContains(summaryIDs, "skill:claude-pricing") {
+		t.Fatalf("summary ids = %+v", summaryIDs)
 	}
 }
 

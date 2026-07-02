@@ -72,6 +72,8 @@ type Stats struct {
 	EdgeKindCounts map[string]int `json:"edge_kind_counts,omitempty"`
 }
 
+const SurfaceSchemaVersion = "compound.capability_surface.v0.1"
+
 func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
@@ -168,6 +170,76 @@ type Surfaced struct {
 	Score       float64              `json:"score"`
 	Why         string               `json:"why"`
 	Constraints SurfacingConstraints `json:"constraints,omitempty"`
+}
+
+type SurfaceReport struct {
+	SchemaVersion     string                `json:"schema_version"`
+	AuthorityRef      string                `json:"authority_ref"`
+	Status            string                `json:"status"`
+	Task              string                `json:"task"`
+	Harness           string                `json:"harness,omitempty"`
+	NodeCount         int                   `json:"node_count"`
+	EdgeCount         int                   `json:"edge_count"`
+	SourceRecordCount int                   `json:"source_record_count"`
+	OfferCount        int                   `json:"offer_count"`
+	Offers            []Surfaced            `json:"offers"`
+	OfferSummaries    []SurfaceOfferSummary `json:"offer_summaries"`
+}
+
+type SurfaceOfferSummary struct {
+	ID           string   `json:"id"`
+	Kind         string   `json:"kind"`
+	Name         string   `json:"name"`
+	Score        float64  `json:"score"`
+	Why          string   `json:"why"`
+	RequiredRefs []string `json:"required_refs,omitempty"`
+	ConflictRefs []string `json:"conflict_refs,omitempty"`
+	HarnessRefs  []string `json:"harness_refs,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	CostRiskNote string   `json:"cost_risk_note,omitempty"`
+}
+
+func NewSurfaceReport(task, harness string, offers []Surfaced, stats Stats, sourceRecordCount int) SurfaceReport {
+	summaries := make([]SurfaceOfferSummary, 0, len(offers))
+	for _, offer := range offers {
+		summaries = append(summaries, SurfaceOfferSummary{
+			ID:           offer.Node.ID,
+			Kind:         offer.Node.Kind,
+			Name:         offer.Node.Name,
+			Score:        offer.Score,
+			Why:          offer.Why,
+			RequiredRefs: constraintRefs(offer.Constraints.Required),
+			ConflictRefs: constraintRefs(offer.Constraints.Conflicts),
+			HarnessRefs:  constraintRefs(offer.Constraints.Harnesses),
+			EvidenceRefs: constraintRefs(offer.Constraints.Evidence),
+			CostRiskNote: offer.Constraints.CostRiskNote,
+		})
+	}
+	return SurfaceReport{
+		SchemaVersion:     SurfaceSchemaVersion,
+		AuthorityRef:      CapabilityGraphAuthorityRef,
+		Status:            "ok",
+		Task:              strings.TrimSpace(task),
+		Harness:           strings.TrimSpace(harness),
+		NodeCount:         stats.NodeCount,
+		EdgeCount:         stats.EdgeCount,
+		SourceRecordCount: sourceRecordCount,
+		OfferCount:        len(offers),
+		Offers:            offers,
+		OfferSummaries:    summaries,
+	}
+}
+
+func constraintRefs(values []SurfacingConstraint) []string {
+	refs := make([]string, 0, len(values))
+	for _, value := range values {
+		ref := strings.TrimSpace(value.Ref)
+		if ref == "" {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 type SurfacingConstraint struct {

@@ -994,19 +994,11 @@ func cmdCapability(args []string) {
 		}
 		die(err)
 		if jsonOut {
-			out := struct {
-				SchemaVersion string              `json:"schema_version"`
-				AuthorityRef  string              `json:"authority_ref"`
-				Task          string              `json:"task"`
-				Harness       string              `json:"harness,omitempty"`
-				Offers        []capgraph.Surfaced `json:"offers"`
-			}{
-				SchemaVersion: "compound.capability_surface.v0.1",
-				AuthorityRef:  "compound://registries/capability-graph",
-				Task:          p[0],
-				Harness:       harness,
-				Offers:        hits,
-			}
+			stats, err := store.Stats()
+			die(err)
+			records, err := capgraph.LoadSourceAuthority(homePath)
+			die(err)
+			out := capgraph.NewSurfaceReport(p[0], harness, hits, stats, len(records))
 			die(json.NewEncoder(os.Stdout).Encode(out))
 			return
 		}

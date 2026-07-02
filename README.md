@@ -129,7 +129,7 @@ Meaning and evidence:
 Adaptive systems:
 
 - `compound capability ...` owns the capability graph. It surfaces offers with
-  constraints; it does not execute skills/tools.
+  constraints and flat JSON summaries; it does not execute skills/tools.
 - `compound route ...` records route evidence, exposes read-only route
   evidence authority, checks provider-call cost coverage, writes
   receipt-linked route outcome reviews, and uses Compound-owned model-router
