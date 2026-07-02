@@ -328,6 +328,15 @@ func applyNonMemoryTargetFinding(homePath string, run Run, finding *TargetFindin
 		app.CandidateRef = finding.TargetRef
 		app.NoPromoteRef = noPromoteRef
 		result.changed = changed
+	case "comparison":
+		mapped, applied, note, err := applyComparisonVerdict(homePath, run, finding, now)
+		if err != nil {
+			return result, err
+		}
+		app.MappedVerdict = mapped
+		app.Applied = applied
+		app.Note = note
+		app.CandidateRef = finding.TargetRef
 	case "memory_candidate":
 		return result, fmt.Errorf("memory_candidate reached non-memory apply path")
 	default:
@@ -557,6 +566,12 @@ func countPanelTargetStates(homePath, targetKind string, memStore *mem.Store) (m
 			return nil, err
 		}
 		return countTargetInputStates(inputs), nil
+	case "comparison":
+		inputs, err := LoadComparisonTargets(homePath, 0)
+		if err != nil {
+			return nil, err
+		}
+		return countTargetInputStates(inputs), nil
 	default:
 		return nil, fmt.Errorf("unsupported target kind %q", targetKind)
 	}
@@ -611,6 +626,8 @@ func panelTargetPath(homePath, targetKind, ref string) string {
 		return filepath.Join(homePath, "reviews", "skill-candidates", ref+".json")
 	case "capability_observation":
 		return filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs), ref+".json")
+	case "comparison":
+		return comparisonCandidatePath(homePath, ref)
 	default:
 		return ""
 	}
@@ -696,6 +713,9 @@ func markAllSkippableNonMemoryApplications(run Run) Run {
 		mapped := normalizePanelPosition(finding.Synthesis.Decision)
 		if run.TargetKind == "skill_candidate" {
 			mapped = mapSkillCandidateDecision(finding.Synthesis.Decision)
+		}
+		if run.TargetKind == "comparison" {
+			mapped = mapComparisonDecision(finding.Synthesis.Decision)
 		}
 		app.MappedVerdict = mapped
 		switch {

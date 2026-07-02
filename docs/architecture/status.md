@@ -876,3 +876,4 @@ Next work is no longer memory-stack convergence. It is adapting existing externa
 ## Recent Proof Notes
 
 - 2026-07-01: `compound memory doctor --json` now exposes the same hop report as the text doctor so consumers can read `sync/embedding` as structured evidence. Umut OS `os status --json` consumes it with `COMPOUND_MEM_ENGINE_BIN='go run ./cmd/compound-memory-cli-engine'` and `external-memory sidecar profile`, surfacing `memory_engine_doctor` with `ledger_unchanged=true`, hit count, and ledger/engine generations. This keeps external-memory-index as a rented breadth index: no sync, no writes, no memory promotion, no authority transfer.
+- 2026-07-02: Packet T2a comparison panel target kind landed with synthetic fixture proof: comparison candidates are judged as evidence-only, stamp inbox state to `judged`, append `ledger/comparison-evidence.jsonl`, and surface promotion-review comparison win/loss tallies without authority mutation.

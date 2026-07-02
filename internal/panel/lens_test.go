@@ -104,7 +104,7 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
-	if !first.Changed || first.NodesChanged != 6 || first.PromptsChanged != 7 || !first.AuthorityAppended {
+	if !first.Changed || first.NodesChanged != 9 || first.PromptsChanged != 10 || !first.AuthorityAppended {
 		t.Fatalf("first import result = %+v, want lens and judge prompt content changed", first)
 	}
 	nodesBefore := readTestFile(t, filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
@@ -138,15 +138,15 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 			lensCount++
 		}
 	}
-	if lensCount != 6 {
-		t.Fatalf("lens node count = %d, want 6", lensCount)
+	if lensCount != 9 {
+		t.Fatalf("lens node count = %d, want 9", lensCount)
 	}
 	selection, err := SelectLenses(homePath, "memory_candidate")
 	if err != nil {
 		t.Fatalf("select imported lenses: %v", err)
 	}
-	if len(selection.Included) != 6 || len(selection.Excluded) != 0 {
-		t.Fatalf("imported memory_candidate selection = %+v, want six included and none excluded", selection)
+	if len(selection.Included) != 6 || len(selection.Excluded) != 3 {
+		t.Fatalf("imported memory_candidate selection = %+v, want six included and three comparison-only excluded", selection)
 	}
 }
 
@@ -183,13 +183,16 @@ func TestLensManifestFixtureHasRequiredPrompts(t *testing.T) {
 		"contradiction-with-existing-memory",
 		"fossilization-risk",
 		"privacy-risk",
+		"comparison-correctness",
+		"comparison-contract-fidelity",
+		"comparison-cost-latency",
 		"inversion-falsification",
 	} {
 		if !strings.Contains(string(data), "id: "+id) {
 			t.Fatalf("manifest missing lens %s", id)
 		}
 	}
-	if got := strings.Count(string(data), `{"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}`); got != 6 {
-		t.Fatalf("strict JSON contract count = %d, want 6", got)
+	if got := strings.Count(string(data), `{"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}`); got != 9 {
+		t.Fatalf("strict JSON contract count = %d, want 9", got)
 	}
 }

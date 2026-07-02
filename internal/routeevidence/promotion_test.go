@@ -206,6 +206,28 @@ func TestEvaluateLanePromotionsArtifactIdempotency(t *testing.T) {
 	}
 }
 
+func TestEvaluateLanePromotionsIncludesComparisonTallies(t *testing.T) {
+	home := t.TempDir()
+	laneID := "local/test-judge"
+	writePromotionModelCapabilities(t, home, laneID, "assumed")
+	writePromotionCriteria(t, home)
+	recordPromotionRows(t, home, laneID, []string{"completed", "completed", "completed", "completed"}, 24*time.Hour)
+	writePromotionComparisonEvidence(t, home, "cmp_win", "judge-critique", "local/baseline", laneID, "prefer_candidate", t0)
+	writePromotionComparisonEvidence(t, home, "cmp_loss", "judge-critique", "local/baseline", laneID, "prefer_baseline", t0.Add(time.Hour))
+	writePromotionComparisonEvidence(t, home, "cmp_other_class", "classify-extract", "local/baseline", laneID, "prefer_candidate", t0.Add(2*time.Hour))
+
+	reviews, err := EvaluateLanePromotions(home, t0.Add(4*24*time.Hour))
+	if err != nil {
+		t.Fatalf("evaluate promotions: %v", err)
+	}
+	if len(reviews) != 1 {
+		t.Fatalf("reviews = %d, want 1", len(reviews))
+	}
+	if reviews[0].Tallies.ComparisonWins != 1 || reviews[0].Tallies.ComparisonLosses != 1 {
+		t.Fatalf("comparison tallies = %+v", reviews[0].Tallies)
+	}
+}
+
 func writePromotionModelCapabilities(t *testing.T, home, laneID, claimLevel string) {
 	t.Helper()
 	source := filepath.Join(t.TempDir(), "model-capabilities.yaml")
@@ -319,4 +341,35 @@ func promotionContainsString(set []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func writePromotionComparisonEvidence(t *testing.T, home, comparisonID, capabilityClass, baselineLane, candidateLane, decision string, createdAt time.Time) {
+	t.Helper()
+	path := filepath.Join(home, "ledger", "comparison-evidence.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir comparison evidence: %v", err)
+	}
+	row := map[string]any{
+		"comparison_id":    comparisonID,
+		"capability_class": capabilityClass,
+		"baseline_lane":    baselineLane,
+		"candidate_lane":   candidateLane,
+		"decision":         decision,
+		"confidence":       0.87,
+		"run_id":           "prun_" + comparisonID,
+		"verdict_artifact": "reviews/panel-verdicts/" + comparisonID + ".json",
+		"created_at":       rfc3339(createdAt),
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal comparison evidence: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open comparison evidence: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		t.Fatalf("write comparison evidence: %v", err)
+	}
 }
