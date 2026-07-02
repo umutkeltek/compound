@@ -12,7 +12,10 @@ import (
 	"time"
 )
 
-const SourceAuthoritySchemaVersion = "compound.capability_source_authority.v0.1"
+const (
+	SourceAuthoritySchemaVersion = "compound.capability_source_authority.v0.1"
+	CapabilityGraphAuthorityRef  = "compound://registries/capability-graph"
+)
 
 // SourceAuthorityRecord records the authority handoff for an imported capability
 // source. The source file remains evidence/rollback input; the Compound graph is
@@ -79,7 +82,7 @@ func RecordSourceAuthority(homePath string, in SourceAuthorityInput, now time.Ti
 		SourceClass:         firstNonEmpty(in.SourceClass, "source"),
 		SourceRevision:      strings.TrimSpace(in.SourceRevision),
 		ImportedVia:         strings.TrimSpace(in.ImportedVia),
-		AuthorityRef:        "compound://registries/capability-graph",
+		AuthorityRef:        CapabilityGraphAuthorityRef,
 		AuthorityStatus:     "compound_authoritative",
 		SourceRole:          "evidence_only_input",
 		Retires:             "source_view_authority:" + strings.TrimSpace(in.SourcePath),
@@ -128,6 +131,30 @@ func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
 		out = append(out, byID[id])
 	}
 	return out, err
+}
+
+// AuthorityRevision returns a content digest for the graph authority state that
+// determines capability surfacing. It reads append-only graph logs only; source
+// authority records remain handoff evidence, not offer state.
+func AuthorityRevision(homePath string) (string, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return "", fmt.Errorf("COMPOUND_HOME required")
+	}
+	var parts []string
+	for _, name := range []string{"capability-nodes.jsonl", "capability-edges.jsonl"} {
+		data, err := os.ReadFile(filepath.Join(homePath, "registries", name))
+		if err != nil {
+			if os.IsNotExist(err) {
+				parts = append(parts, name+":missing")
+				continue
+			}
+			return "", err
+		}
+		sum := sha256.Sum256(data)
+		parts = append(parts, name+":"+hex.EncodeToString(sum[:]))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return "sha256:" + hex.EncodeToString(sum[:])[:12], nil
 }
 
 func sourceAuthorityLog(homePath string) string {

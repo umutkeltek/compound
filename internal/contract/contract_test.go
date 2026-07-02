@@ -485,6 +485,9 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	if contractOffer.CostRiskNote == "" || !hasOfferConstraint(contractOffer.Required, capgraph.EdRequires, "tool:revenuecat") {
 		t.Fatalf("effective contract offer lost constraints: %+v", contractOffer)
 	}
+	if sourceRev(ec.SourceRevisions, capgraph.CapabilityGraphAuthorityRef) == "" {
+		t.Fatalf("effective contract missing capability graph source revision: %+v", ec.SourceRevisions)
+	}
 }
 
 func TestPackWithCapabilitiesBoundsCapabilityOffers(t *testing.T) {

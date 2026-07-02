@@ -340,12 +340,19 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	ec.ActiveHooks = hooks
 	ec.Excluded = append(ec.Excluded, excludedHooks...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, hookRevs)
-	capabilityHits, _, err := surfaceCapabilityHits(homePath, in)
+	capabilityHits, surfacedTotal, err := surfaceCapabilityHits(homePath, in)
 	if err != nil {
 		return ec, err
 	}
 	for _, hit := range capabilityHits {
 		ec.CapabilityOffers = append(ec.CapabilityOffers, capabilityOffer(hit))
+	}
+	if surfacedTotal > 0 {
+		rev, err := capgraph.AuthorityRevision(homePath)
+		if err != nil {
+			return ec, err
+		}
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}})
 	}
 	decisions, decisionRevs, err := loadDecisionRefs(homePath)
 	if err != nil {
