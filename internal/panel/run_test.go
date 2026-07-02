@@ -26,6 +26,33 @@ func (c failingLensCaller) Call(ctx context.Context, req CallRequest) (CallResul
 	return c.base.Call(ctx, req)
 }
 
+func TestDecodeLensResponseStripsMarkdownFence(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "full fence",
+			body: "```json\n{\"confidence\":0.8,\"findings\":[{\"claim\":\"ok\",\"severity\":\"low\",\"evidence_refs\":[\"trace://one\"]}]}\n```",
+		},
+		{
+			name: "trailing closing fence",
+			body: "{\"confidence\":0.8,\"findings\":[{\"claim\":\"ok\",\"severity\":\"low\",\"evidence_refs\":[\"trace://one\"]}]}\n```",
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := decodeLensResponse([]byte(tt.body))
+			if err != nil {
+				t.Fatalf("decode fenced lens response: %v", err)
+			}
+			if got.Confidence != 0.8 || len(got.Findings) != 1 || got.Findings[0].Claim != "ok" {
+				t.Fatalf("decoded lens response = %+v", got)
+			}
+		})
+	}
+}
+
 func TestExecuteDryRunEndToEndWritesArtifactsEvidenceAndDoesNotMutateInbox(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")

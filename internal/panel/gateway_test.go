@@ -53,6 +53,36 @@ func TestGatewayCallerSuccess(t *testing.T) {
 	}
 }
 
+func TestGatewayCallerRetriesTransientUpstream400(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"message": "missing `choices[0]`",
+					"type":    "upstream_error",
+				},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]string{"content": `{"confidence":0.8,"findings":[]}`}}},
+			"usage":   map[string]int{"total_tokens": 12},
+		})
+	}))
+	defer server.Close()
+
+	got, err := (GatewayCaller{BaseURL: server.URL, HTTPClient: server.Client()}).Call(context.Background(), CallRequest{Lane: LaneRef{ModelID: "model"}})
+	if err != nil {
+		t.Fatalf("gateway call after transient upstream 400: %v", err)
+	}
+	if calls != 2 || got.TotalTokens != 12 || !strings.Contains(string(got.Content), `"confidence"`) {
+		t.Fatalf("calls=%d result=%+v", calls, got)
+	}
+}
+
 func TestGatewayCallerNon200(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nope", http.StatusBadGateway)

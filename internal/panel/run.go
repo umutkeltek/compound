@@ -252,6 +252,7 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 }
 
 func decodeLensResponse(data []byte) (decodedLensResponse, error) {
+	data = stripLensResponseFence(data)
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var out decodedLensResponse
@@ -272,6 +273,34 @@ func decodeLensResponse(data []byte) (decodedLensResponse, error) {
 		return decodedLensResponse{}, fmt.Errorf("lens findings required")
 	}
 	return out, nil
+}
+
+func stripLensResponseFence(data []byte) []byte {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return data
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 3 && isJSONFenceOpener(lines[0]) && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			return []byte(strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n")))
+		}
+	}
+	if strings.HasSuffix(trimmed, "```") {
+		withoutFence := strings.TrimSpace(strings.TrimSuffix(trimmed, "```"))
+		if strings.HasPrefix(withoutFence, "{") {
+			return []byte(withoutFence)
+		}
+	}
+	return data
+}
+
+func isJSONFenceOpener(line string) bool {
+	opener := strings.TrimSpace(line)
+	if opener == "```" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(opener, "```")), "json")
 }
 
 func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requestID, clientProfile string, lane LaneRef, result CallResult, status string) (string, error) {

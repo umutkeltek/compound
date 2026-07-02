@@ -110,16 +110,36 @@ func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKe
 	if client == nil {
 		client = http.DefaultClient
 	}
-	content, usage, latencyMS, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, true)
+	jsonResponseFormat := true
+	content, usage, latencyMS, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
 	// Some local gateways (e.g. LM Studio) reject response_format "json_object";
 	// retry once without it — the prompts already demand strict JSON and callers
 	// strict-decode the content.
 	if err != nil && strings.Contains(err.Error(), "response_format") {
 		var retryLatency int64
-		content, usage, retryLatency, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, false)
+		jsonResponseFormat = false
+		content, usage, retryLatency, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
+		latencyMS += retryLatency
+	}
+	if isTransientOpenAICompatibleUpstreamError(err) {
+		var retryLatency int64
+		content, usage, retryLatency, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
 		latencyMS += retryLatency
 	}
 	return content, usage, latencyMS, err
+}
+
+func isTransientOpenAICompatibleUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "openai-compatible status 400") {
+		return false
+	}
+	return strings.Contains(msg, "upstream_error") ||
+		strings.Contains(msg, "upstream 400 error") ||
+		strings.Contains(msg, "missing `choices[0]`")
 }
 
 func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string, jsonResponseFormat bool) (content []byte, usage OpenAIUsage, latencyMS int64, err error) {
