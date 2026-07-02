@@ -44,10 +44,17 @@ type ExternalRepoIntakeReviewReport struct {
 	Repo          string   `json:"repo"`
 	Decision      string   `json:"decision"`
 	Owner         string   `json:"owner,omitempty"`
+	Rationale     string   `json:"rationale,omitempty"`
+	Confidence    float64  `json:"confidence,omitempty"`
 	NextAction    string   `json:"next_action,omitempty"`
 	SourcePath    string   `json:"source_path"`
+	SourceHash    string   `json:"source_hash,omitempty"`
+	SourceRef     string   `json:"source_ref,omitempty"`
 	ReviewPath    string   `json:"review_path,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+	Boundaries    []string `json:"boundaries,omitempty"`
+	ReviewedAt    string   `json:"reviewed_at,omitempty"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty"`
 	Warnings      []string `json:"warnings,omitempty"`
 }
 
@@ -139,6 +146,22 @@ func RecordExternalRepoIntakeReview(homePath string, review ExternalRepoIntakeRe
 		review.ReviewedAt = createdAt
 	}
 	review.SourceRef = "external-repo-intake-review:" + filepath.Base(sourcePath)
+	sourceFound, sourceHash, err := reviewartifact.HashFileTarget(sourcePath)
+	if err != nil {
+		report.Status = "blocked"
+		return report, err
+	}
+	if !sourceFound {
+		report.Status = "blocked"
+		return report, fmt.Errorf("external repo review source file %q required", sourcePath)
+	}
+	report.Rationale = strings.TrimSpace(review.Rationale)
+	report.Confidence = review.Confidence
+	report.SourceHash = sourceHash
+	report.SourceRef = review.SourceRef
+	report.Boundaries = reviewartifact.Unique(review.Boundaries)
+	report.ReviewedAt = review.ReviewedAt
+	report.ReviewedBy = strings.TrimSpace(review.ReviewedBy)
 	report.ReviewPath = filepath.Join(filepath.Dir(sourcePath), review.PlanID+"."+review.ID+".reviewed.json")
 	if _, err := reviewartifact.WriteJSON(homePath, ExternalRepoIntakeReviewArea, filepath.Base(report.ReviewPath), report, " "); err != nil {
 		return ExternalRepoIntakeReviewReport{}, err

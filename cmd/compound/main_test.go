@@ -6938,6 +6938,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if reviewReport.Status != "recorded" || reviewReport.Repo != "example/research" || reviewReport.Decision != "keep_needs_review" {
 		t.Fatalf("external-intake-review report missing recorded review: %+v", reviewReport)
 	}
+	if reviewReport.Rationale != "reviewed source-list repo against current Compound owners" || reviewReport.SourceHash == "" || reviewReport.SourceRef == "" || reviewReport.ReviewedAt == "" || len(reviewReport.Boundaries) == 0 {
+		t.Fatalf("external-intake-review report should preserve reviewed evidence: %+v", reviewReport)
+	}
 	reviewsJSON := captureStdout(t, func() {
 		cmdReviews([]string{"--area", "external-repo-intake", "--json"})
 	})

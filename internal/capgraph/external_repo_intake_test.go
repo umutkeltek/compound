@@ -310,18 +310,34 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 		t.Fatalf("queue should expose external repo review action before valid review: %+v", queue.Items[0])
 	}
 
+	reviewDraft, err := os.ReadFile(item.ReviewYAMLPath)
+	if err != nil {
+		t.Fatalf("read review yaml: %v", err)
+	}
+	editedReview := strings.ReplaceAll(string(reviewDraft), `rationale: ""`, `rationale: "owner reviewed against current Compound capability boundaries"`)
+	if err := os.WriteFile(item.ReviewYAMLPath, []byte(editedReview), 0o644); err != nil {
+		t.Fatalf("write review yaml: %v", err)
+	}
 	review, err := LoadExternalRepoIntakeReview(item.ReviewYAMLPath)
 	if err != nil {
 		t.Fatalf("load review yaml: %v", err)
 	}
-	review.Rationale = "owner reviewed against current Compound capability boundaries"
-	review.EvidenceRefs = append(review.EvidenceRefs, "compound://reviews/external-repo-intake/test-review")
 	reported, err := RecordExternalRepoIntakeReview(home, review, item.ReviewYAMLPath, time.Date(2026, 7, 2, 3, 4, 7, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("record external repo review: %v", err)
 	}
 	if reported.Status != "recorded" || reported.Repo != "example/review" || reported.Decision != "keep_needs_review" || reported.ReviewPath == "" {
 		t.Fatalf("review report = %+v", reported)
+	}
+	if reported.Rationale != "owner reviewed against current Compound capability boundaries" || reported.SourceHash == "" || reported.SourceRef != "external-repo-intake-review:"+filepath.Base(item.ReviewYAMLPath) || reported.ReviewedAt != "2026-07-02T03:04:07Z" || len(reported.Boundaries) == 0 {
+		t.Fatalf("review report should preserve reviewed evidence: %+v", reported)
+	}
+	persisted, err := LoadExternalRepoIntakeReviewReport(reported.ReviewPath)
+	if err != nil {
+		t.Fatalf("load reviewed report: %v", err)
+	}
+	if persisted.Rationale != reported.Rationale || persisted.SourceHash != reported.SourceHash || len(persisted.Boundaries) != len(reported.Boundaries) {
+		t.Fatalf("persisted reviewed report lost evidence: got=%+v want=%+v", persisted, reported)
 	}
 	queue, err = reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ExternalRepoIntakeReviewArea}, time.Date(2026, 7, 2, 3, 4, 8, 0, time.UTC))
 	if err != nil {
