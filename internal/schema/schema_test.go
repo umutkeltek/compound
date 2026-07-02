@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/knowledge"
 	"compound/internal/product"
 )
 
@@ -50,6 +51,50 @@ func TestValidateContextPackUsesEnvelopeSemantics(t *testing.T) {
 	badPath := writeSchemaFixture(t, "bad-context-pack.json", data)
 	if err := Validate("context_pack", badPath); err == nil || !strings.Contains(err.Error(), "excluded") {
 		t.Fatalf("expected excluded validation error, got %v", err)
+	}
+}
+
+func TestKnowledgeExtractionRequestContractValidatesStateEnum(t *testing.T) {
+	doc, err := Export("knowledge_extraction_request")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc["$id"] != "compound://schemas/knowledge_extraction_request" {
+		t.Fatalf("schema id = %v", doc["$id"])
+	}
+
+	req := knowledge.ExtractionRequest{
+		SchemaVersion: knowledge.ExtractionRequestSchemaVersion,
+		ID:            "kx_schema",
+		ItemRef:       "arxiv:2506.12345v1",
+		EvidenceRef:   "ev_schema",
+		SourceKind:    "arxiv",
+		ContentDigest: "digest",
+		State:         "pending",
+		CreatedAt:     "2026-07-02T00:00:00Z",
+		CandidateIDs:  []string{},
+		RouteEvidence: nil,
+		CompletedAt:   "",
+		Title:         "Schema test",
+		Error:         "",
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeSchemaFixture(t, "knowledge-extraction-request.json", data)
+	if err := Validate("knowledge-extraction-request", path); err != nil {
+		t.Fatal(err)
+	}
+
+	req.State = "stuck"
+	badData, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	badPath := writeSchemaFixture(t, "bad-knowledge-extraction-request.json", badData)
+	if err := Validate("knowledge_extraction_request", badPath); err == nil || !strings.Contains(err.Error(), "state") {
+		t.Fatalf("expected state validation error, got %v", err)
 	}
 }
 

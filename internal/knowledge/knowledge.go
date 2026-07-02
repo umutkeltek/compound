@@ -24,6 +24,9 @@ const (
 	ExportSchemaVersion            = "compound.knowledge_export.v0.1"
 	ExtractionRequestSchemaVersion = "compound.knowledge_extraction_request.v0.1"
 	maxEvidenceQuoteChars          = 4000
+	ExtractionStatePending         = "pending"
+	ExtractionStateDone            = "done"
+	ExtractionStateError           = "error"
 )
 
 type Export struct {
@@ -92,6 +95,48 @@ type ExtractionRouteEvidence struct {
 	LatencyMS      int64                 `json:"latency_ms,omitempty"`
 	LiveModelCalls int                   `json:"live_model_calls,omitempty"`
 	Fixture        string                `json:"fixture,omitempty"`
+}
+
+func (r ExtractionRequest) Validate() error {
+	var missing []string
+	if strings.TrimSpace(r.SchemaVersion) == "" {
+		missing = append(missing, "schema_version")
+	} else if r.SchemaVersion != ExtractionRequestSchemaVersion {
+		return fmt.Errorf("schema_version must be %q, got %q", ExtractionRequestSchemaVersion, r.SchemaVersion)
+	}
+	if strings.TrimSpace(r.ID) == "" {
+		missing = append(missing, "id")
+	}
+	if strings.TrimSpace(r.ItemRef) == "" {
+		missing = append(missing, "item_ref")
+	}
+	if strings.TrimSpace(r.EvidenceRef) == "" {
+		missing = append(missing, "evidence_ref")
+	}
+	if strings.TrimSpace(r.SourceKind) == "" {
+		missing = append(missing, "source_kind")
+	}
+	if strings.TrimSpace(r.ContentDigest) == "" {
+		missing = append(missing, "content_digest")
+	}
+	if strings.TrimSpace(r.CreatedAt) == "" {
+		missing = append(missing, "created_at")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing %s", strings.Join(missing, ", "))
+	}
+	if _, err := time.Parse(time.RFC3339, r.CreatedAt); err != nil {
+		return fmt.Errorf("created_at must be RFC3339: %w", err)
+	}
+	if strings.TrimSpace(r.CompletedAt) != "" {
+		if _, err := time.Parse(time.RFC3339, r.CompletedAt); err != nil {
+			return fmt.Errorf("completed_at must be RFC3339: %w", err)
+		}
+	}
+	if !oneOf(r.State, []string{ExtractionStatePending, ExtractionStateDone, ExtractionStateError}) {
+		return fmt.Errorf("state must be one of [%s %s %s], got %q", ExtractionStatePending, ExtractionStateDone, ExtractionStateError, r.State)
+	}
+	return nil
 }
 
 type ExtractOptions struct {
@@ -351,11 +396,11 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 		if !opts.Pending && !matchesExtractionItem(req, opts.ItemID) {
 			continue
 		}
-		if opts.Pending && req.State != "pending" {
+		if opts.Pending && req.State != ExtractionStatePending {
 			report.Skipped++
 			continue
 		}
-		if req.State == "done" && len(req.CandidateIDs) > 0 {
+		if req.State == ExtractionStateDone && len(req.CandidateIDs) > 0 {
 			report.Skipped++
 			report.CandidateIDs = append(report.CandidateIDs, req.CandidateIDs...)
 			report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
@@ -366,13 +411,13 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 			// Fail soft per item: one bad model response must not strand the
 			// remaining pending items (same lesson as panel apply). Failed
 			// items keep state=error and stay retryable via --item.
-			req.State = "error"
+			req.State = ExtractionStateError
 			req.Error = err.Error()
 			_ = writeExtractionRequestFile(homePath, req)
 			report.Failed++
 			continue
 		}
-		req.State = "done"
+		req.State = ExtractionStateDone
 		req.CompletedAt = rfc3339(now)
 		req.CandidateIDs = candidateIDs
 		req.RouteEvidence = &route
@@ -498,7 +543,7 @@ func memoryCandidateFromExtraction(req ExtractionRequest, dc distiller.Candidate
 	if !oneOf(derivation, mem.Derivations) {
 		derivation = "extracted"
 	}
-	visibility := "candidate"
+	visibility := "contextual"
 	if evidence.Visibility == "private" {
 		visibility = "private"
 	}
@@ -688,7 +733,7 @@ func writeExtractionRequest(homePath string, export Export, item Item, evidenceI
 		SourceKind:    export.Source.Kind,
 		Title:         item.Title,
 		ContentDigest: contentDigest(item),
-		State:         "pending",
+		State:         ExtractionStatePending,
 		CreatedAt:     rfc3339(now),
 	}
 	path := filepath.Join(homePath, "inbox", "knowledge-extractions", id+".json")

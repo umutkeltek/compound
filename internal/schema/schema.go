@@ -44,6 +44,7 @@ func Contracts() []Contract {
 		{Name: "candidate_set", Description: "distiller candidate set", Type: reflect.TypeOf(distiller.Trace{}), Validate: validateCandidateSet},
 
 		{Name: "knowledge_export", Description: "generic knowledge source export", Type: reflect.TypeOf(knowledge.Export{}), Validate: validateKnowledgeExport},
+		{Name: "knowledge_extraction_request", Description: "knowledge extraction work item", Type: reflect.TypeOf(knowledge.ExtractionRequest{}), Validate: validateKnowledgeExtractionRequest},
 		{Name: "runtime_binding", Description: "RuntimeBinding and ServiceContract bundle", Type: reflect.TypeOf(runtimebinding.Bundle{}), Validate: validateRuntimeBinding},
 		{Name: "decision_lifecycle", Description: "decision lifecycle object", Type: reflect.TypeOf(decisions.Lifecycle{}), Validate: validateDecisionLifecycle},
 		{Name: "capability_node", Description: "CapabilityGraph node", Type: reflect.TypeOf(capgraph.Node{}), Validate: validateCapabilityNode},
@@ -278,6 +279,14 @@ func validatePanelRun(_ string, data []byte) error {
 func validateKnowledgeExport(_ string, data []byte) error {
 	_, err := knowledge.DecodeExport(data)
 	return err
+}
+
+func validateKnowledgeExtractionRequest(path string, data []byte) error {
+	var req knowledge.ExtractionRequest
+	if err := decodeStrictJSON(path, data, &req); err != nil {
+		return err
+	}
+	return req.Validate()
 }
 
 func validateProductSignalExport(path string, data []byte) error {

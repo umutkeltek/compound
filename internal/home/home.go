@@ -36,6 +36,7 @@ var Dirs = func() []string {
 		"events",
 		"work", "work/work", "work/runs", "work/leases", "work/checkpoints",
 		"context/requests", "context/packs", "context/injections",
+		"inbox/knowledge-extractions",
 		"ledger",
 		"registries",
 		"artifacts/sha256", "artifacts/refs",

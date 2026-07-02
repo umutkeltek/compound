@@ -45,6 +45,9 @@ func TestInitAndDoctor(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h, "ledger")); err != nil {
 		t.Fatalf("ledger dir missing: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(h, "inbox", "knowledge-extractions")); err != nil {
+		t.Fatalf("knowledge extraction inbox missing: %v", err)
+	}
 }
 
 func TestDoctorMissingIsNotOK(t *testing.T) {

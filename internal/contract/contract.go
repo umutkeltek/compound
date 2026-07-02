@@ -20,7 +20,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/mem"
@@ -813,23 +812,7 @@ func memoryVisibilityAllowed(visibility string) bool {
 }
 
 func memoryVisibilityAllowedForOrient(claim mem.Claim) bool {
-	if memoryVisibilityAllowed(claim.Visibility) {
-		return true
-	}
-	return legacyPromotedKnowledgeImportClaim(claim)
-}
-
-func legacyPromotedKnowledgeImportClaim(claim mem.Claim) bool {
-	if !strings.EqualFold(strings.TrimSpace(claim.Visibility), "candidate") {
-		return false
-	}
-	if claim.PromotionBasis != candidates.BasisTrustedDeterministic {
-		return false
-	}
-	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(claim.Entity)), "knowledge:") {
-		return false
-	}
-	return qualifierContains(claim, "source", "knowledge_import")
+	return memoryVisibilityAllowed(claim.Visibility)
 }
 
 func selfModelClaim(claim mem.Claim) bool {

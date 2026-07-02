@@ -346,7 +346,7 @@ func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) 
 	if extracted.State != "proposed" || extracted.Qualifiers["source"] != "knowledge_extraction" || extracted.Qualifiers["extraction_id"] != req.ID {
 		t.Fatalf("candidate shape = %+v", extracted)
 	}
-	if extracted.SourceTraceRef != "knowledge_extraction:"+req.ID || extracted.Visibility != "candidate" {
+	if extracted.SourceTraceRef != "knowledge_extraction:"+req.ID || extracted.Visibility != "contextual" {
 		t.Fatalf("candidate provenance = %+v", extracted)
 	}
 
