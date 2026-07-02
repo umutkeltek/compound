@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
@@ -673,6 +674,64 @@ func TestDispatchStepImportsSourcePacketAndClaimsIt(t *testing.T) {
 	}
 	if string(afterPacket) != string(before) {
 		t.Fatalf("source packet was mutated")
+	}
+}
+
+func TestDispatchStepReportsTerminalSourcePacket(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
+		Owner: "compound-core",
+		State: "ready",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet work: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running", RunID: "run_terminal_packet"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:terminal-source"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	if _, err := s.Close(imported.Work.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "terminal packet proof",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:terminal-source"},
+	}, fixedNow.Add(4*time.Second)); err != nil {
+		t.Fatalf("close packet: %v", err)
+	}
+	result, err := s.DispatchStep(fixedNow.Add(5*time.Second), DispatchStepOptions{
+		Actor:            "codex",
+		SourcePacketPath: packetPath,
+	})
+	if err != nil {
+		t.Fatalf("dispatch step: %v", err)
+	}
+	if result.Status != "source_packet_terminal" || result.Action != "none" || result.WorkID != imported.Work.ID {
+		t.Fatalf("dispatch step should report terminal source packet: %+v", result)
+	}
+	if result.Source == nil || result.Source.Created || result.Source.WorkID != imported.Work.ID || result.Source.State != "completed" {
+		t.Fatalf("terminal source packet not surfaced: %+v", result.Source)
+	}
+	if result.DispatchClaim == nil || result.DispatchClaim.Plan.Source == nil {
+		t.Fatalf("dispatch claim source proof missing: %+v", result.DispatchClaim)
+	}
+	if result.WaitReason != "source_packet_terminal" || !contains(result.BlockedOn, "work.terminal:"+imported.Work.ID) {
+		t.Fatalf("terminal source packet wait not surfaced: reason=%q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+	if result.CanContinue || len(result.ContinueCommand) != 0 {
+		t.Fatalf("terminal source packet should not continue: can=%v command=%v", result.CanContinue, result.ContinueCommand)
+	}
+	if result.PostCounts == nil || result.PostCounts.Open != 0 || result.PostCounts.Terminal == 0 {
+		t.Fatalf("terminal source packet post-state not surfaced: %+v", result.PostCounts)
+	}
+	if result.NextAction != "source packet already has terminal Compound work proof; no dispatch step needed" {
+		t.Fatalf("terminal source packet next action = %q", result.NextAction)
 	}
 }
 

@@ -1070,6 +1070,64 @@ func TestWorkDispatchStepCommandImportsSourcePacket(t *testing.T) {
 	}
 }
 
+func TestWorkDispatchStepCommandReportsTerminalSourcePacket(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := store.ImportPacket(packetPath, work.PacketImportOptions{
+		Owner: "compound-core",
+		State: "ready",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunID: "run_terminal_packet"}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:terminal-source"}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	if _, err := store.Close(imported.Work.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "terminal source packet proof",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:terminal-source"},
+	}, cliTestNow.Add(4*time.Second)); err != nil {
+		t.Fatalf("close packet: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-step", "--actor", "codex", "--source-packet", packetPath, "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-step output missing JSON:\n%s", out)
+	}
+	var result work.DispatchStepResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse dispatch step result: %v\n%s", err, out)
+	}
+	if result.Status != "source_packet_terminal" || result.Action != "none" || result.WorkID != imported.Work.ID {
+		t.Fatalf("dispatch step result = %+v", result)
+	}
+	if result.Source == nil || result.Source.Created || result.Source.State != "completed" {
+		t.Fatalf("dispatch step source = %+v", result.Source)
+	}
+	if result.WaitReason != "source_packet_terminal" || !containsString(result.BlockedOn, "work.terminal:"+imported.Work.ID) {
+		t.Fatalf("dispatch step wait = %q blocked=%v", result.WaitReason, result.BlockedOn)
+	}
+}
+
 func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

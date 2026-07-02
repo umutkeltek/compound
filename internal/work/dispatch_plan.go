@@ -208,6 +208,7 @@ type DispatchStepResult struct {
 	Action          string                 `json:"action"`
 	WorkID          string                 `json:"work_id,omitempty"`
 	ResultPath      string                 `json:"result_path,omitempty"`
+	Source          *DispatchPlanSource    `json:"source,omitempty"`
 	Counts          WorkbenchCounts        `json:"counts"`
 	PostCounts      *WorkbenchCounts       `json:"post_counts,omitempty"`
 	DispatchClose   *DispatchCloseResult   `json:"dispatch_close,omitempty"`
@@ -923,12 +924,19 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 		result.Status = claimed.Status
 		result.Counts = claimed.Plan.Counts
 		result.Integrity = append([]string{}, claimed.Plan.Integrity...)
+		result.Source = claimed.Plan.Source
 		result.WorkID = claimed.ClaimedWorkID
 		if result.WorkID == "" && claimed.Selected != nil {
 			result.WorkID = claimed.Selected.WorkID
 		}
 		result.DispatchClaim = &claimed
 		result.NoAction = claimed.NoAction
+		if sourcePacketAlreadyTerminal(claimed) {
+			result.Action = "none"
+			result.Status = "source_packet_terminal"
+			result.WorkID = claimed.Plan.Source.WorkID
+			result.NoAction = "source packet already has terminal Compound work proof; no dispatch step needed"
+		}
 		return s.recordDispatchStep(now, result)
 	}
 	switch {
@@ -1034,6 +1042,9 @@ func (s *Store) recordDispatchStepRun(result DispatchStepRunResult) (DispatchSte
 }
 
 func dispatchStepNextAction(result DispatchStepResult, post WorkbenchReport) string {
+	if result.Status == "source_packet_terminal" && strings.TrimSpace(result.NoAction) != "" {
+		return result.NoAction
+	}
 	if strings.TrimSpace(result.WorkID) != "" {
 		for _, item := range post.Open {
 			if item.WorkID == result.WorkID {
@@ -1074,6 +1085,13 @@ func dispatchStepContinuation(result DispatchStepResult, post WorkbenchReport) (
 }
 
 func dispatchStepWait(result DispatchStepResult, post WorkbenchReport) (string, []string) {
+	if result.Status == "source_packet_terminal" {
+		blockedOn := []string{"work.terminal"}
+		if strings.TrimSpace(result.WorkID) != "" {
+			blockedOn = append(blockedOn, "work.terminal:"+result.WorkID)
+		}
+		return "source_packet_terminal", blockedOn
+	}
 	if post.Counts.Open == 0 {
 		return "no_open_work", []string{"work.ready_or_source_packet"}
 	}
@@ -1123,6 +1141,17 @@ func dispatchStepWait(result DispatchStepResult, post WorkbenchReport) (string, 
 	default:
 		return "no_dispatchable_work", mergeUnique(unknown)
 	}
+}
+
+func sourcePacketAlreadyTerminal(result DispatchClaimResult) bool {
+	source := result.Plan.Source
+	if source == nil || source.Created || strings.TrimSpace(source.WorkID) == "" {
+		return false
+	}
+	if strings.TrimSpace(result.ClaimedWorkID) != "" || result.Selected != nil {
+		return false
+	}
+	return terminalStates[source.State]
 }
 
 func dispatchStepRunContinuation(actor string, maxSteps int) []string {
