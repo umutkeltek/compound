@@ -274,3 +274,36 @@ func includedLensRefForPanelTest(lenses []IncludedLens, want string) bool {
 	}
 	return false
 }
+
+func TestComparisonEvidenceLedgerSurvivesMultipleRows(t *testing.T) {
+	home := t.TempDir()
+	rows := []comparisonEvidenceRow{
+		{ComparisonID: "cmp_a", CapabilityClass: "judge-critique", BaselineLane: "lane/base", CandidateLane: "lane/cand-a", Decision: "prefer_baseline", Confidence: 0.9, RunID: "prun_1", CreatedAt: "2026-07-02T00:00:00Z"},
+		{ComparisonID: "cmp_b", CapabilityClass: "judge-critique", BaselineLane: "lane/base", CandidateLane: "lane/cand-b", Decision: "inconclusive", Confidence: 0.6, RunID: "prun_1", CreatedAt: "2026-07-02T00:01:00Z"},
+		{ComparisonID: "cmp_c", CapabilityClass: "judge-critique", BaselineLane: "lane/base", CandidateLane: "lane/cand-c", Decision: "prefer_candidate", Confidence: 0.95, RunID: "prun_2", CreatedAt: "2026-07-02T00:02:00Z"},
+	}
+	for _, row := range rows {
+		if err := appendComparisonEvidenceRow(home, row); err != nil {
+			t.Fatalf("append %s to ledger with existing rows: %v", row.ComparisonID, err)
+		}
+	}
+	// Idempotency must still hold once the ledger holds multiple newline-delimited rows.
+	if err := appendComparisonEvidenceRow(home, rows[0]); err != nil {
+		t.Fatalf("idempotent re-append over multi-row ledger: %v", err)
+	}
+	data, err := os.ReadFile(comparisonEvidenceLedgerPath(home))
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("ledger rows = %d, want 3 (no duplicates, all rows kept)", len(lines))
+	}
+	exists, err := comparisonEvidenceRowExists(comparisonEvidenceLedgerPath(home), "cmp_c", "prun_2")
+	if err != nil {
+		t.Fatalf("row-exists over multi-row ledger: %v", err)
+	}
+	if !exists {
+		t.Fatalf("row cmp_c/prun_2 not found in multi-row ledger")
+	}
+}

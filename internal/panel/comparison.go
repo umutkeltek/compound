@@ -236,7 +236,7 @@ func comparisonEvidenceRowExists(path, comparisonID, runID string) (bool, error)
 		}
 		return false, err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\\n") {
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
