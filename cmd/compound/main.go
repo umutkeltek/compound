@@ -4168,6 +4168,7 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	panel.AnnotateVerdictQueue(&report)
 	projection.AnnotateProjectionRegenerationQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)
+	annotateSynthesisReviewQueue(&report)
 	reviewartifact.Recount(&report)
 	return report, nil
 }

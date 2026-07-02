@@ -68,6 +68,8 @@ Capability surfacing status note: `compound capability import-surfacing-misses <
 
 Product authority status note: `compound product authority [--json]` is the read-only product feedback authority report over existing ledgers and candidate stores.
 
+Synthesis status note: `compound synthesis sweep [--stage cluster,contradict]` stays proposal-only; sweep/contradiction artifacts project as recorded review items with mutation guardrails and no apply actions, including legacy statusless artifacts.
+
 | Family | Verbs | Status |
 |---|---|---|
 | Capability note | `capability authority` / `capability external-intake` / `capability import-surfacing-misses` / `capability skill-candidate-review` / `capability skill-candidate-decision` | `authority` lists deduped topology/skill-manifest source-authority handoffs; `external-intake` reports governed external repo intake evidence and follow-up rows without installing or mutating the graph; `import-surfacing-misses` records known-capability `missed_when` and `false_triggered_by` learning edges plus SourceObservation/no-promote evidence without installing unknown skills; `skill-candidate-review` writes external skill intake review artifacts without installing unknown skills; `skill-candidate-decision` records reviewed intake and can create only the next skill inbox candidate for `skill-plan` |

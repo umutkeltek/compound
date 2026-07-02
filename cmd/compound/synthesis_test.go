@@ -5,11 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 )
 
 func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
@@ -93,6 +96,25 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 		t.Fatalf("contradiction review paths = %v, want one", result.ContradictionReviewPaths)
 	}
 
+	queue, err := buildReviewQueueReport(homePath, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue.Counts.Total != 2 || queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 2 || queue.Counts.ByStatus["recorded"] != 2 {
+		t.Fatalf("synthesis reviews should be recorded, not unknown review debt: %+v", queue.Counts)
+	}
+	for _, item := range queue.Items {
+		if item.Status != "recorded" || item.Readiness != "review_recorded" {
+			t.Fatalf("synthesis item not recorded/review_recorded: %+v", item)
+		}
+		if item.NotToDo == "" || !strings.Contains(item.NotToDo, "do not bulk-apply") {
+			t.Fatalf("synthesis item missing mutation guardrail: %+v", item)
+		}
+		if len(item.Actions) != 0 {
+			t.Fatalf("proposal-only synthesis item must not expose apply actions: %+v", item)
+		}
+	}
+
 	inboxAfter := snapshotTree(t, filepath.Join(homePath, candidates.InboxDir(candidates.Memory)))
 	claimsAfter := readFileOrEmpty(t, claimsPath)
 	if !reflect.DeepEqual(inboxAfter, inboxBefore) {
@@ -100,6 +122,45 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 	}
 	if string(claimsAfter) != string(claimsBefore) {
 		t.Fatalf("claims.jsonl mutated:\nbefore=%s\nafter=%s", claimsBefore, claimsAfter)
+	}
+}
+
+func TestSynthesisReviewQueueAnnotatesLegacyStatuslessArtifacts(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, synthesisContradictionArea, "synthesis_contradiction_legacy", map[string]any{
+		"schema_version": "compound.synthesis_contradiction_review.v0.1",
+		"id":             "synthesis_contradiction_legacy",
+		"work_id":        "work_legacy",
+		"proposal": map[string]any{
+			"id":          "synth_contradiction_legacy",
+			"cluster_key": "project:api\x1flanguage\x1fdecision",
+			"claim_ids":   []string{"claim_go", "claim_rust"},
+			"objects":     []string{"Go", "Rust"},
+		},
+	}, " ", "# Legacy synthesis contradiction\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	queue, err := buildReviewQueueReport(homePath, synthesisContradictionArea, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Counts.ByStatus["recorded"] != 1 {
+		t.Fatalf("legacy statusless synthesis item should be projected recorded: %+v", queue.Counts)
+	}
+	item := queue.Items[0]
+	if item.Status != "recorded" || item.Readiness != "review_recorded" || item.SourceKind != "memory-synthesis-contradiction" {
+		t.Fatalf("legacy synthesis item missing projection metadata: %+v", item)
+	}
+	if !strings.Contains(item.NextAction, "supersession") || !strings.Contains(item.NotToDo, "do not bulk-apply") {
+		t.Fatalf("legacy synthesis item missing operator guardrails: %+v", item)
+	}
+	if len(item.Actions) != 0 {
+		t.Fatalf("legacy synthesis item must not expose apply actions: %+v", item)
 	}
 }
 

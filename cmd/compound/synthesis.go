@@ -30,14 +30,32 @@ type synthesisSweepOutput struct {
 type synthesisSweepArtifact struct {
 	SchemaVersion string                   `json:"schema_version"`
 	ID            string                   `json:"id"`
+	CreatedAt     string                   `json:"created_at"`
+	Status        string                   `json:"status"`
+	Readiness     string                   `json:"readiness"`
 	WorkID        string                   `json:"work_id"`
+	Owner         string                   `json:"owner,omitempty"`
+	SourceKind    string                   `json:"source_kind,omitempty"`
+	NextAction    string                   `json:"next_action,omitempty"`
+	NotToDo       string                   `json:"not_to_do,omitempty"`
+	Boundaries    []string                 `json:"boundaries,omitempty"`
+	EvidenceRefs  []string                 `json:"evidence_refs,omitempty"`
 	Report        mem.SynthesisSweepReport `json:"report"`
 }
 
 type synthesisContradictionArtifact struct {
 	SchemaVersion string                             `json:"schema_version"`
 	ID            string                             `json:"id"`
+	CreatedAt     string                             `json:"created_at"`
+	Status        string                             `json:"status"`
+	Readiness     string                             `json:"readiness"`
 	WorkID        string                             `json:"work_id"`
+	Owner         string                             `json:"owner,omitempty"`
+	SourceKind    string                             `json:"source_kind,omitempty"`
+	NextAction    string                             `json:"next_action,omitempty"`
+	NotToDo       string                             `json:"not_to_do,omitempty"`
+	Boundaries    []string                           `json:"boundaries,omitempty"`
+	EvidenceRefs  []string                           `json:"evidence_refs,omitempty"`
 	Proposal      mem.SynthesisContradictionProposal `json:"proposal"`
 }
 
@@ -113,7 +131,16 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 	reportArtifact := synthesisSweepArtifact{
 		SchemaVersion: "compound.synthesis_sweep_artifact.v0.1",
 		ID:            reportID,
+		CreatedAt:     reviewartifact.Timestamp(now),
+		Status:        "recorded",
+		Readiness:     "review_recorded",
 		WorkID:        created.ID,
+		Owner:         "Memory synthesis",
+		SourceKind:    "memory-synthesis-sweep",
+		NextAction:    synthesisSweepNextAction,
+		NotToDo:       synthesisNotToDo,
+		Boundaries:    synthesisReviewBoundaries(),
+		EvidenceRefs:  []string{"compound://synthesis/sweep", created.ID},
 		Report:        report,
 	}
 	reportPaths, err := reviewartifact.Write(homePath, synthesisSweepArea, reportID, reportArtifact, " ", renderSynthesisSweepMarkdown(reportArtifact))
@@ -126,7 +153,16 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 		artifact := synthesisContradictionArtifact{
 			SchemaVersion: "compound.synthesis_contradiction_review.v0.1",
 			ID:            reviewID,
+			CreatedAt:     reviewartifact.Timestamp(now),
+			Status:        "recorded",
+			Readiness:     "review_recorded",
 			WorkID:        created.ID,
+			Owner:         "Memory synthesis",
+			SourceKind:    "memory-synthesis-contradiction",
+			NextAction:    synthesisContradictionNextAction,
+			NotToDo:       synthesisNotToDo,
+			Boundaries:    synthesisReviewBoundaries(),
+			EvidenceRefs:  synthesisContradictionEvidenceRefs(created.ID, proposal),
 			Proposal:      proposal,
 		}
 		paths, err := reviewartifact.Write(homePath, synthesisContradictionArea, reviewID, artifact, " ", renderSynthesisContradictionMarkdown(artifact))
@@ -173,4 +209,56 @@ func renderSynthesisSweepMarkdown(a synthesisSweepArtifact) string {
 func renderSynthesisContradictionMarkdown(a synthesisContradictionArtifact) string {
 	return fmt.Sprintf("# Synthesis contradiction proposal\n\n- work: `%s`\n- cluster_key: `%s`\n- claims: `%s`\n- objects: `%s`\n",
 		a.WorkID, a.Proposal.ClusterKey, strings.Join(a.Proposal.ClaimIDs, ","), strings.Join(a.Proposal.Objects, ","))
+}
+
+const (
+	synthesisSweepNextAction         = "synthesis sweep recorded; inspect proposals and create a focused WorkEnvelope only for one evidence-backed repair"
+	synthesisContradictionNextAction = "review the claim group; create a focused memory or decision repair packet only if current evidence proves a supersession"
+	synthesisNotToDo                 = "do not bulk-apply, auto-adjudicate, promote, reject, or supersede memory from synthesis proposals alone"
+)
+
+func synthesisReviewBoundaries() []string {
+	return []string{
+		"proposal-only",
+		"no memory mutation",
+		"no candidate adjudication",
+		"no claim promotion",
+		"no claim supersession",
+	}
+}
+
+func synthesisContradictionEvidenceRefs(workID string, proposal mem.SynthesisContradictionProposal) []string {
+	refs := []string{"compound://synthesis/sweep", workID, proposal.ID}
+	for _, id := range proposal.ClaimIDs {
+		refs = append(refs, "claim:"+id)
+	}
+	return reviewartifact.Unique(refs)
+}
+
+func annotateSynthesisReviewQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		switch item.Area {
+		case synthesisSweepArea:
+			annotateSynthesisQueueItem(item, "memory-synthesis-sweep", synthesisSweepNextAction)
+		case synthesisContradictionArea:
+			annotateSynthesisQueueItem(item, "memory-synthesis-contradiction", synthesisContradictionNextAction)
+		}
+	}
+}
+
+func annotateSynthesisQueueItem(item *reviewartifact.QueueItem, sourceKind, nextAction string) {
+	if item.Status == "" || item.Status == "unknown" {
+		item.Status = "recorded"
+	}
+	item.Owner = reviewartifact.FirstNonEmpty(item.Owner, "Memory synthesis")
+	item.SourceKind = reviewartifact.FirstNonEmpty(item.SourceKind, sourceKind)
+	item.Readiness = reviewartifact.FirstNonEmpty(item.Readiness, "review_recorded")
+	item.NextAction = reviewartifact.FirstNonEmpty(item.NextAction, nextAction)
+	item.NotToDo = reviewartifact.FirstNonEmpty(item.NotToDo, synthesisNotToDo)
+	item.Boundaries = reviewartifact.Unique(append(item.Boundaries, synthesisReviewBoundaries()...))
+	item.Actions = nil
 }
