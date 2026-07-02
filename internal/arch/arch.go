@@ -301,6 +301,8 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 		"old skill matrix",
 	}
 	var hits []string
+	hasToolResolverRetirement := false
+	hasToolResolverEvidenceOnly := false
 	docs := filepath.Join(repoRoot, "docs")
 	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
@@ -309,6 +311,14 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil
+		}
+		text := strings.ToLower(string(b))
+		if strings.Contains(text, "os-tool-resolver-json") || strings.Contains(text, "tool-resolver") {
+			hasToolResolverRetirement = hasToolResolverRetirement ||
+				(strings.Contains(text, "compound://registries/capability-graph") &&
+					(strings.Contains(text, "source_view_authority") || strings.Contains(text, "retired_as_authority")))
+			hasToolResolverEvidenceOnly = hasToolResolverEvidenceOnly ||
+				(strings.Contains(text, "evidence_only_input") || strings.Contains(text, "fallback/evidence"))
 		}
 		rel, _ := filepath.Rel(repoRoot, path)
 		for i, line := range strings.Split(string(b), "\n") {
@@ -324,7 +334,10 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 	if len(hits) > 0 {
 		return []Finding{{"retired-surface", Fail, "retired capability-matrix surface still listed in public docs: " + strings.Join(hits, "; ")}}
 	}
-	return []Finding{{"retired-surface", Info, "capability graph replaced public old-skill-matrix debt"}}
+	if !hasToolResolverRetirement || !hasToolResolverEvidenceOnly {
+		return []Finding{{"retired-surface", Fail, "public docs must state generated tool-resolver authority is retired to compound://registries/capability-graph and remains evidence-only rollback input"}}
+	}
+	return []Finding{{"retired-surface", Info, "capability graph replaced public old-skill-matrix debt; generated tool-resolver authority retired as evidence-only input"}}
 }
 
 // checkDistillerDuplicateContract keeps the public distiller contract aligned

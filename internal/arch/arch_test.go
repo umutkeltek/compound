@@ -135,6 +135,34 @@ func TestRetiredSurfaceReferencesFailOnPendingSkillMatrix(t *testing.T) {
 	}
 }
 
+func TestRetiredSurfaceReferencesRequireToolResolverRetirement(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(docs, "status.md"), []byte("capability graph replaced old matrix debt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkRetiredSurfaceReferences(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "tool-resolver") {
+		t.Fatalf("failure should name tool-resolver retirement: %+v", findings)
+	}
+
+	text := "os-tool-resolver-json source_view_authority retired_as_authority to compound://registries/capability-graph; source remains evidence_only_input.\n"
+	if err := os.WriteFile(filepath.Join(docs, "status.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings = checkRetiredSurfaceReferences(repo)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("findings = %+v, want non-failure", findings)
+	}
+}
+
 func TestDistillerDuplicateContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool
