@@ -147,6 +147,7 @@ type ExternalRepoIntakeReviewPlanItem struct {
 	ReviewQuestions       []string `json:"review_questions,omitempty"`
 	JSONPath              string   `json:"json_path,omitempty"`
 	MarkdownPath          string   `json:"markdown_path,omitempty"`
+	ReviewYAMLPath        string   `json:"review_yaml_path,omitempty"`
 }
 
 func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (ExternalRepoIntakeReport, error) {
@@ -349,8 +350,13 @@ func WriteExternalRepoIntakeReviewPlan(homePath, sourceListPath string, now time
 		if err != nil {
 			return report, err
 		}
+		reviewYAMLPath, err := reviewartifact.WriteRaw(homePath, ExternalRepoIntakeReviewArea, item.ID+".review.yaml", []byte(RenderExternalRepoIntakeReviewYAMLDraft(item)))
+		if err != nil {
+			return report, err
+		}
 		item.JSONPath = paths.PlanPath
 		item.MarkdownPath = paths.ReviewPath
+		item.ReviewYAMLPath = reviewYAMLPath
 		report.Items = append(report.Items, item)
 	}
 	report.WroteCount = len(report.Items)
@@ -441,6 +447,28 @@ func renderExternalRepoIntakeReviewPlanMarkdown(item ExternalRepoIntakeReviewPla
 		for _, ref := range item.EvidenceRefs {
 			fmt.Fprintf(&b, "- %s\n", ref)
 		}
+	}
+	return b.String()
+}
+
+func RenderExternalRepoIntakeReviewYAMLDraft(item ExternalRepoIntakeReviewPlanItem) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "schema_version: %s\n", ExternalRepoIntakeReviewSchemaVersion)
+	fmt.Fprintf(&b, "id: %s\n", reviewartifact.ID("err_", item.ID, item.Repo))
+	fmt.Fprintf(&b, "plan_id: %s\n", item.ID)
+	fmt.Fprintf(&b, "repo: %s\n", item.Repo)
+	fmt.Fprintf(&b, "decision: %s\n", reviewartifact.FirstNonEmpty(item.Decision, "keep_needs_review"))
+	fmt.Fprintf(&b, "owner: %q\n", item.Owner)
+	fmt.Fprintln(&b, "rationale: \"\"")
+	fmt.Fprintf(&b, "confidence: %.2f\n", item.GraphEvidenceStrength)
+	fmt.Fprintf(&b, "next_action: %q\n", item.NextAction)
+	fmt.Fprintln(&b, "evidence_refs:")
+	for _, ref := range item.EvidenceRefs {
+		fmt.Fprintf(&b, "  - %q\n", ref)
+	}
+	fmt.Fprintln(&b, "boundaries:")
+	for _, boundary := range item.Boundaries {
+		fmt.Fprintf(&b, "  - %q\n", boundary)
 	}
 	return b.String()
 }

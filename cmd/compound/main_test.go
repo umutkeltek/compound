@@ -6917,6 +6917,37 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if _, err := os.Stat(reviewPlan.Items[0].JSONPath); err != nil {
 		t.Fatalf("review artifact JSON not written: %v", err)
 	}
+	if reviewPlan.Items[0].ReviewYAMLPath == "" {
+		t.Fatalf("review YAML not written: %+v", reviewPlan.Items[0])
+	}
+	reviewDraft, err := os.ReadFile(reviewPlan.Items[0].ReviewYAMLPath)
+	if err != nil {
+		t.Fatalf("read review YAML: %v", err)
+	}
+	editedReview := strings.ReplaceAll(string(reviewDraft), `rationale: ""`, `rationale: "reviewed source-list repo against current Compound owners"`)
+	if err := os.WriteFile(reviewPlan.Items[0].ReviewYAMLPath, []byte(editedReview), 0o644); err != nil {
+		t.Fatalf("write edited review YAML: %v", err)
+	}
+	reviewJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake-review", reviewPlan.Items[0].ReviewYAMLPath, "--json"})
+	})
+	var reviewReport capgraph.ExternalRepoIntakeReviewReport
+	if err := json.Unmarshal([]byte(reviewJSON), &reviewReport); err != nil {
+		t.Fatalf("external-intake-review --json parse: %v\n%s", err, reviewJSON)
+	}
+	if reviewReport.Status != "recorded" || reviewReport.Repo != "example/research" || reviewReport.Decision != "keep_needs_review" {
+		t.Fatalf("external-intake-review report missing recorded review: %+v", reviewReport)
+	}
+	reviewsJSON := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "external-repo-intake", "--json"})
+	})
+	var reviews reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(reviewsJSON), &reviews); err != nil {
+		t.Fatalf("reviews external-repo-intake parse: %v\n%s", err, reviewsJSON)
+	}
+	if reviews.Counts.Total != 1 || reviews.Counts.ReviewRequired != 0 || reviews.Counts.OK != 1 || reviews.Items[0].Status != "recorded" || reviews.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("external repo review should close queue item: counts=%+v item=%+v", reviews.Counts, reviews.Items[0])
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {

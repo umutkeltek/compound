@@ -288,7 +288,7 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 	if item.Status != "review_required" || item.Repo != "example/review" || item.Decision != "keep_needs_review" || item.NextAction != "review harness pattern" {
 		t.Fatalf("review plan item = %+v", item)
 	}
-	if item.JSONPath == "" || item.MarkdownPath == "" {
+	if item.JSONPath == "" || item.MarkdownPath == "" || item.ReviewYAMLPath == "" {
 		t.Fatalf("review plan paths missing: %+v", item)
 	}
 	md, err := os.ReadFile(item.MarkdownPath)
@@ -304,6 +304,33 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 	}
 	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 1 || queue.Items[0].TargetPath != "github.com/example/review" || queue.Items[0].NextAction != "review harness pattern" || queue.Items[0].GraphEvidenceStrength != 0.9 {
 		t.Fatalf("queue did not surface review plan: %+v", queue)
+	}
+	AnnotateExternalRepoIntakeQueue(&queue)
+	if queue.Items[0].Readiness != "needs_review" || len(queue.Items[0].Actions) != 1 || queue.Items[0].Actions[0].ID != "record_external_repo_intake_review" {
+		t.Fatalf("queue should expose external repo review action before valid review: %+v", queue.Items[0])
+	}
+
+	review, err := LoadExternalRepoIntakeReview(item.ReviewYAMLPath)
+	if err != nil {
+		t.Fatalf("load review yaml: %v", err)
+	}
+	review.Rationale = "owner reviewed against current Compound capability boundaries"
+	review.EvidenceRefs = append(review.EvidenceRefs, "compound://reviews/external-repo-intake/test-review")
+	reported, err := RecordExternalRepoIntakeReview(home, review, item.ReviewYAMLPath, time.Date(2026, 7, 2, 3, 4, 7, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("record external repo review: %v", err)
+	}
+	if reported.Status != "recorded" || reported.Repo != "example/review" || reported.Decision != "keep_needs_review" || reported.ReviewPath == "" {
+		t.Fatalf("review report = %+v", reported)
+	}
+	queue, err = reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ExternalRepoIntakeReviewArea}, time.Date(2026, 7, 2, 3, 4, 8, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("queue after review: %v", err)
+	}
+	AnnotateExternalRepoIntakeQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "review_recorded" || len(queue.Items[0].Actions) != 0 {
+		t.Fatalf("reviewed external repo queue item should be terminal: counts=%+v item=%+v", queue.Counts, queue.Items[0])
 	}
 }
 

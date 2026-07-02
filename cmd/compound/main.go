@@ -237,7 +237,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|show> perspective panel planning and dry-run verdicts
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
@@ -261,7 +261,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -653,6 +653,32 @@ func cmdCapability(args []string) {
 		for _, item := range report.Items {
 			fmt.Printf("- review_artifact: %s repo=%s decision=%s owner=%s next=%s json=%s\n", item.ID, item.Repo, item.Decision, item.Owner, item.NextAction, item.JSONPath)
 		}
+	case "external-intake-review":
+		jsonOut := hasFlag(rest, "--json")
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability external-intake-review <review.yaml> [--json]")
+			os.Exit(2)
+		}
+		review, err := capgraph.LoadExternalRepoIntakeReview(p[0])
+		die(err)
+		report, err := capgraph.RecordExternalRepoIntakeReview(homePath, review, p[0], time.Now())
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability external-intake-review %s\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- repo: %s\n", report.Repo)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		if report.Owner != "" {
+			fmt.Printf("- owner: %s\n", report.Owner)
+		}
+		if report.NextAction != "" {
+			fmt.Printf("- next_action: %s\n", report.NextAction)
+		}
+		fmt.Printf("- reviewed: %s\n", report.ReviewPath)
 	case "import-evaluations":
 		p := posn(nil)
 		if len(p) != 1 {
@@ -990,7 +1016,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-review|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 }
@@ -3783,6 +3809,7 @@ func cmdReviews(args []string) {
 	product.AnnotateReviewQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
 	capgraph.AnnotateCapabilityEvaluationQueue(&report)
+	capgraph.AnnotateExternalRepoIntakeQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	panel.AnnotateVerdictQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)
