@@ -57,7 +57,7 @@ func (s *Store) ActivePacketProof(now time.Time, surface string) (ActivePacketPr
 		ProofBoundary:    "WorkEnvelope -> ContextPack -> Receipt -> Transition; packet markdown is source evidence/fallback",
 	}
 
-	works, err := s.List()
+	works, err := s.ListWithArchived()
 	if err != nil {
 		return report, err
 	}

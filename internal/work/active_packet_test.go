@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/home"
 )
 
 func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
@@ -55,6 +56,59 @@ func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
 	}
 	if len(report.PacketEvidenceRefs) != 1 || len(report.ProofChain) != 4 || report.NextAction == "" {
 		t.Fatalf("proof report missing evidence/action: %+v", report)
+	}
+}
+
+func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
+		Owner:         "compound-core",
+		State:         "ready",
+		ContextPackID: "ctx_packet",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	writeContextPack(t, s, "ctx_packet")
+	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet work: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running", RunID: "run_packet"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	closed, err := s.Close(imported.Work.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "active packet lifecycle proof complete",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:active-packet-lifecycle"},
+	}, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("close packet work: %v", err)
+	}
+	if err := home.Init(s.home, "test", fixedNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := home.ArchiveOperationalHistory(s.home, home.OperationalArchiveOptions{Kinds: []string{"work"}}, fixedNow.Add(5*time.Second)); err != nil {
+		t.Fatalf("archive terminal work: %v", err)
+	}
+
+	report, err := s.ActivePacketProof(fixedNow.Add(6*time.Second), imported.Work.CanonicalSurface)
+	if err != nil {
+		t.Fatalf("active packet proof: %v", err)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("status = %q, want ok; report = %+v", report.Status, report)
+	}
+	if report.WorkID != closed.Work.ID {
+		t.Fatalf("work id = %q, want %q", report.WorkID, closed.Work.ID)
+	}
+	if report.ReceiptID != closed.Receipt.ID || report.TransitionID != closed.Transition.ID {
+		t.Fatalf("proof ids receipt=%q transition=%q, want %q %q", report.ReceiptID, report.TransitionID, closed.Receipt.ID, closed.Transition.ID)
 	}
 }
 
