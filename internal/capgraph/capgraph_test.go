@@ -161,6 +161,36 @@ func TestSurfaceIncludesCapabilityConstraints(t *testing.T) {
 	}
 }
 
+func TestSurfaceUsesMeaningfulTriggerTokens(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "skill:noisy-meta",
+		Kind:     "skill",
+		Name:     "Noisy Meta",
+		Triggers: []string{"skill", "for", "and"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:       "skill:go-testing",
+		Kind:     "skill",
+		Name:     "Go Testing",
+		Triggers: []string{"go testing practices"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits := surfaced(s, "choose a skill for Go testing and home doctor hygiene")
+	if _, ok := hits["skill:noisy-meta"]; ok {
+		t.Fatalf("stopword/meta-word-only trigger overlap surfaced noisy node: %+v", hits["skill:noisy-meta"])
+	}
+	if score, ok := hits["skill:go-testing"]; !ok {
+		t.Fatalf("meaningful phrase trigger did not surface: %+v", hits)
+	} else if score != 2 {
+		t.Fatalf("go/testing trigger score = %.1f, want 2.0", score)
+	}
+}
+
 func TestConsumeReceiptsFalseTriggeredLowersSurfacing(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:noisy", Kind: "skill", Name: "Noisy", Triggers: []string{"receipt"}}); err != nil {

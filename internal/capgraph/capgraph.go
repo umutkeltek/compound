@@ -316,12 +316,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
-		base := 0.0
-		for _, tr := range n.Triggers {
-			if tokens[strings.ToLower(tr)] {
-				base++
-			}
-		}
+		base := surfaceTriggerScore(tokens, n.Triggers)
 		score := base*n.Weight + add[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
@@ -724,14 +719,50 @@ func tokenSet(s string) map[string]bool {
 	return out
 }
 
+func surfaceTriggerScore(taskTokens map[string]bool, triggers []string) float64 {
+	matched := map[string]bool{}
+	for _, trigger := range triggers {
+		for _, tok := range tokenList(trigger) {
+			if taskTokens[tok] {
+				matched[tok] = true
+			}
+		}
+	}
+	return float64(len(matched))
+}
+
 func tokenList(s string) []string {
 	var out []string
-	for _, t := range strings.Fields(strings.ToLower(s)) {
-		if tok := strings.Trim(t, ".,;:!?\"'()"); tok != "" {
+	for _, tok := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		if usableCapabilityToken(tok) {
 			out = append(out, tok)
 		}
 	}
 	return out
+}
+
+func usableCapabilityToken(tok string) bool {
+	tok = strings.TrimSpace(strings.ToLower(tok))
+	return tok != "" && !capabilityTokenStopWords[tok]
+}
+
+var capabilityTokenStopWords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
+	"be": true, "before": true, "by": true, "for": true, "from": true,
+	"in": true, "into": true, "is": true, "it": true, "its": true,
+	"of": true, "on": true, "or": true, "that": true, "the": true,
+	"this": true, "to": true, "use": true, "uses": true, "using": true,
+	"via": true, "when": true, "where": true, "with": true,
+	"without": true,
+
+	// Capability-graph meta words describe the registry itself. Keeping them as
+	// match tokens turns "choose a skill/tool/capability" into "offer almost
+	// everything", which defeats task-conditioned surfacing.
+	"capability": true, "capabilities": true, "skill": true, "skills": true,
+	"task": true, "tasks": true, "tool": true, "tools": true,
+	"workflow": true, "workflows": true,
 }
 
 func appendJSONL(path string, v any) error {
