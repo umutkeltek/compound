@@ -732,7 +732,7 @@ func candidateVisibility(privacy string) string {
 	if privacy == "private" {
 		return "private"
 	}
-	return "candidate"
+	return "contextual"
 }
 
 func writeJSON(path string, v any) error {

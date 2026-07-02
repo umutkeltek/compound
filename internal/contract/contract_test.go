@@ -1172,6 +1172,89 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 	}
 }
 
+func TestPackWithCapabilitiesIncludesTaskRelevantKnowledgeImportClaim(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := []mem.Candidate{
+		{
+			Entity:         "knowledge:arxiv:arxiv:2607.01213v1",
+			Predicate:      "reference_metadata",
+			Object:         "title=RepoRescue: An Empirical Study of LLM Agents on Whole-Repository Compatibility Rescue; topics=cs.SE",
+			Confidence:     0.8,
+			Derivation:     "deterministic",
+			PromotionBasis: candidates.BasisTrustedDeterministic,
+			Qualifiers: map[string]string{
+				"source":      "knowledge_import",
+				"source_kind": "arxiv",
+				"source_ref":  "arxiv:cs.SE",
+			},
+			SourceTraceRef:  "ev_arxiv",
+			SnippetHash:     "sha256:arxiv",
+			Visibility:      "candidate",
+			ObservationDate: "2026-07-01",
+		},
+	}
+	for i := 0; i < maxContextMemoryRefs; i++ {
+		cands = append(cands, mem.Candidate{
+			Entity:          "repo:compound",
+			Predicate:       fmt.Sprintf("source_control_fact_%d", i),
+			Object:          "repo state is current",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  fmt.Sprintf("ev_repo_%d", i),
+			SnippetHash:     fmt.Sprintf("sha256:repo-%d", i),
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		})
+	}
+	got, err := store.Capture(cands, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var knowledgeRef string
+	for i := range got {
+		res, err := store.Adjudicate(got[i].ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Claim != nil && strings.HasPrefix(res.Claim.Entity, "knowledge:") {
+			knowledgeRef = "claim://" + res.Claim.ID
+		}
+	}
+	if knowledgeRef == "" {
+		t.Fatal("knowledge claim was not promoted")
+	}
+	matching := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/compound",
+		Task:        "RepoRescue whole-repository compatibility rescue for LLM agents",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(matching, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(pack.ActiveMemory, knowledgeRef) {
+		t.Fatalf("context pack active_memory = %v, want task-relevant knowledge claim %s", pack.ActiveMemory, knowledgeRef)
+	}
+	unrelated := matching
+	unrelated.Task = "billing dashboard polish"
+	unrelatedPack, err := PackWithCapabilities(unrelated, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(unrelatedPack.ActiveMemory, knowledgeRef) {
+		t.Fatalf("unrelated task active_memory = %v, should not include %s", unrelatedPack.ActiveMemory, knowledgeRef)
+	}
+}
+
 func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

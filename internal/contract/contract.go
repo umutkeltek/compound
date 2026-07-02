@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/mem"
@@ -724,7 +725,7 @@ func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens ma
 	if claim.ClaimType == "decision" {
 		return 0
 	}
-	if !memoryVisibilityAllowed(claim.Visibility) {
+	if !memoryVisibilityAllowedForOrient(claim) {
 		return 0
 	}
 	if (contains(rule.Forbidden, "personal-corpus") || contains(rule.ExplicitOnly, "personal-corpus")) && personalMemoryClaim(claim) {
@@ -809,6 +810,26 @@ func memoryVisibilityAllowed(visibility string) bool {
 	default:
 		return false
 	}
+}
+
+func memoryVisibilityAllowedForOrient(claim mem.Claim) bool {
+	if memoryVisibilityAllowed(claim.Visibility) {
+		return true
+	}
+	return legacyPromotedKnowledgeImportClaim(claim)
+}
+
+func legacyPromotedKnowledgeImportClaim(claim mem.Claim) bool {
+	if !strings.EqualFold(strings.TrimSpace(claim.Visibility), "candidate") {
+		return false
+	}
+	if claim.PromotionBasis != candidates.BasisTrustedDeterministic {
+		return false
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(claim.Entity)), "knowledge:") {
+		return false
+	}
+	return qualifierContains(claim, "source", "knowledge_import")
 }
 
 func selfModelClaim(claim mem.Claim) bool {
