@@ -5419,13 +5419,14 @@ func cmdContract(args []string) {
 		homePath, err := home.Resolve("")
 		die(err)
 		type hooksAuthorityReport struct {
-			AuthorityRef     string                                   `json:"authority_ref"`
-			AuthorityPath    string                                   `json:"authority_path"`
-			Installed        bool                                     `json:"installed"`
-			HookCount        int                                      `json:"hook_count,omitempty"`
-			Harnesses        []string                                 `json:"harnesses,omitempty"`
-			SourceAuthority  []contract.InstalledHooksSourceAuthority `json:"source_authority,omitempty"`
-			SourceRecordPath string                                   `json:"source_record_path"`
+			AuthorityRef        string                                   `json:"authority_ref"`
+			AuthorityPath       string                                   `json:"authority_path"`
+			Installed           bool                                     `json:"installed"`
+			HookCount           int                                      `json:"hook_count,omitempty"`
+			Harnesses           []string                                 `json:"harnesses,omitempty"`
+			PreToolUseReadiness []contract.HookGateReadiness             `json:"pre_tool_use_readiness,omitempty"`
+			SourceAuthority     []contract.InstalledHooksSourceAuthority `json:"source_authority,omitempty"`
+			SourceRecordPath    string                                   `json:"source_record_path"`
 		}
 		report := hooksAuthorityReport{
 			AuthorityRef:     contract.InstalledHooksAuthorityRef,
@@ -5441,6 +5442,7 @@ func cmdContract(args []string) {
 			report.Installed = true
 			report.HookCount = len(manifest.Hooks)
 			report.Harnesses = hookManifestHarnesses(manifest)
+			report.PreToolUseReadiness = contract.InstalledHookGateReadiness(manifest, nativePreToolUseBlockMap(harness.DefaultRegistry()))
 		}
 		records, err := contract.LoadInstalledHooksSourceAuthority(homePath)
 		die(err)
@@ -5468,9 +5470,20 @@ func hookManifestHarnesses(manifest contract.InstalledHooksManifest) []string {
 	return out
 }
 
-// cmdOrient assembles the ContextPack an agent orients from. The excluded list — what
-// was NOT loaded and why — is required, so OS-governance context is not ambient noise
-// in a product repo.
+// nativePreToolUseBlockMap exposes harness-native gate facts to installed-hook authority reporting.
+func nativePreToolUseBlockMap(reg harness.Registry) map[string]bool {
+	out := map[string]bool{}
+	for name, h := range reg.Harnesses {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out[name] = h.Capabilities.PreToolUseBlock
+	}
+	return out
+}
+
+// cmdOrient assembles ContextPack an agent orients from. The excluded list records what was not loaded and why.
 func cmdOrient(args []string) {
 	homePath, err := home.Resolve("")
 	die(err)

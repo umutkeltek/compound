@@ -264,6 +264,18 @@ type InstalledHooksImportReport struct {
 	Manifest          InstalledHooksManifest        `json:"manifest"`
 }
 
+type HookGateReadiness struct {
+	Harness         string `json:"harness"`
+	Hook            string `json:"hook"`
+	NativeBlock     bool   `json:"native_block"`
+	Installed       bool   `json:"installed"`
+	InstalledRef    string `json:"installed_ref,omitempty"`
+	Status          string `json:"status"`
+	AdapterRequired bool   `json:"adapter_required,omitempty"`
+	AdapterCommand  string `json:"adapter_command,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+}
+
 type InstalledHooksSourceAuthority struct {
 	SchemaVersion       string   `json:"schema_version"`
 	ID                  string   `json:"id"`
@@ -1403,6 +1415,81 @@ func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUseBlock map[string]bool) []HookGateReadiness {
+	harnesses := map[string]bool{}
+	for _, hook := range manifest.Hooks {
+		harness := strings.TrimSpace(hook.Harness)
+		if harness != "" {
+			harnesses[harness] = true
+		}
+	}
+	for harness := range nativePreToolUseBlock {
+		harness = strings.TrimSpace(harness)
+		if harness != "" {
+			harnesses[harness] = true
+		}
+	}
+	names := make([]string, 0, len(harnesses))
+	for harness := range harnesses {
+		names = append(names, harness)
+	}
+	sort.Strings(names)
+
+	out := make([]HookGateReadiness, 0, len(names))
+	for _, harness := range names {
+		installed, ref := installedWriteGateForHarness(manifest, harness)
+		nativeBlock := nativePreToolUseBlock[harness]
+		row := HookGateReadiness{
+			Harness:     harness,
+			Hook:        "PreToolUse",
+			NativeBlock: nativeBlock,
+			Installed:   installed,
+		}
+		if installed {
+			row.InstalledRef = ref
+		}
+		switch {
+		case installed && nativeBlock:
+			row.Status = "native_blocking"
+			row.Reason = "installed write gate can block in the harness"
+		case installed:
+			row.Status = "wrapper_required"
+			row.AdapterRequired = true
+			row.AdapterCommand = "compound hook pre-tool-use --enforce FIXTURE_JSON"
+			row.Reason = "installed write gate is fail-open in this harness; wrapper adapter must enforce the CLI exit code"
+		case nativeBlock:
+			row.Status = "not_installed"
+			row.Reason = "harness can block, but no installed write-scoped PreToolUse hook is registered"
+		default:
+			row.Status = "missing_gate"
+			row.AdapterRequired = true
+			row.AdapterCommand = "compound hook pre-tool-use --enforce FIXTURE_JSON"
+			row.Reason = "no installed write-scoped PreToolUse hook and harness cannot block natively"
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func installedWriteGateForHarness(manifest InstalledHooksManifest, harness string) (bool, string) {
+	for _, hook := range manifest.Hooks {
+		if strings.TrimSpace(hook.Name) == "" {
+			continue
+		}
+		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+			continue
+		}
+		if strings.TrimSpace(hook.Harness) != strings.TrimSpace(harness) {
+			continue
+		}
+		if !writeScopedHook(hook) {
+			continue
+		}
+		return true, "hook://" + strings.TrimSpace(harness) + "/" + strings.TrimSpace(hook.Name)
+	}
+	return false, ""
 }
 
 func missingWriteGateReason(harness string, availableHarnesses []string) string {

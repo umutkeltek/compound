@@ -879,6 +879,33 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	}
 }
 
+func TestInstalledHookGateReadinessFlagsFailOpenCodex(t *testing.T) {
+	home := t.TempDir()
+	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
+	if _, err := ImportHookRegistrationTS(home, source, fixedNow); err != nil {
+		t.Fatalf("import hook registration ts: %v", err)
+	}
+	manifest, err := LoadInstalledHooksManifest(home)
+	if err != nil {
+		t.Fatalf("load installed hooks manifest: %v", err)
+	}
+	readiness := InstalledHookGateReadiness(manifest, map[string]bool{
+		"claude_code": true,
+		"codex":       false,
+	})
+	claude := findHookGateReadiness(readiness, "claude_code")
+	if claude == nil || claude.Status != "native_blocking" || !claude.Installed || claude.AdapterRequired {
+		t.Fatalf("claude readiness = %+v", claude)
+	}
+	codex := findHookGateReadiness(readiness, "codex")
+	if codex == nil || codex.Status != "missing_gate" || !codex.AdapterRequired {
+		t.Fatalf("codex readiness = %+v", codex)
+	}
+	if !strings.Contains(codex.AdapterCommand, "hook pre-tool-use --enforce") {
+		t.Fatalf("codex adapter command = %q", codex.AdapterCommand)
+	}
+}
+
 func TestPackWithCapabilitiesRecordsMissingWriteGateForMutationTask(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
@@ -1301,6 +1328,15 @@ func installedHookHasMatcher(manifest InstalledHooksManifest, harness, name, mat
 		}
 	}
 	return false
+}
+
+func findHookGateReadiness(readiness []HookGateReadiness, harness string) *HookGateReadiness {
+	for i := range readiness {
+		if readiness[i].Harness == harness {
+			return &readiness[i]
+		}
+	}
+	return nil
 }
 
 func findCapabilityOffer(pack envelope.ContextPack, ref string) *envelope.CapabilityOffer {

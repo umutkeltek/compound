@@ -289,6 +289,10 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	for _, want := range []string{
 		`"installed": true`,
 		`"hook_count": 2`,
+		`"pre_tool_use_readiness": [`,
+		`"harness": "codex"`,
+		`"status": "missing_gate"`,
+		`"adapter_command": "compound hook pre-tool-use --enforce FIXTURE_JSON"`,
 		`"source_role": "evidence_only_input_after_import"`,
 	} {
 		if !strings.Contains(authorityOut, want) {
