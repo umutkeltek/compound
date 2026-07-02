@@ -2184,7 +2184,7 @@ func cmdKnowledge(args []string) {
 
 func cmdMemory(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -2345,11 +2345,17 @@ func cmdMemory(args []string) {
 		if v := flag("--as-of"); v != "" {
 			asOf, _ = strconv.ParseInt(v, 10, 64)
 		}
-		rr, err := store.Recall(firstPos(map[string]bool{"--as-of": true}), mem.RecallOpts{AsOfSeq: asOf, IncludeRetired: has("--include-retired")})
+		rr, err := store.Recall(firstPos(map[string]bool{"--as-of": true}), mem.RecallOpts{AsOfSeq: asOf, IncludeRetired: has("--include-retired"), IncludeEvidence: has("--include-evidence")})
 		die(err)
 		fmt.Println("# " + rr.Coverage)
 		for _, c := range rr.Claims {
 			fmt.Printf("%s.%s = %s  (seq %d, since %s, %s, conf %.2f)\n", c.Entity, c.Predicate, c.Object, c.Seq, c.ValidFrom, c.Derivation, c.Confidence)
+		}
+		for _, c := range rr.EvidenceCandidates {
+			fmt.Printf("evidence %s.%s = %s (%s, conf %.2f, annotations %d)\n", c.Entity, c.Predicate, c.Object, c.State, c.Confidence, len(c.Annotations))
+			for _, ann := range c.Annotations {
+				fmt.Printf(" annotation %s decision=%s original=%s confidence=%.2f run=%s verdict=%s\n", ann.ID, ann.Decision, ann.OriginalDecision, ann.Confidence, ann.RunID, ann.VerdictArtifact)
+			}
 		}
 	case "timeline":
 		claims, err := store.Timeline(pos())

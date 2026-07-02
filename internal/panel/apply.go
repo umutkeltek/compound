@@ -267,7 +267,7 @@ func applyTargetFinding(homePath string, run Run, finding *TargetFinding, memSto
 		switch mapped {
 		case "promote":
 			result.promoted = adjudicated.Claim != nil
-		case "park":
+		case "park", "annotate":
 			result.parked = true
 		case "reject", "merge_existing":
 			result.rejected = true
@@ -506,10 +506,68 @@ func applyMemoryCandidateVerdict(run Run, finding *TargetFinding, cand mem.Candi
 		finding.Application.NoPromoteRef = recorded.ID
 		return "merge_existing", true, res.Note, res, nil
 	case "needs_human", "needs_trial":
+		if knowledgeClassCandidate(cand) {
+			appliedAt := now().UTC()
+			annotated, err := memStore.AnnotateCandidate(cand.ID, knowledgePanelAnnotation(run, finding, decision, evidenceRefs, appliedAt), appliedAt)
+			res := mem.AdjudicateResult{Candidate: annotated, Verdict: "park", Note: "knowledge-class panel verdict annotated and parked"}
+			if err != nil {
+				return "annotate", false, "", res, err
+			}
+			return "annotate", true, res.Note, res, nil
+		}
 		return decision, false, "no mutation; verdict remains in review queue", mem.AdjudicateResult{Candidate: cand, Verdict: decision}, nil
 	default:
 		return decision, false, "", mem.AdjudicateResult{Candidate: cand, Verdict: decision}, fmt.Errorf("unsupported panel synthesis decision %q", finding.Synthesis.Decision)
 	}
+}
+
+func knowledgeClassCandidate(cand mem.Candidate) bool {
+	if strings.HasPrefix(strings.TrimSpace(cand.Entity), "knowledge:") {
+		return true
+	}
+	return strings.TrimSpace(cand.Qualifiers["source"]) == "knowledge_extraction"
+}
+
+func knowledgePanelAnnotation(run Run, finding *TargetFinding, originalDecision string, evidenceRefs []string, now time.Time) mem.CandidateAnnotation {
+	return mem.CandidateAnnotation{
+		ID:               reviewartifact.ID("ann_", run.ID, finding.TargetRef, originalDecision, finding.VerdictArtifact),
+		Kind:             "panel_verdict",
+		Decision:         "annotate",
+		OriginalDecision: originalDecision,
+		RunID:            run.ID,
+		VerdictArtifact:  finding.VerdictArtifact,
+		Rationale:        finding.Synthesis.Rationale,
+		Confidence:       finding.Synthesis.Confidence,
+		EvidenceRefs:     reviewartifact.Unique(evidenceRefs),
+		LensFindings:     knowledgeAnnotationLensFindings(finding.LensFindings),
+		CreatedAt:        reviewartifact.Timestamp(now),
+	}
+}
+
+func knowledgeAnnotationLensFindings(findings []LensFinding) []mem.CandidateAnnotationLens {
+	out := make([]mem.CandidateAnnotationLens, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, mem.CandidateAnnotationLens{
+			LensRef:          finding.LensRef,
+			Status:           finding.Status,
+			Confidence:       finding.Confidence,
+			RouteEvidenceRef: finding.RouteEvidenceRef,
+			Findings:         knowledgeAnnotationFindings(finding.Findings),
+		})
+	}
+	return out
+}
+
+func knowledgeAnnotationFindings(findings []Finding) []mem.CandidateAnnotationFinding {
+	out := make([]mem.CandidateAnnotationFinding, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, mem.CandidateAnnotationFinding{
+			Claim:        finding.Claim,
+			Severity:     finding.Severity,
+			EvidenceRefs: append([]string(nil), finding.EvidenceRefs...),
+		})
+	}
+	return out
 }
 
 func panelAdjudicateAction(workID, runID string, cand mem.Candidate, verdict, targetPath string, evidenceRefs []string, now time.Time) envelope.ActionIntent {

@@ -12,6 +12,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/envelope"
 	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
 
@@ -325,4 +326,242 @@ func TestApplyRetriesFailedComparisonApplications(t *testing.T) {
 	if !again.Findings[0].Application.Applied || again.Findings[0].Application.Note != "already applied; skipped" {
 		t.Fatalf("second re-apply not idempotent: %+v", again.Findings[0].Application)
 	}
+}
+
+func TestApplyKnowledgeClassNeedsHumanAnnotatesCandidateAndClosesQueue(t *testing.T) {
+	home := t.TempDir()
+	candID := "mcand_knowledge_needs_human"
+	writeMemoryCandidateRecord(t, home, candID, map[string]any{
+		"id":               candID,
+		"entity":           "knowledge:paper:alpha",
+		"predicate":        "finding",
+		"object":           "route findings can be useful without becoming memory",
+		"claim_type":       "knowledge",
+		"confidence":       0.82,
+		"promotion_basis":  candidates.BasisRuntimeProof,
+		"state":            "parked",
+		"visibility":       "contextual",
+		"derivation":       "panel_test",
+		"source_trace_ref": "trace://knowledge-alpha",
+		"snippet_hash":     "sha256:knowledge-alpha",
+	})
+
+	run := newMemoryPanelApplyRunForTest("knowledge_needs_human", candID)
+	finding := writeMemoryPanelFindingForTest(t, home, run, candID, "needs_human")
+	run.Findings = []TargetFinding{finding}
+
+	got, err := Apply(home, run, incrementingPanelNowForTest())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	applied := got.Findings[0].Application
+	if !applied.Applied || applied.MappedVerdict != "annotate" {
+		t.Fatalf("knowledge application = %+v, want applied annotate", applied)
+	}
+
+	cand := readCandidateForTest(t, home, candID)
+	if cand.State != "parked" || len(cand.Annotations) != 1 {
+		t.Fatalf("candidate after apply = state %q annotations %d", cand.State, len(cand.Annotations))
+	}
+	ann := cand.Annotations[0]
+	if ann.Decision != "annotate" || ann.OriginalDecision != "needs_human" || ann.RunID != got.ID || ann.VerdictArtifact != finding.VerdictArtifact {
+		t.Fatalf("annotation = %+v", ann)
+	}
+	if ann.Confidence != finding.Synthesis.Confidence || ann.Rationale != finding.Synthesis.Rationale {
+		t.Fatalf("annotation synthesis fields = %+v", ann)
+	}
+	if len(ann.LensFindings) != 1 || ann.LensFindings[0].LensRef != "lens:test-memory" || ann.LensFindings[0].Findings[0].Claim == "" {
+		t.Fatalf("annotation lens findings = %+v", ann.LensFindings)
+	}
+
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultRecall, err := store.Recall("knowledge:paper:alpha", mem.RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultRecall.Claims) != 0 || len(defaultRecall.EvidenceCandidates) != 0 {
+		t.Fatalf("default recall must stay promoted-only, got claims=%d evidence=%d", len(defaultRecall.Claims), len(defaultRecall.EvidenceCandidates))
+	}
+	withEvidence, err := store.Recall("knowledge:paper:alpha", mem.RecallOpts{IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withEvidence.Claims) != 0 || len(withEvidence.EvidenceCandidates) != 1 {
+		t.Fatalf("include-evidence recall = claims %d evidence %d", len(withEvidence.Claims), len(withEvidence.EvidenceCandidates))
+	}
+
+	again, err := Apply(home, got, incrementingPanelNowForTest())
+	if err != nil {
+		t.Fatalf("idempotent re-apply: %v", err)
+	}
+	if !again.Findings[0].Application.Applied || again.Findings[0].Application.Note != "already applied; skipped" {
+		t.Fatalf("re-apply application = %+v", again.Findings[0].Application)
+	}
+	if cand := readCandidateForTest(t, home, candID); len(cand.Annotations) != 1 {
+		t.Fatalf("re-apply annotations = %d, want 1", len(cand.Annotations))
+	}
+
+	report := annotatedPanelVerdictQueueForTest(t, home)
+	if report.Counts.ReviewRequired != 0 || report.Counts.OK != 1 || report.Counts.ByStatus["applied"] != 1 {
+		t.Fatalf("queue counts = %+v", report.Counts)
+	}
+	if got := report.Items[0].NextAction; !strings.Contains(got, "mapped=annotate") || strings.Contains(got, "owner review required") {
+		t.Fatalf("queue next action = %q", got)
+	}
+}
+
+func TestApplyOrdinaryNeedsHumanStillRequiresReview(t *testing.T) {
+	home := t.TempDir()
+	candID := "mcand_ordinary_needs_human"
+	writeMemoryCandidateRecord(t, home, candID, map[string]any{
+		"id":               candID,
+		"entity":           "service:example-api",
+		"predicate":        "uses_runtime",
+		"object":           "go-http",
+		"claim_type":       "architecture",
+		"confidence":       0.82,
+		"promotion_basis":  candidates.BasisRuntimeProof,
+		"state":            "parked",
+		"visibility":       "contextual",
+		"derivation":       "panel_test",
+		"source_trace_ref": "trace://ordinary",
+		"snippet_hash":     "sha256:ordinary",
+	})
+
+	run := newMemoryPanelApplyRunForTest("ordinary_needs_human", candID)
+	run.Findings = []TargetFinding{writeMemoryPanelFindingForTest(t, home, run, candID, "needs_human")}
+
+	got, err := Apply(home, run, incrementingPanelNowForTest())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	app := got.Findings[0].Application
+	if app.Applied || app.MappedVerdict != "needs_human" {
+		t.Fatalf("ordinary application = %+v, want unapplied needs_human", app)
+	}
+	cand := readCandidateForTest(t, home, candID)
+	if cand.State != "parked" || len(cand.Annotations) != 0 {
+		t.Fatalf("ordinary candidate = state %q annotations %d", cand.State, len(cand.Annotations))
+	}
+
+	report := annotatedPanelVerdictQueueForTest(t, home)
+	if report.Counts.ReviewRequired != 1 || report.Counts.OK != 0 {
+		t.Fatalf("queue counts = %+v", report.Counts)
+	}
+	if got := report.Items[0].NextAction; !strings.Contains(got, "panel requested human decision") {
+		t.Fatalf("queue next action = %q", got)
+	}
+}
+
+func TestApplyKnowledgeClassPromoteStillRequiresPromotionBasis(t *testing.T) {
+	home := t.TempDir()
+	candID := "mcand_knowledge_promote_no_basis"
+	writeMemoryCandidateRecord(t, home, candID, map[string]any{
+		"id":               candID,
+		"entity":           "knowledge:paper:beta",
+		"predicate":        "finding",
+		"object":           "promotion still needs evidence basis",
+		"claim_type":       "knowledge",
+		"confidence":       0.91,
+		"promotion_basis":  "",
+		"state":            "parked",
+		"visibility":       "contextual",
+		"derivation":       "panel_test",
+		"source_trace_ref": "trace://knowledge-beta",
+		"snippet_hash":     "sha256:knowledge-beta",
+	})
+
+	run := newMemoryPanelApplyRunForTest("knowledge_promote_no_basis", candID)
+	run.Findings = []TargetFinding{writeMemoryPanelFindingForTest(t, home, run, candID, "promote")}
+
+	got, err := Apply(home, run, incrementingPanelNowForTest())
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	app := got.Findings[0].Application
+	if !app.Applied || app.MappedVerdict != "park" || app.NoPromoteRef == "" {
+		t.Fatalf("promotion guard application = %+v", app)
+	}
+	cand := readCandidateForTest(t, home, candID)
+	if cand.State != "parked" || len(cand.Annotations) != 0 {
+		t.Fatalf("candidate after guarded promote = state %q annotations %d", cand.State, len(cand.Annotations))
+	}
+	if countLines(t, filepath.Join(home, "ledger", "claims.jsonl")) != 0 {
+		t.Fatalf("guarded knowledge promote wrote a claim")
+	}
+
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recall, err := store.Recall("knowledge:paper:beta", mem.RecallOpts{IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recall.Claims) != 0 || len(recall.EvidenceCandidates) != 0 {
+		t.Fatalf("guarded promote recall = claims %d evidence %d", len(recall.Claims), len(recall.EvidenceCandidates))
+	}
+}
+
+func newMemoryPanelApplyRunForTest(suffix, candID string) Run {
+	run := newPanelApplyRunForTest("memory_candidate")
+	run.ID = "prun_20260701T000000Z_" + suffix
+	run.Targets = []Target{{Ref: candID, Privacy: "contextual", StateBefore: "parked"}}
+	run.CountsBefore = map[string]int{"parked": 1}
+	return run
+}
+
+func writeMemoryPanelFindingForTest(t *testing.T, home string, run Run, candID, decision string) TargetFinding {
+	t.Helper()
+	lensFindings := []LensFinding{{
+		LensRef:          "lens:test-memory",
+		RouteEvidenceRef: "routeev_lens_" + candID,
+		Confidence:       0.73,
+		Status:           "completed",
+		Findings: []Finding{{
+			Claim:        "candidate is useful evidence but not ambient memory",
+			Severity:     "info",
+			EvidenceRefs: []string{"trace://" + candID},
+		}},
+	}}
+	synthesis := Synthesis{
+		SchemaVersion:         SynthesisSchemaVersion,
+		Decision:              decision,
+		Confidence:            0.87,
+		Rationale:             "panel fixture " + decision,
+		JudgeRouteEvidenceRef: "routeev_judge_" + candID,
+	}
+	target := TargetInput{
+		Kind:       "memory_candidate",
+		Ref:        candID,
+		Visibility: "contextual",
+		Summary:    "memory candidate " + candID,
+	}
+	artifact, err := writeVerdictArtifact(home, run, target, lensFindings, synthesis, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return TargetFinding{
+		TargetRef:       candID,
+		LensFindings:    lensFindings,
+		Synthesis:       synthesis,
+		VerdictArtifact: artifact,
+	}
+}
+
+func annotatedPanelVerdictQueueForTest(t *testing.T, home string) reviewartifact.QueueReport {
+	t.Helper()
+	report, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: "panel-verdicts"}, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateVerdictQueue(&report)
+	reviewartifact.Recount(&report)
+	if len(report.Items) != 1 {
+		t.Fatalf("queue items = %d, want 1", len(report.Items))
+	}
+	return report
 }

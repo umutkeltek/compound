@@ -94,6 +94,15 @@ Modes:
 
 Raw evidence and private quotes are not ambient by default.
 
+Annotated knowledge-class candidates are evidence, not ambient memory. When a
+panel verdict for a knowledge candidate (`knowledge:*` entity or
+`source=knowledge_extraction`) asks for `needs_human` / `needs_trial`, Compound
+records that panel finding as a candidate annotation and keeps the candidate
+parked. Default recall remains promoted-claim-only; `memory recall <entity>
+--include-evidence` may surface annotated candidates as opt-in evidence. A panel
+`promote` verdict still requires a valid promotion basis and reviewed provenance;
+annotation is not an adjudication verdict and never widens the memory verdict set.
+
 ## Nine Questions
 
 Every durable object should answer:

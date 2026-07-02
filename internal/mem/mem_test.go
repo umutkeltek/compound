@@ -202,6 +202,46 @@ func TestRecallRelevanceGate(t *testing.T) {
 	}
 }
 
+func TestRecallIncludeEvidenceSurfacesAnnotatedCandidatesOnlyWhenRequested(t *testing.T) {
+	s := newStore(t)
+	got, err := s.Capture([]Candidate{cand("knowledge:paper:alpha", "finding", "useful", "")}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotated, err := s.AnnotateCandidate(got[0].ID, CandidateAnnotation{
+		Kind:             "panel_verdict",
+		Decision:         "annotate",
+		OriginalDecision: "needs_human",
+		RunID:            "prun_fixture",
+		Rationale:        "panel found useful but not canon",
+		Confidence:       0.77,
+		EvidenceRefs:     []string{"panel_run:prun_fixture"},
+	}, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if annotated.State != "parked" || len(annotated.Annotations) != 1 {
+		t.Fatalf("annotated candidate = %+v", annotated)
+	}
+	def, err := s.Recall("knowledge:paper:alpha", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(def.Claims) != 0 || len(def.EvidenceCandidates) != 0 {
+		t.Fatalf("default recall must stay promoted-only, got claims=%d evidence=%d", len(def.Claims), len(def.EvidenceCandidates))
+	}
+	withEvidence, err := s.Recall("knowledge:paper:alpha", RecallOpts{IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withEvidence.Claims) != 0 || len(withEvidence.EvidenceCandidates) != 1 {
+		t.Fatalf("include-evidence recall = claims %d evidence %d", len(withEvidence.Claims), len(withEvidence.EvidenceCandidates))
+	}
+	if ann := withEvidence.EvidenceCandidates[0].Annotations[0]; ann.Decision != "annotate" || ann.OriginalDecision != "needs_human" || ann.RunID != "prun_fixture" {
+		t.Fatalf("annotation = %+v", ann)
+	}
+}
+
 func TestDoctorReportsHops(t *testing.T) {
 	s := newStore(t)
 	c, _ := s.Capture([]Candidate{cand("e", "p", "v", "")}, t0)

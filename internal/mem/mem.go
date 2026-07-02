@@ -47,26 +47,55 @@ var Visibilities = []string{"ambient", "contextual", "candidate", "private", "op
 
 // Candidate is an untrusted, proposed fact awaiting adjudication (lives in the inbox).
 type Candidate struct {
-	ID              string            `json:"id"`
-	Entity          string            `json:"entity"`
-	Predicate       string            `json:"predicate"`
-	Object          string            `json:"object"`
-	ObservationDate string            `json:"observation_date"` // temporal grounding (when the fact was true)
-	Confidence      float64           `json:"confidence"`
-	Derivation      string            `json:"derivation"`
-	ClaimType       string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
-	Qualifiers      map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
-	PromotionBasis  string            `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
-	SourceTraceRef  string            `json:"source_trace_ref"`          // provenance: where it came from
-	SnippetHash     string            `json:"snippet_hash"`              // bounded snippet, not the raw body
-	Visibility      string            `json:"visibility"`
-	State           string            `json:"state"` // proposed | parked | promoted | rejected
-	Reason          string            `json:"reason,omitempty"`
-	CreatedAt       string            `json:"created_at"`
+	ID              string                `json:"id"`
+	Entity          string                `json:"entity"`
+	Predicate       string                `json:"predicate"`
+	Object          string                `json:"object"`
+	ObservationDate string                `json:"observation_date"` // temporal grounding (when the fact was true)
+	Confidence      float64               `json:"confidence"`
+	Derivation      string                `json:"derivation"`
+	ClaimType       string                `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
+	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
+	PromotionBasis  string                `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
+	SourceTraceRef  string                `json:"source_trace_ref"`          // provenance: where it came from
+	SnippetHash     string                `json:"snippet_hash"`              // bounded snippet, not the raw body
+	Visibility      string                `json:"visibility"`
+	State           string                `json:"state"` // proposed | parked | promoted | rejected
+	Reason          string                `json:"reason,omitempty"`
+	Annotations     []CandidateAnnotation `json:"annotations,omitempty"`
+	CreatedAt       string                `json:"created_at"`
 }
 
 // Claim is a durable, IMMUTABLE assertion in the ledger. It is never mutated or deleted;
 // supersession and validity are derived from the seq order + supersedes edges (MVCC-by-fold).
+type CandidateAnnotation struct {
+	ID               string                    `json:"id"`
+	Kind             string                    `json:"kind"`
+	Decision         string                    `json:"decision"`
+	OriginalDecision string                    `json:"original_decision,omitempty"`
+	RunID            string                    `json:"run_id,omitempty"`
+	VerdictArtifact  string                    `json:"verdict_artifact,omitempty"`
+	Rationale        string                    `json:"rationale,omitempty"`
+	Confidence       float64                   `json:"confidence,omitempty"`
+	EvidenceRefs     []string                  `json:"evidence_refs,omitempty"`
+	LensFindings     []CandidateAnnotationLens `json:"lens_findings,omitempty"`
+	CreatedAt        string                    `json:"created_at"`
+}
+
+type CandidateAnnotationLens struct {
+	LensRef          string                       `json:"lens_ref"`
+	Status           string                       `json:"status,omitempty"`
+	Confidence       float64                      `json:"confidence,omitempty"`
+	RouteEvidenceRef string                       `json:"route_evidence_ref,omitempty"`
+	Findings         []CandidateAnnotationFinding `json:"findings,omitempty"`
+}
+
+type CandidateAnnotationFinding struct {
+	Claim        string   `json:"claim,omitempty"`
+	Severity     string   `json:"severity,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
 type Claim struct {
 	ID             string            `json:"id"`
 	Seq            int64             `json:"seq"` // monotonic version clock
@@ -185,6 +214,48 @@ func (s *Store) getCandidate(id string) (Candidate, error) {
 	var c Candidate
 	err := readJSON(filepath.Join(s.candDir(), id+".json"), &c)
 	return c, err
+}
+
+func (s *Store) AnnotateCandidate(candID string, ann CandidateAnnotation, now time.Time) (Candidate, error) {
+	c, err := s.getCandidate(candID)
+	if err != nil {
+		return Candidate{}, err
+	}
+	if c.State == "promoted" {
+		return Candidate{}, fmt.Errorf("candidate %s already promoted", candID)
+	}
+	if strings.TrimSpace(ann.ID) == "" {
+		ann.ID = idFor("ann_", candID, ann.Kind, ann.Decision, ts(now))
+	}
+	if strings.TrimSpace(ann.Kind) == "" {
+		ann.Kind = "panel_verdict"
+	}
+	if strings.TrimSpace(ann.Decision) == "" {
+		ann.Decision = "annotate"
+	}
+	if strings.TrimSpace(ann.CreatedAt) == "" {
+		ann.CreatedAt = rfc3339(now)
+	}
+	if !candidateHasAnnotation(c.Annotations, ann.ID) {
+		c.Annotations = append(c.Annotations, ann)
+	}
+	c.State = "parked"
+	if strings.TrimSpace(c.Reason) == "" {
+		c.Reason = "annotated evidence; not promoted"
+	}
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+		return Candidate{}, err
+	}
+	return c, nil
+}
+
+func candidateHasAnnotation(annotations []CandidateAnnotation, id string) bool {
+	for _, ann := range annotations {
+		if ann.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // AllCandidates returns inbox candidates in deterministic id order.
@@ -451,18 +522,20 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 // --- recall (relevance-gated, as-of-aware fold) ---
 
 type RecallOpts struct {
-	AsOfSeq        int64    // 0 = now (latest)
-	IncludeRetired bool     // default false
-	MinConfidence  float64  // hard floor
-	Visibilities   []string // allowed tiers; empty = all (minus retired unless IncludeRetired)
+	AsOfSeq         int64    // 0 = now (latest)
+	IncludeRetired  bool     // default false
+	IncludeEvidence bool     // include annotated candidates; default false
+	MinConfidence   float64  // hard floor
+	Visibilities    []string // allowed tiers; empty = all (minus retired unless IncludeRetired)
 }
 
 type RecallResult struct {
-	Entity   string  `json:"entity"`
-	AsOfSeq  int64   `json:"as_of_seq"`
-	Claims   []Claim `json:"claims"`
-	Filtered int     `json:"filtered"`
-	Coverage string  `json:"coverage"`
+	Entity             string      `json:"entity"`
+	AsOfSeq            int64       `json:"as_of_seq"`
+	Claims             []Claim     `json:"claims"`
+	EvidenceCandidates []Candidate `json:"evidence_candidates,omitempty"`
+	Filtered           int         `json:"filtered"`
+	Coverage           string      `json:"coverage"`
 }
 
 // Recall returns the current claims for an entity AS OF a seq, after HARD filters
@@ -513,7 +586,19 @@ func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
 	}
 	sort.Slice(res.Claims, func(i, j int) bool { return res.Claims[i].Seq < res.Claims[j].Seq })
 
+	if opts.IncludeEvidence {
+		evidence, err := s.annotatedEvidenceCandidates(entity, opts)
+		if err != nil {
+			return res, err
+		}
+		res.EvidenceCandidates = evidence
+	}
+
 	switch {
+	case len(res.Claims) > 0 && len(res.EvidenceCandidates) > 0:
+		res.Coverage = fmt.Sprintf("%d current claim(s) for %q as seq %d (%d gated); %d annotated evidence candidate(s)", len(res.Claims), entity, asOf, res.Filtered, len(res.EvidenceCandidates))
+	case len(res.EvidenceCandidates) > 0:
+		res.Coverage = fmt.Sprintf("no current claims recorded for %q as seq %d; %d annotated evidence candidate(s)", entity, asOf, len(res.EvidenceCandidates))
 	case len(res.Claims) > 0:
 		res.Coverage = fmt.Sprintf("%d current claim(s) for %q as of seq %d (%d gated)", len(res.Claims), entity, asOf, res.Filtered)
 	case res.Filtered > 0:
@@ -526,6 +611,36 @@ func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
 
 // Timeline walks the supersession chain for an entity, oldest→newest — the "what changed"
 // view (delta-aware memory on the owned ledger, no engine).
+func (s *Store) annotatedEvidenceCandidates(entity string, opts RecallOpts) ([]Candidate, error) {
+	candidates, err := s.AllCandidates()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Candidate, 0)
+	for _, c := range candidates {
+		if c.Entity != entity || len(c.Annotations) == 0 {
+			continue
+		}
+		if !opts.IncludeRetired && c.Visibility == "retired" {
+			continue
+		}
+		if opts.MinConfidence > 0 && c.Confidence < opts.MinConfidence {
+			continue
+		}
+		if len(opts.Visibilities) > 0 && !oneOf(c.Visibility, opts.Visibilities) {
+			continue
+		}
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt < out[j].CreatedAt
+	})
+	return out, nil
+}
+
 func (s *Store) Timeline(entity string) ([]Claim, error) {
 	claims, err := s.loadClaims()
 	if err != nil {
