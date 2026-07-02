@@ -849,13 +849,17 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 		t.Fatalf("read-only context pack active=%v excluded=%v", readOnlyPack.ActiveHooks, readOnlyPack.Excluded)
 	}
 
-	codexInput := Input{Harness: "codex", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	codexInput := Input{Harness: "codex", Cwd: t.TempDir(), Task: "edit source file with hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
 	codex, err := CompileWithRuntime(codexInput, DefaultPolicy(), home, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if contains(codex.ActiveHooks, "hook://claude_code/PreToolUse") {
 		t.Fatalf("codex effective contract leaked claude hook: %v", codex.ActiveHooks)
+	}
+	reason := excludedRefReason(codex.Excluded, "hook://codex/PreToolUse")
+	if !strings.Contains(reason, "claude_code") || !strings.Contains(reason, "not requested harness codex") {
+		t.Fatalf("codex missing write-gate exclusion should cite incompatible harness evidence, got %q", reason)
 	}
 	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
 		if !contains(codex.ActiveHooks, want) {

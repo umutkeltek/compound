@@ -1321,6 +1321,7 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 	}
 	active := []string{}
 	excluded := []envelope.ExcludedRef{}
+	writeScopedHarnesses := writeScopedHookHarnesses(manifest)
 	hasWriteScopedHook := false
 	revs := []envelope.SourceRev{{Source: InstalledHooksAuthorityRef, Rev: hashBytes(data)}}
 	for _, hook := range manifest.Hooks {
@@ -1358,13 +1359,43 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 	if writeMutationTask(in) && strings.TrimSpace(in.Harness) != "" && !hasWriteScopedHook {
 		excluded = append(excluded, envelope.ExcludedRef{
 			Ref:    "hook://" + in.Harness + "/PreToolUse",
-			Reason: "write-scoped hook missing for mutation task; no installed PreToolUse write gate registered for harness",
+			Reason: missingWriteGateReason(in.Harness, writeScopedHarnesses),
 		})
 	}
 	sort.Strings(active)
 	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Ref < excluded[j].Ref })
 	sort.Slice(revs, func(i, j int) bool { return revs[i].Source < revs[j].Source })
 	return active, excluded, revs, nil
+}
+
+func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {
+	seen := map[string]bool{}
+	for _, hook := range manifest.Hooks {
+		if strings.TrimSpace(hook.Name) == "" {
+			continue
+		}
+		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+			continue
+		}
+		if !writeScopedHook(hook) {
+			continue
+		}
+		seen[firstNonEmpty(hook.Harness, "unknown")] = true
+	}
+	out := make([]string, 0, len(seen))
+	for harness := range seen {
+		out = append(out, harness)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func missingWriteGateReason(harness string, availableHarnesses []string) string {
+	base := "write-scoped hook missing for mutation task; no installed PreToolUse write gate registered for harness"
+	if len(availableHarnesses) == 0 {
+		return base
+	}
+	return base + "; write gate registered for harness(es) " + strings.Join(availableHarnesses, ", ") + " but not requested harness " + harness
 }
 
 func installedHookExcludedForTask(hook InstalledHook, in Input) bool {
