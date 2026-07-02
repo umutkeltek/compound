@@ -369,6 +369,58 @@ func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	}
 }
 
+func TestWorkbenchDerivesObservatoryTags(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "ready work gets readable facets",
+		EvidenceRefs:     []string{"packet_sha256:abc"},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "completed memory work gets proof facets"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(done.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(done.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(done.ID, AdvanceInput{To: "verifying", VerificationID: "ver_memory"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(done.ID, CloseInput{
+		Outcome:        "completed",
+		MoveType:       "memory_delta",
+		Summary:        "memory recipient proof",
+		Changed:        true,
+		ProofRefs:      []string{"ver_memory"},
+		MemoryPromoted: []string{"claim_memory"},
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyItem := findWorkbenchItem(t, report.Open, ready.ID)
+	for _, tag := range []string{"state:ready", "attention:needs-claim", "owner:compound-core", "evidence:source"} {
+		if !contains(readyItem.ObservatoryTags, tag) {
+			t.Fatalf("ready observatory tags missing %q: %+v", tag, readyItem.ObservatoryTags)
+		}
+	}
+	doneItem := findWorkbenchItem(t, report.Recent, done.ID)
+	for _, tag := range []string{"state:completed", "attention:terminal", "move:memory-delta", "recipient:memory", "change:changed", "evidence:verification", "proof:complete"} {
+		if !contains(doneItem.ObservatoryTags, tag) {
+			t.Fatalf("done observatory tags missing %q: %+v", tag, doneItem.ObservatoryTags)
+		}
+	}
+}
+
 func findWorkbenchItem(t *testing.T, items []WorkbenchItem, workID string) WorkbenchItem {
 	t.Helper()
 	for _, item := range items {

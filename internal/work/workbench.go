@@ -87,6 +87,7 @@ type WorkbenchItem struct {
 	MoveType           string                  `json:"move_type,omitempty"`
 	Changed            bool                    `json:"changed,omitempty"`
 	ReviewTrigger      string                  `json:"review_trigger,omitempty"`
+	ObservatoryTags    []string                `json:"observatory_tags,omitempty"`
 	NextAction         string                  `json:"next_action"`
 	OpenReason         string                  `json:"open_reason,omitempty"`
 	EvidenceRefs       []string                `json:"evidence_refs,omitempty"`
@@ -249,6 +250,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 			report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" invalid: "+err.Error())
 		}
 	}
+	item.ObservatoryTags = workbenchObservatoryTags(item)
 	return item
 }
 
@@ -458,6 +460,119 @@ func openReason(state string) string {
 	default:
 		return ""
 	}
+}
+
+func workbenchObservatoryTags(item WorkbenchItem) []string {
+	var tags []string
+	seen := map[string]bool{}
+	add := func(tag string) {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] {
+			return
+		}
+		seen[tag] = true
+		tags = append(tags, tag)
+	}
+	addFacet := func(facet, value string) {
+		if value = workbenchTagValue(value); value != "" {
+			add(facet + ":" + value)
+		}
+	}
+
+	addFacet("state", item.State)
+	if item.OpenReason != "" {
+		addFacet("attention", item.OpenReason)
+	} else if terminalStates[item.State] {
+		add("attention:terminal")
+	}
+	if item.Owner != "" {
+		addFacet("owner", item.Owner)
+	}
+	if item.ClaimedBy != "" {
+		addFacet("actor", item.ClaimedBy)
+	}
+	if item.CanonicalSurface != "" {
+		addFacet("surface", item.CanonicalSurface)
+	}
+	if item.ContextPackID != "" {
+		add("context:compiled")
+	}
+	if item.PolicyDecisionID != "" {
+		add("policy:decided")
+	}
+	if item.MoveType != "" {
+		addFacet("move", item.MoveType)
+		switch item.MoveType {
+		case "memory_delta":
+			add("recipient:memory")
+		case "rule_delta":
+			add("recipient:rule")
+		case "outward_delta":
+			add("recipient:outward")
+		case "control_plane_repair":
+			add("recipient:control-plane")
+		case "audit_only":
+			add("recipient:audit")
+		}
+		if item.Changed {
+			add("change:changed")
+		} else {
+			add("change:unchanged")
+		}
+	}
+	if item.ReviewTrigger != "" {
+		addFacet("review", item.ReviewTrigger)
+	}
+	if len(item.RunObservations) > 0 {
+		add("evidence:run-observed")
+	}
+	if len(item.EvidenceRefs) > 0 {
+		add("evidence:source")
+	}
+	if len(item.ArtifactIDs) > 0 {
+		add("evidence:artifact")
+	}
+	if len(item.VerificationIDs) > 0 {
+		add("evidence:verification")
+	}
+	if len(item.MemoryCandidateIDs) > 0 {
+		add("memory:candidates")
+	}
+	if terminalProofRequired(item.State) {
+		if item.ReceiptID == "" {
+			add("proof:missing-receipt")
+		} else {
+			add("proof:receipt")
+		}
+		if item.TransitionID == "" {
+			add("proof:missing-transition")
+		} else {
+			add("proof:transition")
+		}
+		if item.ReceiptID != "" && item.TransitionID != "" {
+			add("proof:complete")
+		}
+	}
+	return tags
+}
+
+func workbenchTagValue(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		keep := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if keep {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if b.Len() > 0 && !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func terminalProofRequired(state string) bool {
