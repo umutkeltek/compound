@@ -1273,6 +1273,7 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 	}
 	active := []string{}
 	excluded := []envelope.ExcludedRef{}
+	hasWriteScopedHook := false
 	revs := []envelope.SourceRev{{Source: InstalledHooksAuthorityRef, Rev: hashBytes(data)}}
 	for _, hook := range manifest.Hooks {
 		if strings.TrimSpace(hook.Name) == "" {
@@ -1283,6 +1284,9 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 		}
 		if hook.Harness != "" && in.Harness != "" && hook.Harness != in.Harness {
 			continue
+		}
+		if writeScopedHook(hook) {
+			hasWriteScopedHook = true
 		}
 		h := firstNonEmpty(hook.Harness, in.Harness, "unknown")
 		ref := "hook://" + h + "/" + hook.Name
@@ -1302,6 +1306,12 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 			rev = "unknown"
 		}
 		revs = append(revs, envelope.SourceRev{Source: ref, Rev: rev})
+	}
+	if writeMutationTask(in) && strings.TrimSpace(in.Harness) != "" && !hasWriteScopedHook {
+		excluded = append(excluded, envelope.ExcludedRef{
+			Ref:    "hook://" + in.Harness + "/PreToolUse",
+			Reason: "write-scoped hook missing for mutation task; no installed PreToolUse write gate registered for harness",
+		})
 	}
 	sort.Strings(active)
 	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Ref < excluded[j].Ref })
@@ -1327,6 +1337,23 @@ func writeScopedHook(hook InstalledHook) bool {
 		strings.Contains(matcher, "edit") ||
 		strings.Contains(matcher, "multiedit") ||
 		strings.Contains(ref, "placementguard")
+}
+
+func writeMutationTask(in Input) bool {
+	text := strings.ToLower(strings.Join([]string{in.Task, in.Mode}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	writeSignals := []string{
+		"write", "edit", "modify", "change", "implement", "fix", "patch", "commit",
+		"apply", "create", "add", "delete", "remove", "move", "rename",
+	}
+	for _, sig := range writeSignals {
+		if strings.Contains(text, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 func readOnlyTask(in Input) bool {

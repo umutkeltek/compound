@@ -806,6 +806,61 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesRecordsMissingWriteGateForMutationTask(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schema_version: compound.installed_hooks.v0.1
+hooks:
+  - harness: codex
+    name: SessionStart
+    event: SessionStart
+    ref: /tmp/codex-session-start.hook.ts
+    status: current
+  - harness: codex
+    name: UserPromptSubmit
+    event: UserPromptSubmit
+    ref: /tmp/codex-user-prompt-submit.hook.ts
+    status: current
+`
+	if err := os.WriteFile(filepath.Join(home, "config", "installed-hooks.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{
+		Harness:     "codex",
+		Cwd:         t.TempDir(),
+		Task:        "edit source file",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !contains(pack.ActiveHooks, want) {
+			t.Fatalf("context pack active hooks = %v, want %s", pack.ActiveHooks, want)
+		}
+	}
+	reason := excludedReason(pack, "hook://codex/PreToolUse")
+	if !strings.Contains(reason, "no installed PreToolUse write gate") {
+		t.Fatalf("context pack excluded=%v, want missing write gate reason", pack.Excluded)
+	}
+
+	readOnly := in
+	readOnly.Task = "audit current hook status"
+	readOnly.Mode = ""
+	readOnlyPack, err := PackWithCapabilities(readOnly, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasExcluded(readOnlyPack, "hook://codex/PreToolUse") {
+		t.Fatalf("read-only context pack should not report missing write gate: %v", readOnlyPack.Excluded)
+	}
+}
+
 func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -1091,6 +1146,15 @@ func hasExcluded(pack envelope.ContextPack, ref string) bool {
 		}
 	}
 	return false
+}
+
+func excludedReason(pack envelope.ContextPack, ref string) string {
+	for _, exc := range pack.Excluded {
+		if exc.Ref == ref {
+			return exc.Reason
+		}
+	}
+	return ""
 }
 
 func installedHookHasMatcher(manifest InstalledHooksManifest, harness, name, matcher string) bool {
