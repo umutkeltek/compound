@@ -55,6 +55,9 @@ type QueueItem struct {
 	TargetPath              string   `json:"target_path,omitempty"`
 	TargetHash              string   `json:"target_hash,omitempty"`
 	CandidateID             string   `json:"candidate_id,omitempty"`
+	Owner                   string   `json:"owner,omitempty"`
+	NotToDo                 string   `json:"not_to_do,omitempty"`
+	Boundaries              []string `json:"boundaries,omitempty"`
 	RepairCount             int      `json:"repair_count,omitempty"`
 	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
 	GraphDecisionHint       string   `json:"graph_decision_hint,omitempty"`
@@ -209,6 +212,9 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 		TargetPath:              firstString(payload, "target_path"),
 		TargetHash:              firstString(payload, "target_hash"),
 		CandidateID:             firstString(payload, "candidate_id", "candidate_ref"),
+		Owner:                   firstString(payload, "owner"),
+		NotToDo:                 firstString(payload, "not_to_do"),
+		Boundaries:              stringSlice(payload["boundaries"]),
 		RepairCount:             intField(payload, "repair_count"),
 		EvidenceRefs:            stringSlice(payload["evidence_refs"]),
 		GraphDecisionHint:       firstString(payload, "graph_decision_hint"),

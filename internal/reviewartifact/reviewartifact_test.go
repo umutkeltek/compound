@@ -285,6 +285,9 @@ func TestQueueSummarizesReviewArtifacts(t *testing.T) {
 		"created_at":    "2026-07-01T00:00:00Z",
 		"source_kind":   "note",
 		"source_root":   "owner-root",
+		"owner":         "capability-intake",
+		"not_to_do":     "do not import external repo wholesale",
+		"boundaries":    []string{"review-only", "no graph mutation", "review-only"},
 		"repair_count":  2,
 		"evidence_refs": []string{"e2", "e1", "e1"},
 		"next_action":   "review owner repair",
@@ -343,6 +346,12 @@ func TestQueueSummarizesReviewArtifacts(t *testing.T) {
 	}
 	if report.Items[0].NextAction != "review owner repair" {
 		t.Fatalf("next_action not surfaced: %+v", report.Items[0])
+	}
+	if report.Items[0].Owner != "capability-intake" || report.Items[0].NotToDo != "do not import external repo wholesale" {
+		t.Fatalf("owner placement metadata not surfaced: %+v", report.Items[0])
+	}
+	if strings.Join(report.Items[0].Boundaries, ",") != "no graph mutation,review-only" {
+		t.Fatalf("boundaries not unique/sorted: %+v", report.Items[0].Boundaries)
 	}
 	if report.Items[0].MarkdownPath == "" || len(report.Items[0].ExtraPaths) != 3 {
 		t.Fatalf("expected markdown and draft sibling: %+v", report.Items[0])
