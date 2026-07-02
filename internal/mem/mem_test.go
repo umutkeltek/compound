@@ -176,9 +176,8 @@ func TestDuplicateRejected(t *testing.T) {
 	c1, _ := s.Capture([]Candidate{cand("e", "p", "same", "")}, t0)
 	s.Adjudicate(c1[0].ID, "promote", "", t0)
 	c2, _ := s.Capture([]Candidate{cand("e", "p", "same", "")}, t0)
-	r, _ := s.Adjudicate(c2[0].ID, "promote", "", t0)
-	if r.Verdict != "reject" {
-		t.Errorf("promoting an already-current value should be rejected as duplicate; got %q", r.Verdict)
+	if len(c2) != 0 {
+		t.Fatalf("duplicate capture should reinforce current claim without a candidate; got %d", len(c2))
 	}
 	if claims, _ := s.loadClaims(); len(claims) != 1 {
 		t.Errorf("duplicate must not append a second claim; got %d", len(claims))

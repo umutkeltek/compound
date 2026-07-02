@@ -257,8 +257,8 @@ func critique(c Candidate, prior PriorState) Critique {
 		return Critique{IsNew: true}
 	}
 	for _, cl := range prior.Current {
-		if cl.Entity == c.Entity && cl.Predicate == c.Predicate {
-			if cl.Object == c.Object {
+		if mem.ClusterKey(cl.Entity, cl.Topic(), cl.ClaimType) == mem.ClusterKey(c.Entity, memoryTopic(c), c.ClaimType) {
+			if mem.SameClaimObject(cl.Object, c.Object) && mem.SameClaimQualifiers(cl.Qualifiers, c.Qualifiers) {
 				return Critique{Duplicate: true, DuplicateClaimID: cl.ID, Notes: "matches current claim " + cl.ID}
 			}
 			if c.Confidence < cl.Confidence {
@@ -378,6 +378,10 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 			if err != nil {
 				return res, err
 			}
+			if len(got) == 0 {
+				dec.Verdict, dec.Relation, dec.Basis = Reject, "duplicate", "duplicate per mem ledger"
+				break
+			}
 			ar, err := store.Adjudicate(got[0].ID, "promote", "", now)
 			if err != nil {
 				return res, err
@@ -389,8 +393,10 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 				dec.Verdict, dec.Relation, dec.Basis = Reject, "duplicate", "duplicate per mem ledger"
 			}
 		case c.Kind == KindMemory && verdict == Reject && crit.Duplicate && crit.DuplicateCandidateID != "":
-		// A parked memory candidate is already in the inbox. Do not create a
-		// second parked row; the no-promote record carries the repeat evidence.
+			// A parked memory candidate is already in the inbox. Do not create a
+			// second parked row; the no-promote record carries the repeat evidence.
+		case c.Kind == KindMemory && verdict == Reject && crit.Duplicate:
+			// Current canon already says this; no candidate row is needed.
 		case c.Kind != KindMemory && verdict == Reject && crit.Duplicate:
 			// Anti-churn: the adjudication and no-promote row are the durable
 			// record. Do not write another candidate inbox file for the same
@@ -475,6 +481,13 @@ func duplicatePriorCandidate(c Candidate, priors []PriorCandidate) (PriorCandida
 
 func candidateMeaningKey(c Candidate) string {
 	return meaningKey(c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail)
+}
+
+func memoryTopic(c Candidate) string {
+	if d := c.Qualifiers["domain"]; d != "" {
+		return d
+	}
+	return c.Predicate
 }
 
 func priorCandidateMeaningKey(c PriorCandidate) string {

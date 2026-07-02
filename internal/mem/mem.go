@@ -98,7 +98,7 @@ func (c Claim) Topic() string {
 // so "current as of T" can fold supersession deterministically.
 type Edge struct {
 	Seq        int64   `json:"seq"`
-	Kind       string  `json:"kind"` // supersedes | contradicts | relates
+	Kind       string  `json:"kind"` // supersedes | reinforces | relation kinds
 	From       string  `json:"from"`
 	To         string  `json:"to"`
 	Confidence float64 `json:"confidence"`
@@ -164,6 +164,13 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 			c.Visibility = "operational"
 		}
 		c.ID = idFor("cand_", c.Entity, c.Predicate, c.Object, ts(now))
+		echo, err := s.reinforceIfEcho(c, now)
+		if err != nil {
+			return out, err
+		}
+		if echo {
+			continue
+		}
 		c.State = "proposed"
 		c.CreatedAt = rfc3339(now)
 		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
@@ -252,7 +259,7 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 		hasPrior, dup bool
 	)
 	lockErr := s.withLock(func() error {
-		p, hp, err := s.currentClaim(c.Entity, c.Predicate, 0)
+		p, hp, err := s.currentClusterClaim(c, 0)
 		if err != nil {
 			return err
 		}
@@ -321,20 +328,18 @@ func nonPromoteState(verdict string) string {
 // isDuplicatePromotion reports whether promoting c would only restate the current
 // claim (same object and qualifiers), so no new version is needed.
 func isDuplicatePromotion(c Candidate, prior Claim, hasPrior bool) bool {
-	return hasPrior && prior.Object == c.Object && sameQualifiers(prior.Qualifiers, c.Qualifiers)
-}
-
-func sameQualifiers(a, b map[string]string) bool {
-	if len(a) != len(b) {
+	if !hasPrior {
 		return false
 	}
-	for key, av := range a {
-		if b[key] != av {
+	if c.Entity != "" || c.Predicate != "" || c.ClaimType != "" {
+		if !sameClusterKey(ClusterKey(c.Entity, c.Topic(), c.ClaimType), ClusterKey(prior.Entity, prior.Topic(), prior.ClaimType)) {
 			return false
 		}
 	}
-	return true
+	return SameClaimObject(prior.Object, c.Object) && sameQualifiers(prior.Qualifiers, c.Qualifiers)
 }
+
+func sameQualifiers(a, b map[string]string) bool { return SameClaimQualifiers(a, b) }
 
 // promotedClaim builds the durable Claim a promotion appends at the allocated
 // seq: the candidate's value + taxonomy, superseding the prior claim when one
@@ -365,6 +370,45 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 // supersedesEdge builds the supersedes edge from a promoted claim to the prior.
 func supersedesEdge(claim, prior Claim, c Candidate, seq int64, now time.Time) Edge {
 	return Edge{Seq: seq, Kind: "supersedes", From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
+}
+
+func reinforcesEdge(from string, prior Claim, c Candidate, seq int64, now time.Time) Edge {
+	return Edge{Seq: seq, Kind: "reinforces", From: from, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
+}
+
+func (s *Store) reinforceIfEcho(c Candidate, now time.Time) (bool, error) {
+	var reinforced bool
+	err := s.withLock(func() error {
+		prior, hasPrior, err := s.currentClusterClaim(c, 0)
+		if err != nil {
+			return err
+		}
+		if !isDuplicatePromotion(c, prior, hasPrior) {
+			return nil
+		}
+		evidence, err := s.RecordEvidence(EvidenceItem{
+			SourceKind: "memory-candidate",
+			SourceID:   firstNonEmpty(c.SourceTraceRef, c.ID),
+			QuoteText:  c.Entity + " " + c.Predicate + " " + c.Object,
+			EventTime:  c.ObservationDate,
+			Actor:      "agent",
+			Visibility: c.Visibility,
+		}, now)
+		if err != nil {
+			return err
+		}
+		seq, err := s.nextSeq()
+		if err != nil {
+			return err
+		}
+		edge := reinforcesEdge(evidence.ID, prior, c, seq, now)
+		if err := appendJSONL(s.edgesLog(), &edge); err != nil {
+			return err
+		}
+		reinforced = true
+		return nil
+	})
+	return reinforced, err
 }
 
 func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID string, now time.Time) envelope.Transition {
@@ -517,6 +561,39 @@ func (s *Store) currentClaim(entity, predicate string, asOf int64) (Claim, bool,
 			if !found || c.Seq > best.Seq {
 				best, found = c, true
 			}
+		}
+	}
+	return best, found, nil
+}
+
+func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, error) {
+	claims, err := s.loadClaims()
+	if err != nil {
+		return Claim{}, false, err
+	}
+	if asOf == 0 {
+		asOf = s.maxSeq(claims)
+	}
+	want, err := s.candidateClusterKey(cand)
+	if err != nil {
+		return Claim{}, false, err
+	}
+	superseded, err := s.supersededAsOf(asOf)
+	if err != nil {
+		return Claim{}, false, err
+	}
+	var best Claim
+	found := false
+	for _, claim := range claims {
+		if claim.Seq > asOf || superseded[claim.ID] {
+			continue
+		}
+		got, err := s.claimClusterKey(claim)
+		if err != nil {
+			return Claim{}, false, err
+		}
+		if sameClusterKey(got, want) && (!found || claim.Seq > best.Seq) {
+			best, found = claim, true
 		}
 	}
 	return best, found, nil

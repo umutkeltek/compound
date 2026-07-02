@@ -80,7 +80,20 @@ func (s *Store) Relate(from, kind, to string, conf float64, now time.Time) (Edge
 	return e, err
 }
 
-// loadRelations reads the entity-level relation edges (kind != supersedes), confidence-gated.
+// loadRelations reads entity-level relation edges, excluding claim-level version/reinforcement edges.
+func (s *Store) loadEdges() ([]Edge, error) {
+	var out []Edge
+	err := readJSONL(s.edgesLog(), func(line []byte) error {
+		var e Edge
+		if err := json.Unmarshal(line, &e); err != nil {
+			return err
+		}
+		out = append(out, e)
+		return nil
+	})
+	return out, err
+}
+
 func (s *Store) loadRelations(minConf float64) ([]Edge, error) {
 	var out []Edge
 	err := readJSONL(s.edgesLog(), func(line []byte) error {
@@ -88,7 +101,7 @@ func (s *Store) loadRelations(minConf float64) ([]Edge, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			return err
 		}
-		if e.Kind != "supersedes" && e.Confidence >= minConf {
+		if e.Kind != "supersedes" && e.Kind != "reinforces" && e.Confidence >= minConf {
 			out = append(out, e)
 		}
 		return nil
