@@ -195,3 +195,13 @@ func TestProductLoopsContractValidatesReadModel(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestKnowledgeExportContractValidatesFixture(t *testing.T) {
+	if _, err := Export("knowledge_export"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join("..", "..", "fixtures", "knowledge", "arxiv-export.json")
+	if err := Validate("knowledge_export", path); err != nil {
+		t.Fatal(err)
+	}
+}

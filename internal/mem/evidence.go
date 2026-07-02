@@ -5,12 +5,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// EvidenceSourceKinds — where a piece of evidence came from (open-ended; validated only if set).
-var EvidenceSourceKinds = []string{"claude_code", "codex", "agent_harness", "repo", "note", "transcript", "web", "user"}
+// Evidence source kinds are OPEN by design: any medium may record evidence through the
+// generic knowledge intake (new medium = 1 edge + 0 core changes), so there is no allowlist.
+// A kind is a lowercase slug so provenance stays greppable and typo-resistant in shape.
+var evidenceSourceKindPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:-]*$`)
 
 // EvidenceItem is immutable, citable raw material — never truth on its own, but the thing a claim
 // points at. The spine-native convergence of the Gen-1 memory.EvidenceItem: mem previously kept
@@ -37,8 +40,12 @@ func (s *Store) RecordEvidence(e EvidenceItem, now time.Time) (EvidenceItem, err
 	if strings.TrimSpace(e.QuoteText) == "" && strings.TrimSpace(e.SourceID) == "" {
 		return EvidenceItem{}, fmt.Errorf("evidence needs quote_text or source_id")
 	}
-	if e.SourceKind != "" && !oneOf(e.SourceKind, EvidenceSourceKinds) {
-		return EvidenceItem{}, fmt.Errorf("evidence source_kind %q not in %v", e.SourceKind, EvidenceSourceKinds)
+	e.SourceKind = strings.TrimSpace(e.SourceKind)
+	if e.SourceKind == "" {
+		return EvidenceItem{}, fmt.Errorf("evidence source_kind required")
+	}
+	if !evidenceSourceKindPattern.MatchString(e.SourceKind) {
+		return EvidenceItem{}, fmt.Errorf("evidence source_kind %q must be a lowercase slug (a-z0-9._:-)", e.SourceKind)
 	}
 	sum := sha256.Sum256([]byte(e.SourceKind + "\x00" + e.SourceID + "\x00" + e.QuoteText))
 	e.ContentHash = hex.EncodeToString(sum[:])

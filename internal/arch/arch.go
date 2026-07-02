@@ -56,6 +56,7 @@ var Classification = map[string]Class{
 	"authority":    Importer,
 	"decisions":    Importer,
 	"eventsource":  Importer,
+	"knowledge":    Importer,
 	"sourceobs":    Importer,
 	"tooltopology": Importer,
 }

@@ -1,0 +1,246 @@
+package knowledge
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"compound/internal/mem"
+)
+
+var testNow = time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+
+func TestImportRecordsEvidenceCandidateExtractionAndSource(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Items != 3 || report.Imported != 3 || report.Echoes != 0 || report.Reused != 0 {
+		t.Fatalf("report counts = %+v", report)
+	}
+	if len(report.EvidenceIDs) != 3 || len(report.CandidateIDs) != 3 || len(report.ExtractionIDs) != 3 {
+		t.Fatalf("report ids = %+v", report)
+	}
+
+	evidence, err := store.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 3 {
+		t.Fatalf("evidence rows = %d; want 3", len(evidence))
+	}
+	if evidence[0].SourceKind != "arxiv" || evidence[0].Actor != "tool" {
+		t.Fatalf("evidence[0] = %+v", evidence[0])
+	}
+
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 3 {
+		t.Fatalf("candidate rows = %d; want 3", len(candidates))
+	}
+	if candidates[0].State != "proposed" || candidates[0].Qualifiers["source"] != "knowledge_import" {
+		t.Fatalf("candidate[0] = %+v", candidates[0])
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("knowledge import must not create promoted claims, stat err=%v", err)
+	}
+
+	extractionPath := filepath.Join(homePath, "inbox", "knowledge-extractions", report.ExtractionIDs[0]+".json")
+	var extraction ExtractionRequest
+	readJSON(t, extractionPath, &extraction)
+	if extraction.SchemaVersion != ExtractionRequestSchemaVersion || extraction.State != "pending" || extraction.EvidenceRef == "" {
+		t.Fatalf("extraction = %+v", extraction)
+	}
+
+	var sources []SourceRegistryRow
+	readJSONLRows(t, filepath.Join(homePath, "registries", "knowledge-sources.jsonl"), &sources)
+	if len(sources) != 1 || sources[0].SourceID != "source:arxiv:arxiv:cs.AI+cs.CL" || sources[0].TrustPosterior != 0.5 {
+		t.Fatalf("sources = %+v", sources)
+	}
+}
+
+func TestImportFoldsEchoAcrossSourceKinds(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	echo, err := ImportFile(homePath, store, fixturePath("web-echo-export.json"), testNow.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if echo.Items != 1 || echo.Imported != 0 || echo.Echoes != 1 || echo.Reused != 0 {
+		t.Fatalf("echo report counts = %+v", echo)
+	}
+	if len(echo.CandidateIDs) != 0 || len(echo.ExtractionIDs) != 0 {
+		t.Fatalf("echo must not create candidates/extractions: %+v", echo)
+	}
+
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 3 {
+		t.Fatalf("echo created duplicate candidates: %+v", candidates)
+	}
+
+	var events []DistributionEvent
+	readJSONLRows(t, filepath.Join(homePath, "ledger", "knowledge-distribution.jsonl"), &events)
+	if len(events) != 1 {
+		t.Fatalf("distribution events = %+v", events)
+	}
+	if events[0].CanonicalRef != "https://arxiv.org/abs/2506.12345" || events[0].EchoSourceKind != "web" || events[0].FirstEvidenceRef != first.EvidenceIDs[0] {
+		t.Fatalf("distribution event = %+v", events[0])
+	}
+}
+
+func TestWholeFileImportIsIdempotent(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Items != 3 || second.Imported != 0 || second.Echoes != 0 || second.Reused != 3 {
+		t.Fatalf("second report counts = %+v", second)
+	}
+	if strings.Join(second.EvidenceIDs, ",") != strings.Join(first.EvidenceIDs, ",") {
+		t.Fatalf("reused evidence ids changed: first=%+v second=%+v", first.EvidenceIDs, second.EvidenceIDs)
+	}
+
+	evidence, err := store.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 3 {
+		t.Fatalf("idempotent import created duplicate evidence: %+v", evidence)
+	}
+	var imports []ImportIndexRow
+	readJSONLRows(t, filepath.Join(homePath, "indexes", "knowledge-imports.jsonl"), &imports)
+	if len(imports) != 3 {
+		t.Fatalf("idempotent import appended rows: %+v", imports)
+	}
+}
+
+func TestDecodeExportRejectsStrictShapeProblems(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "unknown_field",
+			body: `{"schema_version":"compound.knowledge_export.v0.1","source":{"kind":"arxiv","ref":"arxiv:cs.AI","captured_at":"2026-07-02T12:00:00Z"},"items":[{"ref":"x","content":"body","extra":true}]}`,
+			want: "unknown field",
+		},
+		{
+			name: "missing_ref",
+			body: `{"schema_version":"compound.knowledge_export.v0.1","source":{"kind":"arxiv","ref":"arxiv:cs.AI","captured_at":"2026-07-02T12:00:00Z"},"items":[{"content":"body"}]}`,
+			want: "items[0].ref required",
+		},
+		{
+			name: "empty_items",
+			body: `{"schema_version":"compound.knowledge_export.v0.1","source":{"kind":"arxiv","ref":"arxiv:cs.AI","captured_at":"2026-07-02T12:00:00Z"},"items":[]}`,
+			want: "items nonempty",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := DecodeExport([]byte(tt.body)); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("DecodeExport error = %v; want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewMediumImportsWithoutCoreChange(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "podcast-export.json")
+	if err := os.WriteFile(path, []byte(`{
+  "schema_version": "compound.knowledge_export.v0.1",
+  "source": {"kind": "podcast", "ref": "podcast:meaning-machines", "captured_at": "2026-07-02T12:00:00Z"},
+  "items": [{
+    "ref": "episode:42",
+    "title": "Evidence Before Truth",
+    "authors": ["Host Example"],
+    "published_at": "2026-07-01",
+    "topics": ["memory"],
+    "content": "A podcast episode discusses why captured material should become evidence before candidate claims.",
+    "lang": "en"
+  }]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ImportFile(homePath, store, path, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Items != 1 || report.Imported != 1 || len(report.CandidateIDs) != 1 {
+		t.Fatalf("podcast report = %+v", report)
+	}
+	evidence, err := store.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].SourceKind != "podcast" {
+		t.Fatalf("podcast evidence = %+v", evidence)
+	}
+}
+
+func fixturePath(name string) string {
+	return filepath.Join("..", "..", "fixtures", "knowledge", name)
+}
+
+func readJSON(t *testing.T, path string, dst any) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, dst); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readJSONLRows[T any](t *testing.T, path string, out *[]T) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var row T
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		*out = append(*out, row)
+	}
+}

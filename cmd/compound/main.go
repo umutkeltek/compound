@@ -32,6 +32,7 @@ import (
 	"compound/internal/harness"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/knowledge"
 	"compound/internal/mem"
 	"compound/internal/panel"
 	"compound/internal/policy"
@@ -103,6 +104,8 @@ func main() {
 		cmdRoute(os.Args[2:])
 	case "memory":
 		cmdMemory(os.Args[2:])
+	case "knowledge":
+		cmdKnowledge(os.Args[2:])
 	case "distiller":
 		cmdDistiller(os.Args[2:])
 	case "capability":
@@ -2090,6 +2093,58 @@ func readTypedEnvelopeOrDie(path string) envelope.Envelope {
 
 // cmdMemory is P6: the owned memory ledger re-bound through the spine. candidate-first
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
+func cmdKnowledge(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import <export.json> [--json]>")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "import":
+		rest := args[1:]
+		path := ""
+		for _, arg := range rest {
+			if !strings.HasPrefix(arg, "-") {
+				path = arg
+				break
+			}
+		}
+		if path == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound knowledge import <export.json> [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		store, err := mem.Open(homePath)
+		die(err)
+		report, err := knowledge.ImportFile(homePath, store, path, time.Now())
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# knowledge import %s\n", path)
+		fmt.Printf("- items: %d\n", report.Items)
+		fmt.Printf("- imported: %d\n", report.Imported)
+		fmt.Printf("- echoes: %d\n", report.Echoes)
+		fmt.Printf("- reused: %d\n", report.Reused)
+		for _, id := range report.EvidenceIDs {
+			fmt.Printf(" - evidence %s\n", id)
+		}
+		for _, id := range report.CandidateIDs {
+			fmt.Printf(" - candidate %s\n", id)
+		}
+		for _, id := range report.ExtractionIDs {
+			fmt.Printf(" - extraction %s\n", id)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import <export.json> [--json]>")
+		os.Exit(2)
+	}
+}
+
 func cmdMemory(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")

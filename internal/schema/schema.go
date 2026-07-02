@@ -17,6 +17,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
+	"compound/internal/knowledge"
 	"compound/internal/panel"
 	"compound/internal/product"
 	"compound/internal/routeevidence"
@@ -41,6 +42,8 @@ func Contracts() []Contract {
 		{Name: "receipt", Description: "work receipt", Type: reflect.TypeOf(envelope.Receipt{}), Validate: validateEnvelope[envelope.Receipt]},
 		{Name: "transition", Description: "typed transition proof", Type: reflect.TypeOf(envelope.Transition{}), Validate: validateEnvelope[envelope.Transition]},
 		{Name: "candidate_set", Description: "distiller candidate set", Type: reflect.TypeOf(distiller.Trace{}), Validate: validateCandidateSet},
+
+		{Name: "knowledge_export", Description: "generic knowledge source export", Type: reflect.TypeOf(knowledge.Export{}), Validate: validateKnowledgeExport},
 		{Name: "runtime_binding", Description: "RuntimeBinding and ServiceContract bundle", Type: reflect.TypeOf(runtimebinding.Bundle{}), Validate: validateRuntimeBinding},
 		{Name: "decision_lifecycle", Description: "decision lifecycle object", Type: reflect.TypeOf(decisions.Lifecycle{}), Validate: validateDecisionLifecycle},
 		{Name: "capability_node", Description: "CapabilityGraph node", Type: reflect.TypeOf(capgraph.Node{}), Validate: validateCapabilityNode},
@@ -270,6 +273,11 @@ func validatePanelRun(_ string, data []byte) error {
 		return err
 	}
 	return run.Validate()
+}
+
+func validateKnowledgeExport(_ string, data []byte) error {
+	_, err := knowledge.DecodeExport(data)
+	return err
 }
 
 func validateProductSignalExport(path string, data []byte) error {

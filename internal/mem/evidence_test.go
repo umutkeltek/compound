@@ -34,11 +34,17 @@ func TestEvidenceStoredAndIdempotent(t *testing.T) {
 	}
 }
 
-// An unknown source_kind is rejected; empty evidence is rejected.
+// Arbitrary source_kind values are accepted; empty source/evidence is rejected.
 func TestEvidenceValidation(t *testing.T) {
 	s := newStore(t)
-	if _, err := s.RecordEvidence(EvidenceItem{SourceKind: "telepathy", QuoteText: "x"}, t0); err == nil {
-		t.Error("an unknown source_kind must be rejected")
+	if e, err := s.RecordEvidence(EvidenceItem{SourceKind: "podcast", QuoteText: "x"}, t0); err != nil || e.SourceKind != "podcast" {
+		t.Fatalf("arbitrary source_kind should be accepted: evidence=%+v err=%v", e, err)
+	}
+	if _, err := s.RecordEvidence(EvidenceItem{QuoteText: "x"}, t0); err == nil {
+		t.Error("empty source_kind must be rejected")
+	}
+	if _, err := s.RecordEvidence(EvidenceItem{SourceKind: "Bad Kind!", QuoteText: "x"}, t0); err == nil {
+		t.Error("non-slug source_kind must be rejected")
 	}
 	if _, err := s.RecordEvidence(EvidenceItem{SourceKind: "note"}, t0); err == nil {
 		t.Error("evidence with neither quote_text nor source_id must be rejected")
