@@ -2,6 +2,7 @@ package authority
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -51,15 +52,18 @@ type JobHealthReviewDraft struct {
 }
 
 type JobHealthPlanReport struct {
-	SchemaVersion string                 `json:"schema_version"`
-	CreatedAt     string                 `json:"created_at"`
-	Status        string                 `json:"status"`
-	AuthorityRef  string                 `json:"authority_ref"`
-	AuthorityPath string                 `json:"authority_path"`
-	PlanCount     int                    `json:"plan_count"`
-	Plans         []JobHealthPlan        `json:"plans,omitempty"`
-	Paths         []reviewartifact.Paths `json:"paths,omitempty"`
-	ReviewYAMLs   []string               `json:"review_yamls,omitempty"`
+	SchemaVersion       string                 `json:"schema_version"`
+	CreatedAt           string                 `json:"created_at"`
+	Status              string                 `json:"status"`
+	AuthorityRef        string                 `json:"authority_ref"`
+	AuthorityPath       string                 `json:"authority_path"`
+	PlanCount           int                    `json:"plan_count"`
+	ReviewRequiredCount int                    `json:"review_required_count"`
+	RecordedCount       int                    `json:"recorded_count"`
+	ResolvedCount       int                    `json:"resolved_count"`
+	Plans               []JobHealthPlan        `json:"plans,omitempty"`
+	Paths               []reviewartifact.Paths `json:"paths,omitempty"`
+	ReviewYAMLs         []string               `json:"review_yamls,omitempty"`
 }
 
 func BuildJobHealthPlans(homePath string, roster JobRosterAuthority, now time.Time) ([]JobHealthPlan, error) {
@@ -144,21 +148,72 @@ func RecordJobHealthPlans(homePath string, roster JobRosterAuthority, now time.T
 		AuthorityRef:  roster.AuthorityRef,
 		AuthorityPath: JobRosterAuthorityPath(homePath),
 		PlanCount:     len(plans),
-		Plans:         plans,
 	}
 	for _, plan := range plans {
+		plan, reviewedPath, err := annotateJobHealthPlanWithReview(homePath, plan)
+		if err != nil {
+			return JobHealthPlanReport{}, err
+		}
+		report.Plans = append(report.Plans, plan)
+		switch plan.Status {
+		case "recorded":
+			report.RecordedCount++
+		case "resolved":
+			report.ResolvedCount++
+		default:
+			report.ReviewRequiredCount++
+		}
 		paths, err := reviewartifact.Write(homePath, jobHealthReviewArea, plan.ID, plan, "  ", RenderJobHealthPlanMarkdown(plan))
 		if err != nil {
 			return JobHealthPlanReport{}, err
 		}
-		reviewYAMLPath, err := reviewartifact.WriteRaw(homePath, jobHealthReviewArea, plan.ID+".review.yaml", []byte(RenderJobHealthReviewYAMLDraft(plan)))
-		if err != nil {
-			return JobHealthPlanReport{}, err
+		reviewYAMLPath := jobHealthReviewYAMLFilePath(homePath, plan.ID)
+		if reviewedPath == "" {
+			reviewYAMLPath, err = reviewartifact.WriteRaw(homePath, jobHealthReviewArea, plan.ID+".review.yaml", []byte(RenderJobHealthReviewYAMLDraft(plan)))
+			if err != nil {
+				return JobHealthPlanReport{}, err
+			}
 		}
 		report.Paths = append(report.Paths, paths)
 		report.ReviewYAMLs = append(report.ReviewYAMLs, reviewYAMLPath)
 	}
 	return report, nil
+}
+
+func annotateJobHealthPlanWithReview(homePath string, plan JobHealthPlan) (JobHealthPlan, string, error) {
+	reviewedPath, err := jobHealthReviewedFileForPlan(homePath, plan.ID)
+	if err != nil {
+		return JobHealthPlan{}, "", err
+	}
+	if reviewedPath == "" {
+		return plan, "", nil
+	}
+	report, err := LoadJobHealthReviewReport(reviewedPath)
+	if err != nil {
+		return JobHealthPlan{}, "", err
+	}
+	plan.Status = "recorded"
+	plan.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, "job-health review recorded: "+report.Decision)
+	plan.EvidenceRefs = reviewartifact.Unique(append(plan.EvidenceRefs, report.EvidenceRefs...))
+	return plan, reviewedPath, nil
+}
+
+func jobHealthReviewedFileForPlan(homePath, planID string) (string, error) {
+	if strings.TrimSpace(planID) == "" {
+		return "", nil
+	}
+	matches, err := filepath.Glob(filepath.Join(homePath, "reviews", jobHealthReviewArea, planID+".*.reviewed.json"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) == 0 {
+		return "", nil
+	}
+	return matches[0], nil
+}
+
+func jobHealthReviewYAMLFilePath(homePath, planID string) string {
+	return filepath.Join(homePath, "reviews", jobHealthReviewArea, planID+".review.yaml")
 }
 
 func RenderJobHealthPlanMarkdown(plan JobHealthPlan) string {

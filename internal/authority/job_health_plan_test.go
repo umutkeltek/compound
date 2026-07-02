@@ -153,6 +153,16 @@ func TestJobHealthReviewQueueAndRecordSidecar(t *testing.T) {
 	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 {
 		t.Fatalf("recorded review should close review debt counts: %+v", queue.Counts)
 	}
+	replanned, err := RecordJobHealthPlans(home, roster, now.Add(6*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replanned.PlanCount != 1 || replanned.ReviewRequiredCount != 0 || replanned.RecordedCount != 1 || len(replanned.Plans) != 1 {
+		t.Fatalf("recorded job-health plan should not reopen review debt: %+v", replanned)
+	}
+	if replanned.Plans[0].Status != "recorded" || !strings.Contains(replanned.Plans[0].NextAction, "keep parked") {
+		t.Fatalf("recorded job-health plan status not preserved: %+v", replanned.Plans[0])
+	}
 }
 
 func TestJobHealthQueueDemotesSupersededRosterErrors(t *testing.T) {
