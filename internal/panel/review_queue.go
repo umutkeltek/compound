@@ -29,6 +29,7 @@ func AnnotateVerdictQueue(report *reviewartifact.QueueReport) {
 func annotateVerdictQueueItem(item *reviewartifact.QueueItem) {
 	verdict, ok := verdictFromQueueItem(*item)
 	if !ok {
+		item.Status = "blocked"
 		item.Readiness = "blocked"
 		item.BlockedReason = "panel verdict artifact unreadable"
 		item.NextAction = "regenerate panel verdict artifacts"
@@ -39,7 +40,8 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem) {
 	item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, verdict.EvidenceRefs...))
 	item.Actions = nil
 
-	switch strings.TrimSpace(item.Status) {
+	status := strings.TrimSpace(item.Status)
+	switch status {
 	case "ok", "applied", "resolved", "accepted", "recorded":
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
@@ -49,12 +51,18 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem) {
 
 	decision := strings.TrimSpace(verdict.Synthesis.Decision)
 	if decision == "" {
+		if status == "" || status == "unknown" {
+			item.Status = "blocked"
+		}
 		item.Readiness = "blocked"
 		item.BlockedReason = "panel verdict missing synthesis.decision"
 		item.NextAction = "regenerate panel verdict artifact with synthesis decision"
 		return
 	}
 
+	if status == "" || status == "unknown" {
+		item.Status = "review_required"
+	}
 	item.Readiness = "needs_review"
 	item.BlockedReason = ""
 	target := panelVerdictTarget(verdict.Target)

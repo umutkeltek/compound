@@ -1427,7 +1427,10 @@ func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 1 || report.Counts.ReadyToApply != 0 || report.Counts.OK != 0 {
 		t.Fatalf("panel verdict should remain review debt: %+v", report.Counts)
 	}
-	if len(report.Items) != 1 || report.Items[0].Readiness != "needs_review" {
+	if report.Counts.ByStatus["review_required"] != 1 || report.Counts.ByStatus["unknown"] != 0 {
+		t.Fatalf("panel verdict projected status should be review_required: %+v", report.Counts.ByStatus)
+	}
+	if len(report.Items) != 1 || report.Items[0].Status != "review_required" || report.Items[0].Readiness != "needs_review" {
 		t.Fatalf("panel verdict item should be annotated needs_review: %+v", report.Items)
 	}
 	item := report.Items[0]
