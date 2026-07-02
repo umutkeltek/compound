@@ -16,7 +16,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--json]|verdict-record --review <panel_verdict.json> --rationale <text> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -125,6 +125,22 @@ func cmdPanel(args []string) {
 			return
 		}
 		printPanelRun(run)
+	case "verdict-record":
+		reviewPath, rationale, jsonOut := parsePanelVerdictRecordArgs(args[1:])
+		homePath, err := home.Resolve("")
+		die(err)
+		report, err := panel.RecordVerdictHumanReview(homePath, reviewPath, rationale, time.Now())
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# panel verdict-record %s\n", report.ID)
+		fmt.Printf("- verdict: %s\n", report.VerdictID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- review: %s\n", report.ReviewPath)
+		fmt.Printf("- next_action: %s\n", report.NextAction)
 	case "show":
 		if len(args) != 2 && !(len(args) == 3 && args[2] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound panel show <run_id> [--json]")
@@ -145,6 +161,27 @@ func cmdPanel(args []string) {
 		fmt.Fprintf(os.Stderr, "unknown panel command %q\n", args[0])
 		os.Exit(2)
 	}
+}
+
+func parsePanelVerdictRecordArgs(args []string) (reviewPath, rationale string, jsonOut bool) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--review":
+			reviewPath = requirePanelValue(args, &i, "panel verdict-record")
+		case "--rationale":
+			rationale = requirePanelValue(args, &i, "panel verdict-record")
+		case "--json":
+			jsonOut = true
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound panel verdict-record --review <panel_verdict.json> --rationale <text> [--json]")
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(reviewPath) == "" || strings.TrimSpace(rationale) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound panel verdict-record --review <panel_verdict.json> --rationale <text> [--json]")
+		os.Exit(2)
+	}
+	return reviewPath, rationale, jsonOut
 }
 
 func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {

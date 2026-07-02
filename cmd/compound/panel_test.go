@@ -12,6 +12,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/home"
 	"compound/internal/panel"
+	"compound/internal/reviewartifact"
 )
 
 func TestPanelLensesCLIJSON(t *testing.T) {
@@ -112,6 +113,72 @@ func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 		if !strings.Contains(applyShow, want) {
 			t.Fatalf("apply show output missing %q:\n%s", want, applyShow)
 		}
+	}
+}
+
+func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	paths, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_record_cli", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_verdict_record_cli",
+		"created_at":     cliTestNow.Format("2006-01-02T15:04:05Z"),
+		"run_id":         "prun_record_cli",
+		"target": map[string]any{
+			"kind":    "memory_candidate",
+			"ref":     "cand_panel_record_cli",
+			"summary": "candidate needs human adjudication",
+		},
+		"lens_findings": []map[string]any{{
+			"lens_ref":           "lens:privacy",
+			"route_evidence_ref": "route_panel_record",
+			"status":             "failed",
+		}},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "needs_human",
+			"confidence":     0.62,
+			"rationale":      "privacy lens failed",
+		},
+		"evidence_refs": []string{"route_panel_record"},
+	}, " ", "# Panel verdict\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdPanel([]string{"verdict-record", "--review", paths.PlanPath, "--rationale", "owner reviewed panel request; keep target parked until human evidence exists", "--json"})
+	})
+	var record panel.VerdictHumanReviewReport
+	if err := json.Unmarshal([]byte(out), &record); err != nil {
+		t.Fatalf("parse verdict-record JSON: %v\n%s", err, out)
+	}
+	if record.Status != "recorded" || record.Decision != "needs_human" || record.ReviewPath == "" {
+		t.Fatalf("record = %+v, want recorded needs_human", record)
+	}
+
+	queueOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "panel-verdicts", "--json"})
+	})
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(queueOut), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, queueOut)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 0 || report.Counts.OK != 1 {
+		t.Fatalf("recorded panel verdict should be ok: %+v", report.Counts)
+	}
+	if report.Counts.ByStatus["recorded"] != 1 {
+		t.Fatalf("recorded panel verdict status missing: %+v", report.Counts.ByStatus)
+	}
+	if len(report.Items) != 1 || report.Items[0].Status != "recorded" || report.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("panel verdict recorded hold should be review_recorded: %+v", report.Items)
+	}
+	item := report.Items[0]
+	if len(item.Actions) != 0 || !strings.Contains(item.NextAction, "keep target parked") {
+		t.Fatalf("recorded panel verdict should expose no-action next step: %+v", item)
 	}
 }
 

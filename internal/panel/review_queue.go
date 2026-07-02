@@ -42,6 +42,18 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, verdict.EvidenceRefs...))
 	item.Actions = nil
 
+	if reviewedPath := panelVerdictReviewedPath(*item); reviewedPath != "" {
+		item.Status = "recorded"
+		item.Readiness = "review_recorded"
+		item.BlockedReason = ""
+		item.NextAction = "panel verdict human review recorded"
+		if report, err := LoadVerdictHumanReviewReport(reviewedPath); err == nil {
+			item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, report.EvidenceRefs...))
+			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, item.NextAction)
+		}
+		return
+	}
+
 	if app, ok := applicationForVerdictItem(*item, applications); ok && terminalPanelApplication(app.Application, verdict.Synthesis.Decision) {
 		item.Status = "applied"
 		item.Readiness = "no_action"
@@ -153,6 +165,15 @@ func applicationForVerdictItem(item reviewartifact.QueueItem, applications map[s
 		}
 	}
 	return verdictApplication{}, false
+}
+
+func panelVerdictReviewedPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, ".reviewed.json") {
+			return path
+		}
+	}
+	return ""
 }
 
 func verdictArtifactKeys(path string) []string {
