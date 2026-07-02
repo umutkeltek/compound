@@ -3731,11 +3731,29 @@ func flagCSVValues(args []string, names ...string) []string {
 	return out
 }
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H]"
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--review-area A]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
 	CapabilitySurface *capgraph.SurfaceReport `json:"capability_surface,omitempty"`
+	ReviewQueue       *workbenchReviewQueue   `json:"review_queue,omitempty"`
+}
+
+type workbenchReviewQueue struct {
+	SchemaVersion string                     `json:"schema_version"`
+	AuthorityRef  string                     `json:"authority_ref"`
+	Area          string                     `json:"area,omitempty"`
+	Counts        reviewartifact.QueueCounts `json:"counts"`
+	Actionable    []workbenchReviewItem      `json:"actionable,omitempty"`
+}
+
+type workbenchReviewItem struct {
+	Area       string                  `json:"area"`
+	ID         string                  `json:"id"`
+	Status     string                  `json:"status"`
+	Readiness  string                  `json:"readiness,omitempty"`
+	NextAction string                  `json:"next_action,omitempty"`
+	Actions    []reviewartifact.Action `json:"actions,omitempty"`
 }
 
 func cmdWorkbench(args []string) {
@@ -3755,6 +3773,7 @@ func cmdWorkbench(args []string) {
 	activePacketSurface := ""
 	capabilityTask := ""
 	capabilityHarness := ""
+	reviewArea := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
@@ -3790,6 +3809,17 @@ func cmdWorkbench(args []string) {
 			capabilityHarness = strings.TrimSpace(args[i])
 			if capabilityHarness == "" {
 				fmt.Fprintln(os.Stderr, "error: --capability-harness must be non-empty")
+				os.Exit(2)
+			}
+		case "--review-area":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			reviewArea = strings.TrimSpace(args[i])
+			if reviewArea == "" {
+				fmt.Fprintln(os.Stderr, "error: --review-area must be non-empty")
 				os.Exit(2)
 			}
 		case "--actor":
@@ -3846,7 +3876,13 @@ func cmdWorkbench(args []string) {
 		}
 		capabilitySurface = &surface
 	}
-	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface}
+	reviewReport, err := buildReviewQueueReport(homePath, reviewArea)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	reviewQueue := buildWorkbenchReviewQueue(reviewReport)
+	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
 		return
@@ -3873,6 +3909,19 @@ func cmdWorkbench(args []string) {
 			}
 			fmt.Printf("capability_offer: %s %-28s score %.1f [%s]\n", offer.Kind, offer.ID, offer.Score, offer.Why)
 		}
+	}
+	fmt.Printf("review_queue total=%d review_required=%d ready_to_apply=%d ok=%d authority=%s\n",
+		reviewQueue.Counts.Total,
+		reviewQueue.Counts.ReviewRequired,
+		reviewQueue.Counts.ReadyToApply,
+		reviewQueue.Counts.OK,
+		reviewQueue.AuthorityRef,
+	)
+	for i, item := range reviewQueue.Actionable {
+		if i >= 3 {
+			break
+		}
+		fmt.Printf("review_action: %s %-28s %s %s\n", item.Area, item.ID, item.Readiness, item.NextAction)
 	}
 	if report.ActivePacketProof != nil {
 		fmt.Printf("active_packet_proof status=%s work=%s context=%s receipt=%s transition=%s\n",
@@ -3929,6 +3978,61 @@ func cmdWorkbench(args []string) {
 	}
 }
 
+func buildReviewQueueReport(homePath, area string) (reviewartifact.QueueReport, error) {
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area}, time.Now())
+	if err != nil {
+		return reviewartifact.QueueReport{}, err
+	}
+	decisions.AnnotateLifecycleRepairQueue(&report)
+	product.AnnotateReviewQueue(&report)
+	authority.AnnotateJobHealthQueue(&report)
+	authority.AnnotateSourceControlCleanupQueue(&report)
+	runtimebinding.AnnotateRepairQueue(&report)
+	capgraph.AnnotateCapabilityEvaluationQueue(&report)
+	capgraph.AnnotateExternalRepoIntakeQueue(&report)
+	capgraph.AnnotateSkillCandidateQueue(&report)
+	panel.AnnotateVerdictQueue(&report)
+	projection.AnnotateProjectionRegenerationQueue(&report)
+	routeevidence.AnnotatePromotionReviewQueue(&report)
+	reviewartifact.Recount(&report)
+	return report, nil
+}
+
+func buildWorkbenchReviewQueue(report reviewartifact.QueueReport) workbenchReviewQueue {
+	out := workbenchReviewQueue{
+		SchemaVersion: reviewartifact.QueueSchemaVersion,
+		AuthorityRef:  "compound://reviews",
+		Area:          report.Area,
+		Counts:        report.Counts,
+	}
+	for _, item := range report.Items {
+		if len(out.Actionable) >= 5 {
+			break
+		}
+		if len(item.Actions) == 0 && !workbenchReviewReadinessActionable(item.Readiness) {
+			continue
+		}
+		out.Actionable = append(out.Actionable, workbenchReviewItem{
+			Area:       item.Area,
+			ID:         item.ID,
+			Status:     item.Status,
+			Readiness:  item.Readiness,
+			NextAction: item.NextAction,
+			Actions:    item.Actions,
+		})
+	}
+	return out
+}
+
+func workbenchReviewReadinessActionable(readiness string) bool {
+	switch readiness {
+	case "needs_review", "ready_to_record", "ready_to_apply", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
 func cmdReviews(args []string) {
 	if len(args) > 0 && args[0] == "record-finding" {
 		cmdReviewsRecordFinding(args[1:])
@@ -3955,23 +4059,11 @@ func cmdReviews(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area}, time.Now())
+	report, err := buildReviewQueueReport(homePath, area)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	decisions.AnnotateLifecycleRepairQueue(&report)
-	product.AnnotateReviewQueue(&report)
-	authority.AnnotateJobHealthQueue(&report)
-	authority.AnnotateSourceControlCleanupQueue(&report)
-	runtimebinding.AnnotateRepairQueue(&report)
-	capgraph.AnnotateCapabilityEvaluationQueue(&report)
-	capgraph.AnnotateExternalRepoIntakeQueue(&report)
-	capgraph.AnnotateSkillCandidateQueue(&report)
-	panel.AnnotateVerdictQueue(&report)
-	projection.AnnotateProjectionRegenerationQueue(&report)
-	routeevidence.AnnotatePromotionReviewQueue(&report)
-	reviewartifact.Recount(&report)
 	if jsonOut {
 		printJSON(report)
 		return

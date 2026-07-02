@@ -665,6 +665,59 @@ func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
 	}
 }
 
+func TestWorkbenchCommandIncludesReviewQueueSummary(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "product-reviews", "prp_workbench", map[string]any{
+		"id":            "prp_workbench",
+		"status":        "review_required",
+		"product_id":    "product:focus-notes",
+		"hypothesis_id": "hyp_focus",
+		"signal_id":     "sig_focus",
+	}, " ", "# Product review\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.WriteRaw(homePath, "product-reviews", "prp_workbench.review.yaml", []byte("schema_version: compound.product_review.v0.1\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--review-area", "product-reviews"})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse workbench review queue JSON: %v\n%s", err, out)
+	}
+	if report.ReviewQueue == nil ||
+		report.ReviewQueue.SchemaVersion != reviewartifact.QueueSchemaVersion ||
+		report.ReviewQueue.AuthorityRef != "compound://reviews" ||
+		report.ReviewQueue.Area != "product-reviews" ||
+		report.ReviewQueue.Counts.Total != 1 ||
+		report.ReviewQueue.Counts.ReviewRequired != 1 ||
+		len(report.ReviewQueue.Actionable) != 1 ||
+		report.ReviewQueue.Actionable[0].ID != "prp_workbench" ||
+		report.ReviewQueue.Actionable[0].Readiness != "needs_review" ||
+		len(report.ReviewQueue.Actionable[0].Actions) != 1 {
+		t.Fatalf("bad workbench review queue: %+v", report.ReviewQueue)
+	}
+
+	human := captureStdout(t, func() {
+		cmdWorkbench([]string{"--review-area", "product-reviews"})
+	})
+	for _, want := range []string{
+		"review_queue total=1 review_required=1 ready_to_apply=0 ok=0 authority=compound://reviews",
+		"review_action: product-reviews prp_workbench",
+		"open: none",
+	} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human workbench review queue output missing %q:\n%s", want, human)
+		}
+	}
+}
+
 func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
