@@ -21,6 +21,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/hook"
 	"compound/internal/mem"
+	"compound/internal/panel"
 	"compound/internal/policy"
 	"compound/internal/product"
 	"compound/internal/projection"
@@ -1442,6 +1443,101 @@ func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 	}
 	if len(item.EvidenceRefs) != 2 {
 		t.Fatalf("panel verdict item should preserve de-duplicated evidence refs: %+v", item)
+	}
+}
+
+func TestReviewsCommandAnnotatesAppliedPanelVerdictNoAction(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	paths, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_applied_cli", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_verdict_applied_cli",
+		"run_id":         "prun_applied_cli",
+		"target": map[string]any{
+			"kind":    "memory_candidate",
+			"ref":     "cand_panel_applied_cli",
+			"summary": "candidate already applied by panel run",
+		},
+		"lens_findings": []map[string]any{{
+			"lens_ref":           "lens:evidence-strength",
+			"route_evidence_ref": "route_applied",
+			"status":             "failed",
+		}},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "park",
+			"confidence":     0.74,
+			"rationale":      "application already recorded no-promote",
+		},
+		"evidence_refs": []string{"route_applied"},
+	}, " ", "# Panel verdict\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := panel.Open(homePath)
+	if err != nil {
+		t.Fatalf("open panel store: %v", err)
+	}
+	run := panel.Run{
+		SchemaVersion: panel.RunSchemaVersion,
+		ID:            "prun_applied_cli",
+		CreatedAt:     cliTestNow.Format(time.RFC3339),
+		Status:        "applied",
+		TargetKind:    "memory_candidate",
+		Findings: []panel.TargetFinding{{
+			TargetRef:       "cand_panel_applied_cli",
+			VerdictArtifact: paths.PlanPath,
+			LensFindings: []panel.LensFinding{{
+				LensRef: "lens:evidence-strength",
+				Status:  "failed",
+			}},
+			Synthesis: panel.Synthesis{
+				SchemaVersion: panel.SynthesisSchemaVersion,
+				Decision:      "park",
+				Confidence:    0.74,
+				Rationale:     "application already recorded no-promote",
+			},
+			Application: panel.Application{
+				Applied:           true,
+				MappedVerdict:     "park",
+				ActionIntentRef:   "act_applied_cli",
+				PolicyDecisionRef: "pol_applied_cli",
+				CandidateRef:      "cand_panel_applied_cli",
+				NoPromoteRef:      "nop_applied_cli",
+			},
+		}},
+		CountsBefore: map[string]int{"observed": 1},
+		CountsAfter:  map[string]int{"parked": 1},
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatalf("save panel run: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "panel-verdicts", "--json"})
+	})
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 0 || report.Counts.ReadyToApply != 0 || report.Counts.OK != 1 {
+		t.Fatalf("applied panel verdict should be terminal: %+v", report.Counts)
+	}
+	if report.Counts.ByStatus["applied"] != 1 || report.Counts.ByStatus["review_required"] != 0 {
+		t.Fatalf("applied panel verdict projected status should be applied: %+v", report.Counts.ByStatus)
+	}
+	if len(report.Items) != 1 || report.Items[0].Status != "applied" || report.Items[0].Readiness != "no_action" {
+		t.Fatalf("applied panel verdict item should be annotated no_action: %+v", report.Items)
+	}
+	item := report.Items[0]
+	if len(item.Actions) != 0 {
+		t.Fatalf("applied panel verdict must not expose mutating apply actions: %+v", item)
+	}
+	if !strings.Contains(item.NextAction, "already applied by prun_applied_cli") || !strings.Contains(item.NextAction, "memory_candidate/cand_panel_applied_cli") {
+		t.Fatalf("applied panel verdict item should expose terminal application context: %+v", item)
 	}
 }
 

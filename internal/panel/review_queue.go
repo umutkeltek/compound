@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"compound/internal/reviewartifact"
@@ -17,16 +18,17 @@ func AnnotateVerdictQueue(report *reviewartifact.QueueReport) {
 	if report == nil {
 		return
 	}
+	applications := verdictApplicationsByArtifact(report.ReviewRoot)
 	for i := range report.Items {
 		item := &report.Items[i]
 		if item.Area != verdictReviewArea {
 			continue
 		}
-		annotateVerdictQueueItem(item)
+		annotateVerdictQueueItem(item, applications)
 	}
 }
 
-func annotateVerdictQueueItem(item *reviewartifact.QueueItem) {
+func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[string]verdictApplication) {
 	verdict, ok := verdictFromQueueItem(*item)
 	if !ok {
 		item.Status = "blocked"
@@ -39,6 +41,15 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem) {
 
 	item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, verdict.EvidenceRefs...))
 	item.Actions = nil
+
+	if app, ok := applicationForVerdictItem(*item, applications); ok && terminalPanelApplication(app.Application, verdict.Synthesis.Decision) {
+		item.Status = "applied"
+		item.Readiness = "no_action"
+		item.BlockedReason = ""
+		target := panelVerdictTarget(verdict.Target)
+		item.NextAction = fmt.Sprintf("panel verdict already applied by %s (target=%s decision=%s mapped=%s)", app.RunID, target, strings.TrimSpace(verdict.Synthesis.Decision), app.Application.MappedVerdict)
+		return
+	}
 
 	status := strings.TrimSpace(item.Status)
 	switch status {
@@ -75,6 +86,101 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem) {
 	default:
 		item.NextAction = fmt.Sprintf("owner review required for panel verdict (target=%s decision=%s failed_lenses=%d)", target, decision, failedLenses)
 	}
+}
+
+type verdictApplication struct {
+	RunID       string
+	Application Application
+}
+
+func verdictApplicationsByArtifact(reviewRoot string) map[string]verdictApplication {
+	out := map[string]verdictApplication{}
+	homePath := homeFromReviewRoot(reviewRoot)
+	if homePath == "" {
+		return out
+	}
+	runDir := filepath.Join(homePath, "panel-runs")
+	entries, err := os.ReadDir(runDir)
+	if os.IsNotExist(err) {
+		return out
+	}
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(runDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		run, err := Decode(data)
+		if err != nil {
+			continue
+		}
+		for _, finding := range run.Findings {
+			artifact := strings.TrimSpace(finding.VerdictArtifact)
+			if artifact == "" {
+				continue
+			}
+			app := verdictApplication{RunID: run.ID, Application: finding.Application}
+			for _, key := range verdictArtifactKeys(artifact) {
+				out[key] = app
+			}
+		}
+	}
+	return out
+}
+
+func homeFromReviewRoot(reviewRoot string) string {
+	clean := filepath.Clean(strings.TrimSpace(reviewRoot))
+	if clean == "." || filepath.Base(clean) != "reviews" {
+		return ""
+	}
+	return filepath.Dir(clean)
+}
+
+func applicationForVerdictItem(item reviewartifact.QueueItem, applications map[string]verdictApplication) (verdictApplication, bool) {
+	for _, key := range verdictArtifactKeys(item.JSONPath) {
+		if app, ok := applications[key]; ok {
+			return app, true
+		}
+	}
+	if item.ID != "" {
+		if app, ok := applications[item.ID]; ok {
+			return app, true
+		}
+	}
+	return verdictApplication{}, false
+}
+
+func verdictArtifactKeys(path string) []string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	clean := filepath.Clean(path)
+	base := filepath.Base(clean)
+	keys := []string{clean}
+	if base != "." && base != clean {
+		keys = append(keys, base)
+	}
+	if strings.HasSuffix(base, ".json") {
+		keys = append(keys, strings.TrimSuffix(base, ".json"))
+	}
+	return keys
+}
+
+func terminalPanelApplication(app Application, decision string) bool {
+	if !app.Applied {
+		return false
+	}
+	mapped := strings.TrimSpace(app.MappedVerdict)
+	if mapped == "" {
+		mapped = normalizePanelPosition(decision)
+	}
+	return mapped != "needs_human" && mapped != "needs_trial"
 }
 
 func verdictFromQueueItem(item reviewartifact.QueueItem) (verdictArtifactPayload, bool) {
