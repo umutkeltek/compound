@@ -1081,6 +1081,9 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 	if !contains(ec.ActiveMemory, capabilityRef) {
 		t.Fatalf("effective contract active_memory = %v, want task-relevant %s", ec.ActiveMemory, capabilityRef)
 	}
+	if rev := sourceRev(ec.SourceRevisions, memoryRelevanceSourceRef); rev == "" || rev == "unknown" {
+		t.Fatalf("effective contract memory source revision = %q, want ledger digest in %+v", rev, ec.SourceRevisions)
+	}
 }
 
 func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {

@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	defaultRepoKind = "product"
+	defaultRepoKind          = "product"
+	memoryRelevanceSourceRef = "memory://relevance-gated"
 	// repoMarker is the file a repo commits to self-declare its kind. Generic and
 	// leak-free: compound reads the marker, it does not heuristically sniff paths.
 	repoMarker = ".compound/repo.yaml"
@@ -86,7 +87,7 @@ func DefaultPolicy() OrientationPolicy {
 			{Class: "governance-workflow-contract", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://workflow-contract"},
 			{Class: "governance-sop-packets", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://sop-packets"},
 			{Class: "product-docs", SourceClass: "source", AmbientFor: []string{"product"}, Ref: "repo://docs"},
-			{Class: "memory-index", SourceClass: "generated", AmbientFor: all, Ref: "memory://relevance-gated"},
+			{Class: "memory-index", SourceClass: "generated", AmbientFor: all, Ref: memoryRelevanceSourceRef},
 		},
 		Memory: map[string]MemoryRule{
 			"control-plane": {Ambient: []string{"project-facts", "decisions", "system-state"}, ExplicitOnly: []string{"self-model"}, Forbidden: []string{"personal-corpus"}},
@@ -366,6 +367,13 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	}
 	for _, ref := range memoryRefs {
 		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
+	}
+	if len(memoryRefs) > 0 {
+		rev, err := memoryLedgerRevision(homePath)
+		if err != nil {
+			return ec, err
+		}
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: rev}})
 	}
 	return ec, nil
 }
@@ -675,6 +683,14 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
 	return out, nil
+}
+
+func memoryLedgerRevision(homePath string) (string, error) {
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return "", err
+	}
+	return store.LedgerDigest()
 }
 
 func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool) float64 {
