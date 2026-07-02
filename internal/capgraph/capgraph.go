@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -108,6 +109,15 @@ func (s *Store) Add(n Node) error {
 	}
 	if n.Weight == 0 {
 		n.Weight = 1.0
+	}
+	nodes, err := s.loadNodes()
+	if err != nil {
+		return err
+	}
+	for _, existing := range nodes {
+		if existing.ID == n.ID && reflect.DeepEqual(existing, n) {
+			return nil
+		}
 	}
 	return appendJSONL(s.nodesLog(), &n)
 }

@@ -80,6 +80,7 @@ func TestApplyCapabilityEvaluationsRecordsEvalEdgesForKnownNodesOnly(t *testing.
 	if hasEdge(edges, EdEvaluatedBy, "skill:not-installed-skill", "eval:unknown") {
 		t.Fatalf("unknown capability must not receive graph edge: %+v", edges)
 	}
+	nodeRows := readNonEmptyLines(t, filepath.Join(home, "registries", "capability-nodes.jsonl"))
 	replay, err := ApplyCapabilityEvaluations(home, set, t0)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +90,9 @@ func TestApplyCapabilityEvaluationsRecordsEvalEdgesForKnownNodesOnly(t *testing.
 	}
 	if got := len(readCapEdges(t, home)); got != len(edges) {
 		t.Fatalf("replay appended duplicate edges: before %d after %d", len(edges), got)
+	}
+	if got := len(readNonEmptyLines(t, filepath.Join(home, "registries", "capability-nodes.jsonl"))); got != len(nodeRows) {
+		t.Fatalf("replay appended duplicate nodes: before %d after %d", len(nodeRows), got)
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation import must not promote claims, stat err=%v", err)

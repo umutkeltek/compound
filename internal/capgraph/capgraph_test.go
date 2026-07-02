@@ -25,6 +25,49 @@ func newStore(t *testing.T) (string, *Store) {
 	return home, s
 }
 
+func TestAddNodeSkipsIdenticalReplayButKeepsUpdates(t *testing.T) {
+	home, s := newStore(t)
+	node := Node{ID: "eval:capability-evaluation-external-caveman", Kind: "eval", Name: "Capability evaluation: token-economy", Triggers: []string{"token", "economy"}, Weight: 0.25, EvidenceOnly: true}
+	if err := s.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(readNonEmptyLines(t, filepath.Join(home, "registries", "capability-nodes.jsonl"))); got != 1 {
+		t.Fatalf("identical replay appended duplicate node rows: got %d", got)
+	}
+	node.Triggers = append(node.Triggers, "compression")
+	if err := s.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(readNonEmptyLines(t, filepath.Join(home, "registries", "capability-nodes.jsonl"))); got != 2 {
+		t.Fatalf("node update should append exactly one new row, got %d", got)
+	}
+	nodes, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || !contains(nodes[0].Triggers, "compression") {
+		t.Fatalf("latest node update not loaded: %+v", nodes)
+	}
+}
+
+func readNonEmptyLines(t *testing.T, path string) []string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}}); err != nil {
