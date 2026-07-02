@@ -1010,6 +1010,41 @@ hooks:
 	if !strings.Contains(reason, "no installed PreToolUse write gate") {
 		t.Fatalf("effective contract excluded=%v, want missing write gate reason", ec.Excluded)
 	}
+	codexReadiness := findEnvelopeHookReadiness(ec.HookReadiness, "codex", "PreToolUse")
+	if codexReadiness == nil || codexReadiness.Status != "missing_gate" || !codexReadiness.AdapterRequired {
+		t.Fatalf("effective contract hook readiness = %+v, want codex missing_gate adapter-required", ec.HookReadiness)
+	}
+	if codexReadiness.AdapterCommand == "" {
+		t.Fatalf("effective contract hook readiness missing adapter command: %+v", codexReadiness)
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packReadiness := findEnvelopeHookReadiness(pack.HookReadiness, "codex", "PreToolUse")
+	if packReadiness == nil || packReadiness.Status != "missing_gate" || !packReadiness.AdapterRequired {
+		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
+	}
+	readOnly := in
+	readOnly.Task = "audit README headings"
+	readOnly.Mode = ""
+	readOnlyContract, err := CompileWithRuntime(readOnly, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readOnlyContract.HookReadiness) != 0 {
+		t.Fatalf("read-only contract should not carry write-gate readiness: %+v", readOnlyContract.HookReadiness)
+	}
+	hookAudit := in
+	hookAudit.Task = "audit current hook status"
+	hookAudit.Mode = ""
+	hookAuditContract, err := CompileWithRuntime(hookAudit, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findEnvelopeHookReadiness(hookAuditContract.HookReadiness, "codex", "PreToolUse") == nil {
+		t.Fatalf("hook audit contract should carry hook readiness: %+v", hookAuditContract.HookReadiness)
+	}
 }
 
 func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
@@ -1546,6 +1581,15 @@ func installedHookHasMatcher(manifest InstalledHooksManifest, harness, name, mat
 func findHookGateReadiness(readiness []HookGateReadiness, harness string) *HookGateReadiness {
 	for i := range readiness {
 		if readiness[i].Harness == harness {
+			return &readiness[i]
+		}
+	}
+	return nil
+}
+
+func findEnvelopeHookReadiness(readiness []envelope.HookReadiness, harness, hook string) *envelope.HookReadiness {
+	for i := range readiness {
+		if readiness[i].Harness == harness && readiness[i].Hook == hook {
 			return &readiness[i]
 		}
 	}

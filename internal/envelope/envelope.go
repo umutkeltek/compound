@@ -169,6 +169,17 @@ type MutationPolicy struct {
 	RequiresActionIntent      bool `json:"requires_action_intent"`
 	IrreversibleRequiresHuman bool `json:"irreversible_requires_human"`
 }
+type HookReadiness struct {
+	Harness         string `json:"harness"`
+	Hook            string `json:"hook"`
+	NativeBlock     bool   `json:"native_block"`
+	Installed       bool   `json:"installed"`
+	InstalledRef    string `json:"installed_ref,omitempty"`
+	Status          string `json:"status"`
+	AdapterRequired bool   `json:"adapter_required,omitempty"`
+	AdapterCommand  string `json:"adapter_command,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+}
 type SourceRev struct {
 	Source string `json:"source"`
 	Rev    string `json:"rev"`
@@ -179,6 +190,7 @@ type EffectiveContract struct {
 	TaskMode           string            `json:"task_mode,omitempty"`
 	ActiveInstructions []string          `json:"active_instructions"`
 	ActiveHooks        []string          `json:"active_hooks"`
+	HookReadiness      []HookReadiness   `json:"hook_readiness,omitempty"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
 	Excluded           []ExcludedRef     `json:"excluded"`
@@ -264,6 +276,7 @@ type ContextPack struct {
 	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
 	ActiveInstructions []string          `json:"active_instructions"`
 	ActiveHooks        []string          `json:"active_hooks"`
+	HookReadiness      []HookReadiness   `json:"hook_readiness,omitempty"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
 	SourceRevisions    []SourceRev       `json:"source_revisions,omitempty"`

@@ -25,7 +25,7 @@ therefore refer to the same governed target.
 `compound contract import-hooks --codex-hooks-json <hooks.json>` or `--hook-registration-ts <hook-registration.ts>`
 imports generated hook rosters into `COMPOUND_HOME/config/installed-hooks.yaml` as
 `compound://config/installed-hooks`; after handoff generated hook sources are evidence/rollback input, and
-`EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]` come from Compound. `compound contract
+`EffectiveContract.active_hooks[]` plus runtime `ContextPack.active_hooks[]` and task-conditioned `hook_readiness[]` come from Compound. `compound contract
 hooks-authority` reports `pre_tool_use_readiness[]`: native blocking, missing gate, or wrapper-required status
 plus the enforced adapter command for fail-open harnesses. Hook selection is
 task-conditioned where the imported roster provides event/matcher metadata: clearly read-only tasks exclude

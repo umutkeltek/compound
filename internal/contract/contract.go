@@ -22,6 +22,7 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
+	"compound/internal/harness"
 	"compound/internal/mem"
 	"compound/internal/projection"
 )
@@ -351,6 +352,11 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		return ec, err
 	}
 	ec.ActiveHooks = hooks
+	hookReadiness, err := hookReadinessForInput(homePath, in)
+	if err != nil {
+		return ec, err
+	}
+	ec.HookReadiness = hookReadiness
 	ec.Excluded = append(ec.Excluded, excludedHooks...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, hookRevs)
 	capabilityHits, surfacedTotal, err := surfaceCapabilityHits(homePath, in)
@@ -435,6 +441,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		return pack, err
 	}
 	pack.ActiveHooks = hooks
+	hookReadiness, err := hookReadinessForInput(homePath, in)
+	if err != nil {
+		return pack, err
+	}
+	pack.HookReadiness = hookReadiness
 	pack.Excluded = append(pack.Excluded, excludedHooks...)
 	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, hookRevs)
 	if len(hooks) > 0 {
@@ -1364,6 +1375,65 @@ func installedHooksSourceAuthorityID(path, revision, importedVia string) string 
 func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRev, error) {
 	active, _, revs, err := loadInstalledHooksForInput(homePath, Input{Harness: harness})
 	return active, revs, err
+}
+
+func hookReadinessForInput(homePath string, in Input) ([]envelope.HookReadiness, error) {
+	if !writeMutationTask(in) && !hookReadinessTask(in) {
+		return nil, nil
+	}
+	path := InstalledHooksPath(homePath)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		path = filepath.Join(homePath, "config", "installed-hooks.json")
+	}
+	manifest, err := loadInstalledHooksManifest(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	rows := InstalledHookGateReadiness(manifest, nativePreToolUseBlockMap(harness.DefaultRegistry()))
+	out := make([]envelope.HookReadiness, 0, len(rows))
+	requestedHarness := strings.TrimSpace(in.Harness)
+	for _, row := range rows {
+		if requestedHarness != "" && row.Harness != requestedHarness {
+			continue
+		}
+		out = append(out, envelope.HookReadiness{
+			Harness:         row.Harness,
+			Hook:            row.Hook,
+			NativeBlock:     row.NativeBlock,
+			Installed:       row.Installed,
+			InstalledRef:    row.InstalledRef,
+			Status:          row.Status,
+			AdapterRequired: row.AdapterRequired,
+			AdapterCommand:  row.AdapterCommand,
+			Reason:          row.Reason,
+		})
+	}
+	return out, nil
+}
+
+func hookReadinessTask(in Input) bool {
+	text := strings.ToLower(strings.Join([]string{in.Task, in.Mode}, " "))
+	for _, sig := range []string{"hook", "pretooluse", "pre-tool-use", "write gate", "write-gate", "placementguard"} {
+		if strings.Contains(text, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+func nativePreToolUseBlockMap(reg harness.Registry) map[string]bool {
+	out := map[string]bool{}
+	for name, h := range reg.Harnesses {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out[name] = h.Capabilities.PreToolUseBlock
+	}
+	return out
 }
 
 func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope.ExcludedRef, []envelope.SourceRev, error) {
