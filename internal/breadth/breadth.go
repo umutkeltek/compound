@@ -72,6 +72,9 @@ func (e *Engine) Query(text, gate string, allowlist []string, k int) []mem.Hit {
 	bm25 := e.bm25(text, allowedDocs)
 	reference := referenceContains(text, allowedDocs)
 	scores := reciprocalRankFusion([]rankedLane{{weight: 1, hits: bm25}})
+	// Reference hits are reserved before the final k cut so exact/substring
+	// coverage competes on order, not membership. Expansion/BM25 hits fill only
+	// the remaining slots.
 	out := make([]mem.Hit, 0, len(scores)+len(reference))
 	seen := make(map[string]bool, len(scores)+len(reference))
 	for _, h := range reference {
@@ -180,10 +183,9 @@ func referenceContains(text string, docs []doc) []mem.Hit {
 			hits = append(hits, mem.Hit{ClaimID: d.claim.ClaimID, Score: score})
 		}
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].Score == hits[j].Score {
-			return hits[i].ClaimID < hits[j].ClaimID
-		}
+	// Mirror mem.LexicalEngine/refMatch score-only ordering so engine-compare's
+	// top-k reference set is reserved when the reference set itself exceeds k.
+	sort.Slice(hits, func(i, j int) bool {
 		return hits[i].Score > hits[j].Score
 	})
 	return hits

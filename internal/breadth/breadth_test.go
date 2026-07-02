@@ -58,6 +58,40 @@ func TestReferenceCoverageSurvivesTightK(t *testing.T) {
 	}
 }
 
+func TestReferenceCoverageMirrorsReferenceTopKWhenReferenceSetExceedsK(t *testing.T) {
+	claims := []mem.Claim{
+		{ID: "z_first", Entity: "compound", Predicate: "topic", Object: "alpha"},
+		{ID: "a_second", Entity: "compound", Predicate: "topic", Object: "beta"},
+		{ID: "b_third", Entity: "compound", Predicate: "topic", Object: "gamma"},
+	}
+	allow := []string{"z_first", "a_second", "b_third"}
+	var reference mem.LexicalEngine
+	if err := reference.Index(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+	referenceHits, err := reference.Query("compound", mem.GateList, allow, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var eng Engine
+	eng.Index([]mem.ClaimText{
+		{ClaimID: claims[0].ID, Text: mem.ClaimIndexText(claims[0])},
+		{ClaimID: claims[1].ID, Text: mem.ClaimIndexText(claims[1])},
+		{ClaimID: claims[2].ID, Text: mem.ClaimIndexText(claims[2])},
+	}, 1)
+	got := eng.Query("compound", mem.GateList, allow, 2)
+	gotIDs := map[string]bool{}
+	for _, h := range got {
+		gotIDs[h.ClaimID] = true
+	}
+	for _, h := range referenceHits {
+		if !gotIDs[h.ClaimID] {
+			t.Fatalf("breadth result should cover reference top-k hit %s; reference=%+v got=%+v", h.ClaimID, referenceHits, got)
+		}
+	}
+}
+
 func TestBM25RanksSpecificTerms(t *testing.T) {
 	var eng Engine
 	eng.Index([]mem.ClaimText{
