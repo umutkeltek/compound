@@ -24,12 +24,18 @@ type VerdictHumanReviewReport struct {
 	TargetKind    string   `json:"target_kind"`
 	TargetRef     string   `json:"target_ref"`
 	Rationale     string   `json:"rationale"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty"`
 	NextAction    string   `json:"next_action"`
 	SourceRef     string   `json:"source_ref"`
 	SourceHash    string   `json:"source_hash"`
 	EvidenceRefs  []string `json:"evidence_refs"`
 	Boundaries    []string `json:"boundaries"`
 	ReviewPath    string   `json:"review_path,omitempty"`
+}
+
+type VerdictHumanReviewInput struct {
+	Rationale  string
+	ReviewedBy string
 }
 
 func LoadVerdictArtifact(path string) (verdictArtifactPayload, error) {
@@ -50,13 +56,17 @@ func LoadVerdictArtifact(path string) (verdictArtifactPayload, error) {
 	return verdict, nil
 }
 
-func RecordVerdictHumanReview(homePath, sourcePath, rationale string, now time.Time) (VerdictHumanReviewReport, error) {
+func RecordVerdictHumanReview(homePath, sourcePath string, input VerdictHumanReviewInput, now time.Time) (VerdictHumanReviewReport, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return VerdictHumanReviewReport{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	rationale = strings.TrimSpace(rationale)
+	rationale := strings.TrimSpace(input.Rationale)
 	if rationale == "" {
 		return VerdictHumanReviewReport{}, fmt.Errorf("rationale required")
+	}
+	reviewedBy := strings.TrimSpace(input.ReviewedBy)
+	if reviewedBy == "" {
+		return VerdictHumanReviewReport{}, fmt.Errorf("reviewed_by required")
 	}
 	if now.IsZero() {
 		now = time.Now()
@@ -89,6 +99,7 @@ func RecordVerdictHumanReview(homePath, sourcePath, rationale string, now time.T
 		TargetKind:    strings.TrimSpace(verdict.Target.Kind),
 		TargetRef:     strings.TrimSpace(verdict.Target.Ref),
 		Rationale:     rationale,
+		ReviewedBy:    reviewedBy,
 		NextAction:    "owner reviewed panel request; keep target parked until human evidence/action exists",
 		SourceRef:     "file:" + sourcePath,
 		SourceHash:    sourceHash,

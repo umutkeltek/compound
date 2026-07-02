@@ -150,7 +150,7 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		cmdPanel([]string{"verdict-record", "--review", paths.PlanPath, "--rationale", "owner reviewed panel request; keep target parked until human evidence exists", "--json"})
+		cmdPanel([]string{"verdict-record", "--review", paths.PlanPath, "--rationale", "owner reviewed panel request; keep target parked until human evidence exists", "--reviewed-by", "codex", "--json"})
 	})
 	var record panel.VerdictHumanReviewReport
 	if err := json.Unmarshal([]byte(out), &record); err != nil {
@@ -158,6 +158,9 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	}
 	if record.Status != "recorded" || record.Decision != "needs_human" || record.ReviewPath == "" {
 		t.Fatalf("record = %+v, want recorded needs_human", record)
+	}
+	if record.ReviewedBy != "codex" {
+		t.Fatalf("reviewed_by = %q, want codex", record.ReviewedBy)
 	}
 
 	queueOut := captureStdout(t, func() {
