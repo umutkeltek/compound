@@ -3,8 +3,11 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/capgraph"
 )
 
 func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
@@ -146,6 +149,50 @@ func TestDispatchClaimClaimsSelectedReadyWork(t *testing.T) {
 	}
 	if _, err := os.Stat(s.envPath(result.PolicyDecisionID)); err != nil {
 		t.Fatalf("claim policy envelope missing: %v", err)
+	}
+}
+
+func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T) {
+	s := newStore(t)
+	graph, err := capgraph.Open(s.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{ID: "skill:web-design-guidelines", Kind: "skill", Name: "web-design-guidelines", Triggers: []string{"frontend", "ui", "web"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{ID: "skill:golang-testing", Kind: "skill", Name: "golang-testing", Triggers: []string{"go", "testing"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "frontend ui page has visual screenshot proof",
+		DesiredOutcome:   "build web ui",
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.DispatchClaim(fixedNow, DispatchPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ContextPackID == "" || len(result.CapabilitiesOffered) == 0 {
+		t.Fatalf("dispatch claim missing context/capability offers: %+v", result)
+	}
+	if !strings.Contains(result.WorkerPromptMD, "LOAD THESE SKILLS") {
+		t.Fatalf("worker prompt missing skill block:\n%s", result.WorkerPromptMD)
+	}
+	if !strings.Contains(result.WorkerPromptMD, "capability://skill:web-design-guidelines") {
+		t.Fatalf("worker prompt missing web skill:\n%s", result.WorkerPromptMD)
+	}
+	if strings.Contains(result.WorkerPromptMD, "capability://skill:golang-testing") {
+		t.Fatalf("worker prompt should not surface unrelated Go skill:\n%s", result.WorkerPromptMD)
+	}
+	claimed, err := s.Get(result.ClaimedWorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.IDs.ContextPackID != result.ContextPackID {
+		t.Fatalf("claimed context pack = %q, want %q", claimed.IDs.ContextPackID, result.ContextPackID)
 	}
 }
 

@@ -75,24 +75,35 @@ type DispatchPlanItem struct {
 	ClosePlanReady   bool                  `json:"close_plan_ready,omitempty"`
 }
 
+type DispatchCapabilityOffer struct {
+	Ref   string  `json:"ref"`
+	Kind  string  `json:"kind"`
+	Name  string  `json:"name"`
+	Score float64 `json:"score"`
+	Why   string  `json:"why"`
+}
+
 type DispatchClaimResult struct {
-	SchemaVersion    string            `json:"schema_version"`
-	ID               string            `json:"id"`
-	GeneratedAt      string            `json:"generated_at"`
-	Status           string            `json:"status"`
-	Actor            string            `json:"actor"`
-	ResultPath       string            `json:"result_path,omitempty"`
-	DispatchPlanID   string            `json:"dispatch_plan_id"`
-	DispatchPlanPath string            `json:"dispatch_plan_path,omitempty"`
-	Selected         *DispatchPlanItem `json:"selected,omitempty"`
-	ClaimedWorkID    string            `json:"claimed_work_id,omitempty"`
-	ClaimedState     string            `json:"claimed_state,omitempty"`
-	ClaimedBy        string            `json:"claimed_by,omitempty"`
-	ActionIntentID   string            `json:"action_intent_id,omitempty"`
-	PolicyDecisionID string            `json:"policy_decision_id,omitempty"`
-	NoAction         string            `json:"no_action,omitempty"`
-	Warnings         []string          `json:"warnings,omitempty"`
-	Plan             DispatchPlan      `json:"dispatch_plan"`
+	SchemaVersion       string                    `json:"schema_version"`
+	ID                  string                    `json:"id"`
+	GeneratedAt         string                    `json:"generated_at"`
+	Status              string                    `json:"status"`
+	Actor               string                    `json:"actor"`
+	ResultPath          string                    `json:"result_path,omitempty"`
+	DispatchPlanID      string                    `json:"dispatch_plan_id"`
+	DispatchPlanPath    string                    `json:"dispatch_plan_path,omitempty"`
+	Selected            *DispatchPlanItem         `json:"selected,omitempty"`
+	ClaimedWorkID       string                    `json:"claimed_work_id,omitempty"`
+	ClaimedState        string                    `json:"claimed_state,omitempty"`
+	ClaimedBy           string                    `json:"claimed_by,omitempty"`
+	ActionIntentID      string                    `json:"action_intent_id,omitempty"`
+	PolicyDecisionID    string                    `json:"policy_decision_id,omitempty"`
+	ContextPackID       string                    `json:"context_pack_id,omitempty"`
+	CapabilitiesOffered []DispatchCapabilityOffer `json:"capabilities_offered,omitempty"`
+	WorkerPromptMD      string                    `json:"worker_prompt_md,omitempty"`
+	NoAction            string                    `json:"no_action,omitempty"`
+	Warnings            []string                  `json:"warnings,omitempty"`
+	Plan                DispatchPlan              `json:"dispatch_plan"`
 }
 
 type DispatchAdvanceResult struct {
@@ -200,28 +211,31 @@ type DispatchStepOptions struct {
 }
 
 type DispatchStepResult struct {
-	SchemaVersion   string                 `json:"schema_version"`
-	ID              string                 `json:"id"`
-	GeneratedAt     string                 `json:"generated_at"`
-	Status          string                 `json:"status"`
-	Actor           string                 `json:"actor"`
-	Action          string                 `json:"action"`
-	WorkID          string                 `json:"work_id,omitempty"`
-	ResultPath      string                 `json:"result_path,omitempty"`
-	Source          *DispatchPlanSource    `json:"source,omitempty"`
-	Counts          WorkbenchCounts        `json:"counts"`
-	PostCounts      *WorkbenchCounts       `json:"post_counts,omitempty"`
-	DispatchClose   *DispatchCloseResult   `json:"dispatch_close,omitempty"`
-	DispatchAdvance *DispatchAdvanceResult `json:"dispatch_advance,omitempty"`
-	DispatchClaim   *DispatchClaimResult   `json:"dispatch_claim,omitempty"`
-	NextAction      string                 `json:"next_action,omitempty"`
-	CanContinue     bool                   `json:"can_continue"`
-	ContinueCommand []string               `json:"continue_command,omitempty"`
-	WaitReason      string                 `json:"wait_reason,omitempty"`
-	BlockedOn       []string               `json:"blocked_on,omitempty"`
-	NoAction        string                 `json:"no_action,omitempty"`
-	Warnings        []string               `json:"warnings,omitempty"`
-	Integrity       []string               `json:"integrity,omitempty"`
+	SchemaVersion       string                    `json:"schema_version"`
+	ID                  string                    `json:"id"`
+	GeneratedAt         string                    `json:"generated_at"`
+	Status              string                    `json:"status"`
+	Actor               string                    `json:"actor"`
+	Action              string                    `json:"action"`
+	WorkID              string                    `json:"work_id,omitempty"`
+	ResultPath          string                    `json:"result_path,omitempty"`
+	Source              *DispatchPlanSource       `json:"source,omitempty"`
+	Counts              WorkbenchCounts           `json:"counts"`
+	PostCounts          *WorkbenchCounts          `json:"post_counts,omitempty"`
+	DispatchClose       *DispatchCloseResult      `json:"dispatch_close,omitempty"`
+	DispatchAdvance     *DispatchAdvanceResult    `json:"dispatch_advance,omitempty"`
+	DispatchClaim       *DispatchClaimResult      `json:"dispatch_claim,omitempty"`
+	ContextPackID       string                    `json:"context_pack_id,omitempty"`
+	CapabilitiesOffered []DispatchCapabilityOffer `json:"capabilities_offered,omitempty"`
+	WorkerPromptMD      string                    `json:"worker_prompt_md,omitempty"`
+	NextAction          string                    `json:"next_action,omitempty"`
+	CanContinue         bool                      `json:"can_continue"`
+	ContinueCommand     []string                  `json:"continue_command,omitempty"`
+	WaitReason          string                    `json:"wait_reason,omitempty"`
+	BlockedOn           []string                  `json:"blocked_on,omitempty"`
+	NoAction            string                    `json:"no_action,omitempty"`
+	Warnings            []string                  `json:"warnings,omitempty"`
+	Integrity           []string                  `json:"integrity,omitempty"`
 }
 
 type DispatchStepRunOptions struct {
@@ -433,6 +447,13 @@ func (s *Store) DispatchClaim(now time.Time, opts DispatchPlanOptions) (Dispatch
 	if len(claimed.RunIDs) > 0 {
 		result.ActionIntentID = claimed.RunIDs[len(claimed.RunIDs)-1]
 	}
+	prompt, err := s.attachDispatchPrompt(claimed.ID, plan.Actor, now)
+	if err != nil {
+		return DispatchClaimResult{}, err
+	}
+	result.ContextPackID = prompt.ContextPackID
+	result.CapabilitiesOffered = prompt.CapabilitiesOffered
+	result.WorkerPromptMD = prompt.Markdown
 	path, err := s.RecordDispatchClaim(result)
 	if err != nil {
 		return DispatchClaimResult{}, err
@@ -926,6 +947,9 @@ func (s *Store) DispatchStep(now time.Time, opts DispatchStepOptions) (DispatchS
 		result.Integrity = append([]string{}, claimed.Plan.Integrity...)
 		result.Source = claimed.Plan.Source
 		result.WorkID = claimed.ClaimedWorkID
+		result.ContextPackID = claimed.ContextPackID
+		result.CapabilitiesOffered = claimed.CapabilitiesOffered
+		result.WorkerPromptMD = claimed.WorkerPromptMD
 		if result.WorkID == "" && claimed.Selected != nil {
 			result.WorkID = claimed.Selected.WorkID
 		}

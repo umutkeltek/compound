@@ -462,6 +462,9 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	}
 	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs, in.MissedCapabilities, in.FalseTriggeredCapabilities)
 	proofRefs := mergeUnique(in.ProofRefs, w.ArtifactIDs, w.VerificationIDs)
+	if err := validateProofMedium(w.ProofMedium, in.Outcome, proofRefs); err != nil {
+		return res, err
+	}
 	memoryCandidates := mergeUnique(w.MemoryCandidateIDs, in.MemoryCandidates)
 
 	// Receipt — how the run is learned from.
@@ -479,10 +482,11 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		},
 		Cost: envelope.ReceiptCost{ModelCalls: []string{}},
 		Skills: envelope.ReceiptSkills{
-			Used:           usedCapabilities,
-			Missed:         orEmpty(in.MissedCapabilities),
-			FalseTriggered: orEmpty(in.FalseTriggeredCapabilities),
-			Candidate:      capabilityRefs,
+			Used:                usedCapabilities,
+			Missed:              orEmpty(in.MissedCapabilities),
+			FalseTriggered:      orEmpty(in.FalseTriggeredCapabilities),
+			Candidate:           capabilityRefs,
+			CapabilitiesOffered: capabilityRefs,
 		},
 		Memory: envelope.ReceiptMemory{
 			Candidates: memoryCandidates,
@@ -613,6 +617,46 @@ func internalLifecycleCapability(capability string) bool {
 	default:
 		return false
 	}
+}
+
+func validateProofMedium(medium, outcome string, proofRefs []string) error {
+	medium = strings.TrimSpace(strings.ToLower(medium))
+	if medium == "" || medium == "none" || outcome != "completed" {
+		return nil
+	}
+	switch medium {
+	case "web-ui":
+		if !containsProofText(proofRefs, "screenshot") || !containsAnyProofText(proofRefs, []string{"design-review", "design_review"}) {
+			return fmt.Errorf("proof_medium web-ui requires screenshot artifact and design-review verdict proof refs")
+		}
+	case "ios":
+		if !containsProofText(proofRefs, "screenshot") {
+			return fmt.Errorf("proof_medium ios requires screenshot proof ref")
+		}
+	case "cli", "api":
+		if !containsAnyProofText(proofRefs, []string{"command-output", "command_output", "test", "tests"}) {
+			return fmt.Errorf("proof_medium %s requires command-output or test proof ref", medium)
+		}
+	default:
+		return fmt.Errorf("proof_medium %q is not supported", medium)
+	}
+	return nil
+}
+
+func containsProofText(values []string, needle string) bool {
+	return containsAnyProofText(values, []string{needle})
+}
+
+func containsAnyProofText(values []string, needles []string) bool {
+	for _, value := range values {
+		lower := strings.ToLower(value)
+		for _, needle := range needles {
+			if strings.Contains(lower, strings.ToLower(needle)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func mergeUnique(groups ...[]string) []string {

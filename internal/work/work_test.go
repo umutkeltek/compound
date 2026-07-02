@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -287,6 +288,9 @@ func TestContextPackOffersAreTypedAsOfferedNotUsed(t *testing.T) {
 	if !contains(closed.Receipt.Skills.Candidate, "capability://skill:pricing") {
 		t.Fatalf("receipt candidate/offers = %v", closed.Receipt.Skills.Candidate)
 	}
+	if !contains(closed.Receipt.Skills.CapabilitiesOffered, "capability://skill:pricing") {
+		t.Fatalf("receipt capabilities_offered = %v", closed.Receipt.Skills.CapabilitiesOffered)
+	}
 	if contains(closed.Receipt.Skills.Used, "capability://skill:pricing") {
 		t.Fatalf("offered capability must not count as used: %v", closed.Receipt.Skills.Used)
 	}
@@ -432,6 +436,63 @@ func TestCloseMoveTypeProofValidation(t *testing.T) {
 				t.Fatalf("audit_only transition claimed future behavior changed")
 			}
 		})
+	}
+}
+
+func TestCloseEnforcesPacketProofMedium(t *testing.T) {
+	store := newStore(t)
+	packetPath := filepath.Join(t.TempDir(), "visual.md")
+	if err := os.WriteFile(packetPath, []byte(`# Visual packet
+Date: 2026-07-02
+Status: ready
+Owner: codex
+Proof-medium: web-ui
+Success: close requires visual proof.
+
+## Objective
+
+Build a web UI.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.ImportPacket(packetPath, PacketImportOptions{State: "ready", Actor: "codex"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workID := report.Work.ID
+	if report.Work.ProofMedium != "web-ui" {
+		t.Fatalf("proof medium = %q", report.Work.ProofMedium)
+	}
+	if _, err := store.Claim(workID, "codex", fixedNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: "running"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(workID, AdvanceInput{To: "verifying"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Close(workID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "visual work",
+		Changed:   true,
+		ProofRefs: []string{"test:unit"},
+	}, fixedNow.Add(4*time.Second)); err == nil || !strings.Contains(err.Error(), "proof_medium web-ui") {
+		t.Fatalf("close err = %v, want proof_medium web-ui gate", err)
+	}
+	closed, err := store.Close(workID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "visual work",
+		Changed:   true,
+		ProofRefs: []string{"artifact:screenshot-home", "design-review:passed"},
+	}, fixedNow.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("close with visual proof: %v", err)
+	}
+	if closed.Work.State != "completed" {
+		t.Fatalf("state = %q", closed.Work.State)
 	}
 }
 

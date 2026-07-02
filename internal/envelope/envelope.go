@@ -40,6 +40,7 @@ var (
 	Reversibilities   = []string{"none", "easy", "manual", "hard", "irreversible"}
 	PolicyOutcomes    = []string{"allow", "allow_with_obligations", "hold", "deny"}
 	MoveTypes         = []string{"outward_delta", "memory_delta", "rule_delta", "control_plane_repair", "audit_only"}
+	ProofMedia        = []string{"web-ui", "ios", "cli", "api", "none"}
 	ProjectionKinds   = []string{"memory", "skill", "product", "cost", "risk", "taste", "routing", "human_attention", "rule", "control_plane"}
 	ProjectionRoles   = []string{"offered", "used", "missed", "false_triggered", "validated", "candidate", "promoted", "parked", "rejected", "proof"}
 	HookNames         = []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd", "Stop"}
@@ -346,6 +347,7 @@ type WorkEnvelope struct {
 	DesiredOutcome     string   `json:"desired_outcome,omitempty"`
 	SuccessPredicate   string   `json:"success_predicate"`
 	NonGoals           []string `json:"non_goals"`
+	ProofMedium        string   `json:"proof_medium,omitempty"`
 	RouteDecisionID    string   `json:"route_decision_id,omitempty"`
 	PolicyDecisionID   string   `json:"policy_decision_id,omitempty"`
 	RunIDs             []string `json:"run_ids"`
@@ -359,6 +361,7 @@ func (e *WorkEnvelope) Validate() error {
 	v := &verr{}
 	e.Header.validate(v, SVWork, "work_")
 	v.enum("state", e.State, WorkStates, true)
+	v.enum("proof_medium", e.ProofMedium, ProofMedia, false)
 	v.req("owner", e.Owner)
 	v.req("success_predicate", e.SuccessPredicate)
 	return v.result(e.Kind())
@@ -495,10 +498,11 @@ type ReceiptCost struct {
 	HumanMinutes *int     `json:"human_minutes"`
 }
 type ReceiptSkills struct {
-	Used           []string `json:"used"`
-	Missed         []string `json:"missed"`
-	FalseTriggered []string `json:"false_triggered,omitempty"`
-	Candidate      []string `json:"candidate"`
+	Used                []string `json:"used"`
+	Missed              []string `json:"missed"`
+	FalseTriggered      []string `json:"false_triggered,omitempty"`
+	Candidate           []string `json:"candidate"`
+	CapabilitiesOffered []string `json:"capabilities_offered,omitempty"`
 }
 type ReceiptMemory struct {
 	Candidates []string `json:"candidates"`

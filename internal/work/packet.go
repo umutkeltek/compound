@@ -39,6 +39,7 @@ type packetSource struct {
 	Date             string
 	Status           string
 	Owner            string
+	ProofMedium      string
 	Objective        string
 	SuccessPredicate string
 	NonGoals         []string
@@ -87,6 +88,7 @@ func (s *Store) ImportPacket(path string, opts PacketImportOptions, now time.Tim
 	}, now)
 	w.ID = workID
 	w.CanonicalSurface = "packet:" + slug(src.Title)
+	w.ProofMedium = src.ProofMedium
 	w.Authority.SourceClass = "source"
 	w.Authority.SourceRevision = "sha256:" + src.Digest
 	w.Authority.Status = "current"
@@ -146,6 +148,7 @@ func ParsePacketMarkdown(data []byte, sourceRef string) (packetSource, error) {
 	src.Date = meta["date"]
 	src.Status = meta["status"]
 	src.Owner = stripInlineCode(meta["owner"])
+	src.ProofMedium = strings.ToLower(stripInlineCode(meta["proof-medium"]))
 	src.Objective = firstNonEmpty(sectionText(lines, "objective"), src.Title)
 	src.SuccessPredicate = firstNonEmpty(meta["success"], meta["success predicate"], findSuccessLine(lines))
 	if src.SuccessPredicate == "" && src.Title != "" {

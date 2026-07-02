@@ -37,6 +37,26 @@ func TestParsePacketMarkdownExtractsWorkFields(t *testing.T) {
 	}
 }
 
+func TestParsePacketMarkdownExtractsProofMedium(t *testing.T) {
+	packet, err := ParsePacketMarkdown([]byte(`# Visual packet
+Date: 2026-07-02
+Status: ready
+Owner: codex
+Proof-medium: web-ui
+Success: close requires screenshot and design review proof.
+
+## Objective
+
+Build a visual surface.
+`), "visual.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if packet.ProofMedium != "web-ui" {
+		t.Fatalf("proof medium = %q, want web-ui", packet.ProofMedium)
+	}
+}
+
 func TestImportPacketCreatesIdempotentProposedWork(t *testing.T) {
 	home := t.TempDir()
 	store, err := Open(home)
