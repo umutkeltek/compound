@@ -5237,15 +5237,21 @@ func TestCapabilityImportSkillsRecordsSourceAuthority(t *testing.T) {
 	}
 	authorityJSON := captureStdout(t, func() { cmdCapability([]string{"authority", "--json"}) })
 	var authorityReport struct {
-		SchemaVersion string                           `json:"schema_version"`
-		AuthorityRef  string                           `json:"authority_ref"`
-		Records       []capgraph.SourceAuthorityRecord `json:"records"`
+		SchemaVersion               string                           `json:"schema_version"`
+		AuthorityRef                string                           `json:"authority_ref"`
+		SourceRoleCounts            map[string]int                   `json:"source_role_counts"`
+		RetiredSourceAuthorityCount int                              `json:"retired_source_authority_count"`
+		RetiredSourceAuthorityRefs  []string                         `json:"retired_source_authority_refs"`
+		Records                     []capgraph.SourceAuthorityRecord `json:"records"`
 	}
 	if err := json.Unmarshal([]byte(authorityJSON), &authorityReport); err != nil {
 		t.Fatalf("parse authority json: %v\n%s", err, authorityJSON)
 	}
 	if authorityReport.SchemaVersion != capgraph.SourceAuthoritySchemaVersion ||
 		authorityReport.AuthorityRef != "compound://registries/capability-graph" ||
+		authorityReport.SourceRoleCounts["evidence_only_input"] != 1 ||
+		authorityReport.RetiredSourceAuthorityCount != 1 ||
+		!stringSliceContains(authorityReport.RetiredSourceAuthorityRefs, "source_view_authority:fixtures/skills/skill-manifest.yaml") ||
 		len(authorityReport.Records) != 1 ||
 		authorityReport.Records[0].ID != rec.ID ||
 		authorityReport.Records[0].SourceRole != "evidence_only_input" {

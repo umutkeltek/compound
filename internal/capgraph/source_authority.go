@@ -56,6 +56,31 @@ type SourceAuthorityInput struct {
 	EvidenceRefs        []string
 }
 
+type SourceAuthoritySummary struct {
+	SourceRoleCounts            map[string]int `json:"source_role_counts"`
+	RetiredSourceAuthorityCount int            `json:"retired_source_authority_count"`
+	RetiredSourceAuthorityRefs  []string       `json:"retired_source_authority_refs,omitempty"`
+}
+
+func SummarizeSourceAuthority(records []SourceAuthorityRecord) SourceAuthoritySummary {
+	out := SourceAuthoritySummary{SourceRoleCounts: map[string]int{}}
+	retired := map[string]bool{}
+	for _, rec := range records {
+		role := strings.TrimSpace(rec.SourceRole)
+		if role == "" {
+			role = "unknown"
+		}
+		out.SourceRoleCounts[role]++
+		if ref := strings.TrimSpace(rec.Retires); ref != "" && !retired[ref] {
+			retired[ref] = true
+			out.RetiredSourceAuthorityRefs = append(out.RetiredSourceAuthorityRefs, ref)
+		}
+	}
+	sort.Strings(out.RetiredSourceAuthorityRefs)
+	out.RetiredSourceAuthorityCount = len(out.RetiredSourceAuthorityRefs)
+	return out
+}
+
 func RecordSourceAuthority(homePath string, in SourceAuthorityInput, now time.Time) (SourceAuthorityRecord, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return SourceAuthorityRecord{}, fmt.Errorf("COMPOUND_HOME required")

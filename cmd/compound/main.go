@@ -553,27 +553,34 @@ func cmdCapability(args []string) {
 			sourceNodeCount += len(rec.NodeIDs)
 			sourceEdgeCount += len(rec.EdgeIDs)
 		}
+		sourceSummary := capgraph.SummarizeSourceAuthority(records)
 		if hasFlag(rest, "--json") {
 			out := struct {
-				SchemaVersion     string                           `json:"schema_version"`
-				AuthorityRef      string                           `json:"authority_ref"`
-				NodeCount         int                              `json:"node_count"`
-				EdgeCount         int                              `json:"edge_count"`
-				EdgeKindCounts    map[string]int                   `json:"edge_kind_counts,omitempty"`
-				SourceRecordCount int                              `json:"source_record_count"`
-				SourceNodeCount   int                              `json:"source_node_count"`
-				SourceEdgeCount   int                              `json:"source_edge_count"`
-				Records           []capgraph.SourceAuthorityRecord `json:"records"`
+				SchemaVersion               string                           `json:"schema_version"`
+				AuthorityRef                string                           `json:"authority_ref"`
+				NodeCount                   int                              `json:"node_count"`
+				EdgeCount                   int                              `json:"edge_count"`
+				EdgeKindCounts              map[string]int                   `json:"edge_kind_counts,omitempty"`
+				SourceRecordCount           int                              `json:"source_record_count"`
+				SourceNodeCount             int                              `json:"source_node_count"`
+				SourceEdgeCount             int                              `json:"source_edge_count"`
+				SourceRoleCounts            map[string]int                   `json:"source_role_counts,omitempty"`
+				RetiredSourceAuthorityCount int                              `json:"retired_source_authority_count"`
+				RetiredSourceAuthorityRefs  []string                         `json:"retired_source_authority_refs,omitempty"`
+				Records                     []capgraph.SourceAuthorityRecord `json:"records"`
 			}{
-				SchemaVersion:     capgraph.SourceAuthoritySchemaVersion,
-				AuthorityRef:      "compound://registries/capability-graph",
-				NodeCount:         stats.NodeCount,
-				EdgeCount:         stats.EdgeCount,
-				EdgeKindCounts:    stats.EdgeKindCounts,
-				SourceRecordCount: len(records),
-				SourceNodeCount:   sourceNodeCount,
-				SourceEdgeCount:   sourceEdgeCount,
-				Records:           records,
+				SchemaVersion:               capgraph.SourceAuthoritySchemaVersion,
+				AuthorityRef:                "compound://registries/capability-graph",
+				NodeCount:                   stats.NodeCount,
+				EdgeCount:                   stats.EdgeCount,
+				EdgeKindCounts:              stats.EdgeKindCounts,
+				SourceRecordCount:           len(records),
+				SourceNodeCount:             sourceNodeCount,
+				SourceEdgeCount:             sourceEdgeCount,
+				SourceRoleCounts:            sourceSummary.SourceRoleCounts,
+				RetiredSourceAuthorityCount: sourceSummary.RetiredSourceAuthorityCount,
+				RetiredSourceAuthorityRefs:  sourceSummary.RetiredSourceAuthorityRefs,
+				Records:                     records,
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
@@ -584,9 +591,12 @@ func cmdCapability(args []string) {
 			fmt.Println("(no capability source authority records)")
 			return
 		}
-		fmt.Printf("compound://registries/capability-graph nodes=%d edges=%d source_records=%d source_nodes=%d source_edges=%d\n", stats.NodeCount, stats.EdgeCount, len(records), sourceNodeCount, sourceEdgeCount)
+		fmt.Printf("compound://registries/capability-graph nodes=%d edges=%d source_records=%d source_nodes=%d source_edges=%d retired_source_authority=%d\n", stats.NodeCount, stats.EdgeCount, len(records), sourceNodeCount, sourceEdgeCount, sourceSummary.RetiredSourceAuthorityCount)
 		if len(stats.EdgeKindCounts) > 0 {
 			fmt.Printf("edge_kinds=%s\n", formatEdgeKindCounts(stats.EdgeKindCounts))
+		}
+		if len(sourceSummary.SourceRoleCounts) > 0 {
+			fmt.Printf("source_roles=%s\n", formatEdgeKindCounts(sourceSummary.SourceRoleCounts))
 		}
 		for _, rec := range records {
 			fmt.Printf("%s %s source=%s authority=%s nodes=%d edges=%d retires=%s\n",
