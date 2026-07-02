@@ -203,7 +203,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
-  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] read-only open work / receipt / transition board; no dispatch
+  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] read-only open work / receipt / transition board; optional capability offers; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
@@ -256,6 +256,35 @@ retired Gen-1 tombstones:
   compound distill|scope|promote|build|reconcile|timeline|recall|pack|ledger
   These exit 2 and point to canonical compound memory/distiller surfaces.
 `)
+}
+
+// buildCapabilitySurfaceReport adapts CapabilityGraph offers into the stable
+// machine surface consumed by CLI/read-model callers. It only reads graph state.
+func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness string) (capgraph.SurfaceReport, error) {
+	task = strings.TrimSpace(task)
+	if task == "" {
+		return capgraph.SurfaceReport{}, fmt.Errorf("capability task must be non-empty")
+	}
+	harness = strings.TrimSpace(harness)
+	var offers []capgraph.Surfaced
+	var err error
+	if harness != "" {
+		offers, err = store.SurfaceForHarness(task, harness)
+	} else {
+		offers, err = store.Surface(task)
+	}
+	if err != nil {
+		return capgraph.SurfaceReport{}, err
+	}
+	stats, err := store.Stats()
+	if err != nil {
+		return capgraph.SurfaceReport{}, err
+	}
+	records, err := capgraph.LoadSourceAuthority(homePath)
+	if err != nil {
+		return capgraph.SurfaceReport{}, err
+	}
+	return capgraph.NewSurfaceReport(task, harness, offers, stats, len(records)), nil
 }
 
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
@@ -985,25 +1014,14 @@ func cmdCapability(args []string) {
 			fmt.Fprintln(os.Stderr, `usage: compound capability surface [--harness codex|claude_code] [--json] "<task>"`)
 			os.Exit(2)
 		}
-		var hits []capgraph.Surfaced
-		var err error
-		if harness != "" {
-			hits, err = store.SurfaceForHarness(p[0], harness)
-		} else {
-			hits, err = store.Surface(p[0])
-		}
+		report, err := buildCapabilitySurfaceReport(store, homePath, p[0], harness)
 		die(err)
 		if jsonOut {
-			stats, err := store.Stats()
-			die(err)
-			records, err := capgraph.LoadSourceAuthority(homePath)
-			die(err)
-			out := capgraph.NewSurfaceReport(p[0], harness, hits, stats, len(records))
-			die(json.NewEncoder(os.Stdout).Encode(out))
+			die(json.NewEncoder(os.Stdout).Encode(report))
 			return
 		}
-		fmt.Printf("# %d capabilit(ies) surfaced for %q (offered, NOT executed)\n", len(hits), p[0])
-		for _, h := range hits {
+		fmt.Printf("# %d capabilit(ies) surfaced for %q (offered, NOT executed)\n", report.OfferCount, report.Task)
+		for _, h := range report.Offers {
 			fmt.Printf("  %-28s %-12s score %.1f  [%s]\n", h.Node.ID, h.Node.Kind, h.Score, h.Why)
 			printCapabilityConstraints(h.Constraints)
 		}
@@ -3713,6 +3731,13 @@ func flagCSVValues(args []string, names ...string) []string {
 	return out
 }
 
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H]"
+
+type workbenchCLIOutput struct {
+	work.WorkbenchReport
+	CapabilitySurface *capgraph.SurfaceReport `json:"capability_surface,omitempty"`
+}
+
 func cmdWorkbench(args []string) {
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -3728,13 +3753,15 @@ func cmdWorkbench(args []string) {
 	recent := 5
 	actor := "codex"
 	activePacketSurface := ""
+	capabilityTask := ""
+	capabilityHarness := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
 		case "--active-packet-surface":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
+				fmt.Fprintln(os.Stderr, workbenchUsage)
 				os.Exit(2)
 			}
 			i++
@@ -3743,9 +3770,31 @@ func cmdWorkbench(args []string) {
 				fmt.Fprintln(os.Stderr, "error: --active-packet-surface must be non-empty")
 				os.Exit(2)
 			}
+		case "--capability-task":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			capabilityTask = strings.TrimSpace(args[i])
+			if capabilityTask == "" {
+				fmt.Fprintln(os.Stderr, "error: --capability-task must be non-empty")
+				os.Exit(2)
+			}
+		case "--capability-harness":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			capabilityHarness = strings.TrimSpace(args[i])
+			if capabilityHarness == "" {
+				fmt.Fprintln(os.Stderr, "error: --capability-harness must be non-empty")
+				os.Exit(2)
+			}
 		case "--actor":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
+				fmt.Fprintln(os.Stderr, workbenchUsage)
 				os.Exit(2)
 			}
 			i++
@@ -3756,7 +3805,7 @@ func cmdWorkbench(args []string) {
 			}
 		case "--recent":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
+				fmt.Fprintln(os.Stderr, workbenchUsage)
 				os.Exit(2)
 			}
 			i++
@@ -3767,7 +3816,7 @@ func cmdWorkbench(args []string) {
 			}
 			recent = n
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]")
+			fmt.Fprintln(os.Stderr, workbenchUsage)
 			os.Exit(2)
 		}
 	}
@@ -3780,8 +3829,26 @@ func cmdWorkbench(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	var capabilitySurface *capgraph.SurfaceReport
+	if capabilityTask != "" {
+		if capabilityHarness == "" {
+			capabilityHarness = actor
+		}
+		capStore, err := capgraph.Open(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		surface, err := buildCapabilitySurfaceReport(capStore, homePath, capabilityTask, capabilityHarness)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		capabilitySurface = &surface
+	}
+	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface}
 	if jsonOut {
-		printJSON(report)
+		printJSON(output)
 		return
 	}
 	fmt.Printf("workbench open=%d needs_claim=%d needs_review=%d in_progress=%d terminal=%d\n",
@@ -3791,6 +3858,21 @@ func cmdWorkbench(args []string) {
 	}
 	if report.Counts.DispatchStepRuns > 0 {
 		fmt.Printf("dispatch_step_runs=%d\n", report.Counts.DispatchStepRuns)
+	}
+	if capabilitySurface != nil {
+		fmt.Printf("capability_surface status=%s offers=%d task=%q harness=%q authority=%s\n",
+			capabilitySurface.Status,
+			capabilitySurface.OfferCount,
+			capabilitySurface.Task,
+			capabilitySurface.Harness,
+			capabilitySurface.AuthorityRef,
+		)
+		for i, offer := range capabilitySurface.OfferSummaries {
+			if i >= 3 {
+				break
+			}
+			fmt.Printf("capability_offer: %s %-28s score %.1f [%s]\n", offer.Kind, offer.ID, offer.Score, offer.Why)
+		}
 	}
 	if report.ActivePacketProof != nil {
 		fmt.Printf("active_packet_proof status=%s work=%s context=%s receipt=%s transition=%s\n",

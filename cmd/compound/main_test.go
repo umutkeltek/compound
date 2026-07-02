@@ -603,6 +603,68 @@ func TestWorkbenchCommandShowsOpenAndTerminalProof(t *testing.T) {
 	}
 }
 
+func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdCapability([]string{"import-skills", filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml")})
+	})
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--capability-task", "pricing"})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("workbench JSON did not parse: %v\n%s", err, out)
+	}
+	if report.CapabilitySurface == nil {
+		t.Fatalf("capability surface missing: %+v", report)
+	}
+	if report.Counts.Total != 0 || report.DispatchNext.WaitReason != "no_open_work" {
+		t.Fatalf("workbench state changed unexpectedly: counts=%+v dispatch=%+v", report.Counts, report.DispatchNext)
+	}
+	surface := report.CapabilitySurface
+	if surface.SchemaVersion != capgraph.SurfaceSchemaVersion ||
+		surface.AuthorityRef != capgraph.CapabilityGraphAuthorityRef ||
+		surface.Status != "ok" ||
+		surface.Task != "pricing" ||
+		surface.Harness != "codex" ||
+		surface.OfferCount != len(surface.Offers) ||
+		len(surface.OfferSummaries) != len(surface.Offers) {
+		t.Fatalf("unexpected capability surface: %+v", surface)
+	}
+	var ids []string
+	for _, offer := range surface.OfferSummaries {
+		ids = append(ids, offer.ID)
+	}
+	if !stringSliceContains(ids, "skill:codex-pricing") || !stringSliceContains(ids, "skill:generic-pricing") {
+		t.Fatalf("codex/generic offers missing: %+v", ids)
+	}
+	if stringSliceContains(ids, "skill:claude-pricing") {
+		t.Fatalf("claude-only offer leaked into codex workbench surface: %+v", ids)
+	}
+
+	human := captureStdout(t, func() {
+		cmdWorkbench([]string{"--capability-task", "pricing"})
+	})
+	for _, want := range []string{
+		`capability_surface status=ok offers=2 task="pricing" harness="codex" authority=compound://registries/capability-graph`,
+		"capability_offer: skill skill:codex-pricing",
+		"capability_offer: skill skill:generic-pricing",
+		"open: none",
+	} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human workbench output missing %q:\n%s", want, human)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("workbench capability surface must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

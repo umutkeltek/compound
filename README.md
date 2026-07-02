@@ -101,7 +101,8 @@ Execution and policy:
 
 - `compound work ...` creates, claims, advances, closes, and imports work.
 - `compound workbench` is a read-only board over open WorkEnvelopes,
-  terminal receipts, and transitions; it does not dispatch or mutate work.
+  terminal receipts, transitions, and optional CapabilityGraph offers; it does
+  not dispatch, execute offers, or mutate work.
 - `compound policy evaluate` turns ActionIntent into an enforceable
   PolicyDecision.
 - `compound policy import-placement-rules <placement-rules.json>` installs owner
