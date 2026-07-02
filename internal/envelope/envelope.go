@@ -180,6 +180,7 @@ type EffectiveContract struct {
 	ActiveInstructions []string         `json:"active_instructions"`
 	ActiveHooks        []string         `json:"active_hooks"`
 	ActiveDecisions    []string         `json:"active_decisions"`
+	Excluded           []ExcludedRef    `json:"excluded"`
 	MemoryPolicy       MemoryPolicy     `json:"memory_policy"`
 	CapabilityPolicy   CapabilityPolicy `json:"capability_policy"`
 	MutationPolicy     MutationPolicy   `json:"mutation_policy"`

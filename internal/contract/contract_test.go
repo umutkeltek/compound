@@ -861,6 +861,53 @@ hooks:
 	}
 }
 
+func TestCompileWithRuntimeRecordsExcludedContextAndHookGaps(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schema_version: compound.installed_hooks.v0.1
+hooks:
+  - harness: codex
+    name: SessionStart
+    event: SessionStart
+    ref: /tmp/codex-session-start.hook.ts
+    status: current
+  - harness: codex
+    name: UserPromptSubmit
+    event: UserPromptSubmit
+    ref: /tmp/codex-user-prompt-submit.hook.ts
+    status: current
+`
+	if err := os.WriteFile(filepath.Join(home, "config", "installed-hooks.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{
+		Harness:     "codex",
+		Cwd:         t.TempDir(),
+		Task:        "edit source file",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+		if !contains(ec.ActiveHooks, want) {
+			t.Fatalf("effective contract active hooks = %v, want %s", ec.ActiveHooks, want)
+		}
+	}
+	if reason := excludedRefReason(ec.Excluded, "repo://docs"); reason == "" {
+		t.Fatalf("effective contract should record out-of-scope repo docs exclusion: %+v", ec.Excluded)
+	}
+	reason := excludedRefReason(ec.Excluded, "hook://codex/PreToolUse")
+	if !strings.Contains(reason, "no installed PreToolUse write gate") {
+		t.Fatalf("effective contract excluded=%v, want missing write gate reason", ec.Excluded)
+	}
+}
+
 func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -1149,7 +1196,11 @@ func hasExcluded(pack envelope.ContextPack, ref string) bool {
 }
 
 func excludedReason(pack envelope.ContextPack, ref string) string {
-	for _, exc := range pack.Excluded {
+	return excludedRefReason(pack.Excluded, ref)
+}
+
+func excludedRefReason(excluded []envelope.ExcludedRef, ref string) string {
+	for _, exc := range excluded {
 		if exc.Ref == ref {
 			return exc.Reason
 		}

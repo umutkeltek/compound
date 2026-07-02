@@ -284,7 +284,7 @@ type InstalledHooksSourceAuthority struct {
 // Compile produces the EffectiveContract: the instructions, hooks, memory/capability/
 // mutation policy, and unknowns in force for this harness+repo+task.
 func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveContract {
-	incl, _ := partition(pol, in.RepoKind)
+	incl, excl := partition(pol, in.RepoKind)
 	var active []string
 	var revs []envelope.SourceRev
 	for _, r := range incl {
@@ -305,6 +305,7 @@ func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveC
 		ActiveInstructions: orEmpty(active),
 		ActiveHooks:        []string{},
 		ActiveDecisions:    []string{},
+		Excluded:           excl,
 		MemoryPolicy: envelope.MemoryPolicy{
 			Ambient:      orEmpty(mem.Ambient),
 			ExplicitOnly: orEmpty(mem.ExplicitOnly),
@@ -332,11 +333,12 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		return ec, nil
 	}
 	ec.SourceRevisions = resolveSourceRevisions(ec.SourceRevisions, in.Cwd)
-	hooks, _, hookRevs, err := loadInstalledHooksForInput(homePath, in)
+	hooks, excludedHooks, hookRevs, err := loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return ec, err
 	}
 	ec.ActiveHooks = hooks
+	ec.Excluded = append(ec.Excluded, excludedHooks...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, hookRevs)
 	decisions, decisionRevs, err := loadDecisionRefs(homePath)
 	if err != nil {
