@@ -196,6 +196,9 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 	if got := report.SourceListItems[0]; got.Status != "known" || got.Normalized != "example/known" || got.MatchCount != 1 {
 		t.Fatalf("known item = %+v", got)
 	}
+	if report.SourceListByDecision["merge_existing"] != 1 || report.SourceListByLane["external_skill_candidate"] != 1 || report.SourceListByOwner["procedure:skill-ops"] != 1 {
+		t.Fatalf("source-list aggregate counts missing: decision=%+v lane=%+v owner=%+v", report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner)
+	}
 	if report.SourceListItems[0].Matches[0].Owner != "procedure:skill-ops" {
 		t.Fatalf("known item metadata missing: %+v", report.SourceListItems[0].Matches[0])
 	}

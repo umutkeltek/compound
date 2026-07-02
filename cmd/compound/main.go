@@ -595,6 +595,15 @@ func cmdCapability(args []string) {
 		}
 		if report.SourceListPath != "" {
 			fmt.Printf("- source_list: %s total=%d known=%d unknown=%d\n", report.SourceListPath, report.SourceListTotal, report.SourceListKnown, report.SourceListUnknown)
+			for _, decision := range sortedMapKeys(report.SourceListByDecision) {
+				fmt.Printf("- source_list_decision.%s: %d\n", decision, report.SourceListByDecision[decision])
+			}
+			for _, lane := range sortedMapKeys(report.SourceListByLane) {
+				fmt.Printf("- source_list_lane.%s: %d\n", lane, report.SourceListByLane[lane])
+			}
+			for _, owner := range sortedMapKeys(report.SourceListByOwner) {
+				fmt.Printf("- source_list_owner.%s: %d\n", owner, report.SourceListByOwner[owner])
+			}
 			for _, item := range report.SourceListItems {
 				if item.Status == "unknown" {
 					fmt.Printf("- source_list_unknown: %s normalized=%s\n", item.Query, item.Normalized)

@@ -41,6 +41,9 @@ type ExternalRepoIntakeReport struct {
 	SourceListTotal       int                          `json:"source_list_total,omitempty"`
 	SourceListKnown       int                          `json:"source_list_known,omitempty"`
 	SourceListUnknown     int                          `json:"source_list_unknown,omitempty"`
+	SourceListByDecision  map[string]int               `json:"source_list_counts_by_decision,omitempty"`
+	SourceListByLane      map[string]int               `json:"source_list_counts_by_lane,omitempty"`
+	SourceListByOwner     map[string]int               `json:"source_list_counts_by_owner,omitempty"`
 	SourceListItems       []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
 	HighValue             []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
 	Recent                []ExternalRepoIntakeDecision `json:"recent,omitempty"`
@@ -204,9 +207,13 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 		report.SourceListPath = sourceListPath
 		report.SourceListItems = items
 		report.SourceListTotal = len(items)
+		report.SourceListByDecision = map[string]int{}
+		report.SourceListByLane = map[string]int{}
+		report.SourceListByOwner = map[string]int{}
 		for _, item := range items {
 			if item.Status == "known" {
 				report.SourceListKnown++
+				countSourceListMatches(item, report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner)
 			} else {
 				report.SourceListUnknown++
 			}
@@ -218,6 +225,24 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 		report.Boundaries = metadata.Boundaries
 	}
 	return report, nil
+}
+
+func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane, byOwner map[string]int) {
+	if len(item.Matches) == 0 {
+		return
+	}
+	decision := item.Matches[0]
+	incrementNonEmpty(byDecision, decision.Decision)
+	incrementNonEmpty(byLane, decision.Lane)
+	incrementNonEmpty(byOwner, decision.Owner)
+}
+
+func incrementNonEmpty(counts map[string]int, key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	counts[key]++
 }
 
 func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {
