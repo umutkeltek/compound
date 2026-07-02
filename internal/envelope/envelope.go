@@ -180,6 +180,17 @@ type HookReadiness struct {
 	AdapterCommand  string `json:"adapter_command,omitempty"`
 	Reason          string `json:"reason,omitempty"`
 }
+
+type HookRosterEntry struct {
+	Ref     string `json:"ref"`
+	Harness string `json:"harness"`
+	Hook    string `json:"hook"`
+	Event   string `json:"event"`
+	Matcher string `json:"matcher,omitempty"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+}
+
 type SourceRev struct {
 	Source string `json:"source"`
 	Rev    string `json:"rev"`
@@ -190,6 +201,7 @@ type EffectiveContract struct {
 	TaskMode           string            `json:"task_mode,omitempty"`
 	ActiveInstructions []string          `json:"active_instructions"`
 	ActiveHooks        []string          `json:"active_hooks"`
+	HookRoster         []HookRosterEntry `json:"hook_roster,omitempty"`
 	HookReadiness      []HookReadiness   `json:"hook_readiness,omitempty"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
@@ -276,6 +288,7 @@ type ContextPack struct {
 	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
 	ActiveInstructions []string          `json:"active_instructions"`
 	ActiveHooks        []string          `json:"active_hooks"`
+	HookRoster         []HookRosterEntry `json:"hook_roster,omitempty"`
 	HookReadiness      []HookReadiness   `json:"hook_readiness,omitempty"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`

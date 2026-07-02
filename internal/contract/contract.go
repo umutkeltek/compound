@@ -347,11 +347,12 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		return ec, nil
 	}
 	ec.SourceRevisions = resolveSourceRevisions(ec.SourceRevisions, in.Cwd)
-	hooks, excludedHooks, hookRevs, err := loadInstalledHooksForInput(homePath, in)
+	hooks, excludedHooks, hookRoster, hookRevs, err := loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return ec, err
 	}
 	ec.ActiveHooks = hooks
+	ec.HookRoster = hookRoster
 	hookReadiness, err := hookReadinessForInput(homePath, in)
 	if err != nil {
 		return ec, err
@@ -436,11 +437,12 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
 	}
-	hooks, excludedHooks, hookRevs, err := loadInstalledHooksForInput(homePath, in)
+	hooks, excludedHooks, hookRoster, hookRevs, err := loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return pack, err
 	}
 	pack.ActiveHooks = hooks
+	pack.HookRoster = hookRoster
 	hookReadiness, err := hookReadinessForInput(homePath, in)
 	if err != nil {
 		return pack, err
@@ -1373,7 +1375,7 @@ func installedHooksSourceAuthorityID(path, revision, importedVia string) string 
 }
 
 func loadInstalledHooks(homePath, harness string) ([]string, []envelope.SourceRev, error) {
-	active, _, revs, err := loadInstalledHooksForInput(homePath, Input{Harness: harness})
+	active, _, _, revs, err := loadInstalledHooksForInput(homePath, Input{Harness: harness})
 	return active, revs, err
 }
 
@@ -1436,24 +1438,25 @@ func nativePreToolUseBlockMap(reg harness.Registry) map[string]bool {
 	return out
 }
 
-func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope.ExcludedRef, []envelope.SourceRev, error) {
+func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope.ExcludedRef, []envelope.HookRosterEntry, []envelope.SourceRev, error) {
 	path := InstalledHooksPath(homePath)
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = filepath.Join(homePath, "config", "installed-hooks.json")
 	}
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return []string{}, []envelope.ExcludedRef{}, []envelope.SourceRev{}, nil
+		return []string{}, []envelope.ExcludedRef{}, []envelope.HookRosterEntry{}, []envelope.SourceRev{}, nil
 	}
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	manifest, err := loadInstalledHooksManifest(path)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	active := []string{}
 	excluded := []envelope.ExcludedRef{}
+	roster := []envelope.HookRosterEntry{}
 	writeScopedHarnesses := writeScopedHookHarnesses(manifest)
 	hasWriteScopedHook := false
 	revs := []envelope.SourceRev{{Source: InstalledHooksAuthorityRef, Rev: hashBytes(data)}}
@@ -1473,13 +1476,16 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 		h := firstNonEmpty(hook.Harness, in.Harness, "unknown")
 		ref := "hook://" + h + "/" + hook.Name
 		if installedHookExcludedForTask(hook, in) {
+			reason := "write-scoped hook excluded from read-only task context; installed hook remains Compound authority/fallback"
 			excluded = append(excluded, envelope.ExcludedRef{
 				Ref:    ref,
-				Reason: "write-scoped hook excluded from read-only task context; installed hook remains Compound authority/fallback",
+				Reason: reason,
 			})
+			roster = append(roster, hookRosterEntry(hook, h, ref, "excluded_read_only", reason))
 			continue
 		}
 		active = append(active, ref)
+		roster = append(roster, hookRosterEntry(hook, h, ref, "active", installedHookActiveReason(hook, in)))
 		rev := strings.TrimSpace(hook.Revision)
 		if rev == "" && strings.TrimSpace(hook.Ref) != "" {
 			rev = revisionForPath(hook.Ref)
@@ -1497,8 +1503,33 @@ func loadInstalledHooksForInput(homePath string, in Input) ([]string, []envelope
 	}
 	sort.Strings(active)
 	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Ref < excluded[j].Ref })
+	sort.Slice(roster, func(i, j int) bool {
+		if roster[i].Ref == roster[j].Ref {
+			return roster[i].Status < roster[j].Status
+		}
+		return roster[i].Ref < roster[j].Ref
+	})
 	sort.Slice(revs, func(i, j int) bool { return revs[i].Source < revs[j].Source })
-	return active, excluded, revs, nil
+	return active, excluded, roster, revs, nil
+}
+
+func hookRosterEntry(hook InstalledHook, harness, ref, status, reason string) envelope.HookRosterEntry {
+	return envelope.HookRosterEntry{
+		Ref:     ref,
+		Harness: harness,
+		Hook:    strings.TrimSpace(hook.Name),
+		Event:   firstNonEmpty(strings.TrimSpace(hook.Event), strings.TrimSpace(hook.Name)),
+		Matcher: strings.TrimSpace(hook.Matcher),
+		Status:  status,
+		Reason:  reason,
+	}
+}
+
+func installedHookActiveReason(hook InstalledHook, in Input) string {
+	if writeScopedHook(hook) && writeMutationTask(in) {
+		return "write-scoped hook selected for mutation task"
+	}
+	return "installed hook selected for harness and task"
 }
 
 func writeScopedHookHarnesses(manifest InstalledHooksManifest) []string {

@@ -1047,6 +1047,80 @@ hooks:
 	}
 }
 
+func TestCompileWithRuntimeRecordsTaskConditionedHookRoster(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `schema_version: compound.installed_hooks.v0.1
+hooks:
+  - harness: claude_code
+    name: SessionStart
+    event: SessionStart
+    ref: /tmp/claude-session-start.hook.ts
+    status: current
+  - harness: claude_code
+    name: UserPromptSubmit
+    event: UserPromptSubmit
+    ref: /tmp/claude-user-prompt-submit.hook.ts
+    status: current
+  - harness: claude_code
+    name: PreToolUse
+    event: PreToolUse
+    matcher: Write|Edit|MultiEdit
+    ref: /tmp/claude-placement-guard.hook.ts
+    status: current
+`
+	if err := os.WriteFile(filepath.Join(home, "config", "installed-hooks.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{
+		Harness:     "claude_code",
+		Cwd:         t.TempDir(),
+		Task:        "edit source file",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preToolUse := findEnvelopeHookRoster(ec.HookRoster, "hook://claude_code/PreToolUse")
+	if preToolUse == nil || preToolUse.Status != "active" || preToolUse.Matcher != "Write|Edit|MultiEdit" {
+		t.Fatalf("effective contract hook roster = %+v, want active scoped PreToolUse row", ec.HookRoster)
+	}
+	if !strings.Contains(preToolUse.Reason, "mutation task") {
+		t.Fatalf("effective contract PreToolUse reason = %q, want mutation-task reason", preToolUse.Reason)
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packPreToolUse := findEnvelopeHookRoster(pack.HookRoster, "hook://claude_code/PreToolUse")
+	if packPreToolUse == nil || packPreToolUse.Status != "active" || packPreToolUse.Event != "PreToolUse" {
+		t.Fatalf("context pack hook roster = %+v, want active PreToolUse row", pack.HookRoster)
+	}
+
+	readOnly := in
+	readOnly.Task = "audit README headings"
+	readOnly.Mode = ""
+	readOnlyContract, err := CompileWithRuntime(readOnly, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(readOnlyContract.ActiveHooks, "hook://claude_code/PreToolUse") {
+		t.Fatalf("read-only contract active hooks should exclude write scoped hook: %+v", readOnlyContract.ActiveHooks)
+	}
+	excludedPreToolUse := findEnvelopeHookRoster(readOnlyContract.HookRoster, "hook://claude_code/PreToolUse")
+	if excludedPreToolUse == nil || excludedPreToolUse.Status != "excluded_read_only" {
+		t.Fatalf("read-only contract hook roster = %+v, want excluded PreToolUse row", readOnlyContract.HookRoster)
+	}
+	if !strings.Contains(excludedPreToolUse.Reason, "read-only task") {
+		t.Fatalf("read-only PreToolUse reason = %q, want read-only exclusion reason", excludedPreToolUse.Reason)
+	}
+}
+
 func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -1591,6 +1665,15 @@ func findEnvelopeHookReadiness(readiness []envelope.HookReadiness, harness, hook
 	for i := range readiness {
 		if readiness[i].Harness == harness && readiness[i].Hook == hook {
 			return &readiness[i]
+		}
+	}
+	return nil
+}
+
+func findEnvelopeHookRoster(roster []envelope.HookRosterEntry, ref string) *envelope.HookRosterEntry {
+	for i := range roster {
+		if roster[i].Ref == ref {
+			return &roster[i]
 		}
 	}
 	return nil
