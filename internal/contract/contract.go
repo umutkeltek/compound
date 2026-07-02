@@ -988,7 +988,8 @@ func LoadInstalledHooksSourceAuthority(homePath string) ([]InstalledHooksSourceA
 		}
 		return nil, err
 	}
-	var records []InstalledHooksSourceAuthority
+	byID := map[string]InstalledHooksSourceAuthority{}
+	var order []string
 	for i, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -998,9 +999,44 @@ func LoadInstalledHooksSourceAuthority(homePath string) ([]InstalledHooksSourceA
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			return nil, fmt.Errorf("parse installed hooks source authority line %d: %w", i+1, err)
 		}
-		records = append(records, rec)
+		if strings.TrimSpace(rec.ID) == "" {
+			return nil, fmt.Errorf("installed hooks source authority line %d missing id", i+1)
+		}
+		if _, seen := byID[rec.ID]; !seen {
+			order = append(order, rec.ID)
+		}
+		byID[rec.ID] = rec
+	}
+	records := make([]InstalledHooksSourceAuthority, 0, len(order))
+	for _, id := range order {
+		records = append(records, byID[id])
 	}
 	return records, nil
+}
+
+type InstalledHooksSourceAuthoritySummary struct {
+	SourceRoleCounts            map[string]int `json:"source_role_counts,omitempty"`
+	RetiredSourceAuthorityCount int            `json:"retired_source_authority_count"`
+	RetiredSourceAuthorityRefs  []string       `json:"retired_source_authority_refs,omitempty"`
+}
+
+func SummarizeInstalledHooksSourceAuthority(records []InstalledHooksSourceAuthority) InstalledHooksSourceAuthoritySummary {
+	out := InstalledHooksSourceAuthoritySummary{SourceRoleCounts: map[string]int{}}
+	retired := map[string]bool{}
+	for _, rec := range records {
+		role := strings.TrimSpace(rec.SourceRole)
+		if role == "" {
+			role = "unknown"
+		}
+		out.SourceRoleCounts[role]++
+		if ref := strings.TrimSpace(rec.Retires); ref != "" && !retired[ref] {
+			retired[ref] = true
+			out.RetiredSourceAuthorityRefs = append(out.RetiredSourceAuthorityRefs, ref)
+		}
+	}
+	sort.Strings(out.RetiredSourceAuthorityRefs)
+	out.RetiredSourceAuthorityCount = len(out.RetiredSourceAuthorityRefs)
+	return out
 }
 
 func ImportCodexHooksJSON(homePath, sourcePath string, now time.Time) (InstalledHooksImportReport, error) {
@@ -1358,6 +1394,15 @@ func loadInstalledHooksManifest(path string) (InstalledHooksManifest, error) {
 }
 
 func appendInstalledHooksSourceAuthority(homePath string, rec InstalledHooksSourceAuthority) error {
+	records, err := LoadInstalledHooksSourceAuthority(homePath)
+	if err != nil {
+		return err
+	}
+	for _, existing := range records {
+		if existing.ID == rec.ID {
+			return nil
+		}
+	}
 	path := InstalledHooksSourceAuthorityPath(homePath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

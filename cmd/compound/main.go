@@ -5602,14 +5602,17 @@ func cmdContract(args []string) {
 		homePath, err := home.Resolve("")
 		die(err)
 		type hooksAuthorityReport struct {
-			AuthorityRef        string                                   `json:"authority_ref"`
-			AuthorityPath       string                                   `json:"authority_path"`
-			Installed           bool                                     `json:"installed"`
-			HookCount           int                                      `json:"hook_count,omitempty"`
-			Harnesses           []string                                 `json:"harnesses,omitempty"`
-			PreToolUseReadiness []contract.HookGateReadiness             `json:"pre_tool_use_readiness,omitempty"`
-			SourceAuthority     []contract.InstalledHooksSourceAuthority `json:"source_authority,omitempty"`
-			SourceRecordPath    string                                   `json:"source_record_path"`
+			AuthorityRef                string                                   `json:"authority_ref"`
+			AuthorityPath               string                                   `json:"authority_path"`
+			Installed                   bool                                     `json:"installed"`
+			HookCount                   int                                      `json:"hook_count,omitempty"`
+			Harnesses                   []string                                 `json:"harnesses,omitempty"`
+			PreToolUseReadiness         []contract.HookGateReadiness             `json:"pre_tool_use_readiness,omitempty"`
+			SourceRoleCounts            map[string]int                           `json:"source_role_counts,omitempty"`
+			RetiredSourceAuthorityCount int                                      `json:"retired_source_authority_count"`
+			RetiredSourceAuthorityRefs  []string                                 `json:"retired_source_authority_refs,omitempty"`
+			SourceAuthority             []contract.InstalledHooksSourceAuthority `json:"source_authority,omitempty"`
+			SourceRecordPath            string                                   `json:"source_record_path"`
 		}
 		report := hooksAuthorityReport{
 			AuthorityRef:     contract.InstalledHooksAuthorityRef,
@@ -5629,6 +5632,10 @@ func cmdContract(args []string) {
 		}
 		records, err := contract.LoadInstalledHooksSourceAuthority(homePath)
 		die(err)
+		sourceSummary := contract.SummarizeInstalledHooksSourceAuthority(records)
+		report.SourceRoleCounts = sourceSummary.SourceRoleCounts
+		report.RetiredSourceAuthorityCount = sourceSummary.RetiredSourceAuthorityCount
+		report.RetiredSourceAuthorityRefs = sourceSummary.RetiredSourceAuthorityRefs
 		report.SourceAuthority = records
 		printJSON(report)
 	default:

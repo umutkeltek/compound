@@ -15,6 +15,7 @@ import (
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/contract"
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
@@ -530,6 +531,9 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 	importOut := captureStdout(t, func() {
 		cmdContract([]string{"import-hooks", "--hook-registration-ts", source})
 	})
+	captureStdout(t, func() {
+		cmdContract([]string{"import-hooks", "--hook-registration-ts", source})
+	})
 	for _, want := range []string{
 		`"authority_ref": "compound://config/installed-hooks"`,
 		`"hook_count": 5`,
@@ -551,6 +555,21 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		if !strings.Contains(authorityOut, want) {
 			t.Fatalf("hooks-authority output missing %q:\n%s", want, authorityOut)
 		}
+	}
+	var authorityReport struct {
+		SourceRoleCounts            map[string]int                           `json:"source_role_counts"`
+		RetiredSourceAuthorityCount int                                      `json:"retired_source_authority_count"`
+		RetiredSourceAuthorityRefs  []string                                 `json:"retired_source_authority_refs"`
+		SourceAuthority             []contract.InstalledHooksSourceAuthority `json:"source_authority"`
+	}
+	if err := json.Unmarshal([]byte(authorityOut), &authorityReport); err != nil {
+		t.Fatalf("parse hooks-authority: %v\n%s", err, authorityOut)
+	}
+	if len(authorityReport.SourceAuthority) != 1 ||
+		authorityReport.SourceRoleCounts["evidence_only_input_after_import"] != 1 ||
+		authorityReport.RetiredSourceAuthorityCount != 1 ||
+		!stringSliceContains(authorityReport.RetiredSourceAuthorityRefs, "source_view_authority:"+source) {
+		t.Fatalf("unexpected hooks authority source summary: %+v", authorityReport)
 	}
 	out := captureStdout(t, func() {
 		cmdContract([]string{"compile", "--harness", "claude_code", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
