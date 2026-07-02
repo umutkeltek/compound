@@ -243,7 +243,7 @@ usage:
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
-compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] RuntimeBinding health/live probes + gated writeback/review artifacts
+compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
@@ -3963,6 +3963,7 @@ func cmdReviews(args []string) {
 	decisions.AnnotateLifecycleRepairQueue(&report)
 	product.AnnotateReviewQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
+	runtimebinding.AnnotateRepairQueue(&report)
 	capgraph.AnnotateCapabilityEvaluationQueue(&report)
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
@@ -7306,6 +7307,8 @@ func cmdRuntime(args []string) {
 		cmdRuntimeDoctor(args[1:])
 	case "repair-plan":
 		cmdRuntimeRepairPlan(args[1:])
+	case "repair-review":
+		cmdRuntimeRepairReview(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, runtimeUsage())
 		os.Exit(2)
@@ -7313,7 +7316,7 @@ func cmdRuntime(args []string) {
 }
 
 func runtimeUsage() string {
-	return "usage: compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live]"
+	return "usage: compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml>"
 }
 
 func cmdRuntimeDoctor(args []string) {
@@ -7390,6 +7393,41 @@ func cmdRuntimeRepairPlan(args []string) {
 	fmt.Printf("- transition: %s\n", plan.TransitionID)
 	fmt.Printf("- plan: %s\n", paths.PlanPath)
 	fmt.Printf("- review: %s\n", paths.ReviewPath)
+	fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+}
+
+func cmdRuntimeRepairReview(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound runtime repair-review <review.yaml>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-review:", err)
+		os.Exit(1)
+	}
+	review, err := runtimebinding.LoadRepairReview(args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-review:", err)
+		os.Exit(1)
+	}
+	report, err := runtimebinding.RecordRepairReview(homePath, review, args[0], time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "runtime repair-review:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# runtime repair-review %s\n\n", report.ID)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- plan: %s\n", report.PlanID)
+	fmt.Printf("- service: %s\n", report.ServiceID)
+	if report.Owner != "" {
+		fmt.Printf("- owner: %s\n", report.Owner)
+	}
+	fmt.Printf("- decision: %s\n", report.Decision)
+	if report.NextAction != "" {
+		fmt.Printf("- next_action: %s\n", report.NextAction)
+	}
+	fmt.Printf("- reviewed: %s\n", report.ReviewPath)
 }
 
 func loadRuntimeReportOrExit(args []string, label string, live bool) runtimebinding.DoctorReport {

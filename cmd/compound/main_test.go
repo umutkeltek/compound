@@ -6574,6 +6574,7 @@ func TestRuntimeRepairPlanCreatesGateAndReview(t *testing.T) {
 		"- transition: tr_",
 		"- plan:",
 		"- review:",
+		"- review_yaml:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("runtime repair-plan output missing %q:\n%s", want, out)
@@ -6623,6 +6624,60 @@ func TestRuntimeRepairPlanCreatesGateAndReview(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("runtime repair-plan should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
+func TestRuntimeRepairReviewCLIRecordsReviewedSidecar(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	planOut := captureStdout(t, func() {
+		cmdRuntime([]string{"repair-plan", filepath.Join("..", "..", "fixtures", "runtime", "broken-service.yaml")})
+	})
+	reviewYAML := outputValue(planOut, "- review_yaml:")
+	if reviewYAML == "" {
+		t.Fatalf("runtime repair-plan did not print review_yaml:\n%s", planOut)
+	}
+	body, err := os.ReadFile(reviewYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewedYAML := strings.ReplaceAll(string(body), "TODO_decision_owner_action_required_owner_action_done_defer_no_action", "owner_action_required")
+	reviewedYAML = strings.ReplaceAll(reviewedYAML, "rationale: \"\"", "rationale: \"owner reviewed runtime repair path\"")
+	reviewedYAML = strings.ReplaceAll(reviewedYAML, "confidence: -1", "confidence: 0.91")
+	reviewedYAML = strings.ReplaceAll(reviewedYAML, "TODO: reviewed runtime repair next action", "rerun runtime doctor after owner contract edit")
+	if err := os.WriteFile(reviewYAML, []byte(reviewedYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdRuntime([]string{"repair-review", reviewYAML})
+	})
+	if !strings.Contains(reviewOut, "# runtime repair-review") ||
+		!strings.Contains(reviewOut, "- status: recorded") ||
+		!strings.Contains(reviewOut, "- decision: owner_action_required") ||
+		!strings.Contains(reviewOut, "- reviewed:") {
+		t.Fatalf("runtime repair-review output missing proof:\n%s", reviewOut)
+	}
+	queueOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", runtimebinding.RuntimeRepairReviewArea, "--json"})
+	})
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(queueOut), &report); err != nil {
+		t.Fatalf("parse review queue: %v\n%s", err, queueOut)
+	}
+	if report.Counts.Total != 1 || report.Counts.OK != 1 || report.Counts.ReviewRequired != 0 {
+		t.Fatalf("runtime repair review should close queue debt: %+v", report.Counts)
+	}
+	if len(report.Items) != 1 || report.Items[0].Status != "recorded" || report.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("runtime repair item not recorded: %+v", report.Items)
+	}
+	if !strings.Contains(report.Items[0].NextAction, "rerun runtime doctor") {
+		t.Fatalf("reviewed next action missing: %+v", report.Items[0])
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("runtime repair-review should not promote claims, claims ledger stat err=%v", err)
 	}
 }
 

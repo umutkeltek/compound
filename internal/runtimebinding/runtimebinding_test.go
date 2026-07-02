@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 func TestDoctorValidSyntheticService(t *testing.T) {
@@ -163,6 +165,64 @@ func TestRecordRuntimeRepairPlan(t *testing.T) {
 	}
 	if _, err := os.Stat(paths.ReviewPath); err != nil {
 		t.Fatalf("review missing: %v", err)
+	}
+	if _, err := os.Stat(paths.ReviewYAMLPath); err != nil {
+		t.Fatalf("review yaml missing: %v", err)
+	}
+}
+
+func TestRecordRuntimeRepairReviewAnnotatesQueue(t *testing.T) {
+	homePath := t.TempDir()
+	b := validBundle()
+	b.RuntimeBinding.HostBinding = ""
+	report := Doctor(b)
+	plan, err := BuildRepairPlan(report, RepairRefs{WritebackGateID: "owg_runtime"}, time.Date(2026, 6, 29, 1, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordRepairPlan(homePath, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewYAML := strings.ReplaceAll(string(body), "TODO_decision_owner_action_required_owner_action_done_defer_no_action", "owner_action_required")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: \"\"", "rationale: \"owner reviewed runtime repair path\"")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: -1", "confidence: 0.91")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO: reviewed runtime repair next action", "rerun runtime doctor after owner contract edit")
+	if err := os.WriteFile(paths.ReviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadRepairReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := RecordRepairReview(homePath, review, paths.ReviewYAMLPath, time.Date(2026, 6, 29, 1, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != "recorded" || record.PlanID != plan.ID || record.ServiceID != plan.ServiceID {
+		t.Fatalf("bad record: %+v", record)
+	}
+	if _, err := os.Stat(record.ReviewPath); err != nil {
+		t.Fatalf("reviewed sidecar missing: %v", err)
+	}
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: RuntimeRepairReviewArea}, time.Date(2026, 6, 29, 1, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateRepairQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.Total != 1 || queue.Counts.OK != 1 || queue.Counts.ReviewRequired != 0 {
+		t.Fatalf("runtime repair review should close queue debt: %+v", queue.Counts)
+	}
+	if queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("runtime repair queue item not recorded: %+v", queue.Items[0])
+	}
+	if !strings.Contains(queue.Items[0].NextAction, "rerun runtime doctor") {
+		t.Fatalf("next action did not come from reviewed sidecar: %+v", queue.Items[0])
 	}
 }
 

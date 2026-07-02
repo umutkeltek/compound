@@ -8,7 +8,10 @@ import (
 	"compound/internal/reviewartifact"
 )
 
-const RepairPlanSchemaVersion = "compound.runtime_repair_plan.v0.1"
+const (
+	RuntimeRepairReviewArea = "runtime-repair"
+	RepairPlanSchemaVersion = "compound.runtime_repair_plan.v0.1"
+)
 
 type RepairPlan struct {
 	SchemaVersion   string         `json:"schema_version"`
@@ -43,8 +46,9 @@ type RepairRefs struct {
 }
 
 type RepairArtifactPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath       string
+	ReviewPath     string
+	ReviewYAMLPath string
 }
 
 func BuildRepairPlan(report DoctorReport, refs RepairRefs, now time.Time) (RepairPlan, error) {
@@ -87,8 +91,15 @@ func RecordRepairPlan(homePath string, plan RepairPlan) (RepairArtifactPaths, er
 	if strings.TrimSpace(homePath) == "" {
 		return RepairArtifactPaths{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	paths, err := reviewartifact.Write(homePath, "runtime-repair", plan.ID, plan, "  ", RenderRepairReview(plan))
-	return RepairArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
+	paths, err := reviewartifact.Write(homePath, RuntimeRepairReviewArea, plan.ID, plan, "  ", RenderRepairReview(plan))
+	if err != nil {
+		return RepairArtifactPaths{}, err
+	}
+	reviewYAMLPath, err := reviewartifact.WriteRaw(homePath, RuntimeRepairReviewArea, plan.ID+".review.yaml", []byte(RenderRepairReviewYAMLDraft(plan)))
+	if err != nil {
+		return RepairArtifactPaths{}, err
+	}
+	return RepairArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath, ReviewYAMLPath: reviewYAMLPath}, nil
 }
 
 func RenderRepairReview(plan RepairPlan) string {
