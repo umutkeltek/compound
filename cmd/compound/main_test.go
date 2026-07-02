@@ -665,6 +665,90 @@ func TestWorkbenchCommandDispatchNextUsesActor(t *testing.T) {
 	}
 }
 
+func TestWorkActivePacketProofCommand(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	imported, err := store.ImportPacket(filepath.Join("..", "..", "fixtures", "work", "goal-packet.md"), work.PacketImportOptions{
+		Owner:         "compound-core",
+		State:         "ready",
+		ContextPackID: "ctx_packet",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	contextDir := filepath.Join(homePath, "context", "packs")
+	if err := os.MkdirAll(contextDir, 0o755); err != nil {
+		t.Fatalf("mkdir context packs: %v", err)
+	}
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            "ctx_packet",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound-cli-test"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD:          "cli test context pack",
+		Included:           []envelope.IncludedRef{},
+		Excluded:           []envelope.ExcludedRef{},
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		RequiredChecks:     []string{},
+		Avoid:              []string{},
+	}
+	packJSON, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal context pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(contextDir, "ctx_packet.json"), packJSON, 0o644); err != nil {
+		t.Fatalf("write context pack: %v", err)
+	}
+	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunID: "run_packet"}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	closed, err := store.Close(imported.Work.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "active packet proof command",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:active-packet-lifecycle"},
+	}, cliTestNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("close packet: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{"active-packet-proof", "--surface", imported.Work.CanonicalSurface, "--json"})
+	})
+	var report work.ActivePacketProofReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse active packet proof: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.WorkID != imported.Work.ID || report.ReceiptID != closed.Receipt.ID || report.TransitionID != closed.Transition.ID {
+		t.Fatalf("active packet proof report = %+v", report)
+	}
+	if !report.Checks["work_completed"] || !report.Checks["receipt_work_matches"] || !report.Checks["transition_work_matches"] {
+		t.Fatalf("active packet proof checks = %+v", report.Checks)
+	}
+}
+
 func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

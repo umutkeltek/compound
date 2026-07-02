@@ -202,7 +202,7 @@ usage:
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
+  compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] [--actor A] read-only open work / receipt / transition board; no dispatch
   compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
@@ -4324,7 +4324,7 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -4459,6 +4459,53 @@ func cmdWork(args []string) {
 		for _, w := range ws {
 			fmt.Printf("%s  %-10s %s\n", w.ID, w.State, w.SuccessPredicate)
 		}
+	case "active-packet-proof":
+		usage := "usage: compound work active-packet-proof [--surface canonical_surface] [--json]"
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--json":
+			case "--surface":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+		}
+		report, err := store.ActivePacketProof(time.Now(), flag("--surface"))
+		die(err)
+		if has("--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# work active-packet-proof %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- surface: %s\n", report.CanonicalSurface)
+		if report.WorkID != "" {
+			fmt.Printf("- work: %s state=%s\n", report.WorkID, report.State)
+		}
+		if report.ContextPackID != "" {
+			fmt.Printf("- context_pack: %s\n", report.ContextPackID)
+		}
+		if report.ReceiptID != "" {
+			fmt.Printf("- receipt: %s\n", report.ReceiptID)
+		}
+		if report.TransitionID != "" {
+			fmt.Printf("- transition: %s\n", report.TransitionID)
+		}
+		for _, ref := range report.PacketEvidenceRefs {
+			fmt.Printf("- packet_evidence: %s\n", ref)
+		}
+		for name, ok := range report.Checks {
+			fmt.Printf("- check.%s: %v\n", name, ok)
+		}
+		for _, item := range report.Integrity {
+			fmt.Printf("- integrity: %s\n", item)
+		}
+		fmt.Printf("- next: %s\n", report.NextAction)
 	case "dispatch-plan":
 		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
@@ -4971,7 +5018,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 }

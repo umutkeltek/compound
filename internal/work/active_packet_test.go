@@ -1,0 +1,109 @@
+package work
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"compound/internal/envelope"
+)
+
+func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
+		Owner:         "compound-core",
+		State:         "ready",
+		ContextPackID: "ctx_packet",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	writeContextPack(t, s, "ctx_packet")
+	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet work: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "running", RunID: "run_packet"}, fixedNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := s.Advance(imported.Work.ID, AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, fixedNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	closed, err := s.Close(imported.Work.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "active packet lifecycle proof complete",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:active-packet-lifecycle"},
+	}, fixedNow.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("close packet work: %v", err)
+	}
+
+	report, err := s.ActivePacketProof(fixedNow.Add(5*time.Second), imported.Work.CanonicalSurface)
+	if err != nil {
+		t.Fatalf("active packet proof: %v", err)
+	}
+	if report.Status != "ok" || report.WorkID != closed.Work.ID || report.ContextPackID != "ctx_packet" || report.ReceiptID != closed.Receipt.ID || report.TransitionID != closed.Transition.ID {
+		t.Fatalf("proof report missing closed chain: %+v", report)
+	}
+	for name, ok := range report.Checks {
+		if !ok {
+			t.Fatalf("check %s = false in %+v", name, report)
+		}
+	}
+	if len(report.PacketEvidenceRefs) != 1 || len(report.ProofChain) != 4 || report.NextAction == "" {
+		t.Fatalf("proof report missing evidence/action: %+v", report)
+	}
+}
+
+func TestActivePacketProofRisksIncompleteChain(t *testing.T) {
+	s := newStore(t)
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := s.ImportPacket(packetPath, PacketImportOptions{Owner: "compound-core", State: "proposed"}, fixedNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	report, err := s.ActivePacketProof(fixedNow.Add(time.Second), imported.Work.CanonicalSurface)
+	if err != nil {
+		t.Fatalf("active packet proof: %v", err)
+	}
+	if report.Status != "risk" || report.WorkID != imported.Work.ID {
+		t.Fatalf("incomplete chain should be risk: %+v", report)
+	}
+	if report.Checks["work_completed"] || report.Checks["receipt_exists"] || report.Checks["transition_exists"] || report.Checks["context_pack_exists"] {
+		t.Fatalf("incomplete checks should remain false: %+v", report.Checks)
+	}
+}
+
+func writeContextPack(t *testing.T, s *Store, id string) {
+	t.Helper()
+	dir := filepath.Join(s.home, "context", "packs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir context packs: %v", err)
+	}
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            id,
+			CreatedAt:     fixedNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "work-test"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD:          "test context pack",
+		Included:           []envelope.IncludedRef{},
+		Excluded:           []envelope.ExcludedRef{},
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		RequiredChecks:     []string{},
+		Avoid:              []string{},
+	}
+	if err := s.writeJSON(filepath.Join(dir, id+".json"), &pack); err != nil {
+		t.Fatalf("write context pack: %v", err)
+	}
+}
