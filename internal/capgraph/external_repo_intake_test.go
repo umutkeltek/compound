@@ -1,6 +1,7 @@
 package capgraph
 
 import (
+	homepkg "compound/internal/home"
 	"compound/internal/reviewartifact"
 	"encoding/json"
 	"os"
@@ -487,6 +488,19 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	if match.CapabilityEvaluationStatus != "recorded" || match.CapabilityEvaluationPath != reviewReport.ReviewedPath || match.CapabilityEvaluationDecision != "keep_needs_review" || match.CapabilityEvaluationNodeStatus != "needs_review" {
 		t.Fatalf("capability evaluation review context missing: match=%+v review=%+v", match, reviewReport)
 	}
+
+	archiveReviewAreaFilesForTest(t, home, capabilityEvaluationReviewArea, time.Date(2026, 7, 2, 4, 6, 0, 0, time.UTC))
+	archivedRefresh, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
+	if err != nil {
+		t.Fatalf("refresh source-list report after archive: %v", err)
+	}
+	if len(archivedRefresh.SourceListEvalNext) != 0 {
+		t.Fatalf("archived capability evaluation review should leave evaluation-next: %+v", archivedRefresh.SourceListEvalNext)
+	}
+	archivedMatch := archivedRefresh.SourceListItems[0].Matches[0]
+	if archivedMatch.CapabilityEvaluationStatus != "recorded" || archivedMatch.CapabilityEvaluationPath == "" || !strings.Contains(archivedMatch.CapabilityEvaluationPath, "archives/operational/files/reviews/capability-evaluation-intake/") {
+		t.Fatalf("archived capability evaluation review context missing: %+v", archivedMatch)
+	}
 }
 
 func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing.T) {
@@ -616,6 +630,55 @@ func writeJSON(t *testing.T, path string, v any) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+func archiveReviewAreaFilesForTest(t *testing.T, homePath, area string, now time.Time) {
+	t.Helper()
+	dir := filepath.Join(homePath, "reviews", area)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexLines []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join("reviews", area, entry.Name()))
+		archiveRel := filepath.ToSlash(filepath.Join(homepkg.OperationalArchiveFilesRel, rel))
+		src := filepath.Join(homePath, filepath.FromSlash(rel))
+		dst := filepath.Join(homePath, filepath.FromSlash(archiveRel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			t.Fatal(err)
+		}
+		record := homepkg.OperationalArchiveEntry{
+			SchemaVersion: homepkg.OperationalArchiveSchemaVersion,
+			ID:            reviewartifact.ID("arch_", rel),
+			Operation:     "archived",
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Kind:          "review",
+			Status:        "recorded",
+			OriginalPath:  rel,
+			ArchivePath:   archiveRel,
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		indexLines = append(indexLines, string(data))
+	}
+	if len(indexLines) == 0 {
+		t.Fatalf("no files archived for area %s", area)
+	}
+	indexPath := homepkg.OperationalArchiveIndexPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, []byte(strings.Join(indexLines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

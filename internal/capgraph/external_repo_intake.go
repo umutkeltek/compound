@@ -620,16 +620,18 @@ func annotateExternalRepoCapabilityEvaluations(homePath string, matches []Extern
 
 func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]externalRepoCapabilityEvaluationReview {
 	out := map[string]externalRepoCapabilityEvaluationReview{}
-	dir := filepath.Join(homePath, "reviews", capabilityEvaluationReviewArea)
-	entries, err := os.ReadDir(dir)
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: capabilityEvaluationReviewArea, IncludeArchived: true}, time.Now())
 	if err != nil {
 		return out
 	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+	for _, item := range queue.Items {
+		if item.Area != capabilityEvaluationReviewArea || item.Status != "recorded" {
 			continue
 		}
-		reviewedPath := filepath.Join(dir, entry.Name())
+		reviewedPath := capabilityEvaluationReviewedPath(item)
+		if reviewedPath == "" {
+			continue
+		}
 		data, err := os.ReadFile(reviewedPath)
 		if err != nil {
 			continue
@@ -638,9 +640,7 @@ func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]e
 		if err := json.Unmarshal(data, &review); err != nil {
 			continue
 		}
-		planID := strings.TrimSuffix(entry.Name(), ".reviewed.json")
-		planPath := filepath.Join(dir, planID+".json")
-		planData, err := os.ReadFile(planPath)
+		planData, err := os.ReadFile(item.JSONPath)
 		if err != nil {
 			continue
 		}
@@ -662,6 +662,15 @@ func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]e
 		}
 	}
 	return out
+}
+
+func capabilityEvaluationReviewedPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, ".reviewed.json") {
+			return path
+		}
+	}
+	return ""
 }
 
 func extractExternalRepoQueries(text string) []string {
