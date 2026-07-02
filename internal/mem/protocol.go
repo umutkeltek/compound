@@ -29,8 +29,22 @@ const (
 // ClaimText is a claim reduced to its indexable text — the only thing about a claim the engine
 // ever sees. The embedder (in the sidecar) turns this into a vector; the ledger keeps the truth.
 type ClaimText struct {
-	ClaimID string `json:"claim_id"`
-	Text    string `json:"text"`
+	ClaimID    string  `json:"claim_id"`
+	Text       string  `json:"text"`
+	Entity     string  `json:"entity,omitempty"`
+	ClaimType  string  `json:"claim_type,omitempty"`
+	Seq        int64   `json:"seq,omitempty"`
+	CreatedAt  string  `json:"created_at,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
+	Derivation string  `json:"derivation,omitempty"`
+	EvidenceN  int     `json:"evidence_n,omitempty"`
+}
+
+type WireEdge struct {
+	From       string  `json:"from"`
+	Kind       string  `json:"kind"`
+	To         string  `json:"to"`
+	Confidence float64 `json:"confidence"`
 }
 
 // Request is one protocol call.
@@ -42,6 +56,7 @@ type Request struct {
 	// index
 	CorpusGen int64       `json:"corpus_gen,omitempty"`
 	Claims    []ClaimText `json:"claims,omitempty"`
+	Edges     []WireEdge  `json:"edges,omitempty"`
 
 	// query
 	Text string `json:"text,omitempty"`
@@ -69,7 +84,8 @@ type Response struct {
 	Indexed int `json:"indexed,omitempty"`
 
 	// query
-	Hits []Hit `json:"hits,omitempty"`
+	Hits          []Hit    `json:"hits,omitempty"`
+	DegradedLanes []string `json:"degraded_lanes,omitempty"`
 
 	CorpusGen int64 `json:"corpus_gen,omitempty"`
 }

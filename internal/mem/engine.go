@@ -51,6 +51,10 @@ type Engine interface {
 	Query(text, gate string, allowlist []string, k int) ([]Hit, error)
 }
 
+type contextIndexEngine interface {
+	IndexWithContext(claims []Claim, edges []WireEdge, gen int64) error
+}
+
 // NoEngine is the default: no breadth. Its ops return ErrUnsupported EXPLICITLY — never nil,nil —
 // so a missing index cannot masquerade as an empty result.
 type NoEngine struct{}
@@ -127,7 +131,15 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	}
 	gen := s.currentGen()
 	if eng.Capabilities().CorpusGen != gen {
-		if err := eng.Index(cur, gen); err != nil {
+		if ceng, ok := eng.(contextIndexEngine); ok {
+			edges, err := s.visibleWireEdges(cur, 0.5)
+			if err != nil {
+				return nil, err
+			}
+			if err := ceng.IndexWithContext(cur, edges, gen); err != nil {
+				return nil, err
+			}
+		} else if err := eng.Index(cur, gen); err != nil {
 			return nil, err
 		}
 	}
@@ -150,14 +162,41 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 	return out, nil
 }
 
-// currentGen is the ledger generation = the max claim seq. It changes only on a promote, so an
-// engine indexed at this gen is current.
+// currentGen is ledger generation = max seq across claims and relation edges.
 func (s *Store) currentGen() int64 {
-	claims, err := s.loadClaims()
+	gen, err := s.maxLedgerSeq()
 	if err != nil {
 		return 0
 	}
-	return s.maxSeq(claims)
+	return gen
+}
+
+func (s *Store) visibleWireEdges(cur []Claim, minConf float64) ([]WireEdge, error) {
+	visibleEntities := make(map[string]bool, len(cur))
+	for _, c := range cur {
+		visibleEntities[c.Entity] = true
+	}
+	rels, err := s.loadRelations(minConf)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WireEdge, 0, len(rels))
+	for _, e := range rels {
+		if !visibleEntities[e.From] || !visibleEntities[e.To] {
+			continue
+		}
+		out = append(out, WireEdge{From: e.From, Kind: e.Kind, To: e.To, Confidence: e.Confidence})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].From != out[j].From {
+			return out[i].From < out[j].From
+		}
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].To < out[j].To
+	})
+	return out, nil
 }
 
 // AllCurrent returns the current (non-superseded, non-retired) claims — the canon a distiller

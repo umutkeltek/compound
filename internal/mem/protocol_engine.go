@@ -243,6 +243,38 @@ func (e *ProtocolEngine) Index(claims []Claim, gen int64) error {
 	return nil
 }
 
+func (e *ProtocolEngine) IndexWithContext(claims []Claim, edges []WireEdge, gen int64) error {
+	if err := e.ensureProbe(); err != nil {
+		return err
+	}
+	if e.caps.CorpusGen == gen { // idempotent: engine already at this generation
+		return nil
+	}
+	cts := make([]ClaimText, 0, len(claims))
+	for _, c := range claims {
+		cts = append(cts, ClaimText{
+			ClaimID:    c.ID,
+			Text:       ClaimIndexText(c),
+			Entity:     c.Entity,
+			ClaimType:  c.ClaimType,
+			Seq:        c.Seq,
+			CreatedAt:  c.CreatedAt,
+			Confidence: c.Confidence,
+			Derivation: c.Derivation,
+			EvidenceN:  len(c.EvidenceRefs),
+		})
+	}
+	resp, err := e.transport.RoundTrip(Request{SchemaVersion: ProtocolVersion, RequestID: e.nextReqID(), Op: OpIndex, CorpusGen: gen, Claims: cts, Edges: edges})
+	if err != nil {
+		return ErrEngineUnavailable
+	}
+	if !resp.OK {
+		return wireErr(resp)
+	}
+	e.caps.CorpusGen = gen
+	return nil
+}
+
 func (e *ProtocolEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
 	if err := e.ensureProbe(); err != nil {
 		return nil, err

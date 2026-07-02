@@ -21,6 +21,7 @@ func TestMain(m *testing.M) {
 // (idempotency, gate, identity, unavailability) — no spawning, fully deterministic.
 type fakeTransport struct {
 	claims                 []ClaimText
+	edges                  []WireEdge
 	gen                    int64
 	ready                  bool
 	embedder               string
@@ -42,7 +43,7 @@ func (f *fakeTransport) RoundTrip(req Request) (Response, error) {
 		if f.ready && req.CorpusGen == f.gen {
 			return Response{OK: true, Indexed: 0, CorpusGen: f.gen}, nil
 		}
-		f.claims, f.gen, f.ready = req.Claims, req.CorpusGen, true
+		f.claims, f.edges, f.gen, f.ready = req.Claims, req.Edges, req.CorpusGen, true
 		return Response{OK: true, Indexed: len(f.claims), CorpusGen: f.gen}, nil
 	case OpQuery:
 		f.queryCalls++
@@ -59,6 +60,66 @@ func storeWith(t *testing.T, e, p string, objs ...string) *Store {
 		s.Adjudicate(c[0].ID, "promote", "", t0)
 	}
 	return s
+}
+
+func TestProtocolIndexesLedgerOwnedContext(t *testing.T) {
+	s := newStore(t)
+	promote := func(c Candidate) Claim {
+		t.Helper()
+		got, err := s.Capture([]Candidate{c}, t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := s.Adjudicate(got[0].ID, "promote", "", t0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *res.Claim
+	}
+
+	appCand := cand("app", "runtime", "go", "")
+	appCand.ClaimType = "architecture"
+	appCand.Derivation = "deterministic"
+	appCand.SourceTraceRef = "trace_app"
+	app := promote(appCand)
+	auth := promote(cand("auth", "runtime", "jwt", ""))
+	db := promote(cand("db", "engine", "postgres", ""))
+	s.Relate(app.Entity, "depends_on", auth.Entity, 0.9, t0)
+	s.Relate(app.Entity, "depends_on", db.Entity, 0.4, t0)
+	s.Relate(app.Entity, "depends_on", "absent", 0.95, t0)
+
+	ft := &fakeTransport{embedder: "e", failAfter: -1}
+	if _, err := s.QueryBreadth("runtime", 10, NewProtocolEngine(ft, "e")); err != nil {
+		t.Fatal(err)
+	}
+
+	got := claimTextByID(ft.claims, app.ID)
+	if got == nil {
+		t.Fatalf("indexed claims missing %s: %+v", app.ID, ft.claims)
+	}
+	if got.Entity != app.Entity || got.ClaimType != app.ClaimType || got.Seq != app.Seq ||
+		got.CreatedAt != app.CreatedAt || got.Confidence != app.Confidence ||
+		got.Derivation != app.Derivation || got.EvidenceN != len(app.EvidenceRefs) {
+		t.Fatalf("claim wire metadata = %+v, want claim %+v evidence_n=%d", *got, app, len(app.EvidenceRefs))
+	}
+	if len(ft.edges) != 1 {
+		t.Fatalf("indexed edges = %+v, want only the visible high-confidence app->auth edge", ft.edges)
+	}
+	if ft.edges[0] != (WireEdge{From: app.Entity, Kind: "depends_on", To: auth.Entity, Confidence: 0.9}) {
+		t.Fatalf("edge wire context = %+v", ft.edges[0])
+	}
+	if ft.gen != s.currentGen() || ft.gen <= db.Seq {
+		t.Fatalf("corpus generation should include relation-edge seq; got %d current=%d dbSeq=%d", ft.gen, s.currentGen(), db.Seq)
+	}
+}
+
+func claimTextByID(claims []ClaimText, id string) *ClaimText {
+	for i := range claims {
+		if claims[i].ClaimID == id {
+			return &claims[i]
+		}
+	}
+	return nil
 }
 
 // The mandatory fix the judge caught: Index must be idempotent on corpus_gen, or an out-of-process
