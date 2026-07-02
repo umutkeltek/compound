@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/home"
 	"compound/internal/mem"
 )
 
@@ -117,6 +118,119 @@ func TestImportFoldsEchoAcrossSourceKinds(t *testing.T) {
 	if events[0].CanonicalRef != "https://arxiv.org/abs/2506.12345" || events[0].EchoSourceKind != "web" || events[0].FirstEvidenceRef != first.EvidenceIDs[0] {
 		t.Fatalf("distribution event = %+v", events[0])
 	}
+}
+
+func TestImportDedupSurvivesBackupRestore(t *testing.T) {
+	sourceHome := initializedHome(t)
+	sourceStore, err := mem.Open(sourceHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportFile(sourceHome, sourceStore, fixturePath("arxiv-export.json"), testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "compound-home.tar.gz")
+	if _, err := home.Backup(sourceHome, archivePath, testNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	restoredHome := filepath.Join(t.TempDir(), ".compound")
+	if _, err := home.RestoreArchive(archivePath, restoredHome, testNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	restoredStore, err := mem.Open(restoredHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reimport, err := ImportFile(restoredHome, restoredStore, fixturePath("arxiv-export.json"), testNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimport.Imported != 0 || reimport.Echoes != 0 || reimport.Reused != 3 {
+		t.Fatalf("reimport after restore = %+v", reimport)
+	}
+	assertCandidateCount(t, restoredStore, 3)
+
+	echo, err := ImportFile(restoredHome, restoredStore, fixturePath("web-echo-export.json"), testNow.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if echo.Imported != 0 || echo.Echoes != 1 || echo.Reused != 0 {
+		t.Fatalf("echo after restore = %+v", echo)
+	}
+	assertCandidateCount(t, restoredStore, 3)
+	assertDistributionCount(t, restoredHome, 1)
+	assertImportRows(t, filepath.Join(restoredHome, "ledger", "knowledge-imports.jsonl"), 4)
+	assertImportRows(t, filepath.Join(restoredHome, "indexes", "knowledge-imports.jsonl"), 4)
+	t.Logf("backup_restore: reimport imported=%d reused=%d echoes=%d; echo imported=%d reused=%d echoes=%d; candidates=3 import_rows=4", reimport.Imported, reimport.Reused, reimport.Echoes, echo.Imported, echo.Reused, echo.Echoes)
+}
+
+func TestImportDedupSurvivesRebuildableCompact(t *testing.T) {
+	homePath := initializedHome(t)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := home.Compact(homePath, home.CompactOptions{Rebuildable: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "indexes", "knowledge-imports.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("knowledge import index should be deleted by compact, stat err=%v", err)
+	}
+
+	reimport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimport.Imported != 0 || reimport.Echoes != 0 || reimport.Reused != 3 {
+		t.Fatalf("reimport after compact = %+v", reimport)
+	}
+	assertCandidateCount(t, store, 3)
+
+	echo, err := ImportFile(homePath, store, fixturePath("web-echo-export.json"), testNow.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if echo.Imported != 0 || echo.Echoes != 1 || echo.Reused != 0 {
+		t.Fatalf("echo after compact = %+v", echo)
+	}
+	assertCandidateCount(t, store, 3)
+	assertDistributionCount(t, homePath, 1)
+	assertImportRows(t, filepath.Join(homePath, "ledger", "knowledge-imports.jsonl"), 4)
+	assertImportRows(t, filepath.Join(homePath, "indexes", "knowledge-imports.jsonl"), 4)
+	t.Logf("compact_rebuildable: reimport imported=%d reused=%d echoes=%d; echo imported=%d reused=%d echoes=%d; candidates=3 import_rows=4", reimport.Imported, reimport.Reused, reimport.Echoes, echo.Imported, echo.Reused, echo.Echoes)
+}
+
+func TestImportIndexMigratesToLedgerOnLoad(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := ImportIndexRow{
+		CanonicalRef: "https://arxiv.org/abs/2506.12345",
+		EvidenceRef:  "ev_legacy",
+		ImportedAt:   rfc3339(testNow),
+		ExportDigest: fixtureDigest(t, "arxiv-export.json"),
+	}
+	if err := appendImportIndex(homePath, row); err != nil {
+		t.Fatal(err)
+	}
+
+	reimport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimport.Imported != 2 || reimport.Echoes != 0 || reimport.Reused != 1 {
+		t.Fatalf("legacy index migration import = %+v", reimport)
+	}
+	assertImportRows(t, filepath.Join(homePath, "ledger", "knowledge-imports.jsonl"), 3)
+	assertCandidateCount(t, store, 2)
 }
 
 func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) {
@@ -483,6 +597,53 @@ func TestNewMediumImportsWithoutCoreChange(t *testing.T) {
 
 func fixturePath(name string) string {
 	return filepath.Join("..", "..", "fixtures", "knowledge", name)
+}
+
+func initializedHome(t *testing.T) string {
+	t.Helper()
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "local", testNow); err != nil {
+		t.Fatal(err)
+	}
+	return homePath
+}
+
+func fixtureDigest(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(fixturePath(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digestBytes(data)
+}
+
+func assertCandidateCount(t *testing.T, store *mem.Store, want int) {
+	t.Helper()
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != want {
+		t.Fatalf("candidate rows = %d, want %d: %+v", len(candidates), want, candidates)
+	}
+}
+
+func assertDistributionCount(t *testing.T, homePath string, want int) {
+	t.Helper()
+	var events []DistributionEvent
+	readJSONLRows(t, filepath.Join(homePath, "ledger", "knowledge-distribution.jsonl"), &events)
+	if len(events) != want {
+		t.Fatalf("distribution events = %d, want %d: %+v", len(events), want, events)
+	}
+}
+
+func assertImportRows(t *testing.T, path string, want int) {
+	t.Helper()
+	var rows []ImportIndexRow
+	readJSONLRows(t, path, &rows)
+	if len(rows) != want {
+		t.Fatalf("%s rows = %d, want %d: %+v", path, len(rows), want, rows)
+	}
 }
 
 func writeExtractionFixture(t *testing.T, dir, extractionID, evidenceID string) {

@@ -135,6 +135,8 @@ type ImportIndexRow struct {
 	EvidenceRef  string `json:"evidence_ref"`
 	ImportedAt   string `json:"imported_at"`
 	ExportDigest string `json:"export_digest"`
+	SourceKind   string `json:"source_kind"`
+	SourceRef    string `json:"source_ref"`
 }
 
 func LoadExport(path string) (Export, []byte, error) {
@@ -284,6 +286,8 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 			EvidenceRef:  evidence.ID,
 			ImportedAt:   rfc3339(now),
 			ExportDigest: exportDigest,
+			SourceKind:   export.Source.Kind,
+			SourceRef:    export.Source.Ref,
 		}
 
 		if hasRecent {
@@ -296,7 +300,7 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 			}); err != nil {
 				return report, err
 			}
-			if err := appendImportIndex(homePath, row); err != nil {
+			if err := appendImportRow(homePath, row); err != nil {
 				return report, err
 			}
 			imports = append(imports, row)
@@ -312,7 +316,7 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 		if err != nil {
 			return report, err
 		}
-		if err := appendImportIndex(homePath, row); err != nil {
+		if err := appendImportRow(homePath, row); err != nil {
 			return report, err
 		}
 		imports = append(imports, row)
@@ -654,20 +658,99 @@ func appendDistributionEvent(homePath string, event DistributionEvent) error {
 	return appendJSONL(filepath.Join(homePath, "ledger", "knowledge-distribution.jsonl"), event)
 }
 
+func appendImportRow(homePath string, row ImportIndexRow) error {
+	if err := appendImportLedger(homePath, row); err != nil {
+		return err
+	}
+	return appendImportIndex(homePath, row)
+}
+
+func appendImportLedger(homePath string, row ImportIndexRow) error {
+	return appendJSONL(knowledgeImportLedgerPath(homePath), row)
+}
+
 func appendImportIndex(homePath string, row ImportIndexRow) error {
-	return appendJSONL(filepath.Join(homePath, "indexes", "knowledge-imports.jsonl"), row)
+	return appendJSONL(knowledgeImportIndexPath(homePath), row)
 }
 
 func loadImportIndex(homePath string) ([]ImportIndexRow, error) {
+	indexRows, indexExists, err := readImportRows(knowledgeImportIndexPath(homePath))
+	if err != nil {
+		return nil, err
+	}
+	ledgerRows, _, err := readImportRows(knowledgeImportLedgerPath(homePath))
+	if err != nil {
+		return nil, err
+	}
+	if len(indexRows) > 0 && len(ledgerRows) == 0 {
+		if err := writeImportRows(knowledgeImportLedgerPath(homePath), indexRows); err != nil {
+			return nil, err
+		}
+		return indexRows, nil
+	}
+	if len(ledgerRows) > 0 && (!indexExists || !sameImportRows(indexRows, ledgerRows)) {
+		if err := writeImportRows(knowledgeImportIndexPath(homePath), ledgerRows); err != nil {
+			return nil, err
+		}
+		return ledgerRows, nil
+	}
+	return indexRows, nil
+}
+
+func knowledgeImportIndexPath(homePath string) string {
+	return filepath.Join(homePath, "indexes", "knowledge-imports.jsonl")
+}
+
+func knowledgeImportLedgerPath(homePath string) string {
+	return filepath.Join(homePath, "ledger", "knowledge-imports.jsonl")
+}
+
+func readImportRows(path string) ([]ImportIndexRow, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
 	var rows []ImportIndexRow
-	return rows, readJSONL(filepath.Join(homePath, "indexes", "knowledge-imports.jsonl"), func(line []byte) error {
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		var row ImportIndexRow
-		if err := json.Unmarshal(line, &row); err != nil || row.CanonicalRef == "" {
-			return nil
+		if err := json.Unmarshal([]byte(line), &row); err != nil || row.CanonicalRef == "" {
+			continue
 		}
 		rows = append(rows, row)
-		return nil
-	})
+	}
+	return rows, true, nil
+}
+
+func writeImportRows(path string, rows []ImportIndexRow) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, row := range rows {
+		if err := enc.Encode(row); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+func sameImportRows(a, b []ImportIndexRow) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func loadSourceRegistry(path string) ([]SourceRegistryRow, error) {

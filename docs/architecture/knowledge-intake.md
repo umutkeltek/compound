@@ -53,10 +53,15 @@ Rules: strict decode (unknown fields rejected); `source.kind` is a lowercase slu
    first evidence. Ten shares of one thing = one signal + nine distribution events.
    (v0.1 matches identity exactly; URL normalization is a known refinement.)
 5. **Source registry** — `registries/knowledge-sources.jsonl` gains
-   `source:<kind>:<ref>` with a neutral `trust_posterior` (0.5). Trust is operational
-   state that later calibration adjusts from claim outcomes — sources EARN weight.
-6. **Idempotency** — re-importing the same export is a no-op (`reused`); per-item
-   identity is tracked in `indexes/knowledge-imports.jsonl`.
+   `source:<kind>:<ref>` with a neutral `trust_posterior` (0.5). Trust
+   calibration lands at P2; today the registry row is written once and frozen at
+   the neutral prior.
+6. **Idempotency** — re-importing the same export is a no-op (`reused`). Durable
+   truth lives in `ledger/knowledge-imports.jsonl` (`canonical_ref`,
+   `evidence_ref`, `imported_at`, `export_digest`, `source_kind`, `source_ref`);
+   `indexes/knowledge-imports.jsonl` is a rebuildable lookup cache of that
+   ledger, so backup restore and `home compact --rebuildable` can delete indexes
+   without losing import state.
 
 ## Writing a capture edge (any language)
 
