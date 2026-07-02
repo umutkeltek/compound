@@ -56,22 +56,27 @@ type ExternalRepoIntakeReport struct {
 }
 
 type ExternalRepoIntakeDecision struct {
-	Repo                  string  `json:"repo"`
-	Decision              string  `json:"decision"`
-	Lane                  string  `json:"lane,omitempty"`
-	Status                string  `json:"status,omitempty"`
-	Owner                 string  `json:"owner,omitempty"`
-	NextReviewStep        string  `json:"next_review_step,omitempty"`
-	NotToDo               string  `json:"not_to_do,omitempty"`
-	GraphHint             string  `json:"graph_hint,omitempty"`
-	DuplicateRisk         float64 `json:"duplicate_risk,omitempty"`
-	EvidenceStrength      float64 `json:"evidence_strength,omitempty"`
-	ReviewID              string  `json:"review_id,omitempty"`
-	ReviewPath            string  `json:"review_path,omitempty"`
-	OwnerReviewStatus     string  `json:"owner_review_status,omitempty"`
-	OwnerReviewPath       string  `json:"owner_review_path,omitempty"`
-	OwnerReviewDecision   string  `json:"owner_review_decision,omitempty"`
-	OwnerReviewNextAction string  `json:"owner_review_next_action,omitempty"`
+	Repo                           string  `json:"repo"`
+	Decision                       string  `json:"decision"`
+	Lane                           string  `json:"lane,omitempty"`
+	Status                         string  `json:"status,omitempty"`
+	Owner                          string  `json:"owner,omitempty"`
+	NextReviewStep                 string  `json:"next_review_step,omitempty"`
+	NotToDo                        string  `json:"not_to_do,omitempty"`
+	GraphHint                      string  `json:"graph_hint,omitempty"`
+	DuplicateRisk                  float64 `json:"duplicate_risk,omitempty"`
+	EvidenceStrength               float64 `json:"evidence_strength,omitempty"`
+	ReviewID                       string  `json:"review_id,omitempty"`
+	ReviewPath                     string  `json:"review_path,omitempty"`
+	OwnerReviewStatus              string  `json:"owner_review_status,omitempty"`
+	OwnerReviewPath                string  `json:"owner_review_path,omitempty"`
+	OwnerReviewDecision            string  `json:"owner_review_decision,omitempty"`
+	OwnerReviewNextAction          string  `json:"owner_review_next_action,omitempty"`
+	CapabilityEvaluationStatus     string  `json:"capability_evaluation_status,omitempty"`
+	CapabilityEvaluationPath       string  `json:"capability_evaluation_path,omitempty"`
+	CapabilityEvaluationDecision   string  `json:"capability_evaluation_decision,omitempty"`
+	CapabilityEvaluationNodeStatus string  `json:"capability_evaluation_node_status,omitempty"`
+	CapabilityEvaluationNextAction string  `json:"capability_evaluation_next_action,omitempty"`
 }
 
 type ExternalRepoSourceListItem struct {
@@ -312,8 +317,12 @@ func filterSourceListFollowUps(items []ExternalRepoSourceListItem, reviewed bool
 		if len(item.Matches) == 0 || item.Matches[0].Decision != "keep_needs_review" {
 			continue
 		}
-		isReviewed := item.Matches[0].OwnerReviewStatus == "recorded"
+		match := item.Matches[0]
+		isReviewed := match.OwnerReviewStatus == "recorded"
 		if isReviewed != reviewed {
+			continue
+		}
+		if reviewed && match.CapabilityEvaluationStatus == "recorded" {
 			continue
 		}
 		out = append(out, item)
@@ -498,7 +507,8 @@ func RenderExternalRepoIntakeReviewYAMLDraft(item ExternalRepoIntakeReviewPlanIt
 func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {
 	matches := matchExternalRepoDecisions(decisions, query)
 	matches = append(matches, matchExternalRepoEvaluationReferences(homePath, query, matches)...)
-	return annotateExternalRepoOwnerReviews(homePath, matches)
+	matches = annotateExternalRepoOwnerReviews(homePath, matches)
+	return annotateExternalRepoCapabilityEvaluations(homePath, matches)
 }
 
 func externalRepoSourceListCoverage(homePath string, decisions []ExternalRepoIntakeDecision, path string) ([]ExternalRepoSourceListItem, error) {
@@ -570,6 +580,82 @@ func externalRepoReviewedReportsByRepo(homePath string) map[string]ExternalRepoI
 			continue
 		}
 		out[key] = report
+	}
+	return out
+}
+
+type externalRepoCapabilityEvaluationReview struct {
+	Status     string
+	Path       string
+	Decision   string
+	NodeStatus string
+	NextAction string
+}
+
+func annotateExternalRepoCapabilityEvaluations(homePath string, matches []ExternalRepoIntakeDecision) []ExternalRepoIntakeDecision {
+	if len(matches) == 0 {
+		return matches
+	}
+	reviews := externalRepoCapabilityEvaluationReviewsByRepo(homePath)
+	if len(reviews) == 0 {
+		return matches
+	}
+	out := make([]ExternalRepoIntakeDecision, 0, len(matches))
+	for _, match := range matches {
+		if review, ok := reviews[normalizeExternalRepoQuery(match.Repo)]; ok {
+			match.CapabilityEvaluationStatus = review.Status
+			match.CapabilityEvaluationPath = review.Path
+			match.CapabilityEvaluationDecision = review.Decision
+			match.CapabilityEvaluationNodeStatus = review.NodeStatus
+			match.CapabilityEvaluationNextAction = review.NextAction
+		}
+		out = append(out, match)
+	}
+	return out
+}
+
+func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]externalRepoCapabilityEvaluationReview {
+	out := map[string]externalRepoCapabilityEvaluationReview{}
+	dir := filepath.Join(homePath, "reviews", capabilityEvaluationReviewArea)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			continue
+		}
+		reviewedPath := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(reviewedPath)
+		if err != nil {
+			continue
+		}
+		var review CapabilityEvaluationReviewReport
+		if err := json.Unmarshal(data, &review); err != nil {
+			continue
+		}
+		planID := strings.TrimSuffix(entry.Name(), ".reviewed.json")
+		planPath := filepath.Join(dir, planID+".json")
+		planData, err := os.ReadFile(planPath)
+		if err != nil {
+			continue
+		}
+		var plan CapabilityEvaluationPlan
+		if err := json.Unmarshal(planData, &plan); err != nil {
+			continue
+		}
+		repo := signalString(plan.Signals, "external_repo")
+		key := normalizeExternalRepoQuery(repo)
+		if key == "" {
+			continue
+		}
+		out[key] = externalRepoCapabilityEvaluationReview{
+			Status:     "recorded",
+			Path:       reviewedPath,
+			Decision:   review.Decision,
+			NodeStatus: review.NodeStatus,
+			NextAction: "capability evaluation review recorded; graph mutation requires separate reviewed manifest import",
+		}
 	}
 	return out
 }

@@ -447,6 +447,43 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Status != "review_required" {
 		t.Fatalf("capability evaluation queue = counts=%+v item=%+v", queue.Counts, queue.Items[0])
 	}
+	var plan CapabilityEvaluationPlan
+	planData, err := os.ReadFile(report.PlanPath)
+	if err != nil {
+		t.Fatalf("read evaluation plan: %v", err)
+	}
+	if err := json.Unmarshal(planData, &plan); err != nil {
+		t.Fatalf("parse evaluation plan: %v", err)
+	}
+	reviewReport, err := RecordCapabilityEvaluationReview(home, CapabilityEvaluationReview{
+		SchemaVersion: CapabilityEvaluationReviewSchemaVersion,
+		ReviewID:      "review_" + report.PlanID,
+		PlanID:        report.PlanID,
+		EvaluationID:  plan.EvaluationID,
+		Capability:    plan.Capability,
+		Decision:      "keep_needs_review",
+		Rationale:     "reviewed against existing owner; keep as evidence only",
+		Confidence:    0.82,
+		NodeDraft:     plan.NodeDraft,
+		EvidenceRefs:  plan.EvidenceRefs,
+	}, report.ReviewYAMLPath, time.Date(2026, 7, 2, 4, 5, 8, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("record evaluation review: %v", err)
+	}
+	refreshed, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
+	if err != nil {
+		t.Fatalf("refresh source-list report: %v", err)
+	}
+	if len(refreshed.SourceListEvalNext) != 0 {
+		t.Fatalf("reviewed capability evaluation should leave evaluation-next: %+v", refreshed.SourceListEvalNext)
+	}
+	if len(refreshed.SourceListItems) != 1 || len(refreshed.SourceListItems[0].Matches) != 1 {
+		t.Fatalf("refreshed source-list item missing match: %+v", refreshed.SourceListItems)
+	}
+	match := refreshed.SourceListItems[0].Matches[0]
+	if match.CapabilityEvaluationStatus != "recorded" || match.CapabilityEvaluationPath != reviewReport.ReviewedPath || match.CapabilityEvaluationDecision != "keep_needs_review" || match.CapabilityEvaluationNodeStatus != "needs_review" {
+		t.Fatalf("capability evaluation review context missing: match=%+v review=%+v", match, reviewReport)
+	}
 }
 
 func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing.T) {
