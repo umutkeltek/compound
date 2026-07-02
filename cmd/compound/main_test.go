@@ -7043,6 +7043,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if len(sourceListReport.SourceListReviewNext) != 1 || sourceListReport.SourceListReviewNext[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list review_next missing match: %+v", sourceListReport.SourceListReviewNext)
 	}
+	if sourceListReport.SourceListReviewNextMeaning != "owner_review_suggestions_not_open_review_debt" || sourceListReport.SourceListEvalNextMeaning != "focused_capability_evaluation_follow_up_queue" {
+		t.Fatalf("source-list follow-up meanings missing: review=%q eval=%q", sourceListReport.SourceListReviewNextMeaning, sourceListReport.SourceListEvalNextMeaning)
+	}
 	if sourceListReport.SourceListItems[0].Status != "known" || sourceListReport.SourceListItems[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list known item missing match: %+v", sourceListReport.SourceListItems)
 	}
@@ -7110,6 +7113,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	humanAfterReview := captureStdout(t, func() {
 		cmdCapability([]string{"external-intake", "--source-list", sourceListPath})
 	})
+	if !strings.Contains(humanAfterReview, "- source_list_follow_up: review_next=0 meaning=owner_review_suggestions_not_open_review_debt evaluation_next=1 meaning=focused_capability_evaluation_follow_up_queue") {
+		t.Fatalf("human source-list output should label follow-up meanings:\n%s", humanAfterReview)
+	}
 	if !strings.Contains(humanAfterReview, "- source_list_evaluation_next: example/research") || strings.Contains(humanAfterReview, "- source_list_review_next: example/research") {
 		t.Fatalf("human source-list output should show evaluation-next only after review:\n%s", humanAfterReview)
 	}
