@@ -48,6 +48,7 @@ type ExternalRepoIntakeReport struct {
 	SourceListByLane      map[string]int               `json:"source_list_counts_by_lane,omitempty"`
 	SourceListByOwner     map[string]int               `json:"source_list_counts_by_owner,omitempty"`
 	SourceListReviewNext  []ExternalRepoSourceListItem `json:"source_list_review_next,omitempty"`
+	SourceListEvalNext    []ExternalRepoSourceListItem `json:"source_list_evaluation_next,omitempty"`
 	SourceListItems       []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
 	HighValue             []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
 	Recent                []ExternalRepoIntakeDecision `json:"recent,omitempty"`
@@ -55,18 +56,22 @@ type ExternalRepoIntakeReport struct {
 }
 
 type ExternalRepoIntakeDecision struct {
-	Repo             string  `json:"repo"`
-	Decision         string  `json:"decision"`
-	Lane             string  `json:"lane,omitempty"`
-	Status           string  `json:"status,omitempty"`
-	Owner            string  `json:"owner,omitempty"`
-	NextReviewStep   string  `json:"next_review_step,omitempty"`
-	NotToDo          string  `json:"not_to_do,omitempty"`
-	GraphHint        string  `json:"graph_hint,omitempty"`
-	DuplicateRisk    float64 `json:"duplicate_risk,omitempty"`
-	EvidenceStrength float64 `json:"evidence_strength,omitempty"`
-	ReviewID         string  `json:"review_id,omitempty"`
-	ReviewPath       string  `json:"review_path,omitempty"`
+	Repo                  string  `json:"repo"`
+	Decision              string  `json:"decision"`
+	Lane                  string  `json:"lane,omitempty"`
+	Status                string  `json:"status,omitempty"`
+	Owner                 string  `json:"owner,omitempty"`
+	NextReviewStep        string  `json:"next_review_step,omitempty"`
+	NotToDo               string  `json:"not_to_do,omitempty"`
+	GraphHint             string  `json:"graph_hint,omitempty"`
+	DuplicateRisk         float64 `json:"duplicate_risk,omitempty"`
+	EvidenceStrength      float64 `json:"evidence_strength,omitempty"`
+	ReviewID              string  `json:"review_id,omitempty"`
+	ReviewPath            string  `json:"review_path,omitempty"`
+	OwnerReviewStatus     string  `json:"owner_review_status,omitempty"`
+	OwnerReviewPath       string  `json:"owner_review_path,omitempty"`
+	OwnerReviewDecision   string  `json:"owner_review_decision,omitempty"`
+	OwnerReviewNextAction string  `json:"owner_review_next_action,omitempty"`
 }
 
 type ExternalRepoSourceListItem struct {
@@ -265,6 +270,7 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 			}
 		}
 		report.SourceListReviewNext = sourceListReviewNext(items, 12)
+		report.SourceListEvalNext = sourceListEvaluationNext(items, 12)
 	}
 	report.HighValue = filterExternalRepoDecisions(decisions, "keep_needs_review", 12)
 	report.Recent = limitExternalRepoDecisions(decisions, 12)
@@ -293,24 +299,40 @@ func incrementNonEmpty(counts map[string]int, key string) {
 }
 
 func sourceListReviewNext(items []ExternalRepoSourceListItem, limit int) []ExternalRepoSourceListItem {
+	return limitSourceListFollowUps(filterSourceListFollowUps(items, false), limit)
+}
+
+func sourceListEvaluationNext(items []ExternalRepoSourceListItem, limit int) []ExternalRepoSourceListItem {
+	return limitSourceListFollowUps(filterSourceListFollowUps(items, true), limit)
+}
+
+func filterSourceListFollowUps(items []ExternalRepoSourceListItem, reviewed bool) []ExternalRepoSourceListItem {
 	var out []ExternalRepoSourceListItem
 	for _, item := range items {
 		if len(item.Matches) == 0 || item.Matches[0].Decision != "keep_needs_review" {
 			continue
 		}
+		isReviewed := item.Matches[0].OwnerReviewStatus == "recorded"
+		if isReviewed != reviewed {
+			continue
+		}
 		out = append(out, item)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		li, lj := out[i].Matches[0], out[j].Matches[0]
+	return out
+}
+
+func limitSourceListFollowUps(items []ExternalRepoSourceListItem, limit int) []ExternalRepoSourceListItem {
+	sort.Slice(items, func(i, j int) bool {
+		li, lj := items[i].Matches[0], items[j].Matches[0]
 		if li.EvidenceStrength != lj.EvidenceStrength {
 			return li.EvidenceStrength > lj.EvidenceStrength
 		}
-		return out[i].Normalized < out[j].Normalized
+		return items[i].Normalized < items[j].Normalized
 	})
-	if limit > 0 && len(out) > limit {
-		return out[:limit]
+	if limit > 0 && len(items) > limit {
+		return items[:limit]
 	}
-	return out
+	return items
 }
 
 func WriteExternalRepoIntakeReviewPlan(homePath, sourceListPath string, now time.Time) (ExternalRepoIntakeReviewPlanReport, error) {
@@ -476,7 +498,7 @@ func RenderExternalRepoIntakeReviewYAMLDraft(item ExternalRepoIntakeReviewPlanIt
 func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {
 	matches := matchExternalRepoDecisions(decisions, query)
 	matches = append(matches, matchExternalRepoEvaluationReferences(homePath, query, matches)...)
-	return matches
+	return annotateExternalRepoOwnerReviews(homePath, matches)
 }
 
 func externalRepoSourceListCoverage(homePath string, decisions []ExternalRepoIntakeDecision, path string) ([]ExternalRepoSourceListItem, error) {
@@ -501,6 +523,55 @@ func externalRepoSourceListCoverage(homePath string, decisions []ExternalRepoInt
 		items = append(items, item)
 	}
 	return items, nil
+}
+
+func annotateExternalRepoOwnerReviews(homePath string, matches []ExternalRepoIntakeDecision) []ExternalRepoIntakeDecision {
+	if len(matches) == 0 {
+		return matches
+	}
+	reviews := externalRepoReviewedReportsByRepo(homePath)
+	if len(reviews) == 0 {
+		return matches
+	}
+	out := make([]ExternalRepoIntakeDecision, 0, len(matches))
+	for _, match := range matches {
+		if report, ok := reviews[normalizeExternalRepoQuery(match.Repo)]; ok {
+			match.OwnerReviewStatus = report.Status
+			match.OwnerReviewPath = report.ReviewPath
+			match.OwnerReviewDecision = report.Decision
+			match.OwnerReviewNextAction = report.NextAction
+		}
+		out = append(out, match)
+	}
+	return out
+}
+
+func externalRepoReviewedReportsByRepo(homePath string) map[string]ExternalRepoIntakeReviewReport {
+	out := map[string]ExternalRepoIntakeReviewReport{}
+	dir := filepath.Join(homePath, "reviews", ExternalRepoIntakeReviewArea)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		report, err := LoadExternalRepoIntakeReviewReport(path)
+		if err != nil {
+			continue
+		}
+		key := normalizeExternalRepoQuery(report.Repo)
+		if key == "" {
+			continue
+		}
+		if existing, ok := out[key]; ok && existing.ReviewPath < report.ReviewPath {
+			continue
+		}
+		out[key] = report
+	}
+	return out
 }
 
 func extractExternalRepoQueries(text string) []string {

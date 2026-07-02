@@ -609,6 +609,14 @@ func cmdCapability(args []string) {
 				first := item.Matches[0]
 				fmt.Printf("- source_list_review_next: %s lane=%s owner=%s evidence=%.2f next=%s boundary=%s\n", first.Repo, first.Lane, first.Owner, first.EvidenceStrength, first.NextReviewStep, first.NotToDo)
 			}
+			for _, item := range report.SourceListEvalNext {
+				first := item.Matches[0]
+				next := first.OwnerReviewNextAction
+				if next == "" {
+					next = first.NextReviewStep
+				}
+				fmt.Printf("- source_list_evaluation_next: %s lane=%s owner=%s evidence=%.2f review=%s next=%s\n", first.Repo, first.Lane, first.Owner, first.EvidenceStrength, first.OwnerReviewPath, next)
+			}
 			for _, item := range report.SourceListItems {
 				if item.Status == "unknown" {
 					fmt.Printf("- source_list_unknown: %s normalized=%s\n", item.Query, item.Normalized)

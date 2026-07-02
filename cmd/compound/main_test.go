@@ -7093,6 +7093,26 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if reviews.Counts.Total != 1 || reviews.Counts.ReviewRequired != 0 || reviews.Counts.OK != 1 || reviews.Items[0].Status != "recorded" || reviews.Items[0].Readiness != "review_recorded" {
 		t.Fatalf("external repo review should close queue item: counts=%+v item=%+v", reviews.Counts, reviews.Items[0])
 	}
+	afterReviewJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--source-list", sourceListPath, "--json"})
+	})
+	var afterReview capgraph.ExternalRepoIntakeReport
+	if err := json.Unmarshal([]byte(afterReviewJSON), &afterReview); err != nil {
+		t.Fatalf("external-intake after review --json parse: %v\n%s", err, afterReviewJSON)
+	}
+	if len(afterReview.SourceListReviewNext) != 0 || len(afterReview.SourceListEvalNext) != 1 {
+		t.Fatalf("recorded owner review should move source-list item from review-next to evaluation-next: %+v", afterReview)
+	}
+	evalMatch := afterReview.SourceListEvalNext[0].Matches[0]
+	if evalMatch.OwnerReviewStatus != "recorded" || evalMatch.OwnerReviewPath == "" || evalMatch.OwnerReviewNextAction == "" {
+		t.Fatalf("evaluation follow-up missing recorded review context: %+v", evalMatch)
+	}
+	humanAfterReview := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--source-list", sourceListPath})
+	})
+	if !strings.Contains(humanAfterReview, "- source_list_evaluation_next: example/research") || strings.Contains(humanAfterReview, "- source_list_review_next: example/research") {
+		t.Fatalf("human source-list output should show evaluation-next only after review:\n%s", humanAfterReview)
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {
