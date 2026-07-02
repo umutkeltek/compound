@@ -244,7 +244,7 @@ usage:
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] RuntimeBinding health/live probes + gated writeback/review artifacts
-compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml>
+compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
@@ -3967,6 +3967,7 @@ func cmdReviews(args []string) {
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	panel.AnnotateVerdictQueue(&report)
+	projection.AnnotateProjectionRegenerationQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)
 	reviewartifact.Recount(&report)
 	if jsonOut {
@@ -7609,11 +7610,46 @@ func cmdProjectionRepairPlan(args []string) {
 		fmt.Printf("- source_no_promote: %s\n", id)
 	}
 	fmt.Printf("- review: %s\n", paths.ReviewPath)
+	if paths.ReviewYAMLPath != "" {
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	}
 	fmt.Printf("- artifact: %s\n", paths.PlanPath)
 }
 
+func cmdProjectionRepairReview(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound projection repair-review <review.yaml>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-review:", err)
+		os.Exit(1)
+	}
+	review, err := projection.LoadRegenerationReview(args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-review:", err)
+		os.Exit(1)
+	}
+	report, err := projection.RecordRegenerationReview(homePath, review, args[0], time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "projection repair-review:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# projection repair-review %s\n\n", report.ID)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- plan: %s\n", report.PlanID)
+	fmt.Printf("- projection: %s\n", report.ProjectionID)
+	fmt.Printf("- view: %s\n", report.ViewRef)
+	fmt.Printf("- decision: %s\n", report.Decision)
+	if report.NextAction != "" {
+		fmt.Printf("- next_action: %s\n", report.NextAction)
+	}
+	fmt.Printf("- reviewed: %s\n", report.ReviewPath)
+}
+
 func projectionUsage() string {
-	return "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] [--record-context --repo-kind K] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] [--record-context --repo-kind K] | projection repair-plan <freshness.yaml>"
+	return "usage: compound projection doctor <freshness.yaml> [--writeback] [--source-observe] [--record-context --repo-kind K] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] [--record-context --repo-kind K] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>"
 }
 
 func cmdProjectionDashboardReadModel(args []string) {
@@ -7729,6 +7765,10 @@ func cmdProjection(args []string) {
 	}
 	if args[0] == "repair-plan" {
 		cmdProjectionRepairPlan(args[1:])
+		return
+	}
+	if args[0] == "repair-review" {
+		cmdProjectionRepairReview(args[1:])
 		return
 	}
 	if args[0] == "dashboard-read-model" {

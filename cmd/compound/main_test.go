@@ -6290,6 +6290,77 @@ func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T)
 	}
 }
 
+func TestProjectionRepairReviewCLIRecordsReviewedSidecar(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	planOut := captureStdout(t, func() {
+		cmdProjection([]string{"repair-plan", filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml")})
+	})
+	if !strings.Contains(planOut, "# projection repair-plan") || !strings.Contains(planOut, "- review_yaml:") {
+		t.Fatalf("projection repair-plan output missing review YAML:\n%s", planOut)
+	}
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: projection.ProjectionRegenerationReviewArea}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection.AnnotateProjectionRegenerationQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 1 || queue.Items[0].Readiness != "needs_review" {
+		t.Fatalf("initial projection regeneration queue = %+v", queue)
+	}
+	reviewYAML := ""
+	for _, path := range queue.Items[0].ExtraPaths {
+		if strings.HasSuffix(path, ".review.yaml") {
+			reviewYAML = path
+			break
+		}
+	}
+	if reviewYAML == "" {
+		t.Fatalf("review YAML missing from queue item: %+v", queue.Items[0])
+	}
+	review, err := projection.LoadRegenerationReview(reviewYAML)
+	if err != nil {
+		t.Fatalf("load review YAML: %v", err)
+	}
+	review.Decision = "owner_action_required"
+	review.Rationale = "owner reviewed stale projection; regenerate through owner generator before trusting dashboard"
+	review.Confidence = 0.86
+	review.NextAction = "run owner generator and rerun projection doctor"
+	edited, err := yaml.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reviewYAML, edited, 0o644); err != nil {
+		t.Fatalf("write edited review YAML: %v", err)
+	}
+
+	reviewOut := captureStdout(t, func() {
+		cmdProjection([]string{"repair-review", reviewYAML})
+	})
+	if !strings.Contains(reviewOut, "# projection repair-review") ||
+		!strings.Contains(reviewOut, "- status: recorded") ||
+		!strings.Contains(reviewOut, "- decision: owner_action_required") ||
+		!strings.Contains(reviewOut, "- reviewed:") {
+		t.Fatalf("projection repair-review output missing proof lines:\n%s", reviewOut)
+	}
+	queue, err = reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: projection.ProjectionRegenerationReviewArea}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection.AnnotateProjectionRegenerationQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.OK != 1 || queue.Counts.ReviewRequired != 0 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("recorded projection regeneration queue = %+v", queue)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("projection repair-review should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
 func TestHarnessObserveWritesCapabilityNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

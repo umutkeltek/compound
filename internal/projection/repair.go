@@ -50,8 +50,9 @@ type RegenerationRefs struct {
 }
 
 type RegenerationArtifactPaths struct {
-	PlanPath   string
-	ReviewPath string
+	PlanPath       string
+	ReviewPath     string
+	ReviewYAMLPath string
 }
 
 func BuildRegenerationPlan(f Freshness, refs RegenerationRefs, now time.Time) (RegenerationPlan, error) {
@@ -95,8 +96,15 @@ func RecordRegenerationPlan(homePath string, plan RegenerationPlan) (Regeneratio
 	if strings.TrimSpace(homePath) == "" {
 		return RegenerationArtifactPaths{}, fmt.Errorf("COMPOUND_HOME required")
 	}
-	paths, err := reviewartifact.Write(homePath, "projection-regeneration", plan.ID, plan, " ", RenderRegenerationReview(plan))
-	return RegenerationArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
+	paths, err := reviewartifact.Write(homePath, ProjectionRegenerationReviewArea, plan.ID, plan, " ", RenderRegenerationReview(plan))
+	if err != nil {
+		return RegenerationArtifactPaths{}, err
+	}
+	reviewYAMLPath, err := reviewartifact.WriteRaw(homePath, ProjectionRegenerationReviewArea, plan.ID+".review.yaml", []byte(RenderRegenerationReviewYAMLDraft(plan)))
+	if err != nil {
+		return RegenerationArtifactPaths{}, err
+	}
+	return RegenerationArtifactPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath, ReviewYAMLPath: reviewYAMLPath}, nil
 }
 
 func RenderRegenerationReview(plan RegenerationPlan) string {

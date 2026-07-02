@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 func TestDoctorFreshFixture(t *testing.T) {
@@ -259,12 +261,75 @@ func TestRecordRegenerationPlanWritesReviewArtifacts(t *testing.T) {
 			t.Fatalf("artifact %s missing: %v", path, err)
 		}
 	}
+	if _, err := os.Stat(paths.ReviewYAMLPath); err != nil {
+		t.Fatalf("review YAML %s missing: %v", paths.ReviewYAMLPath, err)
+	}
 	review, err := os.ReadFile(paths.ReviewPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(review), "owner-review artifact") || !strings.Contains(string(review), "does not regenerate or edit") {
 		t.Fatalf("review artifact missing non-write warning:\n%s", review)
+	}
+}
+
+func TestRecordRegenerationReviewAnnotatesQueue(t *testing.T) {
+	home := t.TempDir()
+	plan, err := BuildRegenerationPlan(Freshness{
+		ProjectionID:    "projection:test",
+		ViewRef:         "view.md",
+		SourceLedgerSeq: 2,
+		Status:          StatusStale,
+		OutputHash:      "sha256:view",
+		Checks:          []Check{{Name: "age", Status: "fail", Detail: "25h0m0s"}},
+	}, RegenerationRefs{WritebackGateID: "owg_projection", SourceObservationID: "srcobs_projection"}, time.Date(2026, 6, 29, 23, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordRegenerationPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ProjectionRegenerationReviewArea}, time.Date(2026, 6, 30, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateProjectionRegenerationQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 1 || queue.Items[0].Readiness != "needs_review" {
+		t.Fatalf("unedited queue = %+v", queue)
+	}
+
+	review := RegenerationReview{
+		SchemaVersion: RegenerationReviewSchemaVersion,
+		ID:            reviewartifact.ID("prrv_", plan.ID, plan.ProjectionID, plan.ViewRef),
+		PlanID:        plan.ID,
+		ProjectionID:  plan.ProjectionID,
+		ViewRef:       plan.ViewRef,
+		Decision:      "owner_action_required",
+		Rationale:     "owner must regenerate through the owning generator before this view can be trusted",
+		Confidence:    0.9,
+		NextAction:    "run owner generator then rerun projection doctor",
+		EvidenceRefs:  plan.EvidenceRefs,
+	}
+	report, err := RecordRegenerationReview(home, review, paths.ReviewYAMLPath, time.Date(2026, 6, 30, 0, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "recorded" || report.Decision != "owner_action_required" || report.ReviewPath == "" {
+		t.Fatalf("review report = %+v", report)
+	}
+	queue, err = reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ProjectionRegenerationReviewArea}, time.Date(2026, 6, 30, 0, 2, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateProjectionRegenerationQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.OK != 1 || queue.Counts.ReviewRequired != 0 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("recorded queue = %+v", queue)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("projection regeneration review must not promote claims, stat err=%v", err)
 	}
 }
 
