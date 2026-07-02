@@ -148,7 +148,6 @@ lenses:
     name: Inversion Falsification
     triggers:
       - memory_candidate
-      - comparison
     weight: 0.8
     prompt: |
       You are the inversion-falsification lens for a Compound panel run.

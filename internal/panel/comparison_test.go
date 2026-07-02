@@ -76,10 +76,13 @@ func TestBuildPlanComparisonTargetsLensesAndPrivacyDefault(t *testing.T) {
 	if !containsString(run.EvidenceRefs, "privacy_default:not_sensitive:comparison") {
 		t.Fatalf("comparison privacy evidence = %v", run.EvidenceRefs)
 	}
-	for _, want := range []string{"lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency", "lens:inversion-falsification"} {
+	for _, want := range []string{"lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency"} {
 		if !includedLensRefForPanelTest(run.LensSet.Included, want) {
 			t.Fatalf("comparison lens %s missing from %+v", want, run.LensSet.Included)
 		}
+	}
+	if includedLensRefForPanelTest(run.LensSet.Included, "lens:inversion-falsification") {
+		t.Fatalf("generic inversion lens included for comparison plan: %+v", run.LensSet.Included)
 	}
 }
 
@@ -102,7 +105,7 @@ func TestPanelFixtureE2EComparisonDryRun(t *testing.T) {
 	decisions := map[string]string{}
 	for _, finding := range completed.Findings {
 		decisions[finding.TargetRef] = finding.Synthesis.Decision
-		if len(finding.LensFindings) != 4 || finding.VerdictArtifact == "" {
+		if len(finding.LensFindings) != 3 || finding.VerdictArtifact == "" {
 			t.Fatalf("finding did not record all comparison lenses/artifact: %+v", finding)
 		}
 	}
