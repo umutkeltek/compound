@@ -307,3 +307,30 @@ func TestComparisonEvidenceLedgerSurvivesMultipleRows(t *testing.T) {
 		t.Fatalf("row cmp_c/prun_2 not found in multi-row ledger")
 	}
 }
+
+func TestApplyComparisonAppendsLedgerRowBeforeJudgingCandidate(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writeComparisonCandidateForPanelTest(t, home, "cmp_order_proof", "awaiting_verdict", "lane/base", "lane/cand", 120, 80, 340, 220)
+	run := Run{ID: "prun_order_proof", TargetKind: "comparison"}
+	finding := TargetFinding{
+		TargetRef: "cmp_order_proof",
+		Synthesis: Synthesis{SchemaVersion: "compound.panel_synthesis.v0.1", Decision: "promote", Confidence: 0.9, Rationale: "better"},
+	}
+	mapped, applied, note, err := applyComparisonVerdict(home, run, &finding, fixedPanelNow)
+	if err != nil || !applied || mapped != "prefer_candidate" {
+		t.Fatalf("apply: mapped=%q applied=%v note=%q err=%v", mapped, applied, note, err)
+	}
+	exists, err := comparisonEvidenceRowExists(comparisonEvidenceLedgerPath(home), "cmp_order_proof", "prun_order_proof")
+	if err != nil || !exists {
+		t.Fatalf("ledger row missing after apply: exists=%v err=%v", exists, err)
+	}
+	// The judged candidate and the ledger row must move together: a judged
+	// candidate without its evidence row is the stranded state this guards.
+	raw, err := os.ReadFile(filepath.Join(home, "inbox", "comparisons", "cmp_order_proof.json"))
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	if !strings.Contains(string(raw), "\"judged\"") || !strings.Contains(string(raw), "prefer_candidate") {
+		t.Fatalf("candidate not judged with verdict: %s", raw)
+	}
+}

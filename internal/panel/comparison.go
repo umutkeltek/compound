@@ -159,16 +159,10 @@ func applyComparisonVerdict(homePath string, run Run, finding *TargetFinding, no
 	if candidate.State == comparisonStateJudged {
 		return mapped, false, "comparison candidate already judged; skipped", nil
 	}
-	candidate.State = comparisonStateJudged
-	candidate.Verdict = mapped
-	candidate.VerdictArtifact = finding.VerdictArtifact
-	data, err := json.MarshalIndent(candidate, "", " ")
-	if err != nil {
-		return "", false, "", err
-	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return "", false, "", err
-	}
+	// Append the evidence row BEFORE flipping the candidate to judged: the
+	// append is idempotent (rowExists), so a crash between the two steps
+	// retries cleanly, while the reverse order strands a judged candidate
+	// with no ledger row (observed live 2026-07-02).
 	row := comparisonEvidenceRow{
 		ComparisonID:    candidate.ID,
 		CapabilityClass: candidate.CapabilityClass,
@@ -181,6 +175,16 @@ func applyComparisonVerdict(homePath string, run Run, finding *TargetFinding, no
 		CreatedAt:       now().UTC().Format(time.RFC3339),
 	}
 	if err := appendComparisonEvidenceRow(homePath, row); err != nil {
+		return "", false, "", err
+	}
+	candidate.State = comparisonStateJudged
+	candidate.Verdict = mapped
+	candidate.VerdictArtifact = finding.VerdictArtifact
+	data, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		return "", false, "", err
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		return "", false, "", err
 	}
 	return mapped, true, "comparison evidence recorded: " + candidate.ID, nil
