@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +202,14 @@ func TestSurfaceReportCarriesMatchedTriggerTokens(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.Add(Node{
+		ID:       "tool:go-doctor",
+		Kind:     "tool",
+		Name:     "Go Doctor",
+		Triggers: []string{"go doctor"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	task := "choose skill Go testing home doctor hygiene"
 	offers, err := s.Surface(task)
 	if err != nil {
@@ -220,6 +229,9 @@ func TestSurfaceReportCarriesMatchedTriggerTokens(t *testing.T) {
 	report := NewSurfaceReport(task, "codex", offers, stats, 1)
 	if len(report.OfferSummaries) == 0 || strings.Join(report.OfferSummaries[0].MatchedTokens, ",") != "go,testing" {
 		t.Fatalf("summary matched tokens not carried: %+v", report.OfferSummaries)
+	}
+	if got := matchedTokenCountString(report.MatchedTokenCounts); got != "go=2,doctor=1,testing=1" {
+		t.Fatalf("matched token counts = %q, want go=2,doctor=1,testing=1", got)
 	}
 }
 
@@ -661,6 +673,14 @@ func findSurfaceHit(hits []Surfaced, id string) *Surfaced {
 		}
 	}
 	return nil
+}
+
+func matchedTokenCountString(counts []MatchedTokenCount) string {
+	parts := make([]string, 0, len(counts))
+	for _, count := range counts {
+		parts = append(parts, count.Token+"="+strconv.Itoa(count.Count))
+	}
+	return strings.Join(parts, ",")
 }
 
 func hasConstraint(values []SurfacingConstraint, kind, ref string) bool {

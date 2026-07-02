@@ -5452,6 +5452,9 @@ func TestCapabilitySurfaceJSONFiltersByHarness(t *testing.T) {
 	if !stringSliceContains(summaryIDs, "skill:codex-pricing") || stringSliceContains(summaryIDs, "skill:claude-pricing") {
 		t.Fatalf("summary ids = %+v", summaryIDs)
 	}
+	if !hasMatchedTokenCount(report.MatchedTokenCounts, "pricing", 2) {
+		t.Fatalf("matched token counts = %+v, want pricing=2", report.MatchedTokenCounts)
+	}
 }
 
 func TestCapabilityImportEvaluationsRecordsGraphEvidenceAndSourceNoPromote(t *testing.T) {
@@ -8220,6 +8223,15 @@ func splitJSONLines(s string) []string {
 func stringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMatchedTokenCount(values []capgraph.MatchedTokenCount, token string, count int) bool {
+	for _, value := range values {
+		if value.Token == token && value.Count == count {
 			return true
 		}
 	}

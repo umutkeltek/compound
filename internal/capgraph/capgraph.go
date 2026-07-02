@@ -174,17 +174,18 @@ type Surfaced struct {
 }
 
 type SurfaceReport struct {
-	SchemaVersion     string                `json:"schema_version"`
-	AuthorityRef      string                `json:"authority_ref"`
-	Status            string                `json:"status"`
-	Task              string                `json:"task"`
-	Harness           string                `json:"harness,omitempty"`
-	NodeCount         int                   `json:"node_count"`
-	EdgeCount         int                   `json:"edge_count"`
-	SourceRecordCount int                   `json:"source_record_count"`
-	OfferCount        int                   `json:"offer_count"`
-	Offers            []Surfaced            `json:"offers"`
-	OfferSummaries    []SurfaceOfferSummary `json:"offer_summaries"`
+	SchemaVersion      string                `json:"schema_version"`
+	AuthorityRef       string                `json:"authority_ref"`
+	Status             string                `json:"status"`
+	Task               string                `json:"task"`
+	Harness            string                `json:"harness,omitempty"`
+	NodeCount          int                   `json:"node_count"`
+	EdgeCount          int                   `json:"edge_count"`
+	SourceRecordCount  int                   `json:"source_record_count"`
+	OfferCount         int                   `json:"offer_count"`
+	Offers             []Surfaced            `json:"offers"`
+	OfferSummaries     []SurfaceOfferSummary `json:"offer_summaries"`
+	MatchedTokenCounts []MatchedTokenCount   `json:"matched_token_counts,omitempty"`
 }
 
 type SurfaceOfferSummary struct {
@@ -199,6 +200,11 @@ type SurfaceOfferSummary struct {
 	HarnessRefs   []string `json:"harness_refs,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
 	CostRiskNote  string   `json:"cost_risk_note,omitempty"`
+}
+
+type MatchedTokenCount struct {
+	Token string `json:"token"`
+	Count int    `json:"count"`
 }
 
 func NewSurfaceReport(task, harness string, offers []Surfaced, stats Stats, sourceRecordCount int) SurfaceReport {
@@ -219,18 +225,43 @@ func NewSurfaceReport(task, harness string, offers []Surfaced, stats Stats, sour
 		})
 	}
 	return SurfaceReport{
-		SchemaVersion:     SurfaceSchemaVersion,
-		AuthorityRef:      CapabilityGraphAuthorityRef,
-		Status:            "ok",
-		Task:              strings.TrimSpace(task),
-		Harness:           strings.TrimSpace(harness),
-		NodeCount:         stats.NodeCount,
-		EdgeCount:         stats.EdgeCount,
-		SourceRecordCount: sourceRecordCount,
-		OfferCount:        len(offers),
-		Offers:            offers,
-		OfferSummaries:    summaries,
+		SchemaVersion:      SurfaceSchemaVersion,
+		AuthorityRef:       CapabilityGraphAuthorityRef,
+		Status:             "ok",
+		Task:               strings.TrimSpace(task),
+		Harness:            strings.TrimSpace(harness),
+		NodeCount:          stats.NodeCount,
+		EdgeCount:          stats.EdgeCount,
+		SourceRecordCount:  sourceRecordCount,
+		OfferCount:         len(offers),
+		Offers:             offers,
+		OfferSummaries:     summaries,
+		MatchedTokenCounts: matchedTokenCounts(offers),
 	}
+}
+
+func matchedTokenCounts(offers []Surfaced) []MatchedTokenCount {
+	counts := map[string]int{}
+	for _, offer := range offers {
+		for _, token := range offer.MatchedTokens {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			counts[token]++
+		}
+	}
+	out := make([]MatchedTokenCount, 0, len(counts))
+	for token, count := range counts {
+		out = append(out, MatchedTokenCount{Token: token, Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Token < out[j].Token
+	})
+	return out
 }
 
 func constraintRefs(values []SurfacingConstraint) []string {
