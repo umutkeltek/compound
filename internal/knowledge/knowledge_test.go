@@ -203,6 +203,75 @@ func TestExtractRejectsUngroundedFixtureEvidenceRefs(t *testing.T) {
 	}
 }
 
+func TestExtractRejectsZeroCandidateResponse(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := t.TempDir()
+	body := fmt.Sprintf(`{
+ "schema_version": "compound.distiller.llm_extraction.v0.1",
+ "trace_ref": "knowledge_extraction:%s",
+ "source_refs": ["%s"],
+ "candidates": []
+}`, importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+	if err := os.WriteFile(filepath.Join(fixtures, importReport.ExtractionIDs[0]+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "failure(s)") {
+		t.Fatalf("expected completed-with-failures error, got %v", err)
+	}
+	if report.Failed != 1 || report.Processed != 0 || report.Created != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.State != "error" || !strings.Contains(req.Error, "zero candidates") {
+		t.Fatalf("zero-candidate response should stay retryable error: %+v", req)
+	}
+}
+
+func TestExtractRetriesDoneRequestWithZeroCandidates(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	req.State = "done"
+	req.CompletedAt = rfc3339(testNow.Add(time.Minute))
+	req.CandidateIDs = nil
+	if err := writeExtractionRequestFile(homePath, req); err != nil {
+		t.Fatal(err)
+	}
+	fixtures := t.TempDir()
+	writeExtractionFixture(t, fixtures, importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+
+	report, err := Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Processed != 1 || report.Created != 1 || len(report.CandidateIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.State != "done" || len(req.CandidateIDs) != 1 || req.RouteEvidence == nil {
+		t.Fatalf("done-zero request should be healed: %+v", req)
+	}
+}
+
 func TestExtractOpenAICompatibleUsesEvalCorpusAndRecordsRouteEvidence(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := mem.Open(homePath)
@@ -250,6 +319,60 @@ func TestExtractOpenAICompatibleUsesEvalCorpusAndRecordsRouteEvidence(t *testing
 	}
 	if req.RouteEvidence.Model != "fixture-model" || req.RouteEvidence.Usage.TotalTokens != 12 {
 		t.Fatalf("route evidence model/usage = %+v", req.RouteEvidence)
+	}
+}
+
+func TestExtractOpenAICompatibleRecordsCorrectiveRetryRouteEvidence(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			body := fmt.Sprintf(`{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"knowledge_extraction:%s","source_refs":["%s"],"candidates":[{"kind":"memory","confidence":0.91,"evidence_refs":["%s"]}]}`,
+				importReport.ExtractionIDs[0], importReport.EvidenceIDs[0], importReport.EvidenceIDs[0])
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]string{"role": "assistant", "content": body},
+				}},
+				"usage": map[string]int{"total_tokens": 12},
+			})
+			return
+		}
+		body := extractionFixtureBody(importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": body},
+			}},
+			"usage": map[string]int{"total_tokens": 18},
+		})
+	}))
+	defer server.Close()
+
+	report, err := Extract(homePath, store, ExtractOptions{
+		ItemID:              importReport.ExtractionIDs[0],
+		OpenAICompatibleURL: server.URL,
+		Model:               "fixture-model",
+		EvalCorpusDir:       filepath.Join("..", "..", "fixtures", "distiller"),
+	}, testNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || report.Processed != 1 || report.Created != 1 {
+		t.Fatalf("calls=%d report=%+v", calls, report)
+	}
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.RouteEvidence == nil || req.RouteEvidence.LiveModelCalls != 2 || req.RouteEvidence.Usage.TotalTokens != 30 {
+		t.Fatalf("route evidence = %+v", req.RouteEvidence)
 	}
 }
 

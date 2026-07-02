@@ -349,7 +349,7 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 			report.Skipped++
 			continue
 		}
-		if req.State == "done" {
+		if req.State == "done" && len(req.CandidateIDs) > 0 {
 			report.Skipped++
 			report.CandidateIDs = append(report.CandidateIDs, req.CandidateIDs...)
 			report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
@@ -438,6 +438,9 @@ func extractOne(homePath string, store *mem.Store, req ExtractionRequest, opts E
 	trace, err := distiller.NewGroundedLLMExtractor(llmReq).Extract(raw, distiller.DefaultPolicy())
 	if err != nil {
 		return nil, route, err
+	}
+	if len(trace.Candidates) == 0 {
+		return nil, route, fmt.Errorf("knowledge extraction produced zero candidates")
 	}
 	var candidateIDs []string
 	for _, dc := range trace.Candidates {

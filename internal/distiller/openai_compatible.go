@@ -94,9 +94,9 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 		client = http.DefaultClient
 	}
 	started := time.Now()
-	response, usage, err := callOpenAICompatible(ctx, client, opts.BaseURL, opts.APIKey, report.Model, req)
+	response, usage, liveModelCalls, err := callOpenAICompatible(ctx, client, opts.BaseURL, opts.APIKey, report.Model, req)
 	report.Called = true
-	report.LiveModelCalls = 1
+	report.LiveModelCalls = liveModelCalls
 	report.Usage = usage
 	report.LatencyMS = time.Since(started).Milliseconds()
 	report.Response = response
@@ -198,31 +198,98 @@ func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKe
 	return []byte(chat.Choices[0].Message.Content), chat.Usage, latencyMS, nil
 }
 
-func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, error) {
+func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, int, error) {
 	packet, err := json.MarshalIndent(req, "", " ")
 	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, err
+		return LLMExtractionResponse{}, OpenAIUsage{}, 0, err
 	}
-	content, usage, _, err := ChatCompletionJSON(ctx, client, baseURL, apiKey, model, strings.Join([]string{
+	system := strings.Join([]string{
 		"Return only JSON matching compound.distiller.llm_extraction.v0.1.",
 		"Do not include promotion_basis or any authority-bearing field.",
 		"You extract candidates only; Compound owns adjudication, promotion, writeback.",
-	}, "\n"), string(packet))
+	}, "\n")
+	user := string(packet)
+	content, usage, _, err := ChatCompletionJSON(ctx, client, baseURL, apiKey, model, system, user)
+	liveModelCalls := 1
 	if err != nil {
-		return LLMExtractionResponse{}, usage, err
+		return LLMExtractionResponse{}, usage, liveModelCalls, err
 	}
 	extraction, err := decodeOpenAICompatibleExtraction(content, req.TraceRef)
-	if err != nil {
-		return LLMExtractionResponse{}, usage, err
+	if err == nil {
+		extraction, err = validateOpenAICompatibleExtraction(req, extraction)
 	}
+	if isCorrectableExtractionError(err) {
+		correctiveSystem := system + "\n" + correctiveExtractionInstruction(err)
+		var retryUsage OpenAIUsage
+		content, retryUsage, _, err = ChatCompletionJSON(ctx, client, baseURL, apiKey, model, correctiveSystem, user)
+		liveModelCalls++
+		usage = addOpenAIUsage(usage, retryUsage)
+		if err != nil {
+			return LLMExtractionResponse{}, usage, liveModelCalls, err
+		}
+		extraction, err = decodeOpenAICompatibleExtraction(content, req.TraceRef)
+		if err == nil {
+			extraction, err = validateOpenAICompatibleExtraction(req, extraction)
+		}
+	}
+	if err != nil {
+		return LLMExtractionResponse{}, usage, liveModelCalls, err
+	}
+	return extraction, usage, liveModelCalls, nil
+}
+
+func validateOpenAICompatibleExtraction(req LLMExtractionRequest, extraction LLMExtractionResponse) (LLMExtractionResponse, error) {
 	normalized, err := json.Marshal(extraction)
 	if err != nil {
-		return LLMExtractionResponse{}, usage, err
+		return LLMExtractionResponse{}, err
 	}
 	if _, err := NewGroundedLLMExtractor(req).Extract(normalized, DefaultPolicy()); err != nil {
-		return LLMExtractionResponse{}, usage, err
+		return LLMExtractionResponse{}, err
 	}
-	return extraction, usage, nil
+	return extraction, nil
+}
+
+func isCorrectableExtractionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "attempted promotion_basis") {
+		return false
+	}
+	for _, marker := range []string{
+		"parse llm extraction content",
+		"llm extraction schema_version",
+		"llm extraction response missing trace_ref",
+		"unknown kind",
+		"memory requires",
+		"missing evidence_refs",
+		"evidence_ref",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func correctiveExtractionInstruction(err error) string {
+	reason := strings.TrimSpace(err.Error())
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+	return strings.Join([]string{
+		"Your previous extraction response was rejected by Compound validation: " + reason,
+		"Retry once. Return only valid JSON with schema_version, trace_ref, source_refs, and memory candidates grounded in the provided evidence_refs.",
+		"Candidate kind must be \"memory\". Each memory candidate must include entity, predicate, object, confidence, and evidence_refs.",
+	}, "\n")
+}
+
+func addOpenAIUsage(a, b OpenAIUsage) OpenAIUsage {
+	a.PromptTokens += b.PromptTokens
+	a.CompletionTokens += b.CompletionTokens
+	a.TotalTokens += b.TotalTokens
+	return a
 }
 
 func decodeOpenAICompatibleExtraction(content []byte, requestTraceRef string) (LLMExtractionResponse, error) {

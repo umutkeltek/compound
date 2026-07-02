@@ -137,6 +137,96 @@ func TestOpenAICompatibleExtractionRepairsEnvelopeArtifacts(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleExtractionRetriesCorrectableModelContent(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var body openAIChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"message": map[string]string{"role": "assistant", "content": `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_retry","source_refs":["raw:one"],"candidates":[{"kind":"memory","confidence":0.91,"evidence_refs":["raw:one"]}]}`},
+				}},
+				"usage": map[string]int{"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+			})
+			return
+		}
+		if !strings.Contains(body.Messages[0].Content, "previous extraction response was rejected") ||
+			!strings.Contains(body.Messages[0].Content, "memory requires entity, predicate, object") {
+			t.Fatalf("second system prompt missing corrective instruction:\n%s", body.Messages[0].Content)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_retry","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"evidence_refs":["raw:one"]}]}`},
+			}},
+			"usage": map[string]int{"prompt_tokens": 11, "completion_tokens": 13, "total_tokens": 24},
+		})
+	}))
+	defer server.Close()
+
+	report, err := ExtractWithOpenAICompatible(context.Background(), LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_retry",
+		SourceRefs:    []string{"raw:one"},
+	}, OpenAICompatibleOptions{
+		BaseURL:       server.URL,
+		Model:         "fixture-model",
+		EvalCorpusDir: filepath.Join("..", "..", "fixtures", "distiller"),
+		HTTPClient:    server.Client(),
+		Now:           t0,
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if calls != 2 || report.LiveModelCalls != 2 {
+		t.Fatalf("calls=%d live_model_calls=%d", calls, report.LiveModelCalls)
+	}
+	if report.Usage.PromptTokens != 16 || report.Usage.CompletionTokens != 20 || report.Usage.TotalTokens != 36 {
+		t.Fatalf("usage not accumulated: %+v", report.Usage)
+	}
+	if len(report.Response.Candidates) != 1 || report.Response.Candidates[0].Entity != "svc" {
+		t.Fatalf("response = %+v", report.Response)
+	}
+}
+
+func TestOpenAICompatibleExtractionFailsAfterOneCorrectiveRetry(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_retry","source_refs":["raw:one"],"candidates":[{"kind":"memory","confidence":0.91,"evidence_refs":["raw:one"]}]}`},
+			}},
+			"usage": map[string]int{"total_tokens": 10},
+		})
+	}))
+	defer server.Close()
+
+	report, err := ExtractWithOpenAICompatible(context.Background(), LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_retry",
+		SourceRefs:    []string{"raw:one"},
+	}, OpenAICompatibleOptions{
+		BaseURL:       server.URL,
+		Model:         "fixture-model",
+		EvalCorpusDir: filepath.Join("..", "..", "fixtures", "distiller"),
+		HTTPClient:    server.Client(),
+		Now:           t0,
+	})
+	if err == nil || !strings.Contains(err.Error(), "memory requires entity, predicate, object") {
+		t.Fatalf("err = %v, want shape rejection", err)
+	}
+	if calls != 2 || report.LiveModelCalls != 2 {
+		t.Fatalf("calls=%d live_model_calls=%d", calls, report.LiveModelCalls)
+	}
+	if report.Usage.TotalTokens != 20 {
+		t.Fatalf("usage = %+v", report.Usage)
+	}
+}
+
 func TestOpenAICompatibleExtractionRejectsBadModelContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		extraction := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_bad","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"promotion_basis":"model says so"}]}`
