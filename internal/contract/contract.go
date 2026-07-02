@@ -593,6 +593,7 @@ type contextMemoryRef struct {
 	Line       string
 	Confidence float64
 	Seq        int64
+	Rank       float64
 }
 
 func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemoryRef, error) {
@@ -600,7 +601,8 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 		return nil, nil
 	}
 	entities := memoryEntityKeys(in)
-	if len(entities) == 0 {
+	taskTokens := memoryTextTokens(in.Task)
+	if len(entities) == 0 && len(taskTokens) == 0 {
 		return nil, nil
 	}
 	store, err := mem.Open(homePath)
@@ -613,7 +615,8 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 	}
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
-		if !ambientMemoryClaimAllowed(claim, rule, entities) {
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens)
+		if rank <= 0 {
 			continue
 		}
 		line := memoryLine(claim)
@@ -623,9 +626,13 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 			Line:       line,
 			Confidence: claim.Confidence,
 			Seq:        claim.Seq,
+			Rank:       rank,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rank != out[j].Rank {
+			return out[i].Rank > out[j].Rank
+		}
 		if out[i].Seq == out[j].Seq {
 			return out[i].Ref < out[j].Ref
 		}
@@ -638,23 +645,44 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 	return out, nil
 }
 
-func ambientMemoryClaimAllowed(claim mem.Claim, rule MemoryRule, entities map[string]bool) bool {
+func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool) float64 {
 	if claim.ClaimType == "decision" {
-		return false
+		return 0
 	}
 	if !memoryVisibilityAllowed(claim.Visibility) {
-		return false
-	}
-	if !entities[memoryKey(claim.Entity)] {
-		return false
+		return 0
 	}
 	if (contains(rule.Forbidden, "personal-corpus") || contains(rule.ExplicitOnly, "personal-corpus")) && personalMemoryClaim(claim) {
-		return false
+		return 0
 	}
 	if (contains(rule.Forbidden, "self-model") || contains(rule.ExplicitOnly, "self-model")) && selfModelClaim(claim) {
-		return false
+		return 0
 	}
-	return true
+	rank := 0.0
+	if entities[memoryKey(claim.Entity)] {
+		rank += 2
+	}
+	rank += memoryTaskOverlapScore(claim, taskTokens)
+	return rank
+}
+
+func memoryTaskOverlapScore(claim mem.Claim, taskTokens map[string]bool) float64 {
+	if len(taskTokens) == 0 {
+		return 0
+	}
+	claimTokens := memoryTextTokens(claim.Entity + " " + claim.Predicate + " " + claim.Object)
+	for k, v := range claim.Qualifiers {
+		for token := range memoryTextTokens(k + " " + v) {
+			claimTokens[token] = true
+		}
+	}
+	score := 0.0
+	for token := range taskTokens {
+		if claimTokens[token] {
+			score++
+		}
+	}
+	return score
 }
 
 func memoryEntityKeys(in Input) map[string]bool {
@@ -670,6 +698,19 @@ func memoryEntityKeys(in Input) map[string]bool {
 		add(part)
 	}
 	return keys
+}
+
+func memoryTextTokens(value string) map[string]bool {
+	tokens := map[string]bool{}
+	for _, part := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		key := memoryKey(part)
+		if len(key) >= 3 {
+			tokens[key] = true
+		}
+	}
+	return tokens
 }
 
 func memoryKey(value string) string {

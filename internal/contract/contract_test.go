@@ -872,6 +872,91 @@ func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cands []mem.Candidate
+	for i := 0; i < 5; i++ {
+		cands = append(cands, mem.Candidate{
+			Entity:          "repo:compound",
+			Predicate:       fmt.Sprintf("source_control_fact_%d", i),
+			Object:          "repo state is current",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  fmt.Sprintf("ev_repo_%d", i),
+			SnippetHash:     fmt.Sprintf("sha256:repo-%d", i),
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		})
+	}
+	cands = append(cands,
+		mem.Candidate{
+			Entity:          "CapabilityGraph",
+			Predicate:       "surfacing_feedback_status",
+			Object:          "external skill repo adoption should surface procedure:skill-ops ahead of production-audit for capability surfacing",
+			Confidence:      0.91,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "capability-surfacing"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_capability_graph",
+			SnippetHash:     "sha256:capability-graph",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		mem.Candidate{
+			Entity:          "umut",
+			Predicate:       "preference",
+			Object:          "private external skill repo preference",
+			Confidence:      1,
+			Derivation:      "deterministic",
+			ClaimType:       "preference",
+			PromotionBasis:  candidates.BasisExplicitConfirmation,
+			SourceTraceRef:  "ev_private",
+			SnippetHash:     "sha256:private",
+			Visibility:      "private",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+	)
+	got, err := store.Capture(cands, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilityRef string
+	for i := range got {
+		res, err := store.Adjudicate(got[i].ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Claim != nil && res.Claim.Entity == "CapabilityGraph" {
+			capabilityRef = "claim://" + res.Claim.ID
+		}
+	}
+	in := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/compound",
+		Task:        "Evaluate external skill repos for relevant capability surfacing without blind adoption",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(pack.ActiveMemory, capabilityRef) {
+		t.Fatalf("context pack active_memory = %v, want task-relevant %s", pack.ActiveMemory, capabilityRef)
+	}
+	if strings.Contains(pack.SummaryMD, "private external skill repo preference") {
+		t.Fatalf("summary leaked private/self-model memory: %q", pack.SummaryMD)
+	}
+}
+
 func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
