@@ -2248,6 +2248,10 @@ func cmdMemory(args []string) {
 		return ""
 	}
 
+	restoreMemoryEngineProfile, err := configureMemoryEngineProfile(flag("--engine-profile"))
+	die(err)
+	defer restoreMemoryEngineProfile()
+
 	switch sub {
 	case "candidate":
 		data, err := os.ReadFile(pos())
@@ -2589,6 +2593,60 @@ func memBreadthEngine() (mem.Engine, func()) {
 	tr := mem.NewHeldCoprocess(strings.Fields(bin), nil)
 	eng := mem.NewProtocolEngine(tr, os.Getenv("COMPOUND_MEM_ENGINE_EMBEDDER"))
 	return eng, func() { _ = eng.Close() }
+}
+
+func configureMemoryEngineProfile(profile string) (func(), error) {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile == "" {
+		return func() {}, nil
+	}
+	switch profile {
+	case "generic", "memory-cli", "gbrain":
+	default:
+		return func() {}, fmt.Errorf("unknown memory engine profile %q", profile)
+	}
+	restore := captureEnv("COMPOUND_MEM_ENGINE_BIN", "COMPOUND_MEMORY_CLI_PROFILE")
+	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
+		if err := os.Setenv("COMPOUND_MEM_ENGINE_BIN", defaultMemoryCLISidecarCommand()); err != nil {
+			return restore, err
+		}
+	}
+	if err := os.Setenv("COMPOUND_MEMORY_CLI_PROFILE", profile); err != nil {
+		restore()
+		return func() {}, err
+	}
+	return restore, nil
+}
+
+func defaultMemoryCLISidecarCommand() string {
+	for _, path := range []string{"./cmd/compound-memory-cli-engine", "../compound-memory-cli-engine"} {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return "go run " + path
+		}
+	}
+	return "compound-memory-cli-engine"
+}
+
+func captureEnv(names ...string) func() {
+	type value struct {
+		text string
+		ok   bool
+	}
+	saved := map[string]value{}
+	for _, name := range names {
+		text, ok := os.LookupEnv(name)
+		saved[name] = value{text: text, ok: ok}
+	}
+	return func() {
+		for _, name := range names {
+			v := saved[name]
+			if v.ok {
+				_ = os.Setenv(name, v.text)
+			} else {
+				_ = os.Unsetenv(name)
+			}
+		}
+	}
 }
 
 func dashNote(n string) string {

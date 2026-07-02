@@ -6659,6 +6659,58 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 	}
 }
 
+func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{{
+		Entity:         "project:api",
+		Predicate:      "language",
+		Object:         "go",
+		Confidence:     0.9,
+		Derivation:     "extracted",
+		PromotionBasis: candidates.BasisTrustedDeterministic,
+		SourceTraceRef: "trace_cli_memory_profile",
+		SnippetHash:    "sha256:test",
+	}}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_memory_profile", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	fakeCLI := filepath.Join(t.TempDir(), "memory-cli")
+	if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\necho \"project api language go\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEMORY_CLI_BIN", fakeCLI)
+	t.Setenv("COMPOUND_MEMORY_CLI_LIMIT", "1")
+
+	jsonOut := captureStdout(t, func() {
+		cmdMemory([]string{"doctor", "--engine-profile", "memory-cli", "--json"})
+	})
+	var report mem.Report
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("memory doctor --engine-profile --json parse: %v\n%s", err, jsonOut)
+	}
+	var foundEngineHop bool
+	for _, hop := range report.Hops {
+		if hop.Name == "sync/embedding" && hop.Status == "ok" && strings.Contains(hop.Detail, "memory-cli") && strings.Contains(hop.Detail, "ledger_unchanged=true") {
+			foundEngineHop = true
+		}
+	}
+	if !foundEngineHop {
+		t.Fatalf("memory doctor --engine-profile missing configured engine hop: %+v", report.Hops)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
