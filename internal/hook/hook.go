@@ -627,6 +627,8 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	}
 	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
 	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
+	writeHookReadinessList(&b, pack.HookReadiness)
+	writeHookRosterList(&b, pack.HookRoster)
 	writeStringList(&b, "Active Decisions", pack.ActiveDecisions)
 	if len(pack.ActiveMemory) > 0 {
 		shown := pack.ActiveMemory
@@ -653,6 +655,48 @@ func writeStringList(b *strings.Builder, title string, xs []string) {
 	}
 	for _, x := range xs {
 		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
+	}
+}
+
+func writeHookReadinessList(b *strings.Builder, readiness []envelope.HookReadiness) {
+	if len(readiness) == 0 {
+		return
+	}
+	b.WriteString("\n## Hook Gate Readiness\n")
+	for _, r := range readiness {
+		fmt.Fprintf(b, "- `%s/%s` status=%s installed=%t native_block=%t",
+			safeMD(r.Harness), safeMD(r.Hook), safeMD(r.Status), r.Installed, r.NativeBlock)
+		if r.InstalledRef != "" {
+			fmt.Fprintf(b, " ref=`%s`", safeMD(r.InstalledRef))
+		}
+		if r.AdapterRequired {
+			b.WriteString(" adapter_required=true")
+		}
+		if r.AdapterCommand != "" {
+			fmt.Fprintf(b, " command=`%s`", safeMD(r.AdapterCommand))
+		}
+		if r.Reason != "" {
+			fmt.Fprintf(b, " reason=%s", safeMD(r.Reason))
+		}
+		b.WriteString("\n")
+	}
+}
+
+func writeHookRosterList(b *strings.Builder, roster []envelope.HookRosterEntry) {
+	if len(roster) == 0 {
+		return
+	}
+	b.WriteString("\n## Hook Roster\n")
+	for _, r := range roster {
+		fmt.Fprintf(b, "- `%s` harness=%s hook=%s event=%s status=%s",
+			safeMD(r.Ref), safeMD(r.Harness), safeMD(r.Hook), safeMD(r.Event), safeMD(r.Status))
+		if r.Matcher != "" {
+			fmt.Fprintf(b, " matcher=%s", safeMD(r.Matcher))
+		}
+		if r.Reason != "" {
+			fmt.Fprintf(b, " reason=%s", safeMD(r.Reason))
+		}
+		b.WriteString("\n")
 	}
 }
 

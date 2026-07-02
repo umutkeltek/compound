@@ -84,7 +84,7 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 		Hook:     "session-start",
 		Harness:  "codex",
 		Cwd:      "/repo/productX",
-		Task:     "improve pricing",
+		Task:     "edit pricing",
 		RepoKind: "product",
 		Prompt:   "DO NOT LEAK RAW PROMPT BODY",
 	}
@@ -115,7 +115,7 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if req.IntentTextRef != "sha256:"+hashStr("DO NOT LEAK RAW PROMPT BODY") {
 		t.Fatalf("intent_text_ref = %q, want prompt hash", req.IntentTextRef)
 	}
-	if req.TaskGuess != "improve pricing" || req.Harness != "codex" {
+	if req.TaskGuess != "edit pricing" || req.Harness != "codex" {
 		t.Fatalf("unexpected request body: %+v", req)
 	}
 	if strings.Contains(string(reqBytes), "DO NOT LEAK RAW PROMPT BODY") {
@@ -132,6 +132,9 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if !containsString(pack.ActiveHooks, "hook://codex/SessionStart") {
 		t.Fatalf("context pack active hooks = %v, want hook://codex/SessionStart", pack.ActiveHooks)
 	}
+	if readiness := findContextHookReadiness(pack.HookReadiness, "codex", "PreToolUse"); readiness == nil || readiness.Status != "missing_gate" || !readiness.AdapterRequired {
+		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
+	}
 	b, err := os.ReadFile(res.Injection.Path)
 	if err != nil {
 		t.Fatalf("read injection: %v", err)
@@ -140,6 +143,11 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	for _, want := range []string{
 		"## Active Hooks",
 		"hook://codex/SessionStart",
+		"## Hook Gate Readiness",
+		"`codex/PreToolUse` status=missing_gate",
+		"adapter_required=true",
+		"command=`compound hook pre-tool-use --enforce FIXTURE_JSON`",
+		"## Hook Roster",
 		"capability://skill:codex-pricing",
 		"capability://skill:generic-pricing",
 		"[offer, not execution]",
@@ -773,4 +781,13 @@ func containsString(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func findContextHookReadiness(readiness []envelope.HookReadiness, harness, hookName string) *envelope.HookReadiness {
+	for i := range readiness {
+		if readiness[i].Harness == harness && readiness[i].Hook == hookName {
+			return &readiness[i]
+		}
+	}
+	return nil
 }
