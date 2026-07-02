@@ -2274,6 +2274,48 @@ func TestAuthorityGitImportsSourceControlState(t *testing.T) {
 			t.Fatalf("authority git output missing %q:\n%s", want, out)
 		}
 	}
+	jsonOut := captureStdout(t, func() {
+		cmdAuthority([]string{"git", repo, "--json"})
+	})
+	var report struct {
+		SchemaVersion  string `json:"schema_version"`
+		Status         string `json:"status"`
+		AuthorityRef   string `json:"authority_ref"`
+		EntityRef      string `json:"entity_ref"`
+		GitRoot        string `json:"git_root"`
+		Branch         string `json:"branch"`
+		Ahead          int    `json:"ahead"`
+		Behind         int    `json:"behind"`
+		Unstaged       int    `json:"unstaged"`
+		Untracked      int    `json:"untracked"`
+		ChangedPaths   int    `json:"changed_paths"`
+		CandidateCount int    `json:"candidate_count"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("parse authority git JSON: %v\n%s", err, jsonOut)
+	}
+	wantRepoInfo, err := os.Stat(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRepoInfo, err := os.Stat(report.GitRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SchemaVersion != "compound.source_control_snapshot.v0.1" ||
+		report.Status != "dirty" ||
+		report.AuthorityRef != "compound://ledger/source-control" ||
+		report.Branch != "main" ||
+		report.Ahead != 0 ||
+		report.Behind != 0 ||
+		report.Unstaged != 1 ||
+		report.Untracked != 1 ||
+		report.ChangedPaths != 2 ||
+		report.CandidateCount == 0 ||
+		!strings.HasPrefix(report.EntityRef, "repo:") ||
+		!os.SameFile(wantRepoInfo, gotRepoInfo) {
+		t.Fatalf("bad authority git JSON: %+v\n%s", report, jsonOut)
+	}
 	resolved := captureStdout(t, func() {
 		cmdAuthority([]string{"resolve", repo})
 	})

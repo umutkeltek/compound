@@ -240,7 +240,7 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
-  compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
@@ -5937,9 +5937,16 @@ func cmdAuthority(args []string) {
 		return
 	}
 	if args[0] == "git" {
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority git <repo-path>")
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority git <repo-path> [--json]")
 			os.Exit(2)
+		}
+		jsonOut := hasFlag(args[2:], "--json")
+		for _, arg := range args[2:] {
+			if arg != "--json" {
+				fmt.Fprintln(os.Stderr, "usage: compound authority git <repo-path> [--json]")
+				os.Exit(2)
+			}
 		}
 		existing, err := store.Entities()
 		if err != nil {
@@ -5970,6 +5977,54 @@ func cmdAuthority(args []string) {
 			if res.Claim != nil {
 				promoted++
 			}
+		}
+		if jsonOut {
+			out := struct {
+				SchemaVersion   string `json:"schema_version"`
+				Status          string `json:"status"`
+				AuthorityRef    string `json:"authority_ref"`
+				EntityRef       string `json:"entity_ref"`
+				GitRoot         string `json:"git_root"`
+				Branch          string `json:"branch,omitempty"`
+				Head            string `json:"head,omitempty"`
+				Remote          string `json:"remote,omitempty"`
+				Upstream        string `json:"upstream,omitempty"`
+				Ahead           int    `json:"ahead"`
+				Behind          int    `json:"behind"`
+				Staged          int    `json:"staged"`
+				Unstaged        int    `json:"unstaged"`
+				Untracked       int    `json:"untracked"`
+				ChangedPaths    int    `json:"changed_paths"`
+				CandidateCount  int    `json:"candidate_count"`
+				AuthorityClaims int    `json:"authority_claims"`
+				EvidenceRef     string `json:"evidence_ref"`
+			}{
+				SchemaVersion:   authority.SourceControlSchemaVersion,
+				Status:          report.Status,
+				AuthorityRef:    "compound://ledger/source-control",
+				EntityRef:       report.EntityRef,
+				GitRoot:         report.GitRoot,
+				Branch:          report.Branch,
+				Head:            report.Head,
+				Remote:          report.Remote,
+				Upstream:        report.Upstream,
+				Ahead:           report.Ahead,
+				Behind:          report.Behind,
+				Staged:          report.Staged,
+				Unstaged:        report.Unstaged,
+				Untracked:       report.Untracked,
+				ChangedPaths:    report.ChangedPaths,
+				CandidateCount:  report.CandidateCount,
+				AuthorityClaims: promoted,
+				EvidenceRef:     report.EvidenceRef,
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", " ")
+			if err := enc.Encode(out); err != nil {
+				fmt.Fprintln(os.Stderr, "authority git:", err)
+				os.Exit(1)
+			}
+			return
 		}
 		fmt.Printf("# source control\n\n")
 		fmt.Printf("- status: %s\n", report.Status)
