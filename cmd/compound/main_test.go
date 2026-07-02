@@ -4344,7 +4344,7 @@ func TestProductImportProjectContractPromotesSourceInPlaceIdentity(t *testing.T)
 		t.Fatalf("product import output missing source-contract proof:\n%s", out)
 	}
 	resolved := captureStdout(t, func() {
-		cmdAuthority([]string{"resolve", "appstore:9876543210"})
+		cmdAuthority([]string{"resolve", "appstore:app-demo-sourcecontract"})
 	})
 	if !strings.Contains(resolved, "status: resolved") || !strings.Contains(resolved, "entity: product:source_contract_demo") {
 		t.Fatalf("app store identifier did not resolve to product entity:\n%s", resolved)

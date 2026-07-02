@@ -279,7 +279,7 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	for _, ref := range []string{
 		"https://example.invalid/source-contract-demo.git",
 		"bundle:com.example.sourcecontractdemo",
-		"appstore:9876543210",
+		"appstore:app-demo-sourcecontract",
 		"https://source-contract-demo.example.invalid/health",
 	} {
 		if !hasSurfaceRef(bundle.Product.Surfaces, ref) {
@@ -302,7 +302,7 @@ func TestProjectContractBundleMapsSourceInPlaceProductRegistry(t *testing.T) {
 	if report.Status != "ok" || report.EntityID != "product:source_contract_demo" || len(report.ClaimIDs) != 4 || len(report.SignalIDs) != 0 || len(report.HypothesisIDs) != 0 {
 		t.Fatalf("report = %+v", report)
 	}
-	for _, token := range []string{"appstore:9876543210", "bundle:com.example.sourcecontractdemo"} {
+	for _, token := range []string{"appstore:app-demo-sourcecontract", "bundle:com.example.sourcecontractdemo"} {
 		res, err := store.ResolveEntity(token)
 		if err != nil {
 			t.Fatal(err)

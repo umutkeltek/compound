@@ -235,7 +235,7 @@ func TestLoadFixture(t *testing.T) {
   host_binding: host:local-dev
   deployment_binding: process:synthetic-api
   data_bindings: [sqlite:synthetic.db]
-  health_check_refs: [http://127.0.0.1:18080/health]
+  health_check_refs: [https://runtime-binding.example.invalid/health]
   risk_tier: tier1
   evidence_refs: [fixture:runtime-binding]
   status: active
@@ -268,7 +268,7 @@ func validBundle() Bundle {
 			HostBinding:       "host:local-dev",
 			DeploymentBinding: "process:synthetic-api",
 			DataBindings:      []string{"sqlite:synthetic.db"},
-			HealthCheckRefs:   []string{"http://127.0.0.1:18080/health"},
+			HealthCheckRefs:   []string{"https://runtime-binding.example.invalid/health"},
 			RiskTier:          "tier1",
 			EvidenceRefs:      []string{"fixture:runtime-binding"},
 			Status:            StatusActive,

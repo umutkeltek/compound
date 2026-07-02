@@ -55,7 +55,7 @@ func TestLoadAdSenseReportSignalsImportsLatestDateSnapshots(t *testing.T) {
 		sourcePath: "../../fixtures/product/adsense-report.json",
 		sourceKind: "google_adsense",
 		load: func(path string, metric string) ([]SignalDocument, error) {
-			return LoadAdSenseReportSignals(path, AdSenseReportSignalOptions{ProductID: "product:google-demo", Account: "pub-0000000000000000", Metric: metric})
+			return LoadAdSenseReportSignals(path, AdSenseReportSignalOptions{ProductID: "product:google-demo", Account: "pub-demo-account", Metric: metric})
 		},
 		wantMetrics: []string{"adsense_estimated_earnings", "adsense_page_rpm", "adsense_impressions"},
 		wantWindow:  "snapshot 2026-06-30",
@@ -92,9 +92,9 @@ func TestGoogleReportSignalsRejectInvalidShapes(t *testing.T) {
 		},
 		{
 			name: "adsense_bad_date",
-			body: `{"account":"pub-0000000000000000","rows":[{"date":"06/30/2026","estimated_earnings":1.2,"page_rpm":3.4,"impressions":5}]}`,
+			body: `{"account":"pub-demo-account","rows":[{"date":"06/30/2026","estimated_earnings":1.2,"page_rpm":3.4,"impressions":5}]}`,
 			load: func(path string) ([]SignalDocument, error) {
-				return LoadAdSenseReportSignals(path, AdSenseReportSignalOptions{ProductID: "product:google-demo", Account: "pub-0000000000000000"})
+				return LoadAdSenseReportSignals(path, AdSenseReportSignalOptions{ProductID: "product:google-demo", Account: "pub-demo-account"})
 			},
 		},
 	}
