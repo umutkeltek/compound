@@ -216,6 +216,112 @@ func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "ready work remains hot"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	done, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "terminal work archives"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim(done.ID, "codex", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(done.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(done.ID, work.AdvanceInput{To: "verifying", VerificationID: "ver_cli_archive"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Close(done.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "archive history CLI proof",
+		Changed:   true,
+		ProofRefs: []string{"proof:cli-archive"},
+	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "pv_cli_archive", map[string]any{
+		"id":     "pv_cli_archive",
+		"status": "recorded",
+	}, " ", "# Verdict\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.WriteJSON(homePath, "panel-verdicts", "pv_cli_archive.reviewed.json", map[string]any{
+		"id":     "pvr_cli_archive",
+		"status": "recorded",
+	}, " "); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdHome([]string{"archive-history", "--kind", "work", "--kind", "review"})
+	})
+	if !strings.Contains(out, "# home archive-history") || !strings.Contains(out, "- work: 1") || !strings.Contains(out, "- review: 3") {
+		t.Fatalf("archive-history output:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "work", done.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("terminal work should move out of hot store, stat err=%v", err)
+	}
+
+	var wb workbenchCLIOutput
+	out = captureStdout(t, func() { cmdWorkbench([]string{"--json", "--recent", "10", "--review-area", "panel-verdicts"}) })
+	if err := json.Unmarshal([]byte(out), &wb); err != nil {
+		t.Fatalf("parse default workbench: %v\n%s", err, out)
+	}
+	if wb.Counts.Terminal != 0 || wb.ReviewQueue == nil || wb.ReviewQueue.Counts.Total != 0 {
+		t.Fatalf("default workbench should hide archived history: counts=%+v review=%+v", wb.Counts, wb.ReviewQueue)
+	}
+
+	var reviews reviewartifact.QueueReport
+	out = captureStdout(t, func() { cmdReviews([]string{"--json", "--area", "panel-verdicts"}) })
+	if err := json.Unmarshal([]byte(out), &reviews); err != nil {
+		t.Fatalf("parse default reviews: %v\n%s", err, out)
+	}
+	if reviews.Counts.Total != 0 {
+		t.Fatalf("default reviews should hide archived history: %+v", reviews.Counts)
+	}
+
+	out = captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--recent", "10", "--review-area", "panel-verdicts", "--include-archived"})
+	})
+	if err := json.Unmarshal([]byte(out), &wb); err != nil {
+		t.Fatalf("parse archived workbench: %v\n%s", err, out)
+	}
+	if wb.Counts.Terminal != 1 || wb.ReviewQueue == nil || wb.ReviewQueue.Counts.Total != 1 {
+		t.Fatalf("include-archived workbench should show history: counts=%+v review=%+v", wb.Counts, wb.ReviewQueue)
+	}
+
+	out = captureStdout(t, func() { cmdReviews([]string{"--json", "--area", "panel-verdicts", "--include-archived"}) })
+	if err := json.Unmarshal([]byte(out), &reviews); err != nil {
+		t.Fatalf("parse archived reviews: %v\n%s", err, out)
+	}
+	if reviews.Counts.Total != 1 || reviews.Items[0].ID != "pv_cli_archive" {
+		t.Fatalf("include-archived reviews should show history: %+v", reviews)
+	}
+
+	out = captureStdout(t, func() { cmdHome([]string{"restore-history", "--all"}) })
+	if !strings.Contains(out, "# home restore-history") || !strings.Contains(out, "- restored: 4") {
+		t.Fatalf("restore-history output:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "work", done.ID+".json")); err != nil {
+		t.Fatalf("terminal work should restore to hot store: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "reviews", "panel-verdicts", "pv_cli_archive.reviewed.json")); err != nil {
+		t.Fatalf("review sidecar should restore to hot store: %v", err)
+	}
+}
+
 func TestOrientUsesRepoKindRegistry(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -188,6 +188,8 @@ Home durability is part of the runtime contract:
 compound home backup [--target archive.tar.gz]
 compound home verify [archive.tar.gz]
 compound home restore archive.tar.gz --target <empty-home-path>
+compound home archive-history [--dry-run] [--kind work|review|comparison]
+compound home restore-history (--all|--id ID...)
 compound home export --public-fixture [--target fixture.tar.gz]
 compound home compact [--dry-run] [--rebuildable]
 ```
@@ -195,3 +197,10 @@ compound home compact [--dry-run] [--rebuildable]
 `backup` stores durable owned state and intentionally excludes transient or
 rebuildable roots. `export --public-fixture` emits only sanitized layout/manifest
 metadata, not private events, ledgers, context packs, or work records.
+`archive-history` moves terminal operational history out of hot surfaces into
+`COMPOUND_HOME/archives/operational/` with an append-only index, without deleting
+it. It archives completed/failed/cancelled WorkEnvelopes, terminal owner-review
+artifacts and sidecars, and judged comparison candidates. `workbench` and
+`reviews` exclude archived entries by default; `--include-archived` restores
+query visibility, and `restore-history` moves selected entries back to original
+hot paths.

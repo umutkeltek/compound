@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/home"
 )
 
 // These tests pin the exact behaviour every migrated call site relied on. They
@@ -368,5 +370,51 @@ func TestQueueEmptyReviews(t *testing.T) {
 	}
 	if report.Counts.Total != 0 || len(report.Items) != 0 {
 		t.Fatalf("empty queue = %+v", report)
+	}
+}
+
+func TestQueueExcludesArchivedReviewsByDefaultAndIncludesWhenAsked(t *testing.T) {
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	if err := home.Init(homePath, "test", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Write(homePath, "panel-verdicts", "pv_archive", map[string]any{
+		"id":     "pv_archive",
+		"status": "recorded",
+	}, " ", "# Verdict\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteJSON(homePath, "panel-verdicts", "pv_archive.reviewed.json", map[string]any{
+		"id":     "pvr_archive",
+		"status": "recorded",
+	}, " "); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := home.ArchiveOperationalHistory(homePath, home.OperationalArchiveOptions{Kinds: []string{"review"}}, time.Date(2026, 7, 1, 1, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Queue(homePath, QueueOptions{Area: "panel-verdicts"}, time.Date(2026, 7, 1, 2, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Total != 0 || len(report.Items) != 0 {
+		t.Fatalf("default queue should exclude archived reviews: %+v", report)
+	}
+
+	withArchived, err := Queue(homePath, QueueOptions{Area: "panel-verdicts", IncludeArchived: true}, time.Date(2026, 7, 1, 2, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withArchived.Counts.Total != 1 || withArchived.Counts.OK != 1 || len(withArchived.Items) != 1 {
+		t.Fatalf("include archived queue should show recorded review: %+v", withArchived)
+	}
+	item := withArchived.Items[0]
+	if item.ID != "pv_archive" || item.Status != "recorded" {
+		t.Fatalf("archived queue item = %+v", item)
+	}
+	if len(item.ExtraPaths) != 2 || !strings.Contains(strings.Join(item.ExtraPaths, "\n"), "archives/operational/files/reviews/panel-verdicts/pv_archive.reviewed.json") {
+		t.Fatalf("archived review sidecars missing: %+v", item.ExtraPaths)
 	}
 }

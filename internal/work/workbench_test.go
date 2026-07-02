@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"compound/internal/home"
 )
 
 func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
@@ -74,6 +76,66 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 	if report.Recent[0].MoveType != "control_plane_repair" || !report.Recent[0].Changed {
 		t.Fatalf("terminal item missing receipt learning fields: %+v", report.Recent[0])
+	}
+}
+
+func TestWorkbenchExcludesArchivedWorkByDefaultAndResolvesByID(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work stays hot"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "completed work can archive"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(done.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(done.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(done.ID, AdvanceInput{To: "verifying", VerificationID: "ver_archive"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(done.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "archived work remains queryable",
+		Changed:   true,
+		ProofRefs: []string{"proof:archive"},
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.Init(s.home, "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := home.ArchiveOperationalHistory(s.home, home.OperationalArchiveOptions{Kinds: []string{"work"}}, fixedNow.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow.Add(2*time.Hour), WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Open != 1 || report.Counts.Terminal != 0 || len(report.Recent) != 0 {
+		t.Fatalf("default workbench should exclude archived terminal work: counts=%+v recent=%+v", report.Counts, report.Recent)
+	}
+	assertWorkbenchItem(t, report.Open, ready.ID, "needs_claim", "claim before touching")
+
+	withArchived, err := s.Workbench(fixedNow.Add(2*time.Hour), WorkbenchOptions{RecentLimit: 10, IncludeArchived: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withArchived.Counts.Open != 1 || withArchived.Counts.Terminal != 1 || len(withArchived.Recent) != 1 || withArchived.Recent[0].WorkID != done.ID {
+		t.Fatalf("include archived workbench should include terminal history: counts=%+v recent=%+v", withArchived.Counts, withArchived.Recent)
+	}
+	got, err := s.Get(done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != done.ID || got.State != "completed" {
+		t.Fatalf("archived work lookup = %+v", got)
 	}
 }
 

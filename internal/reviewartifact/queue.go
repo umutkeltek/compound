@@ -8,13 +8,16 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/home"
 )
 
 const QueueSchemaVersion = "compound.review_queue.v0.1"
 
 // QueueOptions narrows the read-only review queue.
 type QueueOptions struct {
-	Area string
+	Area            string
+	IncludeArchived bool
 }
 
 // QueueReport is a read-only projection over COMPOUND_HOME/reviews.
@@ -129,6 +132,13 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 	if err != nil {
 		return QueueReport{}, err
 	}
+	if opt.IncludeArchived {
+		archived, err := archivedQueueItems(homePath, opt.Area)
+		if err != nil {
+			return QueueReport{}, err
+		}
+		report.Items = append(report.Items, archived...)
+	}
 	sort.Slice(report.Items, func(i, j int) bool {
 		return queueItemLess(report.Items[i], report.Items[j])
 	})
@@ -167,6 +177,10 @@ func queueItem(root, path string) (QueueItem, error) {
 	if err != nil {
 		return QueueItem{}, err
 	}
+	return queueItemForRel(path, filepath.ToSlash(rel))
+}
+
+func queueItemForRel(path, rel string) (QueueItem, error) {
 	area := filepath.ToSlash(filepath.Dir(rel))
 	if area == "." {
 		area = ""
@@ -227,6 +241,58 @@ func queueItem(root, path string) (QueueItem, error) {
 	}
 	item.ExtraPaths = extras
 	return item, nil
+}
+
+func archivedQueueItems(homePath, area string) ([]QueueItem, error) {
+	entries, err := home.LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return nil, err
+	}
+	byOriginal := map[string]home.OperationalArchiveEntry{}
+	for _, entry := range entries {
+		byOriginal[entry.OriginalPath] = entry
+	}
+	var out []QueueItem
+	for _, entry := range entries {
+		if entry.Kind != "review" || filepath.Ext(entry.OriginalPath) != ".json" || !coreReviewJSON(entry.OriginalPath) {
+			continue
+		}
+		rel := strings.TrimPrefix(filepath.ToSlash(entry.OriginalPath), "reviews/")
+		if area != "" && !strings.HasPrefix(rel, filepath.ToSlash(area)+"/") && rel != filepath.ToSlash(area) {
+			continue
+		}
+		item, err := queueItemForRel(filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)), rel)
+		if err != nil {
+			return nil, err
+		}
+		item.Status = FirstNonEmpty(item.Status, entry.Status, "archived")
+		item.ExtraPaths = archivedReviewExtraPaths(entries, byOriginal, homePath, entry.OriginalPath)
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func archivedReviewExtraPaths(entries []home.OperationalArchiveEntry, byOriginal map[string]home.OperationalArchiveEntry, homePath, originalPath string) []string {
+	stem := strings.TrimSuffix(filepath.Base(originalPath), ".json")
+	dir := filepath.ToSlash(filepath.Dir(originalPath))
+	var out []string
+	for _, entry := range entries {
+		if entry.Kind != "review" || entry.OriginalPath == originalPath {
+			continue
+		}
+		if filepath.ToSlash(filepath.Dir(entry.OriginalPath)) != dir {
+			continue
+		}
+		if !strings.HasPrefix(filepath.Base(entry.OriginalPath), stem+".") {
+			continue
+		}
+		if _, ok := byOriginal[entry.OriginalPath]; !ok {
+			continue
+		}
+		out = append(out, filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)))
+	}
+	sort.Strings(out)
+	return out
 }
 
 func coreReviewJSON(path string) bool {

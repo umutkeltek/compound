@@ -197,14 +197,14 @@ func usage() {
 
 usage:
   compound version
-  compound home <init|doctor|where|backup|export|verify|restore|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore
+  compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
   compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] read-only open work / receipt / transition board; optional capability offers; no dispatch
-  compound reviews [--json] [--area A] read-only owner-review artifact queue; no apply
+  compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
@@ -3735,7 +3735,7 @@ func flagCSVValues(args []string, names ...string) []string {
 	return out
 }
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--review-area A]"
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -3778,10 +3778,13 @@ func cmdWorkbench(args []string) {
 	capabilityTask := ""
 	capabilityHarness := ""
 	reviewArea := ""
+	includeArchived := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
+		case "--include-archived":
+			includeArchived = true
 		case "--active-packet-surface":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, workbenchUsage)
@@ -3858,6 +3861,7 @@ func cmdWorkbench(args []string) {
 		RecentLimit:         recent,
 		Actor:               actor,
 		ActivePacketSurface: activePacketSurface,
+		IncludeArchived:     includeArchived,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -3880,7 +3884,7 @@ func cmdWorkbench(args []string) {
 		}
 		capabilitySurface = &surface
 	}
-	reviewReport, err := buildReviewQueueReport(homePath, reviewArea)
+	reviewReport, err := buildReviewQueueReport(homePath, reviewArea, includeArchived)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -3982,8 +3986,8 @@ func cmdWorkbench(args []string) {
 	}
 }
 
-func buildReviewQueueReport(homePath, area string) (reviewartifact.QueueReport, error) {
-	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area}, time.Now())
+func buildReviewQueueReport(homePath, area string, includeArchived bool) (reviewartifact.QueueReport, error) {
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area, IncludeArchived: includeArchived}, time.Now())
 	if err != nil {
 		return reviewartifact.QueueReport{}, err
 	}
@@ -4044,17 +4048,19 @@ func cmdReviews(args []string) {
 	}
 	jsonOut := hasFlag(args, "--json")
 	area := valueFlag(args, "--area")
+	includeArchived := hasFlag(args, "--include-archived")
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
+		case "--include-archived":
 		case "--area":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound reviews [--json] [--area A]")
+				fmt.Fprintln(os.Stderr, "usage: compound reviews [--json] [--area A] [--include-archived]")
 				os.Exit(2)
 			}
 			i++
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound reviews [--json] [--area A]")
+			fmt.Fprintln(os.Stderr, "usage: compound reviews [--json] [--area A] [--include-archived]")
 			os.Exit(2)
 		}
 	}
@@ -4063,7 +4069,7 @@ func cmdReviews(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	report, err := buildReviewQueueReport(homePath, area)
+	report, err := buildReviewQueueReport(homePath, area, includeArchived)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -5603,6 +5609,27 @@ func cmdHome(args []string) {
 			os.Exit(1)
 		}
 		printHomeRestoreReport(report)
+	case "archive-history":
+		report, err := home.ArchiveOperationalHistory(resolve(), home.OperationalArchiveOptions{
+			DryRun: hasFlag(args, "--dry-run"),
+			Kinds:  valuesFlag(args, "--kind"),
+		}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home archive-history:", err)
+			os.Exit(1)
+		}
+		printHomeOperationalArchiveReport("archive-history", report)
+	case "restore-history":
+		report, err := home.RestoreOperationalArchive(resolve(), home.OperationalRestoreOptions{
+			DryRun: hasFlag(args, "--dry-run"),
+			All:    hasFlag(args, "--all"),
+			IDs:    valuesFlag(args, "--id"),
+		}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "home restore-history:", err)
+			os.Exit(1)
+		}
+		printHomeOperationalArchiveReport("restore-history", report)
 	case "compact":
 		report, err := home.Compact(resolve(), home.CompactOptions{
 			DryRun:      hasFlag(args, "--dry-run"),
@@ -5614,7 +5641,7 @@ func cmdHome(args []string) {
 		}
 		printHomeCompactReport(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|compact> [--home <path>] [--local|--global]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]")
 		os.Exit(2)
 	}
 }
@@ -5670,6 +5697,30 @@ func printHomeRestoreReport(r home.RestoreReport) {
 	fmt.Printf("- files: %d\n", r.Files)
 	fmt.Printf("- bytes: %d\n", r.Bytes)
 	fmt.Println("- verdict: ok")
+}
+
+func printHomeOperationalArchiveReport(action string, r home.OperationalArchiveReport) {
+	fmt.Printf("# home %s\n", action)
+	fmt.Printf("- home: %s\n", r.Home)
+	fmt.Printf("- dry_run: %v\n", r.DryRun)
+	if r.ArchivedAt != "" {
+		fmt.Printf("- archived_at: %s\n", r.ArchivedAt)
+	}
+	if r.RestoredAt != "" {
+		fmt.Printf("- restored_at: %s\n", r.RestoredAt)
+	}
+	if r.ArchivedCount > 0 {
+		fmt.Printf("- archived: %d\n", r.ArchivedCount)
+	}
+	if r.RestoredCount > 0 {
+		fmt.Printf("- restored: %d\n", r.RestoredCount)
+	}
+	for _, kind := range sortedMapKeys(r.Counts) {
+		fmt.Printf("- %s: %d\n", kind, r.Counts[kind])
+	}
+	for _, entry := range r.Entries {
+		fmt.Printf("- entry: %s %s %s -> %s\n", entry.ID, entry.Kind, entry.OriginalPath, entry.ArchivePath)
+	}
 }
 
 func printHomeCompactReport(r home.CompactReport) {

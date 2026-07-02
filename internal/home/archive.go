@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +27,7 @@ const (
 
 	ArchiveKindBackup        = "backup"
 	ArchiveKindPublicFixture = "public_fixture"
+	ArchiveKindOperational   = "operational_history"
 )
 
 var backupExcludedRoots = []string{"exports", "indexes", "lock", "projections", "tmp"}
@@ -82,6 +85,54 @@ type CompactReport struct {
 	ClearedDirs  []string
 	RemovedFiles int
 	RemovedBytes int64
+}
+
+const (
+	OperationalArchiveSchemaVersion = "compound.operational_archive.v0.1"
+	OperationalArchiveIndexRel      = "archives/operational/index.jsonl"
+	OperationalArchiveFilesRel      = "archives/operational/files"
+)
+
+type OperationalArchiveOptions struct {
+	DryRun bool
+	Kinds  []string
+}
+
+type OperationalRestoreOptions struct {
+	DryRun bool
+	All    bool
+	IDs    []string
+}
+
+type OperationalArchiveEntry struct {
+	SchemaVersion string `json:"schema_version"`
+	ID            string `json:"id"`
+	Operation     string `json:"operation"`
+	CreatedAt     string `json:"created_at"`
+	Kind          string `json:"kind"`
+	Status        string `json:"status,omitempty"`
+	OriginalPath  string `json:"original_path"`
+	ArchivePath   string `json:"archive_path"`
+	Size          int64  `json:"size,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+}
+
+type OperationalArchiveReport struct {
+	SchemaVersion string                    `json:"schema_version"`
+	Home          string                    `json:"home"`
+	DryRun        bool                      `json:"dry_run"`
+	ArchivedAt    string                    `json:"archived_at,omitempty"`
+	RestoredAt    string                    `json:"restored_at,omitempty"`
+	ArchivedCount int                       `json:"archived_count,omitempty"`
+	RestoredCount int                       `json:"restored_count,omitempty"`
+	Counts        map[string]int            `json:"counts,omitempty"`
+	Entries       []OperationalArchiveEntry `json:"entries"`
+}
+
+type operationalCandidate struct {
+	Kind         string
+	Status       string
+	OriginalPath string
 }
 
 // Backup writes a durable COMPOUND_HOME archive. Transient and rebuildable roots
@@ -292,6 +343,528 @@ func Compact(homePath string, opts CompactOptions) (CompactReport, error) {
 		}
 	}
 	return report, nil
+}
+
+func OperationalArchiveIndexPath(homePath string) string {
+	return filepath.Join(homePath, OperationalArchiveIndexRel)
+}
+
+func OperationalArchiveFilesRoot(homePath string) string {
+	return filepath.Join(homePath, OperationalArchiveFilesRel)
+}
+
+func LoadOperationalArchiveIndex(homePath string) ([]OperationalArchiveEntry, error) {
+	homePath, err := filepath.Abs(expandUser(homePath))
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(OperationalArchiveIndexPath(homePath))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	active := map[string]OperationalArchiveEntry{}
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry OperationalArchiveEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, fmt.Errorf("parse operational archive index line %d: %w", i+1, err)
+		}
+		if entry.SchemaVersion != OperationalArchiveSchemaVersion {
+			return nil, fmt.Errorf("operational archive index line %d schema_version must be %s, got %q", i+1, OperationalArchiveSchemaVersion, entry.SchemaVersion)
+		}
+		switch entry.Operation {
+		case "archived":
+			active[entry.ID] = entry
+		case "restored":
+			delete(active, entry.ID)
+		default:
+			return nil, fmt.Errorf("operational archive index line %d has unknown operation %q", i+1, entry.Operation)
+		}
+	}
+	out := make([]OperationalArchiveEntry, 0, len(active))
+	for _, entry := range active {
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].OriginalPath < out[j].OriginalPath
+	})
+	return out, nil
+}
+
+func ArchiveOperationalHistory(homePath string, opts OperationalArchiveOptions, now time.Time) (OperationalArchiveReport, error) {
+	homePath, err := filepath.Abs(expandUser(homePath))
+	if err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	if err := requireHealthyHome(homePath); err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	report := OperationalArchiveReport{
+		SchemaVersion: OperationalArchiveSchemaVersion,
+		Home:          homePath,
+		DryRun:        opts.DryRun,
+		ArchivedAt:    now.UTC().Format(time.RFC3339),
+		Counts:        map[string]int{},
+	}
+	active, err := LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	alreadyArchived := map[string]bool{}
+	for _, entry := range active {
+		alreadyArchived[entry.OriginalPath] = true
+	}
+	candidates, err := operationalArchiveCandidates(homePath, opts)
+	if err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	for _, cand := range candidates {
+		if alreadyArchived[cand.OriginalPath] {
+			continue
+		}
+		entry, err := archiveOperationalFile(homePath, cand, now, opts.DryRun)
+		if err != nil {
+			return OperationalArchiveReport{}, err
+		}
+		report.Entries = append(report.Entries, entry)
+		report.Counts[entry.Kind]++
+	}
+	report.ArchivedCount = len(report.Entries)
+	if !opts.DryRun && len(report.Entries) > 0 {
+		if err := appendOperationalArchiveEntries(homePath, report.Entries); err != nil {
+			return OperationalArchiveReport{}, err
+		}
+	}
+	return report, nil
+}
+
+func RestoreOperationalArchive(homePath string, opts OperationalRestoreOptions, now time.Time) (OperationalArchiveReport, error) {
+	homePath, err := filepath.Abs(expandUser(homePath))
+	if err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	if err := requireHealthyHome(homePath); err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	active, err := LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return OperationalArchiveReport{}, err
+	}
+	selected := selectOperationalArchiveEntries(active, opts)
+	if len(selected) == 0 && !opts.All && len(opts.IDs) == 0 {
+		return OperationalArchiveReport{}, fmt.Errorf("restore requires --all or at least one --id")
+	}
+	report := OperationalArchiveReport{
+		SchemaVersion: OperationalArchiveSchemaVersion,
+		Home:          homePath,
+		DryRun:        opts.DryRun,
+		RestoredAt:    now.UTC().Format(time.RFC3339),
+		Counts:        map[string]int{},
+	}
+	for _, entry := range selected {
+		restored, err := restoreOperationalFile(homePath, entry, now, opts.DryRun)
+		if err != nil {
+			return OperationalArchiveReport{}, err
+		}
+		report.Entries = append(report.Entries, restored)
+		report.Counts[restored.Kind]++
+	}
+	report.RestoredCount = len(report.Entries)
+	if !opts.DryRun && len(report.Entries) > 0 {
+		if err := appendOperationalArchiveEntries(homePath, report.Entries); err != nil {
+			return OperationalArchiveReport{}, err
+		}
+	}
+	return report, nil
+}
+
+func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions) ([]operationalCandidate, error) {
+	kinds, err := operationalArchiveKinds(opts.Kinds)
+	if err != nil {
+		return nil, err
+	}
+	var out []operationalCandidate
+	if kinds["work"] {
+		candidates, err := terminalWorkCandidates(homePath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidates...)
+	}
+	if kinds["review"] {
+		candidates, err := terminalReviewCandidates(homePath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidates...)
+	}
+	if kinds["comparison"] {
+		candidates, err := terminalComparisonCandidates(homePath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidates...)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].OriginalPath < out[j].OriginalPath
+	})
+	return out, nil
+}
+
+func operationalArchiveKinds(values []string) (map[string]bool, error) {
+	allowed := map[string]bool{"work": true, "review": true, "comparison": true}
+	out := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				if !allowed[part] {
+					return nil, fmt.Errorf("unknown operational archive kind %q", part)
+				}
+				out[part] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		out["work"] = true
+		out["review"] = true
+		out["comparison"] = true
+	}
+	return out, nil
+}
+
+func terminalWorkCandidates(homePath string) ([]operationalCandidate, error) {
+	dir := filepath.Join(homePath, "work", "work")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []operationalCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join("work", "work", entry.Name()))
+		status, err := jsonStringField(filepath.Join(homePath, filepath.FromSlash(rel)), "state")
+		if err != nil {
+			return nil, err
+		}
+		if terminalWorkStatus(status) {
+			out = append(out, operationalCandidate{Kind: "work", Status: status, OriginalPath: rel})
+		}
+	}
+	return out, nil
+}
+
+func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {
+	root := filepath.Join(homePath, "reviews")
+	var out []operationalCandidate
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || filepath.Ext(path) != ".json" || !operationalCoreReviewJSON(path) {
+			return nil
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		status, err := jsonFirstStringField(path, "status", "verdict", "result")
+		if err != nil {
+			return err
+		}
+		derivedStatus, derivedTerminal, err := derivedTerminalReviewStatus(homePath, path)
+		if err != nil {
+			return err
+		}
+		if derivedTerminal {
+			status = firstNonEmptyString(status, derivedStatus)
+		}
+		if terminalReviewStatus(status) || derivedTerminal || hasTerminalReviewSidecar(path) {
+			status = firstNonEmptyString(status, "recorded")
+			out = append(out, operationalCandidate{Kind: "review", Status: status, OriginalPath: rel})
+			siblings, err := operationalReviewSiblingPaths(homePath, path)
+			if err != nil {
+				return err
+			}
+			for _, sibling := range siblings {
+				out = append(out, operationalCandidate{Kind: "review", Status: status, OriginalPath: sibling})
+			}
+		}
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	return out, err
+}
+
+func terminalComparisonCandidates(homePath string) ([]operationalCandidate, error) {
+	dir := filepath.Join(homePath, "inbox", "comparisons")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []operationalCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		state, err := jsonStringField(path, "state")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(state) != "judged" {
+			continue
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, operationalCandidate{
+			Kind:         "comparison",
+			Status:       state,
+			OriginalPath: filepath.ToSlash(rel),
+		})
+	}
+	return out, nil
+}
+
+func derivedTerminalReviewStatus(homePath, path string) (string, bool, error) {
+	var payload map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false, err
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", false, err
+	}
+	if jsonMapString(payload, "schema_version") != "compound.panel_verdict.v0.1" {
+		return "", false, nil
+	}
+	target, ok := payload["target"].(map[string]any)
+	if !ok {
+		return "", false, nil
+	}
+	switch jsonMapString(target, "kind") {
+	case "comparison":
+		ref := jsonMapString(target, "ref")
+		if ref == "" {
+			return "", false, nil
+		}
+		judged, err := comparisonCandidateTerminal(homePath, ref)
+		if err != nil {
+			return "", false, err
+		}
+		if judged {
+			return "applied", true, nil
+		}
+	case "memory_candidate":
+		ref := jsonMapString(target, "ref")
+		if ref == "" {
+			return "", false, nil
+		}
+		terminal, err := candidateTerminal(homePath, candidates.Memory, ref)
+		if err != nil {
+			return "", false, err
+		}
+		if terminal {
+			return "applied", true, nil
+		}
+	case "capability_observation":
+		ref := jsonMapString(target, "ref")
+		if ref == "" {
+			return "", false, nil
+		}
+		terminal, err := candidateTerminal(homePath, candidates.CapabilityObs, ref)
+		if err != nil {
+			return "", false, err
+		}
+		if terminal {
+			return "applied", true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func comparisonCandidateTerminal(homePath, ref string) (bool, error) {
+	rel := filepath.ToSlash(filepath.Join("inbox", "comparisons", ref+".json"))
+	path := filepath.Join(homePath, filepath.FromSlash(rel))
+	if state, err := jsonStringField(path, "state"); err == nil {
+		return strings.TrimSpace(state) == "judged", nil
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	entries, err := LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.Kind == "comparison" && entry.OriginalPath == rel && entry.Status == "judged" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func candidateTerminal(homePath string, kind candidates.Kind, ref string) (bool, error) {
+	dir := candidates.InboxDir(kind)
+	if dir == "" {
+		return false, nil
+	}
+	path := filepath.Join(homePath, dir, ref+".json")
+	status, err := jsonFirstStringField(path, "state", "verdict", "status", "result")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	switch strings.TrimSpace(status) {
+	case "park", "parked", "promote", "promoted", "reject", "rejected", "no_promote", "operationalize", "operationalized":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func archiveOperationalFile(homePath string, cand operationalCandidate, now time.Time, dryRun bool) (OperationalArchiveEntry, error) {
+	rel := filepath.ToSlash(cand.OriginalPath)
+	if err := validateArchivePath(rel); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	source := filepath.Join(homePath, filepath.FromSlash(rel))
+	info, err := os.Stat(source)
+	if err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	if info.IsDir() {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive source must be file: %s", rel)
+	}
+	hash, err := fileSHA256(source)
+	if err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	archiveRel := filepath.ToSlash(filepath.Join(OperationalArchiveFilesRel, rel))
+	target := filepath.Join(homePath, filepath.FromSlash(archiveRel))
+	entry := OperationalArchiveEntry{
+		SchemaVersion: OperationalArchiveSchemaVersion,
+		ID:            operationalArchiveID(rel),
+		Operation:     "archived",
+		CreatedAt:     now.UTC().Format(time.RFC3339),
+		Kind:          cand.Kind,
+		Status:        cand.Status,
+		OriginalPath:  rel,
+		ArchivePath:   archiveRel,
+		Size:          info.Size(),
+		SHA256:        hash,
+	}
+	if dryRun {
+		return entry, nil
+	}
+	if _, err := os.Stat(target); err == nil {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive target already exists: %s", archiveRel)
+	} else if !os.IsNotExist(err) {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := os.Rename(source, target); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	return entry, nil
+}
+
+func restoreOperationalFile(homePath string, entry OperationalArchiveEntry, now time.Time, dryRun bool) (OperationalArchiveEntry, error) {
+	source := filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath))
+	target := filepath.Join(homePath, filepath.FromSlash(entry.OriginalPath))
+	if !isUnderHome(homePath, source) || !isUnderHome(homePath, target) {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore path escapes home: %s", entry.ID)
+	}
+	if _, err := os.Stat(source); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	restored := entry
+	restored.Operation = "restored"
+	restored.CreatedAt = now.UTC().Format(time.RFC3339)
+	if dryRun {
+		return restored, nil
+	}
+	if _, err := os.Stat(target); err == nil {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore target already exists: %s", entry.OriginalPath)
+	} else if !os.IsNotExist(err) {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	if err := os.Rename(source, target); err != nil {
+		return OperationalArchiveEntry{}, err
+	}
+	return restored, nil
+}
+
+func selectOperationalArchiveEntries(entries []OperationalArchiveEntry, opts OperationalRestoreOptions) []OperationalArchiveEntry {
+	if opts.All {
+		return append([]OperationalArchiveEntry(nil), entries...)
+	}
+	wanted := map[string]bool{}
+	for _, raw := range opts.IDs {
+		for _, id := range strings.Split(raw, ",") {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				wanted[id] = true
+			}
+		}
+	}
+	var out []OperationalArchiveEntry
+	for _, entry := range entries {
+		if wanted[entry.ID] {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func appendOperationalArchiveEntries(homePath string, entries []OperationalArchiveEntry) error {
+	path := OperationalArchiveIndexPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now time.Time, include func(string, fs.FileInfo) bool) (ArchiveReport, error) {
@@ -575,6 +1148,130 @@ func validateArchivePath(name string) error {
 		}
 	}
 	return nil
+}
+
+func terminalWorkStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalReviewStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
+		return true
+	default:
+		return false
+	}
+}
+
+func operationalCoreReviewJSON(path string) bool {
+	name := filepath.Base(path)
+	for _, suffix := range []string{".apply.json", ".decision.json", ".reviewed.json"} {
+		if strings.HasSuffix(name, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasTerminalReviewSidecar(path string) bool {
+	stem := strings.TrimSuffix(filepath.Base(path), ".json")
+	dir := filepath.Dir(path)
+	for _, suffix := range []string{".reviewed.json", ".apply.json", ".decision.json"} {
+		if _, err := os.Stat(filepath.Join(dir, stem+suffix)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func operationalReviewSiblingPaths(homePath, corePath string) ([]string, error) {
+	stem := strings.TrimSuffix(filepath.Base(corePath), ".json")
+	dir := filepath.Dir(corePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, stem+".") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if path == corePath {
+			continue
+		}
+		rel, err := filepath.Rel(homePath, path)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filepath.ToSlash(rel))
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func jsonStringField(path, key string) (string, error) {
+	return jsonFirstStringField(path, key)
+}
+
+func jsonFirstStringField(path string, keys ...string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	for _, key := range keys {
+		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", nil
+}
+
+func jsonMapString(payload map[string]any, key string) string {
+	if value, ok := payload[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func operationalArchiveID(originalPath string) string {
+	sum := sha256.Sum256([]byte(filepath.ToSlash(originalPath)))
+	return "oparch_" + hex.EncodeToString(sum[:])[:12]
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sum := sha256.New()
+	if _, err := io.Copy(sum, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 func sortedArchiveEntries(entries []ArchiveEntry) []ArchiveEntry {

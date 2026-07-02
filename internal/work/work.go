@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/home"
 )
 
 // transitions is the work-state machine. Terminal states (completed/failed/cancelled)
@@ -136,6 +138,11 @@ func (s *Store) Create(in CreateInput, now time.Time) (envelope.WorkEnvelope, er
 func (s *Store) Get(workID string) (envelope.WorkEnvelope, error) {
 	var w envelope.WorkEnvelope
 	err := s.readJSON(s.workPath(workID), &w)
+	if errors.Is(err, os.ErrNotExist) {
+		if archivedPath, ok := s.archivedWorkPath(workID); ok {
+			err = s.readJSON(archivedPath, &w)
+		}
+	}
 	return w, err
 }
 
@@ -150,6 +157,14 @@ func (s *Store) Show(workID string) (envelope.WorkEnvelope, []Event, error) {
 }
 
 func (s *Store) List() ([]envelope.WorkEnvelope, error) {
+	return s.list(false)
+}
+
+func (s *Store) ListWithArchived() ([]envelope.WorkEnvelope, error) {
+	return s.list(true)
+}
+
+func (s *Store) list(includeArchived bool) ([]envelope.WorkEnvelope, error) {
 	dir := filepath.Join(s.home, "work/work")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -165,7 +180,46 @@ func (s *Store) List() ([]envelope.WorkEnvelope, error) {
 			out = append(out, w)
 		}
 	}
+	if includeArchived {
+		archived, err := s.archivedWorks()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, archived...)
+	}
 	return out, nil
+}
+
+func (s *Store) archivedWorks() ([]envelope.WorkEnvelope, error) {
+	entries, err := home.LoadOperationalArchiveIndex(s.home)
+	if err != nil {
+		return nil, err
+	}
+	var out []envelope.WorkEnvelope
+	for _, entry := range entries {
+		if entry.Kind != "work" || !strings.HasPrefix(entry.OriginalPath, "work/work/") || !strings.HasSuffix(entry.OriginalPath, ".json") {
+			continue
+		}
+		var w envelope.WorkEnvelope
+		if err := s.readJSON(filepath.Join(s.home, filepath.FromSlash(entry.ArchivePath)), &w); err == nil {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) archivedWorkPath(workID string) (string, bool) {
+	entries, err := home.LoadOperationalArchiveIndex(s.home)
+	if err != nil {
+		return "", false
+	}
+	want := filepath.ToSlash(filepath.Join("work", "work", workID+".json"))
+	for _, entry := range entries {
+		if entry.Kind == "work" && entry.OriginalPath == want {
+			return filepath.Join(s.home, filepath.FromSlash(entry.ArchivePath)), true
+		}
+	}
+	return "", false
 }
 
 // --- claim ---
@@ -624,7 +678,7 @@ func (s *Store) readJSON(path string, v any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("not found: %s", filepath.Base(path))
+			return fmt.Errorf("not found: %s: %w", filepath.Base(path), err)
 		}
 		return err
 	}

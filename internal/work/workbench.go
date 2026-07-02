@@ -15,6 +15,7 @@ type WorkbenchOptions struct {
 	RecentLimit         int
 	Actor               string
 	ActivePacketSurface string
+	IncludeArchived     bool
 }
 
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
@@ -116,7 +117,13 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		Counts:      WorkbenchCounts{ByState: map[string]int{}},
 		Open:        []WorkbenchItem{},
 	}
-	works, err := s.List()
+	var works []envelope.WorkEnvelope
+	var err error
+	if opts.IncludeArchived {
+		works, err = s.ListWithArchived()
+	} else {
+		works, err = s.List()
+	}
 	if err != nil {
 		return report, err
 	}

@@ -212,6 +212,86 @@ func TestCompactClearsTransientAndOptionalRebuildableDirs(t *testing.T) {
 	}
 }
 
+func TestOperationalArchiveMovesTerminalHistoryAndRestores(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	writeHomeFile(t, h, "work/work/work_done.json", `{"id":"work_done","state":"completed"}`)
+	writeHomeFile(t, h, "work/work/work_ready.json", `{"id":"work_ready","state":"ready"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/pv.json", `{"id":"pv","status":"recorded"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/pv.md", "# pv\n")
+	writeHomeFile(t, h, "reviews/panel-verdicts/pv.reviewed.json", `{"id":"pv_review","status":"recorded"}`)
+	writeHomeFile(t, h, "inbox/comparisons/cmp_judged.json", `{"id":"cmp_judged","state":"judged"}`)
+	writeHomeFile(t, h, "inbox/comparisons/cmp_awaiting.json", `{"id":"cmp_awaiting","state":"awaiting_verdict"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_cmp.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_cmp","target":{"kind":"comparison","ref":"cmp_judged"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_cmp.md", "# verdict\n")
+	writeHomeFile(t, h, "inbox/memory-candidates/cand_memory.json", `{"id":"cand_memory","state":"parked"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_memory.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_memory","target":{"kind":"memory_candidate","ref":"cand_memory"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_memory.md", "# memory verdict\n")
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 9 || report.Counts["work"] != 1 || report.Counts["review"] != 7 || report.Counts["comparison"] != 1 {
+		t.Fatalf("archive report = %+v", report)
+	}
+	assertMissing(t, filepath.Join(h, "work/work/work_done.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/pv.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/pv.md"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/pv.reviewed.json"))
+	assertMissing(t, filepath.Join(h, "inbox/comparisons/cmp_judged.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_cmp.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_cmp.md"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_memory.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_memory.md"))
+	if got := mustReadHomeFile(t, h, "work/work/work_ready.json"); !strings.Contains(got, "work_ready") {
+		t.Fatalf("ready work should remain hot, got %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "inbox/comparisons/cmp_awaiting.json"); !strings.Contains(got, "awaiting_verdict") {
+		t.Fatalf("awaiting comparison should remain hot, got %q", got)
+	}
+	active, err := LoadOperationalArchiveIndex(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 9 {
+		t.Fatalf("active archive entries = %d, want 9", len(active))
+	}
+
+	restore, err := RestoreOperationalArchive(h, OperationalRestoreOptions{All: true}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore.RestoredCount != 9 {
+		t.Fatalf("restore report = %+v", restore)
+	}
+	if got := mustReadHomeFile(t, h, "work/work/work_done.json"); !strings.Contains(got, "completed") {
+		t.Fatalf("restored work = %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/pv.reviewed.json"); !strings.Contains(got, "recorded") {
+		t.Fatalf("restored review sidecar = %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "inbox/comparisons/cmp_judged.json"); !strings.Contains(got, "judged") {
+		t.Fatalf("restored comparison = %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_cmp.json"); !strings.Contains(got, "cmp_judged") {
+		t.Fatalf("restored panel verdict = %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_memory.json"); !strings.Contains(got, "cand_memory") {
+		t.Fatalf("restored memory panel verdict = %q", got)
+	}
+	active, err = LoadOperationalArchiveIndex(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active archive after restore = %+v", active)
+	}
+}
+
 func writeHomeFile(t *testing.T, homePath, rel, content string) {
 	t.Helper()
 	path := filepath.Join(homePath, filepath.FromSlash(rel))

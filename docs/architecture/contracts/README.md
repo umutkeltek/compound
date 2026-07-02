@@ -11,6 +11,8 @@ vertical slice needs it (`../../roadmap/phases.md`).
 
 Product feedback contract note: `compound product canonical-metrics <json> --product <id>` adapts canonical latest metric records into the existing `ProductSignal` and `ProductHypothesis` stores. It records neutral snapshot signals, parks idea-backed hypotheses only if absent, and leaves review/application to `product doctor`, `product review-plan`, and `product review`; it does not call providers, infer causality, mutate product surfaces, or promote memory truth.
 
+Operational history archive contract note: `compound home archive-history [--kind work|review|comparison]` is a `COMPOUND_HOME` owner verb, not a parallel archive system. It moves terminal WorkEnvelope JSON, terminal review artifacts plus sidecars, and judged comparison candidates into `archives/operational/files/`, records active rows in `archives/operational/index.jsonl`, and leaves receipts, transitions, ledgers, and direct ID lookup resolvable. Hot `workbench` / `reviews` surfaces exclude archived entries by default; `--include-archived` is the explicit history query path; `compound home restore-history` reversibly moves selected entries back.
+
 ## Envelope-spine contracts (first-order — the runtime grammar)
 
 Context orientation resolves repo kind by explicit flag, committed `.compound/repo.yaml`, private `COMPOUND_HOME/config/repo-kinds.yaml`, then product default. Product repos exclude control-plane governance refs with recorded reasons; control-plane repos include them.
