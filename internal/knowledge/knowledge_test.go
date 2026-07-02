@@ -461,7 +461,7 @@ func TestExtractionPromptCarriesCandidateShape(t *testing.T) {
 	req := ExtractionRequest{ID: "kx_x", ItemRef: "arxiv:1234.5678v1", SourceKind: "arxiv", Title: "T", EvidenceRef: "ev_1"}
 	llmReq := buildKnowledgeExtractionRequest(req, mem.EvidenceItem{ID: "ev_1", QuoteText: "quote"})
 	joined := strings.Join(llmReq.Instructions, "\n")
-	for _, want := range []string{"knowledge:arxiv:arxiv:1234.5678v1", "entity, predicate, and object", "snake_case", "falsifiable"} {
+	for _, want := range []string{"knowledge:arxiv:arxiv:1234.5678v1", "trace_ref must be knowledge_extraction:kx_x", `Candidate kind must be "memory"`, "entity, predicate, and object", "snake_case", "falsifiable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("instructions missing %q:\n%s", want, joined)
 		}

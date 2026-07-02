@@ -211,17 +211,76 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 	if err != nil {
 		return LLMExtractionResponse{}, usage, err
 	}
-	var extraction LLMExtractionResponse
-	if err := json.Unmarshal(content, &extraction); err != nil {
-		return LLMExtractionResponse{}, usage, fmt.Errorf("parse llm extraction content: %w", err)
+	extraction, err := decodeOpenAICompatibleExtraction(content, req.TraceRef)
+	if err != nil {
+		return LLMExtractionResponse{}, usage, err
 	}
-	if extraction.SchemaVersion != LLMExtractionSchemaVersion {
-		return LLMExtractionResponse{}, usage, fmt.Errorf("llm extraction schema_version=%q, want %q", extraction.SchemaVersion, LLMExtractionSchemaVersion)
+	normalized, err := json.Marshal(extraction)
+	if err != nil {
+		return LLMExtractionResponse{}, usage, err
 	}
-	if _, err := NewGroundedLLMExtractor(req).Extract(content, DefaultPolicy()); err != nil {
+	if _, err := NewGroundedLLMExtractor(req).Extract(normalized, DefaultPolicy()); err != nil {
 		return LLMExtractionResponse{}, usage, err
 	}
 	return extraction, usage, nil
+}
+
+func decodeOpenAICompatibleExtraction(content []byte, requestTraceRef string) (LLMExtractionResponse, error) {
+	content = stripJSONFence(content)
+	var extraction LLMExtractionResponse
+	if err := json.Unmarshal(content, &extraction); err != nil {
+		return LLMExtractionResponse{}, fmt.Errorf("parse llm extraction content: %w", err)
+	}
+	var repairs []string
+	if strings.TrimSpace(extraction.SchemaVersion) == "" {
+		extraction.SchemaVersion = LLMExtractionSchemaVersion
+		repairs = append(repairs, "repaired_missing_schema_version")
+	}
+	if extraction.SchemaVersion != LLMExtractionSchemaVersion {
+		return LLMExtractionResponse{}, fmt.Errorf("llm extraction schema_version=%q, want %q", extraction.SchemaVersion, LLMExtractionSchemaVersion)
+	}
+	if strings.TrimSpace(extraction.TraceRef) == "" && strings.TrimSpace(requestTraceRef) != "" {
+		extraction.TraceRef = strings.TrimSpace(requestTraceRef)
+		repairs = append(repairs, "repaired_missing_trace_ref")
+	}
+	for i := range extraction.Candidates {
+		if strings.TrimSpace(extraction.Candidates[i].Kind) == "memory_candidate" {
+			extraction.Candidates[i].Kind = KindMemory
+			repairs = append(repairs, "normalized_kind_memory_candidate")
+		}
+	}
+	if len(repairs) > 0 {
+		extraction.Warnings = append(extraction.Warnings, repairs...)
+	}
+	return extraction, nil
+}
+
+func stripJSONFence(data []byte) []byte {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return data
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 3 && isJSONFenceOpener(lines[0]) && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			return []byte(strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n")))
+		}
+	}
+	if strings.HasSuffix(trimmed, "```") {
+		withoutFence := strings.TrimSpace(strings.TrimSuffix(trimmed, "```"))
+		if strings.HasPrefix(withoutFence, "{") {
+			return []byte(withoutFence)
+		}
+	}
+	return data
+}
+
+func isJSONFenceOpener(line string) bool {
+	opener := strings.TrimSpace(line)
+	if opener == "```" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(opener, "```")), "json")
 }
 
 func chatCompletionsURL(baseURL string) string {

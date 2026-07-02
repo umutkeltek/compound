@@ -464,6 +464,8 @@ func buildKnowledgeExtractionRequest(req ExtractionRequest, evidence mem.Evidenc
 	llmReq.SourceRefs = []string{req.EvidenceRef}
 	llmReq.Instructions = append(llmReq.Instructions,
 		"Emit memory candidates only.",
+		"Top-level schema_version must be "+distiller.LLMExtractionSchemaVersion+" and trace_ref must be "+llmReq.TraceRef+".",
+		"Candidate kind must be \"memory\" exactly; do not use \"memory_candidate\".",
 		"Every candidate MUST set entity, predicate, and object. Use entity \""+knowledgeEntity(req.SourceKind, req.ItemRef)+"\" for claims about this item; use entity \"topic:<short-slug>\" only for a claim about a broader topic this item evidences.",
 		"predicate is a short snake_case relation such as claims, reports_result, method, finding, limitation.",
 		"object is ONE falsifiable statement grounded in the evidence quote — no speculation beyond it.",

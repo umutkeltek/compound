@@ -96,6 +96,47 @@ func TestOpenAICompatibleExtractionCallsProviderAfterCorpusPasses(t *testing.T) 
 	}
 }
 
+func TestOpenAICompatibleExtractionRepairsEnvelopeArtifacts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		extraction := "```json\n" + `{
+ "source_refs":["raw:one"],
+ "candidates":[{"kind":"memory_candidate","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"evidence_refs":["raw:one"]}]
+}` + "\n```"
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": extraction},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	report, err := ExtractWithOpenAICompatible(context.Background(), LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_live",
+		SourceRefs:    []string{"raw:one"},
+	}, OpenAICompatibleOptions{
+		BaseURL:       server.URL,
+		Model:         "fixture-model",
+		EvalCorpusDir: filepath.Join("..", "..", "fixtures", "distiller"),
+		HTTPClient:    server.Client(),
+		Now:           t0,
+	})
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if report.Response.SchemaVersion != LLMExtractionSchemaVersion || report.Response.TraceRef != "trace_live" {
+		t.Fatalf("response envelope = %+v", report.Response)
+	}
+	if got := report.Response.Candidates[0].Kind; got != KindMemory {
+		t.Fatalf("candidate kind = %q, want %q", got, KindMemory)
+	}
+	for _, want := range []string{"repaired_missing_schema_version", "repaired_missing_trace_ref", "normalized_kind_memory_candidate"} {
+		if !hasString(report.Response.Warnings, want) {
+			t.Fatalf("warnings = %v, want %s", report.Response.Warnings, want)
+		}
+	}
+}
+
 func TestOpenAICompatibleExtractionRejectsBadModelContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		extraction := `{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"trace_bad","source_refs":["raw:one"],"candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.91,"promotion_basis":"model says so"}]}`
