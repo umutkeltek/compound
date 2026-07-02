@@ -2608,6 +2608,10 @@ func cmdRoute(args []string) {
 				fmt.Fprintln(os.Stderr, "route plan:", err)
 				os.Exit(1)
 			}
+			if hasFlag(args[1:], "--json") {
+				printJSON(plan)
+				return
+			}
 			fmt.Printf("# route capability-plan %s\n", plan.ID)
 			fmt.Printf("- status: %s\n", plan.Status)
 			fmt.Printf("- authority: %s\n", plan.AuthorityRef)

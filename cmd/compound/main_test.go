@@ -7492,6 +7492,20 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 		!strings.Contains(planOut, "- verdict: metadata_only_not_task_success") {
 		t.Fatalf("bad route plan output:\n%s", planOut)
 	}
+	planJSONOut := captureStdout(t, func() {
+		cmdRoute([]string{"plan", "--capability-class", "judge-critique", "--json"})
+	})
+	var plan routeevidence.CapabilityRoutePlan
+	if err := json.Unmarshal([]byte(planJSONOut), &plan); err != nil {
+		t.Fatalf("parse route plan JSON: %v\n%s", err, planJSONOut)
+	}
+	if plan.SchemaVersion != routeevidence.CapabilityRoutePlanSchemaVersion ||
+		plan.AuthorityRef != routeevidence.ModelCapabilitiesAuthorityRef ||
+		plan.CapabilityClass != "judge-critique" ||
+		plan.RoutingRule != "routing_defaults[judge-critique]" ||
+		len(plan.Chain) != 2 {
+		t.Fatalf("bad route plan JSON: %+v", plan)
+	}
 	costFixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls-cost-gaps.ndjson")
 	costOut := captureStdout(t, func() {
 		cmdRoute([]string{"cost-doctor", costFixture, "--record"})
