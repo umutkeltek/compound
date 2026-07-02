@@ -5799,6 +5799,13 @@ func homeOKStr(b bool) string {
 	return "MISSING"
 }
 
+func homeCleanStr(b bool) string {
+	if b {
+		return "ok"
+	}
+	return "DIRTY"
+}
+
 func printHomeDoctor(r home.Report) {
 	// generated state must not be tracked: a global home inside a git repo is the
 	// smell; a --local home inside a repo is fine if it is gitignored.
@@ -5809,6 +5816,10 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("dirs: %d/%d ok\n", r.DirsOK, len(home.Dirs))
 	fmt.Printf("inside_git_repo: %v\n", r.InsideGitRepo)
 	fmt.Printf("generated_state_in_repo_source: %v\n", smell)
+	fmt.Printf("operational_hygiene: %s\n", homeCleanStr(r.HygieneOK))
+	for _, item := range r.Hygiene {
+		fmt.Printf("%s: %s\n", item.Name, homeCleanStr(item.OK))
+	}
 	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
 	if !r.OK {
 		os.Exit(1)

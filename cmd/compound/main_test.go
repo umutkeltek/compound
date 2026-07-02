@@ -341,11 +341,34 @@ func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testin
 		t.Fatal(err)
 	}
 
-	out := captureStdout(t, func() {
-		cmdHome([]string{"archive-history", "--kind", "work", "--kind", "review"})
+	out := captureStdout(t, func() { cmdHome([]string{"doctor"}) })
+	for _, want := range []string{
+		"operational_hygiene: DIRTY",
+		"hygiene:no-terminal-work-hot: DIRTY",
+		"hygiene:no-stale-leases: DIRTY",
+		"verdict: ok",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dirty home doctor missing %q:\n%s", want, out)
+		}
+	}
+
+	out = captureStdout(t, func() {
+		cmdHome([]string{"archive-history", "--kind", "work", "--kind", "lease", "--kind", "review"})
 	})
-	if !strings.Contains(out, "# home archive-history") || !strings.Contains(out, "- work: 1") || !strings.Contains(out, "- review: 3") {
+	if !strings.Contains(out, "# home archive-history") || !strings.Contains(out, "- work: 1") || !strings.Contains(out, "- lease: 1") || !strings.Contains(out, "- review: 3") {
 		t.Fatalf("archive-history output:\n%s", out)
+	}
+	out = captureStdout(t, func() { cmdHome([]string{"doctor"}) })
+	for _, want := range []string{
+		"operational_hygiene: ok",
+		"hygiene:no-terminal-work-hot: ok",
+		"hygiene:no-stale-leases: ok",
+		"verdict: ok",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("swept home doctor missing %q:\n%s", want, out)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "work", "work", done.ID+".json")); !os.IsNotExist(err) {
 		t.Fatalf("terminal work should move out of hot store, stat err=%v", err)
@@ -388,7 +411,7 @@ func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testin
 	}
 
 	out = captureStdout(t, func() { cmdHome([]string{"restore-history", "--all"}) })
-	if !strings.Contains(out, "# home restore-history") || !strings.Contains(out, "- restored: 4") {
+	if !strings.Contains(out, "# home restore-history") || !strings.Contains(out, "- restored: 5") {
 		t.Fatalf("restore-history output:\n%s", out)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "work", "work", done.ID+".json")); err != nil {

@@ -188,7 +188,7 @@ Home durability is part of the runtime contract:
 compound home backup [--target archive.tar.gz]
 compound home verify [archive.tar.gz]
 compound home restore archive.tar.gz --target <empty-home-path>
-compound home archive-history [--dry-run] [--kind work|review|comparison]
+compound home archive-history [--dry-run] [--kind work|lease|review|comparison]
 compound home restore-history (--all|--id ID...)
 compound home export --public-fixture [--target fixture.tar.gz]
 compound home compact [--dry-run] [--rebuildable]
@@ -199,8 +199,11 @@ rebuildable roots. `export --public-fixture` emits only sanitized layout/manifes
 metadata, not private events, ledgers, context packs, or work records.
 `archive-history` moves terminal operational history out of hot surfaces into
 `COMPOUND_HOME/archives/operational/` with an append-only index, without deleting
-it. It archives completed/failed/cancelled WorkEnvelopes, terminal owner-review
-artifacts and sidecars, and judged comparison candidates. `workbench` and
-`reviews` exclude archived entries by default; `--include-archived` restores
-query visibility, and `restore-history` moves selected entries back to original
-hot paths.
+it. It archives completed/failed/cancelled WorkEnvelopes, stale
+`work/leases/*.json` entries whose work is terminal/archived/missing, terminal
+owner-review artifacts and sidecars, and judged comparison candidates. `home
+doctor` reports operational hygiene (`hygiene:no-terminal-work-hot`,
+`hygiene:no-stale-leases`) without making hygiene dirty state fatal, because
+`archive-history` is the repair path. `workbench` and `reviews` exclude archived
+entries by default; `--include-archived` restores query visibility, and
+`restore-history` moves selected entries back to original hot paths.
