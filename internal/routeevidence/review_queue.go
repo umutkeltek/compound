@@ -33,16 +33,15 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		return
 	}
 	item.EvidenceRefs = reviewartifact.UniqueSorted(review.EvidenceRefs)
-	if reviewedPath := routePromotionReviewedPath(*item); reviewedPath != "" {
+	if reviewedPath, holdReport, ok := routePromotionReviewedHold(*item, review); ok {
 		item.Status = "recorded"
 		item.Readiness = "review_recorded"
 		item.BlockedReason = ""
 		item.Actions = nil
 		item.NextAction = "route promotion hold review recorded"
-		if report, err := LoadPromotionHoldReviewReport(reviewedPath); err == nil {
-			item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, report.EvidenceRefs...))
-			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, item.NextAction)
-		}
+		item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, holdReport.EvidenceRefs...))
+		item.NextAction = reviewartifact.FirstNonEmpty(holdReport.NextAction, item.NextAction)
+		item.ExtraPaths = reviewartifact.UniqueSorted(append(item.ExtraPaths, reviewedPath))
 		return
 	}
 	switch strings.TrimSpace(review.Status) {
@@ -71,13 +70,38 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 	}
 }
 
-func routePromotionReviewedPath(item reviewartifact.QueueItem) string {
+func routePromotionReviewedHold(item reviewartifact.QueueItem, review PromotionReview) (string, PromotionHoldReviewReport, bool) {
 	for _, path := range item.ExtraPaths {
 		if strings.HasSuffix(path, ".reviewed.json") {
-			return path
+			report, err := LoadPromotionHoldReviewReport(path)
+			if err != nil {
+				continue
+			}
+			if promotionHoldReviewMatches(review, report) {
+				return path, report, true
+			}
 		}
 	}
-	return ""
+	return "", PromotionHoldReviewReport{}, false
+}
+
+func promotionHoldReviewMatches(review PromotionReview, report PromotionHoldReviewReport) bool {
+	if strings.TrimSpace(report.Status) != "recorded" || strings.TrimSpace(report.Decision) != "hold_recorded" {
+		return false
+	}
+	if strings.TrimSpace(report.ReviewID) != strings.TrimSpace(review.ID) {
+		return false
+	}
+	if strings.TrimSpace(report.Recommendation) != strings.TrimSpace(review.Recommendation) {
+		return false
+	}
+	if strings.TrimSpace(report.LaneID) != strings.TrimSpace(review.LaneID) {
+		return false
+	}
+	if strings.TrimSpace(report.CapabilityClass) != strings.TrimSpace(review.CapabilityClass) {
+		return false
+	}
+	return strings.TrimSpace(report.Reason) == strings.TrimSpace(review.Reason)
 }
 
 func promotionReviewFromQueueItem(item reviewartifact.QueueItem) (PromotionReview, bool) {

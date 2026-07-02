@@ -132,6 +132,9 @@ func Queue(homePath string, opt QueueOptions, now time.Time) (QueueReport, error
 	if err != nil {
 		return QueueReport{}, err
 	}
+	if err := attachArchivedReviewExtraPaths(homePath, report.Items); err != nil {
+		return QueueReport{}, err
+	}
 	if opt.IncludeArchived {
 		archived, err := archivedQueueItems(homePath, opt.Area)
 		if err != nil {
@@ -272,6 +275,32 @@ func archivedQueueItems(homePath, area string) ([]QueueItem, error) {
 	return out, nil
 }
 
+func attachArchivedReviewExtraPaths(homePath string, items []QueueItem) error {
+	entries, err := home.LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	byOriginal := map[string]home.OperationalArchiveEntry{}
+	for _, entry := range entries {
+		byOriginal[entry.OriginalPath] = entry
+	}
+	for i := range items {
+		rel, err := filepath.Rel(homePath, items[i].JSONPath)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if !strings.HasPrefix(rel, "reviews/") {
+			continue
+		}
+		items[i].ExtraPaths = uniqueSortedPaths(append(items[i].ExtraPaths, archivedReviewExtraPaths(entries, byOriginal, homePath, rel)...))
+	}
+	return nil
+}
+
 func archivedReviewExtraPaths(entries []home.OperationalArchiveEntry, byOriginal map[string]home.OperationalArchiveEntry, homePath, originalPath string) []string {
 	stem := strings.TrimSuffix(filepath.Base(originalPath), ".json")
 	dir := filepath.ToSlash(filepath.Dir(originalPath))
@@ -327,6 +356,24 @@ func queueExtraPaths(dir, stem, jsonPath, mdPath string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func uniqueSortedPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func queueItemLess(a, b QueueItem) bool {
