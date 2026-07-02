@@ -690,6 +690,47 @@ Future agents consume this decision through Compound runtime context.
 	}
 }
 
+func TestRuntimeContractResolvesControlPlaneSourceRevisions(t *testing.T) {
+	home := t.TempDir()
+	repo := t.TempDir()
+	files := map[string]string{
+		"AGENTS.md":                             "# Repo Instructions\nUse Compound context.\n",
+		"docs/ARCHITECTURE.md":                  "# Architecture\nRead LAYERS first.\n",
+		"docs/LAYERS.md":                        "# Layers\nEnvelope spine.\n",
+		"docs/architecture/contracts/README.md": "# Contracts\nContext and work contracts.\n",
+		"docs/architecture/runtime.md":          "# Runtime\nCOMPOUND_HOME and envelope spine.\n",
+		"docs/roadmap/phases.md":                "# Phases\nEnvelope-first roadmap.\n",
+	}
+	for rel, body := range files {
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	in := Input{Harness: "codex", Cwd: repo, Task: "compile control-plane source refs", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{
+		"control-plane://orientation-map",
+		"control-plane://workflow-contract",
+		"control-plane://sop-packets",
+	} {
+		if !contains(ec.ActiveInstructions, source) {
+			t.Fatalf("effective contract active instructions missing %s: %v", source, ec.ActiveInstructions)
+		}
+		rev := sourceRev(ec.SourceRevisions, source)
+		if rev == "" || rev == "unknown" || !strings.HasPrefix(rev, "sha256:") {
+			t.Fatalf("source revision for %s = %q, want sha256 digest in %+v", source, rev, ec.SourceRevisions)
+		}
+	}
+}
+
 func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join("..", "..", "fixtures", "harness", "codex-hooks-json.json")

@@ -1446,6 +1446,8 @@ func revisionForSource(source, cwd string) string {
 		if p := findUp(cwd, source); p != "" {
 			return revisionForPath(p)
 		}
+	case strings.HasPrefix(source, "control-plane://"):
+		return revisionForControlPlaneSource(source, cwd)
 	case source == "repo://docs":
 		if p := findUp(cwd, "docs"); p != "" {
 			return revisionForPath(p)
@@ -1454,6 +1456,39 @@ func revisionForSource(source, cwd string) string {
 		return revisionForPath(source)
 	}
 	return ""
+}
+
+func revisionForControlPlaneSource(source, cwd string) string {
+	docsDir := findUp(cwd, "docs")
+	if docsDir == "" {
+		return ""
+	}
+	root := filepath.Dir(docsDir)
+	var rels []string
+	switch source {
+	case "control-plane://orientation-map":
+		rels = []string{"docs/ARCHITECTURE.md", "docs/LAYERS.md"}
+	case "control-plane://workflow-contract":
+		rels = []string{"docs/architecture/contracts/README.md"}
+	case "control-plane://sop-packets":
+		rels = []string{"docs/architecture/runtime.md", "docs/roadmap/phases.md"}
+	default:
+		return ""
+	}
+	return revisionForRelativePaths(root, rels)
+}
+
+func revisionForRelativePaths(root string, rels []string) string {
+	rows := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		rev := revisionForPath(filepath.Join(root, filepath.FromSlash(rel)))
+		if rev == "" {
+			return ""
+		}
+		rows = append(rows, rel+":"+rev)
+	}
+	sort.Strings(rows)
+	return "sha256:" + hashBytes([]byte(strings.Join(rows, "\n")))
 }
 
 func revisionForPath(path string) string {
