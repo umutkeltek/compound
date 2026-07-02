@@ -3722,6 +3722,7 @@ func cmdReviews(args []string) {
 	decisions.AnnotateLifecycleRepairQueue(&report)
 	product.AnnotateReviewQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
+	capgraph.AnnotateCapabilityEvaluationQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	panel.AnnotateVerdictQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)

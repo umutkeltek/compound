@@ -1442,6 +1442,43 @@ func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 	}
 }
 
+func TestReviewsCommandAnnotatesCapabilityEvaluationRecorded(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "capability-evaluation-intake", "cep_cli", map[string]any{
+		"schema_version": "compound.capability.evaluation_plan.v0.1",
+		"id":             "cep_cli",
+		"status":         "recorded",
+		"evaluation_id":  "capability-evaluation.external.example",
+		"capability":     "example-capability",
+		"target_path":    "/tmp/capability-manifest.yaml",
+		"evidence_refs":  []string{"eval_a", "eval_b", "eval_a"},
+	}, " ", "# Capability evaluation\n"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() { cmdReviews([]string{"--area", "capability-evaluation-intake", "--json"}) })
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 0 || report.Counts.ReadyToApply != 0 || report.Counts.OK != 1 {
+		t.Fatalf("capability evaluation recorded item should remain terminal: %+v", report.Counts)
+	}
+	item := report.Items[0]
+	if item.Readiness != "no_action" || len(item.Actions) != 0 {
+		t.Fatalf("capability evaluation recorded item should be terminal/non-mutating: %+v", item)
+	}
+	if !strings.Contains(item.NextAction, "separate reviewed manifest import") {
+		t.Fatalf("capability evaluation item should expose graph mutation boundary: %+v", item)
+	}
+	if len(item.EvidenceRefs) != 2 {
+		t.Fatalf("capability evaluation item should preserve de-duplicated evidence refs: %+v", item)
+	}
+}
+
 func TestReviewsRecordFindingConsumesStandingGrantAndRecordsWorkAction(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
