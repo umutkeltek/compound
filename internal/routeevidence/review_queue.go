@@ -33,6 +33,18 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		return
 	}
 	item.EvidenceRefs = reviewartifact.UniqueSorted(review.EvidenceRefs)
+	if reviewedPath := routePromotionReviewedPath(*item); reviewedPath != "" {
+		item.Status = "recorded"
+		item.Readiness = "review_recorded"
+		item.BlockedReason = ""
+		item.Actions = nil
+		item.NextAction = "route promotion hold review recorded"
+		if report, err := LoadPromotionHoldReviewReport(reviewedPath); err == nil {
+			item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, report.EvidenceRefs...))
+			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, item.NextAction)
+		}
+		return
+	}
 	switch strings.TrimSpace(review.Status) {
 	case "ok", "applied", "resolved", "accepted", "recorded":
 		item.Readiness = "no_action"
@@ -57,6 +69,15 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "owner review required for route promotion artifact"
 		item.Actions = nil
 	}
+}
+
+func routePromotionReviewedPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, ".reviewed.json") {
+			return path
+		}
+	}
+	return ""
 }
 
 func promotionReviewFromQueueItem(item reviewartifact.QueueItem) (PromotionReview, bool) {

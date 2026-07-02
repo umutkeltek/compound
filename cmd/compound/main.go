@@ -214,6 +214,7 @@ usage:
   compound route import-model-capabilities <model-capabilities.yaml> OS model router YAML -> Compound route authority
   compound route import-promotion-criteria <promotion-criteria.yaml> Promotion criteria YAML -> Compound route review authority
   compound route promotion-review [--lane ID] [--json] Review model-lane claim promotion evidence, no authority mutation
+  compound route promotion-record --review route_promotion.json --rationale TEXT [--json] Record reviewed hold decision, no authority mutation
   compound route evidence-authority [--json] [--recent N] read-only route evidence authority
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote

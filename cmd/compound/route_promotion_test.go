@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 )
 
@@ -52,6 +53,46 @@ func TestRoutePromotionCLIHappyPath(t *testing.T) {
 		if !strings.Contains(human, want) {
 			t.Fatalf("human output missing %q:\n%s", want, human)
 		}
+	}
+}
+
+func TestRoutePromotionRecordHold(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	paths, err := reviewartifact.Write(homePath, "route-promotions", "route_promotion_hold_cli", map[string]any{
+		"schema_version":                   "compound.route_promotion_review.v0.1",
+		"id":                               "route_promotion_hold_cli",
+		"status":                           "review_required",
+		"recommendation":                   "hold_insufficient_evidence",
+		"reason":                           "samples 2 below min_samples 10",
+		"lane_id":                          "auto/judge",
+		"capability_class":                 "classify-extract",
+		"current_claim_level":              "assumed",
+		"model_capabilities_authority_ref": routeevidence.ModelCapabilitiesAuthorityRef,
+		"criteria_authority_ref":           routeevidence.PromotionCriteriaAuthorityRef,
+		"evidence_refs":                    []string{"route_a", "route_b"},
+	}, " ", "# Route promotion\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdRoute([]string{"promotion-record", "--review", paths.PlanPath, "--rationale", "owner reviewed current samples; keep held until criteria are met", "--json"})
+	})
+	var report routeevidence.PromotionHoldReviewReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse promotion-record JSON: %v\n%s", err, out)
+	}
+	if report.Status != "recorded" || report.Decision != "hold_recorded" || report.ReviewID != "route_promotion_hold_cli" {
+		t.Fatalf("bad promotion hold report: %+v", report)
+	}
+	if report.ReviewPath == "" || !strings.HasSuffix(report.ReviewPath, "route_promotion_hold_cli.reviewed.json") {
+		t.Fatalf("review path not recorded: %+v", report)
+	}
+	if len(report.Boundaries) == 0 || !strings.Contains(strings.Join(report.Boundaries, " "), "no lane promotion") {
+		t.Fatalf("report should preserve no-mutation boundaries: %+v", report)
 	}
 }
 

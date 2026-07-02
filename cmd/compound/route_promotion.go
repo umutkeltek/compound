@@ -46,6 +46,25 @@ func tryRoutePromotionCommand(args []string, homePath string) bool {
 		}
 		printRoutePromotionReviews(reviews)
 		return true
+	case "promotion-record":
+		reviewPath, rationale, jsonOut := parseRoutePromotionRecordArgs(args[1:])
+		report, err := routeevidence.RecordPromotionHoldReview(homePath, reviewPath, rationale, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route promotion-record:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return true
+		}
+		fmt.Println("# route promotion-record")
+		fmt.Printf("- review: %s\n", report.ReviewID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- lane: %s\n", report.LaneID)
+		fmt.Printf("- capability_class: %s\n", report.CapabilityClass)
+		fmt.Printf("- recorded: %s\n", report.ReviewPath)
+		fmt.Println("- authority_mutation: none")
+		return true
 	default:
 		return false
 	}
@@ -69,6 +88,37 @@ func parseRoutePromotionReviewArgs(args []string) (laneID string, jsonOut bool) 
 		}
 	}
 	return laneID, jsonOut
+}
+
+func parseRoutePromotionRecordArgs(args []string) (reviewPath, rationale string, jsonOut bool) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--review":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]")
+				os.Exit(2)
+			}
+			reviewPath = args[i]
+		case "--rationale":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]")
+				os.Exit(2)
+			}
+			rationale = args[i]
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]")
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(reviewPath) == "" || strings.TrimSpace(rationale) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]")
+		os.Exit(2)
+	}
+	return reviewPath, rationale, jsonOut
 }
 
 func filterPromotionReviews(reviews []routeevidence.PromotionReview, laneID string) []routeevidence.PromotionReview {

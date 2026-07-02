@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/reviewartifact"
 )
 
 func TestImportPromotionCriteriaRoundTrip(t *testing.T) {
@@ -141,6 +143,28 @@ func TestEvaluateLanePromotionsRecommendations(t *testing.T) {
 				t.Fatalf("md artifact missing: %v", err)
 			}
 		})
+	}
+}
+
+func TestRecordPromotionHoldReviewRejectsMutatingRecommendation(t *testing.T) {
+	home := t.TempDir()
+	paths, err := reviewartifact.Write(home, routePromotionReviewArea, "route_promotion_promote_guard", PromotionReview{
+		SchemaVersion:         PromotionReviewSchemaVersion,
+		ID:                    "route_promotion_promote_guard",
+		Status:                "review_required",
+		Recommendation:        promotionRecommendationPromote,
+		LaneID:                "auto/judge",
+		CapabilityClass:       "classify-extract",
+		CurrentClaimLevel:     "capable",
+		RecommendedClaimLevel: "primary",
+		Reason:                "samples meet criteria",
+	}, " ", "# Route promotion\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = RecordPromotionHoldReview(home, paths.PlanPath, "recording promote through hold review must fail", t0)
+	if err == nil || !strings.Contains(err.Error(), "separate authority review required") {
+		t.Fatalf("err = %v, want separate authority review guard", err)
 	}
 }
 

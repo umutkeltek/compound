@@ -1383,6 +1383,52 @@ func TestReviewsCommandAnnotatesRoutePromotionHold(t *testing.T) {
 	}
 }
 
+func TestReviewsCommandAnnotatesRoutePromotionRecordedHold(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	paths, err := reviewartifact.Write(homePath, "route-promotions", "route_promotion_recorded_cli", map[string]any{
+		"schema_version":                   "compound.route_promotion_review.v0.1",
+		"id":                               "route_promotion_recorded_cli",
+		"status":                           "review_required",
+		"recommendation":                   "hold_insufficient_evidence",
+		"reason":                           "samples 2 below min_samples 10",
+		"lane_id":                          "auto/judge",
+		"capability_class":                 "classify-extract",
+		"current_claim_level":              "assumed",
+		"model_capabilities_authority_ref": routeevidence.ModelCapabilitiesAuthorityRef,
+		"criteria_authority_ref":           routeevidence.PromotionCriteriaAuthorityRef,
+		"evidence_refs":                    []string{"route_a", "route_b"},
+	}, " ", "# Route promotion\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.RecordPromotionHoldReview(homePath, paths.PlanPath, "owner reviewed current samples; keep held until criteria are met", cliTestNow); err != nil {
+		t.Fatalf("record promotion hold review: %v", err)
+	}
+
+	out := captureStdout(t, func() { cmdReviews([]string{"--area", "route-promotions", "--json"}) })
+	var report reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse reviews report: %v\n%s", err, out)
+	}
+	if report.Counts.Total != 1 || report.Counts.ReviewRequired != 0 || report.Counts.OK != 1 {
+		t.Fatalf("recorded route promotion hold should be ok: %+v", report.Counts)
+	}
+	if report.Counts.ByStatus["recorded"] != 1 {
+		t.Fatalf("recorded route promotion status missing: %+v", report.Counts.ByStatus)
+	}
+	if len(report.Items) != 1 || report.Items[0].Status != "recorded" || report.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("route promotion recorded hold should be review_recorded: %+v", report.Items)
+	}
+	item := report.Items[0]
+	if len(item.Actions) != 0 || !strings.Contains(item.NextAction, "keep lane promotion held") {
+		t.Fatalf("recorded route promotion should expose no-action next step: %+v", item)
+	}
+}
+
 func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
