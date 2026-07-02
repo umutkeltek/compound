@@ -181,22 +181,28 @@ func queueItem(root, path string) (QueueItem, error) {
 	}
 	stem := strings.TrimSuffix(filepath.Base(path), ".json")
 	item := QueueItem{
-		Area:          area,
-		ID:            firstString(payload, "id", "plan_id", "review_id", "repair_plan_id"),
-		Status:        firstString(payload, "status", "verdict", "result"),
-		CreatedAt:     firstString(payload, "created_at", "generated_at"),
-		JSONPath:      path,
-		SourceKind:    firstString(payload, "source_kind"),
-		SourceRoot:    firstString(payload, "source_root"),
-		SourcePath:    firstString(payload, "source_path"),
-		TargetPath:    firstString(payload, "target_path"),
-		TargetHash:    firstString(payload, "target_hash"),
-		CandidateID:   firstString(payload, "candidate_id", "candidate_ref"),
-		RepairCount:   intField(payload, "repair_count"),
-		EvidenceRefs:  stringSlice(payload["evidence_refs"]),
-		Readiness:     firstString(payload, "readiness"),
-		BlockedReason: firstString(payload, "blocked_reason"),
-		NextAction:    firstString(payload, "next_action"),
+		Area:                    area,
+		ID:                      firstString(payload, "id", "plan_id", "review_id", "repair_plan_id"),
+		Status:                  firstString(payload, "status", "verdict", "result"),
+		CreatedAt:               firstString(payload, "created_at", "generated_at"),
+		JSONPath:                path,
+		SourceKind:              firstString(payload, "source_kind"),
+		SourceRoot:              firstString(payload, "source_root"),
+		SourcePath:              firstString(payload, "source_path"),
+		TargetPath:              firstString(payload, "target_path"),
+		TargetHash:              firstString(payload, "target_hash"),
+		CandidateID:             firstString(payload, "candidate_id", "candidate_ref"),
+		RepairCount:             intField(payload, "repair_count"),
+		EvidenceRefs:            stringSlice(payload["evidence_refs"]),
+		GraphDecisionHint:       firstString(payload, "graph_decision_hint"),
+		GraphDecisionConfidence: floatField(payload, "graph_decision_confidence"),
+		GraphDuplicateRisk:      floatField(payload, "graph_duplicate_risk"),
+		GraphEvidenceStrength:   floatField(payload, "graph_evidence_strength"),
+		GraphAuditRisk:          firstString(payload, "graph_audit_risk"),
+		GraphTopOverlapScore:    intField(payload, "graph_top_overlap_score"),
+		Readiness:               firstString(payload, "readiness"),
+		BlockedReason:           firstString(payload, "blocked_reason"),
+		NextAction:              firstString(payload, "next_action"),
 	}
 	if item.ID == "" {
 		item.ID = stem
@@ -296,6 +302,21 @@ func intField(payload map[string]any, key string) int {
 		return int(value)
 	case int:
 		return value
+	default:
+		return 0
+	}
+}
+
+func floatField(payload map[string]any, key string) float64 {
+	switch value := payload[key].(type) {
+	case float64:
+		return value
+	case float32:
+		return float64(value)
+	case int:
+		return float64(value)
+	case int64:
+		return float64(value)
 	default:
 		return 0
 	}

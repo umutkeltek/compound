@@ -1,6 +1,7 @@
 package capgraph
 
 import (
+	"compound/internal/reviewartifact"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -13,8 +14,10 @@ import (
 )
 
 const (
-	ExternalRepoIntakeReportSchemaVersion = "compound.capability.external_repo_intake_report.v0.1"
-	ExternalRepoIntakeAuthorityRef        = "compound://reviews/external-repo-intake"
+	ExternalRepoIntakeReportSchemaVersion     = "compound.capability.external_repo_intake_report.v0.1"
+	ExternalRepoIntakeReviewPlanSchemaVersion = "compound.capability.external_repo_intake_review_plan.v0.1"
+	ExternalRepoIntakeReviewArea              = "external-repo-intake"
+	ExternalRepoIntakeAuthorityRef            = "compound://reviews/external-repo-intake"
 )
 
 type ExternalRepoIntakeReport struct {
@@ -103,6 +106,47 @@ type externalRepoIntakeSummaryFile struct {
 	path    string
 	summary externalRepoIntakeRunSummary
 	created time.Time
+}
+
+type ExternalRepoIntakeReviewPlanReport struct {
+	SchemaVersion     string                             `json:"schema_version"`
+	Status            string                             `json:"status"`
+	CreatedAt         string                             `json:"created_at"`
+	AuthorityRef      string                             `json:"authority_ref"`
+	ReviewArea        string                             `json:"review_area"`
+	SourceListPath    string                             `json:"source_list_path"`
+	SourceListTotal   int                                `json:"source_list_total,omitempty"`
+	SourceListKnown   int                                `json:"source_list_known,omitempty"`
+	SourceListUnknown int                                `json:"source_list_unknown,omitempty"`
+	LatestBatchID     string                             `json:"latest_batch_id,omitempty"`
+	WroteCount        int                                `json:"wrote_count"`
+	Items             []ExternalRepoIntakeReviewPlanItem `json:"items,omitempty"`
+	Boundaries        []string                           `json:"boundaries,omitempty"`
+}
+
+type ExternalRepoIntakeReviewPlanItem struct {
+	ID                    string   `json:"id"`
+	Status                string   `json:"status"`
+	CreatedAt             string   `json:"created_at"`
+	Readiness             string   `json:"readiness"`
+	SourceKind            string   `json:"source_kind"`
+	SourcePath            string   `json:"source_path"`
+	TargetPath            string   `json:"target_path,omitempty"`
+	SourceListQuery       string   `json:"source_list_query"`
+	NormalizedRepo        string   `json:"normalized_repo"`
+	Repo                  string   `json:"repo"`
+	Decision              string   `json:"decision"`
+	Lane                  string   `json:"lane,omitempty"`
+	Owner                 string   `json:"owner,omitempty"`
+	NextAction            string   `json:"next_action,omitempty"`
+	NotToDo               string   `json:"not_to_do,omitempty"`
+	GraphDecisionHint     string   `json:"graph_decision_hint,omitempty"`
+	GraphEvidenceStrength float64  `json:"graph_evidence_strength,omitempty"`
+	EvidenceRefs          []string `json:"evidence_refs,omitempty"`
+	Boundaries            []string `json:"boundaries,omitempty"`
+	ReviewQuestions       []string `json:"review_questions,omitempty"`
+	JSONPath              string   `json:"json_path,omitempty"`
+	MarkdownPath          string   `json:"markdown_path,omitempty"`
 }
 
 func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (ExternalRepoIntakeReport, error) {
@@ -266,6 +310,139 @@ func sourceListReviewNext(items []ExternalRepoSourceListItem, limit int) []Exter
 		return out[:limit]
 	}
 	return out
+}
+
+func WriteExternalRepoIntakeReviewPlan(homePath, sourceListPath string, now time.Time) (ExternalRepoIntakeReviewPlanReport, error) {
+	createdAt := reviewartifact.Timestamp(now)
+	report := ExternalRepoIntakeReviewPlanReport{
+		SchemaVersion:  ExternalRepoIntakeReviewPlanSchemaVersion,
+		Status:         "missing",
+		CreatedAt:      createdAt,
+		AuthorityRef:   ExternalRepoIntakeAuthorityRef,
+		ReviewArea:     ExternalRepoIntakeReviewArea,
+		SourceListPath: strings.TrimSpace(sourceListPath),
+	}
+	intake, err := ExternalRepoIntakeReportForHomeWithSourceList(homePath, sourceListPath)
+	if err != nil {
+		return report, err
+	}
+	report.Status = intake.Status
+	report.SourceListTotal = intake.SourceListTotal
+	report.SourceListKnown = intake.SourceListKnown
+	report.SourceListUnknown = intake.SourceListUnknown
+	report.LatestBatchID = intake.LatestBatchID
+	report.Boundaries = append([]string{}, intake.Boundaries...)
+	if intake.Status != "ok" {
+		return report, nil
+	}
+	if len(intake.SourceListReviewNext) == 0 {
+		report.Status = "no_review_required"
+		return report, nil
+	}
+	for _, sourceItem := range intake.SourceListReviewNext {
+		if len(sourceItem.Matches) == 0 {
+			continue
+		}
+		match := sourceItem.Matches[0]
+		item := externalRepoIntakeReviewPlanItem(intake, sourceItem, match, createdAt)
+		paths, err := reviewartifact.Write(homePath, ExternalRepoIntakeReviewArea, item.ID, item, " ", renderExternalRepoIntakeReviewPlanMarkdown(item))
+		if err != nil {
+			return report, err
+		}
+		item.JSONPath = paths.PlanPath
+		item.MarkdownPath = paths.ReviewPath
+		report.Items = append(report.Items, item)
+	}
+	report.WroteCount = len(report.Items)
+	if report.WroteCount == 0 {
+		report.Status = "no_review_required"
+	}
+	return report, nil
+}
+
+func externalRepoIntakeReviewPlanItem(report ExternalRepoIntakeReport, sourceItem ExternalRepoSourceListItem, match ExternalRepoIntakeDecision, createdAt string) ExternalRepoIntakeReviewPlanItem {
+	boundaries := reviewartifact.Unique(append(append([]string{}, report.Boundaries...), match.NotToDo))
+	repo := reviewartifact.FirstNonEmpty(match.Repo, sourceItem.Normalized)
+	evidenceRefs := reviewartifact.Unique([]string{
+		ExternalRepoIntakeAuthorityRef,
+		ExternalRepoIntakeAuthorityRef + "/" + report.LatestBatchID,
+		ExternalRepoIntakeAuthorityRef + "/" + report.LatestBatchID + "#" + repo,
+	})
+	return ExternalRepoIntakeReviewPlanItem{
+		ID:                    reviewartifact.ID("extrepo_", report.LatestBatchID, sourceItem.Normalized),
+		Status:                "review_required",
+		CreatedAt:             createdAt,
+		Readiness:             "needs_owner_review",
+		SourceKind:            "external-repo-source-list",
+		SourcePath:            report.SourceListPath,
+		TargetPath:            "github.com/" + repo,
+		SourceListQuery:       sourceItem.Query,
+		NormalizedRepo:        sourceItem.Normalized,
+		Repo:                  repo,
+		Decision:              match.Decision,
+		Lane:                  match.Lane,
+		Owner:                 match.Owner,
+		NextAction:            match.NextReviewStep,
+		NotToDo:               match.NotToDo,
+		GraphDecisionHint:     match.Decision,
+		GraphEvidenceStrength: match.EvidenceStrength,
+		EvidenceRefs:          evidenceRefs,
+		Boundaries:            boundaries,
+		ReviewQuestions: []string{
+			"Which existing Compound owner should consume this repository, if any?",
+			"What proof would be required before any skill, hook, MCP, plugin, or graph mutation is promoted?",
+			"What existing surface would this merge into or retire instead of creating a parallel system?",
+			"What boundary must stay true even if the repo remains useful as reference evidence?",
+		},
+	}
+}
+
+func renderExternalRepoIntakeReviewPlanMarkdown(item ExternalRepoIntakeReviewPlanItem) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# External Repo Intake Review: %s\n\n", item.Repo)
+	fmt.Fprintf(&b, "- status: %s\n", item.Status)
+	fmt.Fprintf(&b, "- source_list_query: %s\n", item.SourceListQuery)
+	fmt.Fprintf(&b, "- decision: %s\n", item.Decision)
+	if item.Lane != "" {
+		fmt.Fprintf(&b, "- lane: %s\n", item.Lane)
+	}
+	if item.Owner != "" {
+		fmt.Fprintf(&b, "- owner: %s\n", item.Owner)
+	}
+	if item.GraphEvidenceStrength > 0 {
+		fmt.Fprintf(&b, "- evidence_strength: %.2f\n", item.GraphEvidenceStrength)
+	}
+	if item.NextAction != "" {
+		fmt.Fprintf(&b, "- next_action: %s\n", item.NextAction)
+	}
+	if item.NotToDo != "" {
+		fmt.Fprintf(&b, "- boundary: %s\n", item.NotToDo)
+	}
+	if len(item.ReviewQuestions) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Review Questions")
+		fmt.Fprintln(&b)
+		for _, question := range item.ReviewQuestions {
+			fmt.Fprintf(&b, "- %s\n", question)
+		}
+	}
+	if len(item.Boundaries) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Boundaries")
+		fmt.Fprintln(&b)
+		for _, boundary := range item.Boundaries {
+			fmt.Fprintf(&b, "- %s\n", boundary)
+		}
+	}
+	if len(item.EvidenceRefs) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Evidence")
+		fmt.Fprintln(&b)
+		for _, ref := range item.EvidenceRefs {
+			fmt.Fprintf(&b, "- %s\n", ref)
+		}
+	}
+	return b.String()
 }
 
 func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {

@@ -1,10 +1,13 @@
 package capgraph
 
 import (
+	"compound/internal/reviewartifact"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestExternalRepoIntakeReportForHome(t *testing.T) {
@@ -219,6 +222,88 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 	}
 	if got := report.SourceListItems[2]; got.Status != "unknown" || got.Normalized != "example/unknown" || got.MatchCount != 0 {
 		t.Fatalf("unknown item = %+v", got)
+	}
+}
+
+func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
+	home := t.TempDir()
+	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	writeJSON(t, mapPath, map[string]any{
+		"boundaries": []string{"review-only", "no install"},
+		"items": []map[string]any{
+			{
+				"repo":             "example/review",
+				"owner":            "Agent Workbench / harness adapters",
+				"next_review_step": "review harness pattern",
+				"not_to_do":        "do not clone automatically",
+			},
+			{
+				"repo":             "example/merge",
+				"owner":            "procedure:skill-ops",
+				"next_review_step": "merge deltas only",
+				"not_to_do":        "do not install wholesale",
+			},
+		},
+	})
+	writeJSON(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
+		"schema_version":  "compound.external_repo_intake_run.v0.1",
+		"id":              "2026-07-01-test",
+		"created_at":      "2026-07-01T12:00:00Z",
+		"map_path":        mapPath,
+		"candidate_count": 2,
+		"decisions": []map[string]any{
+			{
+				"repo":              "example/review",
+				"decision":          "keep_needs_review",
+				"lane":              "harness_reference",
+				"evidence_strength": 0.9,
+			},
+			{
+				"repo":              "example/merge",
+				"decision":          "merge_existing",
+				"lane":              "external_skill_candidate",
+				"evidence_strength": 0.7,
+			},
+		},
+		"counts_by_decision": map[string]any{"keep_needs_review": 1, "merge_existing": 1},
+		"counts_by_lane":     map[string]any{"harness_reference": 1, "external_skill_candidate": 1},
+	})
+	sourceListPath := filepath.Join(home, "repos.md")
+	if err := os.WriteFile(sourceListPath, []byte("https://github.com/example/review\nhttps://github.com/example/merge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := WriteExternalRepoIntakeReviewPlan(home, sourceListPath, time.Date(2026, 7, 2, 3, 4, 5, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("write review plan: %v", err)
+	}
+	if report.Status != "ok" || report.WroteCount != 1 || len(report.Items) != 1 {
+		t.Fatalf("review plan report = %+v", report)
+	}
+	item := report.Items[0]
+	if item.Status != "review_required" || item.Repo != "example/review" || item.Decision != "keep_needs_review" || item.NextAction != "review harness pattern" {
+		t.Fatalf("review plan item = %+v", item)
+	}
+	if item.JSONPath == "" || item.MarkdownPath == "" {
+		t.Fatalf("review plan paths missing: %+v", item)
+	}
+	md, err := os.ReadFile(item.MarkdownPath)
+	if err != nil {
+		t.Fatalf("read markdown: %v", err)
+	}
+	if !strings.Contains(string(md), "do not clone automatically") {
+		t.Fatalf("markdown missing boundary:\n%s", md)
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ExternalRepoIntakeReviewArea}, time.Date(2026, 7, 2, 3, 4, 6, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("queue review artifacts: %v", err)
+	}
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 1 || queue.Items[0].TargetPath != "github.com/example/review" || queue.Items[0].NextAction != "review harness pattern" || queue.Items[0].GraphEvidenceStrength != 0.9 {
+		t.Fatalf("queue did not surface review plan: %+v", queue)
 	}
 }
 

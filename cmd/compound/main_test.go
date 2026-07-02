@@ -6904,6 +6904,19 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if sourceListReport.SourceListItems[0].Status != "known" || sourceListReport.SourceListItems[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list known item missing match: %+v", sourceListReport.SourceListItems)
 	}
+	reviewPlanJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake-review-plan", "--source-list", sourceListPath, "--json"})
+	})
+	var reviewPlan capgraph.ExternalRepoIntakeReviewPlanReport
+	if err := json.Unmarshal([]byte(reviewPlanJSON), &reviewPlan); err != nil {
+		t.Fatalf("external-intake-review-plan --json parse: %v\n%s", err, reviewPlanJSON)
+	}
+	if reviewPlan.Status != "ok" || reviewPlan.WroteCount != 1 || len(reviewPlan.Items) != 1 || reviewPlan.Items[0].Repo != "example/research" {
+		t.Fatalf("external-intake-review-plan report missing artifact: %+v", reviewPlan)
+	}
+	if _, err := os.Stat(reviewPlan.Items[0].JSONPath); err != nil {
+		t.Fatalf("review artifact JSON not written: %v", err)
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {
