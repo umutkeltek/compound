@@ -2165,6 +2165,7 @@ func cmdKnowledge(args []string) {
 		fmt.Printf("- processed: %d\n", report.Processed)
 		fmt.Printf("- created: %d\n", report.Created)
 		fmt.Printf("- skipped: %d\n", report.Skipped)
+		fmt.Printf("- failed: %d\n", report.Failed)
 		for _, id := range report.CandidateIDs {
 			fmt.Printf(" - candidate %s\n", id)
 		}

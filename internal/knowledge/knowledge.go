@@ -109,6 +109,7 @@ type ExtractReport struct {
 	Processed     int      `json:"processed"`
 	Created       int      `json:"created"`
 	Skipped       int      `json:"skipped"`
+	Failed        int      `json:"failed"`
 	CandidateIDs  []string `json:"candidate_ids"`
 	ExtractionIDs []string `json:"extraction_ids"`
 }
@@ -356,10 +357,14 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 		}
 		candidateIDs, route, err := extractOne(homePath, store, req, opts, now)
 		if err != nil {
+			// Fail soft per item: one bad model response must not strand the
+			// remaining pending items (same lesson as panel apply). Failed
+			// items keep state=error and stay retryable via --item.
 			req.State = "error"
 			req.Error = err.Error()
 			_ = writeExtractionRequestFile(homePath, req)
-			return report, err
+			report.Failed++
+			continue
 		}
 		req.State = "done"
 		req.CompletedAt = rfc3339(now)
@@ -374,8 +379,11 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 		report.CandidateIDs = append(report.CandidateIDs, candidateIDs...)
 		report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
 	}
-	if !opts.Pending && strings.TrimSpace(opts.ItemID) != "" && report.Processed == 0 && len(report.ExtractionIDs) == 0 {
+	if !opts.Pending && strings.TrimSpace(opts.ItemID) != "" && report.Processed == 0 && len(report.ExtractionIDs) == 0 && report.Failed == 0 {
 		return report, fmt.Errorf("knowledge extraction item %q not found", opts.ItemID)
+	}
+	if report.Failed > 0 {
+		return report, fmt.Errorf("knowledge extraction completed with %d failure(s); failed items keep state=error and are retryable via --item", report.Failed)
 	}
 	return report, nil
 }
@@ -456,6 +464,9 @@ func buildKnowledgeExtractionRequest(req ExtractionRequest, evidence mem.Evidenc
 	llmReq.SourceRefs = []string{req.EvidenceRef}
 	llmReq.Instructions = append(llmReq.Instructions,
 		"Emit memory candidates only.",
+		"Every candidate MUST set entity, predicate, and object. Use entity \""+knowledgeEntity(req.SourceKind, req.ItemRef)+"\" for claims about this item; use entity \"topic:<short-slug>\" only for a claim about a broader topic this item evidences.",
+		"predicate is a short snake_case relation such as claims, reports_result, method, finding, limitation.",
+		"object is ONE falsifiable statement grounded in the evidence quote — no speculation beyond it.",
 		"Each candidate must cite the provided evidence ref exactly.",
 		"Qualifiers may add domain metadata, but Compound will stamp source=knowledge_extraction.",
 	)
@@ -519,7 +530,7 @@ func ensureSourceRegistry(homePath string, source Source, now time.Time) error {
 }
 
 func candidateForItem(export Export, item Item, evidenceID string, now time.Time) mem.Candidate {
-	entity := "knowledge:" + export.Source.Kind + ":" + item.Ref
+	entity := knowledgeEntity(export.Source.Kind, item.Ref)
 	return mem.Candidate{
 		ID:              "cand_" + shortDigest(entity, evidenceID, item.Title, strings.Join(item.Authors, "\x00"), strings.Join(item.Topics, "\x00")),
 		Entity:          entity,
@@ -851,4 +862,9 @@ func shortDigest(parts ...string) string {
 
 func rfc3339(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
+}
+
+// knowledgeEntity is the canonical entity id for an imported knowledge item.
+func knowledgeEntity(sourceKind, itemRef string) string {
+	return "knowledge:" + sourceKind + ":" + itemRef
 }

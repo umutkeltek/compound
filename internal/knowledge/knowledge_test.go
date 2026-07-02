@@ -188,9 +188,18 @@ func TestExtractRejectsUngroundedFixtureEvidenceRefs(t *testing.T) {
 	fixtures := t.TempDir()
 	writeExtractionFixture(t, fixtures, importReport.ExtractionIDs[0], "ev_wrong")
 
-	_, err = Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
-	if err == nil || !strings.Contains(err.Error(), "evidence_ref") {
-		t.Fatalf("expected grounded evidence error, got %v", err)
+	report, err := Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "failure(s)") {
+		t.Fatalf("expected completed-with-failures error, got %v", err)
+	}
+	if report.Failed != 1 || report.Processed != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	// The grounded-evidence rejection is preserved on the item itself.
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.State != "error" || !strings.Contains(req.Error, "evidence_ref") {
+		t.Fatalf("item should hold the grounded-evidence error: %+v", req)
 	}
 }
 
@@ -407,5 +416,54 @@ func readJSONLRows[T any](t *testing.T, path string, out *[]T) {
 			t.Fatal(err)
 		}
 		*out = append(*out, row)
+	}
+}
+
+func TestExtractFailsSoftPerItem(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(importReport.ExtractionIDs) < 2 {
+		t.Fatalf("need >=2 extraction requests, got %d", len(importReport.ExtractionIDs))
+	}
+	// Fixture responses exist for exactly one request: every other item fails
+	// and must not strand the run (state=error, retryable) while the good one
+	// completes.
+	fixtures := t.TempDir()
+	writeExtractionFixture(t, fixtures, importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+
+	report, err := Extract(homePath, store, ExtractOptions{Pending: true, FixturesDir: fixtures}, testNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "failure(s)") {
+		t.Fatalf("want completed-with-failures error, got %v", err)
+	}
+	want := len(importReport.ExtractionIDs) - 1
+	if report.Processed != 1 || report.Failed != want {
+		t.Fatalf("processed=%d failed=%d, want 1 and %d", report.Processed, report.Failed, want)
+	}
+	states := map[string]int{}
+	for _, id := range importReport.ExtractionIDs {
+		var req ExtractionRequest
+		readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", id+".json"), &req)
+		states[req.State]++
+	}
+	if states["done"] != 1 || states["error"] != want {
+		t.Fatalf("states = %v", states)
+	}
+}
+
+func TestExtractionPromptCarriesCandidateShape(t *testing.T) {
+	req := ExtractionRequest{ID: "kx_x", ItemRef: "arxiv:1234.5678v1", SourceKind: "arxiv", Title: "T", EvidenceRef: "ev_1"}
+	llmReq := buildKnowledgeExtractionRequest(req, mem.EvidenceItem{ID: "ev_1", QuoteText: "quote"})
+	joined := strings.Join(llmReq.Instructions, "\n")
+	for _, want := range []string{"knowledge:arxiv:arxiv:1234.5678v1", "entity, predicate, and object", "snake_case", "falsifiable"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("instructions missing %q:\n%s", want, joined)
+		}
 	}
 }

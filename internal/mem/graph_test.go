@@ -108,7 +108,7 @@ func TestRecallGraphFrontierRelation(t *testing.T) {
 	mk("y")
 	s.Relate("app", "relates", "x", 0.9, t0)
 	s.Relate("app", "relates", "y", 0.9, t0)
-	s.Relate("x", "relates", "y", 0.9, t0) // boundary cross-edge: x and y are reached but never expanded
+	s.Relate("x", "relates", "y", 0.9, t0)  // boundary cross-edge: x and y are reached but never expanded
 	sg, _ := s.RecallGraph("app", 1, 20, 0) // depth 1 reaches app,x,y; x and y are frontier (not expanded)
 	hasXY := false
 	for _, r := range sg.Relations {
