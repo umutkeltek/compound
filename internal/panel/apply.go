@@ -706,7 +706,8 @@ func mergeTargetClaimRef(s Synthesis) string {
 	return ""
 }
 
-func markAllSkippableNonMemoryApplications(run Run) Run {
+func markAllSkippableNonMemoryApplications(run Run) (Run, bool) {
+	allSkipped := len(run.Findings) > 0
 	for i := range run.Findings {
 		finding := &run.Findings[i]
 		app := finding.Application
@@ -723,15 +724,23 @@ func markAllSkippableNonMemoryApplications(run Run) Run {
 			app.Note = "already applied; skipped"
 		case mapped == "needs_human" || mapped == "needs_trial":
 			app.Note = "no mutation; verdict remains in review queue"
+		case strings.TrimSpace(finding.Synthesis.Decision) == "":
+			app.Note = "no recorded synthesis; skipped"
+		default:
+			// A recorded mutating verdict whose application never applied
+			// (e.g. a prior apply failure) is retryable; the run must not
+			// stay terminal or the target strands in awaiting_verdict.
+			allSkipped = false
 		}
 		finding.Application = app
 	}
-	return run
+	return run, allSkipped
 }
 
 func markAllSkippableApplications(homePath string, run Run) (Run, bool, error) {
 	if run.TargetKind != "memory_candidate" {
-		return markAllSkippableNonMemoryApplications(run), len(run.Findings) > 0, nil
+		marked, allSkipped := markAllSkippableNonMemoryApplications(run)
+		return marked, allSkipped, nil
 	}
 	allSkipped := len(run.Findings) > 0
 	for i := range run.Findings {

@@ -273,3 +273,56 @@ func TestApplyFailSoftTerminalizesEnvelopeOnTargetFailure(t *testing.T) {
 		t.Fatalf("fail-soft accounting wrong: %+v", got.Findings)
 	}
 }
+
+func TestApplyRetriesFailedComparisonApplications(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writeComparisonCandidateForPanelTest(t, home, "cmp_retry_me", "awaiting_verdict", "lane/base", "lane/cand", 120, 80, 340, 220)
+	run, err := BuildPlan(home, PlanInput{TargetKind: "comparison", TargetRefs: []string{"cmp_retry_me"}}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	// Simulate the stranded state observed live 2026-07-02: a prior apply
+	// failed on every target yet the run was persisted as "applied" with a
+	// closed work chain. Re-apply must retry the failed application instead
+	// of skipping it forever.
+	run.Status = "applied"
+	run.Findings = []TargetFinding{{
+		TargetRef:       "cmp_retry_me",
+		VerdictArtifact: filepath.Join(home, "reviews", "panel-verdicts", "panel_verdict_retry_stub.json"),
+		Synthesis:       Synthesis{SchemaVersion: "compound.panel_synthesis.v0.1", Decision: "promote", Confidence: 0.95, Rationale: "candidate strictly better"},
+		Application:     Application{Applied: false, Note: "apply failed: invalid character '{' after top-level value"},
+	}}
+	store, err := Open(home)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatalf("save stranded run: %v", err)
+	}
+
+	got, err := Apply(home, run, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("re-apply must succeed for retryable failed applications: %v", err)
+	}
+	if len(got.Findings) != 1 || !got.Findings[0].Application.Applied {
+		t.Fatalf("failed application was not retried: %+v", got.Findings)
+	}
+	if got.Findings[0].Application.MappedVerdict != "prefer_candidate" {
+		t.Fatalf("mapped verdict = %q, want prefer_candidate", got.Findings[0].Application.MappedVerdict)
+	}
+	exists, err := comparisonEvidenceRowExists(comparisonEvidenceLedgerPath(home), "cmp_retry_me", got.ID)
+	if err != nil {
+		t.Fatalf("ledger lookup: %v", err)
+	}
+	if !exists {
+		t.Fatalf("comparison evidence row missing after retried apply")
+	}
+	// Second re-apply is a no-op: everything is genuinely applied now.
+	again, err := Apply(home, got, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("idempotent re-apply: %v", err)
+	}
+	if !again.Findings[0].Application.Applied || again.Findings[0].Application.Note != "already applied; skipped" {
+		t.Fatalf("second re-apply not idempotent: %+v", again.Findings[0].Application)
+	}
+}
