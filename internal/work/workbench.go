@@ -95,6 +95,7 @@ type WorkbenchItem struct {
 	VerificationIDs    []string                `json:"verification_ids,omitempty"`
 	MemoryCandidateIDs []string                `json:"memory_candidate_ids,omitempty"`
 	RunObservations    []RunObservationSummary `json:"run_observations,omitempty"`
+	recentAt           string
 }
 
 type RunObservationSummary struct {
@@ -178,7 +179,10 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		return report.Open[i].WorkID < report.Open[j].WorkID
 	})
 	report.DispatchNext = workbenchDispatchNext(report, opts.Actor)
-	sort.Slice(report.Recent, func(i, j int) bool {
+	sort.SliceStable(report.Recent, func(i, j int) bool {
+		if report.Recent[i].recentAt != report.Recent[j].recentAt {
+			return workbenchTimestampAfter(report.Recent[i].recentAt, report.Recent[j].recentAt)
+		}
 		return report.Recent[i].WorkID > report.Recent[j].WorkID
 	})
 	if len(report.Recent) > opts.RecentLimit {
@@ -215,6 +219,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		ArtifactIDs:        append([]string{}, w.ArtifactIDs...),
 		VerificationIDs:    append([]string{}, w.VerificationIDs...),
 		MemoryCandidateIDs: append([]string{}, w.MemoryCandidateIDs...),
+		recentAt:           w.CreatedAt,
 	}
 	if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
 		item.RunObservations = observations
@@ -237,6 +242,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 			item.MoveType = rec.MoveType
 			item.Changed = rec.StateDelta.Changed
 			item.ReviewTrigger = rec.Next.ReviewTrigger
+			item.recentAt = workbenchLatestTimestamp(item.recentAt, rec.CreatedAt)
 		}
 	}
 	if item.TransitionID == "" {
@@ -248,6 +254,8 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 			report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" unreadable: "+err.Error())
 		} else if err := tr.Validate(); err != nil {
 			report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" invalid: "+err.Error())
+		} else {
+			item.recentAt = workbenchLatestTimestamp(item.recentAt, tr.CreatedAt)
 		}
 	}
 	item.ObservatoryTags = workbenchObservatoryTags(item)
@@ -577,6 +585,33 @@ func workbenchTagValue(value string) string {
 
 func terminalProofRequired(state string) bool {
 	return state == "completed" || state == "failed"
+}
+
+func workbenchLatestTimestamp(a, b string) string {
+	if strings.TrimSpace(a) == "" {
+		return b
+	}
+	if workbenchTimestampAfter(b, a) {
+		return b
+	}
+	return a
+}
+
+func workbenchTimestampAfter(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" {
+		return false
+	}
+	if b == "" {
+		return true
+	}
+	at, aerr := time.Parse(time.RFC3339Nano, a)
+	bt, berr := time.Parse(time.RFC3339Nano, b)
+	if aerr == nil && berr == nil {
+		return at.After(bt)
+	}
+	return a > b
 }
 
 func statePriority(state string) int {

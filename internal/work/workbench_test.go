@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -76,6 +77,47 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 	if report.Recent[0].MoveType != "control_plane_repair" || !report.Recent[0].Changed {
 		t.Fatalf("terminal item missing receipt learning fields: %+v", report.Recent[0])
+	}
+}
+
+func TestWorkbenchRecentOrdersByCompletionTimeNotWorkID(t *testing.T) {
+	s := newStore(t)
+	olderAt := fixedNow
+	newerAt := fixedNow.Add(2 * time.Hour)
+	var olderInput, newerInput CreateInput
+	found := false
+	for i := 0; i < 1000; i++ {
+		olderInput = CreateInput{Owner: "compound-core", SuccessPredicate: fmt.Sprintf("older terminal %03d", i)}
+		newerInput = CreateInput{Owner: "compound-core", SuccessPredicate: fmt.Sprintf("newer terminal %03d", i)}
+		older := BuildWork(olderInput, olderAt)
+		newer := BuildWork(newerInput, newerAt)
+		if older.ID > newer.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("test setup could not find lexicographic id inversion")
+	}
+	older, err := s.Create(olderInput, olderAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := s.Create(newerInput, newerAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeWorkbenchTestWork(t, s, older.ID, olderAt.Add(10*time.Minute), "older completion")
+	closeWorkbenchTestWork(t, s, newer.ID, newerAt.Add(10*time.Minute), "newer completion")
+	report, err := s.Workbench(newerAt.Add(time.Hour), WorkbenchOptions{RecentLimit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Recent) != 2 {
+		t.Fatalf("recent len = %d, want 2: %+v", len(report.Recent), report.Recent)
+	}
+	if report.Recent[0].WorkID != newer.ID {
+		t.Fatalf("recent[0] = %s, want newer %s; older id %s sorts higher lexicographically", report.Recent[0].WorkID, newer.ID, older.ID)
 	}
 }
 
@@ -418,6 +460,28 @@ func TestWorkbenchDerivesObservatoryTags(t *testing.T) {
 		if !contains(doneItem.ObservatoryTags, tag) {
 			t.Fatalf("done observatory tags missing %q: %+v", tag, doneItem.ObservatoryTags)
 		}
+	}
+}
+
+func closeWorkbenchTestWork(t *testing.T, s *Store, workID string, at time.Time, summary string) {
+	t.Helper()
+	if _, err := s.Claim(workID, "codex", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(workID, AdvanceInput{To: "running"}, at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(workID, AdvanceInput{To: "verifying", VerificationID: "ver_" + workID}, at.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(workID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Summary:   summary,
+		Changed:   true,
+		ProofRefs: []string{"proof:" + workID},
+	}, at.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
 	}
 }
 
