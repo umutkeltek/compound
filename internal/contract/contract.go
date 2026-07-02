@@ -353,6 +353,13 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	}
 	ec.ActiveDecisions = decisions
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, decisionRevs)
+	memoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
+	if err != nil {
+		return ec, err
+	}
+	for _, ref := range memoryRefs {
+		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
+	}
 	return ec, nil
 }
 

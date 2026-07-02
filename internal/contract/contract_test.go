@@ -1071,6 +1071,13 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 	if strings.Contains(pack.SummaryMD, "private external skill repo preference") {
 		t.Fatalf("summary leaked private/self-model memory: %q", pack.SummaryMD)
 	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(ec.ActiveMemory, capabilityRef) {
+		t.Fatalf("effective contract active_memory = %v, want task-relevant %s", ec.ActiveMemory, capabilityRef)
+	}
 }
 
 func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
