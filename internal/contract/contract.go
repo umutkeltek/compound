@@ -340,6 +340,13 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	ec.ActiveHooks = hooks
 	ec.Excluded = append(ec.Excluded, excludedHooks...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, hookRevs)
+	capabilityHits, _, err := surfaceCapabilityHits(homePath, in)
+	if err != nil {
+		return ec, err
+	}
+	for _, hit := range capabilityHits {
+		ec.CapabilityOffers = append(ec.CapabilityOffers, capabilityOffer(hit))
+	}
 	decisions, decisionRevs, err := loadDecisionRefs(homePath)
 	if err != nil {
 		return ec, err
@@ -433,19 +440,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		}
 		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
 	}
-	if capgraph.Exists(homePath) {
-		store, err := capgraph.Open(homePath)
-		if err != nil {
-			return pack, err
-		}
-		surfaced, err := store.SurfaceForHarness(in.Task, in.Harness)
-		if err != nil {
-			return pack, err
-		}
-		surfacedTotal := len(surfaced)
-		if len(surfaced) > maxContextCapabilityOffers {
-			surfaced = surfaced[:maxContextCapabilityOffers]
-		}
+	surfaced, surfacedTotal, err := surfaceCapabilityHits(homePath, in)
+	if err != nil {
+		return pack, err
+	}
+	if surfacedTotal > 0 {
 		for _, hit := range surfaced {
 			pack.CapabilityOffers = append(pack.CapabilityOffers, capabilityOffer(hit))
 			pack.Included = append(pack.Included, envelope.IncludedRef{
@@ -456,12 +455,10 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 				Status:      "current",
 			})
 		}
-		if surfacedTotal > 0 {
-			if surfacedTotal > len(surfaced) {
-				pack.SummaryMD += fmt.Sprintf(" %d of %d capability offer(s) surfaced; %d omitted from context budget; offers are not execution.", len(surfaced), surfacedTotal, surfacedTotal-len(surfaced))
-			} else {
-				pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
-			}
+		if surfacedTotal > len(surfaced) {
+			pack.SummaryMD += fmt.Sprintf(" %d of %d capability offer(s) surfaced; %d omitted from context budget; offers are not execution.", len(surfaced), surfacedTotal, surfacedTotal-len(surfaced))
+		} else {
+			pack.SummaryMD += fmt.Sprintf(" %d capability offer(s) surfaced; offers are not execution.", len(surfaced))
 		}
 	}
 	externalIntake, err := capgraph.ExternalRepoIntakeReportForHome(homePath, in.Task)
@@ -506,6 +503,25 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
 	return pack, nil
+}
+
+func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int, error) {
+	if !capgraph.Exists(homePath) {
+		return nil, 0, nil
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		return nil, 0, err
+	}
+	surfaced, err := store.SurfaceForHarness(in.Task, in.Harness)
+	if err != nil {
+		return nil, 0, err
+	}
+	surfacedTotal := len(surfaced)
+	if len(surfaced) > maxContextCapabilityOffers {
+		surfaced = surfaced[:maxContextCapabilityOffers]
+	}
+	return surfaced, surfacedTotal, nil
 }
 
 func capabilityOffer(hit capgraph.Surfaced) envelope.CapabilityOffer {

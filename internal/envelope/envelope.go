@@ -175,18 +175,19 @@ type SourceRev struct {
 }
 type EffectiveContract struct {
 	Header
-	Harness            string           `json:"harness"`
-	TaskMode           string           `json:"task_mode,omitempty"`
-	ActiveInstructions []string         `json:"active_instructions"`
-	ActiveHooks        []string         `json:"active_hooks"`
-	ActiveDecisions    []string         `json:"active_decisions"`
-	Excluded           []ExcludedRef    `json:"excluded"`
-	MemoryPolicy       MemoryPolicy     `json:"memory_policy"`
-	CapabilityPolicy   CapabilityPolicy `json:"capability_policy"`
-	MutationPolicy     MutationPolicy   `json:"mutation_policy"`
-	SourceRevisions    []SourceRev      `json:"source_revisions"`
-	Unknowns           []string         `json:"unknowns"`
-	Conflicts          []string         `json:"conflicts"`
+	Harness            string            `json:"harness"`
+	TaskMode           string            `json:"task_mode,omitempty"`
+	ActiveInstructions []string          `json:"active_instructions"`
+	ActiveHooks        []string          `json:"active_hooks"`
+	ActiveDecisions    []string          `json:"active_decisions"`
+	Excluded           []ExcludedRef     `json:"excluded"`
+	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
+	MemoryPolicy       MemoryPolicy      `json:"memory_policy"`
+	CapabilityPolicy   CapabilityPolicy  `json:"capability_policy"`
+	MutationPolicy     MutationPolicy    `json:"mutation_policy"`
+	SourceRevisions    []SourceRev       `json:"source_revisions"`
+	Unknowns           []string          `json:"unknowns"`
+	Conflicts          []string          `json:"conflicts"`
 }
 
 func (e *EffectiveContract) Kind() string { return "effective_contract" }
@@ -194,6 +195,7 @@ func (e *EffectiveContract) Validate() error {
 	v := &verr{}
 	e.Header.validate(v, SVEffectiveContract, "contract_")
 	v.req("harness", e.Harness)
+	validateCapabilityOffers(v, "capability_offers", e.CapabilityOffers)
 	return v.result(e.Kind())
 }
 
@@ -276,8 +278,18 @@ func (e *ContextPack) Validate() error {
 		v.enum(fmt.Sprintf("included[%d].status", i), inc.Status, AuthorityStatuses, false)
 		v.req(fmt.Sprintf("included[%d].ref", i), inc.Ref)
 	}
-	for i, offer := range e.CapabilityOffers {
-		prefix := fmt.Sprintf("capability_offers[%d]", i)
+	validateCapabilityOffers(v, "capability_offers", e.CapabilityOffers)
+	// the excluded list (what was NOT loaded, and why) is the whole point of replaceability;
+	// require its presence (may be empty) so it's never silently dropped.
+	if e.Excluded == nil {
+		v.addf("excluded must be present (record what was not loaded and why)")
+	}
+	return v.result(e.Kind())
+}
+
+func validateCapabilityOffers(v *verr, field string, values []CapabilityOffer) {
+	for i, offer := range values {
+		prefix := fmt.Sprintf("%s[%d]", field, i)
 		v.req(prefix+".ref", offer.Ref)
 		v.req(prefix+".kind", offer.Kind)
 		v.req(prefix+".name", offer.Name)
@@ -288,12 +300,6 @@ func (e *ContextPack) Validate() error {
 		validateCapabilityOfferConstraints(v, prefix+".known_false_triggered_by", offer.KnownFalseTriggeredBy)
 		validateCapabilityOfferConstraints(v, prefix+".evidence", offer.Evidence)
 	}
-	// the excluded list (what was NOT loaded, and why) is the whole point of replaceability;
-	// require its presence (may be empty) so it's never silently dropped.
-	if e.Excluded == nil {
-		v.addf("excluded must be present (record what was not loaded and why)")
-	}
-	return v.result(e.Kind())
 }
 
 func validateCapabilityOfferConstraints(v *verr, field string, values []CapabilityOfferConstraint) {

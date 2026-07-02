@@ -471,6 +471,20 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	if pack.SummaryMD == "" || !containsText(pack.SummaryMD, "capability offer(s) surfaced") {
 		t.Fatalf("summary should report surfaced offers, got %q", pack.SummaryMD)
 	}
+	ec, err := CompileWithRuntime(mkInput("product"), DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	contractOffer := findEffectiveContractCapabilityOffer(ec, "capability://skill:pricing")
+	if contractOffer == nil {
+		t.Fatalf("effective contract capability offers = %+v, want skill:pricing", ec.CapabilityOffers)
+	}
+	if contractOffer.CostRiskNote == "" || !hasOfferConstraint(contractOffer.Required, capgraph.EdRequires, "tool:revenuecat") {
+		t.Fatalf("effective contract offer lost constraints: %+v", contractOffer)
+	}
 }
 
 func TestPackWithCapabilitiesBoundsCapabilityOffers(t *testing.T) {
@@ -1221,6 +1235,15 @@ func findCapabilityOffer(pack envelope.ContextPack, ref string) *envelope.Capabi
 	for i := range pack.CapabilityOffers {
 		if pack.CapabilityOffers[i].Ref == ref {
 			return &pack.CapabilityOffers[i]
+		}
+	}
+	return nil
+}
+
+func findEffectiveContractCapabilityOffer(ec envelope.EffectiveContract, ref string) *envelope.CapabilityOffer {
+	for i := range ec.CapabilityOffers {
+		if ec.CapabilityOffers[i].Ref == ref {
+			return &ec.CapabilityOffers[i]
 		}
 	}
 	return nil
