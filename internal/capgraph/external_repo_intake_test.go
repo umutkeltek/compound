@@ -350,6 +350,105 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 	}
 }
 
+func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T) {
+	home := t.TempDir()
+	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	writeJSON(t, mapPath, map[string]any{
+		"boundaries": []string{"review-only", "no install"},
+		"items": []map[string]any{
+			{
+				"repo":             "example/review",
+				"owner":            "Agent Workbench / harness adapters",
+				"next_review_step": "evaluate browser QA workflow against Agent Workbench",
+				"not_to_do":        "do not clone automatically",
+			},
+		},
+	})
+	writeJSON(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
+		"schema_version":  "compound.external_repo_intake_run.v0.1",
+		"id":              "2026-07-01-test",
+		"created_at":      "2026-07-01T12:00:00Z",
+		"map_path":        mapPath,
+		"candidate_count": 1,
+		"decisions": []map[string]any{
+			{
+				"repo":              "example/review",
+				"decision":          "keep_needs_review",
+				"lane":              "harness_reference",
+				"evidence_strength": 0.9,
+				"duplicate_risk":    0.2,
+			},
+		},
+		"counts_by_decision": map[string]any{"keep_needs_review": 1},
+		"counts_by_lane":     map[string]any{"harness_reference": 1},
+	})
+	sourceListPath := filepath.Join(home, "repos.md")
+	if err := os.WriteFile(sourceListPath, []byte("https://github.com/example/review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewDir := filepath.Join(home, "reviews", ExternalRepoIntakeReviewArea)
+	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reviewedPath := filepath.Join(reviewDir, "example-review.reviewed.json")
+	writeJSON(t, reviewedPath, ExternalRepoIntakeReviewReport{
+		SchemaVersion: ExternalRepoIntakeReviewReportSchemaVersion,
+		ID:            "errr_test",
+		CreatedAt:     "2026-07-02T03:04:07Z",
+		Status:        "recorded",
+		PlanID:        "extrepo_test",
+		ReviewID:      "err_test",
+		Repo:          "example/review",
+		Decision:      "keep_needs_review",
+		Owner:         "Agent Workbench / harness adapters",
+		NextAction:    "evaluate browser QA workflow against Agent Workbench",
+		SourcePath:    "external-repo-intake-review.yaml",
+		ReviewPath:    reviewedPath,
+		EvidenceRefs:  []string{ExternalRepoIntakeAuthorityRef + "/2026-07-01-test#example/review"},
+		Boundaries:    []string{"review-only", "no install"},
+	})
+
+	report, err := RecordExternalRepoCapabilityEvaluationPlan(home, ExternalRepoCapabilityEvaluationPlanOptions{
+		SourceListPath: sourceListPath,
+		RepoQuery:      "github.com/example/review",
+	}, time.Date(2026, 7, 2, 4, 5, 6, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("record external repo evaluation plan: %v", err)
+	}
+	if report.Status != "review_required" || report.Repo != "example/review" || report.OwnerReviewStatus != "recorded" {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.EvaluationPath == "" || report.PlanPath == "" || report.ReviewPath == "" || report.ReviewYAMLPath == "" || report.ManifestDraftPath == "" {
+		t.Fatalf("paths missing from report: %+v", report)
+	}
+	eval, _, err := loadCapabilityEvaluationFile(report.EvaluationPath)
+	if err != nil {
+		t.Fatalf("load written evaluation: %v", err)
+	}
+	if eval.Verdict != "evaluate_further" || eval.Capability != "external-repo-example-review-workflow" {
+		t.Fatalf("evaluation = %+v", eval)
+	}
+	if signalString(eval.Signals, "external_repo") != "example/review" || signalString(eval.Signals, "existing_owner") != "Agent Workbench / harness adapters" {
+		t.Fatalf("evaluation signals = %+v", eval.Signals)
+	}
+	if _, err := os.Stat(filepath.Join(home, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("evaluation plan must not mutate capability graph, stat err=%v", err)
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: capabilityEvaluationReviewArea}, time.Date(2026, 7, 2, 4, 5, 7, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	AnnotateCapabilityEvaluationQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Status != "review_required" {
+		t.Fatalf("capability evaluation queue = counts=%+v item=%+v", queue.Counts, queue.Items[0])
+	}
+}
+
 func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing.T) {
 	home := t.TempDir()
 	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")

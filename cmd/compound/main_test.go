@@ -7113,6 +7113,22 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if !strings.Contains(humanAfterReview, "- source_list_evaluation_next: example/research") || strings.Contains(humanAfterReview, "- source_list_review_next: example/research") {
 		t.Fatalf("human source-list output should show evaluation-next only after review:\n%s", humanAfterReview)
 	}
+	evalPlanJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake-evaluation-plan", "--source-list", sourceListPath, "--repo", "github.com/example/research", "--json"})
+	})
+	var evalPlan capgraph.ExternalRepoCapabilityEvaluationPlanReport
+	if err := json.Unmarshal([]byte(evalPlanJSON), &evalPlan); err != nil {
+		t.Fatalf("external-intake-evaluation-plan --json parse: %v\n%s", err, evalPlanJSON)
+	}
+	if evalPlan.Status != "review_required" || evalPlan.Repo != "example/research" || evalPlan.OwnerReviewStatus != "recorded" {
+		t.Fatalf("external-intake-evaluation-plan report = %+v", evalPlan)
+	}
+	if evalPlan.EvaluationPath == "" || evalPlan.PlanPath == "" || evalPlan.ReviewYAMLPath == "" || evalPlan.ManifestDraftPath == "" {
+		t.Fatalf("external-intake-evaluation-plan paths missing: %+v", evalPlan)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("external-intake-evaluation-plan must not mutate capability graph, stat err=%v", err)
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {

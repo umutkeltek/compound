@@ -238,7 +238,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
@@ -262,7 +262,7 @@ retired Gen-1 tombstones:
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -662,6 +662,47 @@ func cmdCapability(args []string) {
 		for _, item := range report.Items {
 			fmt.Printf("- review_artifact: %s repo=%s decision=%s owner=%s next=%s json=%s\n", item.ID, item.Repo, item.Decision, item.Owner, item.NextAction, item.JSONPath)
 		}
+	case "external-intake-evaluation-plan":
+		jsonOut := hasFlag(rest, "--json")
+		opts := capgraph.ExternalRepoCapabilityEvaluationPlanOptions{
+			SourceListPath: flagValue(rest, "--source-list"),
+			RepoQuery:      flagValue(rest, "--repo"),
+			Capability:     flagValue(rest, "--capability"),
+			TargetPath:     flagValue(rest, "--target"),
+		}
+		if opts.SourceListPath == "" {
+			opts.SourceListPath = flagValue(rest, "--repo-file")
+		}
+		p := posn(map[string]bool{"--source-list": true, "--repo-file": true, "--repo": true, "--capability": true, "--target": true})
+		if len(p) != 0 || opts.SourceListPath == "" || opts.RepoQuery == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound capability external-intake-evaluation-plan --source-list <file> --repo <repo> [--capability <name>] [--target <file>] [--json]")
+			os.Exit(2)
+		}
+		report, err := capgraph.RecordExternalRepoCapabilityEvaluationPlan(homePath, opts, time.Now())
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability external-intake-evaluation-plan %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- source_list: %s\n", report.SourceListPath)
+		fmt.Printf("- repo: %s\n", report.Repo)
+		if report.Owner != "" {
+			fmt.Printf("- owner: %s\n", report.Owner)
+		}
+		if report.OwnerReviewPath != "" {
+			fmt.Printf("- owner_review: %s\n", report.OwnerReviewPath)
+		}
+		if report.OwnerReviewNextAction != "" {
+			fmt.Printf("- next_action: %s\n", report.OwnerReviewNextAction)
+		}
+		fmt.Printf("- capability: %s\n", report.Capability)
+		fmt.Printf("- evaluation: %s\n", report.EvaluationPath)
+		fmt.Printf("- plan: %s\n", report.PlanPath)
+		fmt.Printf("- review: %s\n", report.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", report.ReviewYAMLPath)
+		fmt.Printf("- manifest_draft: %s\n", report.ManifestDraftPath)
 	case "external-intake-review":
 		jsonOut := hasFlag(rest, "--json")
 		p := posn(nil)
@@ -1025,7 +1066,7 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-review|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
 		os.Exit(2)
 	}
 }
