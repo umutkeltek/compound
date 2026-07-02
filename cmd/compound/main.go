@@ -241,7 +241,7 @@ usage:
   compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound authority import [f] | path <f> | path-registry <f> | git <repo> | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
-  compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
+  compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>
@@ -6848,6 +6848,7 @@ func cmdDecisions(args []string) {
 			fmt.Printf("- source_authority: %s %s -> %s (%s)\n", rec.ID, rec.SourceRole, rec.AuthorityRef, rec.AuthorityStatus)
 		}
 	case "authority":
+		jsonOut := hasFlag(args[1:], "--json")
 		sourceKind := decisionSourceKind(value("--source-kind"))
 		policyDirs := values("--policy-dir")
 		if root := strings.TrimSpace(os.Getenv("COMPOUND_POLICY_DECISIONS_DIR")); root != "" {
@@ -6877,6 +6878,45 @@ func cmdDecisions(args []string) {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "decisions authority:", err)
 			os.Exit(1)
+		}
+		if jsonOut {
+			out := struct {
+				SchemaVersion   string                            `json:"schema_version"`
+				Status          string                            `json:"status"`
+				AuthorityRef    string                            `json:"authority_ref"`
+				RecordCount     int                               `json:"record_count"`
+				Eligible        int                               `json:"eligible"`
+				Covered         int                               `json:"covered"`
+				Missing         int                               `json:"missing"`
+				CountsByKind    map[string]int                    `json:"counts_by_kind"`
+				CountsByStatus  map[string]int                    `json:"counts_by_status"`
+				EligibleSources []string                          `json:"eligible_sources,omitempty"`
+				MissingSources  []string                          `json:"missing_sources,omitempty"`
+				Records         []decisions.SourceAuthorityRecord `json:"records,omitempty"`
+			}{
+				SchemaVersion:   "compound.decision_source_authority_coverage.v0.1",
+				Status:          report.Status,
+				AuthorityRef:    "compound://registries/decision-source-authority",
+				RecordCount:     len(report.Records),
+				Eligible:        len(report.Eligible),
+				Covered:         len(report.Eligible) - len(report.Missing),
+				Missing:         len(report.Missing),
+				CountsByKind:    report.CountsByKind,
+				CountsByStatus:  report.CountsByStatus,
+				EligibleSources: report.Eligible,
+				MissingSources:  report.Missing,
+				Records:         report.Records,
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", " ")
+			if err := enc.Encode(out); err != nil {
+				fmt.Fprintln(os.Stderr, "decisions authority:", err)
+				os.Exit(1)
+			}
+			if len(report.Eligible) > 0 && len(report.Missing) > 0 {
+				os.Exit(1)
+			}
+			return
 		}
 		fmt.Printf("# decisions authority\n\n")
 		fmt.Printf("- status: %s\n", report.Status)

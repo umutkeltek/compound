@@ -7073,6 +7073,35 @@ Park until lifecycle proof is reviewed.
 			t.Fatalf("authority output missing %q:\n%s", want, authorityOut)
 		}
 	}
+	authorityJSON := captureStdout(t, func() {
+		cmdDecisions([]string{"authority", "--source-dir", sourceDir, "--source-kind", "note", "--json"})
+	})
+	var authorityReport struct {
+		SchemaVersion  string         `json:"schema_version"`
+		Status         string         `json:"status"`
+		AuthorityRef   string         `json:"authority_ref"`
+		RecordCount    int            `json:"record_count"`
+		Eligible       int            `json:"eligible"`
+		Covered        int            `json:"covered"`
+		Missing        int            `json:"missing"`
+		CountsByKind   map[string]int `json:"counts_by_kind"`
+		CountsByStatus map[string]int `json:"counts_by_status"`
+	}
+	if err := json.Unmarshal([]byte(authorityJSON), &authorityReport); err != nil {
+		t.Fatalf("parse authority JSON: %v\n%s", err, authorityJSON)
+	}
+	if authorityReport.SchemaVersion != "compound.decision_source_authority_coverage.v0.1" ||
+		authorityReport.Status != "ok" ||
+		authorityReport.AuthorityRef != "compound://registries/decision-source-authority" ||
+		authorityReport.RecordCount != 2 ||
+		authorityReport.Eligible != 2 ||
+		authorityReport.Covered != 2 ||
+		authorityReport.Missing != 0 ||
+		authorityReport.CountsByKind["note"] != 2 ||
+		authorityReport.CountsByStatus["compound_primary"] != 1 ||
+		authorityReport.CountsByStatus["compound_parked"] != 1 {
+		t.Fatalf("bad authority JSON: %+v\n%s", authorityReport, authorityJSON)
+	}
 }
 
 func writeHookFixture(t *testing.T, fixture hook.Fixture) string {
