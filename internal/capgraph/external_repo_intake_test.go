@@ -145,6 +145,12 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 				"next_review_step": "merge deltas only",
 				"not_to_do":        "do not install wholesale",
 			},
+			{
+				"repo":             "example/review",
+				"owner":            "Agent Workbench / harness adapters",
+				"next_review_step": "review harness pattern",
+				"not_to_do":        "do not clone automatically",
+			},
 		},
 	})
 	writeJSON(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
@@ -160,12 +166,18 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 				"lane":              "external_skill_candidate",
 				"evidence_strength": 0.8,
 			},
+			{
+				"repo":              "example/review",
+				"decision":          "keep_needs_review",
+				"lane":              "harness_reference",
+				"evidence_strength": 0.9,
+			},
 		},
-		"counts_by_decision": map[string]any{"merge_existing": 1},
-		"counts_by_lane":     map[string]any{"external_skill_candidate": 1},
+		"counts_by_decision": map[string]any{"merge_existing": 1, "keep_needs_review": 1},
+		"counts_by_lane":     map[string]any{"external_skill_candidate": 1, "harness_reference": 1},
 	})
 	sourceListPath := filepath.Join(home, "repos.md")
-	if err := os.WriteFile(sourceListPath, []byte("https://github.com/example/known\nhttps://github.com/example/known\nhttps://github.com/example/unknown\n"), 0o644); err != nil {
+	if err := os.WriteFile(sourceListPath, []byte("https://github.com/example/known\nhttps://github.com/example/review\nhttps://github.com/example/known\nhttps://github.com/example/unknown\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	evalDir := filepath.Join(home, "inbox", "capability-evaluations")
@@ -190,19 +202,22 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source list report should not fail: %v", err)
 	}
-	if report.SourceListPath != sourceListPath || report.SourceListTotal != 2 || report.SourceListKnown != 1 || report.SourceListUnknown != 1 {
+	if report.SourceListPath != sourceListPath || report.SourceListTotal != 3 || report.SourceListKnown != 2 || report.SourceListUnknown != 1 {
 		t.Fatalf("source list counts = %+v", report)
 	}
 	if got := report.SourceListItems[0]; got.Status != "known" || got.Normalized != "example/known" || got.MatchCount != 1 {
 		t.Fatalf("known item = %+v", got)
 	}
-	if report.SourceListByDecision["merge_existing"] != 1 || report.SourceListByLane["external_skill_candidate"] != 1 || report.SourceListByOwner["procedure:skill-ops"] != 1 {
+	if report.SourceListByDecision["merge_existing"] != 1 || report.SourceListByDecision["keep_needs_review"] != 1 || report.SourceListByLane["external_skill_candidate"] != 1 || report.SourceListByLane["harness_reference"] != 1 || report.SourceListByOwner["procedure:skill-ops"] != 1 || report.SourceListByOwner["Agent Workbench / harness adapters"] != 1 {
 		t.Fatalf("source-list aggregate counts missing: decision=%+v lane=%+v owner=%+v", report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner)
+	}
+	if len(report.SourceListReviewNext) != 1 || report.SourceListReviewNext[0].Matches[0].Repo != "example/review" {
+		t.Fatalf("source-list review_next = %+v", report.SourceListReviewNext)
 	}
 	if report.SourceListItems[0].Matches[0].Owner != "procedure:skill-ops" {
 		t.Fatalf("known item metadata missing: %+v", report.SourceListItems[0].Matches[0])
 	}
-	if got := report.SourceListItems[1]; got.Status != "unknown" || got.Normalized != "example/unknown" || got.MatchCount != 0 {
+	if got := report.SourceListItems[2]; got.Status != "unknown" || got.Normalized != "example/unknown" || got.MatchCount != 0 {
 		t.Fatalf("unknown item = %+v", got)
 	}
 }

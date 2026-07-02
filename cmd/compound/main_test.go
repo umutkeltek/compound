@@ -6898,6 +6898,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if sourceListReport.SourceListByDecision["keep_needs_review"] != 1 || sourceListReport.SourceListByLane["freshness_research_skill_candidate"] != 1 || sourceListReport.SourceListByOwner["deep-research"] != 1 {
 		t.Fatalf("source-list aggregate counts missing: decision=%+v lane=%+v owner=%+v", sourceListReport.SourceListByDecision, sourceListReport.SourceListByLane, sourceListReport.SourceListByOwner)
 	}
+	if len(sourceListReport.SourceListReviewNext) != 1 || sourceListReport.SourceListReviewNext[0].Matches[0].Repo != "example/research" {
+		t.Fatalf("source-list review_next missing match: %+v", sourceListReport.SourceListReviewNext)
+	}
 	if sourceListReport.SourceListItems[0].Status != "known" || sourceListReport.SourceListItems[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list known item missing match: %+v", sourceListReport.SourceListItems)
 	}

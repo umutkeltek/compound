@@ -44,6 +44,7 @@ type ExternalRepoIntakeReport struct {
 	SourceListByDecision  map[string]int               `json:"source_list_counts_by_decision,omitempty"`
 	SourceListByLane      map[string]int               `json:"source_list_counts_by_lane,omitempty"`
 	SourceListByOwner     map[string]int               `json:"source_list_counts_by_owner,omitempty"`
+	SourceListReviewNext  []ExternalRepoSourceListItem `json:"source_list_review_next,omitempty"`
 	SourceListItems       []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
 	HighValue             []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
 	Recent                []ExternalRepoIntakeDecision `json:"recent,omitempty"`
@@ -218,6 +219,7 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 				report.SourceListUnknown++
 			}
 		}
+		report.SourceListReviewNext = sourceListReviewNext(items, 12)
 	}
 	report.HighValue = filterExternalRepoDecisions(decisions, "keep_needs_review", 12)
 	report.Recent = limitExternalRepoDecisions(decisions, 12)
@@ -243,6 +245,27 @@ func incrementNonEmpty(counts map[string]int, key string) {
 		return
 	}
 	counts[key]++
+}
+
+func sourceListReviewNext(items []ExternalRepoSourceListItem, limit int) []ExternalRepoSourceListItem {
+	var out []ExternalRepoSourceListItem
+	for _, item := range items {
+		if len(item.Matches) == 0 || item.Matches[0].Decision != "keep_needs_review" {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		li, lj := out[i].Matches[0], out[j].Matches[0]
+		if li.EvidenceStrength != lj.EvidenceStrength {
+			return li.EvidenceStrength > lj.EvidenceStrength
+		}
+		return out[i].Normalized < out[j].Normalized
+	})
+	if limit > 0 && len(out) > limit {
+		return out[:limit]
+	}
+	return out
 }
 
 func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {

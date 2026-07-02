@@ -604,6 +604,10 @@ func cmdCapability(args []string) {
 			for _, owner := range sortedMapKeys(report.SourceListByOwner) {
 				fmt.Printf("- source_list_owner.%s: %d\n", owner, report.SourceListByOwner[owner])
 			}
+			for _, item := range report.SourceListReviewNext {
+				first := item.Matches[0]
+				fmt.Printf("- source_list_review_next: %s lane=%s owner=%s evidence=%.2f next=%s boundary=%s\n", first.Repo, first.Lane, first.Owner, first.EvidenceStrength, first.NextReviewStep, first.NotToDo)
+			}
 			for _, item := range report.SourceListItems {
 				if item.Status == "unknown" {
 					fmt.Printf("- source_list_unknown: %s normalized=%s\n", item.Query, item.Normalized)
