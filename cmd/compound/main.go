@@ -2774,7 +2774,17 @@ func cmdRoute(args []string) {
 			fmt.Printf("- routing_rule: %s\n", plan.RoutingRule)
 			fmt.Printf("- chain_count: %d\n", len(plan.Chain))
 			for _, lane := range plan.Chain {
-				fmt.Printf("- lane: %d %s tier=%s role=%s claim=%s\n", lane.Position, lane.ModelID, lane.Tier, lane.GateRole, lane.ClaimLevel)
+				fmt.Printf("- lane: %d %s tier=%s cost_class=%s role=%s claim=%s harness=%s provider_route=%s effort=%s\n",
+					lane.Position,
+					lane.ModelID,
+					lane.Tier,
+					emptyDash(lane.CostClass),
+					lane.GateRole,
+					lane.ClaimLevel,
+					emptyDash(lane.Harness),
+					emptyDash(lane.ProviderRoute),
+					emptyDash(lane.EffortDefault),
+				)
 				fmt.Printf("  lane_justification: %s\n", lane.Justification)
 			}
 			if len(plan.Omitted) > 0 {

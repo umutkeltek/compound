@@ -54,8 +54,13 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 	}
 	if plan.Chain[0].ModelID != "auto/judge" ||
 		plan.Chain[0].GateRole != "eligible" ||
+		plan.Chain[0].CostClass != "api-marginal" ||
+		plan.Chain[0].Harness != "switchback" ||
+		plan.Chain[0].ProviderRoute != "auto/judge" ||
+		plan.Chain[0].EffortDefault != "high" ||
 		plan.Chain[1].ModelID != "scout/chat" ||
-		plan.Chain[1].GateRole != "tripwire_only" {
+		plan.Chain[1].GateRole != "tripwire_only" ||
+		plan.Chain[1].CostClass != "free" {
 		t.Fatalf("bad chain: %+v", plan.Chain)
 	}
 	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "free judge/critique lane scout/chat may object but must not gate verdicts") {

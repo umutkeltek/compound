@@ -34,6 +34,10 @@ type CapabilityClaim struct {
 
 type ModelCapabilityEntry struct {
 	Lane          string                     `json:"lane" yaml:"lane"`
+	Harness       string                     `json:"harness,omitempty" yaml:"harness,omitempty"`
+	ProviderRoute string                     `json:"provider_route,omitempty" yaml:"provider_route,omitempty"`
+	EffortDefault string                     `json:"effort_default,omitempty" yaml:"effort_default,omitempty"`
+	CostClass     string                     `json:"cost_class,omitempty" yaml:"cost_class,omitempty"`
 	Tier          string                     `json:"tier" yaml:"tier"`
 	PacketCeiling string                     `json:"packet_ceiling" yaml:"packet_ceiling"`
 	Capabilities  map[string]CapabilityClaim `json:"capabilities" yaml:"capabilities"`
@@ -105,6 +109,10 @@ type CapabilityRouteLane struct {
 	Position            int    `json:"position"`
 	ModelID             string `json:"model_id"`
 	Lane                string `json:"lane"`
+	Harness             string `json:"harness,omitempty"`
+	ProviderRoute       string `json:"provider_route,omitempty"`
+	EffortDefault       string `json:"effort_default,omitempty"`
+	CostClass           string `json:"cost_class,omitempty"`
 	Tier                string `json:"tier"`
 	PacketCeiling       string `json:"packet_ceiling,omitempty"`
 	ClaimLevel          string `json:"claim_level,omitempty"`
@@ -397,6 +405,10 @@ func capabilityRouteLane(class, modelID string, model ModelCapabilityEntry, posi
 		Position:      position,
 		ModelID:       modelID,
 		Lane:          model.Lane,
+		Harness:       strings.TrimSpace(model.Harness),
+		ProviderRoute: strings.TrimSpace(model.ProviderRoute),
+		EffortDefault: strings.TrimSpace(model.EffortDefault),
+		CostClass:     strings.TrimSpace(model.CostClass),
 		Tier:          model.Tier,
 		PacketCeiling: model.PacketCeiling,
 		ClaimLevel:    level,
@@ -430,7 +442,11 @@ func laneJustification(class string, position int, modelID string, model ModelCa
 	if level == "" {
 		level = "missing"
 	}
-	return fmt.Sprintf("%s[%d] -> %s (%s) claim=%s role=%s", "routing_defaults["+class+"]", position, modelID, model.Tier, level, role)
+	cost := strings.TrimSpace(model.CostClass)
+	if cost == "" {
+		cost = "unknown"
+	}
+	return fmt.Sprintf("%s[%d] -> %s (%s cost=%s) claim=%s role=%s", "routing_defaults["+class+"]", position, modelID, model.Tier, cost, level, role)
 }
 
 func pendingRouteObservations(homePath, capabilityClass string, modelIDs []string, now time.Time) ([]PendingRouteObservation, error) {

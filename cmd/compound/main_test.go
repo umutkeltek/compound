@@ -7753,6 +7753,8 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 		!strings.Contains(planOut, "- routing_rule: routing_defaults[judge-critique]") ||
 		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][0] -> auto/judge") ||
 		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][1] -> scout/chat") ||
+		!strings.Contains(planOut, "cost_class=api-marginal") ||
+		!strings.Contains(planOut, "harness=switchback provider_route=auto/judge effort=high") ||
 		!strings.Contains(planOut, "role=tripwire_only") ||
 		!strings.Contains(planOut, "- verdict: metadata_only_not_task_success") {
 		t.Fatalf("bad route plan output:\n%s", planOut)

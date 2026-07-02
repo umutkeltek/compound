@@ -11,6 +11,10 @@ capability_classes:
 models:
   auto/extract:
     lane: "auto/extract (switchback adaptive profile)"
+    harness: "switchback"
+    provider_route: "auto/extract"
+    effort_default: low
+    cost_class: free
     tier: free
     packet_ceiling: single-file
     capabilities:
@@ -19,6 +23,10 @@ models:
         evidence: "fixture: free extraction pool selected by route preview"
   auto/judge:
     lane: "auto/judge (switchback adaptive profile)"
+    harness: "switchback"
+    provider_route: "auto/judge"
+    effort_default: high
+    cost_class: api-marginal
     tier: cheap
     packet_ceiling: multi-file
     capabilities:
@@ -27,6 +35,10 @@ models:
         evidence: "fixture: cheap paid judge leads critique route"
   scout/chat:
     lane: "scout/chat (switchback)"
+    harness: "switchback"
+    provider_route: "scout/chat"
+    effort_default: low
+    cost_class: free
     tier: free
     packet_ceiling: single-file
     capabilities:
@@ -38,6 +50,10 @@ models:
         evidence: "fixture: tripwire only; free lanes do not gate verdicts"
   mac/qwen-fixture:
     lane: "local/mac-fast (fixture)"
+    harness: "local"
+    provider_route: "local/mac-fast"
+    effort_default: medium
+    cost_class: local
     tier: local-batch
     packet_ceiling: single-file
     capabilities:
