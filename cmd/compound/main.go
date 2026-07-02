@@ -564,7 +564,17 @@ func cmdCapability(args []string) {
 		}
 	case "external-intake":
 		repoQuery := flagValue(rest, "--repo")
-		report, err := capgraph.ExternalRepoIntakeReportForHome(homePath, repoQuery)
+		sourceListPath := flagValue(rest, "--source-list")
+		if sourceListPath == "" {
+			sourceListPath = flagValue(rest, "--repo-file")
+		}
+		var report capgraph.ExternalRepoIntakeReport
+		var err error
+		if sourceListPath != "" {
+			report, err = capgraph.ExternalRepoIntakeReportForHomeWithSourceList(homePath, sourceListPath, repoQuery)
+		} else {
+			report, err = capgraph.ExternalRepoIntakeReportForHome(homePath, repoQuery)
+		}
 		die(err)
 		if hasFlag(rest, "--json") {
 			printJSON(report)
@@ -582,6 +592,17 @@ func cmdCapability(args []string) {
 		fmt.Printf("- reference_only: %d\n", report.ReferenceOnlyCount)
 		if report.SourceObservationID != "" {
 			fmt.Printf("- source_observation: %s\n", report.SourceObservationID)
+		}
+		if report.SourceListPath != "" {
+			fmt.Printf("- source_list: %s total=%d known=%d unknown=%d\n", report.SourceListPath, report.SourceListTotal, report.SourceListKnown, report.SourceListUnknown)
+			for _, item := range report.SourceListItems {
+				if item.Status == "unknown" {
+					fmt.Printf("- source_list_unknown: %s normalized=%s\n", item.Query, item.Normalized)
+					continue
+				}
+				first := item.Matches[0]
+				fmt.Printf("- source_list_known: %s matches=%d first=%s decision=%s owner=%s\n", item.Query, item.MatchCount, first.Repo, first.Decision, first.Owner)
+			}
 		}
 		if report.RepoQuery != "" {
 			fmt.Printf("- repo_query: %s matches=%d\n", report.RepoQuery, len(report.Matches))

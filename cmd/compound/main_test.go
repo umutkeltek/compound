@@ -6881,6 +6881,23 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if !strings.Contains(humanOut, "- repo_query: research matches=1") || !strings.Contains(humanOut, "- repo_match: example/research decision=keep_needs_review") {
 		t.Fatalf("human repo lookup missing match:\n%s", humanOut)
 	}
+	sourceListPath := filepath.Join(homePath, "repos.md")
+	if err := os.WriteFile(sourceListPath, []byte("https://github.com/example/research\nhttps://github.com/example/unknown\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceListJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--source-list", sourceListPath, "--json"})
+	})
+	var sourceListReport capgraph.ExternalRepoIntakeReport
+	if err := json.Unmarshal([]byte(sourceListJSON), &sourceListReport); err != nil {
+		t.Fatalf("external-intake --source-list --json parse: %v\n%s", err, sourceListJSON)
+	}
+	if sourceListReport.SourceListTotal != 2 || sourceListReport.SourceListKnown != 1 || sourceListReport.SourceListUnknown != 1 {
+		t.Fatalf("source-list coverage missing counts: %+v", sourceListReport)
+	}
+	if sourceListReport.SourceListItems[0].Status != "known" || sourceListReport.SourceListItems[0].Matches[0].Repo != "example/research" {
+		t.Fatalf("source-list known item missing match: %+v", sourceListReport.SourceListItems)
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {

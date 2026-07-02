@@ -130,6 +130,80 @@ func TestExternalRepoIntakeReportForHome(t *testing.T) {
 	}
 }
 
+func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
+	home := t.TempDir()
+	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	writeJSON(t, mapPath, map[string]any{
+		"items": []map[string]any{
+			{
+				"repo":             "example/known",
+				"owner":            "procedure:skill-ops",
+				"next_review_step": "merge deltas only",
+				"not_to_do":        "do not install wholesale",
+			},
+		},
+	})
+	writeJSON(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
+		"schema_version":  "compound.external_repo_intake_run.v0.1",
+		"id":              "2026-07-01-test",
+		"created_at":      "2026-07-01T12:00:00Z",
+		"map_path":        mapPath,
+		"candidate_count": 1,
+		"decisions": []map[string]any{
+			{
+				"repo":              "example/known",
+				"decision":          "merge_existing",
+				"lane":              "external_skill_candidate",
+				"evidence_strength": 0.8,
+			},
+		},
+		"counts_by_decision": map[string]any{"merge_existing": 1},
+		"counts_by_lane":     map[string]any{"external_skill_candidate": 1},
+	})
+	sourceListPath := filepath.Join(home, "repos.md")
+	if err := os.WriteFile(sourceListPath, []byte("https://github.com/example/known\nhttps://github.com/example/known\nhttps://github.com/example/unknown\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evalDir := filepath.Join(home, "inbox", "capability-evaluations")
+	if err := os.MkdirAll(evalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSON(t, filepath.Join(evalDir, "receipt-only-mention.json"), map[string]any{
+		"schema_version":    1,
+		"id":                "capability-evaluation.external.other.20260701",
+		"source_receipt":    "file:///tmp/repos.md#github.com/example/unknown",
+		"capability":        "procedure:skill-ops",
+		"verdict":           "downgrade_to_index",
+		"rubric_normalized": 0.4,
+		"signals": map[string]any{
+			"external_repo":  "example/other",
+			"external_url":   "https://github.com/example/other",
+			"existing_owner": "procedure:skill-ops",
+		},
+	})
+
+	report, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
+	if err != nil {
+		t.Fatalf("source list report should not fail: %v", err)
+	}
+	if report.SourceListPath != sourceListPath || report.SourceListTotal != 2 || report.SourceListKnown != 1 || report.SourceListUnknown != 1 {
+		t.Fatalf("source list counts = %+v", report)
+	}
+	if got := report.SourceListItems[0]; got.Status != "known" || got.Normalized != "example/known" || got.MatchCount != 1 {
+		t.Fatalf("known item = %+v", got)
+	}
+	if report.SourceListItems[0].Matches[0].Owner != "procedure:skill-ops" {
+		t.Fatalf("known item metadata missing: %+v", report.SourceListItems[0].Matches[0])
+	}
+	if got := report.SourceListItems[1]; got.Status != "unknown" || got.Normalized != "example/unknown" || got.MatchCount != 0 {
+		t.Fatalf("unknown item = %+v", got)
+	}
+}
+
 func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing.T) {
 	home := t.TempDir()
 	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")

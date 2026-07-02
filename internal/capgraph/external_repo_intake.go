@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -36,6 +37,11 @@ type ExternalRepoIntakeReport struct {
 	NoPromoteIDs          []string                     `json:"no_promote_ids,omitempty"`
 	RepoQuery             string                       `json:"repo_query,omitempty"`
 	Matches               []ExternalRepoIntakeDecision `json:"matches,omitempty"`
+	SourceListPath        string                       `json:"source_list_path,omitempty"`
+	SourceListTotal       int                          `json:"source_list_total,omitempty"`
+	SourceListKnown       int                          `json:"source_list_known,omitempty"`
+	SourceListUnknown     int                          `json:"source_list_unknown,omitempty"`
+	SourceListItems       []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
 	HighValue             []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
 	Recent                []ExternalRepoIntakeDecision `json:"recent,omitempty"`
 	Boundaries            []string                     `json:"boundaries"`
@@ -54,6 +60,14 @@ type ExternalRepoIntakeDecision struct {
 	EvidenceStrength float64 `json:"evidence_strength,omitempty"`
 	ReviewID         string  `json:"review_id,omitempty"`
 	ReviewPath       string  `json:"review_path,omitempty"`
+}
+
+type ExternalRepoSourceListItem struct {
+	Query      string                       `json:"query"`
+	Normalized string                       `json:"normalized,omitempty"`
+	Status     string                       `json:"status"`
+	MatchCount int                          `json:"match_count"`
+	Matches    []ExternalRepoIntakeDecision `json:"matches,omitempty"`
 }
 
 type externalRepoIntakeRunSummary struct {
@@ -88,6 +102,22 @@ type externalRepoIntakeSummaryFile struct {
 }
 
 func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (ExternalRepoIntakeReport, error) {
+	query := ""
+	if len(repoQuery) > 0 {
+		query = strings.TrimSpace(repoQuery[0])
+	}
+	return externalRepoIntakeReportForHome(homePath, query, "")
+}
+
+func ExternalRepoIntakeReportForHomeWithSourceList(homePath, sourceListPath string, repoQuery ...string) (ExternalRepoIntakeReport, error) {
+	query := ""
+	if len(repoQuery) > 0 {
+		query = strings.TrimSpace(repoQuery[0])
+	}
+	return externalRepoIntakeReportForHome(homePath, query, sourceListPath)
+}
+
+func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string) (ExternalRepoIntakeReport, error) {
 	report := ExternalRepoIntakeReport{
 		SchemaVersion: ExternalRepoIntakeReportSchemaVersion,
 		AuthorityRef:  ExternalRepoIntakeAuthorityRef,
@@ -162,14 +192,25 @@ func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (Exte
 
 	metadata := loadExternalRepoIntakeMap(latest.MapPath)
 	decisions := enrichExternalRepoDecisions(latest.Decisions, metadata)
-	query := ""
-	if len(repoQuery) > 0 {
-		query = strings.TrimSpace(repoQuery[0])
+	if repoQuery != "" {
+		report.RepoQuery = repoQuery
+		report.Matches = externalRepoMatchesForQuery(homePath, decisions, repoQuery)
 	}
-	if query != "" {
-		report.RepoQuery = query
-		report.Matches = matchExternalRepoDecisions(decisions, query)
-		report.Matches = append(report.Matches, matchExternalRepoEvaluationReferences(homePath, query, report.Matches)...)
+	if strings.TrimSpace(sourceListPath) != "" {
+		items, err := externalRepoSourceListCoverage(homePath, decisions, sourceListPath)
+		if err != nil {
+			return report, err
+		}
+		report.SourceListPath = sourceListPath
+		report.SourceListItems = items
+		report.SourceListTotal = len(items)
+		for _, item := range items {
+			if item.Status == "known" {
+				report.SourceListKnown++
+			} else {
+				report.SourceListUnknown++
+			}
+		}
 	}
 	report.HighValue = filterExternalRepoDecisions(decisions, "keep_needs_review", 12)
 	report.Recent = limitExternalRepoDecisions(decisions, 12)
@@ -177,6 +218,70 @@ func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (Exte
 		report.Boundaries = metadata.Boundaries
 	}
 	return report, nil
+}
+
+func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntakeDecision, query string) []ExternalRepoIntakeDecision {
+	matches := matchExternalRepoDecisions(decisions, query)
+	matches = append(matches, matchExternalRepoEvaluationReferences(homePath, query, matches)...)
+	return matches
+}
+
+func externalRepoSourceListCoverage(homePath string, decisions []ExternalRepoIntakeDecision, path string) ([]ExternalRepoSourceListItem, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read external repo source list %s: %w", path, err)
+	}
+	queries := extractExternalRepoQueries(string(data))
+	items := make([]ExternalRepoSourceListItem, 0, len(queries))
+	for _, query := range queries {
+		matches := externalRepoMatchesForQuery(homePath, decisions, query)
+		item := ExternalRepoSourceListItem{
+			Query:      query,
+			Normalized: normalizeExternalRepoQuery(query),
+			Status:     "unknown",
+			MatchCount: len(matches),
+			Matches:    matches,
+		}
+		if len(matches) > 0 {
+			item.Status = "known"
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func extractExternalRepoQueries(text string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, token := range strings.FieldsFunc(text, externalRepoTokenBoundary) {
+		token = strings.Trim(token, "`\"'.,;")
+		if token == "" {
+			continue
+		}
+		normalized := normalizeExternalRepoQuery(token)
+		if !looksLikeExternalRepoToken(token, normalized) || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, token)
+	}
+	return out
+}
+
+func externalRepoTokenBoundary(r rune) bool {
+	return unicode.IsSpace(r) || strings.ContainsRune("<>()[]{}", r)
+}
+
+func looksLikeExternalRepoToken(token, normalized string) bool {
+	if normalized == "" || !strings.Contains(normalized, "/") {
+		return false
+	}
+	lower := strings.ToLower(token)
+	if strings.Contains(lower, "github.com/") || strings.Contains(lower, "gist.github.com/") {
+		return true
+	}
+	parts := strings.Split(normalized, "/")
+	return len(parts) == 2 && !strings.Contains(token, ":")
 }
 
 func parseExternalRepoSourceObserve(lines []string) (string, []string, []string) {
@@ -303,7 +408,7 @@ func externalRepoDecisionFromEvaluation(eval CapabilityEvaluation, needle string
 	if repo == "" && url == "" {
 		return ExternalRepoIntakeDecision{}, false
 	}
-	if !externalRepoQueryMatches(needle, repo) && !externalRepoQueryMatches(needle, url) && !externalRepoQueryMatches(needle, eval.SourceReceipt) {
+	if !externalRepoQueryMatches(needle, repo) && !externalRepoQueryMatches(needle, url) {
 		return ExternalRepoIntakeDecision{}, false
 	}
 	decision := ExternalRepoIntakeDecision{
