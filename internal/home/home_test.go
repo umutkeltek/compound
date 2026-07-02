@@ -292,6 +292,51 @@ func TestOperationalArchiveMovesTerminalHistoryAndRestores(t *testing.T) {
 	}
 }
 
+func TestOperationalArchiveKeepsOperatorPendingPanelVerdictsHot(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+
+	writeHomeFile(t, h, "inbox/comparisons/cmp_judged.json", `{"id":"cmp_judged","state":"judged"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_park.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_park","target":{"kind":"comparison","ref":"cmp_judged"},"synthesis":{"decision":"park"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_park.md", "# park\n")
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_needs_human.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_needs_human","target":{"kind":"comparison","ref":"cmp_judged"},"synthesis":{"decision":"needs_human"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_needs_human.md", "# needs human\n")
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_needs_trial.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_needs_trial","target":{"kind":"comparison","ref":"cmp_judged"},"synthesis":{"decision":"needs_trial"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_needs_trial.md", "# needs trial\n")
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_legacy_reviewed.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_legacy_reviewed","target":{"kind":"comparison","ref":"cmp_judged"},"synthesis":{"decision":"needs_human"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_legacy_reviewed.md", "# legacy reviewed\n")
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_legacy_reviewed.reviewed.json", `{"schema_version":"compound.panel_verdict_human_review.v0.1","id":"pvr_legacy","status":"recorded"}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.json", `{"schema_version":"compound.panel_verdict.v0.1","id":"panel_verdict_operator_reviewed","target":{"kind":"comparison","ref":"cmp_judged"},"synthesis":{"decision":"needs_human"}}`)
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.md", "# operator reviewed\n")
+	writeHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.reviewed.json", `{"schema_version":"compound.panel_verdict_human_review.v0.1","id":"pvr_operator","status":"recorded","reviewed_by":"umut"}`)
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"review"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 5 || report.Counts["review"] != 5 {
+		t.Fatalf("archive report = %+v, want only park plus operator-reviewed sidecar group", report)
+	}
+
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_park.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_park.md"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.json"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.md"))
+	assertMissing(t, filepath.Join(h, "reviews/panel-verdicts/panel_verdict_operator_reviewed.reviewed.json"))
+	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_needs_human.json"); !strings.Contains(got, "needs_human") {
+		t.Fatalf("needs_human verdict should remain hot, got %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_needs_trial.json"); !strings.Contains(got, "needs_trial") {
+		t.Fatalf("needs_trial verdict should remain hot, got %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "reviews/panel-verdicts/panel_verdict_legacy_reviewed.reviewed.json"); !strings.Contains(got, "pvr_legacy") {
+		t.Fatalf("review sidecar without reviewed_by should remain hot, got %q", got)
+	}
+}
+
 func writeHomeFile(t *testing.T, homePath, rel, content string) {
 	t.Helper()
 	path := filepath.Join(homePath, filepath.FromSlash(rel))

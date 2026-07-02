@@ -587,6 +587,13 @@ func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {
 		if err != nil {
 			return err
 		}
+		operatorPending, err := operatorPendingReviewDecision(path)
+		if err != nil {
+			return err
+		}
+		if operatorPending && !hasOperatorDispositionSidecar(path) {
+			return nil
+		}
 		derivedStatus, derivedTerminal, err := derivedTerminalReviewStatus(homePath, path)
 		if err != nil {
 			return err
@@ -1187,6 +1194,50 @@ func hasTerminalReviewSidecar(path string) bool {
 		}
 	}
 	return false
+}
+
+func operatorPendingReviewDecision(path string) (bool, error) {
+	var payload map[string]any
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false, err
+	}
+	if operatorPendingDecision(jsonMapString(payload, "status")) ||
+		operatorPendingDecision(jsonMapString(payload, "verdict")) ||
+		operatorPendingDecision(jsonMapString(payload, "result")) {
+		return true, nil
+	}
+	synthesis, ok := payload["synthesis"].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	return operatorPendingDecision(jsonMapString(synthesis, "decision")), nil
+}
+
+func operatorPendingDecision(decision string) bool {
+	switch strings.TrimSpace(decision) {
+	case "needs_human", "needs_trial":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasOperatorDispositionSidecar(path string) bool {
+	stem := strings.TrimSuffix(filepath.Base(path), ".json")
+	sidecarPath := filepath.Join(filepath.Dir(path), stem+".reviewed.json")
+	data, err := os.ReadFile(sidecarPath)
+	if err != nil {
+		return false
+	}
+	var sidecar map[string]any
+	if err := json.Unmarshal(data, &sidecar); err != nil {
+		return false
+	}
+	return strings.TrimSpace(jsonMapString(sidecar, "reviewed_by")) != ""
 }
 
 func operationalReviewSiblingPaths(homePath, corePath string) ([]string, error) {
