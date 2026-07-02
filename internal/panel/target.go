@@ -177,6 +177,8 @@ func LoadTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
 			return TargetInput{}, err
 		}
 		return TargetInput{Kind: "capability_observation", Ref: ref, Visibility: "internal", Summary: capabilityObservationSummary(obs), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
+	case "comparison":
+		return loadComparisonTarget(homePath, ref)
 	default:
 		return TargetInput{}, fmt.Errorf("unsupported target kind %q", targetKind)
 	}

@@ -110,12 +110,22 @@ func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKe
 	if client == nil {
 		client = http.DefaultClient
 	}
+	content, usage, latencyMS, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, true)
+	// Some local gateways (e.g. LM Studio) reject response_format "json_object";
+	// retry once without it — the prompts already demand strict JSON and callers
+	// strict-decode the content.
+	if err != nil && strings.Contains(err.Error(), "response_format") {
+		var retryLatency int64
+		content, usage, retryLatency, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, false)
+		latencyMS += retryLatency
+	}
+	return content, usage, latencyMS, err
+}
+
+func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string, jsonResponseFormat bool) (content []byte, usage OpenAIUsage, latencyMS int64, err error) {
 	body := openAIChatRequest{
 		Model:       model,
 		Temperature: 0,
-		ResponseFormat: map[string]string{
-			"type": "json_object",
-		},
 		Messages: []openAIChatMessage{
 			{
 				Role:    "system",
@@ -126,6 +136,11 @@ func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKe
 				Content: user,
 			},
 		},
+	}
+	if jsonResponseFormat {
+		body.ResponseFormat = map[string]string{
+			"type": "json_object",
+		}
 	}
 	rawBody, err := json.Marshal(body)
 	if err != nil {

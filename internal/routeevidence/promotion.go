@@ -117,6 +117,8 @@ type PromotionTallies struct {
 	PanelJudgeFindings      int      `json:"panel_judge_findings"`
 	JudgeJSONMalformed      int      `json:"judge_json_malformed"`
 	JudgeJSONMalformedRate  float64  `json:"judge_json_malformed_rate"`
+	ComparisonWins          int      `json:"comparison_wins"`
+	ComparisonLosses        int      `json:"comparison_losses"`
 	MatchedRouteEvidenceIDs []string `json:"matched_route_evidence_ids,omitempty"`
 	MatchedPanelRunIDs      []string `json:"matched_panel_run_ids,omitempty"`
 }
@@ -267,6 +269,10 @@ func EvaluateLanePromotions(homePath string, now time.Time) ([]PromotionReview, 
 	if err != nil {
 		return nil, err
 	}
+	comparisonSignals, err := loadPromotionComparisonSignals(homePath)
+	if err != nil {
+		return nil, err
+	}
 
 	var reviews []PromotionReview
 	for _, laneID := range modelCapabilityIDs(models) {
@@ -278,7 +284,7 @@ func EvaluateLanePromotions(homePath string, now time.Time) ([]PromotionReview, 
 				continue
 			}
 			criterion, matched := promotionCriterionFor(criteria, laneID, class)
-			tallies := tallyPromotionEvidence(laneID, rows, panelSignals[laneID])
+			tallies := tallyPromotionEvidence(laneID, rows, panelSignals[laneID], comparisonSignals[promotionComparisonKey{laneID: laneID, capabilityClass: class}])
 			review := buildPromotionReview(promotionReviewInput{
 				Now:                             now,
 				LaneID:                          laneID,
@@ -398,13 +404,15 @@ func promotionRecommendation(level string, criteriaMatched bool, criterion Promo
 	}
 }
 
-func tallyPromotionEvidence(laneID string, rows []Evidence, panel promotionPanelSignal) PromotionTallies {
+func tallyPromotionEvidence(laneID string, rows []Evidence, panel promotionPanelSignal, comparison promotionComparisonSignal) PromotionTallies {
 	var first time.Time
 	var last time.Time
 	tallies := PromotionTallies{
 		PanelJudgeRuns:          panel.JudgeRuns,
 		PanelJudgeFindings:      panel.JudgeFindings,
 		JudgeJSONMalformed:      panel.JudgeJSONMalformed,
+		ComparisonWins:          comparison.Wins,
+		ComparisonLosses:        comparison.Losses,
 		MatchedPanelRunIDs:      reviewartifact.UniqueSorted(panel.PanelRunRefs),
 		MatchedRouteEvidenceIDs: []string{},
 	}
@@ -483,6 +491,28 @@ type promotionPanelSignal struct {
 	PanelRunRefs       []string
 }
 
+type promotionComparisonKey struct {
+	laneID          string
+	capabilityClass string
+}
+
+type promotionComparisonSignal struct {
+	Wins   int
+	Losses int
+}
+
+type promotionComparisonEvidenceRow struct {
+	ComparisonID    string  `json:"comparison_id"`
+	CapabilityClass string  `json:"capability_class"`
+	BaselineLane    string  `json:"baseline_lane"`
+	CandidateLane   string  `json:"candidate_lane"`
+	Decision        string  `json:"decision"`
+	Confidence      float64 `json:"confidence"`
+	RunID           string  `json:"run_id"`
+	VerdictArtifact string  `json:"verdict_artifact"`
+	CreatedAt       string  `json:"created_at"`
+}
+
 type promotionPanelRunFile struct {
 	ID    string `json:"id"`
 	Route struct {
@@ -547,6 +577,48 @@ func loadPromotionPanelSignals(homePath string) (map[string]promotionPanelSignal
 	for laneID, signal := range out {
 		signal.PanelRunRefs = reviewartifact.UniqueSorted(signal.PanelRunRefs)
 		out[laneID] = signal
+	}
+	return out, nil
+}
+
+func loadPromotionComparisonSignals(homePath string) (map[promotionComparisonKey]promotionComparisonSignal, error) {
+	path := filepath.Join(homePath, "ledger", "comparison-evidence.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[promotionComparisonKey]promotionComparisonSignal{}, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	out := map[promotionComparisonKey]promotionComparisonSignal{}
+	scanner := bufio.NewScanner(f)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var row promotionComparisonEvidenceRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return nil, fmt.Errorf("parse comparison evidence line %d: %w", lineNo, err)
+		}
+		key := promotionComparisonKey{laneID: strings.TrimSpace(row.CandidateLane), capabilityClass: strings.TrimSpace(row.CapabilityClass)}
+		if key.laneID == "" || key.capabilityClass == "" {
+			continue
+		}
+		signal := out[key]
+		switch strings.TrimSpace(row.Decision) {
+		case "prefer_candidate":
+			signal.Wins++
+		case "prefer_baseline":
+			signal.Losses++
+		}
+		out[key] = signal
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -723,6 +795,7 @@ func promotionMatchingSemantics() []string {
 	return []string{
 		"route ledger rows are attributed when execution_route_evidence.selected_target.model equals the model-capabilities lane id",
 		"panel malformed judge JSON is attributed from panel-runs/*.json when route.judge_lane.model_id equals the lane id and a finding synthesis guardrail is judge_json_malformed",
+		"comparison evidence wins/losses are attributed when ledger/comparison-evidence.jsonl candidate_lane equals lane id and capability_class equals the claim class",
 	}
 }
 

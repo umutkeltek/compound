@@ -89,13 +89,15 @@ func printRoutePromotionReviews(reviews []routeevidence.PromotionReview) {
 	fmt.Println("# route promotion-review")
 	fmt.Printf("- reviews: %d\n", len(reviews))
 	for _, review := range reviews {
-		fmt.Printf("- lane: %s capability_class=%s claim=%s samples=%d failed_status_rate=%.3f judge_json_malformed_rate=%.3f window_days=%.2f recommendation=%s\n",
+		fmt.Printf("- lane: %s capability_class=%s claim=%s samples=%d failed_status_rate=%.3f judge_json_malformed_rate=%.3f comparison_wins=%d comparison_losses=%d window_days=%.2f recommendation=%s\n",
 			review.LaneID,
 			review.CapabilityClass,
 			review.CurrentClaimLevel,
 			review.Tallies.Samples,
 			review.Tallies.FailedStatusRate,
 			review.Tallies.JudgeJSONMalformedRate,
+			review.Tallies.ComparisonWins,
+			review.Tallies.ComparisonLosses,
 			review.Tallies.WindowDays,
 			review.Recommendation,
 		)

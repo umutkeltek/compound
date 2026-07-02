@@ -28,8 +28,8 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &memorySelection); err != nil {
 		t.Fatalf("parse memory lens JSON: %v\n%s", err, out)
 	}
-	if len(memorySelection.Included) != 6 || len(memorySelection.Excluded) != 0 {
-		t.Fatalf("memory_candidate selection = %+v, want six included", memorySelection)
+	if len(memorySelection.Included) != 6 || len(memorySelection.Excluded) != 3 {
+		t.Fatalf("memory_candidate selection = %+v, want six included and three comparison-only excluded", memorySelection)
 	}
 
 	out = captureStdout(t, func() { cmdPanel([]string{"lenses", "--target-kind", "external_repo", "--json"}) })
@@ -44,7 +44,7 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	for _, excluded := range externalSelection.Excluded {
 		reasons[excluded.Ref] = excluded.Reason
 	}
-	for _, id := range []string{"lens:duplicate-risk", "lens:evidence-strength", "lens:contradiction-with-existing-memory", "lens:fossilization-risk", "lens:inversion-falsification"} {
+	for _, id := range []string{"lens:duplicate-risk", "lens:evidence-strength", "lens:contradiction-with-existing-memory", "lens:fossilization-risk", "lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency", "lens:inversion-falsification"} {
 		if reasons[id] != "trigger_mismatch" {
 			t.Fatalf("%s exclusion reason = %q, want trigger_mismatch (all reasons: %+v)", id, reasons[id], reasons)
 		}

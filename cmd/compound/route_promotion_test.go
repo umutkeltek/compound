@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +30,8 @@ func TestRoutePromotionCLIHappyPath(t *testing.T) {
 	}
 	laneID := "panel/free-judge-tripwire"
 	recordCLIPromotionRows(t, homePath, laneID, 20, 4*time.Hour)
+	writeCLIPromotionComparisonEvidence(t, homePath, "cmp_cli_win", laneID, "prefer_candidate")
+	writeCLIPromotionComparisonEvidence(t, homePath, "cmp_cli_loss", laneID, "prefer_baseline")
 
 	out := captureStdout(t, func() {
 		cmdRoute([]string{"promotion-review", "--lane", laneID, "--json"})
@@ -48,7 +51,7 @@ func TestRoutePromotionCLIHappyPath(t *testing.T) {
 	human := captureStdout(t, func() {
 		cmdRoute([]string{"promotion-review", "--lane", laneID})
 	})
-	for _, want := range []string{"# route promotion-review", "claim=capable", "samples=20", "recommendation=promote", "review_artifacts_only_no_authority_mutation"} {
+	for _, want := range []string{"# route promotion-review", "claim=capable", "samples=20", "recommendation=promote", "comparison_wins=1", "comparison_losses=1", "review_artifacts_only_no_authority_mutation"} {
 		if !strings.Contains(human, want) {
 			t.Fatalf("human output missing %q:\n%s", want, human)
 		}
@@ -75,5 +78,36 @@ func recordCLIPromotionRows(t *testing.T, homePath, laneID string, count int, sp
 		if err := routeevidence.RecordEvidence(homePath, ev); err != nil {
 			t.Fatalf("record route evidence: %v", err)
 		}
+	}
+}
+
+func writeCLIPromotionComparisonEvidence(t *testing.T, homePath, comparisonID, candidateLane, decision string) {
+	t.Helper()
+	path := filepath.Join(homePath, "ledger", "comparison-evidence.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir comparison evidence: %v", err)
+	}
+	row := map[string]any{
+		"comparison_id":    comparisonID,
+		"capability_class": "judge-critique",
+		"baseline_lane":    "panel/baseline",
+		"candidate_lane":   candidateLane,
+		"decision":         decision,
+		"confidence":       0.88,
+		"run_id":           "prun_" + comparisonID,
+		"verdict_artifact": "reviews/panel-verdicts/" + comparisonID + ".json",
+		"created_at":       cliTestNow.Format(time.RFC3339),
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal comparison evidence: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open comparison evidence: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		t.Fatalf("write comparison evidence: %v", err)
 	}
 }

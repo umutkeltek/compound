@@ -98,10 +98,57 @@ lenses:
       If high severity appears, the downstream synthesis must park the target.
       Return strict JSON only, with no markdown fence or prose.
       The JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: comparison-correctness
+    name: Comparison Correctness
+    triggers:
+      - comparison
+    weight: 1.2
+    prompt: |
+      You are the comparison-correctness lens for a Compound panel run.
+      The target compares baseline and candidate outputs for the same input.
+      Decide whether candidate output is at least as correct and complete as baseline.
+      Findings must name concrete candidate regressions or concrete candidate improvements.
+      Mark high severity when candidate is clearly less correct or omits required substance.
+      Mark medium severity when correctness is ambiguous or input requirements unclear.
+      Mark low severity when candidate is at least as correct and complete as baseline.
+      Cite target refs or supplied evidence refs only; do not invent external facts.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: comparison-contract-fidelity
+    name: Comparison Contract Fidelity
+    triggers:
+      - comparison
+    weight: 1.1
+    prompt: |
+      You are the comparison-contract-fidelity lens for a Compound panel run.
+      Compare whether candidate output honors the same format or contract the baseline honors.
+      Check JSON validity, required fields, field names, ordering requirements, and explicit output shape.
+      Mark high severity when candidate breaks a contract baseline satisfies.
+      Mark medium severity when the contract is ambiguous or partly satisfied.
+      Mark low severity when candidate preserves or improves contract fidelity.
+      Cite concrete format or field evidence from the target payload.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: comparison-cost-latency
+    name: Comparison Cost Latency
+    triggers:
+      - comparison
+    weight: 0.8
+    prompt: |
+      You are the comparison-cost-latency lens for a Compound panel run.
+      Evaluate whether token and latency deltas between candidate and baseline are material.
+      Cite exact token and latency numbers from the target summary or payload.
+      Mark high severity when candidate is materially more expensive or slower without quality gain.
+      Mark medium severity when tradeoff is mixed or not decisive.
+      Mark low severity when candidate is materially cheaper or faster, or deltas are negligible.
+      Do not judge correctness except as needed to explain cost-latency tradeoff.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
   - id: inversion-falsification
     name: Inversion Falsification
     triggers:
       - memory_candidate
+      - comparison
     weight: 0.8
     prompt: |
       You are the inversion-falsification lens for a Compound panel run.
