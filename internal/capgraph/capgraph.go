@@ -166,10 +166,11 @@ func (s *Store) Observe(node, signal, context string, conf float64, now time.Tim
 // Surfaced is a node the graph offers for a task, with the score that ranked it. It is OFFERED,
 // not run.
 type Surfaced struct {
-	Node        Node                 `json:"node"`
-	Score       float64              `json:"score"`
-	Why         string               `json:"why"`
-	Constraints SurfacingConstraints `json:"constraints,omitempty"`
+	Node          Node                 `json:"node"`
+	Score         float64              `json:"score"`
+	Why           string               `json:"why"`
+	MatchedTokens []string             `json:"matched_tokens,omitempty"`
+	Constraints   SurfacingConstraints `json:"constraints,omitempty"`
 }
 
 type SurfaceReport struct {
@@ -187,32 +188,34 @@ type SurfaceReport struct {
 }
 
 type SurfaceOfferSummary struct {
-	ID           string   `json:"id"`
-	Kind         string   `json:"kind"`
-	Name         string   `json:"name"`
-	Score        float64  `json:"score"`
-	Why          string   `json:"why"`
-	RequiredRefs []string `json:"required_refs,omitempty"`
-	ConflictRefs []string `json:"conflict_refs,omitempty"`
-	HarnessRefs  []string `json:"harness_refs,omitempty"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
-	CostRiskNote string   `json:"cost_risk_note,omitempty"`
+	ID            string   `json:"id"`
+	Kind          string   `json:"kind"`
+	Name          string   `json:"name"`
+	Score         float64  `json:"score"`
+	Why           string   `json:"why"`
+	MatchedTokens []string `json:"matched_tokens,omitempty"`
+	RequiredRefs  []string `json:"required_refs,omitempty"`
+	ConflictRefs  []string `json:"conflict_refs,omitempty"`
+	HarnessRefs   []string `json:"harness_refs,omitempty"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+	CostRiskNote  string   `json:"cost_risk_note,omitempty"`
 }
 
 func NewSurfaceReport(task, harness string, offers []Surfaced, stats Stats, sourceRecordCount int) SurfaceReport {
 	summaries := make([]SurfaceOfferSummary, 0, len(offers))
 	for _, offer := range offers {
 		summaries = append(summaries, SurfaceOfferSummary{
-			ID:           offer.Node.ID,
-			Kind:         offer.Node.Kind,
-			Name:         offer.Node.Name,
-			Score:        offer.Score,
-			Why:          offer.Why,
-			RequiredRefs: constraintRefs(offer.Constraints.Required),
-			ConflictRefs: constraintRefs(offer.Constraints.Conflicts),
-			HarnessRefs:  constraintRefs(offer.Constraints.Harnesses),
-			EvidenceRefs: constraintRefs(offer.Constraints.Evidence),
-			CostRiskNote: offer.Constraints.CostRiskNote,
+			ID:            offer.Node.ID,
+			Kind:          offer.Node.Kind,
+			Name:          offer.Node.Name,
+			Score:         offer.Score,
+			Why:           offer.Why,
+			MatchedTokens: append([]string{}, offer.MatchedTokens...),
+			RequiredRefs:  constraintRefs(offer.Constraints.Required),
+			ConflictRefs:  constraintRefs(offer.Constraints.Conflicts),
+			HarnessRefs:   constraintRefs(offer.Constraints.Harnesses),
+			EvidenceRefs:  constraintRefs(offer.Constraints.Evidence),
+			CostRiskNote:  offer.Constraints.CostRiskNote,
 		})
 	}
 	return SurfaceReport{
@@ -316,7 +319,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
-		base := surfaceTriggerScore(tokens, n.Triggers)
+		base, matchedTokens := surfaceTriggerScore(tokens, n.Triggers)
 		score := base*n.Weight + add[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
@@ -328,7 +331,13 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if sub[n.ID] > 0 {
 			why += fmt.Sprintf(" -false_triggered=%.1f", sub[n.ID])
 		}
-		out = append(out, Surfaced{Node: n, Score: score, Why: why, Constraints: capabilityConstraints(n.ID, edges)})
+		out = append(out, Surfaced{
+			Node:          n,
+			Score:         score,
+			Why:           why,
+			MatchedTokens: matchedTokens,
+			Constraints:   capabilityConstraints(n.ID, edges),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
@@ -719,7 +728,7 @@ func tokenSet(s string) map[string]bool {
 	return out
 }
 
-func surfaceTriggerScore(taskTokens map[string]bool, triggers []string) float64 {
+func surfaceTriggerScore(taskTokens map[string]bool, triggers []string) (float64, []string) {
 	matched := map[string]bool{}
 	for _, trigger := range triggers {
 		for _, tok := range tokenList(trigger) {
@@ -728,7 +737,12 @@ func surfaceTriggerScore(taskTokens map[string]bool, triggers []string) float64 
 			}
 		}
 	}
-	return float64(len(matched))
+	tokens := make([]string, 0, len(matched))
+	for tok := range matched {
+		tokens = append(tokens, tok)
+	}
+	sort.Strings(tokens)
+	return float64(len(tokens)), tokens
 }
 
 func tokenList(s string) []string {

@@ -191,6 +191,38 @@ func TestSurfaceUsesMeaningfulTriggerTokens(t *testing.T) {
 	}
 }
 
+func TestSurfaceReportCarriesMatchedTriggerTokens(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "skill:go-testing",
+		Kind:     "skill",
+		Name:     "Go Testing",
+		Triggers: []string{"go testing practices"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := "choose skill Go testing home doctor hygiene"
+	offers, err := s.Surface(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit := findSurfaceHit(offers, "skill:go-testing")
+	if hit == nil {
+		t.Fatalf("missing full surface hit: %+v", offers)
+	}
+	if got := strings.Join(hit.MatchedTokens, ","); got != "go,testing" {
+		t.Fatalf("matched tokens = %q, want go,testing", got)
+	}
+	stats, err := s.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := NewSurfaceReport(task, "codex", offers, stats, 1)
+	if len(report.OfferSummaries) == 0 || strings.Join(report.OfferSummaries[0].MatchedTokens, ",") != "go,testing" {
+		t.Fatalf("summary matched tokens not carried: %+v", report.OfferSummaries)
+	}
+}
+
 func TestConsumeReceiptsFalseTriggeredLowersSurfacing(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:noisy", Kind: "skill", Name: "Noisy", Triggers: []string{"receipt"}}); err != nil {

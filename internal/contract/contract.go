@@ -499,7 +499,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			pack.Included = append(pack.Included, envelope.IncludedRef{
 				Ref:         "capability://" + hit.Node.ID,
 				SourceClass: "generated",
-				Reason:      fmt.Sprintf("capability_graph surface score=%.1f kind=%s why=%s", hit.Score, hit.Node.Kind, hit.Why),
+				Reason:      capabilitySurfaceReason(hit),
 				Confidence:  hit.Score,
 				Status:      "current",
 			})
@@ -571,6 +571,14 @@ func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int,
 		surfaced = surfaced[:maxContextCapabilityOffers]
 	}
 	return surfaced, surfacedTotal, nil
+}
+
+func capabilitySurfaceReason(hit capgraph.Surfaced) string {
+	reason := fmt.Sprintf("capability_graph surface score=%.1f kind=%s why=%s", hit.Score, hit.Node.Kind, hit.Why)
+	if len(hit.MatchedTokens) > 0 {
+		reason += " matched=" + strings.Join(hit.MatchedTokens, ",")
+	}
+	return reason
 }
 
 func capabilityOffer(hit capgraph.Surfaced) envelope.CapabilityOffer {

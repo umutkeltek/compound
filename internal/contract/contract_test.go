@@ -443,8 +443,12 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	if sourceRev(pack.SourceRevisions, capgraph.CapabilityGraphAuthorityRef) == "" {
 		t.Fatalf("context pack missing capability graph source revision: %+v", pack.SourceRevisions)
 	}
-	if !hasIncluded(pack, "capability://skill:pricing") {
+	included, ok := findIncludedRef(pack, "capability://skill:pricing")
+	if !ok {
 		t.Fatalf("context pack should include surfaced skill offer; included=%v", pack.Included)
+	}
+	if !containsText(included.Reason, "matched=paywall") {
+		t.Fatalf("included reason should explain matched trigger tokens: %q", included.Reason)
 	}
 	offer := findCapabilityOffer(pack, "capability://skill:pricing")
 	if offer == nil {
