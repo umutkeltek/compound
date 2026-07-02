@@ -745,6 +745,9 @@ func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens ma
 	if claim.ClaimType == "decision" {
 		return 0
 	}
+	if volatileOperationalRepoStateClaim(claim) {
+		return 0
+	}
 	if !memoryVisibilityAllowedForOrient(claim) {
 		return 0
 	}
@@ -779,6 +782,25 @@ func memoryTaskOverlapScore(claim mem.Claim, taskTokens map[string]bool) float64
 		}
 	}
 	return score
+}
+
+func volatileOperationalRepoStateClaim(claim mem.Claim) bool {
+	if !strings.EqualFold(strings.TrimSpace(claim.Visibility), "operational") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(claim.ClaimType), "status") {
+		return false
+	}
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(claim.Entity)), "repo:") {
+		return false
+	}
+	predicate := memoryKey(claim.Predicate)
+	switch predicate {
+	case "head", "aheadcount", "behindcount", "stagedcount", "unstagedcount", "untrackedcount", "changedpathcount", "sourcecontrolstatus":
+		return true
+	default:
+		return false
+	}
 }
 
 func memoryEntityKeys(in Input) map[string]bool {

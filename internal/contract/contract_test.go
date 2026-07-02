@@ -1285,6 +1285,131 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 	}
 }
 
+func TestPackWithCapabilitiesExcludesVolatileRepoStateMemory(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := []mem.Candidate{
+		{
+			Entity:          "repo:compound",
+			Predicate:       "ahead_count",
+			Object:          "253",
+			Confidence:      1,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "ahead_count"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_repo_ahead",
+			SnippetHash:     "sha256:repo-ahead",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		{
+			Entity:          "repo:compound",
+			Predicate:       "changed_path_count",
+			Object:          "4",
+			Confidence:      1,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "changed_path_count"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_repo_changed",
+			SnippetHash:     "sha256:repo-changed",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		{
+			Entity:          "repo:compound",
+			Predicate:       "source_control_status",
+			Object:          "dirty",
+			Confidence:      1,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "source_control_status"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_repo_status",
+			SnippetHash:     "sha256:repo-status",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		{
+			Entity:          "CapabilityGraph",
+			Predicate:       "surfacing_feedback_status",
+			Object:          "capability surfacing still reaches context from operational memory",
+			Confidence:      0.91,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "capability-surfacing"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_capability_graph",
+			SnippetHash:     "sha256:capability-graph",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+	}
+	got, err := store.Capture(cands, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blockedRefs []string
+	var capabilityRef string
+	for i := range got {
+		res, err := store.Adjudicate(got[i].ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Claim == nil {
+			continue
+		}
+		ref := "claim://" + res.Claim.ID
+		if res.Claim.Entity == "repo:compound" {
+			blockedRefs = append(blockedRefs, ref)
+		}
+		if res.Claim.Entity == "CapabilityGraph" {
+			capabilityRef = ref
+		}
+	}
+	in := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/compound",
+		Task:        "inspect repo compound changed path count and capability surfacing context",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "review",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(pack.ActiveMemory, capabilityRef) {
+		t.Fatalf("context pack active_memory = %v, want useful operational memory %s", pack.ActiveMemory, capabilityRef)
+	}
+	for _, ref := range blockedRefs {
+		if contains(pack.ActiveMemory, ref) || hasIncluded(pack, ref) {
+			t.Fatalf("volatile repo-state memory %s leaked into context pack: active=%v included=%v", ref, pack.ActiveMemory, pack.Included)
+		}
+	}
+	if strings.Contains(pack.SummaryMD, "repo:compound.ahead_count") ||
+		strings.Contains(pack.SummaryMD, "repo:compound.changed_path_count") ||
+		strings.Contains(pack.SummaryMD, "repo:compound.source_control_status") {
+		t.Fatalf("summary leaked volatile repo-state memory: %q", pack.SummaryMD)
+	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(ec.ActiveMemory, capabilityRef) {
+		t.Fatalf("effective contract active_memory = %v, want useful operational memory %s", ec.ActiveMemory, capabilityRef)
+	}
+	for _, ref := range blockedRefs {
+		if contains(ec.ActiveMemory, ref) {
+			t.Fatalf("volatile repo-state memory %s leaked into effective contract: active=%v", ref, ec.ActiveMemory)
+		}
+	}
+}
+
 func TestPackWithCapabilitiesIncludesTaskRelevantKnowledgeImportClaim(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
