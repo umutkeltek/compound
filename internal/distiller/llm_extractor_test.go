@@ -249,7 +249,8 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 			Artifacts:    []string{"artifact_request_packet"},
 			Verification: []string{"go test ./internal/distiller"},
 		},
-		Cost: envelope.ReceiptCost{ModelCalls: []string{}},
+		Cost:      envelope.ReceiptCost{ModelCalls: []string{}},
+		ProofRefs: []string{"proof:request-packet", "artifact:request-packet"},
 		Skills: envelope.ReceiptSkills{
 			Used:           []string{"capability://skill:golang-testing"},
 			Missed:         []string{"capability://skill:distiller-request-packet"},
@@ -292,6 +293,9 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	if req.Receipt.Cost.ModelCalls == nil {
 		t.Fatalf("receipt cost metadata missing: %+v", req.Receipt.Cost)
 	}
+	if !hasString(req.Receipt.ProofRefs, "proof:request-packet") || !hasString(req.Receipt.ProofRefs, "artifact:request-packet") {
+		t.Fatalf("receipt proof refs missing: %+v", req.Receipt)
+	}
 	if len(req.CapabilityFeedback) != 2 {
 		t.Fatalf("capability feedback = %+v, want 2 explicit items", req.CapabilityFeedback)
 	}
@@ -312,7 +316,7 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	if len(req.Envelopes) != 1 || req.Envelopes[0].Kind != "hook_event" || !strings.Contains(req.Envelopes[0].Summary, "PostToolUse") {
 		t.Fatalf("extra envelope summary = %+v", req.Envelopes)
 	}
-	for _, want := range []string{"raw_trace:trace_spine", "context_pack:ctx_distill", "work:work_distill", "receipt:rec_distill", "hook_event:hook_distill"} {
+	for _, want := range []string{"raw_trace:trace_spine", "context_pack:ctx_distill", "work:work_distill", "receipt:rec_distill", "proof:request-packet", "artifact:request-packet", "hook_event:hook_distill"} {
 		if !hasString(req.SourceRefs, want) {
 			t.Fatalf("source refs missing %q: %v", want, req.SourceRefs)
 		}

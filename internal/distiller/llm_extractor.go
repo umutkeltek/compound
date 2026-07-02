@@ -91,6 +91,7 @@ type LLMReceipt struct {
 	Outcome    string                 `json:"outcome"`
 	MoveType   string                 `json:"move_type"`
 	StateDelta envelope.StateDelta    `json:"state_delta"`
+	ProofRefs  []string               `json:"proof_refs,omitempty"`
 	Cost       envelope.ReceiptCost   `json:"cost"`
 	Skills     envelope.ReceiptSkills `json:"skills"`
 	Memory     envelope.ReceiptMemory `json:"memory"`
@@ -196,6 +197,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 			Outcome:    src.Receipt.Outcome,
 			MoveType:   src.Receipt.MoveType,
 			StateDelta: src.Receipt.StateDelta,
+			ProofRefs:  append([]string(nil), src.Receipt.ProofRefs...),
 			Cost:       src.Receipt.Cost,
 			Skills:     src.Receipt.Skills,
 			Memory:     src.Receipt.Memory,
@@ -204,6 +206,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		req.CapabilityFeedback = capabilityFeedbackFromReceipt(src.Receipt)
 		addSourceRef(&req, "receipt:"+src.Receipt.ID)
 		addSourceRefs(&req, src.Receipt.EvidenceRefs)
+		addSourceRefs(&req, src.Receipt.ProofRefs)
 	}
 	for _, e := range src.Extra {
 		if e == nil {
