@@ -5643,6 +5643,10 @@ func nativePreToolUseBlockMap(reg harness.Registry) map[string]bool {
 func cmdOrient(args []string) {
 	homePath, err := home.Resolve("")
 	die(err)
+	if hasFlag(args, "--operator") {
+		cmdOrientOperator(homePath, args)
+		return
+	}
 	in, err := parseOrientArgsWithHome(args, homePath)
 	die(err)
 	if in.Harness == "" {
