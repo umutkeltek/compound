@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"compound/internal/eventsource"
 	"compound/internal/home"
 	"compound/internal/hook"
+	"compound/internal/knowledge"
 	"compound/internal/mem"
 	"compound/internal/panel"
 	"compound/internal/policy"
@@ -213,6 +215,81 @@ func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "tmp", "cache.txt")); !os.IsNotExist(err) {
 		t.Fatalf("compact should remove tmp cache, stat err=%v", err)
+	}
+}
+
+func TestKnowledgeExtractCLIUsesFixtureAndWritesCandidate(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	var importReport knowledge.ImportReport
+	importOut := captureStdout(t, func() {
+		cmdKnowledge([]string{"import", filepath.Join("..", "..", "fixtures", "knowledge", "arxiv-export.json"), "--json"})
+	})
+	if err := json.Unmarshal([]byte(importOut), &importReport); err != nil {
+		t.Fatalf("parse import report: %v\n%s", err, importOut)
+	}
+	if len(importReport.ExtractionIDs) == 0 || len(importReport.EvidenceIDs) == 0 {
+		t.Fatalf("import report missing ids: %+v", importReport)
+	}
+	fixtureDir := t.TempDir()
+	writeKnowledgeExtractionFixture(t, fixtureDir, importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+
+	var extractReport knowledge.ExtractReport
+	extractOut := captureStdout(t, func() {
+		cmdKnowledge([]string{"extract", "--item", importReport.ExtractionIDs[0], "--fixtures", fixtureDir, "--json"})
+	})
+	if err := json.Unmarshal([]byte(extractOut), &extractReport); err != nil {
+		t.Fatalf("parse extract report: %v\n%s", err, extractOut)
+	}
+	if extractReport.Processed != 1 || extractReport.Created != 1 || len(extractReport.CandidateIDs) != 1 {
+		t.Fatalf("extract report = %+v", extractReport)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range candidates {
+		if c.ID == extractReport.CandidateIDs[0] {
+			found = c.Qualifiers["source"] == "knowledge_extraction" && c.State == "proposed"
+		}
+	}
+	if !found {
+		t.Fatalf("extracted candidate not found or wrong shape: %s in %+v", extractReport.CandidateIDs[0], candidates)
+	}
+}
+
+func writeKnowledgeExtractionFixture(t *testing.T, dir, extractionID, evidenceID string) {
+	t.Helper()
+	body := `{
+ "schema_version": "compound.distiller.llm_extraction.v0.1",
+ "trace_ref": "knowledge_extraction:` + extractionID + `",
+ "extractor": "fixture",
+ "model": "fixture-rules",
+ "source_refs": [` + strconv.Quote(evidenceID) + `],
+ "candidates": [
+  {
+   "kind": "memory",
+   "entity": "paper:retrieval-agents",
+   "predicate": "claim",
+   "object": "Retrieval agents need grounded evidence to avoid echo amplification.",
+   "confidence": 0.78,
+   "derivation": "extracted",
+   "claim_type": "architecture",
+   "qualifiers": {"domain": "knowledge-intake"},
+   "evidence_refs": [` + strconv.Quote(evidenceID) + `]
+  }
+ ]
+}`
+	if err := os.WriteFile(filepath.Join(dir, extractionID+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -2,6 +2,9 @@ package knowledge
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +116,131 @@ func TestImportFoldsEchoAcrossSourceKinds(t *testing.T) {
 	}
 }
 
+func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := t.TempDir()
+	writeExtractionFixture(t, fixtures, importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+
+	report, err := Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Processed != 1 || report.Created != 1 || len(report.CandidateIDs) != 1 {
+		t.Fatalf("extract report = %+v", report)
+	}
+
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.State != "done" || req.CompletedAt == "" || len(req.CandidateIDs) != 1 || req.RouteEvidence == nil || req.RouteEvidence.Provider != "fixture" {
+		t.Fatalf("extraction request not marked done: %+v", req)
+	}
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var extracted *mem.Candidate
+	for i := range candidates {
+		if candidates[i].ID == report.CandidateIDs[0] {
+			extracted = &candidates[i]
+			break
+		}
+	}
+	if extracted == nil {
+		t.Fatalf("extracted candidate %s not found in %+v", report.CandidateIDs[0], candidates)
+	}
+	if extracted.State != "proposed" || extracted.Qualifiers["source"] != "knowledge_extraction" || extracted.Qualifiers["extraction_id"] != req.ID {
+		t.Fatalf("candidate shape = %+v", extracted)
+	}
+	if extracted.SourceTraceRef != "knowledge_extraction:"+req.ID || extracted.Visibility != "candidate" {
+		t.Fatalf("candidate provenance = %+v", extracted)
+	}
+
+	replay, err := Extract(homePath, store, ExtractOptions{ItemID: req.ID, FixturesDir: fixtures}, testNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Processed != 0 || replay.Skipped != 1 || len(replay.CandidateIDs) != 1 || replay.CandidateIDs[0] != extracted.ID {
+		t.Fatalf("idempotent replay = %+v", replay)
+	}
+}
+
+func TestExtractRejectsUngroundedFixtureEvidenceRefs(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := t.TempDir()
+	writeExtractionFixture(t, fixtures, importReport.ExtractionIDs[0], "ev_wrong")
+
+	_, err = Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "evidence_ref") {
+		t.Fatalf("expected grounded evidence error, got %v", err)
+	}
+}
+
+func TestExtractOpenAICompatibleUsesEvalCorpusAndRecordsRouteEvidence(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		body := extractionFixtureBody(importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": body},
+			}},
+			"usage": map[string]int{"total_tokens": 12},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	report, err := Extract(homePath, store, ExtractOptions{
+		ItemID:              importReport.ExtractionIDs[0],
+		OpenAICompatibleURL: server.URL,
+		Model:               "fixture-model",
+		EvalCorpusDir:       filepath.Join("..", "..", "fixtures", "distiller"),
+	}, testNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || report.Processed != 1 || report.Created != 1 || len(report.CandidateIDs) != 1 {
+		t.Fatalf("calls=%d report=%+v", calls, report)
+	}
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.RouteEvidence == nil || req.RouteEvidence.Provider != "openai-compatible" || !req.RouteEvidence.Called || req.RouteEvidence.LiveModelCalls != 1 {
+		t.Fatalf("route evidence = %+v", req.RouteEvidence)
+	}
+	if req.RouteEvidence.Model != "fixture-model" || req.RouteEvidence.Usage.TotalTokens != 12 {
+		t.Fatalf("route evidence model/usage = %+v", req.RouteEvidence)
+	}
+}
+
 func TestWholeFileImportIsIdempotent(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := mem.Open(homePath)
@@ -220,6 +348,37 @@ func TestNewMediumImportsWithoutCoreChange(t *testing.T) {
 
 func fixturePath(name string) string {
 	return filepath.Join("..", "..", "fixtures", "knowledge", name)
+}
+
+func writeExtractionFixture(t *testing.T, dir, extractionID, evidenceID string) {
+	t.Helper()
+	body := extractionFixtureBody(extractionID, evidenceID)
+	if err := os.WriteFile(filepath.Join(dir, extractionID+".json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func extractionFixtureBody(extractionID, evidenceID string) string {
+	return fmt.Sprintf(`{
+ "schema_version": "compound.distiller.llm_extraction.v0.1",
+ "trace_ref": "knowledge_extraction:%s",
+ "extractor": "fixture",
+ "model": "fixture-rules",
+ "source_refs": [%q],
+ "candidates": [
+  {
+   "kind": "memory",
+   "entity": "paper:retrieval-agents",
+   "predicate": "claim",
+   "object": "Retrieval agents need grounded evidence to avoid echo amplification.",
+   "confidence": 0.78,
+   "derivation": "extracted",
+   "claim_type": "architecture",
+   "qualifiers": {"domain": "knowledge-intake"},
+   "evidence_refs": [%q]
+  }
+ ]
+}`, extractionID, evidenceID, evidenceID)
 }
 
 func readJSON(t *testing.T, path string, dst any) {

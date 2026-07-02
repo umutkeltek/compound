@@ -5,6 +5,7 @@ package knowledge
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/distiller"
 	"compound/internal/mem"
 )
 
@@ -67,15 +69,48 @@ type ImportReport struct {
 }
 
 type ExtractionRequest struct {
-	SchemaVersion string `json:"schema_version"`
-	ID            string `json:"id"`
-	ItemRef       string `json:"item_ref"`
-	EvidenceRef   string `json:"evidence_ref"`
-	SourceKind    string `json:"source_kind"`
-	Title         string `json:"title,omitempty"`
-	ContentDigest string `json:"content_digest"`
-	State         string `json:"state"`
-	CreatedAt     string `json:"created_at"`
+	SchemaVersion string                   `json:"schema_version"`
+	ID            string                   `json:"id"`
+	ItemRef       string                   `json:"item_ref"`
+	EvidenceRef   string                   `json:"evidence_ref"`
+	SourceKind    string                   `json:"source_kind"`
+	Title         string                   `json:"title,omitempty"`
+	ContentDigest string                   `json:"content_digest"`
+	State         string                   `json:"state"`
+	CreatedAt     string                   `json:"created_at"`
+	CompletedAt   string                   `json:"completed_at,omitempty"`
+	CandidateIDs  []string                 `json:"candidate_ids,omitempty"`
+	RouteEvidence *ExtractionRouteEvidence `json:"route_evidence,omitempty"`
+	Error         string                   `json:"error,omitempty"`
+}
+
+type ExtractionRouteEvidence struct {
+	Provider       string                `json:"provider"`
+	Model          string                `json:"model,omitempty"`
+	Called         bool                  `json:"called"`
+	Usage          distiller.OpenAIUsage `json:"usage,omitempty"`
+	LatencyMS      int64                 `json:"latency_ms,omitempty"`
+	LiveModelCalls int                   `json:"live_model_calls,omitempty"`
+	Fixture        string                `json:"fixture,omitempty"`
+}
+
+type ExtractOptions struct {
+	Pending             bool
+	ItemID              string
+	FixturesDir         string
+	OpenAICompatibleURL string
+	Model               string
+	APIKeyEnv           string
+	EvalCorpusDir       string
+	EvalRoot            string
+}
+
+type ExtractReport struct {
+	Processed     int      `json:"processed"`
+	Created       int      `json:"created"`
+	Skipped       int      `json:"skipped"`
+	CandidateIDs  []string `json:"candidate_ids"`
+	ExtractionIDs []string `json:"extraction_ids"`
 }
 
 type DistributionEvent struct {
@@ -287,6 +322,182 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 	return report, nil
 }
 
+func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Time) (ExtractReport, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return ExtractReport{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	if store == nil {
+		return ExtractReport{}, fmt.Errorf("memory store required")
+	}
+	if !opts.Pending && strings.TrimSpace(opts.ItemID) == "" {
+		return ExtractReport{}, fmt.Errorf("use --pending or --item")
+	}
+	if strings.TrimSpace(opts.FixturesDir) == "" && (strings.TrimSpace(opts.OpenAICompatibleURL) == "" || strings.TrimSpace(opts.Model) == "" || strings.TrimSpace(opts.EvalCorpusDir) == "") {
+		return ExtractReport{}, fmt.Errorf("use --fixtures or --openai-compatible-url with --model and --eval-corpus")
+	}
+	requests, err := loadExtractionRequests(homePath)
+	if err != nil {
+		return ExtractReport{}, err
+	}
+	report := ExtractReport{CandidateIDs: []string{}, ExtractionIDs: []string{}}
+	for _, req := range requests {
+		if !opts.Pending && !matchesExtractionItem(req, opts.ItemID) {
+			continue
+		}
+		if opts.Pending && req.State != "pending" {
+			report.Skipped++
+			continue
+		}
+		if req.State == "done" {
+			report.Skipped++
+			report.CandidateIDs = append(report.CandidateIDs, req.CandidateIDs...)
+			report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
+			continue
+		}
+		candidateIDs, route, err := extractOne(homePath, store, req, opts, now)
+		if err != nil {
+			req.State = "error"
+			req.Error = err.Error()
+			_ = writeExtractionRequestFile(homePath, req)
+			return report, err
+		}
+		req.State = "done"
+		req.CompletedAt = rfc3339(now)
+		req.CandidateIDs = candidateIDs
+		req.RouteEvidence = &route
+		req.Error = ""
+		if err := writeExtractionRequestFile(homePath, req); err != nil {
+			return report, err
+		}
+		report.Processed++
+		report.Created += len(candidateIDs)
+		report.CandidateIDs = append(report.CandidateIDs, candidateIDs...)
+		report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
+	}
+	if !opts.Pending && strings.TrimSpace(opts.ItemID) != "" && report.Processed == 0 && len(report.ExtractionIDs) == 0 {
+		return report, fmt.Errorf("knowledge extraction item %q not found", opts.ItemID)
+	}
+	return report, nil
+}
+
+func extractOne(homePath string, store *mem.Store, req ExtractionRequest, opts ExtractOptions, now time.Time) ([]string, ExtractionRouteEvidence, error) {
+	evidence, ok, err := store.GetEvidence(req.EvidenceRef)
+	if err != nil {
+		return nil, ExtractionRouteEvidence{}, err
+	}
+	if !ok {
+		return nil, ExtractionRouteEvidence{}, fmt.Errorf("evidence %s not found", req.EvidenceRef)
+	}
+	llmReq := buildKnowledgeExtractionRequest(req, evidence)
+	var raw []byte
+	route := ExtractionRouteEvidence{}
+	if strings.TrimSpace(opts.FixturesDir) != "" {
+		fixture := filepath.Join(opts.FixturesDir, fixtureExtractionName(req)+".json")
+		raw, err = os.ReadFile(fixture)
+		if err != nil {
+			return nil, route, err
+		}
+		route = ExtractionRouteEvidence{Provider: "fixture", Called: false, Fixture: fixture}
+	} else {
+		apiKey := ""
+		if strings.TrimSpace(opts.APIKeyEnv) != "" {
+			apiKey = os.Getenv(strings.TrimSpace(opts.APIKeyEnv))
+		}
+		live, err := distiller.ExtractWithOpenAICompatible(context.Background(), llmReq, distiller.OpenAICompatibleOptions{
+			BaseURL:       opts.OpenAICompatibleURL,
+			APIKey:        apiKey,
+			Model:         opts.Model,
+			EvalCorpusDir: opts.EvalCorpusDir,
+			EvalRoot:      opts.EvalRoot,
+			Now:           now,
+		})
+		if err != nil {
+			return nil, route, err
+		}
+		raw, err = json.Marshal(live.Response)
+		if err != nil {
+			return nil, route, err
+		}
+		route = ExtractionRouteEvidence{
+			Provider:       live.Provider,
+			Model:          live.Model,
+			Called:         live.Called,
+			Usage:          live.Usage,
+			LatencyMS:      live.LatencyMS,
+			LiveModelCalls: live.LiveModelCalls,
+		}
+	}
+	trace, err := distiller.NewGroundedLLMExtractor(llmReq).Extract(raw, distiller.DefaultPolicy())
+	if err != nil {
+		return nil, route, err
+	}
+	var candidateIDs []string
+	for _, dc := range trace.Candidates {
+		if dc.Kind != distiller.KindMemory {
+			return nil, route, fmt.Errorf("knowledge extraction only accepts memory candidates, got %q", dc.Kind)
+		}
+		c := memoryCandidateFromExtraction(req, dc, evidence, now)
+		if _, err := store.RecordStableCandidate(c); err != nil {
+			return nil, route, err
+		}
+		candidateIDs = append(candidateIDs, c.ID)
+	}
+	return candidateIDs, route, nil
+}
+
+func buildKnowledgeExtractionRequest(req ExtractionRequest, evidence mem.EvidenceItem) distiller.LLMExtractionRequest {
+	body := strings.Join(compactStrings(
+		"Knowledge extraction item: "+req.ItemRef,
+		"Title: "+req.Title,
+		"Evidence ref: "+req.EvidenceRef,
+		"Evidence quote:\n"+evidence.QuoteText,
+	), "\n\n")
+	llmReq := distiller.BuildLLMExtractionRequest("knowledge_extraction:"+req.ID, []byte(body), distiller.DefaultPolicy(), distiller.PriorState{})
+	llmReq.SourceRefs = []string{req.EvidenceRef}
+	llmReq.Instructions = append(llmReq.Instructions,
+		"Emit memory candidates only.",
+		"Each candidate must cite the provided evidence ref exactly.",
+		"Qualifiers may add domain metadata, but Compound will stamp source=knowledge_extraction.",
+	)
+	return llmReq
+}
+
+func memoryCandidateFromExtraction(req ExtractionRequest, dc distiller.Candidate, evidence mem.EvidenceItem, now time.Time) mem.Candidate {
+	qualifiers := map[string]string{}
+	for k, v := range dc.Qualifiers {
+		if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
+			qualifiers[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		}
+	}
+	qualifiers["source"] = "knowledge_extraction"
+	qualifiers["extraction_id"] = req.ID
+	qualifiers["item_ref"] = req.ItemRef
+	derivation := dc.Derivation
+	if !oneOf(derivation, mem.Derivations) {
+		derivation = "extracted"
+	}
+	visibility := "candidate"
+	if evidence.Visibility == "private" {
+		visibility = "private"
+	}
+	return mem.Candidate{
+		ID:              "cand_" + shortDigest("knowledge_extraction", req.ID, dc.Entity, dc.Predicate, dc.Object),
+		Entity:          dc.Entity,
+		Predicate:       dc.Predicate,
+		Object:          dc.Object,
+		ObservationDate: firstNonEmpty(evidence.EventTime, rfc3339(now)),
+		Confidence:      dc.Confidence,
+		Derivation:      derivation,
+		ClaimType:       dc.ClaimType,
+		Qualifiers:      qualifiers,
+		SourceTraceRef:  "knowledge_extraction:" + req.ID,
+		SnippetHash:     shortDigest(req.EvidenceRef, req.ContentDigest),
+		Visibility:      visibility,
+		State:           "proposed",
+		CreatedAt:       rfc3339(now),
+	}
+}
+
 func ensureSourceRegistry(homePath string, source Source, now time.Time) error {
 	path := filepath.Join(homePath, "registries", "knowledge-sources.jsonl")
 	rows, err := loadSourceRegistry(path)
@@ -383,6 +594,44 @@ func writeExtractionRequest(homePath string, export Export, item Item, evidenceI
 		return ExtractionRequest{}, err
 	}
 	return req, nil
+}
+
+func writeExtractionRequestFile(homePath string, req ExtractionRequest) error {
+	return writeJSON(filepath.Join(homePath, "inbox", "knowledge-extractions", req.ID+".json"), req)
+}
+
+func loadExtractionRequests(homePath string) ([]ExtractionRequest, error) {
+	dir := filepath.Join(homePath, "inbox", "knowledge-extractions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []ExtractionRequest
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var req ExtractionRequest
+		if err := readJSONFile(filepath.Join(dir, entry.Name()), &req); err != nil {
+			return nil, err
+		}
+		if req.ID != "" {
+			out = append(out, req)
+		}
+	}
+	return out, nil
+}
+
+func matchesExtractionItem(req ExtractionRequest, item string) bool {
+	item = strings.TrimSpace(item)
+	return item != "" && (req.ID == item || req.ItemRef == item)
+}
+
+func fixtureExtractionName(req ExtractionRequest) string {
+	return strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(req.ID)
 }
 
 func appendDistributionEvent(homePath string, event DistributionEvent) error {
@@ -497,6 +746,14 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
+func readJSONFile(path string, v any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
 func appendJSONL(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -543,6 +800,35 @@ func cleanStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+func compactStrings(in ...string) []string {
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func oneOf(value string, allowed []string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func digestBytes(data []byte) string {

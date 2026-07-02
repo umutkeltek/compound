@@ -2095,9 +2095,16 @@ func readTypedEnvelopeOrDie(path string) envelope.Envelope {
 // (reject|park|promote), MVCC-by-fold (as-of recall), provenance + contradiction-over-delete.
 func cmdKnowledge(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import <export.json> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import|extract> ...")
 		os.Exit(2)
 	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	die(err)
 	switch args[0] {
 	case "import":
 		rest := args[1:]
@@ -2112,13 +2119,6 @@ func cmdKnowledge(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound knowledge import <export.json> [--json]")
 			os.Exit(2)
 		}
-		homePath, err := home.Resolve("")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-			os.Exit(1)
-		}
-		store, err := mem.Open(homePath)
-		die(err)
 		report, err := knowledge.ImportFile(homePath, store, path, time.Now())
 		die(err)
 		if hasFlag(rest, "--json") {
@@ -2139,8 +2139,40 @@ func cmdKnowledge(args []string) {
 		for _, id := range report.ExtractionIDs {
 			fmt.Printf(" - extraction %s\n", id)
 		}
+	case "extract":
+		rest := args[1:]
+		opts := knowledge.ExtractOptions{
+			Pending:             hasFlag(rest, "--pending"),
+			ItemID:              flagValue(rest, "--item"),
+			FixturesDir:         flagValue(rest, "--fixtures"),
+			OpenAICompatibleURL: flagValue(rest, "--openai-compatible-url"),
+			Model:               flagValue(rest, "--model"),
+			APIKeyEnv:           flagValue(rest, "--api-key-env"),
+			EvalCorpusDir:       flagValue(rest, "--eval-corpus"),
+			EvalRoot:            flagValue(rest, "--eval-root"),
+		}
+		if !opts.Pending && strings.TrimSpace(opts.ItemID) == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound knowledge extract (--pending|--item <id>) (--fixtures dir | --openai-compatible-url U --model M --eval-corpus dir [--eval-root dir] [--api-key-env E]) [--json]")
+			os.Exit(2)
+		}
+		report, err := knowledge.Extract(homePath, store, opts, time.Now())
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Println("# knowledge extract")
+		fmt.Printf("- processed: %d\n", report.Processed)
+		fmt.Printf("- created: %d\n", report.Created)
+		fmt.Printf("- skipped: %d\n", report.Skipped)
+		for _, id := range report.CandidateIDs {
+			fmt.Printf(" - candidate %s\n", id)
+		}
+		for _, id := range report.ExtractionIDs {
+			fmt.Printf(" - extraction %s\n", id)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import <export.json> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound knowledge <import|extract> ...")
 		os.Exit(2)
 	}
 }
