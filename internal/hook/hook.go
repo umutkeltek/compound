@@ -586,6 +586,10 @@ func writeJSON(path string, v any) error {
 	return os.WriteFile(path, b, 0o644)
 }
 
+// maxInjectionActiveMemoryRefs caps how many ActiveMemory refs a hook digest lists;
+// the pack keeps the full set — the digest is a budgeted surface, not the record.
+const maxInjectionActiveMemoryRefs = 8
+
 func renderInjection(hookID string, pack envelope.ContextPack) string {
 	var b strings.Builder
 	b.WriteString("# Compound Context Injection\n\n")
@@ -624,6 +628,18 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	writeStringList(&b, "Active Instructions", pack.ActiveInstructions)
 	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
 	writeStringList(&b, "Active Decisions", pack.ActiveDecisions)
+	if len(pack.ActiveMemory) > 0 {
+		shown := pack.ActiveMemory
+		omitted := 0
+		if len(shown) > maxInjectionActiveMemoryRefs {
+			omitted = len(shown) - maxInjectionActiveMemoryRefs
+			shown = shown[:maxInjectionActiveMemoryRefs]
+		}
+		writeStringList(&b, "Active Memory", shown)
+		if omitted > 0 {
+			fmt.Fprintf(&b, "- %d more active memory ref(s) omitted from digest budget\n", omitted)
+		}
+	}
 	writeStringList(&b, "Required Checks", pack.RequiredChecks)
 	writeStringList(&b, "Avoid", pack.Avoid)
 	return b.String()

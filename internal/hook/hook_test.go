@@ -2,6 +2,7 @@ package hook
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,6 +213,55 @@ func TestSessionStartInjectionIncludesRelevantCompoundMemory(t *testing.T) {
 	}
 	if !strings.Contains(text, "claim://"+promoted.Claim.ID) {
 		t.Fatalf("injection missing claim ref claim://%s:\n%s", promoted.Claim.ID, text)
+	}
+	if !strings.Contains(text, "## Active Memory") {
+		t.Fatalf("injection missing Active Memory section:\n%s", text)
+	}
+}
+
+func TestRenderInjectionEmitsActiveMemorySection(t *testing.T) {
+	pack := envelope.ContextPack{
+		SummaryMD:    "summary",
+		ActiveMemory: []string{"claim://claim_a", "claim://claim_b"},
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	if !strings.Contains(text, "## Active Memory") {
+		t.Fatalf("injection missing Active Memory section:\n%s", text)
+	}
+	for _, want := range []string{"`claim://claim_a`", "`claim://claim_b`"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("injection missing active memory ref %q:\n%s", want, text)
+		}
+	}
+
+	empty := envelope.ContextPack{SummaryMD: "summary"}
+	empty.Header.ID = "ctx_test"
+	if got := renderInjection("hookev_test", empty); strings.Contains(got, "## Active Memory") {
+		t.Fatalf("empty active memory should not emit a section header:\n%s", got)
+	}
+}
+
+func TestRenderInjectionCapsActiveMemorySection(t *testing.T) {
+	refs := make([]string, 0, maxInjectionActiveMemoryRefs+2)
+	for i := 0; i < maxInjectionActiveMemoryRefs+2; i++ {
+		refs = append(refs, fmt.Sprintf("claim://claim_%02d", i))
+	}
+	pack := envelope.ContextPack{SummaryMD: "summary", ActiveMemory: refs}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	for _, want := range refs[:maxInjectionActiveMemoryRefs] {
+		if !strings.Contains(text, "`"+want+"`") {
+			t.Fatalf("injection missing active memory ref %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range refs[maxInjectionActiveMemoryRefs:] {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("injection should cap active memory refs, got %q:\n%s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "2 more active memory ref(s) omitted") {
+		t.Fatalf("injection missing omission note for capped active memory:\n%s", text)
 	}
 }
 

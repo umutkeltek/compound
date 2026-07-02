@@ -1255,6 +1255,55 @@ func TestPackWithCapabilitiesIncludesTaskRelevantKnowledgeImportClaim(t *testing
 	}
 }
 
+func TestPackWithCapabilitiesIgnoresStopwordOnlyTaskOverlap(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:         "knowledge:arxiv:stopword.0001v1",
+			Predicate:      "reference_title",
+			Object:         "Findings about the impact for agents",
+			Confidence:     0.8,
+			Derivation:     "deterministic",
+			PromotionBasis: candidates.BasisTrustedDeterministic,
+			Qualifiers: map[string]string{
+				"source":      "knowledge_import",
+				"source_kind": "arxiv",
+			},
+			SourceTraceRef:  "ev_stopword",
+			SnippetHash:     "sha256:stopword",
+			Visibility:      "contextual",
+			ObservationDate: "2026-07-01",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "claim://" + res.Claim.ID
+	in := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/compound",
+		Task:        "polish the billing dashboard for launch",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(pack.ActiveMemory, ref) {
+		t.Fatalf("stopword-only overlap surfaced unrelated claim in active_memory: %v", pack.ActiveMemory)
+	}
+}
+
 func TestPackWithCapabilitiesRejectsLegacyKnowledgeCandidateVisibility(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)

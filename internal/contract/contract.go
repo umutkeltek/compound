@@ -775,13 +775,37 @@ func memoryEntityKeys(in Input) map[string]bool {
 	return keys
 }
 
+// memoryStopwords are function words dropped from task/claim token overlap so
+// ambient memory selection keys on content-bearing tokens only; short tokens
+// (<3 chars) are already dropped by memoryTextTokens.
+var memoryStopwords = map[string]bool{
+	"about": true, "after": true, "against": true, "all": true, "also": true,
+	"and": true, "any": true, "are": true, "because": true, "been": true,
+	"before": true, "being": true, "between": true, "both": true, "but": true,
+	"can": true, "could": true, "did": true, "does": true, "during": true,
+	"each": true, "for": true, "from": true, "had": true, "has": true,
+	"have": true, "her": true, "here": true, "him": true, "his": true,
+	"how": true, "into": true, "its": true, "just": true, "may": true,
+	"might": true, "more": true, "most": true, "must": true, "not": true,
+	"off": true, "only": true, "onto": true, "other": true, "our": true,
+	"out": true, "over": true, "per": true, "shall": true, "she": true,
+	"should": true, "some": true, "such": true, "than": true, "that": true,
+	"the": true, "their": true, "them": true, "then": true, "there": true,
+	"these": true, "they": true, "this": true, "those": true, "through": true,
+	"too": true, "under": true, "upon": true, "very": true, "via": true,
+	"was": true, "were": true, "what": true, "when": true, "where": true,
+	"which": true, "while": true, "who": true, "why": true, "will": true,
+	"with": true, "within": true, "without": true, "would": true, "you": true,
+	"your": true,
+}
+
 func memoryTextTokens(value string) map[string]bool {
 	tokens := map[string]bool{}
 	for _, part := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
 		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
 	}) {
 		key := memoryKey(part)
-		if len(key) >= 3 {
+		if len(key) >= 3 && !memoryStopwords[key] {
 			tokens[key] = true
 		}
 	}
