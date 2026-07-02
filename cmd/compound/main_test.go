@@ -2348,6 +2348,7 @@ func TestAuthorityDirtyPlanWritesReviewWithoutMutatingRepo(t *testing.T) {
 		"- evidence_refs: 1",
 		"- plan:",
 		"- review:",
+		"- review_yaml:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dirty-plan output missing %q:\n%s", want, out)
@@ -2355,6 +2356,7 @@ func TestAuthorityDirtyPlanWritesReviewWithoutMutatingRepo(t *testing.T) {
 	}
 	planPath := outputValue(out, "- plan:")
 	reviewPath := outputValue(out, "- review:")
+	reviewYAMLPath := outputValue(out, "- review_yaml:")
 	var plan struct {
 		SchemaVersion string `json:"schema_version"`
 		Status        string `json:"status"`
@@ -2371,9 +2373,76 @@ func TestAuthorityDirtyPlanWritesReviewWithoutMutatingRepo(t *testing.T) {
 	if plan.SchemaVersion != "compound.source_control_review_plan.v0.1" || plan.Status != "review_required" || plan.WorkID != "work_dirty_gate" || plan.ChangedPaths != 2 {
 		t.Fatalf("bad dirty plan: %+v", plan)
 	}
+	if _, err := os.Stat(reviewYAMLPath); err != nil {
+		t.Fatalf("dirty-plan review yaml missing: %v", err)
+	}
 	review := readFile(t, reviewPath)
-	if !strings.Contains(review, "does not stage") || !strings.Contains(review, "Required Evidence") {
+	if !strings.Contains(review, "does not stage") || !strings.Contains(review, "Required Evidence") || !strings.Contains(review, "Review YAML Template") {
 		t.Fatalf("dirty-plan review missing no-mutation/procedure text:\n%s", review)
+	}
+	jsonOut := captureStdout(t, func() {
+		cmdAuthority([]string{"dirty-plan", repo, "--work-id", "work_dirty_gate", "--json"})
+	})
+	var dirtyPlanJSON struct {
+		SchemaVersion string `json:"schema_version"`
+		Status        string `json:"status"`
+		AuthorityRef  string `json:"authority_ref"`
+		ID            string `json:"id"`
+		ChangedPaths  int    `json:"changed_paths"`
+		Paths         struct {
+			PlanPath       string `json:"plan_path"`
+			ReviewPath     string `json:"review_path"`
+			ReviewYAMLPath string `json:"review_yaml_path"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &dirtyPlanJSON); err != nil {
+		t.Fatalf("parse dirty-plan JSON: %v\n%s", err, jsonOut)
+	}
+	if dirtyPlanJSON.SchemaVersion != "compound.source_control_review_plan.v0.1" ||
+		dirtyPlanJSON.Status != "review_required" ||
+		dirtyPlanJSON.AuthorityRef != "compound://reviews/source-control-cleanup" ||
+		dirtyPlanJSON.ID == "" ||
+		dirtyPlanJSON.ChangedPaths != 2 ||
+		dirtyPlanJSON.Paths.PlanPath == "" ||
+		dirtyPlanJSON.Paths.ReviewPath == "" ||
+		dirtyPlanJSON.Paths.ReviewYAMLPath == "" {
+		t.Fatalf("bad dirty-plan JSON: %+v\n%s", dirtyPlanJSON, jsonOut)
+	}
+	reviewYAML := readFile(t, reviewYAMLPath)
+	reviewYAML = strings.ReplaceAll(reviewYAML, "decision: TODO_decision_owner_action_required_owner_action_done_parked_no_action", "decision: parked")
+	reviewYAML = strings.ReplaceAll(reviewYAML, `rationale: ""`, `rationale: "untracked scratch is parked for owner classification"`)
+	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: -1", "confidence: 0.9")
+	reviewYAML = strings.ReplaceAll(reviewYAML, `next_action: "TODO: reviewed source-control cleanup next action"`, `next_action: "leave scratch parked until owner classifies it"`)
+	if err := os.WriteFile(reviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdAuthority([]string{"dirty-review", reviewYAMLPath, "--json"})
+	})
+	var reviewReport struct {
+		SchemaVersion string `json:"schema_version"`
+		Status        string `json:"status"`
+		Decision      string `json:"decision"`
+		ReviewPath    string `json:"review_path"`
+	}
+	if err := json.Unmarshal([]byte(reviewOut), &reviewReport); err != nil {
+		t.Fatalf("parse dirty-review JSON: %v\n%s", err, reviewOut)
+	}
+	if reviewReport.SchemaVersion != "compound.source_control_review_report.v0.1" ||
+		reviewReport.Status != "recorded" ||
+		reviewReport.Decision != "parked" ||
+		reviewReport.ReviewPath == "" {
+		t.Fatalf("bad dirty-review JSON: %+v\n%s", reviewReport, reviewOut)
+	}
+	queueOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "source-control-cleanup", "--json"})
+	})
+	var queue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(queueOut), &queue); err != nil {
+		t.Fatalf("parse source-control cleanup queue: %v\n%s", err, queueOut)
+	}
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Items[0].Readiness != "review_recorded" {
+		t.Fatalf("source-control cleanup queue not recorded: %+v", queue)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("dirty-plan must not promote claims, stat err=%v", err)

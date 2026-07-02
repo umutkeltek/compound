@@ -240,7 +240,7 @@ usage:
   compound distiller run [--llm-response] <trace.json> | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
-  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
@@ -3963,6 +3963,7 @@ func cmdReviews(args []string) {
 	decisions.AnnotateLifecycleRepairQueue(&report)
 	product.AnnotateReviewQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
+	authority.AnnotateSourceControlCleanupQueue(&report)
 	runtimebinding.AnnotateRepairQueue(&report)
 	capgraph.AnnotateCapabilityEvaluationQueue(&report)
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)
@@ -6043,8 +6044,23 @@ func cmdAuthority(args []string) {
 	}
 	if args[0] == "dirty-plan" {
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id]")
+			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id] [--json]")
 			os.Exit(2)
+		}
+		jsonOut := hasFlag(args[2:], "--json")
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+			case "--work-id":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id] [--json]")
+					os.Exit(2)
+				}
+				i++
+			default:
+				fmt.Fprintln(os.Stderr, "usage: compound authority dirty-plan <repo-path> [--work-id id] [--json]")
+				os.Exit(2)
+			}
 		}
 		workID := flagValue(args[2:], "--work-id")
 		snap, _, _, _, err := authority.ImportGitSnapshot(args[1], nil)
@@ -6062,6 +6078,36 @@ func cmdAuthority(args []string) {
 			fmt.Fprintln(os.Stderr, "authority dirty-plan:", err)
 			os.Exit(1)
 		}
+		if jsonOut {
+			printJSON(struct {
+				SchemaVersion string                                 `json:"schema_version"`
+				Status        string                                 `json:"status"`
+				AuthorityRef  string                                 `json:"authority_ref"`
+				ID            string                                 `json:"id"`
+				RepoID        string                                 `json:"repo_id"`
+				SourceStatus  string                                 `json:"source_status"`
+				ChangedPaths  int                                    `json:"changed_paths"`
+				Staged        int                                    `json:"staged"`
+				Unstaged      int                                    `json:"unstaged"`
+				Untracked     int                                    `json:"untracked"`
+				Plan          authority.SourceControlReviewPlan      `json:"plan"`
+				Paths         authority.SourceControlReviewPlanPaths `json:"paths"`
+			}{
+				SchemaVersion: authority.SourceControlReviewPlanSchemaVersion,
+				Status:        plan.Status,
+				AuthorityRef:  "compound://reviews/source-control-cleanup",
+				ID:            plan.ID,
+				RepoID:        plan.RepoID,
+				SourceStatus:  plan.SourceStatus,
+				ChangedPaths:  plan.ChangedPaths,
+				Staged:        plan.Staged,
+				Unstaged:      plan.Unstaged,
+				Untracked:     plan.Untracked,
+				Plan:          plan,
+				Paths:         paths,
+			})
+			return
+		}
 		fmt.Printf("# source-control dirty-plan %s\n", plan.ID)
 		fmt.Printf("- status: %s\n", plan.Status)
 		fmt.Printf("- repo: %s\n", plan.RepoID)
@@ -6077,6 +6123,50 @@ func cmdAuthority(args []string) {
 		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+		return
+	}
+	if args[0] == "dirty-review" {
+		jsonOut := hasFlag(args[1:], "--json")
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--json]")
+			os.Exit(2)
+		}
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+			default:
+				if i != 1 {
+					fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--json]")
+					os.Exit(2)
+				}
+			}
+		}
+		review, err := authority.LoadSourceControlReview(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority dirty-review:", err)
+			os.Exit(1)
+		}
+		report, err := authority.RecordSourceControlReview(homePath, review, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority dirty-review:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# source-control dirty-review %s\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- plan: %s\n", report.PlanID)
+		fmt.Printf("- review: %s\n", report.ReviewID)
+		fmt.Printf("- repo: %s\n", report.RepoID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		if report.NextAction != "" {
+			fmt.Printf("- next_action: %s\n", report.NextAction)
+		}
+		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		fmt.Printf("- reviewed: %s\n", report.ReviewPath)
 		return
 	}
 	if args[0] == "import" {
