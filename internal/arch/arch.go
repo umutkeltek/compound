@@ -116,6 +116,7 @@ func loadLeakTokens(path string) (toks []string, present bool) {
 // this. `--strict` fails if it grows (new fragmentation). Lower it as packages converge onto the
 // spine — the budget can only go down, so the debt can never become wallpaper or quietly grow.
 const ConvergePendingBudget = 0
+const MaxStatusHotPathLines = 250
 
 // Doctor runs every check. repoRoot is the compound repo root for filesystem checks (classification
 // totality, doc leak); pass "" to run only the in-memory checks (candidate map). strict turns the
@@ -126,6 +127,7 @@ func Doctor(repoRoot string, strict bool) Report {
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
+		f = append(f, checkStatusHotPath(repoRoot)...)
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
 		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
 		f = append(f, checkLLMExtractionGroundingContract(repoRoot)...)
@@ -209,6 +211,31 @@ func checkClassificationTotal(repoRoot string) []Finding {
 		f = append(f, Finding{"classification", Info, "all " + itoa(len(found)) + " internal/ packages classified"})
 	}
 	return f
+}
+
+// checkStatusHotPath keeps status.md bounded as a hot map, not a runtime proof journal.
+func checkStatusHotPath(repoRoot string) []Finding {
+	path := filepath.Join(repoRoot, "docs", "architecture", "status.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return []Finding{{"status-hot-path", Warn, "could not read docs/architecture/status.md: " + err.Error()}}
+	}
+	lines := lineCount(b)
+	if lines > MaxStatusHotPathLines {
+		return []Finding{{"status-hot-path", Fail, "docs/architecture/status.md is " + itoa(lines) + " lines; keep the hot status surface at or below " + itoa(MaxStatusHotPathLines) + " lines and move proof journal entries to docs/architecture/archive/"}}
+	}
+	return []Finding{{"status-hot-path", Info, "docs/architecture/status.md hot path is " + itoa(lines) + "/" + itoa(MaxStatusHotPathLines) + " lines"}}
+}
+
+func lineCount(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
+	n := strings.Count(string(b), "\n")
+	if b[len(b)-1] != '\n' {
+		n++
+	}
+	return n
 }
 
 // checkDocLeak: no operator-private token in tracked docs, and no configured

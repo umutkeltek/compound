@@ -80,6 +80,28 @@ func TestClassificationIsTotal(t *testing.T) {
 
 // The convergence debt is reported (observable), not hidden — the coherent treatment of a duplicate
 // that cannot yet be retired.
+func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {
+	repo := t.TempDir()
+	statusDir := filepath.Join(repo, "docs", "architecture")
+	if err := os.MkdirAll(statusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for i := 0; i < MaxStatusHotPathLines+1; i++ {
+		b.WriteString("line\n")
+	}
+	if err := os.WriteFile(filepath.Join(statusDir, "status.md"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkStatusHotPath(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one status-hot-path failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "docs/architecture/status.md") {
+		t.Fatalf("failure should name status.md: %+v", findings[0])
+	}
+}
+
 func TestConvergenceDebtIsObservable(t *testing.T) {
 	r := Doctor("", false)
 	for _, f := range r.Findings {
