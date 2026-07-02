@@ -440,6 +440,9 @@ func TestPackWithCapabilitiesSurfacesGraphOffers(t *testing.T) {
 	if err := pack.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	if sourceRev(pack.SourceRevisions, capgraph.CapabilityGraphAuthorityRef) == "" {
+		t.Fatalf("context pack missing capability graph source revision: %+v", pack.SourceRevisions)
+	}
 	if !hasIncluded(pack, "capability://skill:pricing") {
 		t.Fatalf("context pack should include surfaced skill offer; included=%v", pack.Included)
 	}
@@ -716,6 +719,10 @@ func TestRuntimeContractResolvesControlPlaneSourceRevisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, source := range []string{
 		"control-plane://orientation-map",
 		"control-plane://workflow-contract",
@@ -727,6 +734,10 @@ func TestRuntimeContractResolvesControlPlaneSourceRevisions(t *testing.T) {
 		rev := sourceRev(ec.SourceRevisions, source)
 		if rev == "" || rev == "unknown" || !strings.HasPrefix(rev, "sha256:") {
 			t.Fatalf("source revision for %s = %q, want sha256 digest in %+v", source, rev, ec.SourceRevisions)
+		}
+		packRev := sourceRev(pack.SourceRevisions, source)
+		if packRev == "" || packRev == "unknown" || !strings.HasPrefix(packRev, "sha256:") {
+			t.Fatalf("context pack source revision for %s = %q, want sha256 digest in %+v", source, packRev, pack.SourceRevisions)
 		}
 	}
 }
@@ -1115,6 +1126,9 @@ func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testin
 	}
 	if !contains(pack.ActiveMemory, capabilityRef) {
 		t.Fatalf("context pack active_memory = %v, want task-relevant %s", pack.ActiveMemory, capabilityRef)
+	}
+	if rev := sourceRev(pack.SourceRevisions, memoryRelevanceSourceRef); rev == "" || rev == "unknown" {
+		t.Fatalf("context pack memory source revision = %q, want ledger digest in %+v", rev, pack.SourceRevisions)
 	}
 	if strings.Contains(pack.SummaryMD, "private external skill repo preference") {
 		t.Fatalf("summary leaked private/self-model memory: %q", pack.SummaryMD)

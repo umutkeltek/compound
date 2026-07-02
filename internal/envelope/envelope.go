@@ -266,6 +266,7 @@ type ContextPack struct {
 	ActiveHooks        []string          `json:"active_hooks"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
+	SourceRevisions    []SourceRev       `json:"source_revisions,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`
 }

@@ -383,10 +383,12 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 	incl, excl := partition(pol, in.RepoKind)
 	var active []string
+	var revs []envelope.SourceRev
 	for _, r := range incl {
 		if r.SourceClass == "source" {
 			active = append(active, r.Ref)
 		}
+		revs = append(revs, envelope.SourceRev{Source: r.Ref, Rev: "unknown"})
 	}
 	mem := pol.Memory[in.RepoKind]
 	summary := fmt.Sprintf("Oriented as a **%s** repo for `%s`: %d sources included, %d excluded.",
@@ -403,6 +405,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		ActiveHooks:        []string{},
 		ActiveDecisions:    []string{},
 		ActiveMemory:       []string{},
+		SourceRevisions:    resolveSourceRevisions(revs, in.Cwd),
 		RequiredChecks:     []string{},
 		Avoid:              orEmpty(mem.Forbidden),
 	}
@@ -415,16 +418,17 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if strings.TrimSpace(homePath) == "" {
 		return pack, nil
 	}
-	hooks, excludedHooks, _, err := loadInstalledHooksForInput(homePath, in)
+	hooks, excludedHooks, hookRevs, err := loadInstalledHooksForInput(homePath, in)
 	if err != nil {
 		return pack, err
 	}
 	pack.ActiveHooks = hooks
 	pack.Excluded = append(pack.Excluded, excludedHooks...)
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, hookRevs)
 	if len(hooks) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(hooks))
 	}
-	decisions, _, err := loadDecisionRefs(homePath)
+	decisions, decisionRevs, err := loadDecisionRefs(homePath)
 	if err != nil {
 		return pack, err
 	}
@@ -438,6 +442,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		})
 	}
 	pack.ActiveDecisions = decisions
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, decisionRevs)
 	if len(decisions) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
 	}
@@ -456,6 +461,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		})
 	}
 	if len(memoryRefs) > 0 {
+		rev, err := memoryLedgerRevision(homePath)
+		if err != nil {
+			return pack, err
+		}
+		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: rev}})
 		lines := make([]string, 0, len(memoryRefs))
 		for _, ref := range memoryRefs {
 			lines = append(lines, ref.Line)
@@ -467,6 +477,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		return pack, err
 	}
 	if surfacedTotal > 0 {
+		rev, err := capgraph.AuthorityRevision(homePath)
+		if err != nil {
+			return pack, err
+		}
+		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}})
 		for _, hit := range surfaced {
 			pack.CapabilityOffers = append(pack.CapabilityOffers, capabilityOffer(hit))
 			pack.Included = append(pack.Included, envelope.IncludedRef{
