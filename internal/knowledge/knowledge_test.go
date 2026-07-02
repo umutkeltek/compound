@@ -318,7 +318,9 @@ func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) 
 
 	report, err := Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
 	if err != nil {
-		t.Fatal(err)
+		var req ExtractionRequest
+		readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+		t.Fatalf("extract error: %v; request = %+v", err, req)
 	}
 	if report.Processed != 1 || report.Created != 1 || len(report.CandidateIDs) != 1 {
 		t.Fatalf("extract report = %+v", report)
@@ -356,6 +358,75 @@ func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) 
 	}
 	if replay.Processed != 0 || replay.Skipped != 1 || len(replay.CandidateIDs) != 1 || replay.CandidateIDs[0] != extracted.ID {
 		t.Fatalf("idempotent replay = %+v", replay)
+	}
+}
+
+func TestExtractEssenceFixtureShapesCandidatesAndPersistsResidue(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	importReport, err := ImportFile(homePath, store, fixturePath("arxiv-export.json"), testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := t.TempDir()
+	writeEssenceFixture(t, fixtures, importReport.ExtractionIDs[0])
+
+	report, err := Extract(homePath, store, ExtractOptions{ItemID: importReport.ExtractionIDs[0], FixturesDir: fixtures}, testNow.Add(time.Minute))
+	if err != nil {
+		var req ExtractionRequest
+		readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+		t.Fatalf("extract error: %v; request = %+v", err, req)
+	}
+	if report.Processed != 1 || report.Created != 1 || len(report.CandidateIDs) != 1 {
+		t.Fatalf("extract report = %+v", report)
+	}
+
+	var req ExtractionRequest
+	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
+	if req.State != "done" || len(req.EssenceLines) != 2 || len(req.EssenceResidue) != 1 {
+		t.Fatalf("essence request = %+v", req)
+	}
+	if req.RouteEvidence == nil ||
+		req.RouteEvidence.EssenceLines != 2 ||
+		req.RouteEvidence.ShapedCandidates != 1 ||
+		req.RouteEvidence.ResidueLines != 1 ||
+		req.RouteEvidence.HallucinationRejections != 1 {
+		t.Fatalf("route evidence = %+v", req.RouteEvidence)
+	}
+
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shaped *mem.Candidate
+	for i := range candidates {
+		if candidates[i].ID == report.CandidateIDs[0] {
+			shaped = &candidates[i]
+			break
+		}
+	}
+	if shaped == nil {
+		t.Fatalf("missing shaped candidate %q in %+v", report.CandidateIDs[0], candidates)
+	}
+	if shaped.Entity != "knowledge:arxiv:2506.12345v1" || shaped.Predicate != "reports_result" {
+		t.Fatalf("shaped candidate identity = %+v", shaped)
+	}
+	if shaped.Qualifiers["source"] != "knowledge_extraction" ||
+		shaped.Qualifiers["extracted_by"] != "fixture" ||
+		shaped.Qualifiers["shaped_by"] != "deterministic" {
+		t.Fatalf("shaped provenance qualifiers = %+v", shaped.Qualifiers)
+	}
+
+	var rows []ExtractionModelEvidenceRow
+	readJSONLRows(t, filepath.Join(homePath, "ledger", "knowledge-extraction-model-evidence.jsonl"), &rows)
+	if len(rows) != 1 {
+		t.Fatalf("model evidence rows = %+v", rows)
+	}
+	if rows[0].ExtractionID != req.ID || rows[0].EssenceLines != 2 || rows[0].ShapedCandidates != 1 || rows[0].ResidueLines != 1 || rows[0].HallucinationRejections != 1 {
+		t.Fatalf("model evidence row = %+v", rows[0])
 	}
 }
 
@@ -472,7 +543,7 @@ func TestExtractOpenAICompatibleUsesEvalCorpusAndRecordsRouteEvidence(t *testing
 		if r.URL.Path != "/chat/completions" {
 			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
 		}
-		body := extractionFixtureBody(importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+		body := essenceFixtureBody()
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
 				"message": map[string]string{"role": "assistant", "content": body},
@@ -506,7 +577,7 @@ func TestExtractOpenAICompatibleUsesEvalCorpusAndRecordsRouteEvidence(t *testing
 	}
 }
 
-func TestExtractOpenAICompatibleRecordsCorrectiveRetryRouteEvidence(t *testing.T) {
+func TestExtractOpenAICompatibleEssenceResponseRecordsModelEvidence(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := mem.Open(homePath)
 	if err != nil {
@@ -520,18 +591,7 @@ func TestExtractOpenAICompatibleRecordsCorrectiveRetryRouteEvidence(t *testing.T
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if calls == 1 {
-			body := fmt.Sprintf(`{"schema_version":"compound.distiller.llm_extraction.v0.1","trace_ref":"knowledge_extraction:%s","source_refs":["%s"],"candidates":[{"kind":"memory","confidence":0.91,"evidence_refs":["%s"]}]}`,
-				importReport.ExtractionIDs[0], importReport.EvidenceIDs[0], importReport.EvidenceIDs[0])
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"choices": []map[string]any{{
-					"message": map[string]string{"role": "assistant", "content": body},
-				}},
-				"usage": map[string]int{"total_tokens": 12},
-			})
-			return
-		}
-		body := extractionFixtureBody(importReport.ExtractionIDs[0], importReport.EvidenceIDs[0])
+		body := essenceFixtureBody()
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
 				"message": map[string]string{"role": "assistant", "content": body},
@@ -550,13 +610,23 @@ func TestExtractOpenAICompatibleRecordsCorrectiveRetryRouteEvidence(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || report.Processed != 1 || report.Created != 1 {
+	if calls != 1 || report.Processed != 1 || report.Created != 1 {
 		t.Fatalf("calls=%d report=%+v", calls, report)
 	}
 	var req ExtractionRequest
 	readJSON(t, filepath.Join(homePath, "inbox", "knowledge-extractions", importReport.ExtractionIDs[0]+".json"), &req)
-	if req.RouteEvidence == nil || req.RouteEvidence.LiveModelCalls != 2 || req.RouteEvidence.Usage.TotalTokens != 30 {
+	if req.RouteEvidence == nil ||
+		req.RouteEvidence.LiveModelCalls != 1 ||
+		req.RouteEvidence.Usage.TotalTokens != 18 ||
+		req.RouteEvidence.EssenceLines != 2 ||
+		req.RouteEvidence.ShapedCandidates != 1 ||
+		req.RouteEvidence.ResidueLines != 1 {
 		t.Fatalf("route evidence = %+v", req.RouteEvidence)
+	}
+	var rows []ExtractionModelEvidenceRow
+	readJSONLRows(t, filepath.Join(homePath, "ledger", "knowledge-extraction-model-evidence.jsonl"), &rows)
+	if len(rows) != 1 || rows[0].ExtractedBy != "openai-compatible/fixture-model" || rows[0].ShapedCandidates != 1 {
+		t.Fatalf("model evidence rows = %+v", rows)
 	}
 }
 
@@ -722,6 +792,30 @@ func writeExtractionFixture(t *testing.T, dir, extractionID, evidenceID string) 
 	if err := os.WriteFile(filepath.Join(dir, extractionID+".json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeEssenceFixture(t *testing.T, dir, extractionID string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, extractionID+".json"), []byte(essenceFixtureBody()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func essenceFixtureBody() string {
+	return `{
+ "essence_lines": [
+ {
+ "predicate_hint": "reports result",
+ "statement": "Captured artifacts become evidence before any memory claim is promoted.",
+ "quote": "captured artifacts become evidence before any memory claim is promoted"
+ },
+ {
+ "predicate_hint": "claims",
+ "statement": "This paper proves a production deployment strategy.",
+ "quote": "this quote is not in the evidence"
+ }
+ ]
+}`
 }
 
 func extractionFixtureBody(extractionID, evidenceID string) string {

@@ -72,29 +72,57 @@ type ImportReport struct {
 }
 
 type ExtractionRequest struct {
-	SchemaVersion string                   `json:"schema_version"`
-	ID            string                   `json:"id"`
-	ItemRef       string                   `json:"item_ref"`
-	EvidenceRef   string                   `json:"evidence_ref"`
-	SourceKind    string                   `json:"source_kind"`
-	Title         string                   `json:"title,omitempty"`
-	ContentDigest string                   `json:"content_digest"`
-	State         string                   `json:"state"`
-	CreatedAt     string                   `json:"created_at"`
-	CompletedAt   string                   `json:"completed_at,omitempty"`
-	CandidateIDs  []string                 `json:"candidate_ids,omitempty"`
-	RouteEvidence *ExtractionRouteEvidence `json:"route_evidence,omitempty"`
-	Error         string                   `json:"error,omitempty"`
+	SchemaVersion  string                   `json:"schema_version"`
+	ID             string                   `json:"id"`
+	ItemRef        string                   `json:"item_ref"`
+	EvidenceRef    string                   `json:"evidence_ref"`
+	SourceKind     string                   `json:"source_kind"`
+	Title          string                   `json:"title,omitempty"`
+	ContentDigest  string                   `json:"content_digest"`
+	State          string                   `json:"state"`
+	CreatedAt      string                   `json:"created_at"`
+	CompletedAt    string                   `json:"completed_at,omitempty"`
+	CandidateIDs   []string                 `json:"candidate_ids,omitempty"`
+	EssenceLines   []EssenceLine            `json:"essence_lines,omitempty"`
+	EssenceResidue []string                 `json:"essence_residue,omitempty"`
+	RouteEvidence  *ExtractionRouteEvidence `json:"route_evidence,omitempty"`
+	Error          string                   `json:"error,omitempty"`
+}
+
+type EssenceLine struct {
+	PredicateHint string `json:"predicate_hint,omitempty"`
+	Statement     string `json:"statement"`
+	Quote         string `json:"quote"`
 }
 
 type ExtractionRouteEvidence struct {
-	Provider       string                `json:"provider"`
-	Model          string                `json:"model,omitempty"`
-	Called         bool                  `json:"called"`
-	Usage          distiller.OpenAIUsage `json:"usage,omitempty"`
-	LatencyMS      int64                 `json:"latency_ms,omitempty"`
-	LiveModelCalls int                   `json:"live_model_calls,omitempty"`
-	Fixture        string                `json:"fixture,omitempty"`
+	Provider                string                `json:"provider"`
+	Model                   string                `json:"model,omitempty"`
+	Called                  bool                  `json:"called"`
+	Usage                   distiller.OpenAIUsage `json:"usage,omitempty"`
+	LatencyMS               int64                 `json:"latency_ms,omitempty"`
+	LiveModelCalls          int                   `json:"live_model_calls,omitempty"`
+	EssenceLines            int                   `json:"essence_lines,omitempty"`
+	ShapedCandidates        int                   `json:"shaped_candidates,omitempty"`
+	ResidueLines            int                   `json:"residue_lines,omitempty"`
+	HallucinationRejections int                   `json:"hallucination_rejections,omitempty"`
+	Fixture                 string                `json:"fixture,omitempty"`
+}
+
+type ExtractionModelEvidenceRow struct {
+	ID                      string   `json:"id"`
+	ExtractionID            string   `json:"extraction_id"`
+	ItemRef                 string   `json:"item_ref"`
+	EvidenceRef             string   `json:"evidence_ref"`
+	Provider                string   `json:"provider"`
+	Model                   string   `json:"model,omitempty"`
+	ExtractedBy             string   `json:"extracted_by"`
+	EssenceLines            int      `json:"essence_lines"`
+	ShapedCandidates        int      `json:"shaped_candidates"`
+	ResidueLines            int      `json:"residue_lines"`
+	HallucinationRejections int      `json:"hallucination_rejections"`
+	CandidateIDs            []string `json:"candidate_ids,omitempty"`
+	ObservedAt              string   `json:"observed_at"`
 }
 
 func (r ExtractionRequest) Validate() error {
@@ -406,7 +434,7 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 			report.ExtractionIDs = append(report.ExtractionIDs, req.ID)
 			continue
 		}
-		candidateIDs, route, err := extractOne(homePath, store, req, opts, now)
+		candidateIDs, route, err := extractOne(homePath, store, &req, opts, now)
 		if err != nil {
 			// Fail soft per item: one bad model response must not strand the
 			// remaining pending items (same lesson as panel apply). Failed
@@ -439,7 +467,7 @@ func Extract(homePath string, store *mem.Store, opts ExtractOptions, now time.Ti
 	return report, nil
 }
 
-func extractOne(homePath string, store *mem.Store, req ExtractionRequest, opts ExtractOptions, now time.Time) ([]string, ExtractionRouteEvidence, error) {
+func extractOne(homePath string, store *mem.Store, req *ExtractionRequest, opts ExtractOptions, now time.Time) ([]string, ExtractionRouteEvidence, error) {
 	evidence, ok, err := store.GetEvidence(req.EvidenceRef)
 	if err != nil {
 		return nil, ExtractionRouteEvidence{}, err
@@ -447,44 +475,25 @@ func extractOne(homePath string, store *mem.Store, req ExtractionRequest, opts E
 	if !ok {
 		return nil, ExtractionRouteEvidence{}, fmt.Errorf("evidence %s not found", req.EvidenceRef)
 	}
-	llmReq := buildKnowledgeExtractionRequest(req, evidence)
+	llmReq := buildKnowledgeExtractionRequest(*req, evidence)
 	var raw []byte
 	route := ExtractionRouteEvidence{}
 	if strings.TrimSpace(opts.FixturesDir) != "" {
-		fixture := filepath.Join(opts.FixturesDir, fixtureExtractionName(req)+".json")
+		fixture := filepath.Join(opts.FixturesDir, fixtureExtractionName(*req)+".json")
 		raw, err = os.ReadFile(fixture)
 		if err != nil {
 			return nil, route, err
 		}
 		route = ExtractionRouteEvidence{Provider: "fixture", Called: false, Fixture: fixture}
 	} else {
-		apiKey := ""
-		if strings.TrimSpace(opts.APIKeyEnv) != "" {
-			apiKey = os.Getenv(strings.TrimSpace(opts.APIKeyEnv))
-		}
-		live, err := distiller.ExtractWithOpenAICompatible(context.Background(), llmReq, distiller.OpenAICompatibleOptions{
-			BaseURL:       opts.OpenAICompatibleURL,
-			APIKey:        apiKey,
-			Model:         opts.Model,
-			EvalCorpusDir: opts.EvalCorpusDir,
-			EvalRoot:      opts.EvalRoot,
-			Now:           now,
-		})
+		raw, route, err = callKnowledgeEssenceOpenAICompatible(*req, evidence, opts, now)
 		if err != nil {
 			return nil, route, err
 		}
-		raw, err = json.Marshal(live.Response)
-		if err != nil {
-			return nil, route, err
-		}
-		route = ExtractionRouteEvidence{
-			Provider:       live.Provider,
-			Model:          live.Model,
-			Called:         live.Called,
-			Usage:          live.Usage,
-			LatencyMS:      live.LatencyMS,
-			LiveModelCalls: live.LiveModelCalls,
-		}
+	}
+	raw, err = normalizeKnowledgeExtractionRaw(req, evidence, llmReq, raw, &route)
+	if err != nil {
+		return nil, route, err
 	}
 	trace, err := distiller.NewGroundedLLMExtractor(llmReq).Extract(raw, distiller.DefaultPolicy())
 	if err != nil {
@@ -498,13 +507,209 @@ func extractOne(homePath string, store *mem.Store, req ExtractionRequest, opts E
 		if dc.Kind != distiller.KindMemory {
 			return nil, route, fmt.Errorf("knowledge extraction only accepts memory candidates, got %q", dc.Kind)
 		}
-		c := memoryCandidateFromExtraction(req, dc, evidence, now)
+		c := memoryCandidateFromExtraction(*req, dc, evidence, route, now)
 		if _, err := store.RecordStableCandidate(c); err != nil {
 			return nil, route, err
 		}
 		candidateIDs = append(candidateIDs, c.ID)
 	}
+	if err := appendExtractionModelEvidence(homePath, *req, route, candidateIDs, now); err != nil {
+		return nil, route, err
+	}
 	return candidateIDs, route, nil
+}
+
+func callKnowledgeEssenceOpenAICompatible(req ExtractionRequest, evidence mem.EvidenceItem, opts ExtractOptions, now time.Time) ([]byte, ExtractionRouteEvidence, error) {
+	route := ExtractionRouteEvidence{
+		Provider: "openai-compatible",
+		Model:    strings.TrimSpace(opts.Model),
+	}
+	if strings.TrimSpace(opts.EvalCorpusDir) == "" {
+		return nil, route, fmt.Errorf("eval corpus required before provider extraction")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	eval, err := distiller.EvaluateCorpusDirInRoot(opts.EvalCorpusDir, opts.EvalRoot, now)
+	if err != nil {
+		return nil, route, err
+	}
+	if eval.Status != "pass" {
+		return nil, route, fmt.Errorf("eval corpus status %s; provider call blocked", eval.Status)
+	}
+	if eval.LiveModelCalls != 0 {
+		return nil, route, fmt.Errorf("eval corpus reported %d live model call(s); provider call blocked", eval.LiveModelCalls)
+	}
+	if strings.TrimSpace(opts.OpenAICompatibleURL) == "" {
+		return nil, route, fmt.Errorf("openai-compatible base_url is required")
+	}
+	if route.Model == "" {
+		return nil, route, fmt.Errorf("model is required")
+	}
+	apiKey := ""
+	if strings.TrimSpace(opts.APIKeyEnv) != "" {
+		apiKey = os.Getenv(strings.TrimSpace(opts.APIKeyEnv))
+	}
+	system, user := buildKnowledgeEssencePrompt(req, evidence)
+	raw, usage, latencyMS, err := distiller.ChatCompletionJSON(context.Background(), nil, opts.OpenAICompatibleURL, apiKey, route.Model, system, user)
+	if err != nil {
+		return nil, route, err
+	}
+	route.Called = true
+	route.Usage = usage
+	route.LatencyMS = latencyMS
+	route.LiveModelCalls = 1
+	return raw, route, nil
+}
+
+func buildKnowledgeEssencePrompt(req ExtractionRequest, evidence mem.EvidenceItem) (string, string) {
+	system := strings.Join([]string{
+		"Return only JSON with top-level essence_lines.",
+		"Do not emit Compound's full extraction envelope.",
+		"Each essence line has predicate_hint, statement, and quote.",
+		"The quote must be copied from the provided evidence text.",
+	}, "\n")
+	user := strings.Join(compactStrings(
+		"Knowledge extraction item: "+req.ItemRef,
+		"Title: "+req.Title,
+		"Evidence ref: "+req.EvidenceRef,
+		"Evidence quote:\n"+evidence.QuoteText,
+		"Return shape: {\"essence_lines\":[{\"predicate_hint\":\"reports_result\",\"statement\":\"one grounded meaning claim\",\"quote\":\"short exact supporting quote\"}]}",
+	), "\n\n")
+	return system, user
+}
+
+type essenceEnvelope struct {
+	EssenceLines []EssenceLine `json:"essence_lines"`
+}
+
+func normalizeKnowledgeExtractionRaw(req *ExtractionRequest, evidence mem.EvidenceItem, llmReq distiller.LLMExtractionRequest, raw []byte, route *ExtractionRouteEvidence) ([]byte, error) {
+	var strict distiller.LLMExtractionResponse
+	if err := json.Unmarshal(raw, &strict); err == nil && strings.TrimSpace(strict.SchemaVersion) == distiller.LLMExtractionSchemaVersion {
+		route.ShapedCandidates = len(strict.Candidates)
+		return raw, nil
+	}
+
+	var essence essenceEnvelope
+	if err := json.Unmarshal(raw, &essence); err != nil {
+		return nil, fmt.Errorf("parse essence extraction response: %w", err)
+	}
+	if len(essence.EssenceLines) == 0 {
+		return nil, fmt.Errorf("essence extraction produced zero essence lines")
+	}
+	req.EssenceLines = cleanEssenceLines(essence.EssenceLines)
+	route.EssenceLines = len(req.EssenceLines)
+
+	shaped, residue, hallucinationRejections := shapeEssenceLines(*req, evidence, llmReq, req.EssenceLines)
+	req.EssenceResidue = residue
+	route.ShapedCandidates = len(shaped.Candidates)
+	route.ResidueLines = len(residue)
+	route.HallucinationRejections = hallucinationRejections
+	if len(shaped.Candidates) == 0 {
+		return nil, fmt.Errorf("essence extraction produced zero shaped candidates")
+	}
+	return json.Marshal(shaped)
+}
+
+func cleanEssenceLines(lines []EssenceLine) []EssenceLine {
+	out := make([]EssenceLine, 0, len(lines))
+	for _, line := range lines {
+		cleaned := EssenceLine{
+			PredicateHint: strings.TrimSpace(line.PredicateHint),
+			Statement:     strings.TrimSpace(line.Statement),
+			Quote:         strings.TrimSpace(line.Quote),
+		}
+		if cleaned.PredicateHint != "" || cleaned.Statement != "" || cleaned.Quote != "" {
+			out = append(out, cleaned)
+		}
+	}
+	return out
+}
+
+func shapeEssenceLines(req ExtractionRequest, evidence mem.EvidenceItem, llmReq distiller.LLMExtractionRequest, lines []EssenceLine) (distiller.LLMExtractionResponse, []string, int) {
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      llmReq.TraceRef,
+		SourceRefs:    []string{req.EvidenceRef},
+	}
+	residue := []string{}
+	hallucinationRejections := 0
+	for _, line := range lines {
+		statement := strings.TrimSpace(line.Statement)
+		quote := strings.TrimSpace(line.Quote)
+		if statement == "" || quote == "" {
+			residue = append(residue, essenceResidue(line, "missing statement or quote"))
+			continue
+		}
+		if !quoteAppearsInEvidence(evidence.QuoteText, quote) {
+			residue = append(residue, essenceResidue(line, "quote not found in evidence"))
+			hallucinationRejections++
+			continue
+		}
+		confidence := 0.72
+		response.Candidates = append(response.Candidates, distiller.LLMCandidate{
+			Kind:       distiller.KindMemory,
+			Entity:     knowledgeEntity(req.SourceKind, req.ItemRef),
+			Predicate:  predicateFromEssenceHint(line.PredicateHint),
+			Object:     statement,
+			Confidence: &confidence,
+			Derivation: "extracted",
+			ClaimType:  "architecture",
+			Qualifiers: map[string]string{
+				"source":        "knowledge_extraction",
+				"extraction_id": req.ID,
+				"item_ref":      req.ItemRef,
+				"shaped_by":     "deterministic",
+			},
+			EvidenceRefs: []string{req.EvidenceRef},
+		})
+	}
+	return response, residue, hallucinationRejections
+}
+
+func essenceResidue(line EssenceLine, reason string) string {
+	parts := compactStrings(
+		"reason="+strings.TrimSpace(reason),
+		"predicate_hint="+strings.TrimSpace(line.PredicateHint),
+		"statement="+strings.TrimSpace(line.Statement),
+		"quote="+strings.TrimSpace(line.Quote),
+	)
+	return strings.Join(parts, " | ")
+}
+
+func quoteAppearsInEvidence(evidenceQuote, quote string) bool {
+	evidenceQuote = strings.ToLower(strings.Join(strings.Fields(evidenceQuote), " "))
+	quote = strings.ToLower(strings.Join(strings.Fields(quote), " "))
+	return quote != "" && strings.Contains(evidenceQuote, quote)
+}
+
+func predicateFromEssenceHint(hint string) string {
+	hint = strings.ToLower(strings.TrimSpace(hint))
+	if hint == "" {
+		return "claims"
+	}
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range hint {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore && b.Len() > 0 {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	predicate := strings.Trim(b.String(), "_")
+	if predicate == "" {
+		return "claims"
+	}
+	if predicate[0] >= '0' && predicate[0] <= '9' {
+		return "claims_" + predicate
+	}
+	return predicate
 }
 
 func buildKnowledgeExtractionRequest(req ExtractionRequest, evidence mem.EvidenceItem) distiller.LLMExtractionRequest {
@@ -529,7 +734,7 @@ func buildKnowledgeExtractionRequest(req ExtractionRequest, evidence mem.Evidenc
 	return llmReq
 }
 
-func memoryCandidateFromExtraction(req ExtractionRequest, dc distiller.Candidate, evidence mem.EvidenceItem, now time.Time) mem.Candidate {
+func memoryCandidateFromExtraction(req ExtractionRequest, dc distiller.Candidate, evidence mem.EvidenceItem, route ExtractionRouteEvidence, now time.Time) mem.Candidate {
 	qualifiers := map[string]string{}
 	for k, v := range dc.Qualifiers {
 		if strings.TrimSpace(k) != "" && strings.TrimSpace(v) != "" {
@@ -539,6 +744,12 @@ func memoryCandidateFromExtraction(req ExtractionRequest, dc distiller.Candidate
 	qualifiers["source"] = "knowledge_extraction"
 	qualifiers["extraction_id"] = req.ID
 	qualifiers["item_ref"] = req.ItemRef
+	if _, ok := qualifiers["extracted_by"]; !ok {
+		qualifiers["extracted_by"] = extractionActor(route)
+	}
+	if _, ok := qualifiers["shaped_by"]; !ok {
+		qualifiers["shaped_by"] = "model"
+	}
 	derivation := dc.Derivation
 	if !oneOf(derivation, mem.Derivations) {
 		derivation = "extracted"
@@ -562,6 +773,40 @@ func memoryCandidateFromExtraction(req ExtractionRequest, dc distiller.Candidate
 		Visibility:      visibility,
 		State:           "proposed",
 		CreatedAt:       rfc3339(now),
+	}
+}
+
+func appendExtractionModelEvidence(homePath string, req ExtractionRequest, route ExtractionRouteEvidence, candidateIDs []string, now time.Time) error {
+	row := ExtractionModelEvidenceRow{
+		ID:                      "kxmodel_" + shortDigest(req.ID, extractionActor(route), rfc3339(now)),
+		ExtractionID:            req.ID,
+		ItemRef:                 req.ItemRef,
+		EvidenceRef:             req.EvidenceRef,
+		Provider:                route.Provider,
+		Model:                   route.Model,
+		ExtractedBy:             extractionActor(route),
+		EssenceLines:            route.EssenceLines,
+		ShapedCandidates:        route.ShapedCandidates,
+		ResidueLines:            route.ResidueLines,
+		HallucinationRejections: route.HallucinationRejections,
+		CandidateIDs:            append([]string(nil), candidateIDs...),
+		ObservedAt:              rfc3339(now),
+	}
+	return appendJSONL(filepath.Join(homePath, "ledger", "knowledge-extraction-model-evidence.jsonl"), row)
+}
+
+func extractionActor(route ExtractionRouteEvidence) string {
+	provider := strings.TrimSpace(route.Provider)
+	model := strings.TrimSpace(route.Model)
+	switch {
+	case provider != "" && model != "":
+		return provider + "/" + model
+	case provider != "":
+		return provider
+	case model != "":
+		return model
+	default:
+		return "unknown"
 	}
 }
 
