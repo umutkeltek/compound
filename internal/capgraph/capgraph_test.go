@@ -835,6 +835,38 @@ func TestSurfaceByTrigger(t *testing.T) {
 	}
 }
 
+func TestSurfaceIgnoresGenericAgentRoleToken(t *testing.T) {
+	_, s := newStore(t)
+	mustAdd := func(n Node) {
+		t.Helper()
+		if err := s.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustAdd(Node{
+		ID:       "procedure:agent-harness-doctrine",
+		Kind:     "procedure",
+		Name:     "agent-harness-doctrine",
+		Triggers: []string{"agent harness doctrine", "harness adapter"},
+		Weight:   1.25,
+	})
+	mustAdd(Node{
+		ID:       "tool:episode-agent-logs",
+		Kind:     "tool",
+		Name:     "episode-agent-logs",
+		Triggers: []string{"agent logs"},
+		Weight:   1.2,
+	})
+
+	hits := surfaced(s, "evaluate Agent Workbench harness adapter skills")
+	if _, ok := hits["procedure:agent-harness-doctrine"]; !ok {
+		t.Fatalf("specific harness capability should surface, got %+v", hits)
+	}
+	if _, ok := hits["tool:episode-agent-logs"]; ok {
+		t.Fatalf("unrelated tool should not surface from generic agent token alone: %+v", hits)
+	}
+}
+
 func TestSurfaceForHarnessFiltersExplicitHarnessEdges(t *testing.T) {
 	_, s := newStore(t)
 	mustAdd := func(n Node) {

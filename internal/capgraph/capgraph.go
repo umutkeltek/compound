@@ -859,6 +859,9 @@ var capabilityTokenStopWords = map[string]bool{
 	"capability": true, "capabilities": true, "skill": true, "skills": true,
 	"task": true, "tasks": true, "tool": true, "tools": true,
 	"workflow": true, "workflows": true,
+	// Agent describes the caller/role across too many tools and skills. Let
+	// concrete task words like harness, adapter, workbench, browser, or MCP match.
+	"agent": true, "agents": true,
 }
 
 func appendJSONL(path string, v any) error {
