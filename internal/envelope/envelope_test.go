@@ -1,6 +1,9 @@
 package envelope
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func hdr(sv, id string) Header {
 	return Header{
@@ -98,6 +101,7 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 			Header:        withWork(hdr(SVActionIntent, "act_1"), "work_1"),
 			Capability:    "filesystem.write",
 			Action:        "write_file",
+			Target:        ActionTarget{Kind: "file", Path: "docs/architecture/runtime.md"},
 			MutationClass: "local_reversible",
 			Reversibility: "easy",
 		},
@@ -130,6 +134,38 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 		if err := RoundTrip(e); err != nil {
 			t.Errorf("%s: round-trip: %v", e.Kind(), err)
 		}
+	}
+}
+
+func TestActionIntentTargetRequiredForMutatingActions(t *testing.T) {
+	base := ActionIntent{
+		Header:        withWork(hdr(SVActionIntent, "act_target"), "work_1"),
+		Capability:    "filesystem.write",
+		Action:        "write_file",
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+	}
+	if err := base.Validate(); err == nil || !strings.Contains(err.Error(), "target.kind") || !strings.Contains(err.Error(), "target.id or target.path") {
+		t.Fatalf("mutating action without target should fail target identity, got %v", err)
+	}
+	withPath := base
+	withPath.Target = ActionTarget{Kind: "file", Path: "docs/architecture/runtime.md"}
+	if err := withPath.Validate(); err != nil {
+		t.Fatalf("mutating action with path target should pass: %v", err)
+	}
+	withID := base
+	withID.ID = "act_target2"
+	withID.Target = ActionTarget{Kind: "work", ID: "work_1"}
+	if err := withID.Validate(); err != nil {
+		t.Fatalf("mutating action with id target should pass: %v", err)
+	}
+	read := base
+	read.ID = "act_read"
+	read.MutationClass = "read"
+	read.Action = "inspect"
+	read.Target = ActionTarget{}
+	if err := read.Validate(); err != nil {
+		t.Fatalf("read action without target should still pass: %v", err)
 	}
 }
 

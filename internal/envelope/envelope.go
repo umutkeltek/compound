@@ -398,6 +398,12 @@ func (e *ActionIntent) Validate() error {
 	v.req("capability", e.Capability)
 	v.enum("mutation_class", e.MutationClass, MutationClasses, true)
 	v.enum("reversibility", e.Reversibility, Reversibilities, true)
+	if e.MutationClass != "" && e.MutationClass != "read" {
+		v.req("target.kind", e.Target.Kind)
+		if strings.TrimSpace(e.Target.ID) == "" && strings.TrimSpace(e.Target.Path) == "" {
+			v.addf("target.id or target.path is required for mutating action")
+		}
+	}
 	if e.IDs.WorkID == "" {
 		v.addf("ids.work_id is required (an action belongs to a work)")
 	}
