@@ -641,6 +641,14 @@ func writeJSON(path string, v any) error {
 // the pack keeps the full set — the digest is a budgeted surface, not the record.
 const maxInjectionActiveMemoryRefs = 8
 
+// maxInjectionActiveDecisionRefs caps the harness-facing decision list; the
+// ContextPack JSON keeps the full authoritative active_decisions set.
+const maxInjectionActiveDecisionRefs = 12
+
+// maxInjectionIncludedRefs caps generic provenance in the harness digest.
+// Dedicated sections render the high-signal subsets separately.
+const maxInjectionIncludedRefs = 24
+
 func renderInjection(hookID string, pack envelope.ContextPack) string {
 	var b strings.Builder
 	b.WriteString("# Compound Context Injection\n\n")
@@ -657,19 +665,7 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 
 	writeCapabilityOfferList(&b, pack.CapabilityOffers)
 
-	b.WriteString("## Included\n")
-	if len(pack.Included) == 0 {
-		b.WriteString("- none\n")
-	} else {
-		for _, ref := range pack.Included {
-			fmt.Fprintf(&b, "- `%s` source=%s status=%s confidence=%.2f reason=%s",
-				safeMD(ref.Ref), safeMD(ref.SourceClass), safeMD(ref.Status), ref.Confidence, safeMD(ref.Reason))
-			if strings.HasPrefix(ref.Ref, "capability://") {
-				b.WriteString(" [offer, not execution]")
-			}
-			b.WriteString("\n")
-		}
-	}
+	writeIncludedList(&b, pack.Included)
 	b.WriteString("\n## Excluded\n")
 	if len(pack.Excluded) == 0 {
 		b.WriteString("- none\n")
@@ -682,7 +678,7 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	writeStringList(&b, "Active Hooks", pack.ActiveHooks)
 	writeHookReadinessList(&b, pack.HookReadiness)
 	writeHookRosterList(&b, pack.HookRoster)
-	writeStringList(&b, "Active Decisions", pack.ActiveDecisions)
+	writeCappedStringList(&b, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
 	if len(pack.ActiveMemory) > 0 {
 		shown := pack.ActiveMemory
 		omitted := 0
@@ -723,6 +719,29 @@ func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOf
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+}
+
+func writeIncludedList(b *strings.Builder, refs []envelope.IncludedRef) {
+	b.WriteString("## Included\n")
+	if len(refs) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	shown := refs
+	if len(shown) > maxInjectionIncludedRefs {
+		shown = shown[:maxInjectionIncludedRefs]
+	}
+	for _, ref := range shown {
+		fmt.Fprintf(b, "- `%s` source=%s status=%s confidence=%.2f reason=%s",
+			safeMD(ref.Ref), safeMD(ref.SourceClass), safeMD(ref.Status), ref.Confidence, safeMD(ref.Reason))
+		if strings.HasPrefix(ref.Ref, "capability://") {
+			b.WriteString(" [offer, not execution]")
+		}
+		b.WriteString("\n")
+	}
+	if omitted := len(refs) - len(shown); omitted > 0 {
+		fmt.Fprintf(b, "- %d more included ref(s) omitted digest budget; see ContextPack JSON for full provenance\n", omitted)
+	}
 }
 
 func writeCapabilityConstraintSummary(b *strings.Builder, label string, values []envelope.CapabilityOfferConstraint) {
@@ -788,6 +807,24 @@ func writeStringList(b *strings.Builder, title string, xs []string) {
 	}
 	for _, x := range xs {
 		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
+	}
+}
+
+func writeCappedStringList(b *strings.Builder, title string, xs []string, limit int, omittedLabel string) {
+	fmt.Fprintf(b, "\n## %s\n", title)
+	if len(xs) == 0 {
+		b.WriteString("- none\n")
+		return
+	}
+	shown := xs
+	if limit > 0 && len(shown) > limit {
+		shown = shown[:limit]
+	}
+	for _, x := range shown {
+		fmt.Fprintf(b, "- `%s`\n", safeMD(x))
+	}
+	if omitted := len(xs) - len(shown); omitted > 0 {
+		fmt.Fprintf(b, "- %d more %s omitted digest budget\n", omitted, safeMD(omittedLabel))
 	}
 }
 

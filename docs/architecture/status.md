@@ -65,7 +65,7 @@ Distiller request record note: `distiller request --record` artifacts under `rev
 
 Hook input hash note: context-producing hooks hash normalized hook, harness, cwd, task, repo-kind, mode, and prompt digest, so same prompt/task in different scope does not collide and raw prompt text stays out of artifacts.
 
-Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown; `output_ref` points directly at injection markdown, whose `Capability Offers` section renders surfaced offer refs/names/constraints before long provenance lists.
+Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown; `output_ref` points directly at injection markdown, whose `Capability Offers` section renders surfaced offer refs/names/constraints before budgeted provenance/decision lists while full refs remain in ContextPack JSON.
 
 Distiller runtime-source note: `distiller.LoadRuntimeSources` follows safe relative JSON `HookEvent.side_effects`, validates typed envelopes, dedupes already-loaded work/context artifacts, includes ContextRequest/EffectiveContract envelopes as grounded extraction sources, preserves HookEvent `output_ref` in structured LLM envelopes, and includes output refs in request `source_refs` so grounded extraction can cite them.
 

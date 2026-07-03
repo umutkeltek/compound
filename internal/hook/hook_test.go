@@ -396,6 +396,73 @@ func TestRenderInjectionCapsActiveMemorySection(t *testing.T) {
 	}
 }
 
+func TestRenderInjectionCapsIncludedSection(t *testing.T) {
+	included := make([]envelope.IncludedRef, 0, maxInjectionIncludedRefs+2)
+	for i := 0; i < maxInjectionIncludedRefs+2; i++ {
+		included = append(included, envelope.IncludedRef{
+			Ref:         fmt.Sprintf("decision://DEC-%04d", i),
+			SourceClass: "runtime",
+			Reason:      "accepted decision",
+			Confidence:  1,
+			Status:      "current",
+		})
+	}
+	pack := envelope.ContextPack{
+		SummaryMD: "summary",
+		Included:  included,
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	for _, want := range included[:maxInjectionIncludedRefs] {
+		if !strings.Contains(text, "`"+want.Ref+"`") {
+			t.Fatalf("injection missing included ref %q:\n%s", want.Ref, text)
+		}
+	}
+	for _, forbidden := range included[maxInjectionIncludedRefs:] {
+		if strings.Contains(text, forbidden.Ref) {
+			t.Fatalf("injection should cap included refs, got %q:\n%s", forbidden.Ref, text)
+		}
+	}
+	if !strings.Contains(text, "2 more included ref(s) omitted digest budget; see ContextPack JSON for full provenance") {
+		t.Fatalf("injection missing included omission note:\n%s", text)
+	}
+	if len(pack.Included) != maxInjectionIncludedRefs+2 {
+		t.Fatalf("render should not mutate ContextPack included refs, got %d", len(pack.Included))
+	}
+}
+
+func TestRenderInjectionCapsActiveDecisionsSection(t *testing.T) {
+	refs := make([]string, 0, maxInjectionActiveDecisionRefs+3)
+	for i := 0; i < maxInjectionActiveDecisionRefs+3; i++ {
+		refs = append(refs, fmt.Sprintf("decision://DEC-%04d", i))
+	}
+	pack := envelope.ContextPack{
+		SummaryMD:       "summary",
+		ActiveDecisions: refs,
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	if !strings.Contains(text, "## Active Decisions") {
+		t.Fatalf("injection missing Active Decisions section:\n%s", text)
+	}
+	for _, want := range refs[:maxInjectionActiveDecisionRefs] {
+		if !strings.Contains(text, "`"+want+"`") {
+			t.Fatalf("injection missing active decision ref %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range refs[maxInjectionActiveDecisionRefs:] {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("injection should cap active decision refs, got %q:\n%s", forbidden, text)
+		}
+	}
+	if !strings.Contains(text, "3 more active decision ref(s) omitted digest budget") {
+		t.Fatalf("injection missing omission note for capped active decisions:\n%s", text)
+	}
+	if len(pack.ActiveDecisions) != maxInjectionActiveDecisionRefs+3 {
+		t.Fatalf("render should not mutate ContextPack decisions, got %d", len(pack.ActiveDecisions))
+	}
+}
+
 func TestRenderInjectionShowsCapabilityOffers(t *testing.T) {
 	pack := envelope.ContextPack{
 		SummaryMD: "summary",
