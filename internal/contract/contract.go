@@ -277,6 +277,28 @@ type HookGateReadiness struct {
 	Reason          string `json:"reason,omitempty"`
 }
 
+type HookRuntimeSupport struct {
+	Harness        string `json:"harness"`
+	Hook           string `json:"hook"`
+	FixturePresent bool   `json:"fixture_present"`
+	FixtureRef     string `json:"fixture_ref,omitempty"`
+	LiveAdapter    bool   `json:"live_adapter"`
+	LiveCommand    string `json:"live_command,omitempty"`
+}
+
+type InstalledHookRuntimeReadiness struct {
+	Harness        string `json:"harness"`
+	Hook           string `json:"hook"`
+	Installed      bool   `json:"installed"`
+	InstalledRef   string `json:"installed_ref,omitempty"`
+	FixturePresent bool   `json:"fixture_present"`
+	FixtureRef     string `json:"fixture_ref,omitempty"`
+	LiveAdapter    bool   `json:"live_adapter"`
+	LiveCommand    string `json:"live_command,omitempty"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason,omitempty"`
+}
+
 type InstalledHooksSourceAuthority struct {
 	SchemaVersion       string   `json:"schema_version"`
 	ID                  string   `json:"id"`
@@ -1824,6 +1846,85 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 		out = append(out, row)
 	}
 	return out
+}
+
+func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports []HookRuntimeSupport) []InstalledHookRuntimeReadiness {
+	byHook := map[string]HookRuntimeSupport{}
+	for _, support := range supports {
+		harnessName := strings.TrimSpace(support.Harness)
+		hookName := canonicalHookEvent(support.Hook)
+		if harnessName == "" || hookName == "" {
+			continue
+		}
+		byHook[harnessName+"\x00"+hookName] = support
+	}
+	var rows []InstalledHookRuntimeReadiness
+	for _, hook := range manifest.Hooks {
+		harnessName := strings.TrimSpace(hook.Harness)
+		hookName := canonicalHookEvent(firstNonEmpty(hook.Event, hook.Name))
+		if harnessName == "" || hookName == "" {
+			continue
+		}
+		if hook.Status != "" && hook.Status != "current" && hook.Status != "active" {
+			continue
+		}
+		row := InstalledHookRuntimeReadiness{
+			Harness:      harnessName,
+			Hook:         hookName,
+			Installed:    true,
+			InstalledRef: strings.TrimSpace(hook.Ref),
+		}
+		if support, ok := byHook[harnessName+"\x00"+hookName]; ok {
+			row.FixturePresent = support.FixturePresent
+			row.FixtureRef = strings.TrimSpace(support.FixtureRef)
+			row.LiveAdapter = support.LiveAdapter
+			row.LiveCommand = strings.TrimSpace(support.LiveCommand)
+		}
+		switch {
+		case row.FixturePresent && row.LiveAdapter:
+			row.Status = "ready"
+			row.Reason = "installed hook has fixture proof and live adapter support"
+		case !row.FixturePresent && !row.LiveAdapter:
+			row.Status = "missing_fixture_and_live_adapter"
+			row.Reason = "installed hook lacks checked fixture proof and live adapter support"
+		case !row.FixturePresent:
+			row.Status = "missing_fixture"
+			row.Reason = "installed hook lacks checked fixture proof"
+		default:
+			row.Status = "missing_live_adapter"
+			row.Reason = "installed hook lacks live adapter support for this harness"
+		}
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		a := rows[i].Harness + "\x00" + rows[i].Hook + "\x00" + rows[i].InstalledRef
+		b := rows[j].Harness + "\x00" + rows[j].Hook + "\x00" + rows[j].InstalledRef
+		return a < b
+	})
+	return rows
+}
+
+func canonicalHookEvent(value string) string {
+	key := strings.ToLower(strings.TrimSpace(value))
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, " ", "")
+	switch key {
+	case "sessionstart":
+		return "SessionStart"
+	case "userpromptsubmit":
+		return "UserPromptSubmit"
+	case "pretooluse":
+		return "PreToolUse"
+	case "posttooluse":
+		return "PostToolUse"
+	case "sessionend":
+		return "SessionEnd"
+	case "stop":
+		return "Stop"
+	default:
+		return strings.TrimSpace(value)
+	}
 }
 
 func installedWriteGateForHarness(manifest InstalledHooksManifest, harness string) (bool, string) {

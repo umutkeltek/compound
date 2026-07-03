@@ -688,6 +688,10 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		`"claude_code"`,
 		`"codex"`,
 		`"hook_count": 5`,
+		`"hook_readiness": [`,
+		`"fixture_present": true`,
+		`"live_adapter": true`,
+		`"live_command": "compound hook session-start --live --harness claude-code"`,
 	} {
 		if !strings.Contains(authorityOut, want) {
 			t.Fatalf("hooks-authority output missing %q:\n%s", want, authorityOut)
@@ -698,6 +702,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		RetiredSourceAuthorityCount int                                      `json:"retired_source_authority_count"`
 		RetiredSourceAuthorityRefs  []string                                 `json:"retired_source_authority_refs"`
 		SourceAuthority             []contract.InstalledHooksSourceAuthority `json:"source_authority"`
+		HookReadiness               []contract.InstalledHookRuntimeReadiness `json:"hook_readiness"`
 	}
 	if err := json.Unmarshal([]byte(authorityOut), &authorityReport); err != nil {
 		t.Fatalf("parse hooks-authority: %v\n%s", err, authorityOut)
@@ -707,6 +712,18 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		authorityReport.RetiredSourceAuthorityCount != 1 ||
 		!stringSliceContains(authorityReport.RetiredSourceAuthorityRefs, "source_view_authority:"+source) {
 		t.Fatalf("unexpected hooks authority source summary: %+v", authorityReport)
+	}
+	if got := findHookReadiness(authorityReport.HookReadiness, "claude_code", "SessionStart"); got == nil ||
+		got.Status != "ready" || !got.Installed || !got.FixturePresent || !got.LiveAdapter {
+		t.Fatalf("claude session-start readiness not ready: %+v", got)
+	}
+	if got := findHookReadiness(authorityReport.HookReadiness, "claude_code", "PreToolUse"); got == nil ||
+		got.Status != "ready" || !strings.Contains(got.FixtureRef, "pre-tool-use.claude.json") {
+		t.Fatalf("claude pre-tool-use readiness not ready: %+v", got)
+	}
+	if got := findHookReadiness(authorityReport.HookReadiness, "codex", "SessionStart"); got == nil ||
+		got.Status != "missing_live_adapter" || !got.FixturePresent || got.LiveAdapter {
+		t.Fatalf("codex live readiness should expose missing adapter: %+v", got)
 	}
 	out := captureStdout(t, func() {
 		cmdContract([]string{"compile", "--harness", "claude_code", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
@@ -9246,6 +9263,15 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func findHookReadiness(rows []contract.InstalledHookRuntimeReadiness, harnessName, hookName string) *contract.InstalledHookRuntimeReadiness {
+	for i := range rows {
+		if rows[i].Harness == harnessName && rows[i].Hook == hookName {
+			return &rows[i]
+		}
+	}
+	return nil
 }
 
 func hasMatchedTokenCount(values []capgraph.MatchedTokenCount, token string, count int) bool {

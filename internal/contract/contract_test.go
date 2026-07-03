@@ -49,6 +49,35 @@ func TestCompileAndPackValidate(t *testing.T) {
 	}
 }
 
+func TestInstalledHookRuntimeReadinessRowsExposeFixtureAndLiveGaps(t *testing.T) {
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+		Hooks: []InstalledHook{
+			{Harness: "claude_code", Name: "SessionStart", Ref: "hook://claude_code/SessionStart", Status: "current"},
+			{Harness: "claude_code", Name: "SessionEnd", Ref: "hook://claude_code/SessionEnd", Status: "current"},
+			{Harness: "codex", Name: "SessionStart", Ref: "hook://codex/SessionStart", Status: "current"},
+			{Harness: "claude_code", Name: "OldHook", Ref: "hook://claude_code/OldHook", Status: "retired"},
+		},
+	}
+	rows := InstalledHookRuntimeReadinessRows(manifest, []HookRuntimeSupport{
+		{Harness: "claude_code", Hook: "SessionStart", FixturePresent: true, FixtureRef: "fixtures/hooks/session-start.json", LiveAdapter: true, LiveCommand: "compound hook session-start --live --harness claude-code"},
+		{Harness: "claude_code", Hook: "SessionEnd", LiveAdapter: true, LiveCommand: "compound hook session-end --live --harness claude-code"},
+		{Harness: "codex", Hook: "SessionStart", FixturePresent: true, FixtureRef: "fixtures/hooks/session-start.json"},
+	})
+	if got := contractHookReadiness(rows, "claude_code", "SessionStart"); got == nil || got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter {
+		t.Fatalf("claude session-start readiness = %+v", got)
+	}
+	if got := contractHookReadiness(rows, "claude_code", "SessionEnd"); got == nil || got.Status != "missing_fixture" || got.FixturePresent || !got.LiveAdapter {
+		t.Fatalf("claude session-end readiness should expose missing fixture: %+v", got)
+	}
+	if got := contractHookReadiness(rows, "codex", "SessionStart"); got == nil || got.Status != "missing_live_adapter" || !got.FixturePresent || got.LiveAdapter {
+		t.Fatalf("codex session-start readiness should expose missing live adapter: %+v", got)
+	}
+	if got := contractHookReadiness(rows, "claude_code", "OldHook"); got != nil {
+		t.Fatalf("retired hook should not produce readiness row: %+v", got)
+	}
+}
+
 func TestModeAffectsContractAndContextPackIDs(t *testing.T) {
 	in := mkInput("control-plane")
 	in.Task = "same task"
@@ -2063,6 +2092,15 @@ func findEffectiveContractCapabilityOffer(ec envelope.EffectiveContract, ref str
 	for i := range ec.CapabilityOffers {
 		if ec.CapabilityOffers[i].Ref == ref {
 			return &ec.CapabilityOffers[i]
+		}
+	}
+	return nil
+}
+
+func contractHookReadiness(rows []InstalledHookRuntimeReadiness, harnessName, hookName string) *InstalledHookRuntimeReadiness {
+	for i := range rows {
+		if rows[i].Harness == harnessName && rows[i].Hook == hookName {
+			return &rows[i]
 		}
 	}
 	return nil

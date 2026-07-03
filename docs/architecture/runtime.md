@@ -123,7 +123,7 @@ arbitration. (Hooks sit at high-gravity points — a tiny SessionStart nudge ben
 them thin.)
 
 Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-tool-use, session-end, stop}`.
-`compound contract hooks-authority` reports `pre_tool_use_readiness[]` from installed hooks plus harness native-block facts; `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate`, so wrapper adapters can fail closed even when a harness only reports `fail_open`.
+`compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate`, so wrapper adapters can fail closed even when a harness only reports `fail_open`.
 Each: `stdin JSON → normalized HookEvent persisted under events/ → compound service → typed object written under .compound → small
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 

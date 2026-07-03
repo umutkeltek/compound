@@ -6185,6 +6185,7 @@ func cmdContract(args []string) {
 			HookCount                   int                                      `json:"hook_count,omitempty"`
 			Harnesses                   []string                                 `json:"harnesses,omitempty"`
 			PreToolUseReadiness         []contract.HookGateReadiness             `json:"pre_tool_use_readiness,omitempty"`
+			HookReadiness               []contract.InstalledHookRuntimeReadiness `json:"hook_readiness,omitempty"`
 			SourceRoleCounts            map[string]int                           `json:"source_role_counts,omitempty"`
 			RetiredSourceAuthorityCount int                                      `json:"retired_source_authority_count"`
 			RetiredSourceAuthorityRefs  []string                                 `json:"retired_source_authority_refs,omitempty"`
@@ -6206,6 +6207,7 @@ func cmdContract(args []string) {
 			report.HookCount = len(manifest.Hooks)
 			report.Harnesses = hookManifestHarnesses(manifest)
 			report.PreToolUseReadiness = contract.InstalledHookGateReadiness(manifest, nativePreToolUseBlockMap(harness.DefaultRegistry()))
+			report.HookReadiness = contract.InstalledHookRuntimeReadinessRows(manifest, installedHookRuntimeSupport())
 		}
 		records, err := contract.LoadInstalledHooksSourceAuthority(homePath)
 		die(err)
@@ -6235,6 +6237,70 @@ func hookManifestHarnesses(manifest contract.InstalledHooksManifest) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
+	return []contract.HookRuntimeSupport{
+		hookRuntimeSupport("claude_code", "SessionStart", "fixtures/hooks/session-start.json", true),
+		hookRuntimeSupport("claude_code", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
+		hookRuntimeSupport("claude_code", "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
+		hookRuntimeSupport("claude_code", "PostToolUse", "fixtures/hooks/post-tool-use.json", true),
+		hookRuntimeSupport("claude_code", "SessionEnd", "", true),
+		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", false),
+		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", false),
+		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", false),
+	}
+}
+
+func hookRuntimeSupport(harnessName, hookName, fixtureRef string, liveAdapter bool) contract.HookRuntimeSupport {
+	return contract.HookRuntimeSupport{
+		Harness:        harnessName,
+		Hook:           hookName,
+		FixtureRef:     fixtureRef,
+		FixturePresent: fileExists(fixtureRef),
+		LiveAdapter:    liveAdapter,
+		LiveCommand:    liveHookCommand(harnessName, hookName, liveAdapter),
+	}
+}
+
+func liveHookCommand(harnessName, hookName string, liveAdapter bool) string {
+	if !liveAdapter {
+		return ""
+	}
+	harnessArg := strings.ReplaceAll(harnessName, "_", "-")
+	return fmt.Sprintf("compound hook %s --live --harness %s", hookCommandName(hookName), harnessArg)
+}
+
+func hookCommandName(hookName string) string {
+	switch strings.TrimSpace(hookName) {
+	case "SessionStart":
+		return "session-start"
+	case "UserPromptSubmit":
+		return "user-prompt-submit"
+	case "PreToolUse":
+		return "pre-tool-use"
+	case "PostToolUse":
+		return "post-tool-use"
+	case "SessionEnd":
+		return "session-end"
+	case "Stop":
+		return "stop"
+	default:
+		return strings.ToLower(strings.TrimSpace(hookName))
+	}
+}
+
+func fileExists(path string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	if _, err := os.Stat(path); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join("..", "..", path)); err == nil {
+		return true
+	}
+	return false
 }
 
 // nativePreToolUseBlockMap exposes harness-native gate facts to installed-hook authority reporting.
