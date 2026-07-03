@@ -5854,6 +5854,8 @@ func cmdContract(args []string) {
 		}
 		ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, time.Now())
 		die(err)
+		_, err = contract.RecordEffectiveContract(homePath, ec)
+		die(err)
 		printJSON(ec)
 	case "import-hooks":
 		sourcePath := valueFlag(args[1:], "--codex-hooks-json")

@@ -61,6 +61,8 @@ Active packet proof note: `work active-packet-proof --source-packet <packet.md>`
 
 CLI safety note: `compound capability ... --help`, plus guarded `work`, `memory`, and `route cost-doctor` subcommand help paths, return usage before opening runtime state, so help requests cannot consume receipts, import graph data, validate work/memory fields, or open provider ledgers.
 
+Contract command status note: `compound contract compile` records durable EffectiveContract artifacts under `COMPOUND_HOME/contracts/effective/<date>/<id>.json` and `latest.json` while preserving stdout JSON.
+
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.

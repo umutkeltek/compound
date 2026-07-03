@@ -522,6 +522,26 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	if !sourceRevisionExists(ec.SourceRevisions, "compound://config/installed-hooks") {
 		t.Fatalf("compiled source revisions missing installed hooks authority: %+v", ec.SourceRevisions)
 	}
+	var latest envelope.EffectiveContract
+	latestPath := filepath.Join(homePath, "contracts", "effective", "latest.json")
+	latestData, err := os.ReadFile(latestPath)
+	if err != nil {
+		t.Fatalf("read latest effective contract: %v", err)
+	}
+	if err := json.Unmarshal(latestData, &latest); err != nil {
+		t.Fatalf("parse latest effective contract: %v", err)
+	}
+	if latest.ID != ec.ID {
+		t.Fatalf("latest effective contract id = %q, want %q", latest.ID, ec.ID)
+	}
+	createdAt, err := time.Parse(time.RFC3339, ec.CreatedAt)
+	if err != nil {
+		t.Fatalf("parse contract created_at %q: %v", ec.CreatedAt, err)
+	}
+	datedPath := filepath.Join(homePath, "contracts", "effective", createdAt.UTC().Format("2006-01-02"), ec.ID+".json")
+	if _, err := os.Stat(datedPath); err != nil {
+		t.Fatalf("dated effective contract artifact missing: %v", err)
+	}
 }
 
 func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {

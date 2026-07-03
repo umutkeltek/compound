@@ -1,6 +1,7 @@
 package contract
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +42,44 @@ func TestCompileAndPackValidate(t *testing.T) {
 		}
 		if err := envelope.RoundTrip(&cp); err != nil {
 			t.Fatalf("%s pack round-trip: %v", kind, err)
+		}
+	}
+}
+
+func TestRecordEffectiveContractWritesDatedAndLatestArtifacts(t *testing.T) {
+	homePath := t.TempDir()
+	ec := Compile(mkInput("control-plane"), DefaultPolicy(), fixedNow)
+
+	paths, err := RecordEffectiveContract(homePath, ec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantContractPath := filepath.Join(homePath, "contracts", "effective", "2026-06-28", ec.ID+".json")
+	wantLatestPath := filepath.Join(homePath, "contracts", "effective", "latest.json")
+	if paths.ContractPath != wantContractPath {
+		t.Fatalf("contract path = %q, want %q", paths.ContractPath, wantContractPath)
+	}
+	if paths.LatestPath != wantLatestPath {
+		t.Fatalf("latest path = %q, want %q", paths.LatestPath, wantLatestPath)
+	}
+	invalid := ec
+	invalid.CreatedAt = "not-a-time"
+	if _, err := RecordEffectiveContract(homePath, invalid); err == nil {
+		t.Fatal("expected invalid created_at to fail")
+	}
+
+	for _, path := range []string{paths.ContractPath, paths.LatestPath} {
+		var got envelope.EffectiveContract
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if got.ID != ec.ID || got.Harness != ec.Harness {
+			t.Fatalf("artifact %s = id %q harness %q, want id %q harness %q", path, got.ID, got.Harness, ec.ID, ec.Harness)
 		}
 	}
 }

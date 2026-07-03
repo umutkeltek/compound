@@ -398,6 +398,49 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	return ec, nil
 }
 
+type EffectiveContractArtifactPaths struct {
+	ContractPath string `json:"contract_path"`
+	LatestPath   string `json:"latest_path"`
+}
+
+func RecordEffectiveContract(homePath string, ec envelope.EffectiveContract) (EffectiveContractArtifactPaths, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return EffectiveContractArtifactPaths{}, fmt.Errorf("compound home required")
+	}
+	if err := ec.Validate(); err != nil {
+		return EffectiveContractArtifactPaths{}, fmt.Errorf("effective contract invalid: %w", err)
+	}
+	createdAt, err := time.Parse(time.RFC3339, ec.CreatedAt)
+	if err != nil {
+		return EffectiveContractArtifactPaths{}, fmt.Errorf("effective contract created_at invalid: %w", err)
+	}
+	date := createdAt.UTC().Format("2006-01-02")
+	base := filepath.Join(homePath, "contracts", "effective")
+	contractPath := filepath.Join(base, date, ec.ID+".json")
+	latestPath := filepath.Join(base, "latest.json")
+	if err := os.MkdirAll(filepath.Dir(contractPath), 0o755); err != nil {
+		return EffectiveContractArtifactPaths{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(latestPath), 0o755); err != nil {
+		return EffectiveContractArtifactPaths{}, err
+	}
+	if err := writeContractJSON(contractPath, ec); err != nil {
+		return EffectiveContractArtifactPaths{}, err
+	}
+	if err := writeContractJSON(latestPath, ec); err != nil {
+		return EffectiveContractArtifactPaths{}, err
+	}
+	return EffectiveContractArtifactPaths{ContractPath: contractPath, LatestPath: latestPath}, nil
+}
+
+func writeContractJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
 // Pack assembles the ContextPack an agent orients from. Its EXCLUDED list — what was
 // NOT loaded and why — is the whole point: it is required and never silently dropped.
 func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
