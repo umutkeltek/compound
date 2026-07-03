@@ -17,7 +17,7 @@ Panel target-provenance note: memory-candidate panel targets produced by `knowle
 
 Panel memory-review note: `compound panel plan --target-kind memory_candidate` defaults to current `proposed` memory candidates, matching `orient --operator` actionable memory debt. Explicit `--state parked` remains available for parked backlog review, but parked memory candidates are not the default review queue.
 
-Panel public-knowledge privacy note: proposed arXiv `knowledge_extraction` memory candidates default to not privacy-sensitive, carrying `privacy_default:not_sensitive:public_arxiv_memory_candidate`, so public paper-review panels use ordinary non-sensitive route lanes without requiring operator override. Other memory candidates remain privacy-sensitive by default.
+Panel public-knowledge privacy note: parked arXiv `knowledge_extraction` annotated-evidence candidates default to not privacy-sensitive when explicitly planned for review with `--state parked`, carrying `privacy_default:not_sensitive:public_arxiv_memory_candidate`, so public paper-review panels use ordinary non-sensitive route lanes without requiring operator override. Other memory candidates remain privacy-sensitive by default.
 
 Panel spend-gate note: `GatewayCaller` panel runs refuse metered route lanes (`cheap`, `premium`, etc.) unless the plan carries an explicit `--max-usd-micros` cap; budget-only caps still require `--max-items` or `--max-tokens` because lane cost metadata is not yet enforceable. Fixture/local non-spending callers are unaffected.
 

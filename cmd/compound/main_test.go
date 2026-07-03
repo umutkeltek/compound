@@ -326,7 +326,7 @@ func TestKnowledgeExtractCLIUsesFixtureAndWritesCandidate(t *testing.T) {
 	found := false
 	for _, c := range candidates {
 		if c.ID == extractReport.CandidateIDs[0] {
-			found = c.Qualifiers["source"] == "knowledge_extraction" && c.State == "proposed"
+			found = c.Qualifiers["source"] == "knowledge_extraction" && c.State == "parked" && strings.Contains(c.Reason, "knowledge extraction")
 		}
 	}
 	if !found {

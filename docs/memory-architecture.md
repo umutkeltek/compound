@@ -96,6 +96,14 @@ Modes:
 
 Raw evidence and private quotes are not ambient by default.
 
+Admission happens before operator review: deterministic source metadata
+(`source=knowledge_import`) enters the source-index tier and knowledge extraction
+outputs (`source=knowledge_extraction`) enter the annotated-evidence tier. Both
+are parked, not `proposed` operator approval rows. Durable memory candidates,
+decisions, principles, conflicts, and other canon-changing claims remain
+`proposed` and operator-gated unless a later class-tier automation rule
+explicitly proves a clean audit window.
+
 Annotated knowledge-class candidates are evidence, not ambient memory. When a
 panel verdict for a knowledge candidate (`knowledge:*` entity or
 `source=knowledge_extraction`) asks for `needs_human` / `needs_trial`, Compound

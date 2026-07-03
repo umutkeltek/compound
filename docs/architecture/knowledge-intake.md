@@ -45,19 +45,20 @@ refinement, not a new internal package.
 
 ## What `compound knowledge import <export.json>` does per item
 
-Current implementation note: deterministic reference metadata is field-level.
-An imported item can emit separate proposed candidates for title, authors,
+Current implementation note: deterministic reference metadata is field-level source-index evidence.
+An imported item can emit separate parked candidates for title, authors,
 published date, topics, and URL; all share the same evidence ref and normalized
 `knowledge:<kind>:<ref-without-leading-kind-prefix>` entity id. This keeps
-field changes independently supersedable while preserving candidate-only intake.
+field changes independently citable while keeping source catalog rows out of
+the operator approval queue.
 
 1. **Evidence** — a content-addressed `EvidenceItem` (source kind/id + bounded quote).
    Evidence is citable raw material, never truth.
-2. **One proposed candidate** — a reference/metadata claim about the item
-   (`knowledge:<kind>:<ref>`), state `proposed`. **No import path writes promoted
-   claims; adjudication is the only birthplace of a claim.**
-   Current behavior fans deterministic metadata out to field-level candidates,
-   not one opaque metadata row.
+2. **Parked source-index metadata candidates** — reference/metadata claims about the item
+   (`knowledge:<kind>:<ref>`), state `parked`, reason `source metadata...`.
+   **No import path writes promoted claims, and source metadata does not create
+   operator approval debt.** Current behavior fans deterministic metadata out to
+   field-level evidence candidates, not one opaque metadata row.
 3. **An extraction request** — `inbox/knowledge-extractions/kx_*.json` (state `pending`),
    consumed later by the gated extraction bridge (rented model proposes meaning
    candidates from the content; code decides; candidate-only).
@@ -92,7 +93,7 @@ tests import new medium kinds to prove the zero-core-change guarantee.
 
 ## Downstream (owned by other contracts)
 
-Extraction bridge → proposed meaning candidates; `memory adjudicate` / panel →
-promote/park/reject; background synthesis relates and compounds claims across mediums;
-`compound orient --task` serves the result. See `docs/memory-architecture.md` and
-`docs/architecture/runtime.md`.
+Extraction bridge → parked annotated-evidence candidates; `memory adjudicate` /
+panel → promote/park/reject only through the governed memory path; background
+synthesis relates Compound claims across mediums; `compound orient --task` serves
+promoted results. See `docs/memory-architecture.md` and `docs/architecture/runtime.md`.

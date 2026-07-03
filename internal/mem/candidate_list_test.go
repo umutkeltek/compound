@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,56 @@ func TestListCandidatesFiltersCountsAndEvidenceGate(t *testing.T) {
 	}
 }
 
+func TestListCandidatesAppliesAdmissionToLegacySourceRows(t *testing.T) {
+	s := newStore(t)
+	legacy := Candidate{
+		ID:             "cand_legacy_source_metadata",
+		Entity:         "knowledge:source:item",
+		Predicate:      "title",
+		Object:         "Legacy source title",
+		Confidence:     0.8,
+		Derivation:     "deterministic",
+		Qualifiers:     map[string]string{"source": "knowledge_import"},
+		SourceTraceRef: "ev_legacy_source",
+		SnippetHash:    "abc123",
+		Visibility:     "candidate",
+		State:          "proposed",
+		CreatedAt:      rfc3339(t0),
+	}
+	writeRawCandidate(t, s, legacy)
+
+	proposed, err := s.ListCandidates(t0, CandidateListOptions{State: "proposed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposed.Counts.Matched != 0 || proposed.Counts.ByState["proposed"] != 0 {
+		t.Fatalf("proposed report = %+v, want legacy source row admitted away from operator queue", proposed.Counts)
+	}
+
+	parked, err := s.ListCandidates(t0, CandidateListOptions{State: "parked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Counts.Matched != 1 || parked.Counts.ByState["parked"] != 1 {
+		t.Fatalf("parked report = %+v, want legacy source row counted as parked", parked.Counts)
+	}
+	if parked.Items[0].State != "parked" || !strings.Contains(parked.Items[0].Reason, "source metadata") {
+		t.Fatalf("parked item = %+v, want admitted source metadata", parked.Items[0])
+	}
+
+	var persisted Candidate
+	data, err := os.ReadFile(filepath.Join(s.candDir(), legacy.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.State != "proposed" || persisted.Reason != "" {
+		t.Fatalf("persisted candidate mutated by list projection: %+v", persisted)
+	}
+}
+
 func tagRawCandidateKind(t *testing.T, s *Store, id, kind string) {
 	t.Helper()
 	path := filepath.Join(s.candDir(), id+".json")
@@ -111,6 +162,17 @@ func tagRawCandidateKind(t *testing.T, s *Store, id, kind string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeRawCandidate(t *testing.T, s *Store, c Candidate) {
+	t.Helper()
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.candDir(), c.ID+".json"), append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -53,8 +53,11 @@ func TestImportRecordsEvidenceCandidateExtractionAndSource(t *testing.T) {
 	if len(candidates) != 15 {
 		t.Fatalf("candidate rows = %d; want 15", len(candidates))
 	}
-	if candidates[0].State != "proposed" || candidates[0].Qualifiers["source"] != "knowledge_import" {
+	if candidates[0].State != "parked" || candidates[0].Qualifiers["source"] != "knowledge_import" {
 		t.Fatalf("candidate[0] = %+v", candidates[0])
+	}
+	if !strings.Contains(candidates[0].Reason, "source metadata") {
+		t.Fatalf("metadata candidate reason = %q, want source metadata admission", candidates[0].Reason)
 	}
 	if candidates[0].PromotionBasis != "trusted_deterministic_import" {
 		t.Fatalf("metadata candidate basis = %q, want trusted_deterministic_import (deterministic tool import)", candidates[0].PromotionBasis)
@@ -139,6 +142,9 @@ func TestImportNormalizesKnowledgeEntityAndSplitsMetadataCandidates(t *testing.T
 		}
 		if candidate.SourceTraceRef != report.EvidenceIDs[0] {
 			t.Fatalf("candidate %s source trace = %q, want shared evidence %q", candidate.ID, candidate.SourceTraceRef, report.EvidenceIDs[0])
+		}
+		if candidate.State != "parked" || !strings.Contains(candidate.Reason, "source metadata") {
+			t.Fatalf("metadata candidate admission = %+v, want parked source evidence", candidate)
 		}
 		delete(wantObjects, candidate.Predicate)
 	}
@@ -247,6 +253,9 @@ func TestImportChatGPTConversationUsesGenericKnowledgeDoor(t *testing.T) {
 		}
 		if candidate.SourceTraceRef != report.EvidenceIDs[0] {
 			t.Fatalf("candidate %s source trace = %q, want %q", candidate.ID, candidate.SourceTraceRef, report.EvidenceIDs[0])
+		}
+		if candidate.State != "parked" || !strings.Contains(candidate.Reason, "source metadata") {
+			t.Fatalf("chatgpt metadata admission = %+v, want parked source evidence", candidate)
 		}
 	}
 
@@ -390,7 +399,7 @@ func TestImportIndexMigratesToLedgerOnLoad(t *testing.T) {
 	assertCandidateCount(t, store, 10)
 }
 
-func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) {
+func TestExtractPendingParksKnowledgeEvidenceCandidatesAndMarksDone(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := mem.Open(homePath)
 	if err != nil {
@@ -432,8 +441,11 @@ func TestExtractPendingWritesProposedMemoryCandidatesAndMarksDone(t *testing.T) 
 	if extracted == nil {
 		t.Fatalf("extracted candidate %s not found in %+v", report.CandidateIDs[0], candidates)
 	}
-	if extracted.State != "proposed" || extracted.Qualifiers["source"] != "knowledge_extraction" || extracted.Qualifiers["extraction_id"] != req.ID {
+	if extracted.State != "parked" || extracted.Qualifiers["source"] != "knowledge_extraction" || extracted.Qualifiers["extraction_id"] != req.ID {
 		t.Fatalf("candidate shape = %+v", extracted)
+	}
+	if !strings.Contains(extracted.Reason, "knowledge extraction") {
+		t.Fatalf("extracted candidate reason = %q, want knowledge extraction admission", extracted.Reason)
 	}
 	if extracted.SourceTraceRef != "knowledge_extraction:"+req.ID || extracted.Visibility != "contextual" {
 		t.Fatalf("candidate provenance = %+v", extracted)

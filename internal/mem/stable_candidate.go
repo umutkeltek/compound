@@ -7,8 +7,10 @@ import (
 	"compound/internal/candidates"
 )
 
-// RecordStableCandidate writes a caller-supplied proposed memory candidate using
-// the same stable candidate path used by knowledge page import.
+// RecordStableCandidate writes a caller-supplied memory candidate using the same
+// stable candidate path used by knowledge page import. Admission decides whether
+// the candidate enters operator review or stays parked as source-index or
+// annotated-evidence material.
 func (s *Store) RecordStableCandidate(c Candidate) (bool, error) {
 	if strings.TrimSpace(c.ID) == "" {
 		return false, fmt.Errorf("candidate id required")
@@ -34,11 +36,13 @@ func (s *Store) RecordStableCandidate(c Candidate) (bool, error) {
 	if !oneOf(c.Visibility, Visibilities) {
 		return false, fmt.Errorf("candidate %s: bad visibility %q", c.ID, c.Visibility)
 	}
-	if c.State == "" {
-		c.State = "proposed"
-	}
-	if c.State != "proposed" {
-		return false, fmt.Errorf("candidate %s state must be proposed, got %q", c.ID, c.State)
+	c, _ = AdmitCandidate(c)
+	if !validStableCandidateState(c.State) {
+		return false, fmt.Errorf("candidate %s state must be proposed or parked, got %q", c.ID, c.State)
 	}
 	return s.writeStableCandidate(c)
+}
+
+func validStableCandidateState(state string) bool {
+	return state == "proposed" || state == "parked"
 }

@@ -50,6 +50,7 @@ type CandidateListItem struct {
 	Visibility      string                `json:"visibility,omitempty"`
 	PromotionBasis  string                `json:"promotion_basis,omitempty"`
 	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`
+	Reason          string                `json:"reason,omitempty"`
 	CreatedAt       string                `json:"created_at,omitempty"`
 	SourceTraceRef  string                `json:"source_trace_ref,omitempty"`
 	SnippetHash     string                `json:"snippet_hash,omitempty"`
@@ -70,6 +71,9 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 	cands, err := s.AllCandidates()
 	if err != nil {
 		return CandidateListReport{}, err
+	}
+	for i := range cands {
+		cands[i], _ = AdmitCandidate(cands[i])
 	}
 	reviewByCandidate, warnings := s.reviewStateByCandidate()
 	rawKinds, kindWarnings := s.rawCandidateKinds()
@@ -153,6 +157,7 @@ func candidateListItem(c Candidate, reviewState, rawKind string, includeEvidence
 		Visibility:      c.Visibility,
 		PromotionBasis:  c.PromotionBasis,
 		Qualifiers:      c.Qualifiers,
+		Reason:          c.Reason,
 		CreatedAt:       c.CreatedAt,
 	}
 	if includeEvidence {
