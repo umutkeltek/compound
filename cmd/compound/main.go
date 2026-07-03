@@ -172,7 +172,7 @@ func routeUsage(sub string) string {
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	default:
-		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
+		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
 	}
 }
 
@@ -3161,22 +3161,16 @@ func cmdRoute(args []string) {
 		routeID := flagValue(args[1:], "--route-id")
 		routePath := flagValue(args[1:], "--route-evidence")
 		receiptPath := flagValue(args[1:], "--receipt")
+		receiptID := flagValue(args[1:], "--receipt-id")
+		workID := flagValue(args[1:], "--work-id")
 		targetPath := flagValue(args[1:], "--target")
-		if receiptPath == "" || (routeID == "" && routePath == "") || (routeID != "" && routePath != "") {
-			fmt.Fprintln(os.Stderr, "usage: compound route outcome-review (--route-id <id>|--route-evidence <file>) --receipt <file> [--target <file>] [--record]")
-			os.Exit(2)
-		}
-		var ev routeevidence.Evidence
-		if routeID != "" {
-			ev, err = routeevidence.LoadEvidenceByID(homePath, routeID)
-		} else {
-			ev, err = routeevidence.LoadEvidenceFile(routePath)
-		}
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "route outcome-review:", err)
-			os.Exit(1)
-		}
-		rec, err := routeevidence.LoadReceiptFile(receiptPath)
+		ev, rec, err := routeevidence.ResolveOutcomeReviewInputs(homePath, routeevidence.OutcomeReviewSelector{
+			RouteID:           routeID,
+			RouteEvidencePath: routePath,
+			ReceiptPath:       receiptPath,
+			ReceiptID:         receiptID,
+			WorkID:            workID,
+		})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "route outcome-review:", err)
 			os.Exit(1)

@@ -26,6 +26,7 @@ func TestRouteOutcomeReviewRecordsObservationForFailedReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if review.SchemaVersion != RouteOutcomeReviewSchemaVersion ||
+		review.Status != "review_required" ||
 		review.Assessment.Class != "route_remorse" ||
 		!review.Assessment.ShouldReviewPolicy ||
 		review.ReceiptID != rec.ID ||
@@ -33,7 +34,6 @@ func TestRouteOutcomeReviewRecordsObservationForFailedReceipt(t *testing.T) {
 		review.TargetHash == "" {
 		t.Fatalf("bad review: %+v", review)
 	}
-
 	review, err = RecordRouteOutcomeObservation(home, review, t0)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestRouteOutcomeReviewRecordsObservationForFailedReceipt(t *testing.T) {
 	for _, want := range []string{
 		"does not mutate gateway/provider config",
 		"Required Evidence Before Policy Change",
-		"not task success by itself",
+		"route metadata alone",
 		"route_remorse",
 	} {
 		if !strings.Contains(reviewText, want) {
@@ -98,6 +98,9 @@ func TestRouteOutcomeReviewDoesNotRecordObservationForSupportedRoute(t *testing.
 	if review.Assessment.Class != "route_supported" || review.Assessment.ShouldReviewPolicy {
 		t.Fatalf("assessment = %+v", review.Assessment)
 	}
+	if review.Status != "recorded" {
+		t.Fatalf("supported route status = %q, want recorded", review.Status)
+	}
 	if _, err := RecordRouteOutcomeObservation(home, review, t0); err == nil ||
 		!strings.Contains(err.Error(), "does not require policy observation") {
 		t.Fatalf("err = %v, want no policy observation", err)
@@ -128,6 +131,67 @@ func TestLoadEvidenceByIDReadsRouteEvidenceLedger(t *testing.T) {
 	}
 }
 
+func TestResolveOutcomeReviewInputsByWorkID(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("completed", true)
+	writeReceiptArtifact(t, home, rec)
+	appendWorkReceiptEvent(t, home, rec.IDs.WorkID, rec.ID)
+	ev := fixtureEvidence()
+	ev.WorkID = ""
+	ev.EvidenceRefs = append(ev.EvidenceRefs, rec.ID)
+	if err := RecordEvidence(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	gotEv, gotRec, err := ResolveOutcomeReviewInputs(home, OutcomeReviewSelector{WorkID: rec.IDs.WorkID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEv.ID != ev.ID || gotRec.ID != rec.ID {
+		t.Fatalf("resolved evidence=%q receipt=%q, want %q %q", gotEv.ID, gotRec.ID, ev.ID, rec.ID)
+	}
+}
+
+func TestResolveOutcomeReviewInputsByReceiptID(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("completed", true)
+	writeReceiptArtifact(t, home, rec)
+	ev := fixtureEvidence()
+	ev.WorkID = ""
+	ev.EvidenceRefs = append(ev.EvidenceRefs, rec.ID)
+	if err := RecordEvidence(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	gotEv, gotRec, err := ResolveOutcomeReviewInputs(home, OutcomeReviewSelector{ReceiptID: rec.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEv.ID != ev.ID || gotRec.ID != rec.ID {
+		t.Fatalf("resolved evidence=%q receipt=%q, want %q %q", gotEv.ID, gotRec.ID, ev.ID, rec.ID)
+	}
+}
+
+func TestResolveOutcomeReviewInputsRejectsAmbiguousRouteEvidence(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("completed", true)
+	writeReceiptArtifact(t, home, rec)
+	for _, id := range []string{"route_first", "route_second"} {
+		ev := fixtureEvidence()
+		ev.ID = id
+		ev.WorkID = ""
+		ev.EvidenceRefs = append(ev.EvidenceRefs, rec.ID)
+		if err := RecordEvidence(home, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, _, err := ResolveOutcomeReviewInputs(home, OutcomeReviewSelector{ReceiptID: rec.ID})
+	if err == nil || !strings.Contains(err.Error(), "multiple route evidence rows match") {
+		t.Fatalf("err = %v, want ambiguity", err)
+	}
+}
+
 func fixtureReceipt(outcome string, changed bool) envelope.Receipt {
 	return envelope.Receipt{
 		Header: envelope.Header{
@@ -151,5 +215,47 @@ func fixtureReceipt(outcome string, changed bool) envelope.Receipt {
 			Verification: []string{"go test ./internal/routeevidence"},
 		},
 		Cost: envelope.ReceiptCost{ModelCalls: []string{"route_fixture"}},
+	}
+}
+
+func writeReceiptArtifact(t *testing.T, home string, rec envelope.Receipt) {
+	t.Helper()
+	dir := filepath.Join(home, "events")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(rec, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, rec.ID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendWorkReceiptEvent(t *testing.T, home, workID, receiptID string) {
+	t.Helper()
+	dir := filepath.Join(home, "events")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	row := map[string]any{
+		"ts":       rfc3339(t0),
+		"work_id":  workID,
+		"from":     "verifying",
+		"to":       "completed",
+		"attached": []string{receiptID},
+	}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "work.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
 	}
 }

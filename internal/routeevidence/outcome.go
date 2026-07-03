@@ -90,6 +90,14 @@ type RouteOutcomeReviewPaths struct {
 	ReviewPath string
 }
 
+type OutcomeReviewSelector struct {
+	RouteID           string
+	RouteEvidencePath string
+	ReceiptPath       string
+	ReceiptID         string
+	WorkID            string
+}
+
 func LoadEvidenceByID(homePath, evidenceID string) (Evidence, error) {
 	id := strings.TrimSpace(evidenceID)
 	if id == "" {
@@ -124,6 +132,88 @@ func LoadEvidenceByID(homePath, evidenceID string) (Evidence, error) {
 	return Evidence{}, fmt.Errorf("route evidence %q not found", id)
 }
 
+func LoadEvidenceForReceipt(homePath, receiptID, workID string) (Evidence, error) {
+	receiptID = strings.TrimSpace(receiptID)
+	workID = strings.TrimSpace(workID)
+	if receiptID == "" && workID == "" {
+		return Evidence{}, fmt.Errorf("receipt id or work id required")
+	}
+	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		return Evidence{}, fmt.Errorf("read route evidence ledger: %w", err)
+	}
+	defer f.Close()
+	var matches []Evidence
+	bestScore := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	line := 0
+	for scanner.Scan() {
+		line++
+		raw := bytes.TrimSpace(scanner.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		ev, err := Decode(raw)
+		if err != nil {
+			return Evidence{}, fmt.Errorf("decode route evidence line %d: %w", line, err)
+		}
+		score := routeOutcomeEvidenceMatchScore(ev, receiptID, workID)
+		if score == 0 {
+			continue
+		}
+		if score > bestScore {
+			bestScore = score
+			matches = matches[:0]
+		}
+		if score == bestScore {
+			matches = append(matches, ev)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return Evidence{}, fmt.Errorf("scan route evidence ledger: %w", err)
+	}
+	if len(matches) == 0 {
+		return Evidence{}, fmt.Errorf("route evidence for receipt %q work %q not found", receiptID, workID)
+	}
+	if len(matches) > 1 {
+		return Evidence{}, fmt.Errorf("multiple route evidence rows match receipt %q work %q: %s; pass --route-id", receiptID, workID, joinEvidenceIDs(matches, 5))
+	}
+	return matches[0], nil
+}
+
+func routeOutcomeEvidenceMatchScore(ev Evidence, receiptID, workID string) int {
+	if receiptID != "" && containsRef(ev.EvidenceRefs, receiptID) {
+		return 2
+	}
+	if workID != "" && ev.WorkID == workID {
+		return 1
+	}
+	return 0
+}
+
+func containsRef(refs []string, want string) bool {
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func joinEvidenceIDs(evs []Evidence, limit int) string {
+	ids := make([]string, 0, len(evs))
+	for i, ev := range evs {
+		if limit > 0 && i >= limit {
+			ids = append(ids, "...")
+			break
+		}
+		ids = append(ids, ev.ID)
+	}
+	return strings.Join(ids, ",")
+}
+
 func LoadEvidenceFile(path string) (Evidence, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -149,6 +239,137 @@ func LoadReceiptFile(path string) (envelope.Receipt, error) {
 	return rec, nil
 }
 
+func LoadReceiptByID(homePath, receiptID string) (envelope.Receipt, error) {
+	id, err := bareRuntimeID("receipt", receiptID)
+	if err != nil {
+		return envelope.Receipt{}, err
+	}
+	return LoadReceiptFile(filepath.Join(homePath, "events", id+".json"))
+}
+
+func LoadReceiptForWorkID(homePath, workID string) (envelope.Receipt, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return envelope.Receipt{}, fmt.Errorf("work id required")
+	}
+	receiptID, err := latestReceiptIDForWork(homePath, workID)
+	if err != nil {
+		return envelope.Receipt{}, err
+	}
+	if receiptID == "" {
+		return envelope.Receipt{}, fmt.Errorf("receipt for work %q not found", workID)
+	}
+	rec, err := LoadReceiptByID(homePath, receiptID)
+	if err != nil {
+		return envelope.Receipt{}, err
+	}
+	if rec.IDs.WorkID != workID {
+		return envelope.Receipt{}, fmt.Errorf("receipt %q work_id %q does not match requested work %q", rec.ID, rec.IDs.WorkID, workID)
+	}
+	return rec, nil
+}
+
+func ResolveOutcomeReviewInputs(homePath string, sel OutcomeReviewSelector) (Evidence, envelope.Receipt, error) {
+	routeID := strings.TrimSpace(sel.RouteID)
+	routePath := strings.TrimSpace(sel.RouteEvidencePath)
+	receiptPath := strings.TrimSpace(sel.ReceiptPath)
+	receiptID := strings.TrimSpace(sel.ReceiptID)
+	workID := strings.TrimSpace(sel.WorkID)
+	if routeID != "" && routePath != "" {
+		return Evidence{}, envelope.Receipt{}, fmt.Errorf("use only one of --route-id or --route-evidence")
+	}
+	if receiptPath != "" && receiptID != "" {
+		return Evidence{}, envelope.Receipt{}, fmt.Errorf("use only one of --receipt or --receipt-id")
+	}
+	if receiptPath == "" && receiptID == "" && workID == "" {
+		return Evidence{}, envelope.Receipt{}, fmt.Errorf("receipt selector required: --receipt, --receipt-id, or --work-id")
+	}
+	var rec envelope.Receipt
+	var err error
+	switch {
+	case receiptPath != "":
+		rec, err = LoadReceiptFile(receiptPath)
+	case receiptID != "":
+		rec, err = LoadReceiptByID(homePath, receiptID)
+	default:
+		rec, err = LoadReceiptForWorkID(homePath, workID)
+	}
+	if err != nil {
+		return Evidence{}, envelope.Receipt{}, err
+	}
+	if workID != "" && rec.IDs.WorkID != "" && rec.IDs.WorkID != workID {
+		return Evidence{}, envelope.Receipt{}, fmt.Errorf("receipt work_id %q does not match requested work %q", rec.IDs.WorkID, workID)
+	}
+	var ev Evidence
+	switch {
+	case routeID != "":
+		ev, err = LoadEvidenceByID(homePath, routeID)
+	case routePath != "":
+		ev, err = LoadEvidenceFile(routePath)
+	default:
+		ev, err = LoadEvidenceForReceipt(homePath, rec.ID, workID)
+	}
+	if err != nil {
+		return Evidence{}, envelope.Receipt{}, err
+	}
+	return ev, rec, nil
+}
+
+type workReceiptEvent struct {
+	WorkID   string   `json:"work_id"`
+	Attached []string `json:"attached,omitempty"`
+}
+
+func latestReceiptIDForWork(homePath, workID string) (string, error) {
+	path := filepath.Join(homePath, "events", "work.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read work event log: %w", err)
+	}
+	defer f.Close()
+	var receiptID string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	line := 0
+	for scanner.Scan() {
+		line++
+		raw := bytes.TrimSpace(scanner.Bytes())
+		if len(raw) == 0 {
+			continue
+		}
+		var event workReceiptEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return "", fmt.Errorf("decode work event line %d: %w", line, err)
+		}
+		if event.WorkID != workID {
+			continue
+		}
+		for _, attached := range event.Attached {
+			if strings.HasPrefix(attached, "rec_") {
+				receiptID = attached
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan work event log: %w", err)
+	}
+	return receiptID, nil
+}
+
+func bareRuntimeID(kind, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", fmt.Errorf("%s id required", kind)
+	}
+	if id == "." || id == ".." || id != filepath.Base(id) || strings.ContainsAny(id, `/\`) {
+		return "", fmt.Errorf("%s id must be bare id, got %q", kind, id)
+	}
+	return id, nil
+}
+
 func BuildRouteOutcomeReview(ev Evidence, rec envelope.Receipt, targetPath string, now time.Time) (RouteOutcomeReview, error) {
 	if err := Validate(ev); err != nil {
 		return RouteOutcomeReview{}, err
@@ -169,12 +390,16 @@ func BuildRouteOutcomeReview(ev Evidence, rec envelope.Receipt, targetPath strin
 	workID := reviewartifact.FirstNonEmpty(ev.WorkID, rec.IDs.WorkID)
 	refs := dedupeRefs(append([]string{ev.ID, rec.ID}, append(ev.EvidenceRefs, rec.EvidenceRefs...)...))
 	assessment := assessRouteOutcome(ev, rec)
+	status := "recorded"
+	if assessment.ShouldReviewPolicy {
+		status = "review_required"
+	}
 	id := idFor("ror_", ev.ID, rec.ID, rec.Outcome, fmt.Sprintf("%t", rec.StateDelta.Changed))
 	review := RouteOutcomeReview{
 		SchemaVersion:       RouteOutcomeReviewSchemaVersion,
 		ID:                  id,
 		CreatedAt:           rfc3339(now),
-		Status:              "review_required",
+		Status:              status,
 		RouteEvidenceID:     ev.ID,
 		RequestID:           ev.RequestID,
 		WorkID:              workID,
