@@ -235,6 +235,65 @@ func TestSurfaceUsesMeaningfulTriggerTokens(t *testing.T) {
 	}
 }
 
+func TestSurfaceTreatsGoAsLanguageInEngineeringContext(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "skill:launch",
+		Kind:     "skill",
+		Name:     "Launch",
+		Triggers: []string{"launch product feature go market"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:       "skill:golang-patterns",
+		Kind:     "skill",
+		Name:     "Golang Patterns",
+		Triggers: []string{"golang patterns writing reviewing refactoring go code"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	offers, err := s.Surface("implement a Go distiller request-grounded replay feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goHit := findSurfaceHit(offers, "skill:golang-patterns")
+	if goHit == nil {
+		t.Fatalf("golang patterns did not surface: %+v", offers)
+	}
+	if got := strings.Join(goHit.MatchedTokens, ","); got != "go,golang" {
+		t.Fatalf("golang matched tokens = %q, want go,golang", got)
+	}
+	if launchHit := findSurfaceHit(offers, "skill:launch"); launchHit != nil {
+		t.Fatalf("launch should not surface from generic feature/go tokens in engineering context: %+v", launchHit)
+	}
+}
+
+func TestSurfaceStillFindsLaunchForLaunchContext(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "skill:launch",
+		Kind:     "skill",
+		Name:     "Launch",
+		Triggers: []string{"launch product feature announcement release strategy hunt go market"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	offers, err := s.Surface("launch product on product hunt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchHit := findSurfaceHit(offers, "skill:launch")
+	if launchHit == nil {
+		t.Fatalf("launch did not surface for launch context: %+v", offers)
+	}
+	if got := strings.Join(launchHit.MatchedTokens, ","); got != "hunt,launch,product" {
+		t.Fatalf("launch matched tokens = %q, want hunt,launch,product", got)
+	}
+}
+
 func TestSurfaceReportCarriesMatchedTriggerTokens(t *testing.T) {
 	_, s := newStore(t)
 	if err := s.Add(Node{

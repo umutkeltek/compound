@@ -360,7 +360,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
-		base, matchedTokens := surfaceTriggerScore(tokens, n.Triggers)
+		base, matchedTokens := surfaceTriggerScore(tokens, n)
 		score := base*n.Weight + add[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
@@ -766,13 +766,28 @@ func tokenSet(s string) map[string]bool {
 	for _, t := range tokenList(s) {
 		out[t] = true
 	}
+	if out["go"] && hasAnyToken(out, goEngineeringContextTokens) {
+		out["golang"] = true
+		out[goLanguageAliasToken] = true
+	}
 	return out
 }
 
-func surfaceTriggerScore(taskTokens map[string]bool, triggers []string) (float64, []string) {
+func surfaceTriggerScore(taskTokens map[string]bool, n Node) (float64, []string) {
 	matched := map[string]bool{}
-	for _, trigger := range triggers {
-		for _, tok := range tokenList(trigger) {
+	for _, trigger := range n.Triggers {
+		triggerTokens := tokenList(trigger)
+		triggerSet := map[string]bool{}
+		for _, tok := range triggerTokens {
+			triggerSet[tok] = true
+		}
+		for _, tok := range triggerTokens {
+			if tok == "golang" && taskTokens[goLanguageAliasToken] && !goLanguageCapability(n, triggerSet) {
+				continue
+			}
+			if tok == "go" && taskTokens["golang"] && !triggerSet["golang"] && !hasAnyToken(triggerSet, goEngineeringContextTokens) {
+				continue
+			}
 			if taskTokens[tok] {
 				matched[tok] = true
 			}
@@ -803,6 +818,30 @@ func usableCapabilityToken(tok string) bool {
 	return tok != "" && !capabilityTokenStopWords[tok]
 }
 
+func hasAnyToken(tokens map[string]bool, candidates map[string]bool) bool {
+	for tok := range candidates {
+		if tokens[tok] {
+			return true
+		}
+	}
+	return false
+}
+
+const goLanguageAliasToken = "__compound_go_language_alias"
+
+func goLanguageCapability(n Node, triggerSet map[string]bool) bool {
+	id := strings.ToLower(n.ID + " " + n.Name)
+	return strings.Contains(id, "golang") || strings.Contains(id, "gochi") || triggerSet["go"]
+}
+
+var goEngineeringContextTokens = map[string]bool{
+	"api": true, "backend": true, "cli": true, "code": true, "concurrency": true,
+	"database": true, "distiller": true, "endpoint": true, "function": true,
+	"goroutine": true, "middleware": true, "migration": true, "module": true,
+	"package": true, "repo": true, "repository": true, "service": true,
+	"struct": true, "test": true, "tests": true,
+}
+
 var capabilityTokenStopWords = map[string]bool{
 	"a": true, "an": true, "and": true, "are": true, "as": true, "at": true,
 	"be": true, "before": true, "by": true, "for": true, "from": true,
@@ -811,6 +850,8 @@ var capabilityTokenStopWords = map[string]bool{
 	"this": true, "to": true, "use": true, "uses": true, "using": true,
 	"via": true, "when": true, "where": true, "with": true,
 	"without": true,
+	"feature": true, "features": true, "implement": true, "implementation": true,
+	"request": true, "requests": true, "replay": true,
 
 	// Capability-graph meta words describe the registry itself. Keeping them as
 	// match tokens turns "choose a skill/tool/capability" into "offer almost
