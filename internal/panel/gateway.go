@@ -20,6 +20,8 @@ type GatewayCaller struct {
 	ModelResolver func(lane LaneRef) string
 }
 
+func (g GatewayCaller) RequiresMeteredBudget() bool { return true }
+
 func (g GatewayCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
 	baseURL := strings.TrimSpace(g.BaseURL)
 	if baseURL == "" {

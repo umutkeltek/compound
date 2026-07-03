@@ -66,6 +66,15 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 	if run.CountsAfter == nil {
 		run.CountsAfter = copyCounts(run.CountsBefore)
 	}
+	if callerRequiresMeteredBudget(caller) && hasMeteredLane(run.Route) && run.Budget.MaxUSDMicros == 0 {
+		err := fmt.Errorf("budget:metered_lane_requires_max_usd_micros")
+		run.Status = "blocked"
+		run.StoppedReason = err.Error()
+		if saveErr := store.SaveRun(run); saveErr != nil {
+			return run, fmt.Errorf("%w; additionally failed to save blocked panel run: %v", err, saveErr)
+		}
+		return run, err
+	}
 	if run.Budget.MaxUSDMicros > 0 {
 		// No lane cost data exists yet, so a USD cap alone cannot be enforced.
 		// Fail closed rather than running an unbounded live batch.
@@ -140,6 +149,28 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		return run, err
 	}
 	return run, nil
+}
+
+type meteredBudgetCaller interface {
+	RequiresMeteredBudget() bool
+}
+
+func callerRequiresMeteredBudget(caller LensCaller) bool {
+	budgeted, ok := caller.(meteredBudgetCaller)
+	return ok && budgeted.RequiresMeteredBudget()
+}
+
+func hasMeteredLane(route RoutePlan) bool {
+	return laneIsMetered(route.LensLane) || laneIsMetered(route.JudgeLane)
+}
+
+func laneIsMetered(lane LaneRef) bool {
+	switch strings.TrimSpace(lane.Tier) {
+	case "", "free", "local", "local-batch":
+		return false
+	default:
+		return true
+	}
 }
 
 func failDryRun(store *Store, run Run, targetRef string, cause error) (Run, error) {
