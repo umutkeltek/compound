@@ -42,6 +42,53 @@ func TestEvaluateCapsDesiredContextByHostAndModel(t *testing.T) {
 	}
 }
 
+func TestEvaluateSuggestsLowerContextWhenConservingMemory(t *testing.T) {
+	loaded := 262144
+	report := Evaluate(map[string]Model{
+		"judge": {ID: "judge", State: "loaded", MaxContextLength: 262144, LoadedContextLength: &loaded},
+	}, []Requirement{{ModelID: "judge", MinContextTokens: 12000}}, Policy{ReserveTokens: 1000, HostContextLimitTokens: 64000, ConserveMemory: true})
+
+	if report.Status != "actionable" || len(report.Findings) != 1 {
+		t.Fatalf("report = %+v, want one actionable finding", report)
+	}
+	finding := report.Findings[0]
+	if finding.Action != ActionReloadLowerWhenIdle || finding.Blocking || finding.DesiredContext != 13000 {
+		t.Fatalf("finding = %+v, want non-blocking lower-context advice", finding)
+	}
+	if finding.LifecycleIntent == nil || finding.LifecycleIntent.Action != ActionReloadLowerWhenIdle || finding.LifecycleIntent.ContextTokens != 13000 {
+		t.Fatalf("intent = %+v, want lower-context lifecycle intent", finding.LifecycleIntent)
+	}
+}
+
+func TestEvaluateAddsSequentialPipelineAdviceForConstrainedHost(t *testing.T) {
+	loaded := 65536
+	report := Evaluate(map[string]Model{
+		"ornith": {ID: "ornith", State: "loaded", MaxContextLength: 262144, LoadedContextLength: &loaded},
+		"qwen":   {ID: "qwen", State: "loaded", MaxContextLength: 262144, LoadedContextLength: &loaded},
+	}, []Requirement{{ModelID: "qwen", MinContextTokens: 12000}, {ModelID: "ornith", MinContextTokens: 16000}}, Policy{ReserveTokens: 1000, HostContextLimitTokens: 64000, MaxConcurrentLoaded: 1})
+
+	if report.Status != "actionable" || report.PipelineAdvice == nil {
+		t.Fatalf("report = %+v, want actionable sequential advice", report)
+	}
+	if report.PipelineAdvice.Mode != "sequential" || report.PipelineAdvice.MaxConcurrentLoaded != 1 {
+		t.Fatalf("advice = %+v, want sequential max 1", report.PipelineAdvice)
+	}
+	if len(report.PipelineAdvice.Steps) != 2 {
+		t.Fatalf("steps = %+v, want two lease steps", report.PipelineAdvice.Steps)
+	}
+	for _, step := range report.PipelineAdvice.Steps {
+		if step.ReleaseIntent == nil || step.ReleaseIntent.Action != ActionUnloadIdle {
+			t.Fatalf("step = %+v, want release intent", step)
+		}
+		if step.ModelID == "ornith" && step.DesiredContext != 17000 {
+			t.Fatalf("ornith step = %+v, want desired context 17000", step)
+		}
+		if step.ModelID == "qwen" && step.DesiredContext != 13000 {
+			t.Fatalf("qwen step = %+v, want desired context 13000", step)
+		}
+	}
+}
+
 func TestEvaluateSuggestsUnloadingIdleUnrequiredModels(t *testing.T) {
 	loaded := 262144
 	lastUsed := time.Date(2026, 7, 3, 8, 0, 0, 0, time.UTC)

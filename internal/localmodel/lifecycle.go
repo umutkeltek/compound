@@ -32,6 +32,8 @@ type Policy struct {
 	ReserveTokens          int
 	IdleTTL                time.Duration
 	Now                    time.Time
+	ConserveMemory         bool
+	MaxConcurrentLoaded    int
 }
 
 type Action string
@@ -62,8 +64,24 @@ type Finding struct {
 }
 
 type Report struct {
-	Status   string    `json:"status"`
-	Findings []Finding `json:"findings"`
+	Status         string          `json:"status"`
+	Findings       []Finding       `json:"findings"`
+	PipelineAdvice *PipelineAdvice `json:"pipeline_advice,omitempty"`
+}
+
+type PipelineAdvice struct {
+	Mode                string      `json:"mode"`
+	MaxConcurrentLoaded int         `json:"max_concurrent_loaded,omitempty"`
+	Reason              string      `json:"reason"`
+	Steps               []LeaseStep `json:"steps,omitempty"`
+}
+
+type LeaseStep struct {
+	Order          int              `json:"order"`
+	ModelID        string           `json:"model_id"`
+	DesiredContext int              `json:"desired_context,omitempty"`
+	LoadIntent     *LifecycleIntent `json:"load_intent,omitempty"`
+	ReleaseIntent  *LifecycleIntent `json:"release_intent,omitempty"`
 }
 
 func Evaluate(models map[string]Model, requirements []Requirement, policy Policy) Report {
@@ -133,7 +151,11 @@ func Evaluate(models map[string]Model, requirements []Requirement, policy Policy
 			status = "actionable"
 		}
 	}
-	return Report{Status: status, Findings: findings}
+	advice := pipelineAdvice(models, ids, needed, policy)
+	if status == "ok" && advice != nil {
+		status = "actionable"
+	}
+	return Report{Status: status, Findings: findings, PipelineAdvice: advice}
 }
 
 func (r Report) BlockingError(prefix string) error {
@@ -189,9 +211,13 @@ func evaluateRequiredModel(model Model, req Requirement, policy Policy) Finding 
 		base.LifecycleIntent = NewLifecycleIntent(model.ID, base.Action, desired)
 		return base
 	}
-	if desired > 0 && *model.LoadedContextLength > desired && idleTooLong(model, policy) {
+	if desired > 0 && *model.LoadedContextLength > desired && (idleTooLong(model, policy) || policy.ConserveMemory) {
 		base.Action = ActionReloadLowerWhenIdle
-		base.Reason = fmt.Sprintf("model %q loaded_context_length=%d exceeds desired_context=%d and is idle", model.ID, *model.LoadedContextLength, desired)
+		if idleTooLong(model, policy) {
+			base.Reason = fmt.Sprintf("model %q loaded_context_length=%d exceeds desired_context=%d and is idle", model.ID, *model.LoadedContextLength, desired)
+		} else {
+			base.Reason = fmt.Sprintf("model %q loaded_context_length=%d exceeds desired_context=%d; memory conservation requested", model.ID, *model.LoadedContextLength, desired)
+		}
 		base.RecommendedSteps = []string{"reload " + model.ID + contextArg(desired)}
 		base.LifecycleIntent = NewLifecycleIntent(model.ID, base.Action, desired)
 		return base
@@ -222,6 +248,58 @@ func desiredContext(model Model, req Requirement, policy Policy) int {
 		return 0
 	}
 	return desired
+}
+
+func pipelineAdvice(models map[string]Model, ids []string, needed map[string]Requirement, policy Policy) *PipelineAdvice {
+	if len(ids) == 0 {
+		return nil
+	}
+	maxConcurrent := policy.MaxConcurrentLoaded
+	if maxConcurrent <= 0 {
+		if !policy.ConserveMemory {
+			return nil
+		}
+		maxConcurrent = 1
+	}
+	if maxConcurrent >= len(ids) && !policy.ConserveMemory {
+		return nil
+	}
+	mode := "batched"
+	if maxConcurrent <= 1 {
+		mode = "sequential"
+	}
+	reason := fmt.Sprintf("%d required models exceed max_concurrent_loaded=%d; lease models through local-routing instead of keeping all resident", len(ids), maxConcurrent)
+	if policy.ConserveMemory && maxConcurrent >= len(ids) {
+		reason = "memory conservation requested; release required local models after active use"
+	}
+	steps := make([]LeaseStep, 0, len(ids))
+	for i, id := range ids {
+		model := models[id]
+		req := needed[id]
+		desired := desiredContext(model, req, policy)
+		if model.ID == "" {
+			desired = req.MinContextTokens
+		}
+		var loadIntent *LifecycleIntent
+		if model.ID == "" || strings.TrimSpace(model.State) != "loaded" {
+			loadIntent = NewLifecycleIntent(id, ActionLoad, desired)
+		} else if model.LoadedContextLength != nil && desired > 0 && *model.LoadedContextLength < desired {
+			loadIntent = NewLifecycleIntent(id, ActionReloadHigherContext, desired)
+		}
+		steps = append(steps, LeaseStep{
+			Order:          i + 1,
+			ModelID:        id,
+			DesiredContext: desired,
+			LoadIntent:     loadIntent,
+			ReleaseIntent:  NewLifecycleIntent(id, ActionUnloadIdle, 0),
+		})
+	}
+	return &PipelineAdvice{
+		Mode:                mode,
+		MaxConcurrentLoaded: maxConcurrent,
+		Reason:              reason,
+		Steps:               steps,
+	}
 }
 
 func idleTooLong(model Model, policy Policy) bool {

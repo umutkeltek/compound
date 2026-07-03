@@ -16,7 +16,7 @@ import (
 
 func cmdLocalModels(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound local-models advise [--lm-studio-url U] [--required MODEL]... [--min-context MODEL=TOKENS]... [--host-context-limit N] [--idle-ttl DURATION] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound local-models advise [--lm-studio-url U] [--required MODEL]... [--min-context MODEL=TOKENS]... [--host-context-limit N] [--idle-ttl DURATION] [--conserve-memory] [--max-loaded-models N] [--json]")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -38,6 +38,19 @@ func cmdLocalModels(args []string) {
 			}
 			if intent := finding.LifecycleIntent; intent != nil {
 				fmt.Printf("  intent: owner=%s action=%s mutation_class=%s delegation=%s\n", intent.Owner, intent.Action, intent.MutationClass, intent.Delegation)
+			}
+		}
+		if advice := report.PipelineAdvice; advice != nil {
+			fmt.Printf("- pipeline mode=%s max_loaded=%d reason=%s\n", advice.Mode, advice.MaxConcurrentLoaded, advice.Reason)
+			for _, step := range advice.Steps {
+				fmt.Printf("  step %d: model=%s desired=%d", step.Order, step.ModelID, step.DesiredContext)
+				if step.LoadIntent != nil {
+					fmt.Printf(" load_intent=%s", step.LoadIntent.Action)
+				}
+				if step.ReleaseIntent != nil {
+					fmt.Printf(" release_intent=%s", step.ReleaseIntent.Action)
+				}
+				fmt.Println()
 			}
 		}
 	default:
@@ -75,6 +88,10 @@ func runLocalModelAdvise(args []string) localmodel.Report {
 			}
 			policy.IdleTTL = ttl
 			policy.Now = time.Now()
+		case "--conserve-memory":
+			policy.ConserveMemory = true
+		case "--max-loaded-models":
+			policy.MaxConcurrentLoaded = parsePositiveInt(requireLocalModelValue(args, &i, "--max-loaded-models"), "--max-loaded-models")
 		case "--json":
 		default:
 			fmt.Fprintf(os.Stderr, "unknown local-models advise arg %q\n", args[i])
