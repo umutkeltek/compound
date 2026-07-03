@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/envelope"
 )
 
 func TestDispatchPlanSelectsReadyWorkWithoutClaiming(t *testing.T) {
@@ -194,6 +195,22 @@ func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T)
 	if claimed.IDs.ContextPackID != result.ContextPackID {
 		t.Fatalf("claimed context pack = %q, want %q", claimed.IDs.ContextPackID, result.ContextPackID)
 	}
+	var pack envelope.ContextPack
+	if err := s.readJSON(filepath.Join(s.home, "context", "packs", result.ContextPackID+".json"), &pack); err != nil {
+		t.Fatalf("read dispatch context pack: %v", err)
+	}
+	if pack.IDs.ContractID != "" {
+		t.Fatalf("dispatch worker context pack contract_id = %q, want empty", pack.IDs.ContractID)
+	}
+	if !contextPackExcludesRef(pack, dispatchWorkerPromptContractRef) {
+		t.Fatalf("dispatch worker context pack missing contract exclusion: %+v", pack.Excluded)
+	}
+	if !sourceRevisionExists(pack.SourceRevisions, "work://"+claimed.ID) {
+		t.Fatalf("dispatch worker context pack missing work source revision: %+v", pack.SourceRevisions)
+	}
+	if !sourceRevisionExists(pack.SourceRevisions, capgraph.CapabilityGraphAuthorityRef) {
+		t.Fatalf("dispatch worker context pack missing capability graph source revision: %+v", pack.SourceRevisions)
+	}
 }
 
 func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
@@ -234,6 +251,24 @@ func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 	if _, err := s.readLease(ready.ID); err == nil {
 		t.Fatal("blocked dispatch claim must not write lease")
 	}
+}
+
+func contextPackExcludesRef(pack envelope.ContextPack, ref string) bool {
+	for _, excluded := range pack.Excluded {
+		if excluded.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceRevisionExists(revs []envelope.SourceRev, source string) bool {
+	for _, rev := range revs {
+		if rev.Source == source {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDispatchAdvanceAdvancesOwnClaimedWork(t *testing.T) {

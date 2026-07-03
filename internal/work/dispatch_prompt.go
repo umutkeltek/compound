@@ -11,7 +11,11 @@ import (
 	"compound/internal/envelope"
 )
 
-const maxDispatchPromptOffers = 5
+const (
+	maxDispatchPromptOffers          = 5
+	dispatchWorkerPromptContractRef  = "contract://dispatch-worker-prompt"
+	dispatchWorkerPromptContractNote = "dispatch worker prompt is derived from an already-admitted WorkEnvelope plus task-scoped CapabilityGraph offers; no new EffectiveContract is compiled for this capability-only prompt"
+)
 
 type dispatchPrompt struct {
 	ContextPackID       string
@@ -65,13 +69,13 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 		Header:             newHeader(envelope.SVContextPack, idFor("ctx_", "dispatch", w.ID, actor, task), now, w.ID, "", w.Privacy, "tier0"),
 		SummaryMD:          fmt.Sprintf("Dispatch context for %s. Capability offers are task-scoped hints, not execution.", w.ID),
 		Included:           []envelope.IncludedRef{},
-		Excluded:           []envelope.ExcludedRef{},
+		Excluded:           []envelope.ExcludedRef{{Ref: dispatchWorkerPromptContractRef, Reason: dispatchWorkerPromptContractNote}},
 		CapabilityOffers:   []envelope.CapabilityOffer{},
 		ActiveInstructions: []string{},
 		ActiveHooks:        []string{},
 		ActiveDecisions:    []string{},
 		ActiveMemory:       []string{},
-		SourceRevisions:    []envelope.SourceRev{},
+		SourceRevisions:    []envelope.SourceRev{{Source: "work://" + w.ID, Rev: dispatchWorkRevision(w)}},
 		RequiredChecks:     []string{},
 		Avoid:              []string{},
 	}
@@ -113,9 +117,20 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 		if err != nil {
 			return envelope.ContextPack{}, err
 		}
-		pack.SourceRevisions = []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}}
+		pack.SourceRevisions = append(pack.SourceRevisions, envelope.SourceRev{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev})
 	}
 	return pack, nil
+}
+
+func dispatchWorkRevision(w envelope.WorkEnvelope) string {
+	parts := []string{"state:" + w.State}
+	if w.PolicyDecisionID != "" {
+		parts = append(parts, "policy:"+w.PolicyDecisionID)
+	}
+	if w.IDs.ContextPackID != "" {
+		parts = append(parts, "context:"+w.IDs.ContextPackID)
+	}
+	return strings.Join(parts, ";")
 }
 
 func dispatchSurfaceReason(hit capgraph.Surfaced) string {

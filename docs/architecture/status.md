@@ -67,6 +67,8 @@ Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rul
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.
 
+Work dispatch status note: `work dispatch-claim` attaches a capability-only worker ContextPack with explicit work/capability source revisions and an excluded contract marker rather than pretending a fresh EffectiveContract was compiled.
+
 Work ContextPack status note: Work admission/import/advance validate any supplied `context_pack_id` resolves to a recorded `COMPOUND_HOME/context/packs/<id>.json` artifact and any declared `contract_id` resolves to a matching validated `contracts/effective/<date>/<id>.json` artifact before persisting lifecycle mutation.
 
 Spine orientation note: `compound orient --operator [--json]` is the compact operator projection over needs-me/running/changed. It reads candidate inboxes, shared review queue, workbench open/recent state, receipts/transitions, and the memory claim ledger, with only a rebuildable `projections/orient-operator-last-seq.json` cursor write for claim-seq deltas.
