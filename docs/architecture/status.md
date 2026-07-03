@@ -75,7 +75,7 @@ CLI safety note: `compound capability ... --help`, plus guarded `work`, `memory`
 
 Contract command status note: `compound contract compile` records durable EffectiveContract artifacts under `COMPOUND_HOME/contracts/effective/<date>/<id>.json` and `latest.json` while preserving stdout JSON; `compound orient` records the matching EffectiveContract artifact before recording ContextPack artifacts under `COMPOUND_HOME/context/packs/<id>.json` with matching `ids.contract_id`; hook context-injection paths persist the same contract->pack artifact chain.
 
-ContextPack hook status note: active hook refs appear in both `active_hooks`/`hook_roster` and `included[]` with runtime/current reasons, while task-excluded hooks remain in `excluded[]`, so context consumers can compare included vs excluded hook decisions through the same surface.
+ContextPack hook status note: active hook refs appear in both `active_hooks`/`hook_roster` and `included[]` with runtime/current reasons, while task-excluded hooks remain in `excluded[]`; mutation contexts with adapter-required write-gate readiness add `required_checks[]`, so consumers see the enforce command before writes.
 
 Hook context mode status note: hook context artifacts use one requested-mode decision for both `ContextRequest.requested_mode` and `EffectiveContract.task_mode`: `session-start` orients in `observe`, while `user-prompt-submit` creates execute-mode proposed work context.
 

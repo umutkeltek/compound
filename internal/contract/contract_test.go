@@ -1043,6 +1043,10 @@ hooks:
 	if !strings.Contains(reason, "no installed PreToolUse write gate") {
 		t.Fatalf("context pack excluded=%v, want missing write gate reason", pack.Excluded)
 	}
+	if !containsStringWith(pack.RequiredChecks, "pre_write_gate codex/PreToolUse status=missing_gate") ||
+		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce FIXTURE_JSON") {
+		t.Fatalf("context pack required_checks = %v, want pre-write adapter check", pack.RequiredChecks)
+	}
 
 	readOnly := in
 	readOnly.Task = "audit current hook status"
@@ -1053,6 +1057,9 @@ hooks:
 	}
 	if hasExcluded(readOnlyPack, "hook://codex/PreToolUse") {
 		t.Fatalf("read-only context pack should not report missing write gate: %v", readOnlyPack.Excluded)
+	}
+	if len(readOnlyPack.RequiredChecks) != 0 {
+		t.Fatalf("read-only context pack required_checks = %v, want none", readOnlyPack.RequiredChecks)
 	}
 }
 
@@ -1115,6 +1122,10 @@ hooks:
 	packReadiness := findEnvelopeHookReadiness(pack.HookReadiness, "codex", "PreToolUse")
 	if packReadiness == nil || packReadiness.Status != "missing_gate" || !packReadiness.AdapterRequired {
 		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
+	}
+	if !containsStringWith(pack.RequiredChecks, "pre_write_gate codex/PreToolUse status=missing_gate") ||
+		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce FIXTURE_JSON") {
+		t.Fatalf("context pack required_checks = %v, want pre-write adapter check", pack.RequiredChecks)
 	}
 	readOnly := in
 	readOnly.Task = "audit README headings"
@@ -1997,6 +2008,15 @@ func hasOfferConstraint(values []envelope.CapabilityOfferConstraint, kind, ref s
 
 func containsText(s, needle string) bool {
 	return strings.Contains(s, needle)
+}
+
+func containsStringWith(values []string, needle string) bool {
+	for _, value := range values {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func sourceRev(revs []envelope.SourceRev, source string) string {

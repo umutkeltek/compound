@@ -259,6 +259,8 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 		"adapter_required=true",
 		"command=`compound hook pre-tool-use --enforce FIXTURE_JSON`",
 		"## Hook Roster",
+		"## Required Checks",
+		"pre_write_gate codex/PreToolUse status=missing_gate",
 		"capability://skill:codex-pricing",
 		"capability://skill:generic-pricing",
 		"[offer, not execution]",

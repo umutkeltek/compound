@@ -527,6 +527,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 		return pack, err
 	}
 	pack.HookReadiness = hookReadiness
+	pack.RequiredChecks = append(pack.RequiredChecks, requiredChecksForHookReadiness(hookReadiness, in)...)
 	pack.Excluded = append(pack.Excluded, excludedHooks...)
 	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, hookRevs)
 	if len(hooks) > 0 {
@@ -1599,6 +1600,27 @@ func hookReadinessForInput(homePath string, in Input) ([]envelope.HookReadiness,
 		})
 	}
 	return out, nil
+}
+
+func requiredChecksForHookReadiness(readiness []envelope.HookReadiness, in Input) []string {
+	if !writeMutationTask(in) {
+		return nil
+	}
+	checks := []string{}
+	for _, row := range readiness {
+		if !row.AdapterRequired || strings.TrimSpace(row.AdapterCommand) == "" {
+			continue
+		}
+		status := strings.TrimSpace(row.Status)
+		if status != "missing_gate" && status != "wrapper_required" {
+			continue
+		}
+		harness := firstNonEmpty(strings.TrimSpace(row.Harness), strings.TrimSpace(in.Harness), "unknown")
+		hook := firstNonEmpty(strings.TrimSpace(row.Hook), "PreToolUse")
+		checks = append(checks, fmt.Sprintf("pre_write_gate %s/%s status=%s: run %s before mutation", harness, hook, status, strings.TrimSpace(row.AdapterCommand)))
+	}
+	sort.Strings(checks)
+	return checks
 }
 
 func hookReadinessTask(in Input) bool {
