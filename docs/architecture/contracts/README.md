@@ -169,6 +169,12 @@ Candidate shape is also guarded before inbox write: memory candidates require `e
 `predicate`, and `object`; non-memory candidates require `subject` and `statement`.
 Ungrounded model citations fail before candidate inbox write; model output still cannot promote memory directly.
 
+`SessionLensesImport` adapts already-run session `multi-lens.json` outputs through
+`compound distiller import-session-lenses <multi-lens.json>`. It records only
+six-lens counts and the source digest as
+`SourceObservation -> method_upgrade candidate -> NoPromoteDecision`; it imports no
+rows and promotes no memory.
+
 | Contract | Purpose | Key fields / invariant |
 |---|---|---|
 | **TraceDistiller** | turns spine artifacts (TraceEnvelope + Receipt + ContextPack + HookEvents + ExecutionRouteEvidence + raw refs) into a CandidateSet — extraction only, never canon | loads RetrievedPriorState first; `distiller request --event-trace <trace_id>` loads already-imported `TraceEnvelope` files from `COMPOUND_HOME/events` as source material only; each output cites `evidence_refs[]` + `distillation_policy_version` + a stable deterministic id (replay ⇒ same ids) |

@@ -299,6 +299,8 @@ usage:
                                                                  conversation corpus coverage -> SourceObservation/no-promote; no row import, Dream execution, or memory promotion
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
+  compound distiller import-session-lenses <multi-lens.json>
+                                                                 existing session distill lenses -> SourceObservation/no-promote; no row import or memory promotion
   compound distiller run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
   compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
@@ -1613,6 +1615,59 @@ func cmdDistiller(args []string) {
 		}
 		return
 	}
+	if len(args) >= 1 && args[0] == "import-session-lenses" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound distiller import-session-lenses <multi-lens.json>")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		now := time.Now()
+		lenses, err := distiller.LoadSessionLenses(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller import-session-lenses:", err)
+			os.Exit(1)
+		}
+		sourceReport, err := sourceobs.Apply(homePath, sourceobs.FromSessionLenses(sourceobs.SessionLensObservation{
+			ID:             lenses.ID,
+			SourcePath:     lenses.SourcePath,
+			SourceRevision: lenses.Revision,
+			Decisions:      lenses.Decisions,
+			Outcomes:       lenses.Outcomes,
+			Patterns:       lenses.Patterns,
+			Skills:         lenses.Skills,
+			Taste:          lenses.Taste,
+			Contradictions: lenses.Contradictions,
+			TotalItems:     lenses.TotalItems,
+			EvidenceRefs:   lenses.EvidenceRefs,
+		}, now), now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "source observe:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# distiller import-session-lenses %s\n", lenses.ID)
+		fmt.Printf("- decisions: %d\n", lenses.Decisions)
+		fmt.Printf("- outcomes: %d\n", lenses.Outcomes)
+		fmt.Printf("- patterns: %d\n", lenses.Patterns)
+		fmt.Printf("- skills: %d\n", lenses.Skills)
+		fmt.Printf("- taste: %d\n", lenses.Taste)
+		fmt.Printf("- contradictions: %d\n", lenses.Contradictions)
+		fmt.Printf("- total_items: %d\n", lenses.TotalItems)
+		fmt.Printf("- source_observation: %s\n", sourceReport.ObservationID)
+		for _, id := range sourceReport.CandidateIDs {
+			fmt.Printf("- source_candidate: %s\n", id)
+			fmt.Printf("- review_command: compound distiller improvement-plan --candidate %s\n", id)
+		}
+		for _, id := range sourceReport.NoPromoteIDs {
+			fmt.Printf("- source_no_promote: %s\n", id)
+		}
+		fmt.Println("- row_import: no")
+		fmt.Println("- memory_promotion: no")
+		return
+	}
 	if len(args) >= 1 && args[0] == "doctor" {
 		writebackEnabled := hasFlag(args[1:], "--writeback")
 		homePath, err := home.Resolve("")
@@ -1921,7 +1976,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record] | extract --request <request.json|distiller_request:id> --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response response.json [--request <request.json|distiller_request:id>]|trace.json] | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record] | extract --request <request.json|distiller_request:id> --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | import-session-lenses <multi-lens.json> | run [--llm-response response.json [--request <request.json|distiller_request:id>]|trace.json] | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 

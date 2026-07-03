@@ -38,6 +38,12 @@ the reviewed next step `compound distiller improvement-plan --candidate <id>`.
 It has no row import, no Dream execution, no memory promotion, no source-owner
 mutation, and no raw conversation/body ingestion.
 
+Session distill `multi-lens.json` outputs are already-run extraction evidence,
+not truth. `compound distiller import-session-lenses <multi-lens.json>` records
+only six-lens counts and the source digest as
+`SourceObservation -> method_upgrade candidate -> NoPromoteDecision`, then prints
+the reviewed next step. It imports no rows and promotes no memory.
+
 ## SourceObservation
 
 Every adapter emits observations with enough metadata to answer: what was read,

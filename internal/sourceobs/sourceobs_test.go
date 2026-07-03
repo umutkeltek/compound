@@ -281,6 +281,54 @@ func TestConversationMiningObservationWritesMethodUpgradeNoPromote(t *testing.T)
 	}
 }
 
+func TestSessionLensObservationWritesMethodUpgradeNoPromote(t *testing.T) {
+	home := t.TempDir()
+	obs := FromSessionLenses(SessionLensObservation{
+		ID:             "session_lenses_fixture",
+		SourcePath:     "fixtures/session-distill/multi-lens.json",
+		SourceRevision: "sha256:lenses",
+		Decisions:      1,
+		Outcomes:       1,
+		Patterns:       2,
+		Skills:         1,
+		Taste:          1,
+		Contradictions: 1,
+		TotalItems:     7,
+		EvidenceRefs:   []string{"session_lenses:sha256:lenses"},
+	}, tSource)
+	if obs.GeneratedView.ViewKind != "session_lenses" || obs.GeneratedView.Consumer != "compound distiller import-session-lenses" {
+		t.Fatalf("observation generated view = %+v", obs.GeneratedView)
+	}
+	if len(obs.MapsTo) != 1 || obs.MapsTo[0].CandidateKind != string(candidates.MethodUpgrade) || obs.MapsTo[0].PromoteAllowed {
+		t.Fatalf("maps_to = %+v", obs.MapsTo)
+	}
+	if !strings.Contains(obs.GeneratedView.DriftReason, "decisions=1 outcomes=1 patterns=2 skills=1 taste=1 contradictions=1 total_items=7") {
+		t.Fatalf("drift reason = %q", obs.GeneratedView.DriftReason)
+	}
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" || len(report.CandidateIDs) != 1 || len(report.NoPromoteIDs) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	candidatePath := filepath.Join(home, candidates.InboxDir(candidates.MethodUpgrade), report.CandidateIDs[0]+".json")
+	data, err := os.ReadFile(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c CandidateRecord
+	if err := json.Unmarshal(data, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != string(candidates.MethodUpgrade) || c.Verdict != candidates.NoPromote || c.SourceObservationID != obs.ID {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("session lens source observation should not promote claims, stat err=%v", err)
+	}
+}
+
 func TestConversationCoverageObservationWritesMethodUpgradeNoPromote(t *testing.T) {
 	home := t.TempDir()
 	obs := FromConversationCoverage(ConversationCoverageObservation{

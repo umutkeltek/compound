@@ -114,6 +114,20 @@ type ConversationMiningObservation struct {
 	EvidenceRefs      []string
 }
 
+type SessionLensObservation struct {
+	ID             string
+	SourcePath     string
+	SourceRevision string
+	Decisions      int
+	Outcomes       int
+	Patterns       int
+	Skills         int
+	Taste          int
+	Contradictions int
+	TotalItems     int
+	EvidenceRefs   []string
+}
+
 type ConversationCoverageObservation struct {
 	ID                string
 	ReportPath        string
@@ -474,6 +488,57 @@ func FromConversationCoverage(coverage ConversationCoverageObservation, now time
 				ObjectFamily:   "distiller",
 				CandidateKind:  string(candidates.MethodUpgrade),
 				EntityHint:     firstNonEmpty(coverage.ID, "conversation_coverage"),
+				PromoteAllowed: false,
+			},
+		},
+		EvidenceRefs: evidenceRefs,
+	}
+}
+
+func FromSessionLenses(lenses SessionLensObservation, now time.Time) SourceObservation {
+	revision := strings.TrimSpace(lenses.SourceRevision)
+	if revision == "" {
+		revision = "session_lenses:" + lenses.ID
+	}
+	evidenceRefs := append([]string(nil), lenses.EvidenceRefs...)
+	if len(evidenceRefs) == 0 {
+		evidenceRefs = []string{"session_lenses:" + revision}
+	}
+	detail := fmt.Sprintf("decisions=%d outcomes=%d patterns=%d skills=%d taste=%d contradictions=%d total_items=%d",
+		lenses.Decisions,
+		lenses.Outcomes,
+		lenses.Patterns,
+		lenses.Skills,
+		lenses.Taste,
+		lenses.Contradictions,
+		lenses.TotalItems,
+	)
+	return SourceObservation{
+		SchemaVersion: SchemaVersion,
+		ID:            idFor("srcobs_", "session_lenses", lenses.ID, lenses.SourcePath, revision),
+		AdapterID:     "compound.session-lenses",
+		SourceSystem:  "compound",
+		ObservedAt:    rfc3339(now),
+		SourceRef: SourceRef{
+			Path:        lenses.SourcePath,
+			Kind:        "state_record",
+			Owner:       firstNonEmpty(filepath.Base(lenses.SourcePath), lenses.ID),
+			SourceClass: "session_lenses",
+			Revision:    revision,
+		},
+		GeneratedView: GeneratedView{
+			ViewKind:    "session_lenses",
+			Consumer:    "compound distiller import-session-lenses",
+			Generator:   "session_distill_adapter",
+			Marker:      "multi-lens.json",
+			Freshness:   "observed",
+			DriftReason: detail,
+		},
+		MapsTo: []MapTarget{
+			{
+				ObjectFamily:   "distiller",
+				CandidateKind:  string(candidates.MethodUpgrade),
+				EntityHint:     firstNonEmpty(lenses.ID, "session_lenses"),
 				PromoteAllowed: false,
 			},
 		},

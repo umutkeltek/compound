@@ -6573,6 +6573,61 @@ func TestDistillerImportConversationMiningRecordsSourceNoPromote(t *testing.T) {
 	}
 }
 
+func TestDistillerImportSessionLensesRecordsSourceNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	dir := t.TempDir()
+	lensesPath := filepath.Join(dir, "multi-lens.json")
+	if err := os.WriteFile(lensesPath, []byte(`{
+  "decisions": [{"summary": "Keep extraction source-only."}],
+  "outcomes": [{"summary": "Batch completed."}],
+  "patterns": [{"summary": "Recall misses repeat."}, {"summary": "Operator valves hold."}],
+  "skills": [{"name": "source bridge"}],
+  "taste": [{"summary": "Plain language."}],
+  "contradictions": [{"summary": "Extracted evidence is not promoted truth."}]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"import-session-lenses", lensesPath})
+	})
+	for _, want := range []string{
+		"# distiller import-session-lenses",
+		"- decisions: 1",
+		"- outcomes: 1",
+		"- patterns: 2",
+		"- skills: 1",
+		"- taste: 1",
+		"- contradictions: 1",
+		"- total_items: 7",
+		"- source_observation:",
+		"- source_candidate:",
+		"- review_command: compound distiller improvement-plan --candidate",
+		"- source_no_promote:",
+		"- row_import: no",
+		"- memory_promotion: no",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("import-session-lenses output missing %q:\n%s", want, out)
+		}
+	}
+	sourceCandidateID := outputValue(out, "- source_candidate:")
+	if sourceCandidateID == "" {
+		t.Fatalf("source candidate missing:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("session lenses import must not write claims ledger, stat err=%v", err)
+	}
+	nopRows := readNoPromoteDecisionRows(t, homePath)
+	if len(nopRows) != 1 || nopRows[0].CandidateRef != sourceCandidateID || nopRows[0].OwnerTarget.Kind != "source_observation" {
+		t.Fatalf("no-promote rows = %+v candidate=%s", nopRows, sourceCandidateID)
+	}
+}
+
 func TestDistillerImportConversationCoverageRecordsSourceNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
