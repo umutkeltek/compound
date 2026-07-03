@@ -207,6 +207,67 @@ func TestSurfaceIncludesCapabilityConstraints(t *testing.T) {
 	}
 }
 
+func TestSurfaceUsesMatchedEvidenceOnlyEvaluationsToLiftOwners(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "procedure:skill-ops",
+		Kind:     "procedure",
+		Name:     "skill-ops",
+		Triggers: []string{"adopting", "external", "github"},
+		Weight:   1.25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:           "eval:capability-evaluation-external-steipete-agent-scripts-validate-skills-doctor-20260701",
+		Kind:         "eval",
+		Name:         "Capability evaluation: portable-agent-script-tool-policy-reference",
+		Triggers:     []string{"steipete", "scripts", "evaluate", "external"},
+		Weight:       0.25,
+		EvidenceOnly: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:       "tool:hermes-tools.skill-view",
+		Kind:     "tool",
+		Name:     "hermes-tools.skill_view",
+		Triggers: []string{"scripts"},
+		Weight:   1.2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range []Edge{
+		{Kind: EdEvaluatedBy, From: "procedure:skill-ops", To: "eval:capability-evaluation-external-steipete-agent-scripts-validate-skills-doctor-20260701", Confidence: 0.89},
+		{Kind: EdValidatedBy, From: "procedure:skill-ops", To: "eval:capability-evaluation-external-steipete-agent-scripts-validate-skills-doctor-20260701", Confidence: 0.89},
+	} {
+		if err := s.AddEdge(edge, t0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hits := mustSurface(t, s, "evaluate skills from steipete agent-scripts")
+	if hasSurfaced(hits, "eval:capability-evaluation-external-steipete-agent-scripts-validate-skills-doctor-20260701") {
+		t.Fatalf("evidence-only eval node must not surface as executable offer: %+v", hits)
+	}
+	if hits[0].Node.ID != "procedure:skill-ops" {
+		t.Fatalf("matched evaluation owner should outrank generic script token, got first %+v from %+v", hits[0], hits)
+	}
+	hit := findSurfaceHit(hits, "procedure:skill-ops")
+	if hit == nil {
+		t.Fatalf("matched eval evidence should lift its owner, got %+v", hits)
+	}
+	if !strings.Contains(hit.Why, "+evidence=") {
+		t.Fatalf("surface reason should explain evidence lift: %+v", hit)
+	}
+	if !stringSliceContains(hit.MatchedTokens, "evidence") {
+		t.Fatalf("matched tokens should flag evidence lift: %+v", hit.MatchedTokens)
+	}
+	if !hasConstraint(hit.Constraints.Evidence, "matched_evidence", "eval:capability-evaluation-external-steipete-agent-scripts-validate-skills-doctor-20260701") {
+		t.Fatalf("matched evidence ref missing from constraints: %+v", hit.Constraints.Evidence)
+	}
+}
+
 func TestSurfaceUsesMeaningfulTriggerTokens(t *testing.T) {
 	_, s := newStore(t)
 	if err := s.Add(Node{
@@ -799,6 +860,15 @@ func hasConstraint(values []SurfacingConstraint, kind, ref string) bool {
 func hasSurfaced(hits []Surfaced, id string) bool {
 	for _, hit := range hits {
 		if hit.Node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

@@ -276,12 +276,14 @@ func matchedTokenCounts(offers []Surfaced) []MatchedTokenCount {
 
 func constraintRefs(values []SurfacingConstraint) []string {
 	refs := make([]string, 0, len(values))
+	seen := map[string]bool{}
 	for _, value := range values {
 		ref := strings.TrimSpace(value.Ref)
-		if ref == "" {
+		if ref == "" || seen[ref] {
 			continue
 		}
 		refs = append(refs, ref)
+		seen[ref] = true
 	}
 	return refs
 }
@@ -332,6 +334,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 	add := map[string]float64{}
 	sub := map[string]float64{}
 	harnesses := map[string]map[string]bool{}
+	evidenceBonus, evidenceRefs := evidenceMatchedOwnerBonuses(nodes, edges, tokens)
 	for _, e := range edges {
 		if e.Kind == EdSurfacesWith && strings.HasPrefix(e.To, "harness:") {
 			if harnesses[e.From] == nil {
@@ -361,7 +364,10 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 			continue
 		}
 		base, matchedTokens := surfaceTriggerScore(tokens, n)
-		score := base*n.Weight + add[n.ID] - sub[n.ID]
+		if evidenceBonus[n.ID] > 0 {
+			matchedTokens = appendMatchedTokens(matchedTokens, "evidence")
+		}
+		score := base*n.Weight + add[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
 		}
@@ -369,15 +375,28 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if add[n.ID] > 0 {
 			why += fmt.Sprintf(" +missed_when=%.1f", add[n.ID])
 		}
+		if evidenceBonus[n.ID] > 0 {
+			why += fmt.Sprintf(" +evidence=%.1f", evidenceBonus[n.ID])
+		}
 		if sub[n.ID] > 0 {
 			why += fmt.Sprintf(" -false_triggered=%.1f", sub[n.ID])
 		}
+		constraints := capabilityConstraints(n.ID, edges)
+		for _, ref := range evidenceRefs[n.ID] {
+			constraints.Evidence = append(constraints.Evidence, SurfacingConstraint{
+				Kind:       "matched_evidence",
+				Ref:        ref,
+				Detail:     "matched task tokens through evidence-only capability evaluation",
+				Confidence: evidenceBonus[n.ID],
+			})
+		}
+		sortConstraints(constraints.Evidence)
 		out = append(out, Surfaced{
 			Node:          n,
 			Score:         score,
 			Why:           why,
 			MatchedTokens: matchedTokens,
-			Constraints:   capabilityConstraints(n.ID, edges),
+			Constraints:   constraints,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -387,6 +406,53 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		return out[i].Node.ID < out[j].Node.ID
 	})
 	return out, nil
+}
+
+func evidenceMatchedOwnerBonuses(nodes []Node, edges []Edge, taskTokens map[string]bool) (map[string]float64, map[string][]string) {
+	evalScore := map[string]float64{}
+	for _, node := range nodes {
+		if node.Retired || !node.EvidenceOnly {
+			continue
+		}
+		base, _ := surfaceTriggerScore(taskTokens, node)
+		if base <= 0 {
+			continue
+		}
+		weight := node.Weight
+		if weight < 0.5 {
+			weight = 0.5
+		}
+		evalScore[node.ID] = base * weight
+	}
+	if len(evalScore) == 0 {
+		return nil, nil
+	}
+	ownerBonus := map[string]float64{}
+	ownerRefs := map[string][]string{}
+	for _, edge := range edges {
+		if edge.Kind != EdEvaluatedBy && edge.Kind != EdValidatedBy {
+			continue
+		}
+		matchedEvalScore := evalScore[edge.To]
+		if matchedEvalScore <= 0 {
+			continue
+		}
+		conf := edge.Confidence
+		if conf == 0 {
+			conf = 1
+		}
+		bonus := matchedEvalScore * conf
+		if edge.Kind == EdEvaluatedBy {
+			bonus *= 0.75
+		}
+		ownerBonus[edge.From] += bonus
+		ownerRefs[edge.From] = appendUniqueString(ownerRefs[edge.From], edge.To)
+	}
+	for owner, refs := range ownerRefs {
+		sort.Strings(refs)
+		ownerRefs[owner] = refs
+	}
+	return ownerBonus, ownerRefs
 }
 
 func capabilityConstraints(nodeID string, edges []Edge) SurfacingConstraints {
@@ -800,6 +866,36 @@ func surfaceTriggerScore(taskTokens map[string]bool, n Node) (float64, []string)
 	}
 	sort.Strings(tokens)
 	return float64(len(tokens)), tokens
+}
+
+func appendMatchedTokens(tokens []string, values ...string) []string {
+	seen := map[string]bool{}
+	for _, token := range tokens {
+		seen[token] = true
+	}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		tokens = append(tokens, value)
+		seen[value] = true
+	}
+	sort.Strings(tokens)
+	return tokens
+}
+
+func appendUniqueString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func tokenList(s string) []string {

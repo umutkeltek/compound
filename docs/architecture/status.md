@@ -72,6 +72,8 @@ Product command status note: `compound product hypothesis-plan --candidate <id> 
 
 Capability surfacing status note: `compound capability import-surfacing-misses <skill-surfacing-proposals.json>` consumes generated propose-only surfacing feedback reports as graph feedback for already-known capability nodes (`missed_when` raises matching future surfacing; `false_triggered_by` lowers it), records the source as no-promote evidence, and reports unknown capabilities as review debt rather than installing them. `capability surface` drops registry/role/meta tokens such as skill/tool/capability/task/agent so broad agent-tool descriptions do not swamp task-specific matches.
 
+Capability evaluation surfacing note: evidence-only evaluation nodes never surface as offers, but matched evaluation evidence can lift the already-known owner attached by `evaluated_by` / `validated_by`.
+
 Product authority status note: `compound product authority [--json]` is the read-only product feedback authority report over existing ledgers and candidate stores.
 
 Synthesis status note: `compound synthesis sweep [--stage cluster,contradict]` stays proposal-only; sweep/contradiction artifacts project as recorded review items with mutation guardrails and no apply actions, including legacy statusless artifacts.
