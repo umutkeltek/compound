@@ -947,6 +947,7 @@ var capabilityTokenStopWords = map[string]bool{
 	"this": true, "to": true, "use": true, "uses": true, "using": true,
 	"via": true, "when": true, "where": true, "with": true,
 	"without": true,
+	"build":   true, "building": true, "built": true,
 	"feature": true, "features": true, "implement": true, "implementation": true,
 	"request": true, "requests": true, "replay": true,
 

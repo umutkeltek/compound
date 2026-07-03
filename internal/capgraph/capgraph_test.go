@@ -298,6 +298,43 @@ func TestSurfaceUsesMeaningfulTriggerTokens(t *testing.T) {
 	}
 }
 
+func TestSurfaceIgnoresGenericBuildToken(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "procedure:agent-harness-doctrine",
+		Kind:     "procedure",
+		Name:     "agent-harness-doctrine",
+		Triggers: []string{"agent harness doctrine adapter"},
+		Weight:   1.25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:       "skill:churn-prevention",
+		Kind:     "skill",
+		Name:     "Churn Prevention",
+		Triggers: []string{"build cancellation flows"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:       "skill:prototype",
+		Kind:     "skill",
+		Name:     "Prototype",
+		Triggers: []string{"building throwaway app"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits := mustSurface(t, s, "build Agent Workbench harness adapter")
+	if !hasSurfaced(hits, "procedure:agent-harness-doctrine") {
+		t.Fatalf("harness adapter owner should surface: %+v", hits)
+	}
+	if hasSurfaced(hits, "skill:churn-prevention") || hasSurfaced(hits, "skill:prototype") {
+		t.Fatalf("unrelated capabilities should not surface from generic build token: %+v", hits)
+	}
+}
+
 func TestSurfaceTreatsGoAsLanguageInEngineeringContext(t *testing.T) {
 	_, s := newStore(t)
 	if err := s.Add(Node{
