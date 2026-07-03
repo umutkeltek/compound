@@ -371,6 +371,37 @@ func TestWorkbenchSurfacesDispatchStepRunSummaries(t *testing.T) {
 	}
 }
 
+func TestWorkbenchResolvesNoOpenWorkDispatchStepRun(t *testing.T) {
+	s := newStore(t)
+	run, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+		DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
+		MaxSteps:            5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.WaitReason != "no_open_work" {
+		t.Fatalf("fixture dispatch wait = %+v", run)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.DispatchStepRuns != 1 || len(report.DispatchStepRuns) != 1 {
+		t.Fatalf("dispatch step run summaries missing: counts=%+v runs=%+v", report.Counts, report.DispatchStepRuns)
+	}
+	summary := report.DispatchStepRuns[0]
+	if summary.ID != run.ID || summary.Status != "resolved" || summary.WaitReason != "no_open_work" || summary.CanContinue {
+		t.Fatalf("no-open-work dispatch summary = %+v run=%+v", summary, run)
+	}
+	if !contains(summary.BlockedOn, "work.ready_or_source_packet") {
+		t.Fatalf("no-open-work dispatch blocked_on changed: %+v", summary)
+	}
+	if summary.NextAction != "no open work at run time; no dispatch action remains for this run" {
+		t.Fatalf("no-open-work dispatch next action = %q", summary.NextAction)
+	}
+}
+
 func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "ready work can dispatch"}, fixedNow)

@@ -65,7 +65,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 External repo intake surface note: `capability external-intake --source-list <file>` keeps aggregate/source-list counts plus bounded next-action queues in human output and omits known row details behind `--json`, so large repo lists stay operator-readable without losing evidence. `external-intake-import-reviewed --source-list <file>` explicitly imports reviewed manifests into CapabilityGraph authority; `needs_review` nodes remain non-surfacing, so imported does not mean served/adopted.
 
-Dispatch read-model status note: Workbench resolves recorded dispatch-step waits to `status=resolved` / `wait_reason=terminal_work` when every blocked work ref is already terminal, without rewriting old run files; operator orient hides resolved/no-op dispatch history from the RUNNING triptych.
+Dispatch read-model status note: Workbench resolves recorded dispatch-step waits to `status=resolved` / `wait_reason=terminal_work` when every blocked work ref is already terminal, and resolves historical `no_open_work` waits as no-op summaries, without rewriting old run files; operator orient hides resolved/no-op dispatch history from the RUNNING triptych.
 
 Distiller request record note: `distiller request --record` artifacts under `reviews/distiller-requests` annotate the review queue as recorded replay packets with source refs, not human review debt; invalid request JSON remains blocked.
 

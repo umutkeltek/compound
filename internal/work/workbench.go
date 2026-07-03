@@ -514,6 +514,12 @@ func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) Di
 	if summary.Status != "waiting" || len(summary.BlockedOn) == 0 {
 		return summary
 	}
+	if summary.WaitReason == "no_open_work" && dispatchNoOpenWorkWait(summary.BlockedOn) {
+		summary.Status = "resolved"
+		summary.CanContinue = false
+		summary.NextAction = "no open work at run time; no dispatch action remains for this run"
+		return summary
+	}
 	var terminalRefs []string
 	for _, blocked := range summary.BlockedOn {
 		workID, ok := dispatchBlockedWorkID(blocked)
@@ -535,6 +541,15 @@ func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) Di
 	summary.BlockedOn = mergeUnique(terminalRefs)
 	summary.NextAction = "referenced work is terminal; no dispatch action required"
 	return summary
+}
+
+func dispatchNoOpenWorkWait(blockedOn []string) bool {
+	for _, blocked := range blockedOn {
+		if strings.TrimSpace(blocked) == "work.ready_or_source_packet" {
+			return true
+		}
+	}
+	return false
 }
 
 func dispatchBlockedWorkID(blocked string) (string, bool) {
