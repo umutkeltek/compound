@@ -33,6 +33,8 @@ const (
 	SourceIssueReviewSchemaVersion = "compound.product_source_issue_review.v0.1"
 )
 
+const ascSignalFreshnessWindow = 48 * time.Hour
+
 var signalExportProviderAllowlist = map[string]struct{}{
 	"app_store_connect":     {},
 	"revenuecat":            {},
@@ -380,6 +382,17 @@ type DoctorReport struct {
 	ReviewReady         []ReviewReady         `json:"review_ready,omitempty"`
 	SourceIssues        []ProductSourceIssue  `json:"source_issues,omitempty"`
 	MissingEvidenceRefs []string              `json:"missing_evidence_refs,omitempty"`
+	ASCSignalStaleness  []ASCSignalStaleness  `json:"asc_signal_staleness,omitempty"`
+}
+
+type ASCSignalStaleness struct {
+	ProductID      string `json:"product_id"`
+	LastSignalID   string `json:"last_signal_id,omitempty"`
+	LastObservedAt string `json:"last_observed_at,omitempty"`
+	AgeHours       int    `json:"age_hours,omitempty"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason,omitempty"`
+	FixCommand     string `json:"fix_command"`
 }
 
 type ReviewReady struct {
@@ -1442,6 +1455,31 @@ func LoadTimeline(homePath, productID string) (Timeline, error) {
 }
 
 func Doctor(homePath, productID string) (DoctorReport, error) {
+	return DoctorWithNow(homePath, productID, time.Now())
+}
+
+func DoctorWithNow(homePath, productID string, now time.Time) (DoctorReport, error) {
+	return DoctorWithOptions(homePath, productID, DoctorOptions{Now: now})
+}
+
+type DoctorOptions struct {
+	Now                  time.Time
+	RegisteredASCAppRefs []string
+}
+
+func DoctorForRegisteredProduct(homePath string, store *mem.Store, productID string, now time.Time) (DoctorReport, error) {
+	refs, err := registeredASCAppRefs(store, productID)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	return DoctorWithOptions(homePath, productID, DoctorOptions{Now: now, RegisteredASCAppRefs: refs})
+}
+
+func DoctorWithOptions(homePath, productID string, opts DoctorOptions) (DoctorReport, error) {
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	tl, err := LoadTimeline(homePath, productID)
 	if err != nil {
 		return DoctorReport{}, err
@@ -1466,8 +1504,12 @@ func Doctor(homePath, productID string) (DoctorReport, error) {
 	report.ReviewReady = reviewReadySignals(report.PendingReview, tl.Signals)
 	report.ReviewReadyCount = len(report.ReviewReady)
 	report.SourceIssueCount = len(report.SourceIssues)
+	report.ASCSignalStaleness = staleASCSignals(tl.Signals, productID, now, opts.RegisteredASCAppRefs)
 	if report.PendingReviewCount > 0 || report.SourceIssueCount > 0 {
 		report.Status = "needs_review"
+	}
+	if report.Status == "ok" && len(report.ASCSignalStaleness) > 0 {
+		report.Status = "warn"
 	}
 	return report, nil
 }
@@ -1500,6 +1542,92 @@ func EvidenceRefs(report DoctorReport) []string {
 		refs = append(refs, "product_hypothesis_missing_evidence:"+id)
 	}
 	return compact(refs)
+}
+
+func registeredASCAppRefs(store *mem.Store, productID string) ([]string, error) {
+	if store == nil {
+		return nil, nil
+	}
+	entities, err := store.Entities()
+	if err != nil {
+		return nil, fmt.Errorf("load product registry entities: %w", err)
+	}
+	var refs []string
+	for _, entity := range entities {
+		if entity.Slug != productID || entity.Kind != "product" {
+			continue
+		}
+		for _, id := range entity.Identifiers {
+			id = strings.TrimSpace(id)
+			if strings.HasPrefix(id, "appstore:") || strings.HasPrefix(id, "asc:app:") {
+				refs = append(refs, id)
+			}
+		}
+	}
+	return compact(refs), nil
+}
+
+func staleASCSignals(signals []Signal, productID string, now time.Time, registeredASCAppRefs []string) []ASCSignalStaleness {
+	var latest Signal
+	var latestAt time.Time
+	for _, signal := range signals {
+		if signal.ProductID != productID || !isASCSignal(signal) {
+			continue
+		}
+		observedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(signal.ObservedAt))
+		if err != nil {
+			continue
+		}
+		if latest.ID == "" || observedAt.After(latestAt) {
+			latest = signal
+			latestAt = observedAt
+		}
+	}
+	if latest.ID == "" {
+		if len(registeredASCAppRefs) == 0 {
+			return nil
+		}
+		return []ASCSignalStaleness{{
+			ProductID:  productID,
+			Status:     "warn",
+			Reason:     "no_asc_signal_recorded",
+			FixCommand: ascDailyFixCommand(),
+		}}
+	}
+	if now.Before(latestAt) {
+		return nil
+	}
+	age := now.Sub(latestAt)
+	if age <= ascSignalFreshnessWindow {
+		return nil
+	}
+	return []ASCSignalStaleness{{
+		ProductID:      productID,
+		LastSignalID:   latest.ID,
+		LastObservedAt: latestAt.UTC().Format(time.RFC3339),
+		AgeHours:       int(age.Hours()),
+		Status:         "warn",
+		Reason:         "last_asc_signal_older_than_48h",
+		FixCommand:     ascDailyFixCommand(),
+	}}
+}
+
+func ascDailyFixCommand() string {
+	return `COMPOUND_ASC_DAILY_COMMAND='asc insights daily --app {app_id} --vendor {vendor} --date {date} --output json' bun tools/asc_daily_signals.ts --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" --asc-command "${COMPOUND_ASC_DAILY_COMMAND}" --apply --json`
+}
+
+func isASCSignal(signal Signal) bool {
+	metric := normalizeIDPart(signal.MetricName)
+	if strings.HasPrefix(metric, "app_store_connect_") || metric == "app_store_product_page_conversion" {
+		return true
+	}
+	for _, ref := range signal.EvidenceRefs {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "asc:") || strings.Contains(ref, ":asc:") || strings.Contains(ref, ":asc-") {
+			return true
+		}
+	}
+	return false
 }
 
 func WritebackGate(report DoctorReport, actionIntentRef, policyDecisionRef string, now time.Time) writeback.OwnerWritebackGate {

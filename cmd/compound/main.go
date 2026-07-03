@@ -7654,7 +7654,7 @@ func cmdProduct(args []string) {
 			fmt.Fprintln(os.Stderr, "usage: compound product doctor <product_id> [--writeback]")
 			os.Exit(2)
 		}
-		report, err := product.Doctor(homePath, args[1])
+		report, err := product.DoctorForRegisteredProduct(homePath, store, args[1], time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product doctor:", err)
 			os.Exit(1)
@@ -7671,6 +7671,10 @@ func cmdProduct(args []string) {
 		}
 		fmt.Printf("- source_issues: %d\n", report.SourceIssueCount)
 		fmt.Printf("- missing_evidence_refs: %d\n", len(report.MissingEvidenceRefs))
+		for _, stale := range report.ASCSignalStaleness {
+			fmt.Printf("- asc_signal_stale: %s last=%s age_hours=%d\n", stale.LastSignalID, stale.LastObservedAt, stale.AgeHours)
+			fmt.Printf("  fix: %s\n", stale.FixCommand)
+		}
 		if len(args) == 3 && args[2] == "--writeback" && product.NeedsWriteback(report) {
 			result, err := runProductWriteback(report, time.Now())
 			if err != nil {

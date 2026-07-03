@@ -127,7 +127,7 @@ func TestApplyImportsProductSignalAndHypothesisCandidate(t *testing.T) {
 	if !hasString(reviewed.Hypotheses[0].EvidenceRefs, reviewReport.EvidenceID) || !hasString(reviewed.Hypotheses[0].EvidenceRefs, "product_review:review_focus_visuals_20260713") {
 		t.Fatalf("review evidence refs = %+v", reviewed.Hypotheses[0].EvidenceRefs)
 	}
-	postReview, err := Doctor(home, "product:focus-notes")
+	postReview, err := DoctorWithNow(home, "product:focus-notes", tProduct.Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,6 +530,114 @@ func TestLoadASCDatapointsSignalAdaptsProviderSnapshot(t *testing.T) {
 	}
 }
 
+func TestDoctorWarnsWhenASCSignalIsStale(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := LoadASCDatapointsSignal("../../fixtures/product/asc-datapoints.json", ASCDatapointsSignalOptions{
+		ProductID: "product:focus-notes",
+		AppID:     "123456789",
+		Metric:    "review_count",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySignal(home, store, doc, "fixtures/product/asc-datapoints.json", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	report, err := DoctorWithNow(home, "product:focus-notes", time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "warn" || len(report.ASCSignalStaleness) != 1 {
+		t.Fatalf("stale ASC doctor report = %+v", report)
+	}
+	stale := report.ASCSignalStaleness[0]
+	if stale.LastSignalID != doc.Signal.ID || stale.Reason != "last_asc_signal_older_than_48h" || !strings.Contains(stale.FixCommand, "tools/asc_daily_signals.ts") || !strings.Contains(stale.FixCommand, "--asc-command") {
+		t.Fatalf("stale ASC warning = %+v", stale)
+	}
+}
+
+func TestASCStalenessTreatsCanonicalConversionMetricAsASC(t *testing.T) {
+	signals := []Signal{{
+		ID:         "sig_conversion",
+		ProductID:  "product:focus-notes",
+		MetricName: "app_store_product_page_conversion",
+		ObservedAt: "2026-07-13T12:00:00Z",
+	}}
+	stale := staleASCSignals(signals, "product:focus-notes", time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC), nil)
+	if len(stale) != 1 || stale[0].LastSignalID != "sig_conversion" {
+		t.Fatalf("canonical ASC conversion staleness = %+v", stale)
+	}
+}
+
+func TestDoctorWarnsWhenRegisteredAppHasNoASCSignal(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := Bundle{
+		SchemaVersion: SchemaVersion,
+		Product: Product{
+			ID:             "product:empty-store-app",
+			Name:           "Empty Store App",
+			OwnerEntity:    "project:empty-store-app",
+			Surfaces:       []Surface{{ID: "app-store-page", Kind: "app_store", Ref: "appstore:555555555"}},
+			Channels:       []string{"app_store"},
+			Positioning:    "Synthetic app used to prove ASC silence warnings.",
+			PrivacyPosture: "local_first",
+		},
+		EvidenceRefs: []string{"fixture:product-registry"},
+	}
+	if _, err := Apply(home, store, bundle, "fixtures/product/empty-store-app.yaml", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	report, err := DoctorForRegisteredProduct(home, store, "product:empty-store-app", tProduct.Add(72*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "warn" || len(report.ASCSignalStaleness) != 1 {
+		t.Fatalf("registered app silence should warn: %+v", report)
+	}
+	stale := report.ASCSignalStaleness[0]
+	if stale.LastSignalID != "" || stale.Reason != "no_asc_signal_recorded" || !strings.Contains(stale.FixCommand, "COMPOUND_ASC_DAILY_COMMAND") {
+		t.Fatalf("registered app silence warning = %+v", stale)
+	}
+}
+
+func TestASCSignalReplayIsIdempotentPerMetricDate(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := LoadSignal("../../fixtures/product/source-export.asc.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ApplySignal(home, store, doc, "fixtures/product/source-export.asc.yaml", tProduct)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ApplySignal(home, store, doc, "fixtures/product/source-export.asc.yaml", tProduct.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.SignalIDs) != 1 || len(second.SignalIDs) != 1 || first.SignalIDs[0] != second.SignalIDs[0] {
+		t.Fatalf("signal replay ids first=%+v second=%+v", first, second)
+	}
+	tl, err := LoadTimeline(home, "product:focus-notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tl.Signals) != 1 || tl.Signals[0].ID != first.SignalIDs[0] {
+		t.Fatalf("replay should keep one signal row: %+v", tl.Signals)
+	}
+}
+
 func TestApplyCanonicalMetricsCreatesReviewReadyHypothesis(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -637,6 +745,77 @@ func TestLoadASCDatapointsSignalRejectsMissingApp(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("missing ASC app id should be rejected")
+	}
+}
+
+func TestASCSignalImportIsIdempotentPerDay(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := LoadASCDatapointsSignal("../../fixtures/product/asc-datapoints.json", ASCDatapointsSignalOptions{
+		ProductID: "product:focus-notes",
+		AppID:     "123456789",
+		Metric:    "review_count",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySignal(home, store, doc, "fixtures/product/asc-datapoints.json", tProduct); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySignal(home, store, doc, "fixtures/product/asc-datapoints.json", tProduct.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	signals, err := loadSignals(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(signals) != 1 || signals[0].ID != doc.Signal.ID {
+		t.Fatalf("signals = %+v, want one deduped daily ASC signal %s", signals, doc.Signal.ID)
+	}
+}
+
+func TestProductDoctorWarnsWhenASCSignalsGoStale(t *testing.T) {
+	home := t.TempDir()
+	staleAt := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	if err := appendUniqueSignal(home, Signal{
+		ID:          "sig_stale_asc",
+		ProductID:   "product:focus-notes",
+		Surface:     "app-store-page",
+		ChangeEvent: "App Store Connect daily metric snapshot observed.",
+		MetricName:  "app_store_connect_units",
+		Before:      3,
+		After:       3,
+		Window:      "daily snapshot 2026-07-10",
+		Confidence:  0.72,
+		EvidenceRefs: []string{
+			"asc:daily:123456789:2026-07-10:units",
+			"asc:app:123456789",
+		},
+		ObservedAt: staleAt.Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := DoctorWithNow(home, "product:focus-notes", staleAt.Add(49*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "warn" || len(report.ASCSignalStaleness) != 1 {
+		t.Fatalf("doctor report = %+v, want stale ASC warning", report)
+	}
+	if report.ASCSignalStaleness[0].LastSignalID != "sig_stale_asc" ||
+		!strings.Contains(report.ASCSignalStaleness[0].FixCommand, "tools/asc_daily_signals.ts") {
+		t.Fatalf("staleness = %+v", report.ASCSignalStaleness[0])
+	}
+
+	fresh, err := DoctorWithNow(home, "product:focus-notes", staleAt.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != "ok" || len(fresh.ASCSignalStaleness) != 0 {
+		t.Fatalf("fresh doctor report = %+v, want no stale ASC warning", fresh)
 	}
 }
 

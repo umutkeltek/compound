@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/mem"
@@ -134,7 +135,7 @@ func TestReviewPlanRecordsGatedReviewArtifactsWithoutResolvingHypothesis(t *test
 	if reviewReport.Status != "updated" || reviewReport.HypothesisID != candidateID || reviewReport.TransitionID == "" || reviewReport.EvidenceID == "" {
 		t.Fatalf("review report = %+v", reviewReport)
 	}
-	doctor, err := Doctor(home, "product:focus-notes")
+	doctor, err := DoctorWithNow(home, "product:focus-notes", tProduct.Add(24*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,7 @@
 # Package & Command Status
 
+ASC daily source note: `tools/asc_daily_signals.ts` is a rented Bun edge that converts operator-owned App Store Connect daily snapshots into `compound.product_signal_export.v0.1` files and applies them only through `compound product signal`; `product doctor` warns when a registered app-store product has no ASC signal or its latest ASC signal is older than 48h, with an exact fix command. Launchd plist is shipped under `ops/launchd/` but loading remains an operator act.
+
 Memory graph zoom note: `internal/mem` exposes `RecallGraphOpts` with optional `Direction` (`up`/`down`) and relation-kind filters; `compound memory graph` accepts `--direction up|down` and repeatable/comma `--kind`, so `part_of` chains can zoom generic-to-specific without pulling sibling subtrees or unrelated relation kinds.
 
 Knowledge conversation-edge note: `fixtures/knowledge/chatgpt-conversation-export.json` proves private `source.kind=chatgpt` conversation exports enter the generic `compound.knowledge_export.v0.1` door with item event time, private evidence/candidate visibility, 4000-char bounded quotes, exact reimport reuse, and cross-source echo folding; no conversation-specific core package or importer branch exists.
