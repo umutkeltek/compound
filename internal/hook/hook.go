@@ -167,7 +167,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		}
 	}
 	req := buildContextRequest(name, fx, ec, pack, mode, now)
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Task), nil, now)
+	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
 	ev.IDs.ContextPackID = pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -205,7 +205,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		}
 	}
 	req := buildContextRequest(name, fx, ec, pack, mode, now)
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Prompt), nil, now)
+	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
 	ev.IDs.ContextPackID = pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
@@ -519,6 +519,22 @@ func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract,
 			AllowProvisionalReviews: false,
 		},
 	}
+}
+
+func contextHookInputHash(name string, fx Fixture, mode string) string {
+	promptHash := ""
+	if strings.TrimSpace(fx.Prompt) != "" {
+		promptHash = hashStr(fx.Prompt)
+	}
+	return hashStr(strings.Join([]string{
+		"hook", strings.TrimSpace(name),
+		"harness", strings.TrimSpace(fx.Harness),
+		"cwd", strings.TrimSpace(fx.Cwd),
+		"task", strings.TrimSpace(fx.Task),
+		"repo_kind", strings.TrimSpace(fx.RepoKind),
+		"mode", strings.TrimSpace(mode),
+		"prompt_sha256", promptHash,
+	}, "\x00"))
 }
 
 func hookRequestedMode(name string, fx Fixture) string {

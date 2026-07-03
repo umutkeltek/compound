@@ -120,6 +120,43 @@ func TestHookEventIDIncludesInputHash(t *testing.T) {
 	}
 }
 
+func TestContextHookInputHashIncludesNormalizedScope(t *testing.T) {
+	homePath := t.TempDir()
+	deps := baseDeps()
+	deps.HomePath = homePath
+
+	first, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/a", Task: "audit", RepoKind: "product"}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("first session-start: %v", err)
+	}
+	second, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/b", Task: "audit", RepoKind: "product"}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("second session-start: %v", err)
+	}
+	if first.Event.InputHash == second.Event.InputHash || first.Event.ID == second.Event.ID {
+		t.Fatalf("session-start identity should include cwd: first=%s/%s second=%s/%s", first.Event.InputHash, first.Event.ID, second.Event.InputHash, second.Event.ID)
+	}
+
+	raw := "same raw prompt"
+	promptA, err := Run(Fixture{Hook: "user-prompt-submit", Harness: "codex", Cwd: "/repo/x", Task: "pricing", RepoKind: "product", Prompt: raw}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("first user-prompt-submit: %v", err)
+	}
+	promptB, err := Run(Fixture{Hook: "user-prompt-submit", Harness: "codex", Cwd: "/repo/x", Task: "onboarding", RepoKind: "product", Prompt: raw}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("second user-prompt-submit: %v", err)
+	}
+	if promptA.Event.InputHash == promptB.Event.InputHash || promptA.Event.ID == promptB.Event.ID {
+		t.Fatalf("user-prompt identity should include task as well as prompt hash: first=%s/%s second=%s/%s", promptA.Event.InputHash, promptA.Event.ID, promptB.Event.InputHash, promptB.Event.ID)
+	}
+	for _, res := range []Result{promptA, promptB} {
+		blob, _ := json.Marshal(res)
+		if strings.Contains(string(blob), raw) {
+			t.Fatalf("raw prompt leaked into result:\n%s", string(blob))
+		}
+	}
+}
+
 func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	homePath := t.TempDir()
 	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))

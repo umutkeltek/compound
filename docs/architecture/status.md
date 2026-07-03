@@ -57,6 +57,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Hook input hash note: context-producing hooks hash normalized hook, harness, cwd, task, repo-kind, mode, and prompt digest, so same prompt/task in different scope does not collide and raw prompt text stays out of artifacts.
+
 Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown.
 
 Active packet proof note: `work active-packet-proof --source-packet <packet.md>` and `workbench --source-packet <packet.md>` compare the current packet evidence ref against the proof chain, so stale terminal packet proof reports risk instead of `source_packet_terminal`.
