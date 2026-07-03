@@ -313,7 +313,7 @@ func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveC
 		unknowns = append(unknowns, fmt.Sprintf("repo_kind defaulted to %s (no %s marker found)", in.RepoKind, repoMarker))
 	}
 	return envelope.EffectiveContract{
-		Header:             header(envelope.SVEffectiveContract, idFor("contract_", in.Harness, in.RepoKind, in.Task), now, in),
+		Header:             header(envelope.SVEffectiveContract, contractIDForInput(in), now, in),
 		Harness:            in.Harness,
 		TaskMode:           in.Mode,
 		ActiveInstructions: orEmpty(active),
@@ -459,8 +459,10 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 	if len(excl) > 0 {
 		summary += " Out-of-scope context recorded — see `excluded`."
 	}
+	hdr := header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task), now, in)
+	hdr.IDs.ContractID = contractIDForInput(in)
 	return envelope.ContextPack{
-		Header:             header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task), now, in),
+		Header:             hdr,
 		SummaryMD:          summary,
 		Included:           incl,
 		Excluded:           excl,
@@ -2065,6 +2067,10 @@ func header(sv, id string, now time.Time, in Input) envelope.Header {
 func idFor(prefix string, parts ...string) string {
 	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return prefix + hex.EncodeToString(h[:])[:12]
+}
+
+func contractIDForInput(in Input) string {
+	return idFor("contract_", in.Harness, in.RepoKind, in.Task)
 }
 
 func expandPath(path string) string {

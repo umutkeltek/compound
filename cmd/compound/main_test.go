@@ -507,8 +507,9 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 		}
 	}
 
+	cwd := t.TempDir()
 	out := captureStdout(t, func() {
-		cmdContract([]string{"compile", "--harness", "codex", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
+		cmdContract([]string{"compile", "--harness", "codex", "--cwd", cwd, "--task", "use hooks", "--repo-kind", "control-plane"})
 	})
 	var ec envelope.EffectiveContract
 	if err := json.Unmarshal([]byte(out), &ec); err != nil {
@@ -541,6 +542,17 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	datedPath := filepath.Join(homePath, "contracts", "effective", createdAt.UTC().Format("2006-01-02"), ec.ID+".json")
 	if _, err := os.Stat(datedPath); err != nil {
 		t.Fatalf("dated effective contract artifact missing: %v", err)
+	}
+
+	orientOut := captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--cwd", cwd, "--task", "use hooks", "--repo-kind", "control-plane"})
+	})
+	var pack envelope.ContextPack
+	if err := json.Unmarshal([]byte(orientOut), &pack); err != nil {
+		t.Fatalf("parse orient pack: %v\n%s", err, orientOut)
+	}
+	if pack.IDs.ContractID != ec.ID {
+		t.Fatalf("orient contract_id = %q, want %q", pack.IDs.ContractID, ec.ID)
 	}
 }
 

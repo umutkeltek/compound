@@ -40,6 +40,9 @@ func TestCompileAndPackValidate(t *testing.T) {
 		if err := cp.Validate(); err != nil {
 			t.Fatalf("%s pack invalid: %v", kind, err)
 		}
+		if cp.IDs.ContractID != ec.ID {
+			t.Fatalf("%s pack contract_id = %q, want %q", kind, cp.IDs.ContractID, ec.ID)
+		}
 		if err := envelope.RoundTrip(&cp); err != nil {
 			t.Fatalf("%s pack round-trip: %v", kind, err)
 		}
