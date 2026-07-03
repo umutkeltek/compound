@@ -55,6 +55,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.
+
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.
 
 Spine orientation note: `compound orient --operator [--json]` is the compact operator projection over needs-me/running/changed. It reads candidate inboxes, shared review queue, workbench open/recent state, receipts/transitions, and the memory claim ledger, with only a rebuildable `projections/orient-operator-last-seq.json` cursor write for claim-seq deltas.

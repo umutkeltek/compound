@@ -283,7 +283,7 @@ func buildOrientChanged(homePath string, report work.WorkbenchReport, currentSeq
 			if rec, err := readReceipt(homePath, item.ReceiptID); err == nil {
 				change.MoveType = rec.MoveType
 				change.Summary = rec.StateDelta.Summary
-				change.Changed = rec.StateDelta.Changed
+				change.Changed = rec.EffectiveChanged()
 				change.CreatedAt = rec.CreatedAt
 			}
 		}

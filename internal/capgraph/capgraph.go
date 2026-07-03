@@ -572,11 +572,12 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 		}
 		report.ReceiptsScanned++
 
-		canValidateUse := rec.Outcome == "completed" && rec.StateDelta.Changed
+		changed := rec.EffectiveChanged()
+		canValidateUse := rec.Outcome == "completed" && changed
 		if rec.Outcome != "completed" {
 			report.SkippedNonCompleted++
 		}
-		if !rec.StateDelta.Changed {
+		if !changed {
 			report.SkippedUnchanged++
 		}
 

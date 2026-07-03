@@ -527,20 +527,55 @@ type Receipt struct {
 }
 
 func (e *Receipt) Kind() string { return "receipt" }
+
+func (e Receipt) EffectiveChanged() bool {
+	if e.StateDelta.Changed {
+		return true
+	}
+	if e.Outcome != "completed" {
+		return false
+	}
+	proofRefs := e.proofRefs()
+	switch e.MoveType {
+	case "memory_delta":
+		return len(nonEmpty(e.memoryRefs())) > 0
+	case "rule_delta":
+		return hasPrefixedProof(proofRefs, []string{"failure:", "failure_pattern:", "rule:", "check:", "guard:"})
+	case "control_plane_repair", "outward_delta":
+		return len(nonEmpty(proofRefs)) > 0
+	default:
+		return false
+	}
+}
+
+func (e Receipt) proofRefs() []string {
+	proofRefs := append([]string{}, e.ProofRefs...)
+	proofRefs = append(proofRefs, e.StateDelta.Artifacts...)
+	proofRefs = append(proofRefs, e.StateDelta.Verification...)
+	return proofRefs
+}
+
+func (e Receipt) memoryRefs() []string {
+	refs := append([]string{}, e.Memory.Candidates...)
+	refs = append(refs, e.Memory.Promoted...)
+	refs = append(refs, e.Memory.Parked...)
+	refs = append(refs, e.Memory.Rejected...)
+	return refs
+}
+
 func (e *Receipt) Validate() error {
 	v := &verr{}
 	e.Header.validate(v, SVReceipt, "rec_")
 	v.enum("outcome", e.Outcome, ReceiptOutcomes, true)
 	v.enum("move_type", e.MoveType, MoveTypes, true)
-	proofRefs := append(append([]string{}, e.ProofRefs...), e.StateDelta.Artifacts...)
-	proofRefs = append(proofRefs, e.StateDelta.Verification...)
+	proofRefs := e.proofRefs()
 	switch e.MoveType {
 	case "outward_delta":
 		if e.Outcome == "completed" && !e.StateDelta.Changed && len(nonEmpty(proofRefs)) == 0 {
 			v.addf("outward_delta completed requires state_delta.changed=true or proof_refs/artifacts/verification")
 		}
 	case "memory_delta":
-		if len(nonEmpty(append(append(append([]string{}, e.Memory.Candidates...), e.Memory.Promoted...), append(e.Memory.Parked, e.Memory.Rejected...)...))) == 0 {
+		if len(nonEmpty(e.memoryRefs())) == 0 {
 			v.addf("memory_delta requires memory candidate/promoted/parked/rejected ref")
 		}
 	case "rule_delta":

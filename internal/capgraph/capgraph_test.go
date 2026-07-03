@@ -106,13 +106,13 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 2 || report.MissedCapabilitiesSeen != 1 {
+	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 3 || report.MissedCapabilitiesSeen != 1 {
 		t.Fatalf("report = %+v", report)
 	}
-	if report.AppliedValidatedEdges != 1 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 3 {
+	if report.AppliedValidatedEdges != 2 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 4 {
 		t.Fatalf("report = %+v", report)
 	}
-	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 1 {
+	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 0 {
 		t.Fatalf("skip counts = %+v", report)
 	}
 	if report.SkippedInvalidReceipt != 1 {
@@ -125,14 +125,16 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	if !hasEdge(edges, EdValidatedBy, "skill:pricing", "rec_used") {
 		t.Fatalf("edges = %+v, want used skill validated by receipt", edges)
 	}
+	if !hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_unchanged") {
+		t.Fatalf("edges = %+v, want legacy proof-bearing receipt to validate used skill", edges)
+	}
 	if !hasEdge(edges, EdMissedWhen, "context:receipt", "skill:missed") ||
 		!hasEdge(edges, EdMissedWhen, "context:test", "skill:missed") {
 		t.Fatalf("edges = %+v, want missed skill context edges from failed receipt summary", edges)
 	}
 	if hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_used") ||
-		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_failed") ||
-		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_unchanged") {
-		t.Fatalf("offered/failed/unchanged capability should not validate: %+v", edges)
+		hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_failed") {
+		t.Fatalf("offered/failed capability should not validate: %+v", edges)
 	}
 
 	replay, err := s.ConsumeReceipts(home, t0)

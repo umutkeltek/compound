@@ -21,6 +21,64 @@ func withWork(h Header, wid string) Header {
 	return h
 }
 
+func TestReceiptEffectiveChanged(t *testing.T) {
+	base := func(moveType, outcome string, changed bool) Receipt {
+		return Receipt{
+			Header:     hdr(SVReceipt, "rec_effective"),
+			Outcome:    outcome,
+			MoveType:   moveType,
+			StateDelta: StateDelta{Changed: changed, Summary: "summary", FilesChanged: []string{}, Artifacts: []string{}, Verification: []string{}},
+			Cost:       ReceiptCost{ModelCalls: []string{}},
+			Skills:     ReceiptSkills{Used: []string{}, Missed: []string{}, Candidate: []string{}},
+			Memory:     ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
+			Next:       ReceiptNext{SuggestedWork: []string{}},
+		}
+	}
+
+	tests := []struct {
+		name string
+		rec  Receipt
+		want bool
+	}{
+		{name: "explicit changed", rec: base("audit_only", "completed", true), want: true},
+		{name: "completed audit unchanged", rec: base("audit_only", "completed", false), want: false},
+		{name: "failed proof unchanged", rec: func() Receipt {
+			rec := base("control_plane_repair", "failed", false)
+			rec.ProofRefs = []string{"proof:failed"}
+			return rec
+		}(), want: false},
+		{name: "control repair proof", rec: func() Receipt {
+			rec := base("control_plane_repair", "completed", false)
+			rec.ProofRefs = []string{"proof:repair"}
+			return rec
+		}(), want: true},
+		{name: "rule proof", rec: func() Receipt {
+			rec := base("rule_delta", "completed", false)
+			rec.ProofRefs = []string{"guard:repeat-failure"}
+			return rec
+		}(), want: true},
+		{name: "memory proof", rec: func() Receipt {
+			rec := base("memory_delta", "completed", false)
+			rec.Memory.Promoted = []string{"claim_1"}
+			return rec
+		}(), want: true},
+		{name: "outward proof", rec: func() Receipt {
+			rec := base("outward_delta", "completed", false)
+			rec.ProofRefs = []string{"artifact:handoff"}
+			return rec
+		}(), want: true},
+		{name: "outward proofless unchanged", rec: base("outward_delta", "completed", false), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.rec.EffectiveChanged(); got != tt.want {
+				t.Fatalf("EffectiveChanged() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 	envs := []Envelope{
 		&EffectiveContract{Header: hdr(SVEffectiveContract, "contract_1"), Harness: "claude_code"},

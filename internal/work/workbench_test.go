@@ -462,6 +462,46 @@ func TestWorkbenchDerivesObservatoryTags(t *testing.T) {
 	}
 }
 
+func TestWorkbenchUsesEffectiveChangedForLegacyProofBearingReceipt(t *testing.T) {
+	s := newStore(t)
+	done, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "legacy receipt projects changed"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(done.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(done.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(done.ID, AdvanceInput{To: "verifying", VerificationID: "ver_legacy"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := s.Close(done.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "legacy receipt proof",
+		ProofRefs: []string{"proof:legacy"},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := closed.Receipt
+	legacy.StateDelta.Changed = false
+	if err := s.writeJSON(s.envPath(legacy.ID), &legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findWorkbenchItem(t, report.Recent, done.ID)
+	if !item.Changed || !contains(item.ObservatoryTags, "change:changed") {
+		t.Fatalf("legacy proof-bearing receipt projected unchanged: %+v", item)
+	}
+}
+
 func closeWorkbenchTestWork(t *testing.T, s *Store, workID string, at time.Time, summary string) {
 	t.Helper()
 	if _, err := s.Claim(workID, "codex", at); err != nil {

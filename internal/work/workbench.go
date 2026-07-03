@@ -240,7 +240,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 			report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" invalid: "+err.Error())
 		} else {
 			item.MoveType = rec.MoveType
-			item.Changed = rec.StateDelta.Changed
+			item.Changed = rec.EffectiveChanged()
 			item.ReviewTrigger = rec.Next.ReviewTrigger
 			item.recentAt = workbenchLatestTimestamp(item.recentAt, rec.CreatedAt)
 		}
