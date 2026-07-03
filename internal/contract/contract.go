@@ -374,11 +374,12 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		}
 		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}})
 	}
-	decisions, decisionRevs, err := loadDecisionRefs(homePath)
+	decisions, decisionRevs, excludedDecisions, err := loadDecisionRefs(homePath, in)
 	if err != nil {
 		return ec, err
 	}
 	ec.ActiveDecisions = decisions
+	ec.Excluded = append(ec.Excluded, excludedDecisions...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, decisionRevs)
 	memoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
 	if err != nil {
@@ -453,10 +454,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if len(hooks) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active hook ref(s) included Compound runtime.", len(hooks))
 	}
-	decisions, decisionRevs, err := loadDecisionRefs(homePath)
+	decisions, decisionRevs, excludedDecisions, err := loadDecisionRefs(homePath, in)
 	if err != nil {
 		return pack, err
 	}
+	pack.Excluded = append(pack.Excluded, excludedDecisions...)
 	for _, ref := range decisions {
 		pack.Included = append(pack.Included, envelope.IncludedRef{
 			Ref:         ref,
@@ -912,14 +914,14 @@ func memoryLine(claim mem.Claim) string {
 	return strings.TrimSpace(text[:max-3]) + "..."
 }
 
-func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {
+func loadDecisionRefs(homePath string, in Input) ([]string, []envelope.SourceRev, []envelope.ExcludedRef, error) {
 	store, err := mem.Open(homePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	claims, err := store.AllCurrent()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	byRef := map[string]mem.Claim{}
 	for _, c := range claims {
@@ -940,11 +942,49 @@ func loadDecisionRefs(homePath string) ([]string, []envelope.SourceRev, error) {
 		refs = append(refs, ref)
 	}
 	sort.Strings(refs)
+	active := refs
+	var excluded []envelope.ExcludedRef
+	if !decisionScopeIncludesAll(in.RepoKind) {
+		active = make([]string, 0, len(refs))
+		taskTokens := memoryTextTokens(in.Task + " " + filepath.Base(in.Cwd))
+		for _, ref := range refs {
+			if decisionRelevantToTask(byRef[ref], taskTokens) {
+				active = append(active, ref)
+				continue
+			}
+			excluded = append(excluded, envelope.ExcludedRef{
+				Ref:    ref,
+				Reason: "accepted decision from Compound ledger omitted: not relevant to repo/task scoped context",
+			})
+		}
+	}
 	revs := make([]envelope.SourceRev, 0, len(refs))
-	for _, ref := range refs {
+	for _, ref := range active {
 		revs = append(revs, envelope.SourceRev{Source: ref, Rev: "claim:" + byRef[ref].ID})
 	}
-	return refs, revs, nil
+	return active, revs, excluded, nil
+}
+
+func decisionScopeIncludesAll(repoKind string) bool {
+	return strings.TrimSpace(repoKind) == "control-plane"
+}
+
+func decisionRelevantToTask(claim mem.Claim, taskTokens map[string]bool) bool {
+	if len(taskTokens) == 0 {
+		return false
+	}
+	decisionTokens := memoryTextTokens(claim.Entity + " " + claim.Predicate + " " + claim.Object)
+	for key, value := range claim.Qualifiers {
+		for token := range memoryTextTokens(key + " " + value) {
+			decisionTokens[token] = true
+		}
+	}
+	for token := range taskTokens {
+		if decisionTokens[token] {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalDecisionStatus(status string) string {

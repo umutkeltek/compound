@@ -1689,6 +1689,72 @@ func TestRuntimeContractDedupesDecisionRefsByDecisionID(t *testing.T) {
 	}
 }
 
+func TestProductContextScopesAcceptedDecisionsByTask(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands, err := store.Capture([]mem.Candidate{
+		{
+			Entity:         "decision:DEC-PAYWALL",
+			Predicate:      "decided",
+			Object:         "Paywall onboarding checkout context must carry conversion proof before changing purchase flow",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": "DEC-PAYWALL", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_paywall",
+			SnippetHash:    "paywall",
+			Visibility:     "ambient",
+		},
+		{
+			Entity:         "decision:DEC-CONTROL",
+			Predicate:      "decided",
+			Object:         "Control-plane packet dispatch should use WorkEnvelope receipts before route promotion",
+			Confidence:     1,
+			Derivation:     "deterministic",
+			ClaimType:      "decision",
+			Qualifiers:     map[string]string{"decision_id": "DEC-CONTROL", "lifecycle_status": "accepted"},
+			PromotionBasis: candidates.BasisDecisionRecord,
+			SourceTraceRef: "ev_control",
+			SnippetHash:    "control",
+			Visibility:     "ambient",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cand := range cands {
+		if _, err := store.Adjudicate(cand.ID, "promote", "test", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	in := Input{
+		Harness:     "codex",
+		Cwd:         "/repo/sample-cards",
+		Task:        "fix onboarding paywall conversion bug",
+		RepoKind:    "product",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countStrings(pack.ActiveDecisions, "decision://DEC-PAYWALL"); got != 1 {
+		t.Fatalf("product pack should include task-relevant decision, got %d in %v", got, pack.ActiveDecisions)
+	}
+	if contains(pack.ActiveDecisions, "decision://DEC-CONTROL") || hasIncluded(pack, "decision://DEC-CONTROL") {
+		t.Fatalf("product pack should not include unrelated control-plane decision: active=%v included=%+v", pack.ActiveDecisions, pack.Included)
+	}
+	if !hasExcluded(pack, "decision://DEC-CONTROL") {
+		t.Fatalf("product pack should record unrelated accepted decision as excluded: %+v", pack.Excluded)
+	}
+}
+
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
