@@ -3509,23 +3509,17 @@ func cmdHook(args []string) {
 }
 
 func runHookCommand(args []string) int {
-	hookName, fixturePath, enforce, err := parseHookArgs(args)
+	parsed, err := parseHookArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	homePath := ""
-	data, err := os.ReadFile(fixturePath)
+	fx, err := loadHookFixture(parsed, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	var fx hook.Fixture
-	if err := json.Unmarshal(data, &fx); err != nil {
-		fmt.Fprintln(os.Stderr, "error: parse hook fixture:", err)
-		return 1
-	}
-	fx.Hook = hookName // the CLI verb is authoritative
 
 	deps := hook.Deps{Registry: harness.DefaultRegistry(), Orient: orientPolicy(), Policy: policyConfig()}
 	if resolvedHome, err := home.Resolve(""); err == nil {
@@ -3541,36 +3535,60 @@ func runHookCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	printJSON(res)
-	if hookName == "session-end" {
+	if parsed.Live {
+		printJSON(liveHookResponse(parsed.HookName, res))
+	} else {
+		printJSON(res)
+	}
+	if parsed.HookName == "session-end" {
 		autoConsumeCapabilityFeedback(homePath)
 	}
 	fmt.Fprintf(os.Stderr, "[%s/%s] %s — %s\n", fx.Harness, res.Event.Status, res.Event.HookName, res.Summary)
-	if enforce {
-		return hookEnforceExit(hookName, res)
+	if parsed.Enforce {
+		return hookEnforceExit(parsed.HookName, res)
 	}
 	return 0
 }
 
-func parseHookArgs(args []string) (hookName, fixturePath string, enforce bool, err error) {
+func parseHookArgs(args []string) (hookCommandArgs, error) {
+	var parsed hookCommandArgs
 	if len(args) < 2 {
-		return "", "", false, fmt.Errorf("usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json>")
+		return parsed, fmt.Errorf(hookUsage)
 	}
-	hookName = args[0]
-	for _, arg := range args[1:] {
+	parsed.HookName = args[0]
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
 		if arg == "--enforce" {
-			enforce = true
+			parsed.Enforce = true
 			continue
 		}
-		if fixturePath != "" {
-			return "", "", false, fmt.Errorf("usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json>")
+		if arg == "--live" {
+			parsed.Live = true
+			continue
 		}
-		fixturePath = arg
+		if arg == "--harness" {
+			if i+1 >= len(args) {
+				return parsed, fmt.Errorf(hookUsage)
+			}
+			i++
+			parsed.Harness = args[i]
+			continue
+		}
+		if parsed.FixturePath != "" {
+			return parsed, fmt.Errorf(hookUsage)
+		}
+		parsed.FixturePath = arg
 	}
-	if fixturePath == "" {
-		return "", "", false, fmt.Errorf("usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json>")
+	if parsed.Live {
+		if strings.TrimSpace(parsed.Harness) == "" || parsed.FixturePath != "" {
+			return parsed, fmt.Errorf(hookUsage)
+		}
+		return parsed, nil
 	}
-	return hookName, fixturePath, enforce, nil
+	if parsed.FixturePath == "" {
+		return parsed, fmt.Errorf(hookUsage)
+	}
+	return parsed, nil
 }
 
 func hookEnforceExit(hookName string, res hook.Result) int {
