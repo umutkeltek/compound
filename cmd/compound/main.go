@@ -297,9 +297,14 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
+	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if hasHelpFlag(args) {
+		fmt.Println(usage)
+		return
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -1102,9 +1107,18 @@ func cmdCapability(args []string) {
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ...")
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" || arg == "help" {
+			return true
+		}
+	}
+	return false
 }
 
 func printCapabilityConstraints(c capgraph.SurfacingConstraints) {

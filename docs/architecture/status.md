@@ -55,6 +55,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Capability CLI safety note: `compound capability ... --help` returns usage before opening runtime state, so help requests cannot consume receipts, import graph data, or apply capability observations.
+
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.

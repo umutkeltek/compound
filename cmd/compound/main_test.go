@@ -901,6 +901,72 @@ func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
 	}
 }
 
+func TestCapabilityHelpDoesNotConsumeReceipts(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatalf("open capgraph: %v", err)
+	}
+	if err := store.Add(capgraph.Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := envelope.Receipt{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVReceipt,
+			ID:            "rec_help_guard",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound"},
+			IDs:           envelope.IDs{WorkID: "work_help_guard"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+		StateDelta: envelope.StateDelta{
+			Changed:      true,
+			Summary:      "help guard receipt",
+			FilesChanged: []string{},
+			Artifacts:    []string{},
+			Verification: []string{},
+		},
+		Cost:   envelope.ReceiptCost{ModelCalls: []string{}},
+		Skills: envelope.ReceiptSkills{Used: []string{"capability://skill:pricing"}, Missed: []string{}, Candidate: []string{}},
+		Memory: envelope.ReceiptMemory{Candidates: []string{}, Promoted: []string{}, Parked: []string{}},
+		Next:   envelope.ReceiptNext{SuggestedWork: []string{}},
+	}
+	if err := rec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(homePath, "events"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(rec, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "events", rec.ID+".json"), append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { cmdCapability([]string{"consume-receipts", "--help"}) })
+	if !strings.Contains(out, "usage: compound capability") || strings.Contains(out, "receipts_scanned") {
+		t.Fatalf("help output should be usage only, got:\n%s", out)
+	}
+	stats, err := store.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.EdgeCount != 0 {
+		t.Fatalf("--help consumed receipts and mutated graph: %+v", stats)
+	}
+}
+
 func TestWorkbenchCommandIncludesReviewQueueSummary(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
