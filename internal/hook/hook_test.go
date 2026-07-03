@@ -394,6 +394,57 @@ func TestRenderInjectionCapsActiveMemorySection(t *testing.T) {
 	}
 }
 
+func TestRenderInjectionShowsCapabilityOffers(t *testing.T) {
+	pack := envelope.ContextPack{
+		SummaryMD: "summary",
+		CapabilityOffers: []envelope.CapabilityOffer{{
+			Ref:   "capability://skill:mcp-builder",
+			Kind:  "skill",
+			Name:  "mcp-builder",
+			Score: 1.8,
+			Why:   "trigger x weight",
+			Required: []envelope.CapabilityOfferConstraint{{
+				Kind:   "requires",
+				Ref:    "procedure:skill-ops",
+				Detail: "owner gate",
+			}},
+			Harnesses: []envelope.CapabilityOfferConstraint{{
+				Kind: "surfaces_with",
+				Ref:  "harness:codex",
+			}},
+			Evidence: []envelope.CapabilityOfferConstraint{{
+				Kind: "validated_by",
+				Ref:  "eval:mcp-skill-intake",
+			}},
+			CostRiskNote: "offer only; execution still requires WorkEnvelope, ActionIntent, and PolicyDecision",
+		}},
+		Included: []envelope.IncludedRef{{
+			Ref:         "capability://skill:mcp-builder",
+			SourceClass: "generated",
+			Reason:      "capability_graph surface",
+			Confidence:  1.8,
+			Status:      "current",
+		}},
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	for _, want := range []string{
+		"## Capability Offers",
+		"`capability://skill:mcp-builder` kind=skill name=mcp-builder score=1.80 why=trigger x weight",
+		"required=requires:procedure:skill-ops(owner gate)",
+		"harnesses=surfaces_with:harness:codex",
+		"evidence=validated_by:eval:mcp-skill-intake",
+		"offers only; execution still requires WorkEnvelope, ActionIntent, PolicyDecision",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("injection missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Index(text, "## Capability Offers") > strings.Index(text, "## Included") {
+		t.Fatalf("capability offers should render before long Included provenance:\n%s", text)
+	}
+}
+
 func TestUserPromptProducesCandidateAndHidesPrompt(t *testing.T) {
 	raw := "the onboarding copy is confusing, please fix it"
 	fx := Fixture{Hook: "user-prompt-submit", Harness: "claude_code", Task: "fix onboarding", RepoKind: "product", Prompt: raw}

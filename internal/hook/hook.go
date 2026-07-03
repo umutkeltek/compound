@@ -655,6 +655,8 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	b.WriteString(safeMD(pack.SummaryMD))
 	b.WriteString("\n\n")
 
+	writeCapabilityOfferList(&b, pack.CapabilityOffers)
+
 	b.WriteString("## Included\n")
 	if len(pack.Included) == 0 {
 		b.WriteString("- none\n")
@@ -696,6 +698,55 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	writeStringList(&b, "Required Checks", pack.RequiredChecks)
 	writeStringList(&b, "Avoid", pack.Avoid)
 	return b.String()
+}
+
+func writeCapabilityOfferList(b *strings.Builder, offers []envelope.CapabilityOffer) {
+	if len(offers) == 0 {
+		return
+	}
+	b.WriteString("## Capability Offers\n")
+	b.WriteString("- offers only; execution still requires WorkEnvelope, ActionIntent, PolicyDecision\n")
+	for _, offer := range offers {
+		fmt.Fprintf(b, "- `%s` kind=%s name=%s score=%.2f", safeMD(offer.Ref), safeMD(offer.Kind), safeMD(offer.Name), offer.Score)
+		if strings.TrimSpace(offer.Why) != "" {
+			fmt.Fprintf(b, " why=%s", safeMD(offer.Why))
+		}
+		writeCapabilityConstraintSummary(b, "required", offer.Required)
+		writeCapabilityConstraintSummary(b, "harnesses", offer.Harnesses)
+		writeCapabilityConstraintSummary(b, "conflicts", offer.Conflicts)
+		writeCapabilityConstraintSummary(b, "missed_when", offer.KnownMissedWhen)
+		writeCapabilityConstraintSummary(b, "false_triggered_by", offer.KnownFalseTriggeredBy)
+		writeCapabilityConstraintSummary(b, "evidence", offer.Evidence)
+		if strings.TrimSpace(offer.CostRiskNote) != "" {
+			fmt.Fprintf(b, " note=%s", safeMD(offer.CostRiskNote))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+}
+
+func writeCapabilityConstraintSummary(b *strings.Builder, label string, values []envelope.CapabilityOfferConstraint) {
+	if len(values) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		part := strings.TrimSpace(value.Ref)
+		if strings.TrimSpace(value.Kind) != "" {
+			part = strings.TrimSpace(value.Kind) + ":" + part
+		}
+		if strings.TrimSpace(value.Detail) != "" {
+			part += "(" + strings.TrimSpace(value.Detail) + ")"
+		}
+		if part == "" {
+			continue
+		}
+		parts = append(parts, safeMD(part))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	fmt.Fprintf(b, " %s=%s", label, strings.Join(parts, ","))
 }
 
 func writeActiveMemoryList(b *strings.Builder, pack envelope.ContextPack, refs []string) {
