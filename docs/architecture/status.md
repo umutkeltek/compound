@@ -63,6 +63,8 @@ CLI safety note: `compound capability ... --help`, plus guarded `work`, `memory`
 
 Contract command status note: `compound contract compile` records durable EffectiveContract artifacts under `COMPOUND_HOME/contracts/effective/<date>/<id>.json` and `latest.json` while preserving stdout JSON; `compound orient` records the matching EffectiveContract artifact before recording ContextPack artifacts under `COMPOUND_HOME/context/packs/<id>.json` with matching `ids.contract_id`; hook context-injection paths persist the same contract->pack artifact chain.
 
+ContextPack hook status note: active hook refs appear in both `active_hooks`/`hook_roster` and `included[]` with runtime/current reasons, while task-excluded hooks remain in `excluded[]`, so context consumers can compare included vs excluded hook decisions through the same surface.
+
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.

@@ -1169,6 +1169,13 @@ hooks:
 	if packPreToolUse == nil || packPreToolUse.Status != "active" || packPreToolUse.Event != "PreToolUse" {
 		t.Fatalf("context pack hook roster = %+v, want active PreToolUse row", pack.HookRoster)
 	}
+	includedPreToolUse, ok := findIncludedRef(pack, "hook://claude_code/PreToolUse")
+	if !ok {
+		t.Fatalf("context pack included refs missing active PreToolUse hook: %+v", pack.Included)
+	}
+	if includedPreToolUse.SourceClass != "runtime" || includedPreToolUse.Status != "current" || !strings.Contains(includedPreToolUse.Reason, "mutation task") {
+		t.Fatalf("context pack included PreToolUse = %+v, want runtime current mutation-task reason", includedPreToolUse)
+	}
 
 	readOnly := in
 	readOnly.Task = "audit README headings"

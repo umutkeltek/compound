@@ -510,6 +510,18 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	}
 	pack.ActiveHooks = hooks
 	pack.HookRoster = hookRoster
+	for _, row := range hookRoster {
+		if row.Status != "active" {
+			continue
+		}
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref:         row.Ref,
+			SourceClass: "runtime",
+			Reason:      firstNonEmpty(row.Reason, "installed hook selected for harness and task"),
+			Confidence:  1,
+			Status:      "current",
+		})
+	}
 	hookReadiness, err := hookReadinessForInput(homePath, in)
 	if err != nil {
 		return pack, err
