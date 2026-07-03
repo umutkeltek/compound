@@ -967,6 +967,49 @@ func TestCapabilityHelpDoesNotConsumeReceipts(t *testing.T) {
 	}
 }
 
+func TestCommandHelpShortCircuitsBeforeRuntimeValidation(t *testing.T) {
+	t.Setenv("COMPOUND_HOME", filepath.Join(t.TempDir(), "missing-home"))
+	tests := []struct {
+		name string
+		run  func()
+		want string
+	}{
+		{
+			name: "work create",
+			run:  func() { cmdWork([]string{"create", "--help"}) },
+			want: "usage: compound work create",
+		},
+		{
+			name: "work import-packet",
+			run:  func() { cmdWork([]string{"import-packet", "--help"}) },
+			want: "usage: compound work import-packet",
+		},
+		{
+			name: "memory candidate",
+			run:  func() { cmdMemory([]string{"candidate", "--help"}) },
+			want: "usage: compound memory candidate",
+		},
+		{
+			name: "memory adjudicate",
+			run:  func() { cmdMemory([]string{"adjudicate", "--help"}) },
+			want: "usage: compound memory adjudicate",
+		},
+		{
+			name: "route cost-doctor",
+			run:  func() { cmdRoute([]string{"cost-doctor", "--help"}) },
+			want: "usage: compound route cost-doctor",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := captureStdout(t, tt.run)
+			if !strings.Contains(out, tt.want) {
+				t.Fatalf("help output missing %q:\n%s", tt.want, out)
+			}
+		})
+	}
+}
+
 func TestWorkbenchCommandIncludesReviewQueueSummary(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -55,7 +55,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
-Capability CLI safety note: `compound capability ... --help` returns usage before opening runtime state, so help requests cannot consume receipts, import graph data, or apply capability observations.
+CLI safety note: `compound capability ... --help`, plus guarded `work`, `memory`, and `route cost-doctor` subcommand help paths, return usage before opening runtime state, so help requests cannot consume receipts, import graph data, validate work/memory fields, or open provider ledgers.
 
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.
 

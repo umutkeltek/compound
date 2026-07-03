@@ -131,6 +131,46 @@ func sortedMapKeys(m map[string]int) []string {
 	return keys
 }
 
+func hasUsageFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func workUsage(sub string) string {
+	switch sub {
+	case "create":
+		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready|running] [--context-pack ctx] [--risk tier1] [--privacy private]"
+	case "import-packet":
+		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
+	default:
+		return "usage: compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ..."
+	}
+}
+
+func memoryUsage(sub string) string {
+	switch sub {
+	case "candidate":
+		return "usage: compound memory candidate <trace.json>"
+	case "adjudicate":
+		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W]"
+	default:
+		return "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>"
+	}
+}
+
+func routeUsage(sub string) string {
+	switch sub {
+	case "cost-doctor":
+		return "usage: compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]"
+	default:
+		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
+	}
+}
+
 func decisionSourceKind(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -2235,8 +2275,12 @@ func cmdKnowledge(args []string) {
 
 func cmdMemory(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>")
+		fmt.Fprintln(os.Stderr, memoryUsage(""))
 		os.Exit(2)
+	}
+	if hasUsageFlag(args) {
+		fmt.Println(memoryUsage(args[0]))
+		return
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -2753,8 +2797,12 @@ func cmdTransition(args []string) {
 
 func cmdRoute(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>")
+		fmt.Fprintln(os.Stderr, routeUsage(""))
 		os.Exit(2)
+	}
+	if hasUsageFlag(args) {
+		fmt.Println(routeUsage(args[0]))
+		return
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -4750,8 +4798,12 @@ func renderReviewFindingMarkdown(report reviewFindingRecord) string {
 // receipt -> transition. State lives in COMPOUND_HOME (docs/architecture/transition.md).
 func cmdWork(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, workUsage(""))
 		os.Exit(2)
+	}
+	if hasUsageFlag(args) {
+		fmt.Println(workUsage(args[0]))
+		return
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
