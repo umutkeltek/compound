@@ -49,12 +49,17 @@ type ExternalRepoIntakeReport struct {
 	SourceListByOwner                      map[string]int               `json:"source_list_counts_by_owner,omitempty"`
 	SourceListByOwnerReviewStatus          map[string]int               `json:"source_list_counts_by_owner_review_status,omitempty"`
 	SourceListByCapabilityEvaluationStatus map[string]int               `json:"source_list_counts_by_capability_evaluation_status,omitempty"`
+	SourceListByCapabilityGraphStatus      map[string]int               `json:"source_list_counts_by_capability_graph_status,omitempty"`
 	SourceListReviewNextMeaning            string                       `json:"source_list_review_next_meaning,omitempty"`
 	SourceListEvalNextMeaning              string                       `json:"source_list_evaluation_next_meaning,omitempty"`
+	SourceListGraphImportNextMeaning       string                       `json:"source_list_graph_import_next_meaning,omitempty"`
 	SourceListReviewNextCount              *int                         `json:"source_list_review_next_count,omitempty"`
 	SourceListEvalNextCount                *int                         `json:"source_list_evaluation_next_count,omitempty"`
+	SourceListGraphImportNextCount         *int                         `json:"source_list_graph_import_next_count,omitempty"`
+	SourceListGraphImportNextOmitted       int                          `json:"source_list_graph_import_next_omitted,omitempty"`
 	SourceListReviewNext                   []ExternalRepoSourceListItem `json:"source_list_review_next,omitempty"`
 	SourceListEvalNext                     []ExternalRepoSourceListItem `json:"source_list_evaluation_next,omitempty"`
+	SourceListGraphImportNext              []ExternalRepoSourceListItem `json:"source_list_graph_import_next,omitempty"`
 	SourceListItems                        []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
 	HighValue                              []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
 	Recent                                 []ExternalRepoIntakeDecision `json:"recent,omitempty"`
@@ -62,27 +67,30 @@ type ExternalRepoIntakeReport struct {
 }
 
 type ExternalRepoIntakeDecision struct {
-	Repo                           string  `json:"repo"`
-	Decision                       string  `json:"decision"`
-	Lane                           string  `json:"lane,omitempty"`
-	Status                         string  `json:"status,omitempty"`
-	Owner                          string  `json:"owner,omitempty"`
-	NextReviewStep                 string  `json:"next_review_step,omitempty"`
-	NotToDo                        string  `json:"not_to_do,omitempty"`
-	GraphHint                      string  `json:"graph_hint,omitempty"`
-	DuplicateRisk                  float64 `json:"duplicate_risk,omitempty"`
-	EvidenceStrength               float64 `json:"evidence_strength,omitempty"`
-	ReviewID                       string  `json:"review_id,omitempty"`
-	ReviewPath                     string  `json:"review_path,omitempty"`
-	OwnerReviewStatus              string  `json:"owner_review_status,omitempty"`
-	OwnerReviewPath                string  `json:"owner_review_path,omitempty"`
-	OwnerReviewDecision            string  `json:"owner_review_decision,omitempty"`
-	OwnerReviewNextAction          string  `json:"owner_review_next_action,omitempty"`
-	CapabilityEvaluationStatus     string  `json:"capability_evaluation_status,omitempty"`
-	CapabilityEvaluationPath       string  `json:"capability_evaluation_path,omitempty"`
-	CapabilityEvaluationDecision   string  `json:"capability_evaluation_decision,omitempty"`
-	CapabilityEvaluationNodeStatus string  `json:"capability_evaluation_node_status,omitempty"`
-	CapabilityEvaluationNextAction string  `json:"capability_evaluation_next_action,omitempty"`
+	Repo                             string  `json:"repo"`
+	Decision                         string  `json:"decision"`
+	Lane                             string  `json:"lane,omitempty"`
+	Status                           string  `json:"status,omitempty"`
+	Owner                            string  `json:"owner,omitempty"`
+	NextReviewStep                   string  `json:"next_review_step,omitempty"`
+	NotToDo                          string  `json:"not_to_do,omitempty"`
+	GraphHint                        string  `json:"graph_hint,omitempty"`
+	DuplicateRisk                    float64 `json:"duplicate_risk,omitempty"`
+	EvidenceStrength                 float64 `json:"evidence_strength,omitempty"`
+	ReviewID                         string  `json:"review_id,omitempty"`
+	ReviewPath                       string  `json:"review_path,omitempty"`
+	OwnerReviewStatus                string  `json:"owner_review_status,omitempty"`
+	OwnerReviewPath                  string  `json:"owner_review_path,omitempty"`
+	OwnerReviewDecision              string  `json:"owner_review_decision,omitempty"`
+	OwnerReviewNextAction            string  `json:"owner_review_next_action,omitempty"`
+	CapabilityEvaluationStatus       string  `json:"capability_evaluation_status,omitempty"`
+	CapabilityEvaluationPath         string  `json:"capability_evaluation_path,omitempty"`
+	CapabilityEvaluationDecision     string  `json:"capability_evaluation_decision,omitempty"`
+	CapabilityEvaluationNodeID       string  `json:"capability_evaluation_node_id,omitempty"`
+	CapabilityEvaluationNodeStatus   string  `json:"capability_evaluation_node_status,omitempty"`
+	CapabilityEvaluationManifestPath string  `json:"capability_evaluation_manifest_path,omitempty"`
+	CapabilityEvaluationNextAction   string  `json:"capability_evaluation_next_action,omitempty"`
+	CapabilityGraphStatus            string  `json:"capability_graph_status,omitempty"`
 }
 
 type ExternalRepoSourceListItem struct {
@@ -274,22 +282,29 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 		report.SourceListByOwner = map[string]int{}
 		report.SourceListByOwnerReviewStatus = map[string]int{}
 		report.SourceListByCapabilityEvaluationStatus = map[string]int{}
+		report.SourceListByCapabilityGraphStatus = map[string]int{}
 		for _, item := range items {
 			if item.Status == "known" {
 				report.SourceListKnown++
-				countSourceListMatches(item, report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner, report.SourceListByOwnerReviewStatus, report.SourceListByCapabilityEvaluationStatus)
+				countSourceListMatches(item, report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner, report.SourceListByOwnerReviewStatus, report.SourceListByCapabilityEvaluationStatus, report.SourceListByCapabilityGraphStatus)
 			} else {
 				report.SourceListUnknown++
 			}
 		}
+		graphImportNext := filterSourceListGraphImportFollowUps(items)
 		report.SourceListReviewNext = sourceListReviewNext(items, 12)
 		report.SourceListEvalNext = sourceListEvaluationNext(items, 12)
+		report.SourceListGraphImportNext = limitSourceListFollowUps(graphImportNext, 12)
 		reviewNextCount := len(report.SourceListReviewNext)
 		evalNextCount := len(report.SourceListEvalNext)
+		graphImportNextCount := len(report.SourceListGraphImportNext)
 		report.SourceListReviewNextCount = &reviewNextCount
 		report.SourceListEvalNextCount = &evalNextCount
+		report.SourceListGraphImportNextCount = &graphImportNextCount
+		report.SourceListGraphImportNextOmitted = len(graphImportNext) - len(report.SourceListGraphImportNext)
 		report.SourceListReviewNextMeaning = "owner_review_suggestions_not_open_review_debt"
 		report.SourceListEvalNextMeaning = "focused_capability_evaluation_follow_up_queue"
+		report.SourceListGraphImportNextMeaning = "reviewed_manifest_import_queue_not_graph_mutation"
 	}
 	report.HighValue = filterExternalRepoDecisions(decisions, "keep_needs_review", 12)
 	report.Recent = limitExternalRepoDecisions(decisions, 12)
@@ -299,7 +314,7 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 	return report, nil
 }
 
-func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane, byOwner, byOwnerReviewStatus, byCapabilityEvaluationStatus map[string]int) {
+func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane, byOwner, byOwnerReviewStatus, byCapabilityEvaluationStatus, byCapabilityGraphStatus map[string]int) {
 	if len(item.Matches) == 0 {
 		return
 	}
@@ -309,6 +324,7 @@ func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane,
 	incrementNonEmpty(byOwner, decision.Owner)
 	incrementNonEmpty(byOwnerReviewStatus, ExternalRepoOwnerReviewStatus(decision))
 	incrementNonEmpty(byCapabilityEvaluationStatus, ExternalRepoCapabilityEvaluationStatus(decision))
+	incrementNonEmpty(byCapabilityGraphStatus, ExternalRepoCapabilityGraphStatus(decision))
 }
 
 func ExternalRepoOwnerReviewStatus(decision ExternalRepoIntakeDecision) string {
@@ -334,6 +350,25 @@ func ExternalRepoCapabilityEvaluationStatus(decision ExternalRepoIntakeDecision)
 	return "pending"
 }
 
+func ExternalRepoCapabilityGraphStatus(decision ExternalRepoIntakeDecision) string {
+	if strings.TrimSpace(decision.Decision) != "keep_needs_review" {
+		return "not_required"
+	}
+	if ExternalRepoOwnerReviewStatus(decision) != "recorded" {
+		return "blocked_on_owner_review"
+	}
+	if ExternalRepoCapabilityEvaluationStatus(decision) != "recorded" {
+		return "blocked_on_capability_evaluation"
+	}
+	if strings.TrimSpace(decision.CapabilityGraphStatus) != "" {
+		return strings.TrimSpace(decision.CapabilityGraphStatus)
+	}
+	if strings.TrimSpace(decision.CapabilityEvaluationManifestPath) != "" {
+		return "reviewed_manifest_pending_import"
+	}
+	return "reviewed_manifest_missing"
+}
+
 func incrementNonEmpty(counts map[string]int, key string) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -350,6 +385,10 @@ func sourceListEvaluationNext(items []ExternalRepoSourceListItem, limit int) []E
 	return limitSourceListFollowUps(filterSourceListFollowUps(items, true), limit)
 }
 
+func sourceListGraphImportNext(items []ExternalRepoSourceListItem, limit int) []ExternalRepoSourceListItem {
+	return limitSourceListFollowUps(filterSourceListGraphImportFollowUps(items), limit)
+}
+
 func filterSourceListFollowUps(items []ExternalRepoSourceListItem, reviewed bool) []ExternalRepoSourceListItem {
 	var out []ExternalRepoSourceListItem
 	for _, item := range items {
@@ -362,6 +401,20 @@ func filterSourceListFollowUps(items []ExternalRepoSourceListItem, reviewed bool
 			continue
 		}
 		if reviewed && match.CapabilityEvaluationStatus == "recorded" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func filterSourceListGraphImportFollowUps(items []ExternalRepoSourceListItem) []ExternalRepoSourceListItem {
+	var out []ExternalRepoSourceListItem
+	for _, item := range items {
+		if len(item.Matches) == 0 || item.Matches[0].Decision != "keep_needs_review" {
+			continue
+		}
+		if ExternalRepoCapabilityGraphStatus(item.Matches[0]) != "reviewed_manifest_pending_import" {
 			continue
 		}
 		out = append(out, item)
@@ -624,11 +677,13 @@ func externalRepoReviewedReportsByRepo(homePath string) map[string]ExternalRepoI
 }
 
 type externalRepoCapabilityEvaluationReview struct {
-	Status     string
-	Path       string
-	Decision   string
-	NodeStatus string
-	NextAction string
+	Status       string
+	Path         string
+	Decision     string
+	NodeID       string
+	NodeStatus   string
+	ManifestPath string
+	NextAction   string
 }
 
 func annotateExternalRepoCapabilityEvaluations(homePath string, matches []ExternalRepoIntakeDecision) []ExternalRepoIntakeDecision {
@@ -639,16 +694,42 @@ func annotateExternalRepoCapabilityEvaluations(homePath string, matches []Extern
 	if len(reviews) == 0 {
 		return matches
 	}
+	importedNodeIDs := externalRepoImportedCapabilityNodeIDs(homePath)
 	out := make([]ExternalRepoIntakeDecision, 0, len(matches))
 	for _, match := range matches {
 		if review, ok := reviews[normalizeExternalRepoQuery(match.Repo)]; ok {
 			match.CapabilityEvaluationStatus = review.Status
 			match.CapabilityEvaluationPath = review.Path
 			match.CapabilityEvaluationDecision = review.Decision
+			match.CapabilityEvaluationNodeID = review.NodeID
 			match.CapabilityEvaluationNodeStatus = review.NodeStatus
+			match.CapabilityEvaluationManifestPath = review.ManifestPath
 			match.CapabilityEvaluationNextAction = review.NextAction
+			if importedNodeIDs[review.NodeID] {
+				match.CapabilityGraphStatus = "imported"
+			} else if review.ManifestPath != "" {
+				match.CapabilityGraphStatus = "reviewed_manifest_pending_import"
+			} else {
+				match.CapabilityGraphStatus = "reviewed_manifest_missing"
+			}
 		}
 		out = append(out, match)
+	}
+	return out
+}
+
+func externalRepoImportedCapabilityNodeIDs(homePath string) map[string]bool {
+	out := map[string]bool{}
+	store, err := Open(homePath)
+	if err != nil {
+		return out
+	}
+	nodes, err := store.loadNodes()
+	if err != nil {
+		return out
+	}
+	for _, node := range nodes {
+		out[node.ID] = true
 	}
 	return out
 }
@@ -689,11 +770,13 @@ func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]e
 			continue
 		}
 		out[key] = externalRepoCapabilityEvaluationReview{
-			Status:     "recorded",
-			Path:       reviewedPath,
-			Decision:   review.Decision,
-			NodeStatus: review.NodeStatus,
-			NextAction: "capability evaluation review recorded; graph mutation requires separate reviewed manifest import",
+			Status:       "recorded",
+			Path:         reviewedPath,
+			Decision:     review.Decision,
+			NodeID:       review.NodeID,
+			NodeStatus:   review.NodeStatus,
+			ManifestPath: review.ManifestPath,
+			NextAction:   "capability evaluation review recorded; graph mutation requires separate reviewed manifest import",
 		}
 	}
 	return out

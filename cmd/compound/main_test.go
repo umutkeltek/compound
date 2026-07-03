@@ -8643,6 +8643,34 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(homePath, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("external-intake-evaluation-plan must not mutate capability graph, stat err=%v", err)
 	}
+	evalReviewDraft, err := os.ReadFile(evalPlan.ReviewYAMLPath)
+	if err != nil {
+		t.Fatalf("read evaluation review YAML: %v", err)
+	}
+	editedEvalReview := strings.ReplaceAll(string(evalReviewDraft), "decision: TODO_activate_reject_or_keep_needs_review", "decision: keep_needs_review")
+	editedEvalReview = strings.ReplaceAll(editedEvalReview, `rationale: ""`, `rationale: "reviewed external repo evaluation; keep manifest parked for explicit graph import"`)
+	editedEvalReview = strings.ReplaceAll(editedEvalReview, "confidence: -1", "confidence: 0.82")
+	if err := os.WriteFile(evalPlan.ReviewYAMLPath, []byte(editedEvalReview), 0o644); err != nil {
+		t.Fatalf("write evaluation review YAML: %v", err)
+	}
+	evalReviewText := captureStdout(t, func() {
+		cmdCapability([]string{"evaluation-review", evalPlan.ReviewYAMLPath})
+	})
+	if !strings.Contains(evalReviewText, "- status: manifest_ready") || !strings.Contains(evalReviewText, "- node_status: needs_review") {
+		t.Fatalf("evaluation-review text missing reviewed manifest status:\n%s", evalReviewText)
+	}
+	humanAfterEvalReview := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--source-list", sourceListPath})
+	})
+	for _, want := range []string{
+		"- source_list_capability_graph.reviewed_manifest_pending_import: 1",
+		"- source_list_graph_import_follow_up: graph_import_next=1 omitted=0 meaning=reviewed_manifest_import_queue_not_graph_mutation",
+		"- source_list_graph_import_next: example/research",
+	} {
+		if !strings.Contains(humanAfterEvalReview, want) {
+			t.Fatalf("human source-list output missing graph-import follow-up %q:\n%s", want, humanAfterEvalReview)
+		}
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {

@@ -705,8 +705,14 @@ func cmdCapability(args []string) {
 			for _, status := range sortedMapKeys(report.SourceListByCapabilityEvaluationStatus) {
 				fmt.Printf("- source_list_capability_evaluation.%s: %d\n", status, report.SourceListByCapabilityEvaluationStatus[status])
 			}
+			for _, status := range sortedMapKeys(report.SourceListByCapabilityGraphStatus) {
+				fmt.Printf("- source_list_capability_graph.%s: %d\n", status, report.SourceListByCapabilityGraphStatus[status])
+			}
 			if report.SourceListReviewNextMeaning != "" || report.SourceListEvalNextMeaning != "" {
 				fmt.Printf("- source_list_follow_up: review_next=%d meaning=%s evaluation_next=%d meaning=%s\n", len(report.SourceListReviewNext), report.SourceListReviewNextMeaning, len(report.SourceListEvalNext), report.SourceListEvalNextMeaning)
+			}
+			if report.SourceListGraphImportNextMeaning != "" {
+				fmt.Printf("- source_list_graph_import_follow_up: graph_import_next=%d omitted=%d meaning=%s\n", len(report.SourceListGraphImportNext), report.SourceListGraphImportNextOmitted, report.SourceListGraphImportNextMeaning)
 			}
 			for _, item := range report.SourceListReviewNext {
 				first := item.Matches[0]
@@ -719,6 +725,10 @@ func cmdCapability(args []string) {
 					next = first.NextReviewStep
 				}
 				fmt.Printf("- source_list_evaluation_next: %s lane=%s owner=%s evidence=%.2f review=%s next=%s\n", first.Repo, first.Lane, first.Owner, first.EvidenceStrength, first.OwnerReviewPath, next)
+			}
+			for _, item := range report.SourceListGraphImportNext {
+				first := item.Matches[0]
+				fmt.Printf("- source_list_graph_import_next: %s node=%s node_status=%s manifest=%s next=%s\n", first.Repo, first.CapabilityEvaluationNodeID, first.CapabilityEvaluationNodeStatus, first.CapabilityEvaluationManifestPath, first.CapabilityEvaluationNextAction)
 			}
 			knownDetailsOmitted := 0
 			for _, item := range report.SourceListItems {

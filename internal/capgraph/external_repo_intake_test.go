@@ -500,6 +500,30 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	if refreshed.SourceListByOwnerReviewStatus["recorded"] != 1 || refreshed.SourceListByCapabilityEvaluationStatus["recorded"] != 1 {
 		t.Fatalf("reviewed source-list status counts missing: owner=%+v eval=%+v", refreshed.SourceListByOwnerReviewStatus, refreshed.SourceListByCapabilityEvaluationStatus)
 	}
+	if refreshed.SourceListByCapabilityGraphStatus["reviewed_manifest_pending_import"] != 1 {
+		t.Fatalf("reviewed manifest graph-import status missing: %+v", refreshed.SourceListByCapabilityGraphStatus)
+	}
+	if len(refreshed.SourceListGraphImportNext) != 1 || refreshed.SourceListGraphImportNext[0].Matches[0].CapabilityGraphStatus != "reviewed_manifest_pending_import" {
+		t.Fatalf("graph import follow-up missing: %+v", refreshed.SourceListGraphImportNext)
+	}
+	if refreshed.SourceListGraphImportNextCount == nil || *refreshed.SourceListGraphImportNextCount != 1 || refreshed.SourceListGraphImportNextOmitted != 0 || refreshed.SourceListGraphImportNextMeaning != "reviewed_manifest_import_queue_not_graph_mutation" {
+		t.Fatalf("graph import follow-up count/meaning missing: count=%v omitted=%d meaning=%q", refreshed.SourceListGraphImportNextCount, refreshed.SourceListGraphImportNextOmitted, refreshed.SourceListGraphImportNextMeaning)
+	}
+
+	manifest, err := LoadSkillManifest(reviewReport.ManifestPath)
+	if err != nil {
+		t.Fatalf("load reviewed manifest: %v", err)
+	}
+	if _, err := ApplySkillManifest(home, manifest, time.Date(2026, 7, 2, 4, 5, 9, 0, time.UTC)); err != nil {
+		t.Fatalf("apply reviewed manifest: %v", err)
+	}
+	importedRefresh, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
+	if err != nil {
+		t.Fatalf("refresh source-list report after manifest import: %v", err)
+	}
+	if importedRefresh.SourceListByCapabilityGraphStatus["imported"] != 1 || len(importedRefresh.SourceListGraphImportNext) != 0 {
+		t.Fatalf("imported manifest should leave no graph-import follow-up: status=%+v next=%+v", importedRefresh.SourceListByCapabilityGraphStatus, importedRefresh.SourceListGraphImportNext)
+	}
 
 	archiveReviewAreaFilesForTest(t, home, capabilityEvaluationReviewArea, time.Date(2026, 7, 2, 4, 6, 0, 0, time.UTC))
 	archivedRefresh, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
