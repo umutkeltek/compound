@@ -167,7 +167,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, ec, pack)
 		if err != nil {
 			return Result{}, err
 		}
@@ -204,7 +204,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, ec, pack)
 		if err != nil {
 			return Result{}, err
 		}
@@ -519,7 +519,13 @@ func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract,
 	}
 }
 
-func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest, pack envelope.ContextPack) (*InjectionArtifact, error) {
+func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest, ec envelope.EffectiveContract, pack envelope.ContextPack) (*InjectionArtifact, error) {
+	if pack.IDs.ContractID != ec.ID {
+		return nil, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
+	}
+	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
+		return nil, err
+	}
 	requestRef := filepath.Join("context", "requests", req.Header.ID+".json")
 	requestPath := filepath.Join(homePath, requestRef)
 	if err := writeJSON(requestPath, req); err != nil {
@@ -527,8 +533,8 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 	}
 
 	packRef := filepath.Join("context", "packs", pack.Header.ID+".json")
-	packPath := filepath.Join(homePath, packRef)
-	if err := writeJSON(packPath, pack); err != nil {
+	packPaths, err := contract.RecordContextPack(homePath, pack)
+	if err != nil {
 		return nil, err
 	}
 
@@ -548,7 +554,7 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 		ContextRequestPath: requestPath,
 		ContextPackID:      pack.Header.ID,
 		ContextPackRef:     packRef,
-		ContextPackPath:    packPath,
+		ContextPackPath:    packPaths.PackPath,
 	}, nil
 }
 

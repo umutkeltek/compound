@@ -135,6 +135,21 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if readiness := findContextHookReadiness(pack.HookReadiness, "codex", "PreToolUse"); readiness == nil || readiness.Status != "missing_gate" || !readiness.AdapterRequired {
 		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
 	}
+	if pack.IDs.ContractID == "" {
+		t.Fatal("context pack missing contract_id")
+	}
+	contractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.UTC().Format("2006-01-02"), pack.IDs.ContractID+".json")
+	contractBytes, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("read effective contract artifact: %v", err)
+	}
+	var ec envelope.EffectiveContract
+	if err := json.Unmarshal(contractBytes, &ec); err != nil {
+		t.Fatalf("parse effective contract artifact: %v", err)
+	}
+	if ec.ID != pack.IDs.ContractID {
+		t.Fatalf("effective contract id = %q, want %q", ec.ID, pack.IDs.ContractID)
+	}
 	b, err := os.ReadFile(res.Injection.Path)
 	if err != nil {
 		t.Fatalf("read injection: %v", err)

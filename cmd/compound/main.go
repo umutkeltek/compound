@@ -5970,8 +5970,16 @@ func cmdOrient(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>]")
 		os.Exit(2)
 	}
-	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, time.Now())
+	now := time.Now()
+	ec, err := contract.CompileWithRuntime(in, orientPolicy(), homePath, now)
 	die(err)
+	_, err = contract.RecordEffectiveContract(homePath, ec)
+	die(err)
+	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, now)
+	die(err)
+	if pack.IDs.ContractID != ec.ID {
+		die(fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID))
+	}
 	_, err = contract.RecordContextPack(homePath, pack)
 	die(err)
 	printJSON(pack)

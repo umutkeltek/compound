@@ -583,6 +583,32 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	if storedPack.ID != pack.ID || storedPack.IDs.ContractID != ec.ID {
 		t.Fatalf("stored orient pack id/contract = %q/%q, want %q/%q", storedPack.ID, storedPack.IDs.ContractID, pack.ID, ec.ID)
 	}
+	orientOnlyOut := captureStdout(t, func() {
+		cmdOrient([]string{"--harness", "codex", "--cwd", cwd, "--task", "orient persists contract without precompile", "--repo-kind", "control-plane"})
+	})
+	var orientOnlyPack envelope.ContextPack
+	if err := json.Unmarshal([]byte(orientOnlyOut), &orientOnlyPack); err != nil {
+		t.Fatalf("parse orient-only pack: %v\n%s", err, orientOnlyOut)
+	}
+	if orientOnlyPack.IDs.ContractID == "" {
+		t.Fatal("orient-only pack missing contract_id")
+	}
+	orientCreatedAt, err := time.Parse(time.RFC3339, orientOnlyPack.CreatedAt)
+	if err != nil {
+		t.Fatalf("parse orient-only created_at %q: %v", orientOnlyPack.CreatedAt, err)
+	}
+	orientContractPath := filepath.Join(homePath, "contracts", "effective", orientCreatedAt.UTC().Format("2006-01-02"), orientOnlyPack.IDs.ContractID+".json")
+	orientContractData, err := os.ReadFile(orientContractPath)
+	if err != nil {
+		t.Fatalf("read orient-only effective contract artifact: %v", err)
+	}
+	var orientContract envelope.EffectiveContract
+	if err := json.Unmarshal(orientContractData, &orientContract); err != nil {
+		t.Fatalf("parse orient-only effective contract artifact: %v", err)
+	}
+	if orientContract.ID != orientOnlyPack.IDs.ContractID {
+		t.Fatalf("orient-only effective contract id = %q, want %q", orientContract.ID, orientOnlyPack.IDs.ContractID)
+	}
 }
 
 func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
