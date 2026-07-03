@@ -316,6 +316,9 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	if len(req.Envelopes) != 1 || req.Envelopes[0].Kind != "hook_event" || !strings.Contains(req.Envelopes[0].Summary, "PostToolUse") {
 		t.Fatalf("extra envelope summary = %+v", req.Envelopes)
 	}
+	if req.Envelopes[0].OutputRef != hook.OutputRef {
+		t.Fatalf("extra envelope output_ref = %q, want %q", req.Envelopes[0].OutputRef, hook.OutputRef)
+	}
 	for _, want := range []string{"raw_trace:trace_spine", "context_pack:ctx_distill", "work:work_distill", "receipt:rec_distill", "proof:request-packet", "artifact:request-packet", "hook_event:hook_distill"} {
 		if !hasString(req.SourceRefs, want) {
 			t.Fatalf("source refs missing %q: %v", want, req.SourceRefs)

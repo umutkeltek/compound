@@ -113,6 +113,7 @@ type LLMEnvelope struct {
 	WorkID        string    `json:"work_id,omitempty"`
 	ContextPackID string    `json:"context_pack_id,omitempty"`
 	EvidenceRefs  []string  `json:"evidence_refs,omitempty"`
+	OutputRef     string    `json:"output_ref,omitempty"`
 	Summary       string    `json:"summary,omitempty"`
 	Trace         *LLMTrace `json:"trace,omitempty"`
 }
@@ -494,6 +495,7 @@ func summarizeEnvelope(e envelope.Envelope) LLMEnvelope {
 			WorkID:        v.IDs.WorkID,
 			ContextPackID: v.IDs.ContextPackID,
 			EvidenceRefs:  append([]string(nil), v.EvidenceRefs...),
+			OutputRef:     v.OutputRef,
 			Summary:       strings.TrimSpace(v.HookName + " " + v.Status + " " + v.OutputRef),
 		}
 	case *envelope.Transition:
