@@ -27,7 +27,9 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	}
 
 	rawCandidates := countJSONFiles(t, filepath.Join(homePath, candidates.InboxDir(candidates.Memory))) +
-		countJSONFiles(t, filepath.Join(homePath, candidates.InboxDir(candidates.Skill)))
+		countJSONFiles(t, filepath.Join(homePath, candidates.InboxDir(candidates.Skill))) +
+		countJSONFiles(t, filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))) +
+		countJSONFiles(t, filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade)))
 	if report.NeedsMe.CandidateTotal != rawCandidates {
 		t.Fatalf("candidate total = %d, want raw %d", report.NeedsMe.CandidateTotal, rawCandidates)
 	}
@@ -41,6 +43,14 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	skillInbox := findOrientCandidateInbox(t, report, string(candidates.Skill))
 	if skillInbox.Count != 1 || skillInbox.ActionableCount != 1 || skillInbox.StateCounts["unspecified"] != 1 {
 		t.Fatalf("skill inbox state counts = %+v", skillInbox)
+	}
+	capabilityInbox := findOrientCandidateInbox(t, report, string(candidates.CapabilityObs))
+	if capabilityInbox.Count != 1 || capabilityInbox.ActionableCount != 0 || capabilityInbox.StateCounts["no_promote"] != 1 {
+		t.Fatalf("capability inbox state counts = %+v", capabilityInbox)
+	}
+	methodInbox := findOrientCandidateInbox(t, report, string(candidates.MethodUpgrade))
+	if methodInbox.Count != 1 || methodInbox.ActionableCount != 0 || methodInbox.StateCounts["park"] != 1 {
+		t.Fatalf("method inbox state counts = %+v", methodInbox)
 	}
 	if report.NeedsMe.ReviewRequired != 1 || report.NeedsMe.PendingPanelNeedsHuman != 1 {
 		t.Fatalf("needs-me review counts = %+v, want one review-required needs-human panel verdict", report.NeedsMe)
@@ -206,6 +216,29 @@ func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	oldCandidatePath := filepath.Join(homePath, candidates.InboxDir(candidates.Skill), "skill_orient_fixture.json")
 	if err := os.Chtimes(oldCandidatePath, now.Add(-70*time.Minute), now.Add(-70*time.Minute)); err != nil {
 		t.Fatalf("chtimes skill candidate: %v", err)
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, "capability_orient_no_promote", map[string]any{
+		"id":              "capability_orient_no_promote",
+		"kind":            "capability_observation",
+		"created_at":      now.Add(-68 * time.Minute).Format(time.RFC3339),
+		"verdict":         candidates.NoPromote,
+		"promote_allowed": false,
+	}); err != nil {
+		t.Fatalf("write capability candidate: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs), "capability_orient_no_promote.json"), now.Add(-68*time.Minute), now.Add(-68*time.Minute)); err != nil {
+		t.Fatalf("chtimes capability candidate: %v", err)
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.MethodUpgrade, "method_orient_parked", map[string]any{
+		"id":         "method_orient_parked",
+		"kind":       "method_upgrade",
+		"created_at": now.Add(-67 * time.Minute).Format(time.RFC3339),
+		"verdict":    candidates.Park,
+	}); err != nil {
+		t.Fatalf("write method candidate: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade), "method_orient_parked.json"), now.Add(-67*time.Minute), now.Add(-67*time.Minute)); err != nil {
+		t.Fatalf("chtimes method candidate: %v", err)
 	}
 	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_orient_needs_human", map[string]any{
 		"schema_version": "compound.panel_verdict.v0.1",

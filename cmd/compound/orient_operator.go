@@ -374,8 +374,10 @@ func candidateReadinessState(path string) string {
 	}
 	defer file.Close()
 	var payload struct {
-		State  string `json:"state"`
-		Status string `json:"status"`
+		State          string `json:"state"`
+		Status         string `json:"status"`
+		Verdict        string `json:"verdict"`
+		PromoteAllowed *bool  `json:"promote_allowed"`
 	}
 	if err := json.NewDecoder(file).Decode(&payload); err != nil {
 		return "unreadable"
@@ -383,6 +385,12 @@ func candidateReadinessState(path string) string {
 	state := strings.TrimSpace(payload.State)
 	if state == "" {
 		state = strings.TrimSpace(payload.Status)
+	}
+	if state == "" {
+		state = strings.TrimSpace(payload.Verdict)
+	}
+	if state == "" && payload.PromoteAllowed != nil && !*payload.PromoteAllowed {
+		state = candidates.NoPromote
 	}
 	if state == "" {
 		return "unspecified"
@@ -394,7 +402,7 @@ func candidateStateActionable(state string) bool {
 	switch strings.TrimSpace(state) {
 	case "", "unspecified", "proposed", "pending", "needs_review", "review_required", "blocked":
 		return true
-	case "promoted", "rejected", "parked", "done", "recorded", "resolved", "accepted", "applied", "ok", "no_promote":
+	case "promote", "promoted", "reject", "rejected", "park", "parked", "operationalize", "retire", "done", "recorded", "resolved", "accepted", "applied", "ok", "no_promote":
 		return false
 	default:
 		return true
