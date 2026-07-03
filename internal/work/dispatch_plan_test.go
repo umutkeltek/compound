@@ -71,9 +71,13 @@ func TestDispatchPlanNoopsWhenNoOpenWork(t *testing.T) {
 	}
 }
 
-func TestDispatchPlanImportsSourcePacketAndSelectsReadyWork(t *testing.T) {
+func TestDispatchPlanSourcePacketIsReadOnlyPreview(t *testing.T) {
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	before, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	plan, err := s.DispatchPlan(fixedNow, DispatchPlanOptions{
 		Actor:            "codex",
 		Record:           true,
@@ -82,30 +86,31 @@ func TestDispatchPlanImportsSourcePacketAndSelectsReadyWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Source == nil || plan.Source.Kind != "packet" || !plan.Source.Created {
-		t.Fatalf("source import missing: %+v", plan.Source)
+	if plan.Source == nil || plan.Source.Kind != "packet" || plan.Source.Created || plan.Source.WorkID != "" {
+		t.Fatalf("source preview mismatch: %+v", plan.Source)
 	}
-	if plan.Status != "ready_to_claim" || plan.Selected == nil {
-		t.Fatalf("packet-sourced work should be claimable in plan: %+v", plan)
+	if plan.Status != "no_open_work" || plan.Selected != nil {
+		t.Fatalf("dispatch plan must not import/select packet work: %+v", plan)
 	}
-	if plan.Selected.WorkID != plan.Source.WorkID || plan.Selected.Action != "claim" {
-		t.Fatalf("selected = %+v, source = %+v", plan.Selected, plan.Source)
+	if !contains(plan.Warnings, "does not import source packets") {
+		t.Fatalf("dispatch plan missing no-import warning: %+v", plan.Warnings)
 	}
-	if len(plan.Selected.Command) != 6 || plan.Selected.Command[0] != "compound" || plan.Selected.Command[2] != "claim" {
-		t.Fatalf("claim command = %v", plan.Selected.Command)
-	}
-	w, err := s.Get(plan.Source.WorkID)
+	list, err := s.List()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w.State != "ready" {
-		t.Fatalf("source packet work state = %q, want ready", w.State)
+	if len(list) != 0 {
+		t.Fatalf("dispatch plan imported work: %+v", list)
 	}
-	if _, err := s.readLease(w.ID); err == nil {
-		t.Fatal("dispatch plan must not claim packet-sourced work")
+	after, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("source packet mutated")
 	}
 	if plan.PlanPath == "" {
-		t.Fatalf("recorded packet plan missing path: %+v", plan)
+		t.Fatalf("recorded packet preview plan missing path: %+v", plan)
 	}
 }
 

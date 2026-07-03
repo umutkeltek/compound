@@ -5312,7 +5312,7 @@ func cmdWork(args []string) {
 		}
 		fmt.Printf("- next: %s\n", report.NextAction)
 	case "dispatch-plan":
-		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
+		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md preview-only] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run":
@@ -5326,10 +5326,6 @@ func cmdWork(args []string) {
 				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
-		}
-		if has("--dry-run") && flag("--source-packet") != "" {
-			fmt.Fprintln(os.Stderr, "usage: --dry-run cannot be combined with --source-packet because packet import writes source-backed work; use a temp COMPOUND_HOME for preview")
-			os.Exit(2)
 		}
 		plan, err := store.DispatchPlan(time.Now(), work.DispatchPlanOptions{
 			Actor:                 flag("--actor"),

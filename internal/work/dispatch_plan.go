@@ -269,31 +269,11 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 	}
 	var source *DispatchPlanSource
 	if strings.TrimSpace(opts.SourcePacketPath) != "" {
-		state := strings.TrimSpace(opts.SourcePacketState)
-		if state == "" {
-			state = "ready"
-		}
-		imported, err := s.ImportPacket(opts.SourcePacketPath, PacketImportOptions{
-			Owner:         opts.SourcePacketOwner,
-			Actor:         actor,
-			State:         state,
-			Risk:          opts.SourcePacketRisk,
-			Privacy:       opts.SourcePacketPrivacy,
-			ContextPackID: opts.SourcePacketContextID,
-		}, now)
+		sourcePreview, err := dispatchPlanSourcePreview(opts.SourcePacketPath, dispatchSourceState(opts))
 		if err != nil {
 			return DispatchPlan{}, err
 		}
-		source = &DispatchPlanSource{
-			Kind:         "packet",
-			Path:         opts.SourcePacketPath,
-			Created:      imported.Created,
-			WorkID:       imported.Work.ID,
-			State:        imported.Work.State,
-			PacketTitle:  imported.PacketTitle,
-			EvidenceRef:  imported.EvidenceRef,
-			SourceDigest: imported.SourceDigest,
-		}
+		source = sourcePreview
 	}
 	report, err := s.Workbench(now, WorkbenchOptions{RecentLimit: opts.RecentLimit})
 	if err != nil {
@@ -313,9 +293,12 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 			"does not claim work",
 			"does not execute work",
 			"does not close work",
-			"source packet import creates only source-backed WorkEnvelope state",
+			"does not import source packets",
 		},
 		Integrity: append([]string{}, report.Integrity...),
+	}
+	if source != nil {
+		plan.Warnings = append(plan.Warnings, "source packet is preview-only; use work import-packet or mutating dispatch command to import")
 	}
 	policyBlocked := false
 	for _, item := range report.Open {
@@ -384,12 +367,82 @@ func (s *Store) RecordDispatchPlan(plan DispatchPlan) (string, error) {
 	return path, nil
 }
 
+func dispatchPlanSourcePreview(packetPath, state string) (*DispatchPlanSource, error) {
+	proof, err := PacketSourceProofForPath(packetPath)
+	if err != nil {
+		return nil, err
+	}
+	return &DispatchPlanSource{
+		Kind:         "packet",
+		Path:         packetPath,
+		Created:      false,
+		State:        state,
+		PacketTitle:  proof.PacketTitle,
+		EvidenceRef:  proof.EvidenceRef,
+		SourceDigest: proof.SourceDigest,
+	}, nil
+}
+
+func dispatchSourceState(opts DispatchPlanOptions) string {
+	state := strings.TrimSpace(opts.SourcePacketState)
+	if state == "" {
+		return "ready"
+	}
+	return state
+}
+
+func (s *Store) importDispatchSourcePacket(now time.Time, actor string, opts DispatchPlanOptions) (*DispatchPlanSource, error) {
+	imported, err := s.ImportPacket(opts.SourcePacketPath, PacketImportOptions{
+		Owner:         opts.SourcePacketOwner,
+		Actor:         actor,
+		State:         dispatchSourceState(opts),
+		Risk:          opts.SourcePacketRisk,
+		Privacy:       opts.SourcePacketPrivacy,
+		ContextPackID: opts.SourcePacketContextID,
+	}, now)
+	if err != nil {
+		return nil, err
+	}
+	return &DispatchPlanSource{
+		Kind:         "packet",
+		Path:         opts.SourcePacketPath,
+		Created:      imported.Created,
+		WorkID:       imported.Work.ID,
+		State:        imported.Work.State,
+		PacketTitle:  imported.PacketTitle,
+		EvidenceRef:  imported.EvidenceRef,
+		SourceDigest: imported.SourceDigest,
+	}, nil
+}
+
 func (s *Store) DispatchClaim(now time.Time, opts DispatchPlanOptions) (DispatchClaimResult, error) {
-	opts.Record = true
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = "codex"
+		opts.Actor = actor
+	}
+	var source *DispatchPlanSource
+	if strings.TrimSpace(opts.SourcePacketPath) != "" {
+		imported, err := s.importDispatchSourcePacket(now, actor, opts)
+		if err != nil {
+			return DispatchClaimResult{}, err
+		}
+		source = imported
+		opts.SourcePacketPath = ""
+	}
+	opts.Record = false
 	plan, err := s.DispatchPlan(now, opts)
 	if err != nil {
 		return DispatchClaimResult{}, err
 	}
+	if source != nil {
+		plan.Source = source
+	}
+	path, err := s.RecordDispatchPlan(plan)
+	if err != nil {
+		return DispatchClaimResult{}, err
+	}
+	plan.PlanPath = path
 	result := DispatchClaimResult{
 		SchemaVersion:    DispatchClaimSchemaVersion,
 		ID:               idFor("wdc_", plan.ID, ts(now)),
@@ -454,7 +507,7 @@ func (s *Store) DispatchClaim(now time.Time, opts DispatchPlanOptions) (Dispatch
 	result.ContextPackID = prompt.ContextPackID
 	result.CapabilitiesOffered = prompt.CapabilitiesOffered
 	result.WorkerPromptMD = prompt.Markdown
-	path, err := s.RecordDispatchClaim(result)
+	path, err = s.RecordDispatchClaim(result)
 	if err != nil {
 		return DispatchClaimResult{}, err
 	}

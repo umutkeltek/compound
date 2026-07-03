@@ -2194,7 +2194,7 @@ func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
 	}
 }
 
-func TestWorkDispatchPlanCommandImportsSourcePacket(t *testing.T) {
+func TestWorkDispatchPlanCommandPreviewsSourcePacketReadOnly(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -2202,7 +2202,7 @@ func TestWorkDispatchPlanCommandImportsSourcePacket(t *testing.T) {
 	}
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-plan", "--actor", "codex", "--source-packet", packetPath, "--json"})
+		cmdWork([]string{"dispatch-plan", "--actor", "codex", "--source-packet", packetPath, "--dry-run", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -2212,14 +2212,25 @@ func TestWorkDispatchPlanCommandImportsSourcePacket(t *testing.T) {
 	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
 		t.Fatalf("parse dispatch plan: %v\n%s", err, out)
 	}
-	if plan.Source == nil || plan.Source.Kind != "packet" || !plan.Source.Created {
-		t.Fatalf("dispatch plan source missing: %+v", plan.Source)
+	if plan.Source == nil || plan.Source.Kind != "packet" || plan.Source.Created || plan.Source.WorkID != "" {
+		t.Fatalf("dispatch plan source preview mismatch: %+v", plan.Source)
 	}
-	if plan.Status != "ready_to_claim" || plan.Selected == nil || plan.Selected.WorkID != plan.Source.WorkID {
-		t.Fatalf("dispatch plan did not select packet work: %+v", plan)
+	if plan.Status != "no_open_work" || plan.Selected != nil {
+		t.Fatalf("dispatch plan must not import/select packet work: %+v", plan)
 	}
-	if _, err := os.Stat(filepath.Join(homePath, "work", "leases", plan.Source.WorkID+".json")); !os.IsNotExist(err) {
-		t.Fatalf("dispatch plan must not create lease, stat err=%v", err)
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	list, err := store.List()
+	if err != nil {
+		t.Fatalf("list work: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("dispatch plan must not write work state: %+v", list)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "dispatch-plans")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run dispatch plan must not record plan, stat err=%v", err)
 	}
 }
 
