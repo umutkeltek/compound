@@ -97,7 +97,7 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 		WorkID:        w.ID,
 		WorkState:     w.State,
 		WorkOwner:     w.Owner,
-		CreateCommand: []string{"compound", "work", "create", "--owner", w.Owner, "--predicate", w.SuccessPredicate, "--by", actor},
+		CreateCommand: createCommandForWork(w, actor),
 		Policy:        summarizeCreatePolicy(pd, source),
 		ActionIntent:  ai,
 		Decision:      pd,
@@ -150,6 +150,36 @@ func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAtta
 		return w, err
 	}
 	return w, nil
+}
+
+func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
+	cmd := []string{"compound", "work", "create", "--work-id", w.ID, "--owner", w.Owner, "--predicate", w.SuccessPredicate, "--by", actor}
+	if strings.TrimSpace(w.DesiredOutcome) != "" {
+		cmd = append(cmd, "--outcome", w.DesiredOutcome)
+	}
+	for _, nonGoal := range w.NonGoals {
+		if strings.TrimSpace(nonGoal) != "" {
+			cmd = append(cmd, "--non-goal", nonGoal)
+		}
+	}
+	for _, evidenceRef := range w.EvidenceRefs {
+		if strings.TrimSpace(evidenceRef) != "" {
+			cmd = append(cmd, "--evidence-ref", evidenceRef)
+		}
+	}
+	if strings.TrimSpace(w.IDs.ContextPackID) != "" {
+		cmd = append(cmd, "--context-pack", w.IDs.ContextPackID)
+	}
+	if strings.TrimSpace(w.State) != "" {
+		cmd = append(cmd, "--state", w.State)
+	}
+	if strings.TrimSpace(w.Risk) != "" {
+		cmd = append(cmd, "--risk", w.Risk)
+	}
+	if strings.TrimSpace(w.Privacy) != "" {
+		cmd = append(cmd, "--privacy", w.Privacy)
+	}
+	return cmd
 }
 
 func (s *Store) RecordCreatePlan(plan CreatePlan) (string, error) {

@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"compound/internal/envelope"
@@ -41,6 +42,70 @@ func TestCreatePlanRecordsPolicyWithoutCreatingWork(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("create-plan must not write lifecycle events: %+v", events)
+	}
+}
+
+func TestCreatePlanCommandCarriesPlannedWorkID(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "created work uses planned identity",
+		DesiredOutcome:   "preserve planned fields",
+		NonGoals:         []string{"do not recompute identity"},
+		EvidenceRefs:     []string{"test://planned-work"},
+		ContextPackID:    "ctx_planned",
+	}, fixedNow, CreatePlanOptions{Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(plan.CreateCommand, "--work-id") || !contains(plan.CreateCommand, plan.WorkID) {
+		t.Fatalf("create command must preserve planned work id %s: %v", plan.WorkID, plan.CreateCommand)
+	}
+	for _, want := range []string{"--outcome", "preserve planned fields", "--non-goal", "do not recompute identity", "--evidence-ref", "test://planned-work", "--context-pack", "ctx_planned"} {
+		if !contains(plan.CreateCommand, want) {
+			t.Fatalf("create command missing %q: %v", want, plan.CreateCommand)
+		}
+	}
+}
+
+func TestCreatePreservesExplicitWorkID(t *testing.T) {
+	s := newStore(t)
+	plannedID := "work_planned_identity"
+	w, err := s.Create(CreateInput{
+		WorkID:           plannedID,
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "created work uses planned identity",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.ID != plannedID {
+		t.Fatalf("created work id = %q, want planned id %q", w.ID, plannedID)
+	}
+	if _, err := s.Get(plannedID); err != nil {
+		t.Fatalf("planned work id was not persisted: %v", err)
+	}
+	events, err := s.eventsFor(plannedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].WorkID != plannedID || events[0].To != "ready" {
+		t.Fatalf("create event not threaded through planned id: %+v", events)
+	}
+}
+
+func TestCreateRejectsInvalidExplicitWorkID(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Create(CreateInput{
+		WorkID:           "planned_identity",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "created work validates planned identity",
+	}, fixedNow)
+	if err == nil || !strings.Contains(err.Error(), `must start with "work_"`) {
+		t.Fatalf("expected work id prefix validation, got %v", err)
 	}
 }
 

@@ -4784,6 +4784,7 @@ func cmdWork(args []string) {
 	switch sub {
 	case "create-plan":
 		plan, err := store.CreatePlan(work.CreateInput{
+			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
 			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
 			SuccessPredicate: flag("--predicate"),
@@ -4826,6 +4827,7 @@ func cmdWork(args []string) {
 		}
 	case "create":
 		w, err := store.Create(work.CreateInput{
+			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
 			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
 			SuccessPredicate: flag("--predicate"),

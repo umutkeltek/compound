@@ -633,6 +633,7 @@ func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
 	out := captureStdout(t, func() {
 		cmdWork([]string{
 			"create",
+			"--work-id", "work_cli_planned",
 			"--owner", "compound-core",
 			"--predicate", "continuation envelope preserves fields",
 			"--outcome", "continue adaptive capability OS work",
@@ -656,6 +657,9 @@ func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
 	}
 	if w.Owner != "compound-core" || w.State != "ready" || w.DesiredOutcome != "continue adaptive capability OS work" {
 		t.Fatalf("work core fields not wired: %+v", w)
+	}
+	if w.ID != "work_cli_planned" {
+		t.Fatalf("work id = %q, want explicit planned id", w.ID)
 	}
 	if w.Privacy != "sensitive" || w.Risk != "tier2" || w.IDs.ContextPackID != "ctx_cli_create" {
 		t.Fatalf("header fields not wired: privacy=%q risk=%q context=%q", w.Privacy, w.Risk, w.IDs.ContextPackID)
@@ -698,6 +702,9 @@ func TestWorkCreatePlanCLIRecordsPolicyWithoutCreating(t *testing.T) {
 	}
 	if plan.Status != "create_policy_allowed" || !plan.Policy.Allowed || plan.PlanPath == "" {
 		t.Fatalf("create plan not allowed/recorded: %+v", plan)
+	}
+	if !stringSliceContains(plan.CreateCommand, "--work-id") || !stringSliceContains(plan.CreateCommand, plan.WorkID) {
+		t.Fatalf("create plan command must preserve planned work id %s: %v", plan.WorkID, plan.CreateCommand)
 	}
 	if _, err := os.Stat(plan.PlanPath); err != nil {
 		t.Fatalf("create plan artifact missing: %v", err)

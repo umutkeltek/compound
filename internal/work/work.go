@@ -88,6 +88,7 @@ type Lease struct {
 // --- create ---
 
 type CreateInput struct {
+	WorkID           string
 	Owner            string
 	Actor            string
 	SuccessPredicate string
@@ -103,8 +104,12 @@ type CreateInput struct {
 // BuildWork constructs a WorkEnvelope WITHOUT persisting it — used both by Create (which
 // then persists) and by callers that need a candidate (e.g. a UserPromptSubmit hook).
 func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
+	workID := strings.TrimSpace(in.WorkID)
+	if workID == "" {
+		workID = idFor("work_", in.Owner, in.SuccessPredicate, ts(now))
+	}
 	w := envelope.WorkEnvelope{
-		Header:             newHeader(envelope.SVWork, idFor("work_", in.Owner, in.SuccessPredicate, ts(now)), now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
+		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
 		State:              orDefault(in.State, "ready"),
 		DesiredOutcome:     in.DesiredOutcome,
