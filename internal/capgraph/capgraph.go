@@ -975,6 +975,7 @@ var capabilityTokenStopWords = map[string]bool{
 	// match tokens turns "choose a skill/tool/capability" into "offer almost
 	// everything", which defeats task-conditioned surfacing.
 	"capability": true, "capabilities": true, "skill": true, "skills": true,
+	"mcp": true, "plugin": true, "plugins": true,
 	"task": true, "tasks": true, "tool": true, "tools": true,
 	"workflow": true, "workflows": true,
 	// Agent describes the caller/role across too many tools and skills. Let

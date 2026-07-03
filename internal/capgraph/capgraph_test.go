@@ -298,6 +298,39 @@ func TestSurfaceUsesMeaningfulTriggerTokens(t *testing.T) {
 	}
 }
 
+func TestSurfaceIgnoresGenericMCPPluginKindTokens(t *testing.T) {
+	_, s := newStore(t)
+	if err := s.Add(Node{
+		ID:       "tool:noisy-mcp",
+		Kind:     "tool",
+		Name:     "Noisy MCP",
+		Triggers: []string{"mcp plugin plugins"},
+		Weight:   3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add(Node{
+		ID:       "tool:codegraph",
+		Kind:     "tool",
+		Name:     "Codegraph",
+		Triggers: []string{"code graph dependency trace"},
+		Weight:   1.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits := surfaced(s, "evaluate skills and MCP plugins")
+	if _, ok := hits["tool:noisy-mcp"]; ok {
+		t.Fatalf("generic MCP/plugin kind-token overlap surfaced noisy node: %+v", hits["tool:noisy-mcp"])
+	}
+	hits = surfaced(s, "trace code graph dependencies")
+	if score, ok := hits["tool:codegraph"]; !ok {
+		t.Fatalf("concrete graph task did not surface codegraph: %+v", hits)
+	} else if score <= 0 {
+		t.Fatalf("codegraph score = %.1f, want positive", score)
+	}
+}
+
 func TestSurfaceIgnoresGenericBuildToken(t *testing.T) {
 	_, s := newStore(t)
 	if err := s.Add(Node{

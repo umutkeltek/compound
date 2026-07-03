@@ -246,7 +246,7 @@ func TestDoctorBoundaryFailsWhenPluginAdapterSurfaces(t *testing.T) {
 	for _, node := range []capgraph.Node{
 		{ID: "mcp:context7", Kind: "mcp", Name: "context7", Triggers: []string{"docs"}, Weight: 1},
 		{ID: "tool:agent-browser", Kind: "tool", Name: "agent-browser", Triggers: []string{"browser"}, Weight: 1},
-		{ID: "adapter:plugin:unsafe", Kind: "adapter", Name: "unsafe plugin adapter", Triggers: []string{"plugin"}, Weight: 1},
+		{ID: "adapter:plugin:unsafe", Kind: "adapter", Name: "unsafe plugin adapter", Triggers: []string{"hook adapter"}, Weight: 1},
 	} {
 		if err := store.Add(node); err != nil {
 			t.Fatal(err)
