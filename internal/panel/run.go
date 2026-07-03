@@ -88,11 +88,11 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		}
 		targetInput, err := loadRunTargetInput(homePath, run.TargetKind, target.Ref)
 		if err != nil {
-			return run, err
+			return failDryRun(store, run, target.Ref, err)
 		}
 		artifactID := verdictArtifactID(run.ID, target.Ref)
 		if path, ok, err := verdictArtifactExists(homePath, artifactID); err != nil {
-			return run, err
+			return failDryRun(store, run, target.Ref, err)
 		} else if ok {
 			run.Findings = append(run.Findings, skippedTargetFinding(target.Ref, path, run.LensSet.Included))
 			existingFindings[target.Ref] = true
@@ -112,7 +112,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 
 		finding, used, err := executeTargetDryRun(ctx, homePath, run, targetInput, caller, now)
 		if err != nil {
-			return run, err
+			return failDryRun(store, run, target.Ref, err)
 		}
 		run.Findings = append(run.Findings, finding)
 		existingFindings[target.Ref] = true
@@ -140,6 +140,27 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		return run, err
 	}
 	return run, nil
+}
+
+func failDryRun(store *Store, run Run, targetRef string, cause error) (Run, error) {
+	if cause == nil {
+		return run, nil
+	}
+	run.Status = "failed"
+	run.StoppedReason = truncateStoppedReason("target " + strings.TrimSpace(targetRef) + ": " + cause.Error())
+	if err := store.SaveRun(run); err != nil {
+		return run, fmt.Errorf("%w; additionally failed to save failed panel run: %v", cause, err)
+	}
+	return run, cause
+}
+
+func truncateStoppedReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	const maxStoppedReason = 500
+	if len(reason) <= maxStoppedReason {
+		return reason
+	}
+	return reason[:maxStoppedReason] + "..."
 }
 
 func executeTargetDryRun(ctx context.Context, homePath string, run Run, target TargetInput, caller LensCaller, now func() time.Time) (TargetFinding, int, error) {

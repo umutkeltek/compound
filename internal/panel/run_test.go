@@ -26,6 +26,17 @@ func (c failingLensCaller) Call(ctx context.Context, req CallRequest) (CallResul
 	return c.base.Call(ctx, req)
 }
 
+type failingJudgeCaller struct {
+	base FixtureCaller
+}
+
+func (c failingJudgeCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
+	if req.LensID == judgePromptID {
+		return CallResult{}, fmt.Errorf("fixture judge failure for %s", req.LensID)
+	}
+	return c.base.Call(ctx, req)
+}
+
 func TestDecodeLensResponseStripsMarkdownFence(t *testing.T) {
 	cases := []struct {
 		name string
@@ -118,6 +129,36 @@ func TestExecuteDryRunFailSoftLens(t *testing.T) {
 	}
 	if !foundFailed {
 		t.Fatalf("failed lens finding not recorded: %+v", got.Findings[0].LensFindings)
+	}
+}
+
+func TestExecuteDryRunTerminalizesJudgeFailure(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	got, err := ExecuteDryRun(context.Background(), home, run, failingJudgeCaller{base: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}, fixedPanelNow)
+	if err == nil {
+		t.Fatalf("execute dry run succeeded; want judge failure")
+	}
+	if got.Status != "failed" || !strings.Contains(got.StoppedReason, "target mcand_example_api_clean") || !strings.Contains(got.StoppedReason, "fixture judge failure") {
+		t.Fatalf("failed run state = status %q reason %q", got.Status, got.StoppedReason)
+	}
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadRun(run.ID)
+	if err != nil {
+		t.Fatalf("load saved run: %v", err)
+	}
+	if loaded.Status != got.Status || loaded.StoppedReason != got.StoppedReason {
+		t.Fatalf("saved failed run = status %q reason %q, want status %q reason %q", loaded.Status, loaded.StoppedReason, got.Status, got.StoppedReason)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("judge failure must not record incomplete target finding: %+v", got.Findings)
+	}
+	if rows := routeEvidenceRows(t, home); rows == 0 {
+		t.Fatalf("judge failure should still leave route evidence")
 	}
 }
 

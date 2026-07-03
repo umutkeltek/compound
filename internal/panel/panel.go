@@ -308,6 +308,7 @@ var panelStatuses = map[string]bool{
 	"applied":           true,
 	"blocked":           true,
 	"stopped_budget":    true,
+	"failed":            true,
 }
 
 var targetKinds = map[string]bool{
