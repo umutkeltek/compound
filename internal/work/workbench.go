@@ -348,6 +348,7 @@ func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, 
 				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
 			}
 		}
+		summary = s.resolveDispatchStepRunSummary(summary)
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -360,6 +361,49 @@ func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, 
 		out = out[:limit]
 	}
 	return out, warnings
+}
+
+func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) DispatchStepRunSummary {
+	if summary.Status != "waiting" || len(summary.BlockedOn) == 0 {
+		return summary
+	}
+	var terminalRefs []string
+	for _, blocked := range summary.BlockedOn {
+		workID, ok := dispatchBlockedWorkID(blocked)
+		if !ok {
+			return summary
+		}
+		w, err := s.Get(workID)
+		if err != nil || !terminalStates[w.State] {
+			return summary
+		}
+		terminalRefs = append(terminalRefs, "work.terminal:"+workID)
+	}
+	if len(terminalRefs) == 0 {
+		return summary
+	}
+	summary.Status = "resolved"
+	summary.CanContinue = false
+	summary.WaitReason = "terminal_work"
+	summary.BlockedOn = mergeUnique(terminalRefs)
+	summary.NextAction = "referenced work is terminal; no dispatch action required"
+	return summary
+}
+
+func dispatchBlockedWorkID(blocked string) (string, bool) {
+	blocked = strings.TrimSpace(blocked)
+	if !strings.HasPrefix(blocked, "work.") {
+		return "", false
+	}
+	idx := strings.LastIndex(blocked, ":")
+	if idx < 0 || idx+1 >= len(blocked) {
+		return "", false
+	}
+	workID := strings.TrimSpace(blocked[idx+1:])
+	if workID == "" {
+		return "", false
+	}
+	return workID, true
 }
 
 func workbenchDispatchNext(report WorkbenchReport, actor string) WorkbenchDispatchNext {

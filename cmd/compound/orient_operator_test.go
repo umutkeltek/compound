@@ -92,6 +92,52 @@ func TestOrientOperatorCLIPrintsTriptychAndJSON(t *testing.T) {
 	}
 }
 
+func TestOrientOperatorSuppressesResolvedDispatchStepRun(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 2, 21, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := workStore.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "resolved dispatch wait"}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	run, err := workStore.DispatchStepRun(now.Add(-25*time.Minute), work.DispatchStepRunOptions{
+		DispatchStepOptions: work.DispatchStepOptions{Actor: "codex"},
+		MaxSteps:            5,
+	})
+	if err != nil {
+		t.Fatalf("dispatch step run: %v", err)
+	}
+	if run.WaitReason != "run_evidence" {
+		t.Fatalf("dispatch run wait reason = %q, want run_evidence", run.WaitReason)
+	}
+	if _, err := workStore.Advance(ready.ID, work.AdvanceInput{To: "verifying", VerificationID: "ver_orient_resolved_dispatch"}, now.Add(-20*time.Minute)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	if _, err := workStore.Close(ready.ID, work.CloseInput{
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+		Summary:  "resolved dispatch wait",
+		Changed:  true,
+	}, now.Add(-19*time.Minute)); err != nil {
+		t.Fatalf("close work: %v", err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	if report.Running.OpenCount != 0 || report.Running.LastDispatchStepRun != nil {
+		t.Fatalf("running should not surface resolved dispatch history: %+v", report.Running)
+	}
+}
+
 func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	t.Helper()
 	if err := home.Init(homePath, "test", now.Add(-2*time.Hour)); err != nil {

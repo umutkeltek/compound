@@ -240,8 +240,10 @@ func buildOrientRunning(homePath string, report work.WorkbenchReport, now time.T
 		out.OpenWork = append(out.OpenWork, open)
 	}
 	out.NonStaleLeaseCount = activeLeaseCount(homePath, openIDs)
-	if len(report.DispatchStepRuns) > 0 {
-		run := report.DispatchStepRuns[0]
+	for _, run := range report.DispatchStepRuns {
+		if !orientOperatorDispatchStepRunActive(run) {
+			continue
+		}
 		if at, ok := parseCompoundTime(run.GeneratedAt); ok {
 			out.LastDispatchStepRun = &orientAgedItem{
 				Kind:       "dispatch_step_run",
@@ -252,8 +254,21 @@ func buildOrientRunning(homePath string, report work.WorkbenchReport, now time.T
 				Age:        formatDuration(ageSeconds(now, at)),
 			}
 		}
+		break
 	}
 	return out
+}
+
+func orientOperatorDispatchStepRunActive(run work.DispatchStepRunSummary) bool {
+	if strings.TrimSpace(run.Status) == "resolved" {
+		return false
+	}
+	switch strings.TrimSpace(run.WaitReason) {
+	case "no_open_work", "source_packet_terminal", "terminal_work":
+		return false
+	default:
+		return true
+	}
 }
 
 func buildOrientChanged(homePath string, report work.WorkbenchReport, currentSeq, lastSeenSeq int64, firstRun bool, cursorPath string) orientChanged {

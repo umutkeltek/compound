@@ -83,6 +83,50 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 }
 
+func TestWorkbenchResolvesDispatchStepRunBlockedByTerminalWork(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch run stale wait resolves"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
+		DispatchStepOptions: DispatchStepOptions{Actor: "codex"},
+		MaxSteps:            5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.WaitReason != "run_evidence" || !contains(run.BlockedOn, "work.run_evidence:"+ready.ID) {
+		t.Fatalf("dispatch run did not wait on run evidence: %+v", run)
+	}
+	if _, err := s.Advance(ready.ID, AdvanceInput{To: "verifying", VerificationID: "ver_stale_dispatch"}, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Close(ready.ID, CloseInput{
+		Outcome:  "completed",
+		MoveType: "outward_delta",
+		Summary:  "dispatch run wait resolved by terminal work",
+		Changed:  true,
+	}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow.Add(3*time.Minute), WorkbenchOptions{RecentLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.DispatchStepRuns) != 1 {
+		t.Fatalf("dispatch step runs = %+v", report.DispatchStepRuns)
+	}
+	got := report.DispatchStepRuns[0]
+	if got.Status != "resolved" || got.WaitReason != "terminal_work" || got.CanContinue {
+		t.Fatalf("dispatch step run summary not resolved: %+v", got)
+	}
+	if !contains(got.BlockedOn, "work.terminal:"+ready.ID) || got.NextAction != "referenced work is terminal; no dispatch action required" {
+		t.Fatalf("dispatch step run terminal proof not surfaced: %+v", got)
+	}
+}
+
 func TestWorkbenchRecentOrdersByCompletionTimeNotWorkID(t *testing.T) {
 	s := newStore(t)
 	olderAt := fixedNow

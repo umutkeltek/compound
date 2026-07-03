@@ -57,6 +57,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Dispatch read-model status note: Workbench resolves recorded dispatch-step waits to `status=resolved` / `wait_reason=terminal_work` when every blocked work ref is already terminal, without rewriting old run files; operator orient hides resolved/no-op dispatch history from the RUNNING triptych.
+
 Distiller request record note: `distiller request --record` artifacts under `reviews/distiller-requests` annotate the review queue as recorded replay packets with source refs, not human review debt; invalid request JSON remains blocked.
 
 Hook input hash note: context-producing hooks hash normalized hook, harness, cwd, task, repo-kind, mode, and prompt digest, so same prompt/task in different scope does not collide and raw prompt text stays out of artifacts.
