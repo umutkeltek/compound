@@ -49,6 +49,29 @@ func TestCompileAndPackValidate(t *testing.T) {
 	}
 }
 
+func TestModeAffectsContractAndContextPackIDs(t *testing.T) {
+	in := mkInput("control-plane")
+	in.Task = "same task"
+	observe := in
+	observe.Mode = "observe"
+	execute := in
+	execute.Mode = "execute"
+
+	observeContract := Compile(observe, DefaultPolicy(), fixedNow)
+	executeContract := Compile(execute, DefaultPolicy(), fixedNow)
+	if observeContract.ID == executeContract.ID {
+		t.Fatalf("contract IDs should differ by mode: observe=%s execute=%s", observeContract.ID, executeContract.ID)
+	}
+	observePack := Pack(observe, DefaultPolicy(), fixedNow)
+	executePack := Pack(execute, DefaultPolicy(), fixedNow)
+	if observePack.ID == executePack.ID {
+		t.Fatalf("context pack IDs should differ by mode: observe=%s execute=%s", observePack.ID, executePack.ID)
+	}
+	if observePack.IDs.ContractID != observeContract.ID || executePack.IDs.ContractID != executeContract.ID {
+		t.Fatalf("pack contract IDs do not match mode-specific contracts: observe=%q/%q execute=%q/%q", observePack.IDs.ContractID, observeContract.ID, executePack.IDs.ContractID, executeContract.ID)
+	}
+}
+
 func TestRecordEffectiveContractWritesDatedAndLatestArtifacts(t *testing.T) {
 	homePath := t.TempDir()
 	ec := Compile(mkInput("control-plane"), DefaultPolicy(), fixedNow)

@@ -493,7 +493,7 @@ func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract,
 	return envelope.ContextRequest{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVContextRequest,
-			ID:            idFor("ctxreq_", fx.Harness, name, fx.Cwd, fx.Task, intentRef, ts(now)),
+			ID:            idFor("ctxreq_", fx.Harness, name, fx.Cwd, fx.Task, "mode:"+strings.TrimSpace(mode), intentRef, ts(now)),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
 			IDs:           envelope.IDs{ContextPackID: pack.Header.ID, ContractID: ec.Header.ID},

@@ -480,7 +480,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 	if len(excl) > 0 {
 		summary += " Out-of-scope context recorded — see `excluded`."
 	}
-	hdr := header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task), now, in)
+	hdr := header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task, modeIDPart(in.Mode)), now, in)
 	hdr.IDs.ContractID = contractIDForInput(in)
 	return envelope.ContextPack{
 		Header:             hdr,
@@ -2103,7 +2103,11 @@ func idFor(prefix string, parts ...string) string {
 }
 
 func contractIDForInput(in Input) string {
-	return idFor("contract_", in.Harness, in.RepoKind, in.Task)
+	return idFor("contract_", in.Harness, in.RepoKind, in.Task, modeIDPart(in.Mode))
+}
+
+func modeIDPart(mode string) string {
+	return "mode:" + strings.TrimSpace(mode)
 }
 
 func expandPath(path string) string {

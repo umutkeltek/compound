@@ -66,6 +66,31 @@ func TestSessionStartProducesContract(t *testing.T) {
 	}
 }
 
+func TestHookModeAffectsContextRequestIDs(t *testing.T) {
+	base := Fixture{Hook: "session-start", Harness: "claude_code", Cwd: "/repo/x", Task: "audit", RepoKind: "product"}
+	observe := base
+	observe.Mode = "observe"
+	execute := base
+	execute.Mode = "execute"
+
+	observeRes, err := Run(observe, baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("observe run: %v", err)
+	}
+	executeRes, err := Run(execute, baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("execute run: %v", err)
+	}
+	observeReq := observeRes.Produced[0].(*envelope.ContextRequest)
+	executeReq := executeRes.Produced[0].(*envelope.ContextRequest)
+	if observeReq.ID == executeReq.ID {
+		t.Fatalf("context request IDs should differ by mode: observe=%s execute=%s", observeReq.ID, executeReq.ID)
+	}
+	if observeReq.IDs.ContractID == executeReq.IDs.ContractID {
+		t.Fatalf("context request contract IDs should differ by mode: observe=%s execute=%s", observeReq.IDs.ContractID, executeReq.IDs.ContractID)
+	}
+}
+
 func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	homePath := t.TempDir()
 	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
