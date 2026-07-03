@@ -6888,6 +6888,7 @@ func TestDistillerRequestRecordPersistsReplayablePacket(t *testing.T) {
 		t.Fatalf("request record count = %d, want 1", len(entries))
 	}
 	recordedPath := filepath.Join(requestDir, entries[0].Name())
+	recordedRef := distiller.LLMRequestRecordRefPrefix + strings.TrimSuffix(entries[0].Name(), ".json")
 	var recordedReq distiller.LLMExtractionRequest
 	if err := json.Unmarshal([]byte(readFile(t, recordedPath)), &recordedReq); err != nil {
 		t.Fatalf("parse recorded request: %v", err)
@@ -6923,7 +6924,7 @@ func TestDistillerRequestRecordPersistsReplayablePacket(t *testing.T) {
 	}
 
 	runOut := captureStdout(t, func() {
-		cmdDistiller([]string{"run", "--llm-response", responsePath, "--request", recordedPath})
+		cmdDistiller([]string{"run", "--llm-response", responsePath, "--request", recordedRef})
 	})
 	if !strings.Contains(runOut, "method_upgrade") || !strings.Contains(runOut, "park") {
 		t.Fatalf("recorded request did not replay through grounded run:\n%s", runOut)

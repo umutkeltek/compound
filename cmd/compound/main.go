@@ -279,10 +279,10 @@ usage:
   compound distiller improvement-review <review.yaml>           validate reviewed distiller improvement decision, no source mutation
   compound distiller rule-plan --candidate C [--target file]  failure_pattern candidate -> reviewed rule draft, no doctrine mutation
   compound distiller taste-plan --candidate C [--target file] taste candidate -> reviewed taste standard draft, no doctrine mutation
-  compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...
-                                                                 TraceDistiller LLM request packet, no model call
-  compound distiller extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
-                                                                 gated rented model extraction; provider output stays candidate-only
+  compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record]
+  TraceDistiller LLM request packet, no model call
+  compound distiller extract --request <request.json|distiller_request:id> --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV]
+  gated rented model extraction; provider output stays candidate-only
   compound distiller import-conversation-coverage <summary.json>
                                                                  conversation corpus coverage -> SourceObservation/no-promote; no row import, Dream execution, or memory promotion
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
@@ -1864,45 +1864,46 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record] | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record] | extract --request <request.json|distiller_request:id> --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response response.json [--request <request.json|distiller_request:id>]|trace.json] | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
 	extractor := distiller.Extractor(distiller.ReferenceExtractor{})
 	tracePath := args[1]
+	homePath := ""
 	if args[1] == "--llm-response" {
 		if len(args) != 3 && len(args) != 5 {
-			fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json> [--request <request.json>]")
+			fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json> [--request <request.json|distiller_request:id>]")
 			os.Exit(2)
 		}
 		tracePath = args[2]
 		extractor = distiller.LLMExtractor{}
 		if len(args) == 5 {
 			if args[3] != "--request" || strings.TrimSpace(args[4]) == "" {
-				fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json> [--request <request.json>]")
+				fmt.Fprintln(os.Stderr, "usage: compound distiller run --llm-response <response.json> [--request <request.json|distiller_request:id>]")
 				os.Exit(2)
 			}
-			reqData, err := os.ReadFile(args[4])
+			var err error
+			homePath, err = home.Resolve("")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+				os.Exit(1)
+			}
+			req, err := distiller.LoadLLMExtractionRequest(homePath, args[4])
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "distiller run request:", err)
-				os.Exit(1)
-			}
-			var req distiller.LLMExtractionRequest
-			if err := json.Unmarshal(reqData, &req); err != nil {
-				fmt.Fprintln(os.Stderr, "distiller run request:", err)
-				os.Exit(1)
-			}
-			if req.SchemaVersion != distiller.LLMExtractionSchemaVersion {
-				fmt.Fprintf(os.Stderr, "distiller run request: schema_version=%q, want %q\n", req.SchemaVersion, distiller.LLMExtractionSchemaVersion)
 				os.Exit(1)
 			}
 			extractor = distiller.NewGroundedLLMExtractor(req)
 		}
 	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		os.Exit(1)
+	if homePath == "" {
+		var err error
+		homePath, err = home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
 	}
 	store, err := mem.Open(homePath)
 	if err != nil {
@@ -2092,7 +2093,7 @@ func cmdDistillerExtract(args []string) {
 	}
 	model := valueFlag(args, "--model")
 	if requestPath == "" || evalCorpus == "" || baseURL == "" || model == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller extract --request <request.json> --eval-corpus <cases-dir> --openai-compatible-url <url> --model <model> [--api-key-env ENV]")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller extract --request <request.json|distiller_request:id> --eval-corpus <cases-dir> --openai-compatible-url <url> --model <model> [--api-key-env ENV]")
 		os.Exit(2)
 	}
 	apiKey := ""
@@ -2103,23 +2104,14 @@ func cmdDistillerExtract(args []string) {
 			os.Exit(1)
 		}
 	}
-	data, err := os.ReadFile(requestPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "distiller extract request:", err)
-		os.Exit(1)
-	}
-	var req distiller.LLMExtractionRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		fmt.Fprintln(os.Stderr, "distiller extract request:", err)
-		os.Exit(1)
-	}
-	if req.SchemaVersion != distiller.LLMExtractionSchemaVersion {
-		fmt.Fprintf(os.Stderr, "distiller extract request: schema_version=%q, want %q\n", req.SchemaVersion, distiller.LLMExtractionSchemaVersion)
-		os.Exit(1)
-	}
 	homePath, err := home.Resolve("")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	req, err := distiller.LoadLLMExtractionRequest(homePath, requestPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "distiller extract request:", err)
 		os.Exit(1)
 	}
 	now := time.Now()
