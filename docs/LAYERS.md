@@ -63,6 +63,8 @@ family must answer four questions, or it is not coherent:
 | **Doctrine / Product / Taste** — durable preference/product objects | Doctrine, Product, TasteProfile, Hypothesis, ProductSignal, ProductSourceIssue | taste/product observation (intake) → candidate/source issue; ProductSignal→review-plan→Hypothesis review→Transition | `ledger`; `inbox/{taste-observations,product-hypotheses}` | operationalize/park/review; hypotheses resolve supported\|refuted; source issues close by review | bland-automation / repo-summary "project pages" |
 
 Detail per object: `architecture/contracts/README.md`. Memory slice in depth: `memory-architecture.md`.
+Recurring analytical/audit/optimization prompts are Procedures/Capabilities nodes on this spine, not a
+new home: `architecture/recurring-work-as-capability.md`.
 
 ---
 
