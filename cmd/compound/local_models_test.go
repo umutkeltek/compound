@@ -35,6 +35,12 @@ func TestLocalModelsAdviseCLIJSONBlocksLowContext(t *testing.T) {
 			Action         string `json:"action"`
 			Blocking       bool   `json:"blocking"`
 			DesiredContext int    `json:"desired_context"`
+			Intent         struct {
+				Owner         string `json:"owner"`
+				Action        string `json:"action"`
+				ContextTokens int    `json:"context_tokens"`
+				Delegation    string `json:"delegation"`
+			} `json:"lifecycle_intent"`
 		} `json:"findings"`
 	}
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
@@ -46,6 +52,9 @@ func TestLocalModelsAdviseCLIJSONBlocksLowContext(t *testing.T) {
 	finding := report.Findings[0]
 	if finding.ModelID != "judge" || finding.Action != "reload_higher_context" || !finding.Blocking || finding.DesiredContext != 262144 {
 		t.Fatalf("finding = %+v, want max-context reload blocker", finding)
+	}
+	if finding.Intent.Owner != "local-routing" || finding.Intent.Action != "reload_higher_context" || finding.Intent.ContextTokens != 262144 || finding.Intent.Delegation == "" {
+		t.Fatalf("intent = %+v, want local-routing reload intent", finding.Intent)
 	}
 }
 

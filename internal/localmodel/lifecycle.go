@@ -49,15 +49,16 @@ const (
 )
 
 type Finding struct {
-	ModelID          string   `json:"model_id"`
-	Action           Action   `json:"action"`
-	Blocking         bool     `json:"blocking"`
-	State            string   `json:"state,omitempty"`
-	DesiredContext   int      `json:"desired_context,omitempty"`
-	LoadedContext    int      `json:"loaded_context,omitempty"`
-	MaxContext       int      `json:"max_context,omitempty"`
-	Reason           string   `json:"reason"`
-	RecommendedSteps []string `json:"recommended_steps,omitempty"`
+	ModelID          string           `json:"model_id"`
+	Action           Action           `json:"action"`
+	Blocking         bool             `json:"blocking"`
+	State            string           `json:"state,omitempty"`
+	DesiredContext   int              `json:"desired_context,omitempty"`
+	LoadedContext    int              `json:"loaded_context,omitempty"`
+	MaxContext       int              `json:"max_context,omitempty"`
+	Reason           string           `json:"reason"`
+	RecommendedSteps []string         `json:"recommended_steps,omitempty"`
+	LifecycleIntent  *LifecycleIntent `json:"lifecycle_intent,omitempty"`
 }
 
 type Report struct {
@@ -97,6 +98,7 @@ func Evaluate(models map[string]Model, requirements []Requirement, policy Policy
 				Reason:           "required model is not listed by local model runtime",
 				DesiredContext:   req.MinContextTokens,
 				RecommendedSteps: []string{"load " + id + contextArg(req.MinContextTokens)},
+				LifecycleIntent:  NewLifecycleIntent(id, ActionLoad, req.MinContextTokens),
 			})
 			continue
 		}
@@ -116,6 +118,7 @@ func Evaluate(models map[string]Model, requirements []Requirement, policy Policy
 				MaxContext:       model.MaxContextLength,
 				Reason:           "loaded model is not required and has exceeded idle TTL",
 				RecommendedSteps: []string{"unload " + model.ID},
+				LifecycleIntent:  NewLifecycleIntent(model.ID, ActionUnloadIdle, 0),
 			})
 		}
 	}
@@ -165,6 +168,7 @@ func evaluateRequiredModel(model Model, req Requirement, policy Policy) Finding 
 		base.Blocking = true
 		base.Reason = fmt.Sprintf("model %q state=%q; load it before local execution", model.ID, model.State)
 		base.RecommendedSteps = []string{"load " + model.ID + contextArg(desired)}
+		base.LifecycleIntent = NewLifecycleIntent(model.ID, base.Action, desired)
 		return base
 	}
 	if model.LoadedContextLength == nil {
@@ -182,12 +186,14 @@ func evaluateRequiredModel(model Model, req Requirement, policy Policy) Finding 
 			base.Reason = fmt.Sprintf("model %q loaded_context_length=%d below desired_context=%d", model.ID, *model.LoadedContextLength, desired)
 		}
 		base.RecommendedSteps = []string{"reload " + model.ID + contextArg(desired)}
+		base.LifecycleIntent = NewLifecycleIntent(model.ID, base.Action, desired)
 		return base
 	}
 	if desired > 0 && *model.LoadedContextLength > desired && idleTooLong(model, policy) {
 		base.Action = ActionReloadLowerWhenIdle
 		base.Reason = fmt.Sprintf("model %q loaded_context_length=%d exceeds desired_context=%d and is idle", model.ID, *model.LoadedContextLength, desired)
 		base.RecommendedSteps = []string{"reload " + model.ID + contextArg(desired)}
+		base.LifecycleIntent = NewLifecycleIntent(model.ID, base.Action, desired)
 		return base
 	}
 	base.Action = ActionOK

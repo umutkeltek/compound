@@ -36,6 +36,9 @@ func cmdLocalModels(args []string) {
 			for _, step := range finding.RecommendedSteps {
 				fmt.Printf("  next: %s\n", step)
 			}
+			if intent := finding.LifecycleIntent; intent != nil {
+				fmt.Printf("  intent: owner=%s action=%s mutation_class=%s delegation=%s\n", intent.Owner, intent.Action, intent.MutationClass, intent.Delegation)
+			}
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown local-models command %q\n", args[0])
