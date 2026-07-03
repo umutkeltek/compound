@@ -37,6 +37,12 @@ Rules: strict decode (unknown fields rejected); `source.kind` is a lowercase slu
 `source.captured_at` is RFC3339; every item needs `ref` and `content` (or `content_ref`);
 `privacy` ∈ {public, private}, default public.
 
+Conversation exports are capture edges, not core types: `chatgpt`, `claude-code`,
+`codex`, and other harness/session exports use the same envelope with different
+`source.kind` values. Long private conversations stay bounded evidence quotes;
+per-message/windowed refs such as `<conversation-uuid>#w2` are a later capture-edge
+refinement, not a new internal package.
+
 ## What `compound knowledge import <export.json>` does per item
 
 Current implementation note: deterministic reference metadata is field-level.
@@ -79,6 +85,10 @@ bridge owns meaning proposals), no direct writes into `COMPOUND_HOME`. A referen
 synthetic export lives at `fixtures/knowledge/arxiv-export.json`; the future-proof test
 (`internal/knowledge`) imports a never-seen medium kind to prove the zero-core-change
 guarantee.
+
+The proof fixture set includes `fixtures/knowledge/arxiv-export.json` and
+`fixtures/knowledge/chatgpt-conversation-export.json`; `internal/knowledge`
+tests import new medium kinds to prove the zero-core-change guarantee.
 
 ## Downstream (owned by other contracts)
 

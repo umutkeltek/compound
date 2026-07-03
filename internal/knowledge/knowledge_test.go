@@ -190,6 +190,93 @@ func TestImportFoldsEchoAcrossSourceKinds(t *testing.T) {
 	}
 }
 
+func TestImportChatGPTConversationUsesGenericKnowledgeDoor(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixturePath("chatgpt-conversation-export.json")
+	export, _, err := LoadExport(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(export.Items) != 1 || len(export.Items[0].Content) <= maxEvidenceQuoteChars {
+		t.Fatalf("fixture must carry one long content item, got items=%d content_len=%d", len(export.Items), len(export.Items[0].Content))
+	}
+
+	report, err := ImportFile(homePath, store, fixture, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Items != 1 || report.Imported != 1 || report.Echoes != 0 || report.Reused != 0 {
+		t.Fatalf("first import report = %+v", report)
+	}
+	if len(report.EvidenceIDs) != 1 || len(report.CandidateIDs) != 3 || len(report.ExtractionIDs) != 1 {
+		t.Fatalf("first import ids = %+v", report)
+	}
+	evidence, err := store.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 {
+		t.Fatalf("evidence rows = %d, want 1", len(evidence))
+	}
+	if evidence[0].SourceKind != "chatgpt" || evidence[0].SourceID != export.Items[0].Ref {
+		t.Fatalf("evidence provenance = %+v", evidence[0])
+	}
+	if evidence[0].EventTime != export.Items[0].PublishedAt || evidence[0].EventTime == rfc3339(testNow) {
+		t.Fatalf("evidence event time = %q, want item published_at %q and not import time %q", evidence[0].EventTime, export.Items[0].PublishedAt, rfc3339(testNow))
+	}
+	if evidence[0].Visibility != "private" {
+		t.Fatalf("evidence visibility = %q, want private", evidence[0].Visibility)
+	}
+	if len(evidence[0].QuoteText) != maxEvidenceQuoteChars {
+		t.Fatalf("quote len = %d, want bounded %d", len(evidence[0].QuoteText), maxEvidenceQuoteChars)
+	}
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 3 {
+		t.Fatalf("candidate rows = %d, want 3: %+v", len(candidates), candidates)
+	}
+	for _, candidate := range candidates {
+		if candidate.Visibility != "private" {
+			t.Fatalf("candidate %s visibility = %q, want private", candidate.ID, candidate.Visibility)
+		}
+		if candidate.SourceTraceRef != report.EvidenceIDs[0] {
+			t.Fatalf("candidate %s source trace = %q, want %q", candidate.ID, candidate.SourceTraceRef, report.EvidenceIDs[0])
+		}
+	}
+
+	reimport, err := ImportFile(homePath, store, fixture, testNow.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reimport.Imported != 0 || reimport.Echoes != 0 || reimport.Reused != 1 {
+		t.Fatalf("reimport report = %+v", reimport)
+	}
+
+	echoExport := export
+	echoExport.Source = Source{Kind: "claude-code", Ref: "session:synthetic-echo", CapturedAt: testNow.Add(2 * time.Hour).Format(time.RFC3339)}
+	echoExport.Producer = Producer{Kind: "edge-script", Name: "claude-session-capture", Version: "0.1"}
+	echoExport.Items[0].Content = "A second synthetic source cites the same private conversation ref, so the importer should fold it as distribution evidence."
+	echo, err := Import(homePath, store, echoExport, "synthetic-echo-digest", testNow.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if echo.Imported != 0 || echo.Echoes != 1 || echo.Reused != 0 || len(echo.CandidateIDs) != 0 || len(echo.ExtractionIDs) != 0 {
+		t.Fatalf("echo report = %+v", echo)
+	}
+	assertCandidateCount(t, store, 3)
+	var events []DistributionEvent
+	readJSONLRows(t, filepath.Join(homePath, "ledger", "knowledge-distribution.jsonl"), &events)
+	if len(events) != 1 || events[0].EchoSourceKind != "claude-code" || events[0].FirstEvidenceRef != report.EvidenceIDs[0] {
+		t.Fatalf("distribution events = %+v", events)
+	}
+}
+
 func TestImportDedupSurvivesBackupRestore(t *testing.T) {
 	sourceHome := initializedHome(t)
 	sourceStore, err := mem.Open(sourceHome)
