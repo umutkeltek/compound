@@ -4,6 +4,8 @@ Memory graph zoom note: `internal/mem` exposes `RecallGraphOpts` with optional `
 
 Knowledge conversation-edge note: `fixtures/knowledge/chatgpt-conversation-export.json` proves private `source.kind=chatgpt` conversation exports enter the generic `compound.knowledge_export.v0.1` door with item event time, private evidence/candidate visibility, 4000-char bounded quotes, exact reimport reuse, and cross-source echo folding; no conversation-specific core package or importer branch exists.
 
+Conversation recall gate note: control-plane memory policy treats personal corpus as explicit-only rather than ambient; promoted private `knowledge:chatgpt:*` claims can enter `ContextPack.active_memory` only when task/entity relevance scores them, while product/library contexts still hard-forbid personal corpus.
+
 Epistemics doctrine note: `docs/architecture/epistemics.md` is a doctor-parseable doctrine table mapping principles to existing `internal/` object families and `compound` proof commands; strict architecture doctor fails missing/short/phantom rows so doctrine cannot drift back to prose-only guidance.
 
 Panel blocked-run guidance note: panel runs that stop at no-lane, metered-budget, budget-limit, or target-failure boundaries persist `next_action` alongside `stopped_reason`, so `panel show` / `--json` consumers know whether to refresh route evidence, create a bounded new plan, or inspect route evidence before retrying.

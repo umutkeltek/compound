@@ -326,6 +326,9 @@ func TestPersonalCorpusGate(t *testing.T) {
 	if !contains(ctl.MemoryPolicy.ExplicitOnly, "self-model") {
 		t.Errorf("control-plane should allow self-model only on explicit request; got explicit_only=%v", ctl.MemoryPolicy.ExplicitOnly)
 	}
+	if !contains(ctl.MemoryPolicy.ExplicitOnly, "personal-corpus") || contains(ctl.MemoryPolicy.Forbidden, "personal-corpus") {
+		t.Errorf("control-plane must make personal-corpus explicit-only, not forbidden; explicit_only=%v forbidden=%v", ctl.MemoryPolicy.ExplicitOnly, ctl.MemoryPolicy.Forbidden)
+	}
 }
 
 // Repo kind is discovered from a committed marker (path-independent), walking up from a
@@ -1599,6 +1602,74 @@ func TestPackWithCapabilitiesIncludesTaskRelevantKnowledgeImportClaim(t *testing
 	}
 	if contains(unrelatedPack.ActiveMemory, knowledgeRef) {
 		t.Fatalf("unrelated task active_memory = %v, should not include %s", unrelatedPack.ActiveMemory, knowledgeRef)
+	}
+}
+
+func TestPackWithCapabilitiesIncludesExplicitPrivateChatGPTConversationClaim(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:         "knowledge:chatgpt:conversation-001",
+			Predicate:      "proposes_strategy",
+			Object:         "An owned personal cognition runtime should answer next actions from goals, thinking patterns, and evidence.",
+			Confidence:     0.82,
+			Derivation:     "extracted",
+			PromotionBasis: candidates.BasisExplicitConfirmation,
+			Qualifiers: map[string]string{
+				"source":        "knowledge_extraction",
+				"source_kind":   "chatgpt",
+				"extraction_id": "kx_private_conversation",
+			},
+			SourceTraceRef:  "ev_private_chatgpt",
+			SnippetHash:     "sha256:private-chatgpt",
+			Visibility:      "private",
+			ObservationDate: "2026-07-03",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := store.Adjudicate(got[0].ID, "promote", "operator-reviewed", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "claim://" + res.Claim.ID
+	matching := Input{
+		Harness:     "claude-code",
+		Cwd:         "/repo/compound",
+		Task:        "personal cognition runtime next actions from goals patterns evidence",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(matching, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(pack.ActiveMemory, ref) {
+		t.Fatalf("context pack active_memory = %v, want explicit private conversation claim %s", pack.ActiveMemory, ref)
+	}
+	unrelated := matching
+	unrelated.Task = "billing dashboard polish"
+	unrelatedPack, err := PackWithCapabilities(unrelated, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(unrelatedPack.ActiveMemory, ref) {
+		t.Fatalf("unrelated task active_memory = %v, should not include private conversation claim %s", unrelatedPack.ActiveMemory, ref)
+	}
+	product := matching
+	product.RepoKind = "product"
+	productPack, err := PackWithCapabilities(product, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(productPack.ActiveMemory, ref) {
+		t.Fatalf("product repo active_memory = %v, must not include private conversation claim %s", productPack.ActiveMemory, ref)
 	}
 }
 

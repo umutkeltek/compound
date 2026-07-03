@@ -91,7 +91,7 @@ func DefaultPolicy() OrientationPolicy {
 			{Class: "memory-index", SourceClass: "generated", AmbientFor: all, Ref: memoryRelevanceSourceRef},
 		},
 		Memory: map[string]MemoryRule{
-			"control-plane": {Ambient: []string{"project-facts", "decisions", "system-state"}, ExplicitOnly: []string{"self-model"}, Forbidden: []string{"personal-corpus"}},
+			"control-plane": {Ambient: []string{"project-facts", "decisions", "system-state"}, ExplicitOnly: []string{"self-model", "personal-corpus"}},
 			"product":       {Ambient: []string{"project-facts"}, ExplicitOnly: []string{"decisions"}, Forbidden: []string{"self-model", "personal-corpus"}},
 			"library":       {Ambient: []string{"project-facts"}, ExplicitOnly: []string{"decisions"}, Forbidden: []string{"self-model", "personal-corpus"}},
 		},
@@ -832,17 +832,23 @@ func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens ma
 	if !memoryVisibilityAllowedForOrient(claim) {
 		return 0
 	}
-	if (contains(rule.Forbidden, "personal-corpus") || contains(rule.ExplicitOnly, "personal-corpus")) && personalMemoryClaim(claim) {
-		return 0
-	}
-	if (contains(rule.Forbidden, "self-model") || contains(rule.ExplicitOnly, "self-model")) && selfModelClaim(claim) {
-		return 0
-	}
 	rank := 0.0
 	if entities[memoryKey(claim.Entity)] {
 		rank += 2
 	}
 	rank += memoryTaskOverlapScore(claim, taskTokens)
+	if contains(rule.Forbidden, "self-model") && selfModelClaim(claim) {
+		return 0
+	}
+	if contains(rule.ExplicitOnly, "self-model") && selfModelClaim(claim) {
+		return 0
+	}
+	if contains(rule.Forbidden, "personal-corpus") && personalMemoryClaim(claim) {
+		return 0
+	}
+	if contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim) && rank <= 0 {
+		return 0
+	}
 	return rank
 }
 
@@ -960,6 +966,9 @@ func memoryVisibilityAllowed(visibility string) bool {
 }
 
 func memoryVisibilityAllowedForOrient(claim mem.Claim) bool {
+	if strings.EqualFold(strings.TrimSpace(claim.Visibility), "private") {
+		return true
+	}
 	return memoryVisibilityAllowed(claim.Visibility)
 }
 
