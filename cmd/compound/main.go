@@ -1864,7 +1864,7 @@ func cmdDistiller(args []string) {
 		return
 	}
 	if len(args) < 2 || args[0] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller eval <case.json|cases-dir> [--record] | eval-plan --candidate C [--corpus dir] | rule-plan --candidate C [--target file] | taste-plan --candidate C [--target file] | request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record] | extract --request f --eval-corpus dir --openai-compatible-url URL --model M [--api-key-env ENV] | import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json] | run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state")
 		os.Exit(2)
 	}
 
@@ -1986,7 +1986,7 @@ func printDistillerEvalCorpus(report distiller.EvalCorpusReport) {
 func cmdDistillerRequest(args []string) {
 	traceRef := valueFlag(args, "--trace-ref")
 	if traceRef == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]...")
+		fmt.Fprintln(os.Stderr, "usage: compound distiller request --trace-ref T [--work-id W] [--raw f] [--context-pack f] [--work f] [--receipt f] [--envelope f]... [--event-trace trace_id]... [--record]")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -2070,6 +2070,15 @@ func cmdDistillerRequest(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "distiller request encode:", err)
 		os.Exit(1)
+	}
+	if hasFlag(args, "--record") {
+		record, err := distiller.RecordLLMExtractionRequest(homePath, req)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "distiller request record:", err)
+			os.Exit(1)
+		}
+		fmt.Fprintf(os.Stderr, "- request_ref: %s\n", record.Ref)
+		fmt.Fprintf(os.Stderr, "- request: %s\n", record.Path)
 	}
 	fmt.Println(string(out))
 }

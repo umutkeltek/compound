@@ -6857,6 +6857,83 @@ func TestDistillerRunGroundsLLMResponseWithRequest(t *testing.T) {
 	}
 }
 
+func TestDistillerRequestRecordPersistsReplayablePacket(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	rawPath := filepath.Join(t.TempDir(), "trace.txt")
+	if err := os.WriteFile(rawPath, []byte("hook output refs must remain replayable evidence\n"), 0o644); err != nil {
+		t.Fatalf("write raw trace: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdDistiller([]string{"request", "--trace-ref", "trace_recorded_request", "--raw", rawPath, "--record"})
+	})
+	var stdoutReq distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(out), &stdoutReq); err != nil {
+		t.Fatalf("parse stdout request: %v\n%s", err, out)
+	}
+	if stdoutReq.TraceRef != "trace_recorded_request" || !stringSliceContains(stdoutReq.SourceRefs, "raw_trace:trace_recorded_request") {
+		t.Fatalf("stdout request not grounded in raw trace: %+v", stdoutReq)
+	}
+
+	requestDir := filepath.Join(homePath, "reviews", "distiller-requests")
+	entries, err := os.ReadDir(requestDir)
+	if err != nil {
+		t.Fatalf("read request records: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("request record count = %d, want 1", len(entries))
+	}
+	recordedPath := filepath.Join(requestDir, entries[0].Name())
+	var recordedReq distiller.LLMExtractionRequest
+	if err := json.Unmarshal([]byte(readFile(t, recordedPath)), &recordedReq); err != nil {
+		t.Fatalf("parse recorded request: %v", err)
+	}
+	if recordedReq.TraceRef != stdoutReq.TraceRef || !stringSliceContains(recordedReq.SourceRefs, "raw_trace:trace_recorded_request") {
+		t.Fatalf("recorded request changed replay material: %+v", recordedReq)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("distiller request --record must not promote claims, stat err=%v", err)
+	}
+
+	confidence := 0.9
+	response := distiller.LLMExtractionResponse{
+		SchemaVersion: distiller.LLMExtractionSchemaVersion,
+		TraceRef:      "trace_recorded_request",
+		Extractor:     "fixture-offline",
+		Model:         "offline-fixture",
+		Candidates: []distiller.LLMCandidate{{
+			Kind:         distiller.KindMethodUpgrade,
+			Subject:      "distiller.recorded-request-replay",
+			Statement:    "Recorded distiller request packets should remain reusable for grounded offline replay.",
+			Confidence:   &confidence,
+			EvidenceRefs: []string{"raw_trace:trace_recorded_request"},
+		}},
+	}
+	responsePath := filepath.Join(t.TempDir(), "response.json")
+	responseData, err := json.MarshalIndent(response, "", " ")
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if err := os.WriteFile(responsePath, append(responseData, '\n'), 0o644); err != nil {
+		t.Fatalf("write response: %v", err)
+	}
+
+	runOut := captureStdout(t, func() {
+		cmdDistiller([]string{"run", "--llm-response", responsePath, "--request", recordedPath})
+	})
+	if !strings.Contains(runOut, "method_upgrade") || !strings.Contains(runOut, "park") {
+		t.Fatalf("recorded request did not replay through grounded run:\n%s", runOut)
+	}
+	rows := readCandidateRows(t, filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade)))
+	if len(rows) != 1 || !stringSliceContains(rows[0].EvidenceRefs, "raw_trace:trace_recorded_request") {
+		t.Fatalf("replayed candidate not grounded in recorded request: %+v", rows)
+	}
+}
+
 func TestMemoryImportPageCreatesEvidenceAndCandidatesWithoutClaims(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
