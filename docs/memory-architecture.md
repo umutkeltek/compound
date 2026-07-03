@@ -246,8 +246,9 @@ before they are trusted as rented breadth.
   a silent model swap would wreck recall invisibly. A down sidecar degrades to `ErrEngineUnavailable`
   (the ledger still answers exact/as-of); the two are distinct on purpose.
 
-Config (overlay): `COMPOUND_MEM_ENGINE_BIN` (the sidecar command) and
-`COMPOUND_MEM_ENGINE_EMBEDDER` (the indexed-with stamp). Older `COMPOUND_ENGINE_BIN`
+Config (overlay): `COMPOUND_HOME/config/memory-engine.yaml` can persist the default
+rented sidecar profile, while `--engine-profile`, `COMPOUND_MEM_ENGINE_BIN`, and
+`COMPOUND_MEM_ENGINE_EMBEDDER` stay explicit overrides. Older `COMPOUND_ENGINE_BIN`
 adapters speak a different protocol and are not part of the spine memory engine seam.
 `compound-memory-cli-engine` is a read-only external memory CLI sidecar: it uses a
 configured query command as expansion context over claim text that compound just

@@ -46,6 +46,7 @@ import (
 	"compound/internal/tooltopology"
 	"compound/internal/work"
 	"compound/internal/writeback"
+	"gopkg.in/yaml.v3"
 )
 
 const version = "0.1.0"
@@ -157,8 +158,10 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory candidate <trace.json>"
 	case "adjudicate":
 		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W]"
+	case "engine-config":
+		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain] [--clear] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|doctor>"
+		return "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
 	}
 }
 
@@ -2347,9 +2350,13 @@ func cmdMemory(args []string) {
 		return ""
 	}
 
-	restoreMemoryEngineProfile, err := configureMemoryEngineProfile(flag("--engine-profile"))
-	die(err)
-	defer restoreMemoryEngineProfile()
+	var restoreMemoryEngineProfile func()
+	if sub != "engine-config" {
+		var err error
+		restoreMemoryEngineProfile, err = configureMemoryEngineFromHome(homePath, flag("--engine-profile"))
+		die(err)
+		defer restoreMemoryEngineProfile()
+	}
 
 	switch sub {
 	case "candidate":
@@ -2656,6 +2663,42 @@ func cmdMemory(args []string) {
 		if !report.Acceptable {
 			os.Exit(1)
 		}
+	case "engine-config":
+		if has("--clear") && flag("--profile") != "" {
+			fmt.Fprintln(os.Stderr, memoryUsage("engine-config"))
+			os.Exit(2)
+		}
+		var report memoryEngineConfigReport
+		var err error
+		switch {
+		case has("--clear"):
+			report, err = clearMemoryEngineConfig(homePath)
+		case flag("--profile") != "":
+			report, err = writeMemoryEngineConfig(homePath, flag("--profile"))
+		default:
+			cfg, path, loadErr := loadMemoryEngineConfig(homePath)
+			err = loadErr
+			report = memoryEngineConfigReport{
+				SchemaVersion: memoryEngineConfigSchemaVersion,
+				ConfigPath:    path,
+				Configured:    cfg.Profile != "",
+				Profile:       cfg.Profile,
+			}
+		}
+		die(err)
+		if has("--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Println("# memory engine-config")
+		fmt.Printf("- config: %s\n", report.ConfigPath)
+		fmt.Printf("- configured: %t\n", report.Configured)
+		if report.Profile != "" {
+			fmt.Printf("- profile: %s\n", report.Profile)
+		}
+		if report.Cleared {
+			fmt.Println("- cleared: true")
+		}
 	case "doctor":
 		var r mem.Report
 		if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
@@ -2700,15 +2743,124 @@ func memBreadthEngine() (mem.Engine, func()) {
 	return eng, func() { _ = eng.Close() }
 }
 
-func configureMemoryEngineProfile(profile string) (func(), error) {
+const memoryEngineConfigSchemaVersion = "compound.memory_engine_config.v0.1"
+
+type memoryEngineConfig struct {
+	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
+	Profile       string `json:"profile,omitempty" yaml:"profile,omitempty"`
+}
+
+type memoryEngineConfigReport struct {
+	SchemaVersion string `json:"schema_version"`
+	ConfigPath    string `json:"config_path"`
+	Configured    bool   `json:"configured"`
+	Profile       string `json:"profile,omitempty"`
+	Cleared       bool   `json:"cleared,omitempty"`
+}
+
+func normalizeMemoryEngineProfile(profile string) (string, error) {
 	profile = strings.ToLower(strings.TrimSpace(profile))
+	switch profile {
+	case "", "generic", "memory-cli", "gbrain":
+		return profile, nil
+	default:
+		return "", fmt.Errorf("unknown memory engine profile %q", profile)
+	}
+}
+
+func memoryEngineConfigPath(homePath string) string {
+	return filepath.Join(homePath, "config", "memory-engine.yaml")
+}
+
+func loadMemoryEngineConfig(homePath string) (memoryEngineConfig, string, error) {
+	path := memoryEngineConfigPath(homePath)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return memoryEngineConfig{}, path, nil
+	}
+	if err != nil {
+		return memoryEngineConfig{}, path, err
+	}
+	var cfg memoryEngineConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return memoryEngineConfig{}, path, fmt.Errorf("parse memory engine config: %w", err)
+	}
+	if cfg.SchemaVersion != "" && cfg.SchemaVersion != memoryEngineConfigSchemaVersion {
+		return memoryEngineConfig{}, path, fmt.Errorf("unsupported memory engine config schema %q", cfg.SchemaVersion)
+	}
+	profile, err := normalizeMemoryEngineProfile(cfg.Profile)
+	if err != nil {
+		return memoryEngineConfig{}, path, err
+	}
+	cfg.SchemaVersion = memoryEngineConfigSchemaVersion
+	cfg.Profile = profile
+	return cfg, path, nil
+}
+
+func writeMemoryEngineConfig(homePath, profile string) (memoryEngineConfigReport, error) {
+	profile, err := normalizeMemoryEngineProfile(profile)
+	if err != nil {
+		return memoryEngineConfigReport{}, err
+	}
+	if profile == "" {
+		return memoryEngineConfigReport{}, fmt.Errorf("memory engine profile is required")
+	}
+	path := memoryEngineConfigPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return memoryEngineConfigReport{}, err
+	}
+	cfg := memoryEngineConfig{SchemaVersion: memoryEngineConfigSchemaVersion, Profile: profile}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return memoryEngineConfigReport{}, err
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return memoryEngineConfigReport{}, err
+	}
+	return memoryEngineConfigReport{
+		SchemaVersion: memoryEngineConfigSchemaVersion,
+		ConfigPath:    path,
+		Configured:    true,
+		Profile:       profile,
+	}, nil
+}
+
+func clearMemoryEngineConfig(homePath string) (memoryEngineConfigReport, error) {
+	path := memoryEngineConfigPath(homePath)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return memoryEngineConfigReport{}, err
+	}
+	return memoryEngineConfigReport{
+		SchemaVersion: memoryEngineConfigSchemaVersion,
+		ConfigPath:    path,
+		Configured:    false,
+		Cleared:       true,
+	}, nil
+}
+
+func configureMemoryEngineFromHome(homePath, explicitProfile string) (func(), error) {
+	profile, err := normalizeMemoryEngineProfile(explicitProfile)
+	if err != nil {
+		return func() {}, err
+	}
+	if profile == "" {
+		var cfg memoryEngineConfig
+		cfg, _, err = loadMemoryEngineConfig(homePath)
+		if err != nil {
+			return func() {}, err
+		}
+		profile = cfg.Profile
+	}
+	return configureMemoryEngineProfile(profile)
+}
+
+func configureMemoryEngineProfile(profile string) (func(), error) {
+	profile, err := normalizeMemoryEngineProfile(profile)
+	if err != nil {
+		return func() {}, err
+	}
 	if profile == "" {
 		return func() {}, nil
-	}
-	switch profile {
-	case "generic", "memory-cli", "gbrain":
-	default:
-		return func() {}, fmt.Errorf("unknown memory engine profile %q", profile)
 	}
 	restore := captureEnv("COMPOUND_MEM_ENGINE_BIN", "COMPOUND_MEMORY_CLI_PROFILE")
 	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {

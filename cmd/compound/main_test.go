@@ -6956,6 +6956,64 @@ func TestMemoryDoctorEngineProfileWiresReadOnlyCLISidecar(t *testing.T) {
 	}
 }
 
+func TestMemoryEngineConfigPersistsDefaultProfile(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"engine-config", "--profile", "gbrain"})
+	})
+	if !strings.Contains(out, "- configured: true") || !strings.Contains(out, "- profile: gbrain") {
+		t.Fatalf("engine-config output =\n%s", out)
+	}
+	data, err := os.ReadFile(filepath.Join(homePath, "config", "memory-engine.yaml"))
+	if err != nil {
+		t.Fatalf("read memory engine config: %v", err)
+	}
+	if !strings.Contains(string(data), "schema_version: compound.memory_engine_config.v0.1") ||
+		!strings.Contains(string(data), "profile: gbrain") {
+		t.Fatalf("memory engine config not persisted as expected:\n%s", data)
+	}
+
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "")
+	restore, err := configureMemoryEngineFromHome(homePath, "")
+	if err != nil {
+		t.Fatalf("configure from persisted profile: %v", err)
+	}
+	defer restore()
+	if got := os.Getenv("COMPOUND_MEMORY_CLI_PROFILE"); got != "gbrain" {
+		t.Fatalf("configured profile = %q, want gbrain", got)
+	}
+	if got := os.Getenv("COMPOUND_MEM_ENGINE_BIN"); strings.TrimSpace(got) == "" {
+		t.Fatal("persisted profile should configure a sidecar command")
+	}
+}
+
+func TestMemoryEngineProfileFlagOverridesPersistedConfig(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := writeMemoryEngineConfig(homePath, "gbrain"); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "")
+
+	restore, err := configureMemoryEngineFromHome(homePath, "memory-cli")
+	if err != nil {
+		t.Fatalf("configure explicit profile: %v", err)
+	}
+	defer restore()
+	if got := os.Getenv("COMPOUND_MEMORY_CLI_PROFILE"); got != "memory-cli" {
+		t.Fatalf("explicit profile = %q, want memory-cli", got)
+	}
+}
+
 func TestProjectionDoctorSourceObserveWritesMethodUpgradeNoPromote(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
