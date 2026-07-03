@@ -242,6 +242,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		} else {
 			item.MoveType = rec.MoveType
 			item.Changed = rec.EffectiveChanged()
+			item.EvidenceRefs = mergeUnique(item.EvidenceRefs, rec.ProofRefs)
 			item.ReviewTrigger = rec.Next.ReviewTrigger
 			item.recentAt = workbenchLatestTimestamp(item.recentAt, rec.CreatedAt)
 		}

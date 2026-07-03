@@ -78,6 +78,9 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	if report.Recent[0].MoveType != "control_plane_repair" || !report.Recent[0].Changed {
 		t.Fatalf("terminal item missing receipt learning fields: %+v", report.Recent[0])
 	}
+	if !contains(report.Recent[0].EvidenceRefs, "proof:workbench") {
+		t.Fatalf("terminal item missing receipt proof refs: %+v", report.Recent[0])
+	}
 }
 
 func TestWorkbenchRecentOrdersByCompletionTimeNotWorkID(t *testing.T) {
