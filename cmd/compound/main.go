@@ -720,13 +720,16 @@ func cmdCapability(args []string) {
 				}
 				fmt.Printf("- source_list_evaluation_next: %s lane=%s owner=%s evidence=%.2f review=%s next=%s\n", first.Repo, first.Lane, first.Owner, first.EvidenceStrength, first.OwnerReviewPath, next)
 			}
+			knownDetailsOmitted := 0
 			for _, item := range report.SourceListItems {
 				if item.Status == "unknown" {
 					fmt.Printf("- source_list_unknown: %s normalized=%s\n", item.Query, item.Normalized)
 					continue
 				}
-				first := item.Matches[0]
-				fmt.Printf("- source_list_known: %s matches=%d first=%s decision=%s owner=%s owner_review=%s capability_evaluation=%s\n", item.Query, item.MatchCount, first.Repo, first.Decision, first.Owner, capgraph.ExternalRepoOwnerReviewStatus(first), capgraph.ExternalRepoCapabilityEvaluationStatus(first))
+				knownDetailsOmitted++
+			}
+			if knownDetailsOmitted > 0 {
+				fmt.Printf("- source_list_known_omitted: %d details=--json\n", knownDetailsOmitted)
 			}
 		}
 		if report.RepoQuery != "" {

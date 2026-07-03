@@ -8544,11 +8544,15 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	for _, want := range []string{
 		"- source_list_owner_review.pending: 1",
 		"- source_list_capability_evaluation.blocked_on_owner_review: 1",
-		"owner_review=pending capability_evaluation=blocked_on_owner_review",
+		"- source_list_review_next: example/research",
+		"- source_list_known_omitted: 1 details=--json",
 	} {
 		if !strings.Contains(sourceListText, want) {
 			t.Fatalf("source-list text missing %q:\n%s", want, sourceListText)
 		}
+	}
+	if strings.Contains(sourceListText, "- source_list_known:") {
+		t.Fatalf("source-list text should not dump known rows by default:\n%s", sourceListText)
 	}
 	reviewPlanJSON := captureStdout(t, func() {
 		cmdCapability([]string{"external-intake-review-plan", "--source-list", sourceListPath, "--json"})
