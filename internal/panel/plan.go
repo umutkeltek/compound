@@ -78,7 +78,15 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 	privacyReason := strings.TrimSpace(in.PrivacyOverrideReason)
 	if targetKind == "memory_candidate" && !in.PrivacySensitive {
 		if privacyReason == "" {
-			privacySensitive = true
+			publicKnowledge, err := memoryTargetsDefaultNotSensitive(homePath, targets)
+			if err != nil {
+				return Run{}, err
+			}
+			if publicKnowledge {
+				run.EvidenceRefs = append(run.EvidenceRefs, "privacy_default:not_sensitive:public_arxiv_memory_candidate")
+			} else {
+				privacySensitive = true
+			}
 		} else {
 			run.EvidenceRefs = append(run.EvidenceRefs, "override:privacy_not_sensitive:"+privacyReason)
 		}
@@ -164,6 +172,37 @@ func resolvePlanTargets(homePath, targetKind string, refs, states []string, limi
 		}
 	}
 	return targets, counts, nil
+}
+
+func memoryTargetsDefaultNotSensitive(homePath string, targets []Target) (bool, error) {
+	if len(targets) == 0 {
+		return false, nil
+	}
+	for _, target := range targets {
+		input, err := LoadTargetInput(homePath, "memory_candidate", target.Ref)
+		if err != nil {
+			return false, err
+		}
+		if !publicArxivKnowledgeMemoryPayload(input.Payload) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func publicArxivKnowledgeMemoryPayload(payload json.RawMessage) bool {
+	var candidate struct {
+		Entity         string            `json:"entity"`
+		Qualifiers     map[string]string `json:"qualifiers"`
+		SourceTraceRef string            `json:"source_trace_ref"`
+	}
+	if err := json.Unmarshal(payload, &candidate); err != nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(candidate.Entity), "knowledge:") &&
+		strings.TrimSpace(candidate.Qualifiers["source"]) == "knowledge_extraction" &&
+		strings.HasPrefix(strings.TrimSpace(candidate.Qualifiers["item_ref"]), "arxiv:") &&
+		strings.HasPrefix(strings.TrimSpace(candidate.SourceTraceRef), "knowledge_extraction:")
 }
 
 func loadPlanTargetInputs(homePath, targetKind string, states []string) ([]TargetInput, error) {

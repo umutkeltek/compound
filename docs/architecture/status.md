@@ -2,6 +2,8 @@
 
 Panel memory-review note: `compound panel plan --target-kind memory_candidate` defaults to current `proposed` memory candidates, matching `orient --operator` actionable memory debt. Explicit `--state parked` remains available for parked backlog review, but parked memory candidates are not the default review queue.
 
+Panel public-knowledge privacy note: proposed arXiv `knowledge_extraction` memory candidates default to not privacy-sensitive, carrying `privacy_default:not_sensitive:public_arxiv_memory_candidate`, so public paper-review panels use ordinary non-sensitive route lanes without requiring operator override. Other memory candidates remain privacy-sensitive by default.
+
 Panel execution-failure note: `compound panel run` persists target execution failures as `status=failed` with `stopped_reason`, instead of leaving no-verdict runs in `running`; route evidence already recorded before the failure remains available for diagnosis.
 
 Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.

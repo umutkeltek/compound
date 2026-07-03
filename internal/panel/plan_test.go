@@ -98,6 +98,37 @@ func TestBuildPlanDefaultsMemoryCandidatesToPrivacySensitive(t *testing.T) {
 	}
 }
 
+func TestBuildPlanDefaultsPublicArxivMemoryCandidatesToNotSensitive(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writeMemoryCandidateRecord(t, home, "mcand_public_arxiv", map[string]any{
+		"id":               "mcand_public_arxiv",
+		"entity":           "knowledge:arxiv:arxiv:2607.01211v1",
+		"predicate":        "limitation",
+		"object":           "public benchmark limitation",
+		"confidence":       0.89,
+		"state":            "proposed",
+		"visibility":       "candidate",
+		"derivation":       "extracted",
+		"source_trace_ref": "knowledge_extraction:kx_public",
+		"snippet_hash":     "sha256:public",
+		"qualifiers": map[string]string{
+			"source":   "knowledge_extraction",
+			"item_ref": "arxiv:2607.01211v1",
+		},
+	})
+
+	run, err := BuildPlan(home, PlanInput{TargetKind: "memory_candidate", TargetRefs: []string{"mcand_public_arxiv"}}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("build public arxiv plan: %v", err)
+	}
+	if run.Route.LensLane.ModelID != "panel/free-extract" || run.Route.JudgeLane.ModelID != "panel/cheap-judge" {
+		t.Fatalf("public arxiv memory route = %+v, want non-sensitive fixture lanes", run.Route)
+	}
+	if !containsString(run.EvidenceRefs, "privacy_default:not_sensitive:public_arxiv_memory_candidate") {
+		t.Fatalf("evidence refs = %+v, want public arxiv privacy default", run.EvidenceRefs)
+	}
+}
+
 func setupPanelPlanHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
