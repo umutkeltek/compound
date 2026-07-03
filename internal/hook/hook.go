@@ -464,7 +464,7 @@ func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []strin
 	return envelope.HookEvent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVHookEvent,
-			ID:            idFor("hook_", fx.Harness, name, ts(now)),
+			ID:            idFor("hook_", fx.Harness, name, inputHash, ts(now)),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
 			IDs:           envelope.IDs{WorkID: fx.WorkID},

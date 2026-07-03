@@ -91,6 +91,35 @@ func TestHookModeAffectsContextRequestIDs(t *testing.T) {
 	}
 }
 
+func TestHookEventIDIncludesInputHash(t *testing.T) {
+	homePath := t.TempDir()
+	deps := baseDeps()
+	deps.HomePath = homePath
+
+	first, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/x", Task: "audit", RepoKind: "product"}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	second, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/x", Task: "ship", RepoKind: "product"}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if first.Event.ID == second.Event.ID {
+		t.Fatalf("same-second hook events should differ by input hash: first=%s second=%s", first.Event.ID, second.Event.ID)
+	}
+	if first.Injection == nil || second.Injection == nil {
+		t.Fatalf("expected both runs to persist injections: first=%+v second=%+v", first.Injection, second.Injection)
+	}
+	if first.Injection.Ref == second.Injection.Ref {
+		t.Fatalf("same-second hook injections should not collide: first=%s second=%s", first.Injection.Ref, second.Injection.Ref)
+	}
+	for _, path := range []string{first.Injection.Path, second.Injection.Path} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("missing injection artifact %s: %v", path, err)
+		}
+	}
+}
+
 func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	homePath := t.TempDir()
 	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "harness-split.yaml"))
