@@ -251,7 +251,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
-  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] read-only open work / receipt / transition board; optional capability offers; no dispatch
+  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--capability-limit N] read-only open work / receipt / transition board; optional bounded capability offers; no dispatch
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
@@ -4153,7 +4153,30 @@ func flagCSVValues(args []string, names ...string) []string {
 	return out
 }
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--capability-task T] [--capability-harness H] [--review-area A] [--include-archived]"
+func validateKnownFlags(args []string, valueFlags, boolFlags map[string]bool) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if boolFlags[arg] {
+			continue
+		}
+		if valueFlags[arg] {
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			continue
+		}
+		return fmt.Errorf("unknown flag %s", arg)
+	}
+	return nil
+}
+
+const workbenchCapabilityOfferLimit = 12
+
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--capability-task T] [--capability-harness H] [--capability-limit N] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -4196,6 +4219,7 @@ func cmdWorkbench(args []string) {
 	activePacketExpectedRef := ""
 	capabilityTask := ""
 	capabilityHarness := ""
+	capabilityLimit := workbenchCapabilityOfferLimit
 	reviewArea := ""
 	includeArchived := false
 	for i := 0; i < len(args); i++ {
@@ -4252,6 +4276,18 @@ func cmdWorkbench(args []string) {
 				fmt.Fprintln(os.Stderr, "error: --capability-harness must be non-empty")
 				os.Exit(2)
 			}
+		case "--capability-limit":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "error: --capability-limit must be a non-negative integer")
+				os.Exit(2)
+			}
+			capabilityLimit = n
 		case "--review-area":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, workbenchUsage)
@@ -4317,6 +4353,7 @@ func cmdWorkbench(args []string) {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+		surface = surface.LimitOffers(capabilityLimit)
 		capabilitySurface = &surface
 	}
 	reviewReport, err := buildReviewQueueReport(homePath, reviewArea, includeArchived)
@@ -4339,9 +4376,11 @@ func cmdWorkbench(args []string) {
 		fmt.Printf("dispatch_step_runs=%d\n", report.Counts.DispatchStepRuns)
 	}
 	if capabilitySurface != nil {
-		fmt.Printf("capability_surface status=%s offers=%d task=%q harness=%q authority=%s\n",
+		fmt.Printf("capability_surface status=%s offers=%d showing=%d omitted=%d task=%q harness=%q authority=%s\n",
 			capabilitySurface.Status,
 			capabilitySurface.OfferCount,
+			len(capabilitySurface.OfferSummaries),
+			capabilitySurface.OmittedOfferCount,
 			capabilitySurface.Task,
 			capabilitySurface.Harness,
 			capabilitySurface.AuthorityRef,
@@ -5665,6 +5704,28 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--missed C] [--false-triggered C] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]"
+		if err := validateKnownFlags(rest, map[string]bool{
+			"--outcome":          true,
+			"--move-type":        true,
+			"--summary":          true,
+			"--by":               true,
+			"--actor":            true,
+			"--missed":           true,
+			"--false-triggered":  true,
+			"--proof":            true,
+			"--proof-ref":        true,
+			"--memory-candidate": true,
+			"--memory-promoted":  true,
+			"--memory-parked":    true,
+			"--memory-rejected":  true,
+		}, map[string]bool{
+			"--changed": true,
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, closeUsage)
+			os.Exit(2)
+		}
 		res, err := store.Close(pos(), work.CloseInput{
 			Outcome:                    flag("--outcome"),
 			MoveType:                   flag("--move-type"),
@@ -5673,7 +5734,7 @@ func cmdWork(args []string) {
 			Changed:                    has("--changed"),
 			MissedCapabilities:         splitCSV(flag("--missed")),
 			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
-			ProofRefs:                  splitCSV(flag("--proof")),
+			ProofRefs:                  flagCSVValues(rest, "--proof", "--proof-ref"),
 			MemoryCandidates:           splitCSV(flag("--memory-candidate")),
 			MemoryPromoted:             splitCSV(flag("--memory-promoted")),
 			MemoryParked:               splitCSV(flag("--memory-parked")),

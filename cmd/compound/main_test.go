@@ -976,7 +976,7 @@ func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
 		cmdWorkbench([]string{"--capability-task", "pricing"})
 	})
 	for _, want := range []string{
-		`capability_surface status=ok offers=2 task="pricing" harness="codex" authority=compound://registries/capability-graph`,
+		`capability_surface status=ok offers=2 showing=2 omitted=0 task="pricing" harness="codex" authority=compound://registries/capability-graph`,
 		"capability_offer: skill skill:codex-pricing",
 		"capability_offer: skill skill:generic-pricing",
 		"open: none",
@@ -987,6 +987,63 @@ func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("workbench capability surface must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestWorkbenchCapabilitySurfaceIsBounded(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatalf("open capgraph: %v", err)
+	}
+	for i := 0; i < workbenchCapabilityOfferLimit+3; i++ {
+		id := "skill:pricing-" + strconv.Itoa(i)
+		err := store.Add(capgraph.Node{
+			ID:       id,
+			Kind:     "skill",
+			Name:     "Pricing " + strconv.Itoa(i),
+			Triggers: []string{"pricing"},
+			Weight:   float64(workbenchCapabilityOfferLimit+3-i) / 10,
+		})
+		if err != nil {
+			t.Fatalf("add node %s: %v", id, err)
+		}
+	}
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--capability-task", "pricing"})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("workbench JSON did not parse: %v\n%s", err, out)
+	}
+	surface := report.CapabilitySurface
+	if surface == nil {
+		t.Fatalf("capability surface missing: %+v", report)
+	}
+	if surface.OfferCount != workbenchCapabilityOfferLimit+3 || len(surface.Offers) != workbenchCapabilityOfferLimit || len(surface.OfferSummaries) != workbenchCapabilityOfferLimit {
+		t.Fatalf("surface should preserve full count but bound embedded offers: %+v", surface)
+	}
+	if surface.OfferLimit != workbenchCapabilityOfferLimit || surface.OmittedOfferCount != 3 {
+		t.Fatalf("surface limit metadata = limit %d omitted %d", surface.OfferLimit, surface.OmittedOfferCount)
+	}
+	if surface.OfferSummaries[0].ID != "skill:pricing-0" {
+		t.Fatalf("bounded surface lost ranking order: %+v", surface.OfferSummaries[:3])
+	}
+
+	out = captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--capability-task", "pricing", "--capability-limit", "3"})
+	})
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("workbench JSON with explicit limit did not parse: %v\n%s", err, out)
+	}
+	surface = report.CapabilitySurface
+	if surface == nil || surface.OfferLimit != 3 || len(surface.Offers) != 3 || surface.OmittedOfferCount != workbenchCapabilityOfferLimit {
+		t.Fatalf("explicit limit surface = %+v", surface)
 	}
 }
 
@@ -2003,10 +2060,21 @@ func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
 		t.Fatalf("close plan must not mutate work: %+v", afterPlan)
 	}
 	out = captureStdout(t, func() {
-		cmdWork([]string{"close", ready.ID, "--outcome", "completed", "--move-type", "control_plane_repair", "--summary", "close proof", "--proof", "proof:cli-close", "--by", "codex"})
+		cmdWork([]string{"close", ready.ID, "--outcome", "completed", "--move-type", "control_plane_repair", "--summary", "close proof", "--proof", "proof:cli-close", "--proof-ref", "proof:cli-close-ref", "--by", "codex"})
 	})
 	if !strings.Contains(out, "policy=") {
 		t.Fatalf("close output missing policy id:\n%s", out)
+	}
+	start = strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("close output missing JSON:\n%s", out)
+	}
+	var closeResult work.CloseResult
+	if err := json.Unmarshal([]byte(out[start:]), &closeResult); err != nil {
+		t.Fatalf("parse close output: %v\n%s", err, out)
+	}
+	if !stringSliceContains(closeResult.Receipt.ProofRefs, "proof:cli-close") || !stringSliceContains(closeResult.Receipt.ProofRefs, "proof:cli-close-ref") {
+		t.Fatalf("close receipt proof refs = %+v", closeResult.Receipt.ProofRefs)
 	}
 	closed, err := store.Get(ready.ID)
 	if err != nil {
@@ -2014,6 +2082,20 @@ func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
 	}
 	if closed.State != "completed" || closed.PolicyDecisionID == "" || closed.IDs.TransitionID == "" {
 		t.Fatalf("close command did not record policy/transition: %+v", closed)
+	}
+}
+
+func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
+	err := validateKnownFlags(
+		[]string{"work_123", "--outcome", "completed", "--proof-ref", "proof:ok", "--proof-rfe", "proof:typo"},
+		map[string]bool{"--outcome": true, "--proof-ref": true},
+		map[string]bool{"--changed": true},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unknown flag --proof-rfe") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+	if err := validateKnownFlags([]string{"work_123", "--outcome", "completed", "--changed"}, map[string]bool{"--outcome": true}, map[string]bool{"--changed": true}); err != nil {
+		t.Fatalf("known flags rejected: %v", err)
 	}
 }
 

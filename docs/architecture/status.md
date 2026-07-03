@@ -82,6 +82,9 @@ Hook event identity note: `HookEvent` IDs include the normalized input hash, so 
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`; Workbench recent items surface `Receipt.proof_refs[]` as `evidence_refs[]`, and operator orient changed/recent rows carry those Workbench evidence refs so receipt-only proof chains remain operator-visible.
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.
+Work close proof note: `work close` rejects unknown flags before terminal write and accepts repeated `--proof-ref` values in addition to CSV `--proof`, preventing typoed proof refs from silently dropping receipt evidence.
+
+Workbench capability surface note: `workbench --capability-task ...` embeds a bounded operator offer window (`offer_limit`, `omitted_offer_count`) while preserving full `offer_count`; exhaustive surfacing remains `capability surface`.
 
 Work dispatch status note: `work dispatch-claim` attaches a capability-only worker ContextPack with explicit work/capability source revisions and an excluded contract marker rather than pretending a fresh EffectiveContract was compiled.
 

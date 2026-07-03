@@ -193,6 +193,8 @@ type SurfaceReport struct {
 	EdgeCount          int                   `json:"edge_count"`
 	SourceRecordCount  int                   `json:"source_record_count"`
 	OfferCount         int                   `json:"offer_count"`
+	OfferLimit         int                   `json:"offer_limit,omitempty"`
+	OmittedOfferCount  int                   `json:"omitted_offer_count,omitempty"`
 	Offers             []Surfaced            `json:"offers"`
 	OfferSummaries     []SurfaceOfferSummary `json:"offer_summaries"`
 	MatchedTokenCounts []MatchedTokenCount   `json:"matched_token_counts,omitempty"`
@@ -248,6 +250,24 @@ func NewSurfaceReport(task, harness string, offers []Surfaced, stats Stats, sour
 		OfferSummaries:     summaries,
 		MatchedTokenCounts: matchedTokenCounts(offers),
 	}
+}
+
+// LimitOffers returns a read-model copy bounded to top-ranked offers while
+// preserving OfferCount as the full graph result count.
+func (r SurfaceReport) LimitOffers(limit int) SurfaceReport {
+	if limit < 0 {
+		return r
+	}
+	r.OfferLimit = limit
+	if len(r.Offers) <= limit {
+		return r
+	}
+	r.OmittedOfferCount = len(r.Offers) - limit
+	r.Offers = append([]Surfaced{}, r.Offers[:limit]...)
+	if len(r.OfferSummaries) > limit {
+		r.OfferSummaries = append([]SurfaceOfferSummary{}, r.OfferSummaries[:limit]...)
+	}
+	return r
 }
 
 func matchedTokenCounts(offers []Surfaced) []MatchedTokenCount {
