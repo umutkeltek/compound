@@ -236,6 +236,39 @@ func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
+	out := captureStdout(t, func() {
+		cmdProofCheck([]string{"--dry-run", "--json", "--repo", "."})
+	})
+	var report proofCheckReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse proof-check report: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != proofCheckSchemaVersion || report.Status != "ok" || !report.DryRun {
+		t.Fatalf("bad proof-check report: %+v", report)
+	}
+	wantProofs := []string{
+		"go-test-count-1-all",
+		"go-vet-all",
+		"go-build-all",
+		"diff-check",
+		"architecture-doctor-strict",
+		"memory-doctor",
+		"redact-public-clean",
+	}
+	if len(report.Steps) != len(wantProofs) {
+		t.Fatalf("steps = %+v, want %d", report.Steps, len(wantProofs))
+	}
+	for i, want := range wantProofs {
+		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
+			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
+		}
+		if !stringSliceContains(report.ProofRefs, want) {
+			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
+		}
+	}
+}
+
 func TestKnowledgeExtractCLIUsesFixtureAndWritesCandidate(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

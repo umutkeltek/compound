@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Proof-check status note: `compound proof-check [--json] [--dry-run] [--repo P]` runs the deterministic local verification bundle: `go test -count=1 ./...`, `go vet ./...`, `go build ./...`, `git diff --check`, strict architecture doctor, memory doctor, and public redact scanning of changed files. This is Stage 4 deterministic execution support: repeated proof chores become one command instead of ad hoc operator ritual.
+
 Route outcome status note: `compound route outcome-review` resolves existing joins by `--route-id`/`--route-evidence` plus `--receipt`/`--receipt-id`, or by `--work-id` when the work event log points to a receipt and the route ledger links that receipt/work. Supported joins record as route evidence, not review debt; remorse/failed joins remain the only path to route observations/no-promote.
 
 Workbench route outcome note: `compound workbench --json` attaches compact `route_outcomes[]` summaries from `reviews/route-remorse` to matching work/receipt items and adds `route:outcome` observatory tags, so route evidence joins are visible without opening review artifacts.
