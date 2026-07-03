@@ -53,6 +53,65 @@ func TestGatewayCallerSuccess(t *testing.T) {
 	}
 }
 
+func TestGatewayCallerPreflightRequiresLoadedMaxContext(t *testing.T) {
+	loadedContext := 8192
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":                    "served-model",
+				"state":                 "loaded",
+				"max_context_length":    262144,
+				"loaded_context_length": loadedContext,
+			}},
+		})
+	}))
+	defer server.Close()
+	caller := GatewayCaller{
+		BaseURL:                 server.URL + "/v1",
+		HTTPClient:              server.Client(),
+		RequireLoadedContextMax: true,
+		ModelResolver: func(lane LaneRef) string {
+			if lane.ModelID == "lens-lane" {
+				return "served-model"
+			}
+			return lane.ModelID
+		},
+	}
+	err := caller.Preflight(context.Background(), Run{Route: RoutePlan{LensLane: LaneRef{ModelID: "lens-lane"}}})
+	if err == nil || !strings.Contains(err.Error(), "loaded_context_length=8192 below max_context_length=262144") {
+		t.Fatalf("err = %v, want context preflight failure", err)
+	}
+	if gotPath != "/api/v0/models" {
+		t.Fatalf("models path = %q, want /api/v0/models", gotPath)
+	}
+}
+
+func TestGatewayCallerPreflightAllowsLoadedMaxContext(t *testing.T) {
+	loadedContext := 262144
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":                    "served-model",
+				"state":                 "loaded",
+				"max_context_length":    262144,
+				"loaded_context_length": loadedContext,
+			}},
+		})
+	}))
+	defer server.Close()
+	caller := GatewayCaller{
+		BaseURL:                 server.URL + "/v1",
+		HTTPClient:              server.Client(),
+		RequireLoadedContextMax: true,
+		ModelResolver:           func(LaneRef) string { return "served-model" },
+	}
+	if err := caller.Preflight(context.Background(), Run{Route: RoutePlan{LensLane: LaneRef{ModelID: "lens-lane"}, JudgeLane: LaneRef{ModelID: "judge-lane"}}}); err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+}
+
 func TestGatewayCallerRetriesTransientUpstream400(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

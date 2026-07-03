@@ -52,6 +52,30 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	}
 }
 
+func TestPanelRunCallerRequiresLMStudioContextPreflightForLocalDefault(t *testing.T) {
+	localBaseURL := "http://" + "127.0.0.1" + ":1234/v1"
+	caller, _ := panelRunCaller(panelRunArgs{openAICompatibleURL: localBaseURL})
+	gateway, ok := caller.(panel.GatewayCaller)
+	if !ok {
+		t.Fatalf("caller = %T, want GatewayCaller", caller)
+	}
+	if !gateway.RequireLoadedContextMax {
+		t.Fatal("local LM Studio gateway should require loaded max context preflight")
+	}
+
+	caller, _ = panelRunCaller(panelRunArgs{openAICompatibleURL: localBaseURL, skipContextPreflight: true})
+	gateway = caller.(panel.GatewayCaller)
+	if gateway.RequireLoadedContextMax {
+		t.Fatal("explicit skip should disable loaded context preflight")
+	}
+
+	caller, _ = panelRunCaller(panelRunArgs{openAICompatibleURL: "https://openrouter.ai/api/v1"})
+	gateway = caller.(panel.GatewayCaller)
+	if gateway.RequireLoadedContextMax {
+		t.Fatal("non-LM-Studio gateway should not require LM Studio context preflight")
+	}
+}
+
 func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

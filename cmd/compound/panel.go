@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -16,7 +17,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -233,14 +234,15 @@ func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {
 }
 
 type panelRunArgs struct {
-	planID              string
-	fixtures            string
-	apply               bool
-	jsonOut             bool
-	openAICompatibleURL string
-	apiKeyEnv           string
-	modelOverrides      map[string]string
-	gatewayFlags        bool
+	planID               string
+	fixtures             string
+	apply                bool
+	jsonOut              bool
+	openAICompatibleURL  string
+	apiKeyEnv            string
+	modelOverrides       map[string]string
+	gatewayFlags         bool
+	skipContextPreflight bool
 }
 
 func parsePanelRunArgs(args []string) panelRunArgs {
@@ -263,6 +265,9 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 				parsed.modelOverrides = map[string]string{}
 			}
 			parsed.modelOverrides[lane] = model
+			parsed.gatewayFlags = true
+		case "--skip-loaded-context-preflight":
+			parsed.skipContextPreflight = true
 			parsed.gatewayFlags = true
 		case "--apply":
 			parsed.apply = true
@@ -292,7 +297,7 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 }
 
 func panelRunUsage() string {
-	return "usage: compound panel run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--json]"
+	return "usage: compound panel run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--skip-loaded-context-preflight] [--json]"
 }
 
 func parsePanelModelOverride(value string) (string, string) {
@@ -316,9 +321,11 @@ func panelRunCaller(parsed panelRunArgs) (panel.LensCaller, []string) {
 	}
 	overrides := parsed.modelOverrides
 	refs := panelModelOverrideEvidence(overrides)
+	baseURL := firstNonEmptyString(parsed.openAICompatibleURL, os.Getenv("COMPOUND_PANEL_BASE_URL"))
 	return panel.GatewayCaller{
-		BaseURL: firstNonEmptyString(parsed.openAICompatibleURL, os.Getenv("COMPOUND_PANEL_BASE_URL")),
-		APIKey:  apiKey,
+		BaseURL:                 baseURL,
+		APIKey:                  apiKey,
+		RequireLoadedContextMax: !parsed.skipContextPreflight && panelBaseURLLooksLikeLMStudio(baseURL),
 		ModelResolver: func(lane panel.LaneRef) string {
 			if overrides != nil {
 				if model := strings.TrimSpace(overrides[lane.ModelID]); model != "" {
@@ -328,6 +335,23 @@ func panelRunCaller(parsed panelRunArgs) (panel.LensCaller, []string) {
 			return lane.ModelID
 		},
 	}, refs
+}
+
+func panelBaseURLLooksLikeLMStudio(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	port := parsed.Port()
+	if port != "1234" {
+		return false
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func panelModelOverrideEvidence(overrides map[string]string) []string {

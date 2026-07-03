@@ -37,6 +37,18 @@ func (c failingJudgeCaller) Call(ctx context.Context, req CallRequest) (CallResu
 	return c.base.Call(ctx, req)
 }
 
+type preflightBlockingCaller struct {
+	err error
+}
+
+func (c preflightBlockingCaller) Preflight(ctx context.Context, run Run) error {
+	return c.err
+}
+
+func (c preflightBlockingCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
+	return CallResult{}, fmt.Errorf("call should not run after preflight block")
+}
+
 func TestDecodeLensResponseStripsMarkdownFence(t *testing.T) {
 	cases := []struct {
 		name string
@@ -288,6 +300,33 @@ func routeEvidenceRows(t *testing.T, home string) int {
 		return 0
 	}
 	return strings.Count(trimmed, "\n") + 1
+}
+
+func TestExecuteDryRunBlocksAndPersistsPreflightFailure(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	got, err := ExecuteDryRun(context.Background(), home, run, preflightBlockingCaller{err: fmt.Errorf("lm studio context preflight: model %q loaded_context_length=8192 below max_context_length=262144", "ornith-1.0-35b")}, fixedPanelNow)
+	if err == nil {
+		t.Fatal("expected preflight error")
+	}
+	if got.Status != "blocked" || !strings.Contains(got.StoppedReason, "loaded_context_length=8192") || !strings.Contains(got.NextAction, "lms ps") || len(got.Findings) != 0 {
+		t.Fatalf("blocked run = %+v", got)
+	}
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadRun(run.ID)
+	if err != nil {
+		t.Fatalf("load saved run: %v", err)
+	}
+	if loaded.Status != got.Status || loaded.StoppedReason != got.StoppedReason || loaded.NextAction != got.NextAction {
+		t.Fatalf("saved run = %+v, want %+v", loaded, got)
+	}
+	if rows := routeEvidenceRows(t, home); rows != 0 {
+		t.Fatalf("route evidence rows = %d, want no model call before preflight passes", rows)
+	}
 }
 
 func TestExecuteDryRunRecordsCostUnknownForUSDCapWithoutCostMetadata(t *testing.T) {

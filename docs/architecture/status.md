@@ -10,6 +10,8 @@ Panel public-knowledge privacy note: proposed arXiv `knowledge_extraction` memor
 
 Panel spend-gate note: `GatewayCaller` panel runs refuse metered route lanes (`cheap`, `premium`, etc.) unless the plan carries an explicit `--max-usd-micros` cap; budget-only caps still require `--max-items` or `--max-tokens` because lane cost metadata is not yet enforceable. Fixture/local non-spending callers are unaffected.
 
+Panel local-context preflight note: `GatewayCaller` can preflight LM Studio `/api/v0/models` metadata and block before any model call when a served local model is loaded below its `max_context_length`; `compound panel run` enables this automatically for local LM Studio default URLs (`127.0.0.1:1234`, `localhost:1234`, `[::1]:1234`) and persists `next_action` for reload/verify retry.
+
 Panel execution-failure note: `compound panel run` persists target execution failures as `status=failed` with `stopped_reason`, instead of leaving no-verdict runs in `running`; route evidence already recorded before the failure remains available for diagnosis.
 
 Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.

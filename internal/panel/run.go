@@ -86,6 +86,15 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		}
 		run.EvidenceRefs = appendUniqueString(run.EvidenceRefs, "cost_unknown")
 	}
+	if err := callerPreflight(ctx, caller, run); err != nil {
+		run.Status = "blocked"
+		run.StoppedReason = truncateStoppedReason("preflight: " + err.Error())
+		run.NextAction = preflightBlockNextAction()
+		if saveErr := store.SaveRun(run); saveErr != nil {
+			return run, fmt.Errorf("%w; additionally failed save blocked panel run: %v", err, saveErr)
+		}
+		return run, err
+	}
 	run.Status = "running"
 	run.NextAction = ""
 	if err := store.SaveRun(run); err != nil {
@@ -163,9 +172,21 @@ type meteredBudgetCaller interface {
 	RequiresMeteredBudget() bool
 }
 
+type preflightCaller interface {
+	Preflight(ctx context.Context, run Run) error
+}
+
 func callerRequiresMeteredBudget(caller LensCaller) bool {
 	budgeted, ok := caller.(meteredBudgetCaller)
 	return ok && budgeted.RequiresMeteredBudget()
+}
+
+func callerPreflight(ctx context.Context, caller LensCaller, run Run) error {
+	preflight, ok := caller.(preflightCaller)
+	if !ok {
+		return nil
+	}
+	return preflight.Preflight(ctx, run)
 }
 
 func hasMeteredLane(route RoutePlan) bool {
@@ -191,6 +212,10 @@ func blockedNoLaneNextAction(class string) string {
 
 func meteredBudgetBlockNextAction() string {
 	return "create a new panel plan with explicit --max-usd-micros plus --max-items or --max-tokens, then run only that bounded plan"
+}
+
+func preflightBlockNextAction() string {
+	return "reload local served model at max context, verify with `lms ps`, then rerun panel plan"
 }
 
 func failDryRun(store *Store, run Run, targetRef string, cause error) (Run, error) {
