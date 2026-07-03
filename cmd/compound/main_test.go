@@ -2234,6 +2234,49 @@ func TestWorkDispatchPlanCommandPreviewsSourcePacketReadOnly(t *testing.T) {
 	}
 }
 
+func TestInstallScriptBuildsInitializesAndDoctorsTempHome(t *testing.T) {
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	homePath := filepath.Join(t.TempDir(), ".compound")
+	tempHome := t.TempDir()
+	modCacheOut, err := exec.Command("go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		t.Fatalf("go env GOMODCACHE: %v", err)
+	}
+	modCache := strings.TrimSpace(string(modCacheOut))
+
+	cmd := exec.Command("sh", filepath.Join(repoRoot, "install.sh"))
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"HOME="+tempHome,
+		"GOBIN="+installDir,
+		"COMPOUND_HOME="+homePath,
+		"GOMODCACHE="+modCache,
+		"GOCACHE="+filepath.Join(t.TempDir(), "gocache"),
+		"PATH="+installDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", err, out)
+	}
+	binaryPath := filepath.Join(installDir, "compound")
+	if _, err := os.Stat(binaryPath); err != nil {
+		t.Fatalf("installed binary missing: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, home.ManifestName)); err != nil {
+		t.Fatalf("home manifest missing: %v\n%s", err, out)
+	}
+	text := string(out)
+	for _, want := range []string{"verdict: ok", "status: ok", "compound installed", "compound workbench"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("install output missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

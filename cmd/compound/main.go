@@ -6313,6 +6313,17 @@ func printHomeDoctor(r home.Report) {
 	for _, item := range r.Hygiene {
 		fmt.Printf("%s: %s\n", item.Name, homeCleanStr(item.OK))
 	}
+	fmt.Printf("setup: %s\n", homeOKStr(r.SetupOK))
+	fmt.Printf("setup.install_dir: %s\n", r.Setup.InstallDir)
+	if r.Setup.RequiredGoVersion != "" {
+		fmt.Printf("setup.required_go: %s\n", r.Setup.RequiredGoVersion)
+	}
+	for _, item := range r.Setup.Checks {
+		fmt.Printf("%s: %s — %s\n", item.Name, homeOKStr(item.OK), item.Detail)
+		if !item.OK && item.Fix != "" {
+			fmt.Printf("%s.fix: %s\n", item.Name, item.Fix)
+		}
+	}
 	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
 	if !r.OK {
 		os.Exit(1)

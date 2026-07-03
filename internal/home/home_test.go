@@ -63,6 +63,71 @@ func TestDoctorMissingIsNotOK(t *testing.T) {
 	}
 }
 
+func TestDoctorSetupReportsMissingInstallDirOnPath(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example\n\ngo 1.26.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	report := DoctorSetup(SetupOptions{
+		RepoRoot:        repo,
+		HomeDir:         t.TempDir(),
+		InstallDir:      installDir,
+		Path:            "/usr/bin:/bin",
+		GoVersionOutput: "go version go1.26.4 darwin/arm64",
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "go":
+				return "/usr/bin/go", nil
+			case "compound":
+				return filepath.Join(installDir, "compound"), nil
+			case "bun":
+				return "", os.ErrNotExist
+			default:
+				return "", os.ErrNotExist
+			}
+		},
+	})
+	if report.OK {
+		t.Fatalf("setup report should fail when install dir missing from PATH: %+v", report)
+	}
+	check := setupCheckNamed(report, "setup.install_dir_on_path")
+	if check.OK || check.Fix != `export PATH="`+installDir+`:$PATH"` {
+		t.Fatalf("install-dir check = %+v", check)
+	}
+}
+
+func TestDoctorSetupRejectsOldGoVersion(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example\n\ngo 1.26.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	report := DoctorSetup(SetupOptions{
+		RepoRoot:        repo,
+		InstallDir:      installDir,
+		Path:            installDir,
+		GoVersionOutput: "go version go1.25.0 darwin/arm64",
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "go":
+				return "/usr/bin/go", nil
+			case "compound":
+				return filepath.Join(installDir, "compound"), nil
+			default:
+				return "", os.ErrNotExist
+			}
+		},
+	})
+	if report.OK {
+		t.Fatalf("setup report should fail old Go version: %+v", report)
+	}
+	check := setupCheckNamed(report, "setup.go_toolchain")
+	if check.OK || !strings.Contains(check.Detail, "go1.25.0") || !strings.Contains(check.Fix, "1.26.4") {
+		t.Fatalf("go check = %+v", check)
+	}
+}
+
 func TestResolvePrecedence(t *testing.T) {
 	env := t.TempDir()
 	t.Setenv("COMPOUND_HOME", env)
@@ -580,6 +645,15 @@ func TestRestoreHistoryRestoresSweptLeaseByteIdentical(t *testing.T) {
 	if len(active) != 0 {
 		t.Fatalf("active archive entries after restore = %+v, want none", active)
 	}
+}
+
+func setupCheckNamed(report SetupReport, name string) SetupCheck {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return SetupCheck{}
 }
 
 func writeHomeFile(t *testing.T, homePath, rel, content string) {

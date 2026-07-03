@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +146,24 @@ type CheckItem struct {
 	OK   bool
 }
 
+// SetupCheck is one fresh-machine setup finding.
+type SetupCheck struct {
+	Name     string
+	OK       bool
+	Required bool
+	Detail   string
+	Fix      string
+}
+
+// SetupReport is the home-owned setup preflight. It belongs to home doctor so
+// setup does not become a parallel doctor surface.
+type SetupReport struct {
+	InstallDir        string
+	RequiredGoVersion string
+	Checks            []SetupCheck
+	OK                bool
+}
+
 // Report is the doctor result.
 type Report struct {
 	Home          string
@@ -154,6 +174,8 @@ type Report struct {
 	InsideGitRepo bool        // a global home inside a git repo is a "generated-state-in-source" smell
 	Hygiene       []CheckItem // operational hygiene: terminal work swept, leases live-only
 	HygieneOK     bool
+	Setup         SetupReport
+	SetupOK       bool
 	OK            bool
 }
 
@@ -181,8 +203,227 @@ func Doctor(homePath string) Report {
 	}
 	r.InsideGitRepo = underGitRepo(homePath)
 	r.Hygiene, r.HygieneOK = hygieneChecks(homePath)
-	r.OK = r.ManifestOK && r.DirsOK == len(Dirs)
+	r.Setup = DoctorSetup(SetupOptions{})
+	r.SetupOK = r.Setup.OK
+	r.OK = r.ManifestOK && r.DirsOK == len(Dirs) && r.SetupOK
 	return r
+}
+
+// SetupOptions lets tests inject host/tool state without mutating the process.
+type SetupOptions struct {
+	RepoRoot        string
+	HomeDir         string
+	InstallDir      string
+	Path            string
+	GoVersionOutput string
+	LookPath        func(string) (string, error)
+}
+
+func DoctorSetup(opts SetupOptions) SetupReport {
+	installDir := strings.TrimSpace(opts.InstallDir)
+	if installDir == "" {
+		installDir = defaultInstallDir(opts.HomeDir)
+	}
+	installDir, _ = filepath.Abs(installDir)
+	pathValue := opts.Path
+	if pathValue == "" {
+		pathValue = os.Getenv("PATH")
+	}
+	lookPath := opts.LookPath
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
+	repoRoot := strings.TrimSpace(opts.RepoRoot)
+	if repoRoot == "" {
+		repoRoot = findAncestorFile("go.mod")
+	}
+	requiredGo := requiredGoVersion(repoRoot)
+	report := SetupReport{InstallDir: installDir, RequiredGoVersion: requiredGo, OK: true}
+	add := func(check SetupCheck) {
+		report.Checks = append(report.Checks, check)
+		if check.Required && !check.OK {
+			report.OK = false
+		}
+	}
+
+	goPath, goErr := lookPath("go")
+	goOK := goErr == nil
+	goDetail := "go not found"
+	if goOK {
+		goDetail = goPath
+		if requiredGo != "" {
+			versionOut := strings.TrimSpace(opts.GoVersionOutput)
+			if versionOut == "" {
+				if out, err := exec.Command("go", "version").CombinedOutput(); err == nil {
+					versionOut = strings.TrimSpace(string(out))
+				}
+			}
+			if versionOut == "" {
+				goOK = false
+				goDetail = "could not read go version"
+			} else if !goVersionAtLeast(versionOut, requiredGo) {
+				goOK = false
+				goDetail = versionOut + " < required go" + requiredGo
+			} else {
+				goDetail = versionOut
+			}
+		}
+	}
+	add(SetupCheck{
+		Name:     "setup.go_toolchain",
+		OK:       goOK,
+		Required: true,
+		Detail:   goDetail,
+		Fix:      "install Go " + firstNonEmpty(requiredGo, "from go.dev/dl") + " or newer, then rerun `make install`",
+	})
+
+	add(SetupCheck{
+		Name:     "setup.install_dir_on_path",
+		OK:       pathContainsDir(pathValue, installDir),
+		Required: true,
+		Detail:   "install_dir=" + installDir,
+		Fix:      `export PATH="` + installDir + `:$PATH"`,
+	})
+
+	compoundPath, compoundErr := lookPath("compound")
+	add(SetupCheck{
+		Name:     "setup.compound_on_path",
+		OK:       compoundErr == nil,
+		Required: true,
+		Detail:   firstNonEmpty(compoundPath, "compound not found"),
+		Fix:      "make install",
+	})
+
+	bunPath, bunErr := lookPath("bun")
+	add(SetupCheck{
+		Name:     "setup.bun_optional_console",
+		OK:       bunErr == nil,
+		Required: false,
+		Detail:   firstNonEmpty(bunPath, "bun not found; console is optional"),
+		Fix:      "install Bun from https://bun.sh when using the optional console",
+	})
+	return report
+}
+
+func defaultInstallDir(homeDir string) string {
+	if gobin := strings.TrimSpace(os.Getenv("GOBIN")); gobin != "" {
+		return gobin
+	}
+	if homeDir == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h
+		}
+	}
+	if homeDir == "" {
+		return filepath.Join(".", "bin")
+	}
+	return filepath.Join(homeDir, ".local", "bin")
+}
+
+func pathContainsDir(pathValue, dir string) bool {
+	want, err := filepath.Abs(dir)
+	if err != nil {
+		want = filepath.Clean(dir)
+	}
+	for _, part := range filepath.SplitList(pathValue) {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		got, err := filepath.Abs(part)
+		if err != nil {
+			got = filepath.Clean(part)
+		}
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+func findAncestorFile(name string) string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func requiredGoVersion(repoRoot string) string {
+	if repoRoot == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "go" {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
+func goVersionAtLeast(output, required string) bool {
+	current := parseGoVersion(output)
+	req := parseGoVersion(required)
+	if len(current) == 0 || len(req) == 0 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if current[i] > req[i] {
+			return true
+		}
+		if current[i] < req[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func parseGoVersion(s string) []int {
+	for _, field := range strings.Fields(s) {
+		if strings.HasPrefix(field, "go") && len(field) > 2 && field[2] >= '0' && field[2] <= '9' {
+			s = field
+			break
+		}
+	}
+	s = strings.TrimPrefix(s, "go")
+	parts := strings.Split(s, ".")
+	out := []int{0, 0, 0}
+	found := false
+	for i := 0; i < len(parts) && i < 3; i++ {
+		part := strings.TrimFunc(parts[i], func(r rune) bool { return r < '0' || r > '9' })
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil
+		}
+		out[i] = n
+		found = true
+	}
+	if !found {
+		return nil
+	}
+	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func underGitRepo(p string) bool {

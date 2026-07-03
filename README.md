@@ -30,15 +30,11 @@ should differ.
 ## Quickstart
 
 ```bash
-go test ./...
-
-COMPOUND_HOME="$(mktemp -d)"
-go run ./cmd/compound home init --home "$COMPOUND_HOME"
-COMPOUND_HOME="$COMPOUND_HOME" go run ./cmd/compound architecture doctor --strict
-COMPOUND_HOME="$COMPOUND_HOME" go run ./cmd/compound orient \
-  --harness codex \
-  --cwd . \
-  --task "inspect compound"
+make install
+compound workbench
+compound proof-check --json
+compound orient --harness codex --cwd . --task "inspect compound"
+cd console && bun install && bun run dev # optional
 ```
 
 For contract consumers:
