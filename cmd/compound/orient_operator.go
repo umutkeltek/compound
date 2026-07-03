@@ -84,13 +84,14 @@ type orientChanged struct {
 }
 
 type orientRecentChangeItem struct {
-	WorkID       string `json:"work_id"`
-	ReceiptID    string `json:"receipt_id,omitempty"`
-	TransitionID string `json:"transition_id,omitempty"`
-	MoveType     string `json:"move_type,omitempty"`
-	Summary      string `json:"summary,omitempty"`
-	Changed      bool   `json:"changed"`
-	CreatedAt    string `json:"created_at,omitempty"`
+	WorkID       string   `json:"work_id"`
+	ReceiptID    string   `json:"receipt_id,omitempty"`
+	TransitionID string   `json:"transition_id,omitempty"`
+	MoveType     string   `json:"move_type,omitempty"`
+	Summary      string   `json:"summary,omitempty"`
+	Changed      bool     `json:"changed"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 }
 
 type orientDrillDown struct {
@@ -278,6 +279,7 @@ func buildOrientChanged(homePath string, report work.WorkbenchReport, currentSeq
 			TransitionID: item.TransitionID,
 			MoveType:     item.MoveType,
 			Changed:      item.Changed,
+			EvidenceRefs: append([]string{}, item.EvidenceRefs...),
 		}
 		if item.ReceiptID != "" {
 			if rec, err := readReceipt(homePath, item.ReceiptID); err == nil {

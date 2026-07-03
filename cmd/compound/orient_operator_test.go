@@ -52,6 +52,9 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	if len(report.Changed.Recent) == 0 || report.Changed.Recent[0].Summary != "operator orientation proof closed" {
 		t.Fatalf("recent changes = %+v, want receipt summary", report.Changed.Recent)
 	}
+	if !stringSliceContains(report.Changed.Recent[0].EvidenceRefs, "ver_orient_done") {
+		t.Fatalf("recent evidence refs = %+v, want receipt proof ref", report.Changed.Recent[0].EvidenceRefs)
+	}
 
 	second, err := buildOrientOperatorReport(homePath, 5, now.Add(time.Minute))
 	if err != nil {

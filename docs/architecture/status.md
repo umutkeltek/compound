@@ -75,7 +75,7 @@ Hook context mode status note: hook context artifacts use one requested-mode dec
 
 Hook event identity note: `HookEvent` IDs include the normalized input hash, so same-second hook runs with different task/prompt/action inputs do not overwrite persisted hook events or context injection artifacts.
 
-Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`; Workbench recent items surface `Receipt.proof_refs[]` as `evidence_refs[]` so receipt-only proof chains remain operator-visible.
+Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`; Workbench recent items surface `Receipt.proof_refs[]` as `evidence_refs[]`, and operator orient changed/recent rows carry those Workbench evidence refs so receipt-only proof chains remain operator-visible.
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.
 
