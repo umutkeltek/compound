@@ -2,6 +2,9 @@ package panel
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +83,86 @@ func TestLoadMemoryCandidateTargetsFiltersStateAndMapsVisibility(t *testing.T) {
 	}
 	if len(limited) != 1 || limited[0].Ref != "mcand_beta" {
 		t.Fatalf("default proposed/limit result = %+v, want mcand_beta only", limited)
+	}
+}
+
+func TestLoadMemoryCandidateTargetAddsKnowledgeExtractionProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	writeMemoryCandidateRecord(t, homePath, "mcand_kx", map[string]any{
+		"id":               "mcand_kx",
+		"entity":           "knowledge:arxiv:2607.01211v1",
+		"predicate":        "limitation",
+		"object":           "benchmark scoring overweights worst tasks",
+		"confidence":       0.89,
+		"state":            "proposed",
+		"visibility":       "candidate",
+		"derivation":       "extracted",
+		"source_trace_ref": "knowledge_extraction:kx_alpha",
+		"qualifiers": map[string]string{
+			"source":        "knowledge_extraction",
+			"extraction_id": "kx_alpha",
+			"item_ref":      "arxiv:2607.01211v1",
+		},
+	})
+	dir := filepath.Join(homePath, "inbox", "knowledge-extractions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir extraction dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "kx_alpha.json"), []byte(`{
+		"schema_version":"compound.knowledge_extraction_request.v0.1",
+		"id":"kx_alpha",
+		"item_ref":"arxiv:2607.01211v1",
+		"evidence_ref":"ev_alpha",
+		"source_kind":"arxiv",
+		"title":"Benchmark Paper",
+		"content_digest":"sha256:alpha",
+		"state":"done",
+		"created_at":"2026-07-02T12:00:00Z",
+		"completed_at":"2026-07-02T12:30:00Z",
+		"candidate_ids":["mcand_kx","mcand_other"],
+		"route_evidence":{
+			"provider":"openai-compatible",
+			"model":"auto/extract",
+			"called":true,
+			"usage":{"total_tokens":2351},
+			"latency_ms":1234
+		}
+	}`), 0o644); err != nil {
+		t.Fatalf("write extraction request: %v", err)
+	}
+
+	target, err := LoadTargetInput(homePath, "memory_candidate", "mcand_kx")
+	if err != nil {
+		t.Fatalf("load target: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(target.Payload, &payload); err != nil {
+		t.Fatalf("decode target payload: %v", err)
+	}
+	if payload["object"] != "benchmark scoring overweights worst tasks" {
+		t.Fatalf("candidate payload was not preserved: %+v", payload)
+	}
+	prov, ok := payload["source_provenance"].(map[string]any)
+	if !ok {
+		t.Fatalf("source_provenance missing: %+v", payload)
+	}
+	for key, want := range map[string]string{
+		"status":           "resolved",
+		"source_trace_ref": "knowledge_extraction:kx_alpha",
+		"extraction_id":    "kx_alpha",
+		"evidence_ref":     "ev_alpha",
+		"source_kind":      "arxiv",
+		"item_ref":         "arxiv:2607.01211v1",
+		"title":            "Benchmark Paper",
+		"model":            "auto/extract",
+		"provider":         "openai-compatible",
+	} {
+		if got := prov[key]; got != want {
+			t.Fatalf("source_provenance[%s] = %v, want %q; full=%+v", key, got, want, prov)
+		}
+	}
+	if got := prov["candidate_count"]; got != float64(2) {
+		t.Fatalf("candidate_count = %v, want 2; full=%+v", got, prov)
 	}
 }
 

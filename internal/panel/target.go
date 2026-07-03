@@ -45,7 +45,7 @@ func LoadMemoryCandidateTargets(homePath string, states []string, limit int) ([]
 			Ref:        cand.ID,
 			Visibility: cand.Visibility,
 			Summary:    memoryCandidateSummary(cand),
-			Payload:    json.RawMessage(append([]byte(nil), raw...)),
+			Payload:    memoryCandidatePanelPayload(homePath, cand, raw),
 		})
 		if limit > 0 && len(out) >= limit {
 			break
@@ -151,7 +151,7 @@ func LoadTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
 		if err := json.Unmarshal(raw, &cand); err != nil {
 			return TargetInput{}, err
 		}
-		return TargetInput{Kind: "memory_candidate", Ref: cand.ID, Visibility: cand.Visibility, Summary: memoryCandidateSummary(cand), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
+		return TargetInput{Kind: "memory_candidate", Ref: cand.ID, Visibility: cand.Visibility, Summary: memoryCandidateSummary(cand), Payload: memoryCandidatePanelPayload(homePath, cand, raw)}, nil
 	case "skill_candidate":
 		path := filepath.Join(homePath, "reviews", "skill-candidates", ref+".json")
 		raw, err := os.ReadFile(path)
@@ -253,6 +253,109 @@ func capabilityObservationAwaitingVerdict(obs capabilityObservationTarget) bool 
 	default:
 		return false
 	}
+}
+
+func memoryCandidatePanelPayload(homePath string, cand mem.Candidate, raw []byte) json.RawMessage {
+	payload := append([]byte(nil), raw...)
+	provenance, ok := knowledgeExtractionSourceProvenance(homePath, cand)
+	if !ok {
+		return json.RawMessage(payload)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return json.RawMessage(payload)
+	}
+	if _, exists := body["source_provenance"]; exists {
+		return json.RawMessage(payload)
+	}
+	body["source_provenance"] = provenance
+	data, err := json.Marshal(body)
+	if err != nil {
+		return json.RawMessage(payload)
+	}
+	return json.RawMessage(data)
+}
+
+func knowledgeExtractionSourceProvenance(homePath string, cand mem.Candidate) (map[string]any, bool) {
+	extractionID := strings.TrimSpace(cand.Qualifiers["extraction_id"])
+	sourceTrace := strings.TrimSpace(cand.SourceTraceRef)
+	if strings.HasPrefix(sourceTrace, "knowledge_extraction:") {
+		extractionID = strings.TrimSpace(strings.TrimPrefix(sourceTrace, "knowledge_extraction:"))
+	}
+	if extractionID == "" || strings.TrimSpace(cand.Qualifiers["source"]) != "knowledge_extraction" {
+		return nil, false
+	}
+	provenance := map[string]any{
+		"status":           "missing_extraction_request",
+		"source_trace_ref": sourceTrace,
+		"extraction_id":    extractionID,
+	}
+	request, err := loadKnowledgeExtractionRequest(homePath, extractionID)
+	if err != nil {
+		provenance["error"] = err.Error()
+		return provenance, true
+	}
+	provenance["status"] = "resolved"
+	provenance["item_ref"] = request.ItemRef
+	provenance["evidence_ref"] = request.EvidenceRef
+	provenance["source_kind"] = request.SourceKind
+	provenance["title"] = request.Title
+	provenance["content_digest"] = request.ContentDigest
+	provenance["request_state"] = request.State
+	provenance["candidate_count"] = len(request.CandidateIDs)
+	if request.RouteEvidence.Provider != "" {
+		provenance["provider"] = request.RouteEvidence.Provider
+	}
+	if request.RouteEvidence.Model != "" {
+		provenance["model"] = request.RouteEvidence.Model
+	}
+	if request.RouteEvidence.Called {
+		provenance["model_called"] = request.RouteEvidence.Called
+	}
+	if request.RouteEvidence.LatencyMS > 0 {
+		provenance["latency_ms"] = request.RouteEvidence.LatencyMS
+	}
+	if request.RouteEvidence.Usage.TotalTokens > 0 {
+		provenance["total_tokens"] = request.RouteEvidence.Usage.TotalTokens
+	}
+	return provenance, true
+}
+
+type knowledgeExtractionRequestForPanel struct {
+	ID            string                           `json:"id"`
+	ItemRef       string                           `json:"item_ref"`
+	EvidenceRef   string                           `json:"evidence_ref"`
+	SourceKind    string                           `json:"source_kind"`
+	Title         string                           `json:"title"`
+	ContentDigest string                           `json:"content_digest"`
+	State         string                           `json:"state"`
+	CandidateIDs  []string                         `json:"candidate_ids"`
+	RouteEvidence knowledgeExtractionRouteForPanel `json:"route_evidence"`
+}
+
+type knowledgeExtractionRouteForPanel struct {
+	Provider  string                           `json:"provider"`
+	Model     string                           `json:"model"`
+	Called    bool                             `json:"called"`
+	Usage     knowledgeExtractionUsageForPanel `json:"usage"`
+	LatencyMS int64                            `json:"latency_ms"`
+}
+
+type knowledgeExtractionUsageForPanel struct {
+	TotalTokens int `json:"total_tokens"`
+}
+
+func loadKnowledgeExtractionRequest(homePath, extractionID string) (knowledgeExtractionRequestForPanel, error) {
+	path := filepath.Join(homePath, "inbox", "knowledge-extractions", extractionID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return knowledgeExtractionRequestForPanel{}, err
+	}
+	var request knowledgeExtractionRequestForPanel
+	if err := json.Unmarshal(data, &request); err != nil {
+		return knowledgeExtractionRequestForPanel{}, fmt.Errorf("parse extraction request %s: %w", extractionID, err)
+	}
+	return request, nil
 }
 
 func firstNonEmptyString(values ...string) string {
