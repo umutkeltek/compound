@@ -1,15 +1,16 @@
 node_modules/
 .DS_Store
 *.log
-bin/
+/bin/
 /compound
+/home/
 
 # private overlay — never shipped (compound is destined to be a public repo)
-docs_private/
+/docs_private/
 *.private.md
 .compound-private/
-.claude/
-Plans/
+/.claude/
+/Plans/
 
 # External memory systems cloned for audit (P6 evidence-gathering, never vendored)
-memory/
+/memory/
