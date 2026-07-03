@@ -59,7 +59,7 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 Hook input hash note: context-producing hooks hash normalized hook, harness, cwd, task, repo-kind, mode, and prompt digest, so same prompt/task in different scope does not collide and raw prompt text stays out of artifacts.
 
-Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown.
+Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown; `output_ref` points directly at the injection markdown.
 
 Distiller runtime-source note: `distiller.LoadRuntimeSources` follows safe relative JSON `HookEvent.side_effects`, validates typed envelopes, dedupes already-loaded work/context artifacts, and includes ContextRequest/EffectiveContract envelopes as grounded extraction sources.
 

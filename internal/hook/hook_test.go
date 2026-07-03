@@ -279,6 +279,9 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if got := res.Event.SideEffects; len(got) != 4 || got[0] != res.Injection.ContextRequestRef || got[1] != contractRef || got[2] != res.Injection.ContextPackRef || got[3] != res.Injection.Ref {
 		t.Fatalf("side effects = %v, want request, contract, context pack, injection refs", got)
 	}
+	if res.Event.OutputRef != res.Injection.Ref {
+		t.Fatalf("output_ref = %q, want injection ref %q", res.Event.OutputRef, res.Injection.Ref)
+	}
 }
 
 func TestSessionStartInjectionIncludesRelevantCompoundMemory(t *testing.T) {
@@ -491,6 +494,9 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 	}
 	if persisted.IDs.WorkID != cand.ID || persisted.IDs.ContextPackID != pack.ID {
 		t.Fatalf("hook ids = %+v, want work %s context %s", persisted.IDs, cand.ID, pack.ID)
+	}
+	if persisted.OutputRef != res.Injection.Ref {
+		t.Fatalf("persisted output_ref = %q, want injection ref %q", persisted.OutputRef, res.Injection.Ref)
 	}
 	streamBytes, err := os.ReadFile(hookStreamPath)
 	if err != nil {

@@ -177,6 +177,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 			return Result{}, err
 		}
 		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
+		ev.OutputRef = injection.Ref
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{&req, &ec, &pack}, Summary: pack.SummaryMD, Injection: injection}, nil
 }
@@ -215,6 +216,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 			return Result{}, err
 		}
 		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
+		ev.OutputRef = injection.Ref
 	}
 	create := work.CreateInput{Owner: fx.Harness, SuccessPredicate: pred, DesiredOutcome: fx.Task, State: "proposed"}
 	if injection != nil {
