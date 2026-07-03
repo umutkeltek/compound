@@ -38,6 +38,7 @@ var Classification = map[string]Class{
 	"harness":        Spine,
 	"home":           Spine,
 	"hook":           Spine,
+	"localmodel":     Spine,
 	"panel":          Spine,
 	"policy":         Spine,
 	"product":        Spine,

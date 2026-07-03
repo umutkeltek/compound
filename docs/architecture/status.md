@@ -12,6 +12,8 @@ Panel spend-gate note: `GatewayCaller` panel runs refuse metered route lanes (`c
 
 Panel local-context preflight note: `GatewayCaller` can preflight LM Studio `/api/v0/models` metadata and block before any model call when a served local model is loaded below its `max_context_length`; `compound panel run` enables this automatically for local LM Studio default URLs (`127.0.0.1:1234`, `localhost:1234`, `[::1]:1234`) and persists `next_action` for reload/verify retry.
 
+Local-model lifecycle note: `compound local-models advise` is Compound's non-mutating policy/advice surface for required local model context and idle unload candidates. It reads the local provider base URL through the configured local routing CLI by default, then uses runtime metadata as evidence; the routing layer remains owner for provider routing and any actual load/reload/unload command path.
+
 Panel route-proof note: panel apply receipts include route evidence refs from lens and judge calls as proof refs, so route outcome review can resolve receipt-linked route evidence or report explicit ambiguity for multi-call panel runs instead of losing the execution trail.
 
 Panel execution-failure note: `compound panel run` persists target execution failures as `status=failed` with `stopped_reason`, instead of leaving no-verdict runs in `running`; route evidence already recorded before the failure remains available for diagnosis.
@@ -45,7 +47,7 @@ Capability status note: `capgraph` owns `compound capability skill-plan`; skill 
 
 | Package | Status | Role |
 |---|---|---|
-| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
+| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook`, `localmodel` | canonical | runtime spine |
 | `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
 | `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans |
 | `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and turns eval/method/policy/failure/taste candidates into reviewed eval-plan/improvement-plan/rule-plan/taste-plan artifacts |
