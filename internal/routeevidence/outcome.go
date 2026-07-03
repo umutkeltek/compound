@@ -133,10 +133,15 @@ func LoadEvidenceByID(homePath, evidenceID string) (Evidence, error) {
 }
 
 func LoadEvidenceForReceipt(homePath, receiptID, workID string) (Evidence, error) {
+	return loadEvidenceForReceiptRefs(homePath, receiptID, workID, nil)
+}
+
+func loadEvidenceForReceiptRefs(homePath, receiptID, workID string, proofRefs []string) (Evidence, error) {
 	receiptID = strings.TrimSpace(receiptID)
 	workID = strings.TrimSpace(workID)
-	if receiptID == "" && workID == "" {
-		return Evidence{}, fmt.Errorf("receipt id or work id required")
+	proofRefSet := routeEvidenceProofRefSet(proofRefs)
+	if receiptID == "" && workID == "" && len(proofRefSet) == 0 {
+		return Evidence{}, fmt.Errorf("receipt id work id or route proof ref required")
 	}
 	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
 	f, err := os.Open(path)
@@ -159,7 +164,7 @@ func LoadEvidenceForReceipt(homePath, receiptID, workID string) (Evidence, error
 		if err != nil {
 			return Evidence{}, fmt.Errorf("decode route evidence line %d: %w", line, err)
 		}
-		score := routeOutcomeEvidenceMatchScore(ev, receiptID, workID)
+		score := routeOutcomeEvidenceMatchScore(ev, receiptID, workID, proofRefSet)
 		if score == 0 {
 			continue
 		}
@@ -183,7 +188,10 @@ func LoadEvidenceForReceipt(homePath, receiptID, workID string) (Evidence, error
 	return matches[0], nil
 }
 
-func routeOutcomeEvidenceMatchScore(ev Evidence, receiptID, workID string) int {
+func routeOutcomeEvidenceMatchScore(ev Evidence, receiptID, workID string, proofRefSet map[string]bool) int {
+	if proofRefSet[strings.TrimSpace(ev.ID)] {
+		return 3
+	}
 	if receiptID != "" && containsRef(ev.EvidenceRefs, receiptID) {
 		return 2
 	}
@@ -191,6 +199,17 @@ func routeOutcomeEvidenceMatchScore(ev Evidence, receiptID, workID string) int {
 		return 1
 	}
 	return 0
+}
+
+func routeEvidenceProofRefSet(refs []string) map[string]bool {
+	out := map[string]bool{}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "route_") {
+			out[ref] = true
+		}
+	}
+	return out
 }
 
 func containsRef(refs []string, want string) bool {
@@ -307,7 +326,7 @@ func ResolveOutcomeReviewInputs(homePath string, sel OutcomeReviewSelector) (Evi
 	case routePath != "":
 		ev, err = LoadEvidenceFile(routePath)
 	default:
-		ev, err = LoadEvidenceForReceipt(homePath, rec.ID, workID)
+		ev, err = loadEvidenceForReceiptRefs(homePath, rec.ID, workID, rec.ProofRefs)
 	}
 	if err != nil {
 		return Evidence{}, envelope.Receipt{}, err

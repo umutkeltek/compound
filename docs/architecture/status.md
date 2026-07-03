@@ -12,6 +12,8 @@ Panel spend-gate note: `GatewayCaller` panel runs refuse metered route lanes (`c
 
 Panel local-context preflight note: `GatewayCaller` can preflight LM Studio `/api/v0/models` metadata and block before any model call when a served local model is loaded below its `max_context_length`; `compound panel run` enables this automatically for local LM Studio default URLs (`127.0.0.1:1234`, `localhost:1234`, `[::1]:1234`) and persists `next_action` for reload/verify retry.
 
+Panel route-proof note: panel apply receipts include route evidence refs from lens and judge calls as proof refs, so route outcome review can resolve receipt-linked route evidence or report explicit ambiguity for multi-call panel runs instead of losing the execution trail.
+
 Panel execution-failure note: `compound panel run` persists target execution failures as `status=failed` with `stopped_reason`, instead of leaving no-verdict runs in `running`; route evidence already recorded before the failure remains available for diagnosis.
 
 Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.

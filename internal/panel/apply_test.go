@@ -194,6 +194,28 @@ func assertApplyWorkProof(t *testing.T, home string, run Run, memoryTransitionID
 	}
 }
 
+func TestPanelApplyProofRefsIncludeRouteEvidence(t *testing.T) {
+	run := Run{
+		ID: "prun_route_refs",
+		Findings: []TargetFinding{{
+			VerdictArtifact: "panel_verdict_route_refs.json",
+			LensFindings: []LensFinding{
+				{RouteEvidenceRef: "route_lens_one"},
+				{RouteEvidenceRef: "route_lens_two"},
+				{RouteEvidenceRef: "route_lens_one"},
+			},
+			Synthesis: Synthesis{JudgeRouteEvidenceRef: "route_judge"},
+		}},
+	}
+
+	got := panelApplyProofRefs(run, "/tmp/panel-run.json")
+	for _, want := range []string{"/tmp/panel-run.json", "panel_verdict_route_refs.json", "route_lens_one", "route_lens_two", "route_judge"} {
+		if !containsString(got, want) {
+			t.Fatalf("proof refs = %v, missing %q", got, want)
+		}
+	}
+}
+
 func readCandidateForTest(t *testing.T, home, id string) mem.Candidate {
 	t.Helper()
 	var cand mem.Candidate

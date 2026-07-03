@@ -731,6 +731,14 @@ func panelApplyProofRefs(run Run, runRecordPath string) []string {
 		if strings.TrimSpace(finding.VerdictArtifact) != "" {
 			refs = append(refs, finding.VerdictArtifact)
 		}
+		for _, lens := range finding.LensFindings {
+			if strings.TrimSpace(lens.RouteEvidenceRef) != "" {
+				refs = append(refs, lens.RouteEvidenceRef)
+			}
+		}
+		if strings.TrimSpace(finding.Synthesis.JudgeRouteEvidenceRef) != "" {
+			refs = append(refs, finding.Synthesis.JudgeRouteEvidenceRef)
+		}
 	}
 	return reviewartifact.Unique(refs)
 }

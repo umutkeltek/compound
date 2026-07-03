@@ -172,6 +172,47 @@ func TestResolveOutcomeReviewInputsByReceiptID(t *testing.T) {
 	}
 }
 
+func TestResolveOutcomeReviewInputsByReceiptProofRefs(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("completed", true)
+	rec.ProofRefs = []string{"route_from_receipt_proof"}
+	writeReceiptArtifact(t, home, rec)
+	ev := fixtureEvidence()
+	ev.ID = "route_from_receipt_proof"
+	ev.WorkID = ""
+	if err := RecordEvidence(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	gotEv, gotRec, err := ResolveOutcomeReviewInputs(home, OutcomeReviewSelector{ReceiptID: rec.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotEv.ID != ev.ID || gotRec.ID != rec.ID {
+		t.Fatalf("resolved evidence=%q receipt=%q, want %q %q", gotEv.ID, gotRec.ID, ev.ID, rec.ID)
+	}
+}
+
+func TestResolveOutcomeReviewInputsRejectsAmbiguousReceiptProofRefs(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("completed", true)
+	rec.ProofRefs = []string{"route_first", "route_second"}
+	writeReceiptArtifact(t, home, rec)
+	for _, id := range rec.ProofRefs {
+		ev := fixtureEvidence()
+		ev.ID = id
+		ev.WorkID = ""
+		if err := RecordEvidence(home, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, _, err := ResolveOutcomeReviewInputs(home, OutcomeReviewSelector{ReceiptID: rec.ID})
+	if err == nil || !strings.Contains(err.Error(), "multiple route evidence rows match") {
+		t.Fatalf("err = %v, want proof-ref ambiguity", err)
+	}
+}
+
 func TestResolveOutcomeReviewInputsRejectsAmbiguousRouteEvidence(t *testing.T) {
 	home := t.TempDir()
 	rec := fixtureReceipt("completed", true)
