@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -156,6 +157,36 @@ func (s *Store) validateContextPackRef(contextPackID string) error {
 	}
 	if err := pack.Validate(); err != nil {
 		return fmt.Errorf("context_pack_id %q invalid: %w", contextPackID, err)
+	}
+	if err := s.validateContextPackContractRef(contextPackID, pack.IDs.ContractID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) validateContextPackContractRef(contextPackID, contractID string) error {
+	contractID = strings.TrimSpace(contractID)
+	if contractID == "" {
+		return nil
+	}
+	pattern := filepath.Join(s.home, "contracts", "effective", "*", contractID+".json")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("context_pack_id %q contract_id %q lookup failed: %w", contextPackID, contractID, err)
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("context_pack_id %q references contract_id %q but no %s artifact exists", contextPackID, contractID, filepath.ToSlash(filepath.Join("contracts", "effective", "*", contractID+".json")))
+	}
+	sort.Strings(matches)
+	var ec envelope.EffectiveContract
+	if err := s.readJSON(matches[len(matches)-1], &ec); err != nil {
+		return fmt.Errorf("read context_pack_id %q contract_id %q: %w", contextPackID, contractID, err)
+	}
+	if ec.ID != contractID {
+		return fmt.Errorf("context_pack_id %q contract_id %q does not match artifact id %q", contextPackID, contractID, ec.ID)
+	}
+	if err := ec.Validate(); err != nil {
+		return fmt.Errorf("context_pack_id %q contract_id %q invalid: %w", contextPackID, contractID, err)
 	}
 	return nil
 }

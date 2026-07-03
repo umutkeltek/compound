@@ -132,6 +132,10 @@ func TestActivePacketProofRisksIncompleteChain(t *testing.T) {
 }
 
 func writeContextPack(t *testing.T, s *Store, id string) {
+	writeContextPackWithContractID(t, s, id, "")
+}
+
+func writeContextPackWithContractID(t *testing.T, s *Store, id, contractID string) {
 	t.Helper()
 	dir := filepath.Join(s.home, "context", "packs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -141,6 +145,7 @@ func writeContextPack(t *testing.T, s *Store, id string) {
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVContextPack,
 			ID:            id,
+			IDs:           envelope.IDs{ContractID: contractID},
 			CreatedAt:     fixedNow.Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "test", Name: "work-test"},
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
@@ -159,5 +164,42 @@ func writeContextPack(t *testing.T, s *Store, id string) {
 	}
 	if err := s.writeJSON(filepath.Join(dir, id+".json"), &pack); err != nil {
 		t.Fatalf("write context pack: %v", err)
+	}
+}
+
+func writeEffectiveContract(t *testing.T, s *Store, id string) {
+	t.Helper()
+	ec := envelope.EffectiveContract{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVEffectiveContract,
+			ID:            id,
+			CreatedAt:     fixedNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "work-test"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Harness:            "codex",
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		Excluded:           []envelope.ExcludedRef{},
+		MemoryPolicy:       envelope.MemoryPolicy{},
+		CapabilityPolicy:   envelope.CapabilityPolicy{},
+		MutationPolicy:     envelope.MutationPolicy{RequiresActionIntent: true, IrreversibleRequiresHuman: true},
+		SourceRevisions:    []envelope.SourceRev{},
+		Unknowns:           []string{},
+		Conflicts:          []string{},
+	}
+	if err := ec.Validate(); err != nil {
+		t.Fatalf("effective contract fixture invalid: %v", err)
+	}
+	dir := filepath.Join(s.home, "contracts", "effective", fixedNow.UTC().Format("2006-01-02"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir effective contracts: %v", err)
+	}
+	if err := s.writeJSON(filepath.Join(dir, id+".json"), &ec); err != nil {
+		t.Fatalf("write effective contract: %v", err)
 	}
 }

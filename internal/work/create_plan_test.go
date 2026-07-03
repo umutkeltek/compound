@@ -163,6 +163,45 @@ func TestCreateRejectsMissingContextPack(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsContextPackMissingEffectiveContract(t *testing.T) {
+	s := newStore(t)
+	writeContextPackWithContractID(t, s, "ctx_with_missing_contract", "contract_missing")
+	_, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create refuses context pack with missing contract",
+		ContextPackID:    "ctx_with_missing_contract",
+	}, fixedNow)
+	if err == nil || !strings.Contains(err.Error(), `contract_id "contract_missing"`) {
+		t.Fatalf("expected missing effective contract error, got %v", err)
+	}
+	works, listErr := s.List()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(works) != 0 {
+		t.Fatalf("missing effective contract create must not persist work: %+v", works)
+	}
+}
+
+func TestCreateAcceptsContextPackWithEffectiveContract(t *testing.T) {
+	s := newStore(t)
+	writeEffectiveContract(t, s, "contract_present")
+	writeContextPackWithContractID(t, s, "ctx_with_contract", "contract_present")
+	w, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create accepts context pack with matching contract",
+		ContextPackID:    "ctx_with_contract",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("create with context pack contract: %v", err)
+	}
+	if w.IDs.ContextPackID != "ctx_with_contract" {
+		t.Fatalf("work context_pack_id = %q, want ctx_with_contract", w.IDs.ContextPackID)
+	}
+}
+
 func TestCreateBlockedByPolicyDoesNotMutate(t *testing.T) {
 	s := newStore(t)
 	if err := os.MkdirAll(filepath.Join(s.home, "config"), 0o755); err != nil {
