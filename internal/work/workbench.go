@@ -18,6 +18,7 @@ type WorkbenchOptions struct {
 	ActivePacketSurface             string
 	ActivePacketExpectedEvidenceRef string
 	IncludeArchived                 bool
+	PacketDir                       string
 }
 
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
@@ -28,6 +29,7 @@ type WorkbenchReport struct {
 	Open              []WorkbenchItem          `json:"open"`
 	Recent            []WorkbenchItem          `json:"recent,omitempty"`
 	ActivePacketProof *ActivePacketProofReport `json:"active_packet_proof,omitempty"`
+	OfferedPackets    *OfferedPacketSurface    `json:"offered_packets,omitempty"`
 	DispatchNext      WorkbenchDispatchNext    `json:"dispatch_next"`
 	DispatchStepRuns  []DispatchStepRunSummary `json:"dispatch_step_runs,omitempty"`
 	Integrity         []string                 `json:"integrity,omitempty"`
@@ -135,6 +137,14 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Counts:      WorkbenchCounts{ByState: map[string]int{}},
 		Open:        []WorkbenchItem{},
+	}
+	if strings.TrimSpace(opts.PacketDir) != "" {
+		offered, err := OfferedPackets(opts.PacketDir)
+		if err != nil {
+			report.Integrity = append(report.Integrity, "offered packets unavailable: "+err.Error())
+		} else {
+			report.OfferedPackets = &offered
+		}
 	}
 	var works []envelope.WorkEnvelope
 	var err error

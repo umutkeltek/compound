@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,6 +84,72 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	if !contains(report.Recent[0].EvidenceRefs, "proof:workbench") {
 		t.Fatalf("terminal item missing receipt proof refs: %+v", report.Recent[0])
 	}
+}
+
+func TestWorkbenchOfferedPacketsSkipsMalformedHeaders(t *testing.T) {
+	s := newStore(t)
+	packetDir := filepath.Join(t.TempDir(), "packets")
+	if err := os.MkdirAll(packetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := `# Projection packet
+Date: 2026-07-03
+Status: ready
+Owner: codex
+Proof-medium: cli
+Success: projection packet surfaces as offered work.
+
+## Objective
+Build one read-only door.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "good.md"), []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bad := `Date: 2026-07-03
+Status: ready
+
+## Objective
+No title.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "bad.md"), []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{PacketDir: packetDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OfferedPackets == nil {
+		t.Fatal("offered packet surface missing")
+	}
+	offered := report.OfferedPackets
+	if offered.Counts.Total != 2 || offered.Counts.Listed != 1 || offered.Counts.Skipped != 1 || offered.Counts.ByStatus["ready"] != 1 {
+		t.Fatalf("offered counts = %+v", offered.Counts)
+	}
+	if len(offered.Items) != 1 {
+		t.Fatalf("offered items = %+v", offered.Items)
+	}
+	item := offered.Items[0]
+	if item.Title != "Projection packet" || item.Status != "ready" || item.Owner != "codex" || item.CanonicalSurface != "packet:projection-packet" {
+		t.Fatalf("offered item = %+v", item)
+	}
+	for _, gate := range []string{"status:ready", "owner:codex", "proof_medium:cli"} {
+		if !contains(item.Gates, gate) {
+			t.Fatalf("offered gates missing %q: %+v", gate, item.Gates)
+		}
+	}
+	if !packetWarningContains(offered.Warnings, "bad.md") || !packetWarningContains(offered.Warnings, "packet title heading required") {
+		t.Fatalf("warnings = %+v", offered.Warnings)
+	}
+}
+
+func packetWarningContains(warnings []string, needle string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWorkbenchSurfacesRouteOutcomeReviews(t *testing.T) {

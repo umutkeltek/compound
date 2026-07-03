@@ -180,7 +180,9 @@ returns a **token-budget-trimmed subgraph** plus a **coverage verdict** — on a
 claim rather than fabricating a trace. Runtime context uses the same rule: `ContextPack.active_memory[]` contains
 only current `claim://...` refs from the owned ledger that match repo/task context and repo-kind memory policy.
 Session-start hooks may render those compact claim lines, but rented source stores and MemoryEngine indexes remain
-evidence/adapters, never authority. Patterns are computed **structurally** (high-degree claims =
+evidence/adapters, never authority. `compound memory candidates --json` is the read-only candidate inbox
+door for renderers/agents: it reports counts and filtered candidate rows without evidence refs by default;
+`--include-evidence` is the explicit gate. Patterns are computed **structurally** (high-degree claims =
 load-bearing positions; high-betweenness cross-cluster bridges = contradiction/cross-domain candidates),
 no LLM required. Temperature is a **derived** score (`salience·decay + reinforcement-on-access`), not a
 hand-assigned tier, with `salience` driven by evidence-count and position-strength.

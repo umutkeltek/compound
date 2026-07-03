@@ -162,6 +162,8 @@ func memoryUsage(sub string) string {
 	switch sub {
 	case "candidate":
 		return "usage: compound memory candidate <trace.json>"
+	case "candidates":
+		return "usage: compound memory candidates --json [--state proposed|parked|promoted|rejected|no_promote|needs_review] [--limit N] [--kind K] [--include-evidence]"
 	case "adjudicate":
 		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W]"
 	case "graph":
@@ -169,7 +171,7 @@ func memoryUsage(sub string) string {
 	case "engine-config":
 		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain] [--clear] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
 	}
 }
 
@@ -261,7 +263,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
-  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional bounded capability offers and route plan; no dispatch
+compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
   compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
@@ -281,7 +283,7 @@ usage:
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
-  compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
+compound memory <candidate|candidates|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                 spine memory: candidates, claims, positions, patterns, evidence
   compound synthesis sweep [--stage cluster,contradict] [--json]
                 memory synthesis reports; contradictions append needs_review markers only
@@ -2487,6 +2489,35 @@ func cmdMemory(args []string) {
 			die(err)
 			fmt.Printf("related  %s -%s-> %s  (seq %d, conf %.2f)\n", e.From, e.Kind, e.To, e.Seq, e.Confidence)
 		}
+	case "candidates":
+		limit := 0
+		if v := flag("--limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "error: --limit must be a non-negative integer")
+				os.Exit(2)
+			}
+			limit = n
+		}
+		report, err := store.ListCandidates(time.Now(), mem.CandidateListOptions{
+			State:           flag("--state"),
+			Kind:            flag("--kind"),
+			Limit:           limit,
+			IncludeEvidence: has("--include-evidence"),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# memory candidates %d/%d\n", report.Counts.Matched, report.Counts.Total)
+		for _, item := range report.Items {
+			line := fmt.Sprintf("%s %s %s.%s = %s", item.ID, item.State, item.Entity, item.Predicate, item.Object)
+			if item.ReviewState != "" {
+				line += " review=" + item.ReviewState
+			}
+			fmt.Println(line)
+		}
 	case "import-page":
 		pagePath := pos()
 		if pagePath == "" {
@@ -4284,7 +4315,7 @@ func validateKnownFlags(args []string, valueFlags, boolFlags map[string]bool) er
 
 const workbenchCapabilityOfferLimit = 12
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -4310,6 +4341,21 @@ type workbenchReviewItem struct {
 	Actions    []reviewartifact.Action `json:"actions,omitempty"`
 }
 
+func defaultWorkbenchPacketDir() string {
+	if dir := strings.TrimSpace(os.Getenv("COMPOUND_PACKET_DIR")); dir != "" {
+		return dir
+	}
+	for _, dir := range []string{
+		filepath.Join("docs_private", "plan", "packets"),
+		filepath.Join("..", "docs_private", "plan", "packets"),
+	} {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
 func cmdWorkbench(args []string) {
 	homePath, err := home.Resolve("")
 	if err != nil {
@@ -4333,6 +4379,7 @@ func cmdWorkbench(args []string) {
 	routePrivacySensitive := false
 	reviewArea := ""
 	includeArchived := false
+	packetDir := defaultWorkbenchPacketDir()
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
@@ -4364,6 +4411,17 @@ func cmdWorkbench(args []string) {
 			activePacketExpectedRef = proof.EvidenceRef
 			if activePacketSurface == "" {
 				activePacketSurface = proof.CanonicalSurface
+			}
+		case "--packet-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			packetDir = strings.TrimSpace(args[i])
+			if packetDir == "" {
+				fmt.Fprintln(os.Stderr, "error: --packet-dir must be non-empty")
+				os.Exit(2)
 			}
 		case "--capability-task":
 			if i+1 >= len(args) {
@@ -4457,6 +4515,7 @@ func cmdWorkbench(args []string) {
 		ActivePacketSurface:             activePacketSurface,
 		ActivePacketExpectedEvidenceRef: activePacketExpectedRef,
 		IncludeArchived:                 includeArchived,
+		PacketDir:                       packetDir,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

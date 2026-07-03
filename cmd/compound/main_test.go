@@ -8980,6 +8980,82 @@ func writeJSONFile(t *testing.T, body string) string {
 	return path
 }
 
+func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := store.Capture([]mem.Candidate{{
+		Entity:         "entity:cli",
+		Predicate:      "status",
+		Object:         "listed",
+		Confidence:     0.9,
+		Derivation:     "deterministic",
+		PromotionBasis: candidates.BasisTrustedDeterministic,
+		SourceTraceRef: "trace_cli",
+		SnippetHash:    "hash_cli",
+		Visibility:     "operational",
+	}}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"candidates", "--json", "--state", "proposed", "--limit", "1"})
+	})
+	var report mem.CandidateListReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse candidates json: %v\n%s", err, out)
+	}
+	if report.SchemaVersion != mem.CandidateListSchemaVersion || report.Counts.Matched != 1 || report.Items[0].ID != captured[0].ID {
+		t.Fatalf("candidate list report = %+v", report)
+	}
+	if report.Items[0].SourceTraceRef != "" || len(report.Items[0].EvidenceRefs) != 0 {
+		t.Fatalf("evidence leaked by default: %+v", report.Items[0])
+	}
+
+	out = captureStdout(t, func() {
+		cmdMemory([]string{"candidates", "--json", "--state", "proposed", "--include-evidence"})
+	})
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse candidates include-evidence json: %v\n%s", err, out)
+	}
+	if report.Items[0].SourceTraceRef != "trace_cli" || !stringSliceContains(report.Items[0].EvidenceRefs, "trace_cli") {
+		t.Fatalf("include evidence report = %+v", report.Items[0])
+	}
+}
+
+func TestWorkbenchJSONIncludesOfferedPacketsFromPacketDir(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	packetDir := filepath.Join(t.TempDir(), "packets")
+	if err := os.MkdirAll(packetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packet := `# CLI packet
+Date: 2026-07-03
+Status: ready
+Owner: codex
+Success: packet is listed.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "cli-packet.md"), []byte(packet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--packet-dir", packetDir})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse workbench json: %v\n%s", err, out)
+	}
+	if report.OfferedPackets == nil || report.OfferedPackets.Counts.Listed != 1 || report.OfferedPackets.Items[0].Title != "CLI packet" {
+		t.Fatalf("offered packets missing from workbench: %+v", report.OfferedPackets)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
