@@ -438,7 +438,6 @@ func TestWorkbenchDerivesObservatoryTags(t *testing.T) {
 		Outcome:        "completed",
 		MoveType:       "memory_delta",
 		Summary:        "memory recipient proof",
-		Changed:        true,
 		ProofRefs:      []string{"ver_memory"},
 		MemoryPromoted: []string{"claim_memory"},
 	}, fixedNow); err != nil {

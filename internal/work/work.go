@@ -431,6 +431,33 @@ type CloseResult struct {
 
 var receiptOutcome = map[string]string{"completed": "completed", "failed": "failed", "cancelled": "no_op"}
 
+func closeStateChanged(in CloseInput, proofRefs []string) bool {
+	if in.Changed {
+		return true
+	}
+	if in.Outcome != "completed" {
+		return false
+	}
+	switch in.MoveType {
+	case "memory_delta", "rule_delta", "control_plane_repair":
+		return true
+	case "outward_delta":
+		return len(nonEmptyStrings(proofRefs)) > 0
+	default:
+		return false
+	}
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := []string{}
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 // Close lands a work in a terminal state and emits the Receipt + Transition that tie the
 // whole chain (context -> runs -> outputs) to this work_id.
 func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult, error) {
@@ -479,7 +506,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		Outcome:  rOut,
 		MoveType: in.MoveType,
 		StateDelta: envelope.StateDelta{
-			Changed:      in.Changed,
+			Changed:      closeStateChanged(in, proofRefs),
 			Summary:      in.Summary,
 			FilesChanged: []string{},
 			Artifacts:    orEmpty(w.ArtifactIDs),

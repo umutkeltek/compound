@@ -396,6 +396,68 @@ func TestRecordActionGate(t *testing.T) {
 	}
 }
 
+func TestCloseInfersChangedForCompletedNonAuditMoveTypes(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          CloseInput
+		wantChanged bool
+	}{
+		{
+			name:        "completed control plane repair",
+			in:          CloseInput{Outcome: "completed", MoveType: "control_plane_repair", Summary: "repair landed", ProofRefs: []string{"proof:repair"}},
+			wantChanged: true,
+		},
+		{
+			name:        "completed rule delta",
+			in:          CloseInput{Outcome: "completed", MoveType: "rule_delta", Summary: "guard landed", ProofRefs: []string{"guard:repeat-failure"}},
+			wantChanged: true,
+		},
+		{
+			name:        "completed outward delta",
+			in:          CloseInput{Outcome: "completed", MoveType: "outward_delta", Summary: "handoff landed", ProofRefs: []string{"artifact:handoff"}},
+			wantChanged: true,
+		},
+		{
+			name:        "completed memory delta",
+			in:          CloseInput{Outcome: "completed", MoveType: "memory_delta", Summary: "memory promoted", MemoryPromoted: []string{"claim_1"}},
+			wantChanged: true,
+		},
+		{
+			name:        "completed audit",
+			in:          CloseInput{Outcome: "completed", MoveType: "audit_only", Summary: "observed only"},
+			wantChanged: false,
+		},
+		{
+			name:        "failed repair",
+			in:          CloseInput{Outcome: "failed", MoveType: "control_plane_repair", Summary: "repair failed", ProofRefs: []string{"proof:repair"}},
+			wantChanged: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: tt.name}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			res, err := s.Close(w.ID, tt.in, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Receipt.StateDelta.Changed != tt.wantChanged {
+				t.Fatalf("changed = %v, want %v; receipt=%+v", res.Receipt.StateDelta.Changed, tt.wantChanged, res.Receipt)
+			}
+		})
+	}
+}
+
 func TestCloseMoveTypeProofValidation(t *testing.T) {
 	tests := []struct {
 		name    string
