@@ -52,13 +52,25 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 		src.ContextPack = ctx
 	}
 
+	seenExtra := map[string]bool{w.ID: true}
+	if src.ContextPack != nil {
+		seenExtra[src.ContextPack.ID] = true
+	}
+
 	hookEvents, err := loadHookEvents(homePath, w.ID, w.IDs.ContextPackID)
 	if err != nil {
 		return src, err
 	}
 	for i := range hookEvents {
-		src.Extra = append(src.Extra, &hookEvents[i])
+		if markEnvelopeSeen(&hookEvents[i], seenExtra) {
+			src.Extra = append(src.Extra, &hookEvents[i])
+		}
 	}
+	hookSideEffects, err := loadHookSideEffectEnvelopes(homePath, hookEvents, seenExtra)
+	if err != nil {
+		return src, err
+	}
+	src.Extra = append(src.Extra, hookSideEffects...)
 
 	if terminalWork(w.State) && strings.TrimSpace(w.IDs.TransitionID) == "" {
 		return src, fmt.Errorf("closed work %s missing transition_id", workID)
@@ -73,7 +85,9 @@ func LoadRuntimeSources(homePath, workID string) (LLMExtractionSources, error) {
 		if !ok {
 			return src, fmt.Errorf("%s is %s, want transition", trPath, trEnv.Kind())
 		}
-		src.Extra = append(src.Extra, tr)
+		if markEnvelopeSeen(tr, seenExtra) {
+			src.Extra = append(src.Extra, tr)
+		}
 
 		recID := transitionReceiptID(*tr)
 		if recID == "" {
@@ -161,6 +175,83 @@ func loadHookEvents(homePath, workID, contextPackID string) ([]envelope.HookEven
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+func loadHookSideEffectEnvelopes(homePath string, events []envelope.HookEvent, seen map[string]bool) ([]envelope.Envelope, error) {
+	var out []envelope.Envelope
+	for _, ev := range events {
+		for _, ref := range ev.SideEffects {
+			path, ok, err := hookSideEffectJSONPath(homePath, ref)
+			if err != nil {
+				return nil, fmt.Errorf("hook event %s side effect %q: %w", ev.ID, ref, err)
+			}
+			if !ok {
+				continue
+			}
+			env, err := readRuntimeEnvelope(path)
+			if err != nil {
+				return nil, fmt.Errorf("load hook event %s side effect %s: %w", ev.ID, ref, err)
+			}
+			if markEnvelopeSeen(env, seen) {
+				out = append(out, env)
+			}
+		}
+	}
+	return out, nil
+}
+
+func hookSideEffectJSONPath(homePath, ref string) (string, bool, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || !strings.HasSuffix(ref, ".json") {
+		return "", false, nil
+	}
+	if filepath.IsAbs(ref) {
+		return "", false, fmt.Errorf("absolute path is not allowed")
+	}
+	clean := filepath.Clean(ref)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false, fmt.Errorf("path escapes COMPOUND_HOME")
+	}
+	return filepath.Join(homePath, clean), true, nil
+}
+
+func markEnvelopeSeen(e envelope.Envelope, seen map[string]bool) bool {
+	id := runtimeEnvelopeID(e)
+	if id == "" {
+		return true
+	}
+	if seen[id] {
+		return false
+	}
+	seen[id] = true
+	return true
+}
+
+func runtimeEnvelopeID(e envelope.Envelope) string {
+	switch v := e.(type) {
+	case *envelope.EffectiveContract:
+		return v.ID
+	case *envelope.ContextRequest:
+		return v.ID
+	case *envelope.ContextPack:
+		return v.ID
+	case *envelope.WorkEnvelope:
+		return v.ID
+	case *envelope.ActionIntent:
+		return v.ID
+	case *envelope.PolicyDecision:
+		return v.ID
+	case *envelope.HookEvent:
+		return v.ID
+	case *envelope.TraceEnvelope:
+		return v.ID
+	case *envelope.Receipt:
+		return v.ID
+	case *envelope.Transition:
+		return v.ID
+	default:
+		return ""
+	}
 }
 
 func readRuntimeEnvelope(path string) (envelope.Envelope, error) {

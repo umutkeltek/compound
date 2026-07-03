@@ -40,6 +40,8 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("user prompt hook: %v", err)
 	}
+	ctxReq := findProduced[*envelope.ContextRequest](t, start.Produced)
+	ec := findProduced[*envelope.EffectiveContract](t, start.Produced)
 	pack := findProduced[*envelope.ContextPack](t, start.Produced)
 	w := findProduced[*envelope.WorkEnvelope](t, start.Produced)
 	if w.IDs.ContextPackID != pack.ID {
@@ -85,8 +87,11 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if src.Receipt == nil || src.Receipt.ID != rec.ID {
 		t.Fatalf("loaded receipt = %+v, want %s", src.Receipt, rec.ID)
 	}
-	if countKind(src.Extra, "hook_event") < 2 || countKind(src.Extra, "transition") != 1 {
-		t.Fatalf("loaded extra = %+v, want hook events plus one transition", src.Extra)
+	if countKind(src.Extra, "hook_event") < 2 ||
+		countKind(src.Extra, "context_request") != 1 ||
+		countKind(src.Extra, "effective_contract") != 1 ||
+		countKind(src.Extra, "transition") != 1 {
+		t.Fatalf("loaded extra = %+v, want hook events, context request, effective contract, plus one transition", src.Extra)
 	}
 
 	prior, err := LoadPriorStateFromHome(homePath, memStore, DefaultPolicy())
@@ -101,6 +106,8 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 		"work:" + w.ID,
 		"context_pack:" + pack.ID,
 		"receipt:" + rec.ID,
+		"context_request:" + ctxReq.ID,
+		"effective_contract:" + ec.ID,
 		"transition:" + tr.ID,
 	} {
 		if !hasString(req.SourceRefs, want) {
@@ -119,8 +126,11 @@ func TestLoadRuntimeSourcesFromClosedHookWork(t *testing.T) {
 	if req.Receipt == nil || req.Receipt.StateDelta.Summary == "" {
 		t.Fatalf("request receipt summary incomplete: %+v", req.Receipt)
 	}
-	if countLLMKind(req.Envelopes, "hook_event") < 2 || countLLMKind(req.Envelopes, "transition") != 1 {
-		t.Fatalf("request extra envelopes = %+v, want hook events plus transition %s", req.Envelopes, tr.ID)
+	if countLLMKind(req.Envelopes, "hook_event") < 2 ||
+		countLLMKind(req.Envelopes, "context_request") != 1 ||
+		countLLMKind(req.Envelopes, "effective_contract") != 1 ||
+		countLLMKind(req.Envelopes, "transition") != 1 {
+		t.Fatalf("request extra envelopes = %+v, want hook events, context request, effective contract, plus transition %s", req.Envelopes, tr.ID)
 	}
 	if !hasString(req.SourceRefs, "hook_event:"+start.Event.ID) || !hasString(req.SourceRefs, "hook_event:"+closed.Event.ID) {
 		t.Fatalf("request source refs missing hook events %q/%q: %v", start.Event.ID, closed.Event.ID, req.SourceRefs)
@@ -144,6 +154,29 @@ func TestLoadRuntimeSourcesRejectsBrokenClosedWork(t *testing.T) {
 	_, err = LoadRuntimeSources(homePath, w.ID)
 	if err == nil || !strings.Contains(err.Error(), "missing transition_id") {
 		t.Fatalf("err = %v, want missing transition_id", err)
+	}
+}
+
+func TestHookSideEffectJSONPathRejectsUnsafeRefs(t *testing.T) {
+	homePath := t.TempDir()
+	if _, ok, err := hookSideEffectJSONPath(homePath, "context/injections/hook_123.md"); err != nil || ok {
+		t.Fatalf("markdown ref ok=%v err=%v, want ignored", ok, err)
+	}
+	if _, ok, err := hookSideEffectJSONPath(homePath, "ledger/claims.jsonl"); err != nil || ok {
+		t.Fatalf("jsonl ref ok=%v err=%v, want ignored", ok, err)
+	}
+	if _, _, err := hookSideEffectJSONPath(homePath, filepath.Join("..", "escape.json")); err == nil {
+		t.Fatal("expected escaping ref to fail")
+	}
+	if _, _, err := hookSideEffectJSONPath(homePath, filepath.Join(homePath, "events", "hook.json")); err == nil {
+		t.Fatal("expected absolute ref to fail")
+	}
+	path, ok, err := hookSideEffectJSONPath(homePath, filepath.Join("context", "requests", "ctxreq_123.json"))
+	if err != nil || !ok {
+		t.Fatalf("safe ref ok=%v err=%v, want accepted", ok, err)
+	}
+	if want := filepath.Join(homePath, "context", "requests", "ctxreq_123.json"); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
 	}
 }
 

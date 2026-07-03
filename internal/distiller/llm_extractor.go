@@ -478,6 +478,14 @@ func cleanRefs(refs []string) []string {
 
 func summarizeEnvelope(e envelope.Envelope) LLMEnvelope {
 	switch v := e.(type) {
+	case *envelope.EffectiveContract:
+		return LLMEnvelope{
+			Kind:          v.Kind(),
+			ID:            v.ID,
+			SchemaVersion: v.SchemaVersion,
+			EvidenceRefs:  append([]string(nil), v.EvidenceRefs...),
+			Summary:       strings.TrimSpace(v.Harness + " " + v.TaskMode),
+		}
 	case *envelope.HookEvent:
 		return LLMEnvelope{
 			Kind:          v.Kind(),
