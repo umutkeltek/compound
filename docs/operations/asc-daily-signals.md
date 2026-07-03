@@ -24,6 +24,23 @@ Dry run against a saved ASC snapshot:
 bun tools/asc_daily_signals.ts --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" --asc-json fixtures/product/asc-daily-signals.json --json
 ```
 
+## Sales-series JSONL bridge
+
+If another job already writes App Store Connect sales rows as JSONL, Compound should not fetch that source a second time. Use the bridge to map an operator-owned product config to the existing `compound product signal --asc-sales-series` adapter:
+
+```bash
+bun tools/asc_sales_series_bridge.ts \
+  --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" \
+  --sales-series "${ASC_SALES_SERIES_JSONL}" \
+  --change-event "Describe the product/app-store change being evaluated." \
+  --before 2026-07-01/2026-07-07 \
+  --after 2026-07-08/2026-07-14 \
+  --metric units,developer_proceeds_usd \
+  --json
+```
+
+Add `--apply` only when the intended target is the current Compound runtime. For tests or rehearsals, set `COMPOUND_HOME` to a temp directory and pass a temp-built `--compound-bin`. The bridge does not call ASC, does not load launchd, and does not create a metrics store; it only plans or invokes the existing product-signal door.
+
 Live run with the operator's ASC command template:
 
 ```bash
