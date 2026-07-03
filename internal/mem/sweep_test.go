@@ -58,3 +58,84 @@ func TestSynthesisSweepFindsEchoAndContradictionProposals(t *testing.T) {
 		t.Fatalf("ContradictionProposalCount = %d, want 1: %+v", report.ContradictionProposalCount, report.ContradictionProposals)
 	}
 }
+
+func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T) {
+	s := newStore(t)
+
+	original := cand("project:api", "runtime", "Go", "")
+	original.ClaimType = "decision"
+	original.Qualifiers = map[string]string{"domain": "language"}
+	promotedCandidates, err := s.Capture([]Candidate{original}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := s.Adjudicate(promotedCandidates[0].ID, "promote", "work_promote", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Claim == nil {
+		t.Fatal("promote should write claim")
+	}
+
+	contradicting := cand("project:api", "implementation_language", "Rust", "")
+	contradicting.ClaimType = "decision"
+	contradicting.Qualifiers = map[string]string{"domain": "language"}
+	contradicting.Confidence = 0.55
+	contradictingCandidates, err := s.Capture([]Candidate{contradicting}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.SynthesisSweep([]string{"contradict"}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ContradictionProposalCount != 1 {
+		t.Fatalf("ContradictionProposalCount = %d, want 1: %+v", report.ContradictionProposalCount, report.ContradictionProposals)
+	}
+	if report.ReviewDebtCount != 1 || len(report.ReopenedClaims) != 1 {
+		t.Fatalf("review debt = %d reopened=%+v, want one reopened claim", report.ReviewDebtCount, report.ReopenedClaims)
+	}
+	if report.ContradictionProposals[0].CandidateIDs[0] != contradictingCandidates[0].ID {
+		t.Fatalf("contradiction should link candidate %q: %+v", contradictingCandidates[0].ID, report.ContradictionProposals[0])
+	}
+
+	claims, err := s.loadClaims()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reopened Claim
+	for _, claim := range claims {
+		if claim.ID == promoted.Claim.ID {
+			reopened = claim
+			break
+		}
+	}
+	if reopened.ID == "" {
+		t.Fatalf("missing promoted claim %s in %+v", promoted.Claim.ID, claims)
+	}
+	if reopened.State != ClaimStateNeedsReview {
+		t.Fatalf("claim state = %q, want %q", reopened.State, ClaimStateNeedsReview)
+	}
+	if len(reopened.ReviewRefs) != 1 || reopened.ReviewRefs[0] != report.ContradictionProposals[0].ID {
+		t.Fatalf("claim review refs = %+v, want contradiction %s", reopened.ReviewRefs, report.ContradictionProposals[0].ID)
+	}
+	if reopened.ConfidenceDelta < -0.351 || reopened.ConfidenceDelta > -0.349 {
+		t.Fatalf("confidence delta = %.2f, want -0.35", reopened.ConfidenceDelta)
+	}
+
+	defaultRecall, err := s.Recall("project:api", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultRecall.Claims) != 0 {
+		t.Fatalf("default recall should not keep needs_review claim authoritative: %+v", defaultRecall.Claims)
+	}
+	reviewRecall, err := s.Recall("project:api", RecallOpts{IncludeNeedsReview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviewRecall.Claims) != 1 || reviewRecall.Claims[0].State != ClaimStateNeedsReview {
+		t.Fatalf("IncludeNeedsReview recall = %+v, want reopened claim visible", reviewRecall.Claims)
+	}
+}

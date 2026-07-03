@@ -140,7 +140,7 @@ Capability evaluation surfacing note: evidence-only evaluation nodes never surfa
 
 Product authority status note: `compound product authority [--json]` is the read-only product feedback authority report over existing ledgers and candidate stores.
 
-Synthesis status note: `compound synthesis sweep [--stage cluster,contradict]` stays proposal-only; sweep/contradiction artifacts project as recorded review items with mutation guardrails and no apply actions, including legacy statusless artifacts.
+Synthesis status note: `compound synthesis sweep [--stage cluster,contradict]` keeps cluster proposals report-only, while contradiction sweeps may append `needs_review` claim markers when proposed evidence contradicts a promoted current claim. It still does not adjudicate candidates, promote, reject, or supersede claims; reopened claims leave ambient recall until explicitly resolved and surface review debt through sweep/review artifacts.
 
 | Family | Verbs | Status |
 |---|---|---|

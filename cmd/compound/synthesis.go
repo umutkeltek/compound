@@ -110,8 +110,8 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 		Owner:            "compound synthesis",
 		Actor:            "compound synthesis",
 		State:            "ready",
-		DesiredOutcome:   "proposal-only memory synthesis sweep report",
-		SuccessPredicate: "synthesis sweep emits report artifacts without mutating memory candidate inbox or claims ledger",
+		DesiredOutcome:   "memory synthesis sweep report with claim-review debt markers",
+		SuccessPredicate: "synthesis sweep emits report artifacts; contradiction stage may append needs_review markers without candidate adjudication or claim promotion/supersession",
 		EvidenceRefs:     []string{"compound://synthesis/sweep"},
 	}, now)
 	if err != nil {
@@ -120,7 +120,7 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 	if _, err := workStore.Claim(created.ID, "compound synthesis", now); err != nil {
 		return out, err
 	}
-	if _, err := workStore.Advance(created.ID, work.AdvanceInput{To: "running", Actor: "compound synthesis", Note: "running proposal-only synthesis sweep"}, now); err != nil {
+	if _, err := workStore.Advance(created.ID, work.AdvanceInput{To: "running", Actor: "compound synthesis", Note: "running memory synthesis sweep"}, now); err != nil {
 		return out, err
 	}
 	report, err := memStore.SynthesisSweep(stages, now)
@@ -176,16 +176,28 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 		Actor:          "compound synthesis",
 		ArtifactID:     reportID,
 		VerificationID: "synthesis_sweep_report",
-		Note:           "proposal-only sweep report written",
+		Note:           "synthesis sweep report written",
 	}, now); err != nil {
 		return out, err
 	}
+	moveType := "audit_only"
+	changed := false
+	summary := "memory synthesis sweep completed without claim-review mutation"
+	memoryRefs := []string(nil)
+	if report.ReviewDebtCount > 0 {
+		moveType = "memory_delta"
+		changed = true
+		summary = fmt.Sprintf("memory synthesis sweep reopened %d claim(s) for review", report.ReviewDebtCount)
+		memoryRefs = reopenedClaimRefs(report.ReopenedClaims)
+	}
 	closed, err := workStore.Close(created.ID, work.CloseInput{
-		Outcome:   "completed",
-		MoveType:  "audit_only",
-		Actor:     "compound synthesis",
-		Summary:   "proposal-only memory synthesis sweep completed without memory authority mutation",
-		ProofRefs: []string{reportID, "synthesis_sweep_report"},
+		Outcome:          "completed",
+		MoveType:         moveType,
+		Actor:            "compound synthesis",
+		Summary:          summary,
+		Changed:          changed,
+		ProofRefs:        []string{reportID, "synthesis_sweep_report"},
+		MemoryCandidates: memoryRefs,
 	}, now)
 	if err != nil {
 		return out, err
@@ -202,8 +214,8 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 }
 
 func renderSynthesisSweepMarkdown(a synthesisSweepArtifact) string {
-	return fmt.Sprintf("# Synthesis sweep\n\n- work: `%s`\n- stages: `%s`\n- clusters: %d\n- echo_fold_proposals: %d\n- contradiction_proposals: %d\n",
-		a.WorkID, strings.Join(a.Report.Stages, ","), a.Report.ClusterCount, a.Report.EchoFoldProposalCount, a.Report.ContradictionProposalCount)
+	return fmt.Sprintf("# Synthesis sweep\n\n- work: `%s`\n- stages: `%s`\n- clusters: %d\n- echo_fold_proposals: %d\n- contradiction_proposals: %d\n- review_debt: %d\n",
+		a.WorkID, strings.Join(a.Report.Stages, ","), a.Report.ClusterCount, a.Report.EchoFoldProposalCount, a.Report.ContradictionProposalCount, a.Report.ReviewDebtCount)
 }
 
 func renderSynthesisContradictionMarkdown(a synthesisContradictionArtifact) string {
@@ -219,8 +231,8 @@ const (
 
 func synthesisReviewBoundaries() []string {
 	return []string{
-		"proposal-only",
-		"no memory mutation",
+		"cluster proposals are report-only",
+		"contradiction stage may append needs_review claim markers",
 		"no candidate adjudication",
 		"no claim promotion",
 		"no claim supersession",
@@ -231,6 +243,17 @@ func synthesisContradictionEvidenceRefs(workID string, proposal mem.SynthesisCon
 	refs := []string{"compound://synthesis/sweep", workID, proposal.ID}
 	for _, id := range proposal.ClaimIDs {
 		refs = append(refs, "claim:"+id)
+	}
+	for _, id := range proposal.CandidateIDs {
+		refs = append(refs, "candidate:"+id)
+	}
+	return reviewartifact.Unique(refs)
+}
+
+func reopenedClaimRefs(reopened []mem.SynthesisClaimReview) []string {
+	refs := make([]string, 0, len(reopened))
+	for _, item := range reopened {
+		refs = append(refs, "claim_review:"+item.ClaimID)
 	}
 	return reviewartifact.Unique(refs)
 }

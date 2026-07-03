@@ -45,6 +45,15 @@ var Verdicts = []string{"reject", "park", "promote", "no_promote"}
 // Visibilities are the temperature tiers. retired is hidden from default recall but kept.
 var Visibilities = []string{"ambient", "contextual", "candidate", "private", "operational", "retired"}
 
+const (
+	ClaimStatePromoted    = "promoted"
+	ClaimStateNeedsReview = "needs_review"
+
+	EdgeKindSupersedes  = "supersedes"
+	EdgeKindReinforces  = "reinforces"
+	EdgeKindNeedsReview = "needs_review"
+)
+
 // Candidate is an untrusted, proposed fact awaiting adjudication (lives in the inbox).
 type Candidate struct {
 	ID              string                `json:"id"`
@@ -97,21 +106,24 @@ type CandidateAnnotationFinding struct {
 }
 
 type Claim struct {
-	ID             string            `json:"id"`
-	Seq            int64             `json:"seq"` // monotonic version clock
-	Entity         string            `json:"entity"`
-	Predicate      string            `json:"predicate"`
-	Object         string            `json:"object"`
-	ValidFrom      string            `json:"valid_from"` // observation date (immutable)
-	Confidence     float64           `json:"confidence"`
-	Derivation     string            `json:"derivation"`                // provenance: how derived
-	ClaimType      string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes)
-	Qualifiers     map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → Topic()
-	PromotionBasis string            `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
-	EvidenceRefs   []string          `json:"evidence_refs"`             // provenance: source candidate/trace
-	Supersedes     string            `json:"supersedes,omitempty"`
-	Visibility     string            `json:"visibility"`
-	CreatedAt      string            `json:"created_at"`
+	ID              string            `json:"id"`
+	Seq             int64             `json:"seq"` // monotonic version clock
+	Entity          string            `json:"entity"`
+	Predicate       string            `json:"predicate"`
+	Object          string            `json:"object"`
+	ValidFrom       string            `json:"valid_from"` // observation date (immutable)
+	Confidence      float64           `json:"confidence"`
+	Derivation      string            `json:"derivation"`                // provenance: how derived
+	ClaimType       string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes)
+	Qualifiers      map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → Topic()
+	PromotionBasis  string            `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
+	EvidenceRefs    []string          `json:"evidence_refs"`             // provenance: source candidate/trace
+	Supersedes      string            `json:"supersedes,omitempty"`
+	Visibility      string            `json:"visibility"`
+	State           string            `json:"state,omitempty"`            // derived: promoted | needs_review
+	ReviewRefs      []string          `json:"review_refs,omitempty"`      // append-only review marker refs
+	ConfidenceDelta float64           `json:"confidence_delta,omitempty"` // latest contradicting evidence delta
+	CreatedAt       string            `json:"created_at"`
 }
 
 // Topic is the axis Position/Pattern group by: the claim's domain qualifier if set, else the
@@ -126,12 +138,14 @@ func (c Claim) Topic() string {
 // Edge is an append-only relation between claims. Its seq is when the relation took effect,
 // so "current as of T" can fold supersession deterministically.
 type Edge struct {
-	Seq        int64   `json:"seq"`
-	Kind       string  `json:"kind"` // supersedes | reinforces | relation kinds
-	From       string  `json:"from"`
-	To         string  `json:"to"`
-	Confidence float64 `json:"confidence"`
-	CreatedAt  string  `json:"created_at"`
+	Seq             int64    `json:"seq"`
+	Kind            string   `json:"kind"` // supersedes | reinforces | needs_review | relation kinds
+	From            string   `json:"from"`
+	To              string   `json:"to"`
+	Confidence      float64  `json:"confidence"`
+	ConfidenceDelta float64  `json:"confidence_delta,omitempty"`
+	EvidenceRefs    []string `json:"evidence_refs,omitempty"`
+	CreatedAt       string   `json:"created_at"`
 }
 
 // Position is the CURRENT durable stance per (entity, topic) — the topic-grouped view of the
@@ -440,11 +454,11 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 
 // supersedesEdge builds the supersedes edge from a promoted claim to the prior.
 func supersedesEdge(claim, prior Claim, c Candidate, seq int64, now time.Time) Edge {
-	return Edge{Seq: seq, Kind: "supersedes", From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
+	return Edge{Seq: seq, Kind: EdgeKindSupersedes, From: claim.ID, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
 }
 
 func reinforcesEdge(from string, prior Claim, c Candidate, seq int64, now time.Time) Edge {
-	return Edge{Seq: seq, Kind: "reinforces", From: from, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
+	return Edge{Seq: seq, Kind: EdgeKindReinforces, From: from, To: prior.ID, Confidence: c.Confidence, CreatedAt: rfc3339(now)}
 }
 
 func (s *Store) reinforceIfEcho(c Candidate, now time.Time) (bool, error) {
@@ -522,11 +536,12 @@ func (s *Store) memoryTransition(claim Claim, prior Claim, hasPrior bool, workID
 // --- recall (relevance-gated, as-of-aware fold) ---
 
 type RecallOpts struct {
-	AsOfSeq         int64    // 0 = now (latest)
-	IncludeRetired  bool     // default false
-	IncludeEvidence bool     // include annotated candidates; default false
-	MinConfidence   float64  // hard floor
-	Visibilities    []string // allowed tiers; empty = all (minus retired unless IncludeRetired)
+	AsOfSeq            int64    // 0 = now (latest)
+	IncludeRetired     bool     // default false
+	IncludeNeedsReview bool     // default false: held claims do not keep ruling recall
+	IncludeEvidence    bool     // include annotated candidates; default false
+	MinConfidence      float64  // hard floor
+	Visibilities       []string // allowed tiers; empty = all (minus retired unless IncludeRetired)
 }
 
 type RecallResult struct {
@@ -542,7 +557,7 @@ type RecallResult struct {
 // (visibility/retired/confidence) run BEFORE the fold — never a post-filter. It returns a
 // coverage verdict and never fabricates: an empty result says so plainly.
 func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
-	claims, err := s.loadClaims()
+	claims, err := s.loadClaimsAsOf(opts.AsOfSeq)
 	if err != nil {
 		return RecallResult{Entity: entity}, err
 	}
@@ -564,6 +579,10 @@ func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
 			continue
 		}
 		if !opts.IncludeRetired && c.Visibility == "retired" {
+			res.Filtered++
+			continue
+		}
+		if !opts.IncludeNeedsReview && c.State == ClaimStateNeedsReview {
 			res.Filtered++
 			continue
 		}
@@ -721,7 +740,7 @@ func (s *Store) canonicalRecallEntity(entity string, claims []Claim, includeEvid
 
 // currentClaim returns the current claim for entity+predicate as of asOf (0 = now), if any.
 func (s *Store) currentClaim(entity, predicate string, asOf int64) (Claim, bool, error) {
-	claims, err := s.loadClaims()
+	claims, err := s.loadClaimsAsOf(asOf)
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -745,7 +764,7 @@ func (s *Store) currentClaim(entity, predicate string, asOf int64) (Claim, bool,
 }
 
 func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, error) {
-	claims, err := s.loadClaims()
+	claims, err := s.loadClaimsAsOf(asOf)
 	if err != nil {
 		return Claim{}, false, err
 	}
@@ -1053,7 +1072,7 @@ func (s *Store) nextSeq() (int64, error) {
 // maxLedgerSeq is the highest seq across claims AND edges (they share the seq space: relate-edges
 // and supersedes edges both draw from nextSeq).
 func (s *Store) maxLedgerSeq() (int64, error) {
-	claims, err := s.loadClaims()
+	claims, err := s.loadClaimsRaw()
 	if err != nil {
 		return 0, err
 	}
@@ -1069,6 +1088,18 @@ func (s *Store) maxLedgerSeq() (int64, error) {
 }
 
 func (s *Store) loadClaims() ([]Claim, error) {
+	return s.loadClaimsAsOf(0)
+}
+
+func (s *Store) loadClaimsAsOf(asOf int64) ([]Claim, error) {
+	claims, err := s.loadClaimsRaw()
+	if err != nil {
+		return nil, err
+	}
+	return s.decorateClaimReviewStates(claims, asOf)
+}
+
+func (s *Store) loadClaimsRaw() ([]Claim, error) {
 	var out []Claim
 	err := readJSONL(s.claimsLog(), func(line []byte) error {
 		var c Claim
@@ -1081,6 +1112,53 @@ func (s *Store) loadClaims() ([]Claim, error) {
 	return out, err
 }
 
+type claimReviewMark struct {
+	Refs            []string
+	ConfidenceDelta float64
+}
+
+func (s *Store) decorateClaimReviewStates(claims []Claim, asOf int64) ([]Claim, error) {
+	marks, err := s.claimReviewMarksAsOf(asOf)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Claim, len(claims))
+	for i, claim := range claims {
+		claim.State = ClaimStatePromoted
+		if mark, ok := marks[claim.ID]; ok {
+			claim.State = ClaimStateNeedsReview
+			claim.ReviewRefs = append([]string(nil), mark.Refs...)
+			claim.ConfidenceDelta = mark.ConfidenceDelta
+		}
+		out[i] = claim
+	}
+	return out, nil
+}
+
+func (s *Store) claimReviewMarksAsOf(asOf int64) (map[string]claimReviewMark, error) {
+	out := map[string]claimReviewMark{}
+	err := readJSONL(s.edgesLog(), func(line []byte) error {
+		var e Edge
+		if err := json.Unmarshal(line, &e); err != nil {
+			return err
+		}
+		if e.Kind != EdgeKindNeedsReview {
+			return nil
+		}
+		if asOf > 0 && e.Seq > asOf {
+			return nil
+		}
+		mark := out[e.To]
+		if e.From != "" {
+			mark.Refs = append(mark.Refs, e.From)
+		}
+		mark.ConfidenceDelta = e.ConfidenceDelta
+		out[e.To] = mark
+		return nil
+	})
+	return out, err
+}
+
 func (s *Store) supersededAsOf(asOf int64) (map[string]bool, error) {
 	out := map[string]bool{}
 	err := readJSONL(s.edgesLog(), func(line []byte) error {
@@ -1088,7 +1166,7 @@ func (s *Store) supersededAsOf(asOf int64) (map[string]bool, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			return err
 		}
-		if e.Kind == "supersedes" && e.Seq <= asOf {
+		if e.Kind == EdgeKindSupersedes && e.Seq <= asOf {
 			out[e.To] = true
 		}
 		return nil
@@ -1098,7 +1176,7 @@ func (s *Store) supersededAsOf(asOf int64) (map[string]bool, error) {
 	}
 	// Also honor each claim's own Supersedes pointer, so a lost/torn supersedes-edge append can
 	// never leave two "current" claims for one entity+predicate (the new claim records what it replaced).
-	claims, err := s.loadClaims()
+	claims, err := s.loadClaimsRaw()
 	if err != nil {
 		return nil, err
 	}

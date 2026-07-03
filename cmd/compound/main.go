@@ -282,7 +282,7 @@ usage:
   compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                 spine memory: candidates, claims, positions, patterns, evidence
   compound synthesis sweep [--stage cluster,contradict] [--json]
-                proposal-only memory synthesis reports + run proof
+                memory synthesis reports; contradictions append needs_review markers only
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller improvement-plan --candidate C [--target file] method_upgrade/policy_patch -> reviewed distiller improvement draft

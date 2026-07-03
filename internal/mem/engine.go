@@ -216,7 +216,7 @@ func (s *Store) currentVisible() ([]Claim, error) {
 	}
 	var out []Claim
 	for _, c := range claims {
-		if c.Visibility == "retired" || superseded[c.ID] {
+		if c.Visibility == "retired" || c.State == ClaimStateNeedsReview || superseded[c.ID] {
 			continue
 		}
 		out = append(out, c)

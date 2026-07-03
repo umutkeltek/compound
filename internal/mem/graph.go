@@ -101,7 +101,7 @@ func (s *Store) loadRelations(minConf float64) ([]Edge, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			return err
 		}
-		if e.Kind != "supersedes" && e.Kind != "reinforces" && e.Confidence >= minConf {
+		if e.Kind != EdgeKindSupersedes && e.Kind != EdgeKindReinforces && e.Kind != EdgeKindNeedsReview && e.Confidence >= minConf {
 			out = append(out, e)
 		}
 		return nil
