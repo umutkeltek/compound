@@ -554,6 +554,18 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	if pack.IDs.ContractID != ec.ID {
 		t.Fatalf("orient contract_id = %q, want %q", pack.IDs.ContractID, ec.ID)
 	}
+	packPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
+	packData, err := os.ReadFile(packPath)
+	if err != nil {
+		t.Fatalf("read orient context pack artifact: %v", err)
+	}
+	var storedPack envelope.ContextPack
+	if err := json.Unmarshal(packData, &storedPack); err != nil {
+		t.Fatalf("parse orient context pack artifact: %v", err)
+	}
+	if storedPack.ID != pack.ID || storedPack.IDs.ContractID != ec.ID {
+		t.Fatalf("stored orient pack id/contract = %q/%q, want %q/%q", storedPack.ID, storedPack.IDs.ContractID, pack.ID, ec.ID)
+	}
 }
 
 func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {

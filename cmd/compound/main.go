@@ -5972,6 +5972,8 @@ func cmdOrient(args []string) {
 	}
 	pack, err := contract.PackWithCapabilities(in, orientPolicy(), homePath, time.Now())
 	die(err)
+	_, err = contract.RecordContextPack(homePath, pack)
+	die(err)
 	printJSON(pack)
 }
 

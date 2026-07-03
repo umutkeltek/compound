@@ -403,6 +403,10 @@ type EffectiveContractArtifactPaths struct {
 	LatestPath   string `json:"latest_path"`
 }
 
+type ContextPackArtifactPaths struct {
+	PackPath string `json:"pack_path"`
+}
+
 func RecordEffectiveContract(homePath string, ec envelope.EffectiveContract) (EffectiveContractArtifactPaths, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return EffectiveContractArtifactPaths{}, fmt.Errorf("compound home required")
@@ -439,6 +443,23 @@ func writeContractJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func RecordContextPack(homePath string, pack envelope.ContextPack) (ContextPackArtifactPaths, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return ContextPackArtifactPaths{}, fmt.Errorf("compound home required")
+	}
+	if err := pack.Validate(); err != nil {
+		return ContextPackArtifactPaths{}, fmt.Errorf("context pack invalid: %w", err)
+	}
+	packPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+		return ContextPackArtifactPaths{}, err
+	}
+	if err := writeContractJSON(packPath, pack); err != nil {
+		return ContextPackArtifactPaths{}, err
+	}
+	return ContextPackArtifactPaths{PackPath: packPath}, nil
 }
 
 // Pack assembles the ContextPack an agent orients from. Its EXCLUDED list — what was

@@ -87,6 +87,32 @@ func TestRecordEffectiveContractWritesDatedAndLatestArtifacts(t *testing.T) {
 	}
 }
 
+func TestRecordContextPackWritesPackArtifact(t *testing.T) {
+	homePath := t.TempDir()
+	pack := Pack(mkInput("control-plane"), DefaultPolicy(), fixedNow)
+
+	paths, err := RecordContextPack(homePath, pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wantPath := filepath.Join(homePath, "context", "packs", pack.ID+".json")
+	if paths.PackPath != wantPath {
+		t.Fatalf("pack path = %q, want %q", paths.PackPath, wantPath)
+	}
+	var got envelope.ContextPack
+	data, err := os.ReadFile(paths.PackPath)
+	if err != nil {
+		t.Fatalf("read context pack artifact: %v", err)
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("parse context pack artifact: %v", err)
+	}
+	if got.ID != pack.ID || got.IDs.ContractID != pack.IDs.ContractID {
+		t.Fatalf("artifact id/contract = %q/%q, want %q/%q", got.ID, got.IDs.ContractID, pack.ID, pack.IDs.ContractID)
+	}
+}
+
 // The acceptance test for P2: the SAME task yields DIFFERENT packs in a product repo
 // vs the control-plane repo. Governance context is excluded in product, included in
 // control-plane — the orientation-scope fix.
