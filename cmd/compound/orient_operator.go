@@ -2,10 +2,13 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -327,6 +330,19 @@ type orientCandidateInboxSummary struct {
 	OldestActionable *orientAgedItem
 }
 
+type candidateReadinessPayload struct {
+	State          string            `json:"state"`
+	Status         string            `json:"status"`
+	Verdict        string            `json:"verdict"`
+	PromoteAllowed *bool             `json:"promote_allowed"`
+	Generated      string            `json:"generated"`
+	Remaining      *int              `json:"remaining"`
+	Proposals      []json.RawMessage `json:"proposals"`
+	AllMisses      []json.RawMessage `json:"all_misses"`
+	FalseTriggers  []json.RawMessage `json:"false_triggers"`
+	PerReceipt     []json.RawMessage `json:"perReceipt"`
+}
+
 func candidateInboxSummary(homePath, dir, kind string, now time.Time) orientCandidateInboxSummary {
 	out := orientCandidateInboxSummary{StateCounts: map[string]int{}}
 	entries, err := os.ReadDir(filepath.Join(homePath, dir))
@@ -368,18 +384,12 @@ func candidateInboxSummary(homePath, dir, kind string, now time.Time) orientCand
 }
 
 func candidateReadinessState(path string) string {
-	file, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "unreadable"
 	}
-	defer file.Close()
-	var payload struct {
-		State          string `json:"state"`
-		Status         string `json:"status"`
-		Verdict        string `json:"verdict"`
-		PromoteAllowed *bool  `json:"promote_allowed"`
-	}
-	if err := json.NewDecoder(file).Decode(&payload); err != nil {
+	var payload candidateReadinessPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return "unreadable"
 	}
 	state := strings.TrimSpace(payload.State)
@@ -392,10 +402,72 @@ func candidateReadinessState(path string) string {
 	if state == "" && payload.PromoteAllowed != nil && !*payload.PromoteAllowed {
 		state = candidates.NoPromote
 	}
+	if state == "" && consumedSkillSurfacingFeedback(path, data, payload) {
+		state = candidates.NoPromote
+	}
 	if state == "" {
 		return "unspecified"
 	}
 	return state
+}
+
+func consumedSkillSurfacingFeedback(path string, data []byte, payload candidateReadinessPayload) bool {
+	if strings.TrimSpace(payload.Generated) == "" || payload.Remaining == nil || *payload.Remaining != 0 {
+		return false
+	}
+	if len(payload.Proposals) > 0 || len(payload.AllMisses) > 0 {
+		return false
+	}
+	if len(payload.FalseTriggers) == 0 && len(payload.PerReceipt) == 0 {
+		return false
+	}
+	return hasSourceNoPromoteForSkillSurfacingReport(path, data)
+}
+
+func hasSourceNoPromoteForSkillSurfacingReport(path string, data []byte) bool {
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	hashRef := "skill_surfacing_misses:" + hash
+	shortSubject := "skill_surfacing_misses:" + hash[:12]
+	sourceRef := "source:" + path + "#sha256:" + hash
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" || entry.Name() == filepath.Base(path) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(filepath.Dir(path), entry.Name()))
+		if err != nil {
+			continue
+		}
+		var candidate struct {
+			Subject        string   `json:"subject"`
+			SourceRef      string   `json:"source_ref"`
+			Verdict        string   `json:"verdict"`
+			PromoteAllowed *bool    `json:"promote_allowed"`
+			EvidenceRefs   []string `json:"evidence_refs"`
+		}
+		if err := json.Unmarshal(data, &candidate); err != nil {
+			continue
+		}
+		if !candidateNoPromote(candidate.Verdict, candidate.PromoteAllowed) {
+			continue
+		}
+		if candidate.Subject == shortSubject || candidate.SourceRef == path ||
+			slices.Contains(candidate.EvidenceRefs, hashRef) || slices.Contains(candidate.EvidenceRefs, sourceRef) {
+			return true
+		}
+	}
+	return false
+}
+
+func candidateNoPromote(verdict string, promoteAllowed *bool) bool {
+	if strings.TrimSpace(verdict) == candidates.NoPromote {
+		return true
+	}
+	return promoteAllowed != nil && !*promoteAllowed
 }
 
 func candidateStateActionable(state string) bool {

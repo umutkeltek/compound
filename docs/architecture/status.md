@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.
+
 Proof-check status note: `compound proof-check [--json] [--dry-run] [--repo P]` runs the deterministic local verification bundle: `go test -count=1 ./...`, `go vet ./...`, `go build ./...`, `git diff --check`, strict architecture doctor, memory doctor, and public redact scanning of changed files. This is Stage 4 deterministic execution support: repeated proof chores become one command instead of ad hoc operator ritual.
 
 Route outcome status note: `compound route outcome-review` resolves existing joins by `--route-id`/`--route-evidence` plus `--receipt`/`--receipt-id`, or by `--work-id` when the work event log points to a receipt and the route ledger links that receipt/work. Supported joins record as route evidence, not review debt; remorse/failed joins remain the only path to route observations/no-promote.

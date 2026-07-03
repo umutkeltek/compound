@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -86,6 +88,73 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	}
 	if second.Changed.FirstRun || second.Changed.ClaimsSeqDelta != 0 || second.Changed.LastSeenSeq != 1 {
 		t.Fatalf("second changed cursor = %+v, want no seq delta after cursor write", second.Changed)
+	}
+}
+
+func TestOrientOperatorTreatsConsumedSurfacingFeedbackReportTerminal(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 3, 8, 30, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	reportID := "skill-surfacing-feedback-instruction-design"
+	reportPayload := map[string]any{
+		"generated":      now.Add(-45 * time.Minute).Format(time.RFC3339),
+		"scanned":        1,
+		"skipped":        0,
+		"laneFails":      0,
+		"remaining":      0,
+		"proposals":      []any{},
+		"all_misses":     []any{},
+		"false_triggers": []any{map[string]any{"skill": "skill:swift-actor-persistence", "count": 1}},
+		"perReceipt": []any{map[string]any{
+			"dir": "2026-07-01-instruction-design-surfacing",
+			"false_triggered": []any{map[string]any{
+				"skill":      "skill:swift-actor-persistence",
+				"confidence": 1,
+				"reason":     "instruction graph hook coherence",
+			}},
+		}},
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, reportID, reportPayload); err != nil {
+		t.Fatalf("write surfacing feedback report: %v", err)
+	}
+	summary := candidateInboxSummary(homePath, candidates.InboxDir(candidates.CapabilityObs), string(candidates.CapabilityObs), now)
+	if summary.ActionableCount != 1 || summary.StateCounts["unspecified"] != 1 {
+		t.Fatalf("unconsumed feedback summary = %+v, want one unspecified actionable report", summary)
+	}
+
+	reportPath := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs), reportID+".json")
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	hash := hex.EncodeToString(sum[:])
+	sourceCandidateID := "src_cand_surfacing_feedback"
+	sourceCandidate := map[string]any{
+		"schema_version":        "compound.source_candidate.v0.1",
+		"id":                    sourceCandidateID,
+		"kind":                  string(candidates.CapabilityObs),
+		"subject":               "skill_surfacing_misses:" + hash[:12],
+		"statement":             "capability:" + reportPath,
+		"detail":                "observed",
+		"confidence":            1,
+		"source_observation_id": "srcobs_surfacing_feedback",
+		"source_ref":            reportPath,
+		"promote_allowed":       false,
+		"verdict":               candidates.NoPromote,
+		"created_at":            now.Format(time.RFC3339),
+		"evidence_refs":         []string{"skill_surfacing_misses:" + hash, "source:" + reportPath + "#sha256:" + hash},
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, sourceCandidateID, sourceCandidate); err != nil {
+		t.Fatalf("write source no-promote candidate: %v", err)
+	}
+
+	summary = candidateInboxSummary(homePath, candidates.InboxDir(candidates.CapabilityObs), string(candidates.CapabilityObs), now)
+	if summary.Count != 2 || summary.ActionableCount != 0 || summary.StateCounts[candidates.NoPromote] != 2 {
+		t.Fatalf("consumed feedback summary = %+v, want both report and source candidate terminal no_promote", summary)
 	}
 }
 
