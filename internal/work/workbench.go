@@ -1,6 +1,7 @@
 package work
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -96,7 +97,22 @@ type WorkbenchItem struct {
 	VerificationIDs    []string                `json:"verification_ids,omitempty"`
 	MemoryCandidateIDs []string                `json:"memory_candidate_ids,omitempty"`
 	RunObservations    []RunObservationSummary `json:"run_observations,omitempty"`
+	RouteOutcomes      []RouteOutcomeSummary   `json:"route_outcomes,omitempty"`
 	recentAt           string
+}
+
+type RouteOutcomeSummary struct {
+	ID                 string `json:"id"`
+	CreatedAt          string `json:"created_at,omitempty"`
+	Status             string `json:"status"`
+	ReviewRef          string `json:"review_ref"`
+	RouteEvidenceID    string `json:"route_evidence_id"`
+	ReceiptID          string `json:"receipt_id"`
+	AssessmentClass    string `json:"assessment_class"`
+	ShouldReviewPolicy bool   `json:"should_review_policy"`
+	Provider           string `json:"provider,omitempty"`
+	Model              string `json:"model,omitempty"`
+	Protocol           string `json:"protocol,omitempty"`
 }
 
 type RunObservationSummary struct {
@@ -130,6 +146,10 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	if err != nil {
 		return report, err
 	}
+	routeOutcomes, routeWarnings := s.workbenchRouteOutcomeIndex()
+	for _, warning := range routeWarnings {
+		report.Integrity = append(report.Integrity, warning)
+	}
 	report.Counts.Total = len(works)
 	for _, w := range works {
 		events, err := s.eventsFor(w.ID)
@@ -137,6 +157,8 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 			return report, err
 		}
 		item := s.workbenchItem(w, events, &report)
+		routeOutcomes.attach(&item)
+		item.ObservatoryTags = workbenchObservatoryTags(item)
 		report.Counts.RunObservations += len(item.RunObservations)
 		report.Counts.ByState[w.State]++
 		if terminalStates[w.State] {
@@ -262,6 +284,131 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	}
 	item.ObservatoryTags = workbenchObservatoryTags(item)
 	return item
+}
+
+type routeOutcomeIndex struct {
+	byWork    map[string][]RouteOutcomeSummary
+	byReceipt map[string][]RouteOutcomeSummary
+}
+
+type routeOutcomeArtifact struct {
+	SchemaVersion   string `json:"schema_version"`
+	ID              string `json:"id"`
+	CreatedAt       string `json:"created_at"`
+	Status          string `json:"status"`
+	WorkID          string `json:"work_id,omitempty"`
+	ReceiptID       string `json:"receipt_id"`
+	RouteEvidenceID string `json:"route_evidence_id"`
+	SelectedTarget  struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Protocol string `json:"protocol"`
+	} `json:"selected_target"`
+	Assessment struct {
+		Class              string `json:"class"`
+		ShouldReviewPolicy bool   `json:"should_review_policy"`
+	} `json:"assessment"`
+}
+
+func (s *Store) workbenchRouteOutcomeIndex() (routeOutcomeIndex, []string) {
+	index := routeOutcomeIndex{
+		byWork:    map[string][]RouteOutcomeSummary{},
+		byReceipt: map[string][]RouteOutcomeSummary{},
+	}
+	dir := filepath.Join(s.home, "reviews", "route-remorse")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return index, nil
+		}
+		return index, []string{"route outcome reviews unreadable: " + err.Error()}
+	}
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			warnings = append(warnings, "route outcome review "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		var review routeOutcomeArtifact
+		if err := json.Unmarshal(data, &review); err != nil {
+			warnings = append(warnings, "route outcome review "+entry.Name()+" invalid: "+err.Error())
+			continue
+		}
+		if review.SchemaVersion != "compound.route_outcome_review.v0.1" || strings.TrimSpace(review.ID) == "" {
+			warnings = append(warnings, "route outcome review "+entry.Name()+" invalid: missing route outcome schema/id")
+			continue
+		}
+		summary := RouteOutcomeSummary{
+			ID:                 review.ID,
+			CreatedAt:          review.CreatedAt,
+			Status:             review.Status,
+			ReviewRef:          "route_outcome_review:" + review.ID,
+			RouteEvidenceID:    review.RouteEvidenceID,
+			ReceiptID:          review.ReceiptID,
+			AssessmentClass:    review.Assessment.Class,
+			ShouldReviewPolicy: review.Assessment.ShouldReviewPolicy,
+			Provider:           review.SelectedTarget.Provider,
+			Model:              review.SelectedTarget.Model,
+			Protocol:           review.SelectedTarget.Protocol,
+		}
+		if review.WorkID != "" {
+			index.byWork[review.WorkID] = append(index.byWork[review.WorkID], summary)
+		}
+		if review.ReceiptID != "" {
+			index.byReceipt[review.ReceiptID] = append(index.byReceipt[review.ReceiptID], summary)
+		}
+	}
+	index.sort()
+	return index, warnings
+}
+
+func (idx routeOutcomeIndex) sort() {
+	for key := range idx.byWork {
+		sortRouteOutcomeSummaries(idx.byWork[key])
+	}
+	for key := range idx.byReceipt {
+		sortRouteOutcomeSummaries(idx.byReceipt[key])
+	}
+}
+
+func sortRouteOutcomeSummaries(out []RouteOutcomeSummary) {
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return workbenchTimestampAfter(out[i].CreatedAt, out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+}
+
+func (idx routeOutcomeIndex) attach(item *WorkbenchItem) {
+	if item == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, existing := range item.RouteOutcomes {
+		seen[existing.ID] = true
+	}
+	add := func(out RouteOutcomeSummary) {
+		if out.ID == "" || seen[out.ID] {
+			return
+		}
+		seen[out.ID] = true
+		item.RouteOutcomes = append(item.RouteOutcomes, out)
+		item.EvidenceRefs = mergeUnique(item.EvidenceRefs, []string{out.ReviewRef, out.RouteEvidenceID})
+		item.recentAt = workbenchLatestTimestamp(item.recentAt, out.CreatedAt)
+	}
+	for _, out := range idx.byWork[item.WorkID] {
+		add(out)
+	}
+	for _, out := range idx.byReceipt[item.ReceiptID] {
+		add(out)
+	}
+	sortRouteOutcomeSummaries(item.RouteOutcomes)
 }
 
 func (s *Store) workbenchRunObservations(workID string) ([]RunObservationSummary, []string) {
@@ -579,6 +726,15 @@ func workbenchObservatoryTags(item WorkbenchItem) []string {
 	}
 	if len(item.RunObservations) > 0 {
 		add("evidence:run-observed")
+	}
+	if len(item.RouteOutcomes) > 0 {
+		add("route:outcome")
+		for _, out := range item.RouteOutcomes {
+			if out.ShouldReviewPolicy {
+				add("route:review-needed")
+				break
+			}
+		}
 	}
 	if len(item.EvidenceRefs) > 0 {
 		add("evidence:source")

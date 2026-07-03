@@ -1,7 +1,9 @@
 package work
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -80,6 +82,74 @@ func TestWorkbenchReportsOpenLoopsAndTerminalProof(t *testing.T) {
 	}
 	if !contains(report.Recent[0].EvidenceRefs, "proof:workbench") {
 		t.Fatalf("terminal item missing receipt proof refs: %+v", report.Recent[0])
+	}
+}
+
+func TestWorkbenchSurfacesRouteOutcomeReviews(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "route outcome reaches workbench"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "outward_delta",
+		Summary:   "route outcome fixture work",
+		Changed:   true,
+		ProofRefs: []string{"proof:route-work"},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbenchRouteOutcomeReview(t, s.home, map[string]any{
+		"schema_version":    "compound.route_outcome_review.v0.1",
+		"id":                "ror_workbench",
+		"created_at":        fixedNow.Add(2 * time.Minute).UTC().Format(time.RFC3339),
+		"status":            "recorded",
+		"route_evidence_id": "route_workbench",
+		"request_id":        "gateway:req_workbench",
+		"work_id":           w.ID,
+		"receipt_id":        closed.Receipt.ID,
+		"receipt_outcome":   "completed",
+		"route_status":      "completed",
+		"selected_target": map[string]any{
+			"provider": "fixture-provider",
+			"model":    "fixture-model",
+			"protocol": "openai-chat",
+		},
+		"assessment": map[string]any{
+			"class":                "route_supported",
+			"should_review_policy": false,
+		},
+	})
+
+	report, err := s.Workbench(fixedNow.Add(3*time.Minute), WorkbenchOptions{RecentLimit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Recent) != 1 {
+		t.Fatalf("recent = %+v", report.Recent)
+	}
+	item := report.Recent[0]
+	if item.WorkID != w.ID || len(item.RouteOutcomes) != 1 {
+		t.Fatalf("route outcome missing from workbench item: %+v", item)
+	}
+	out := item.RouteOutcomes[0]
+	if out.ID != "ror_workbench" || out.RouteEvidenceID != "route_workbench" || out.ReceiptID != closed.Receipt.ID ||
+		out.AssessmentClass != "route_supported" || out.Provider != "fixture-provider" {
+		t.Fatalf("bad route outcome summary: %+v", out)
+	}
+	if !contains(item.EvidenceRefs, "route_outcome_review:ror_workbench") || !contains(item.EvidenceRefs, "route_workbench") {
+		t.Fatalf("route outcome proof refs missing: %+v", item.EvidenceRefs)
+	}
+	if !contains(item.ObservatoryTags, "route:outcome") {
+		t.Fatalf("route outcome tag missing: %+v", item.ObservatoryTags)
 	}
 }
 
@@ -567,6 +637,25 @@ func closeWorkbenchTestWork(t *testing.T, s *Store, workID string, at time.Time,
 		Changed:   true,
 		ProofRefs: []string{"proof:" + workID},
 	}, at.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeWorkbenchRouteOutcomeReview(t *testing.T, homePath string, review map[string]any) {
+	t.Helper()
+	dir := filepath.Join(homePath, "reviews", "route-remorse")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := review["id"].(string)
+	if id == "" {
+		t.Fatal("route outcome review id required")
+	}
+	data, err := json.MarshalIndent(review, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

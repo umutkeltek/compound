@@ -2,6 +2,8 @@
 
 Route outcome status note: `compound route outcome-review` resolves existing joins by `--route-id`/`--route-evidence` plus `--receipt`/`--receipt-id`, or by `--work-id` when the work event log points to a receipt and the route ledger links that receipt/work. Supported joins record as route evidence, not review debt; remorse/failed joins remain the only path to route observations/no-promote.
 
+Workbench route outcome note: `compound workbench --json` attaches compact `route_outcomes[]` summaries from `reviews/route-remorse` to matching work/receipt items and adds `route:outcome` observatory tags, so route evidence joins are visible without opening review artifacts.
+
 Archived runtime proof journal through 2026-07-02: [status-journal-through-2026-07-02.md](archive/status-journal-through-2026-07-02.md). Future runtime proof notes belong in WorkEnvelope receipts/worklog, not this hot status surface.
 
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, status hot-path line budget, and the memory convergence ratchet.
