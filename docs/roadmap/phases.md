@@ -9,7 +9,7 @@ Each phase proves one transition with a real command + real/synthetic fixtures. 
 its acceptance test (behavioral, not a document) passes, it ends in a state delta, and it names what it
 **retired**. Never build a service ahead of a slice that needs it. The map is not the work.
 
-> Generic roadmap. Operator-specific sequencing + real data sources live in `docs_private/plan/COHERENT-PLAN.md`.
+> Generic roadmap. Operator-specific sequencing + real data sources live in `docs_private/plan/HANDOFF.md`; the old coherent plan is archived under `docs_private/archive/plan/COHERENT-PLAN.md`.
 
 ## P0 — `.compound` home (habitat only)
 `compound home init/doctor/where`. **Proof:** `home doctor` reports generated state lives under

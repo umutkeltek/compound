@@ -150,6 +150,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkConversationCoverageContract(repoRoot)...)
 		f = append(f, checkDecisionSourceAuthorityContract(repoRoot)...)
 		f = append(f, checkDistillerImprovementReviewContract(repoRoot)...)
+		f = append(f, checkEpistemicsDoctrine(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -1263,6 +1264,168 @@ func checkDistillerImprovementReviewContract(repoRoot string) []Finding {
 		return []Finding{{"distiller-improvement-review-contract", Fail, "public docs do not describe distiller improvement-plan/review as gated review YAML with recorded eval_proof_refs and no policy/eval-corpus/memory mutation"}}
 	}
 	return []Finding{{"distiller-improvement-review-contract", Info, "distiller improvement review is gated by recorded eval proof, not policy/eval-corpus/memory mutation"}}
+}
+
+type epistemicsDoctrineRow struct {
+	N                  string
+	ImplementingObject string
+	ProofCommand       string
+}
+
+func checkEpistemicsDoctrine(repoRoot string) []Finding {
+	path := filepath.Join(repoRoot, "docs", "architecture", "epistemics.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return []Finding{{"epistemics-doctrine", Fail, "docs/architecture/epistemics.md missing or unreadable: " + err.Error()}}
+	}
+	rows := parseEpistemicsDoctrineRows(string(b))
+	if len(rows) < 7 {
+		return []Finding{{"epistemics-doctrine", Fail, "docs/architecture/epistemics.md has " + itoa(len(rows)) + " doctrine row(s); want at least 7 machine-parseable rows"}}
+	}
+	commandCases, err := compoundCommandCases(repoRoot)
+	if err != nil {
+		return []Finding{{"epistemics-doctrine", Fail, "could not inspect cmd/compound/main.go command cases: " + err.Error()}}
+	}
+	var problems []string
+	for _, row := range rows {
+		for _, object := range splitEpistemicsObjects(row.ImplementingObject) {
+			if !strings.HasPrefix(object, "internal/") {
+				problems = append(problems, "row "+row.N+" implementing_object "+strconv(object)+" must name internal/<package>")
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(repoRoot, object)); err != nil {
+				problems = append(problems, "row "+row.N+" implementing_object "+strconv(object)+" not found")
+			}
+		}
+		verb := epistemicsProofVerb(row.ProofCommand)
+		if verb == "" {
+			problems = append(problems, "row "+row.N+" proof_command "+strconv(row.ProofCommand)+" has no compound verb")
+			continue
+		}
+		if !commandCases[verb] {
+			problems = append(problems, "row "+row.N+" proof_command verb "+strconv(verb)+" has no case in cmd/compound/main.go")
+		}
+	}
+	if len(problems) > 0 {
+		return []Finding{{"epistemics-doctrine", Fail, strings.Join(problems, "; ")}}
+	}
+	return []Finding{{"epistemics-doctrine", Info, "docs/architecture/epistemics.md maps " + itoa(len(rows)) + " doctrine rows to existing packages and compound commands"}}
+}
+
+func parseEpistemicsDoctrineRows(text string) []epistemicsDoctrineRow {
+	var rows []epistemicsDoctrineRow
+	inTable := false
+	for _, line := range strings.Split(text, "\n") {
+		cells := splitMarkdownTableRow(line)
+		if len(cells) == 0 {
+			if inTable {
+				break
+			}
+			continue
+		}
+		if !inTable {
+			if len(cells) >= 4 && strings.EqualFold(cells[0], "n") && strings.EqualFold(cells[1], "principle") && strings.EqualFold(cells[2], "implementing_object") && strings.EqualFold(cells[3], "proof_command") {
+				inTable = true
+			}
+			continue
+		}
+		if isMarkdownSeparatorRow(cells) {
+			continue
+		}
+		if len(cells) < 4 || !isDigits(cells[0]) {
+			continue
+		}
+		rows = append(rows, epistemicsDoctrineRow{
+			N:                  cells[0],
+			ImplementingObject: cells[2],
+			ProofCommand:       cells[3],
+		})
+	}
+	return rows
+}
+
+func splitMarkdownTableRow(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.Contains(line, "|") {
+		return nil
+	}
+	line = strings.Trim(line, "|")
+	parts := strings.Split(line, "|")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, cleanEpistemicsCell(part))
+	}
+	return out
+}
+
+func cleanEpistemicsCell(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "`")
+	return strings.TrimSpace(value)
+}
+
+func isMarkdownSeparatorRow(cells []string) bool {
+	if len(cells) == 0 {
+		return false
+	}
+	for _, cell := range cells {
+		cell = strings.TrimSpace(cell)
+		if cell == "" {
+			return false
+		}
+		for _, r := range cell {
+			if r != '-' && r != ':' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func splitEpistemicsObjects(value string) []string {
+	var out []string
+	for _, part := range strings.Split(value, ",") {
+		part = cleanEpistemicsCell(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func epistemicsProofVerb(command string) string {
+	parts := strings.Fields(cleanEpistemicsCell(command))
+	if len(parts) < 2 || parts[0] != "compound" {
+		return ""
+	}
+	return parts[1]
+}
+
+func compoundCommandCases(repoRoot string) (map[string]bool, error) {
+	b, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "main.go"))
+	if err != nil {
+		return nil, err
+	}
+	re := regexp.MustCompile(`(?m)^\s*case\s+"([^"]+)"\s*:`)
+	out := map[string]bool{}
+	for _, match := range re.FindAllStringSubmatch(string(b), -1) {
+		if len(match) == 2 {
+			out[match[1]] = true
+		}
+	}
+	return out, nil
+}
+
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func convergenceDebt(strict bool) []Finding {

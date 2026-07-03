@@ -99,6 +99,13 @@ Execution and policy:
 - `compound workbench` is a read-only board over open WorkEnvelopes,
   terminal receipts, transitions, and optional CapabilityGraph offers; it does
   not dispatch, execute offers, or mutate work.
+- `compound transition ...` exposes the proof apex joining work, receipts,
+  evidence, and typed projections.
+- `compound proof-check [--json]` runs the deterministic local proof bundle:
+  tests, vet, build, diff check, strict architecture doctor, memory doctor, and
+  public redact scan.
+- `compound reviews [--json]` reads owner-review artifacts without applying
+  them.
 - `compound policy evaluate` turns ActionIntent into an enforceable
   PolicyDecision.
 - `compound policy import-placement-rules <placement-rules.json>` installs owner
@@ -109,6 +116,8 @@ Execution and policy:
   global autonomy ceiling into `COMPOUND_HOME/registries/operator-state.json`;
   `compound policy operator-authority [--json]` reports the machine-readable
   handoff for OS/operator consumers.
+- `compound writeback ...` gates owner writeback and no-promote decisions
+  through policy and receipts.
 - `compound hook ...` and `compound harness ...` normalize harness events into
   spine objects; `compound hook pre-tool-use --enforce ...` returns policy gate
   exit codes for wrapper enforcement.
@@ -117,6 +126,10 @@ Meaning and evidence:
 
 - `compound memory ...` owns candidates, evidence, claims, recall, adjudication,
   timelines, and reviewed write plans.
+- `compound knowledge ...` imports source-backed knowledge items into evidence
+  and candidate paths without direct promotion.
+- `compound synthesis ...` records memory synthesis sweeps; contradiction
+  sweeps may reopen claims to review, while cluster proposals stay report-only.
 - `compound distiller ...` turns traces/runtime source material into candidate
   sets; it never promotes model output by confidence alone.
 - `compound decisions ...` imports, repairs, and audits DecisionLifecycle source authority.
@@ -127,6 +140,10 @@ Adaptive systems:
 
 - `compound capability ...` owns the capability graph. It surfaces offers with
   constraints and flat JSON summaries; it does not execute skills/tools.
+- `compound panel ...` runs lens-based reviews over candidate/review queues and
+  applies only through governed proof paths.
+- `compound local-models advise ...` reports local model context/load/unload
+  intent without mutating provider runtime.
 - `compound route ...` records route evidence, exposes read-only route
   evidence authority, checks provider-call cost coverage, writes
   receipt-linked route outcome reviews, and uses Compound-owned model-router
@@ -144,10 +161,11 @@ Read in this order:
 
 1. `docs/LAYERS.md`
 2. `docs/architecture/status.md`
-3. `docs/architecture/runtime.md`
-4. `docs/architecture/contracts/README.md`
-5. `docs/memory-architecture.md`
-6. `docs/architecture/source-adapters.md`
+3. `docs/architecture/epistemics.md`
+4. `docs/architecture/runtime.md`
+5. `docs/architecture/contracts/README.md`
+6. `docs/memory-architecture.md`
+7. `docs/architecture/source-adapters.md`
 
 Core packages:
 
@@ -161,14 +179,19 @@ internal/work/            WorkEnvelope lifecycle + read-only workbench
 internal/policy/          ActionIntent -> PolicyDecision
 internal/harness/         HarnessRegistry
 internal/hook/            lifecycle hook runner
+internal/knowledge/      source-backed knowledge intake
 internal/candidates/      candidate kind -> inbox dir + verdicts
 internal/mem/             canonical memory object family
 internal/distiller/       trace -> candidate fan-out + critique
 internal/capgraph/        capability graph
+internal/panel/          lens review panel
+internal/localmodel/     local model advice seam
 internal/runtimebinding/  RuntimeBinding + ServiceContract doctor
 internal/projection/      generated-view freshness
 internal/product/         product signals, hypotheses, reviews
 internal/routeevidence/   execution route evidence
+internal/reviewartifact/ shared review artifact writes
+internal/writeback/      owner writeback/no-promote gate
 internal/arch/            architecture doctor
 ```
 

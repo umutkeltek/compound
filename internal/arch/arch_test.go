@@ -1017,6 +1017,129 @@ func TestDistillerImprovementReviewContractFailsWithoutGate(t *testing.T) {
 	}
 }
 
+func TestEpistemicsDoctrineResolved(t *testing.T) {
+	findings := checkEpistemicsDoctrine(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("epistemics doctrine check failed against real repo: %+v", findings)
+	}
+}
+
+func TestEpistemicsDoctrineFailsWhenDocMissing(t *testing.T) {
+	repo := writeEpistemicsFixtureRepo(t, epistemicsFixtureRows())
+	if err := os.Remove(filepath.Join(repo, "docs", "architecture", "epistemics.md")); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkEpistemicsDoctrine(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want missing-doc failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "epistemics.md") {
+		t.Fatalf("failure should name epistemics.md: %+v", findings)
+	}
+}
+
+func TestEpistemicsDoctrineFailsWithTooFewRows(t *testing.T) {
+	repo := writeEpistemicsFixtureRepo(t, epistemicsFixtureRows()[:6])
+	findings := checkEpistemicsDoctrine(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want row-count failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "6 doctrine row") {
+		t.Fatalf("failure should name parsed row count: %+v", findings)
+	}
+}
+
+func TestEpistemicsDoctrineFailsForPhantomPackage(t *testing.T) {
+	rows := epistemicsFixtureRows()
+	rows[2] = "| 3 | contradiction review | internal/ghost | compound synthesis sweep |"
+	repo := writeEpistemicsFixtureRepo(t, rows)
+	findings := checkEpistemicsDoctrine(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want phantom package failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "internal/ghost") || !strings.Contains(findings[0].Message, "not found") {
+		t.Fatalf("failure should name missing internal package: %+v", findings)
+	}
+}
+
+func TestEpistemicsDoctrineFailsForPhantomCommandVerb(t *testing.T) {
+	rows := epistemicsFixtureRows()
+	rows[4] = "| 5 | route evidence is not task success | internal/routeevidence | compound ghost-command run |"
+	repo := writeEpistemicsFixtureRepo(t, rows)
+	findings := checkEpistemicsDoctrine(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want phantom command failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "ghost-command") || !strings.Contains(findings[0].Message, "cmd/compound/main.go") {
+		t.Fatalf("failure should name missing command case: %+v", findings)
+	}
+}
+
+func writeEpistemicsFixtureRepo(t *testing.T, rows []string) string {
+	t.Helper()
+	repo := t.TempDir()
+	for _, dir := range []string{
+		"cmd/compound",
+		"docs/architecture",
+		"internal/arch",
+		"internal/candidates",
+		"internal/capgraph",
+		"internal/contract",
+		"internal/distiller",
+		"internal/envelope",
+		"internal/harness",
+		"internal/knowledge",
+		"internal/mem",
+		"internal/panel",
+		"internal/product",
+		"internal/routeevidence",
+		"internal/work",
+	} {
+		if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mainGo := `package main
+func main() {
+	switch "" {
+	case "architecture":
+	case "capability":
+	case "contract":
+	case "memory":
+	case "route":
+	case "synthesis":
+	case "workbench":
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "main.go"), []byte(mainGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	b.WriteString("| n | principle | implementing_object | proof_command |\n")
+	b.WriteString("|---|---|---|---|\n")
+	for _, row := range rows {
+		b.WriteString(row)
+		b.WriteByte('\n')
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs", "architecture", "epistemics.md"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+func epistemicsFixtureRows() []string {
+	return []string{
+		"| 1 | expectations become contracts | internal/contract, internal/harness | compound contract compile |",
+		"| 2 | one root identity closes proof | internal/work, internal/envelope | compound workbench |",
+		"| 3 | contradiction reopens review | internal/mem | compound synthesis sweep |",
+		"| 4 | capability offers do not execute | internal/capgraph, internal/panel | compound capability surface |",
+		"| 5 | route evidence is not task success | internal/routeevidence, internal/product | compound route outcome-review |",
+		"| 6 | history becomes evidence | internal/knowledge, internal/distiller, internal/candidates | compound memory recall |",
+		"| 7 | public core gated intake | internal/arch, internal/capgraph | compound architecture doctor |",
+	}
+}
+
 func TestPluginServingContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool

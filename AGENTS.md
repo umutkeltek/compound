@@ -15,6 +15,7 @@ do not become the source of truth.
 - `docs/architecture/runtime.md` — the `.compound` home, the **envelope spine** (schemas), hooks-as-clients.
 - `docs/architecture/transition.md` — the `Transition` apex object, the 9-field invariant, second-order tests.
 - `docs/architecture/execution-plane.md` — the model-traffic gateway (route evidence ≠ task success).
+- `docs/architecture/epistemics.md` — machine-checked doctrine table: principles → implementing objects → proof commands.
 - `docs/architecture/contracts/README.md` — the contracts (lego seams) + `move_type` + entity precedence.
 - `docs/memory-architecture.md` — the memory slice detail (built at P6; memory is one slice; ledger is authority).
 - `docs/roadmap/phases.md` — envelope-first construction order.

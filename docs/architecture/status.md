@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Epistemics doctrine note: `docs/architecture/epistemics.md` is a doctor-parseable doctrine table mapping principles to existing `internal/` object families and `compound` proof commands; strict architecture doctor fails missing/short/phantom rows so doctrine cannot drift back to prose-only guidance.
+
 Panel blocked-run guidance note: panel runs that stop at no-lane, metered-budget, budget-limit, or target-failure boundaries persist `next_action` alongside `stopped_reason`, so `panel show` / `--json` consumers know whether to refresh route evidence, create a bounded new plan, or inspect route evidence before retrying.
 
 Panel target-provenance note: memory-candidate panel targets produced by `knowledge_extraction` include read-only `source_provenance` joined from `inbox/knowledge-extractions/kx_*.json` (evidence ref, source kind, request state, candidate count, and extraction route model/usage), so lenses judge evidence strength from the extraction request without mutating candidate files or memory truth.
