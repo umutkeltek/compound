@@ -1145,6 +1145,16 @@ func TestCommandHelpShortCircuitsBeforeRuntimeValidation(t *testing.T) {
 			run:  func() { cmdRoute([]string{"cost-doctor", "--help"}) },
 			want: "usage: compound route cost-doctor",
 		},
+		{
+			name: "route overview",
+			run:  func() { cmdRoute([]string{"--help"}) },
+			want: "promotion-record --review",
+		},
+		{
+			name: "route promotion-record",
+			run:  func() { cmdRoute([]string{"promotion-record", "--help"}) },
+			want: "usage: compound route promotion-record",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

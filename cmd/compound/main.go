@@ -169,8 +169,10 @@ func routeUsage(sub string) string {
 	switch sub {
 	case "cost-doctor":
 		return "usage: compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]"
+	case "promotion-record":
+		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	default:
-		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
+		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
 	}
 }
 
@@ -3308,7 +3310,7 @@ func cmdRoute(args []string) {
 		return
 	}
 	if len(args) != 2 || args[0] != "import" {
-		fmt.Fprintln(os.Stderr, "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>")
+		fmt.Fprintln(os.Stderr, routeUsage(""))
 		os.Exit(2)
 	}
 	result, err := routeevidence.ImportFile(homePath, args[1])
