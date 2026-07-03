@@ -1,13 +1,14 @@
 # ASC Daily Signals
 
-Compound does not own App Store Connect fetching. The ASC tools are rented edges:
-they read operator-owned ASC output, normalize it into public-core product signal
-formats, and apply those signals through existing Compound product-loop doors.
+Compound does not own App Store Connect fetching. ASC ingestion is a rented
+edge: any collector can produce ASC-shaped output, and Compound only normalizes
+that output into product signals through existing product-loop doors.
 
-Private app config belongs under `COMPOUND_HOME` or `docs_private/`, never in
-tracked public files. JSON or minimal YAML `apps:` lists are accepted.
+Keep private app IDs, vendor IDs, credentials, and account-specific mappings out
+of tracked public files. Put them under `COMPOUND_HOME` or another private
+runtime location. JSON or minimal YAML `apps:` lists are accepted.
 
-Minimal config:
+Minimal private config shape:
 
 ```json
 {
@@ -52,16 +53,17 @@ bun tools/asc_daily_signals.ts \
 
 ## Sales-Series JSONL Bridge
 
-If an existing collector, cron job, export script, or data warehouse already writes
-App Store Connect sales rows as JSONL, Compound should not fetch the same source a
-second time. Use the bridge to map private product config plus existing sales rows
-into the existing `compound product signal --asc-sales-series` adapter.
+If an existing collector, cron job, export script, or data warehouse already
+writes App Store Connect sales rows as JSONL, Compound should not fetch the same
+source a second time. Use the bridge to map private product config plus existing
+sales rows into the existing `compound product signal --asc-sales-series`
+adapter.
 
 ```bash
 bun tools/asc_sales_series_bridge.ts \
   --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" \
   --sales-series "${ASC_SALES_SERIES_JSONL}" \
-  --change-event "Describe the product or App Store change being evaluated." \
+  --change-event "Describe product or App Store change being evaluated." \
   --before 2026-07-01/2026-07-07 \
   --after 2026-07-08/2026-07-14 \
   --metric units,developer_proceeds_usd \
@@ -72,13 +74,18 @@ Add `--apply` only when the intended target is the current Compound runtime. For
 tests and rehearsals, use a temporary `COMPOUND_HOME` and pass a temp-built
 `--compound-bin`.
 
-The bridge does not call ASC, load launchd, create a metrics store, or assume any
-specific upstream collector. It only plans or invokes the existing product-signal
-door.
+The bridge does not call ASC, install a scheduler, create a metrics store, or
+assume any specific upstream collector. It only plans or invokes the existing
+product-signal door.
 
-## Optional Launchd Example
+## Scheduling
 
-Launchd loading is an operator action, not part of public-core setup:
+Scheduling is deployment-specific. Use cron, systemd timers, launchd, GitHub
+Actions, a hosted worker, or any other scheduler that can run the same command
+with the private config and ASC-producing command available.
+
+The bundled launchd plist is only a macOS example. Loading or unloading it is a
+manual deployment action, not part of public-core setup:
 
 ```bash
 mkdir -p "${HOME}/Library/LaunchAgents"

@@ -1,6 +1,6 @@
 # Package & Command Status
 
-ASC daily source note: `tools/asc_daily_signals.ts` is a rented Bun edge that converts operator-owned App Store Connect daily snapshots into `compound.product_signal_export.v0.1` files and applies them only through `compound product signal`; `product doctor` warns when a registered app-store product has no ASC signal or its latest ASC signal is older than 48h, with an exact fix command. Launchd plist is shipped under `ops/launchd/` but loading remains an operator act.
+ASC daily source note: `tools/asc_daily_signals.ts` is a rented Bun edge that converts any App Store Connect daily snapshot collector output into `compound.product_signal_export.v0.1` files and applies them only through `compound product signal`; `product doctor` warns when a registered app-store product has no ASC signal or its latest ASC signal is older than 48h, with an exact fix command. `ops/launchd/` is only an optional macOS scheduler example; any scheduler that can run the same command is valid.
 
 Memory graph zoom note: `internal/mem` exposes `RecallGraphOpts` with optional `Direction` (`up`/`down`) and relation-kind filters; `compound memory graph` accepts `--direction up|down` and repeatable/comma `--kind`, so `part_of` chains can zoom generic-to-specific without pulling sibling subtrees or unrelated relation kinds.
 
