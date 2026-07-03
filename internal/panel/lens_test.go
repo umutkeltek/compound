@@ -104,7 +104,7 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
-	if !first.Changed || first.NodesChanged != 9 || first.PromptsChanged != 10 || !first.AuthorityAppended {
+	if !first.Changed || first.NodesChanged != 11 || first.PromptsChanged != 12 || !first.AuthorityAppended {
 		t.Fatalf("first import result = %+v, want lens and judge prompt content changed", first)
 	}
 	nodesBefore := readTestFile(t, filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
@@ -138,15 +138,74 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 			lensCount++
 		}
 	}
-	if lensCount != 9 {
-		t.Fatalf("lens node count = %d, want 9", lensCount)
+	if lensCount != 11 {
+		t.Fatalf("lens node count = %d, want 11", lensCount)
 	}
 	selection, err := SelectLenses(homePath, "memory_candidate")
 	if err != nil {
 		t.Fatalf("select imported lenses: %v", err)
 	}
-	if len(selection.Included) != 6 || len(selection.Excluded) != 3 {
-		t.Fatalf("imported memory_candidate selection = %+v, want six included and three comparison-only excluded", selection)
+	if len(selection.Included) != 6 || len(selection.Excluded) != 5 {
+		t.Fatalf("imported memory_candidate selection = %+v, want six included and five non-memory excluded", selection)
+	}
+}
+
+func TestSelectLensesWithContextSelectsDomainLenses(t *testing.T) {
+	homePath := t.TempDir()
+	manifest := filepath.Join("..", "..", "fixtures", "panel", "lens-manifest.yaml")
+	if _, err := ImportLensManifest(homePath, manifest, panelTestNow); err != nil {
+		t.Fatalf("import lenses: %v", err)
+	}
+
+	paid, err := SelectLensesWithContext(homePath, "memory_candidate", LensContext{Domain: "paid-app", Task: "pricing review"})
+	if err != nil {
+		t.Fatalf("select paid-app lenses: %v", err)
+	}
+	if !selectionIncludesLens(paid, "lens:paid-app-commercial-fit", lensReasonDomainTriggerMatch) {
+		t.Fatalf("paid-app selection missing commercial lens: %+v", paid.IncludedRefs)
+	}
+	if selectionIncludesLens(paid, "lens:social-distribution-mechanics", "") {
+		t.Fatalf("paid-app selection unexpectedly included social lens: %+v", paid.IncludedRefs)
+	}
+	if len(paid.MissingDomainLens) != 0 {
+		t.Fatalf("paid-app missing domain lens = %+v, want none", paid.MissingDomainLens)
+	}
+
+	social, err := SelectLensesWithContext(homePath, "memory_candidate", LensContext{Domain: "social-distribution", Task: "audience reach"})
+	if err != nil {
+		t.Fatalf("select social-distribution lenses: %v", err)
+	}
+	if !selectionIncludesLens(social, "lens:social-distribution-mechanics", lensReasonDomainTriggerMatch) {
+		t.Fatalf("social selection missing distribution lens: %+v", social.IncludedRefs)
+	}
+	if selectionIncludesLens(social, "lens:paid-app-commercial-fit", "") {
+		t.Fatalf("social selection unexpectedly included paid lens: %+v", social.IncludedRefs)
+	}
+	if len(social.MissingDomainLens) != 0 {
+		t.Fatalf("social missing domain lens = %+v, want none", social.MissingDomainLens)
+	}
+}
+
+func TestSelectLensesWithContextRecordsUnknownDomainGap(t *testing.T) {
+	homePath := t.TempDir()
+	manifest := filepath.Join("..", "..", "fixtures", "panel", "lens-manifest.yaml")
+	if _, err := ImportLensManifest(homePath, manifest, panelTestNow); err != nil {
+		t.Fatalf("import lenses: %v", err)
+	}
+
+	selection, err := SelectLensesWithContext(homePath, "memory_candidate", LensContext{Domain: "hardware-lab"})
+	if err != nil {
+		t.Fatalf("select unknown-domain lenses: %v", err)
+	}
+	if len(selection.Included) != 6 {
+		t.Fatalf("unknown-domain included lenses = %d, want generic six: %+v", len(selection.Included), selection.IncludedRefs)
+	}
+	if selectionIncludesLens(selection, "lens:paid-app-commercial-fit", "") || selectionIncludesLens(selection, "lens:social-distribution-mechanics", "") {
+		t.Fatalf("unknown-domain selection should not include known domain lenses: %+v", selection.IncludedRefs)
+	}
+	wantMissing := []string{"hardware", "hardware-lab", "lab"}
+	if !reflect.DeepEqual(selection.MissingDomainLens, wantMissing) {
+		t.Fatalf("missing domain lens = %+v, want %+v", selection.MissingDomainLens, wantMissing)
 	}
 }
 
@@ -183,6 +242,8 @@ func TestLensManifestFixtureHasRequiredPrompts(t *testing.T) {
 		"contradiction-with-existing-memory",
 		"fossilization-risk",
 		"privacy-risk",
+		"paid-app-commercial-fit",
+		"social-distribution-mechanics",
 		"comparison-correctness",
 		"comparison-contract-fidelity",
 		"comparison-cost-latency",
@@ -192,7 +253,17 @@ func TestLensManifestFixtureHasRequiredPrompts(t *testing.T) {
 			t.Fatalf("manifest missing lens %s", id)
 		}
 	}
-	if got := strings.Count(string(data), `{"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}`); got != 9 {
-		t.Fatalf("strict JSON contract count = %d, want 9", got)
+	if got := strings.Count(string(data), `{"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}`); got != 11 {
+		t.Fatalf("strict JSON contract count = %d, want 11", got)
 	}
+}
+
+func selectionIncludesLens(selection LensSelection, ref, reason string) bool {
+	for _, included := range selection.IncludedRefs {
+		if included.Ref != ref {
+			continue
+		}
+		return reason == "" || included.Reason == reason
+	}
+	return false
 }

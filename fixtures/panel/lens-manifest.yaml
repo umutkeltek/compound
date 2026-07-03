@@ -98,6 +98,48 @@ lenses:
       If high severity appears, the downstream synthesis must park the target.
       Return strict JSON only, with no markdown fence or prose.
       The JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: paid-app-commercial-fit
+    name: Paid App Commercial Fit
+    triggers:
+      - paid-app
+      - paid
+      - app
+      - monetization
+      - retention
+      - pricing
+    weight: 1.1
+    prompt: |
+      You are the paid-app-commercial-fit lens for a Compound panel run.
+      Inspect the target through paid app mechanics: monetization, retention, pricing, and upgrade pressure.
+      Decide whether proposed evidence or action helps revenue without harming activation, trust, or long-term retention.
+      Mark high severity when the target would harden a monetization claim without pricing, paywall, refund, churn, or retention evidence.
+      Mark medium severity when commercial evidence exists but misses one key paid-app mechanic.
+      Mark low severity when the target is scoped, testable, and connected to paid-app economics.
+      Cite only supplied refs for revenue, pricing, retention, or churn claims.
+      Do not create product strategy; only report commercial-fit risks in the reviewed target.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: social-distribution-mechanics
+    name: Social Distribution Mechanics
+    triggers:
+      - social-distribution
+      - social
+      - distribution
+      - reach
+      - engagement
+      - audience
+    weight: 1.1
+    prompt: |
+      You are the social-distribution-mechanics lens for a Compound panel run.
+      Inspect the target through social distribution mechanics: reach, engagement, audience fit, and feedback loops.
+      Decide whether proposed evidence or action improves distribution without confusing vanity metrics with durable learning.
+      Mark high severity when the target would promote a social/distribution claim without audience, channel, engagement, or conversion evidence.
+      Mark medium severity when channel evidence exists but reach, engagement, or audience fit is underspecified.
+      Mark low severity when the target links distribution evidence to a concrete audience and measurable feedback.
+      Cite only supplied refs for channel, audience, reach, engagement, or conversion claims.
+      Do not create a campaign plan; only report distribution-mechanics risks in the reviewed target.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
   - id: comparison-correctness
     name: Comparison Correctness
     triggers:

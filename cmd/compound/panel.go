@@ -18,7 +18,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -38,16 +38,30 @@ func cmdPanel(args []string) {
 		fmt.Printf("- prompts_changed: %d\n", res.PromptsChanged)
 		fmt.Printf("- authority_appended: %t\n", res.AuthorityAppended)
 	case "lenses":
-		targetKind, jsonOut := "", false
+		targetKind, domain, task, jsonOut := "", "", "", false
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--target-kind":
 				if i+1 >= len(args) {
-					fmt.Fprintln(os.Stderr, "usage: compound panel lenses --target-kind K [--json]")
+					fmt.Fprintln(os.Stderr, "usage: compound panel lenses --target-kind K [--domain D] [--task T] [--json]")
 					os.Exit(2)
 				}
 				i++
 				targetKind = args[i]
+			case "--domain":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound panel lenses --target-kind K [--domain D] [--task T] [--json]")
+					os.Exit(2)
+				}
+				i++
+				domain = args[i]
+			case "--task":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "usage: compound panel lenses --target-kind K [--domain D] [--task T] [--json]")
+					os.Exit(2)
+				}
+				i++
+				task = args[i]
 			case "--json":
 				jsonOut = true
 			default:
@@ -57,7 +71,7 @@ func cmdPanel(args []string) {
 		}
 		homePath, err := home.Resolve("")
 		die(err)
-		selection, err := panel.SelectLenses(homePath, targetKind)
+		selection, err := panel.SelectLensesWithContext(homePath, targetKind, panel.LensContext{Domain: domain, Task: task})
 		die(err)
 		if jsonOut {
 			printJSON(selection)
@@ -69,6 +83,9 @@ func cmdPanel(args []string) {
 		}
 		for _, lens := range selection.Excluded {
 			fmt.Printf("- exclude: %s reason=%s\n", lens.Ref, lens.Reason)
+		}
+		if len(selection.MissingDomainLens) > 0 {
+			fmt.Printf("- missing_domain_lens: %s\n", strings.Join(selection.MissingDomainLens, ","))
 		}
 	case "plan":
 		in, jsonOut := parsePanelPlanArgs(args[1:])
@@ -197,6 +214,10 @@ func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {
 		switch args[i] {
 		case "--target-kind":
 			in.TargetKind = requirePanelValue(args, &i, "panel plan")
+		case "--domain":
+			in.Domain = requirePanelValue(args, &i, "panel plan")
+		case "--task":
+			in.Task = requirePanelValue(args, &i, "panel plan")
 		case "--target":
 			in.TargetRefs = append(in.TargetRefs, requirePanelValue(args, &i, "panel plan"))
 		case "--state":
@@ -229,7 +250,7 @@ func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {
 		}
 	}
 	if strings.TrimSpace(in.TargetKind) == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound panel plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound panel plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]")
 		os.Exit(2)
 	}
 	return in, jsonOut

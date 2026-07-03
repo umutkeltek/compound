@@ -29,8 +29,19 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &memorySelection); err != nil {
 		t.Fatalf("parse memory lens JSON: %v\n%s", err, out)
 	}
-	if len(memorySelection.Included) != 6 || len(memorySelection.Excluded) != 3 {
-		t.Fatalf("memory_candidate selection = %+v, want six included and three comparison-only excluded", memorySelection)
+	if len(memorySelection.Included) != 6 || len(memorySelection.Excluded) != 5 {
+		t.Fatalf("memory_candidate selection = %+v, want six included and five non-memory excluded", memorySelection)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "memory_candidate", "--domain", "paid-app", "--task", "pricing", "--json"})
+	})
+	var paidSelection panel.LensSelection
+	if err := json.Unmarshal([]byte(out), &paidSelection); err != nil {
+		t.Fatalf("parse paid lens JSON: %v\n%s", err, out)
+	}
+	if !panelSelectionIncludes(paidSelection, "lens:paid-app-commercial-fit") || len(paidSelection.MissingDomainLens) != 0 {
+		t.Fatalf("paid-app selection = %+v, want paid commercial lens with no missing domain gap", paidSelection)
 	}
 
 	out = captureStdout(t, func() { cmdPanel([]string{"lenses", "--target-kind", "external_repo", "--json"}) })
@@ -45,11 +56,20 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	for _, excluded := range externalSelection.Excluded {
 		reasons[excluded.Ref] = excluded.Reason
 	}
-	for _, id := range []string{"lens:duplicate-risk", "lens:evidence-strength", "lens:contradiction-with-existing-memory", "lens:fossilization-risk", "lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency", "lens:inversion-falsification"} {
+	for _, id := range []string{"lens:duplicate-risk", "lens:evidence-strength", "lens:contradiction-with-existing-memory", "lens:fossilization-risk", "lens:paid-app-commercial-fit", "lens:social-distribution-mechanics", "lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency", "lens:inversion-falsification"} {
 		if reasons[id] != "trigger_mismatch" {
 			t.Fatalf("%s exclusion reason = %q, want trigger_mismatch (all reasons: %+v)", id, reasons[id], reasons)
 		}
 	}
+}
+
+func panelSelectionIncludes(selection panel.LensSelection, ref string) bool {
+	for _, included := range selection.IncludedRefs {
+		if included.Ref == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPanelRunCallerRequiresLMStudioContextPreflightForLocalDefault(t *testing.T) {

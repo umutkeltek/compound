@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"compound/internal/candidates"
 	"compound/internal/routeevidence"
 )
 
@@ -126,6 +127,38 @@ func TestBuildPlanDefaultsPublicArxivMemoryCandidatesToNotSensitive(t *testing.T
 	}
 	if !containsString(run.EvidenceRefs, "privacy_default:not_sensitive:public_arxiv_memory_candidate") {
 		t.Fatalf("evidence refs = %+v, want public arxiv privacy default", run.EvidenceRefs)
+	}
+}
+
+func TestBuildPlanWritesMissingDomainLensCandidate(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+
+	run, err := BuildPlan(home, PlanInput{
+		TargetKind:            "memory_candidate",
+		TargetRefs:            []string{"mcand_example_api_clean"},
+		States:                []string{"parked"},
+		Domain:                "hardware-lab",
+		PrivacyOverrideReason: "synthetic fixtures",
+	}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+	gapID := "cobs_missing_domain_lens_" + targetDigest("memory_candidate|hardware-lab|")
+	if !containsString(run.EvidenceRefs, "candidate:"+gapID) {
+		t.Fatalf("run evidence refs = %+v, want candidate gap ref %s", run.EvidenceRefs, gapID)
+	}
+	var obs capabilityObservationTarget
+	if err := candidates.ReadCandidate(home, candidates.CapabilityObs, gapID, &obs); err != nil {
+		t.Fatalf("read missing domain lens candidate: %v", err)
+	}
+	if obs.Kind != string(candidates.CapabilityObs) || obs.State != "needs_review" || obs.Subject != "panel_lens_selection" {
+		t.Fatalf("gap candidate = %+v", obs)
+	}
+	for _, want := range []string{"panel:lens_selection", "target_kind:memory_candidate", "domain:hardware-lab", "missing_domain_lens:hardware,hardware-lab,lab"} {
+		if !containsString(obs.EvidenceRefs, want) {
+			t.Fatalf("gap candidate evidence refs missing %q: %+v", want, obs.EvidenceRefs)
+		}
 	}
 }
 

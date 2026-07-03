@@ -8,12 +8,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 type PlanInput struct {
 	TargetKind            string   `json:"target_kind"`
 	TargetRefs            []string `json:"target_refs"`
 	States                []string `json:"states"`
+	Domain                string   `json:"domain,omitempty"`
+	Task                  string   `json:"task,omitempty"`
 	Limit                 int      `json:"limit"`
 	PrivacySensitive      bool     `json:"privacy_sensitive"`
 	PrivacyOverrideReason string   `json:"privacy_override_reason,omitempty"`
@@ -47,7 +51,7 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 	if err != nil {
 		return Run{}, err
 	}
-	selection, err := SelectLenses(homePath, targetKind)
+	selection, err := SelectLensesWithContext(homePath, targetKind, LensContext{Domain: in.Domain, Task: in.Task})
 	if err != nil {
 		return Run{}, err
 	}
@@ -69,6 +73,11 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 		CountsBefore:  countsBefore,
 		CountsAfter:   copyCounts(countsBefore),
 		EvidenceRefs:  []string{},
+	}
+	if gapID, err := recordMissingDomainLensCandidate(homePath, targetKind, in, selection); err != nil {
+		return Run{}, err
+	} else if gapID != "" {
+		run.EvidenceRefs = append(run.EvidenceRefs, "candidate:"+gapID)
 	}
 	if supervised {
 		run.Supervision = "operator"
@@ -239,6 +248,35 @@ func targetState(payload json.RawMessage) string {
 		return "awaiting_verdict"
 	}
 	return "unknown"
+}
+
+func recordMissingDomainLensCandidate(homePath, targetKind string, in PlanInput, selection LensSelection) (string, error) {
+	if len(selection.MissingDomainLens) == 0 {
+		return "", nil
+	}
+	domain := strings.TrimSpace(in.Domain)
+	task := strings.TrimSpace(in.Task)
+	id := "cobs_missing_domain_lens_" + targetDigest(targetKind+"|"+domain+"|"+task)
+	detailParts := []string{"target_kind=" + targetKind, "domain=" + domain}
+	evidenceRefs := []string{"panel:lens_selection", "target_kind:" + targetKind, "domain:" + domain, "missing_domain_lens:" + strings.Join(selection.MissingDomainLens, ",")}
+	if task != "" {
+		detailParts = append(detailParts, "task="+task)
+		evidenceRefs = append(evidenceRefs, "task:"+task)
+	}
+	payload := capabilityObservationTarget{
+		ID:           id,
+		Kind:         string(candidates.CapabilityObs),
+		Subject:      "panel_lens_selection",
+		Statement:    "No reviewed panel lens matched the requested domain context.",
+		Detail:       strings.Join(detailParts, " "),
+		Confidence:   1.0,
+		State:        "needs_review",
+		EvidenceRefs: evidenceRefs,
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, id, payload); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func stringSet(values []string) map[string]bool {

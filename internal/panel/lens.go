@@ -23,9 +23,15 @@ type Lens struct {
 }
 
 type LensSelection struct {
-	Included     []Lens         `json:"included"`
-	IncludedRefs []IncludedLens `json:"included_refs"`
-	Excluded     []ExcludedLens `json:"excluded"`
+	Included          []Lens         `json:"included"`
+	IncludedRefs      []IncludedLens `json:"included_refs"`
+	Excluded          []ExcludedLens `json:"excluded"`
+	MissingDomainLens []string       `json:"missing_domain_lens,omitempty"`
+}
+
+type LensContext struct {
+	Domain string `json:"domain,omitempty"`
+	Task   string `json:"task,omitempty"`
 }
 
 const (
@@ -34,9 +40,14 @@ const (
 	lensReasonEvidenceOnly       = "evidence_only"
 	lensReasonNoPromptInRegistry = "no_prompt_in_registry"
 	lensReasonTriggerMismatch    = "trigger_mismatch"
+	lensReasonDomainTriggerMatch = "domain_trigger_match"
 )
 
 func SelectLenses(homePath, targetKind string) (LensSelection, error) {
+	return SelectLensesWithContext(homePath, targetKind, LensContext{})
+}
+
+func SelectLensesWithContext(homePath, targetKind string, context LensContext) (LensSelection, error) {
 	targetKind = strings.TrimSpace(targetKind)
 	if targetKind == "" {
 		return LensSelection{}, fmt.Errorf("target kind required")
@@ -51,6 +62,10 @@ func SelectLenses(homePath, targetKind string) (LensSelection, error) {
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 
+	targetTokens := targetKindTokens(targetKind)
+	contextTokens := lensContextTokens(context)
+	domainTokens := domainLensTokens(context.Domain)
+	domainMatched := len(domainTokens) == 0
 	selection := LensSelection{}
 	for _, node := range nodes {
 		if node.Kind != "lens" {
@@ -73,9 +88,13 @@ func SelectLenses(homePath, targetKind string) (LensSelection, error) {
 			}
 			return LensSelection{}, fmt.Errorf("read lens prompt %s: %w", node.ID, err)
 		}
-		if !triggerMatchesTarget(node.Triggers, targetKind) {
+		triggerReason := lensTriggerReason(node.Triggers, targetTokens, contextTokens)
+		if triggerReason == "" {
 			selection.Excluded = append(selection.Excluded, ExcludedLens{Ref: node.ID, Reason: lensReasonTriggerMismatch})
 			continue
+		}
+		if len(domainTokens) > 0 && triggerIntersects(node.Triggers, domainTokens) {
+			domainMatched = true
 		}
 		hash := sha256.Sum256(body)
 		promptSHA := hex.EncodeToString(hash[:])
@@ -90,16 +109,33 @@ func SelectLenses(homePath, targetKind string) (LensSelection, error) {
 		selection.Included = append(selection.Included, lens)
 		selection.IncludedRefs = append(selection.IncludedRefs, IncludedLens{
 			Ref:          node.ID,
-			Reason:       lensReasonTriggerMatch,
+			Reason:       triggerReason,
 			Weight:       node.Weight,
 			PromptSHA256: promptSHA,
 		})
+	}
+	if !domainMatched {
+		selection.MissingDomainLens = sortedTokenKeys(domainTokens)
 	}
 	return selection, nil
 }
 
 func triggerMatchesTarget(triggers []string, targetKind string) bool {
 	tokens := targetKindTokens(targetKind)
+	return triggerIntersects(triggers, tokens)
+}
+
+func lensTriggerReason(triggers []string, targetTokens, contextTokens map[string]bool) string {
+	if triggerIntersects(triggers, targetTokens) {
+		return lensReasonTriggerMatch
+	}
+	if triggerIntersects(triggers, contextTokens) {
+		return lensReasonDomainTriggerMatch
+	}
+	return ""
+}
+
+func triggerIntersects(triggers []string, tokens map[string]bool) bool {
 	for _, trigger := range triggers {
 		trigger = strings.ToLower(strings.TrimSpace(trigger))
 		if trigger == "" {
@@ -110,6 +146,18 @@ func triggerMatchesTarget(triggers []string, targetKind string) bool {
 		}
 	}
 	return false
+}
+
+func lensContextTokens(context LensContext) map[string]bool {
+	out := targetKindTokens(context.Domain)
+	for token := range targetKindTokens(context.Task) {
+		out[token] = true
+	}
+	return out
+}
+
+func domainLensTokens(domain string) map[string]bool {
+	return targetKindTokens(domain)
 }
 
 func targetKindTokens(targetKind string) map[string]bool {
@@ -126,5 +174,14 @@ func targetKindTokens(targetKind string) map[string]bool {
 			out[token] = true
 		}
 	}
+	return out
+}
+
+func sortedTokenKeys(tokens map[string]bool) []string {
+	out := make([]string, 0, len(tokens))
+	for token := range tokens {
+		out = append(out, token)
+	}
+	sort.Strings(out)
 	return out
 }
