@@ -31,11 +31,25 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	if report.NeedsMe.CandidateTotal != rawCandidates {
 		t.Fatalf("candidate total = %d, want raw %d", report.NeedsMe.CandidateTotal, rawCandidates)
 	}
+	if report.NeedsMe.CandidateActionable != 1 {
+		t.Fatalf("candidate actionable = %d, want only the unstated skill candidate actionable: %+v", report.NeedsMe.CandidateActionable, report.NeedsMe)
+	}
+	memoryInbox := findOrientCandidateInbox(t, report, string(candidates.Memory))
+	if memoryInbox.Count != 1 || memoryInbox.ActionableCount != 0 || memoryInbox.StateCounts["promoted"] != 1 {
+		t.Fatalf("memory inbox state counts = %+v", memoryInbox)
+	}
+	skillInbox := findOrientCandidateInbox(t, report, string(candidates.Skill))
+	if skillInbox.Count != 1 || skillInbox.ActionableCount != 1 || skillInbox.StateCounts["unspecified"] != 1 {
+		t.Fatalf("skill inbox state counts = %+v", skillInbox)
+	}
 	if report.NeedsMe.ReviewRequired != 1 || report.NeedsMe.PendingPanelNeedsHuman != 1 {
 		t.Fatalf("needs-me review counts = %+v, want one review-required needs-human panel verdict", report.NeedsMe)
 	}
 	if report.NeedsMe.OldestItem == nil || report.NeedsMe.OldestItem.AgeSeconds <= 0 {
 		t.Fatalf("oldest item missing age: %+v", report.NeedsMe.OldestItem)
+	}
+	if report.NeedsMe.OldestActionableItem == nil || report.NeedsMe.OldestActionableItem.ID != "skill_orient_fixture" {
+		t.Fatalf("oldest actionable candidate = %+v", report.NeedsMe.OldestActionableItem)
 	}
 	if report.Running.OpenCount != 1 || report.Running.InProgress != 1 || report.Running.NonStaleLeaseCount != 1 {
 		t.Fatalf("running counts = %+v, want one open in-progress active lease", report.Running)
@@ -90,6 +104,9 @@ func TestOrientOperatorCLIPrintsTriptychAndJSON(t *testing.T) {
 	if report.SchemaVersion != orientOperatorReportSchemaVersion || report.NeedsMe.PendingPanelNeedsHuman != 1 || report.Running.OpenCount != 1 {
 		t.Fatalf("json report = %+v", report)
 	}
+	if report.NeedsMe.CandidateActionable != 1 {
+		t.Fatalf("json actionable candidate count = %+v", report.NeedsMe)
+	}
 }
 
 func TestOrientOperatorSuppressesResolvedDispatchStepRun(t *testing.T) {
@@ -136,6 +153,17 @@ func TestOrientOperatorSuppressesResolvedDispatchStepRun(t *testing.T) {
 	if report.Running.OpenCount != 0 || report.Running.LastDispatchStepRun != nil {
 		t.Fatalf("running should not surface resolved dispatch history: %+v", report.Running)
 	}
+}
+
+func findOrientCandidateInbox(t *testing.T, report orientOperatorReport, kind string) orientCandidateInbox {
+	t.Helper()
+	for _, inbox := range report.NeedsMe.CandidateInboxes {
+		if inbox.Kind == kind {
+			return inbox
+		}
+	}
+	t.Fatalf("candidate inbox %q missing: %+v", kind, report.NeedsMe.CandidateInboxes)
+	return orientCandidateInbox{}
 }
 
 func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {

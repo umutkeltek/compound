@@ -32,17 +32,21 @@ type orientOperatorReport struct {
 
 type orientNeedsMe struct {
 	CandidateTotal         int                    `json:"candidate_total"`
+	CandidateActionable    int                    `json:"candidate_actionable"`
 	CandidateInboxes       []orientCandidateInbox `json:"candidate_inboxes"`
 	ReviewRequired         int                    `json:"review_required"`
 	ReadyToApply           int                    `json:"ready_to_apply"`
 	PendingPanelNeedsHuman int                    `json:"pending_panel_needs_human"`
 	OldestItem             *orientAgedItem        `json:"oldest_item,omitempty"`
+	OldestActionableItem   *orientAgedItem        `json:"oldest_actionable_item,omitempty"`
 }
 
 type orientCandidateInbox struct {
-	Kind  string `json:"kind"`
-	Dir   string `json:"dir"`
-	Count int    `json:"count"`
+	Kind            string         `json:"kind"`
+	Dir             string         `json:"dir"`
+	Count           int            `json:"count"`
+	ActionableCount int            `json:"actionable_count"`
+	StateCounts     map[string]int `json:"state_counts,omitempty"`
 }
 
 type orientAgedItem struct {
@@ -191,16 +195,21 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, now
 		ReadyToApply:     reviews.Counts.ReadyToApply,
 	}
 	var oldest *orientAgedItem
+	var oldestActionable *orientAgedItem
 	for _, kind := range candidates.AllKinds() {
 		dir := candidates.InboxDir(kind)
-		count, candidateOldest := candidateInboxCount(homePath, dir, string(kind), now)
-		out.CandidateTotal += count
+		summary := candidateInboxSummary(homePath, dir, string(kind), now)
+		out.CandidateTotal += summary.Count
+		out.CandidateActionable += summary.ActionableCount
 		out.CandidateInboxes = append(out.CandidateInboxes, orientCandidateInbox{
-			Kind:  string(kind),
-			Dir:   dir,
-			Count: count,
+			Kind:            string(kind),
+			Dir:             dir,
+			Count:           summary.Count,
+			ActionableCount: summary.ActionableCount,
+			StateCounts:     summary.StateCounts,
 		})
-		oldest = olderAgedItem(oldest, candidateOldest)
+		oldest = olderAgedItem(oldest, summary.Oldest)
+		oldestActionable = olderAgedItem(oldestActionable, summary.OldestActionable)
 	}
 	for _, item := range reviews.Items {
 		if item.Area == "panel-verdicts" && item.Readiness == "needs_review" && strings.Contains(item.NextAction, "needs_human") {
@@ -211,6 +220,7 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, now
 		}
 	}
 	out.OldestItem = oldest
+	out.OldestActionableItem = oldestActionable
 	return out
 }
 
@@ -309,23 +319,37 @@ func buildOrientChanged(homePath string, report work.WorkbenchReport, currentSeq
 	return out
 }
 
-func candidateInboxCount(homePath, dir, kind string, now time.Time) (int, *orientAgedItem) {
+type orientCandidateInboxSummary struct {
+	Count            int
+	ActionableCount  int
+	StateCounts      map[string]int
+	Oldest           *orientAgedItem
+	OldestActionable *orientAgedItem
+}
+
+func candidateInboxSummary(homePath, dir, kind string, now time.Time) orientCandidateInboxSummary {
+	out := orientCandidateInboxSummary{StateCounts: map[string]int{}}
 	entries, err := os.ReadDir(filepath.Join(homePath, dir))
 	if err != nil {
-		return 0, nil
+		return out
 	}
-	count := 0
-	var oldest *orientAgedItem
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		count++
+		out.Count++
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
+		fullPath := filepath.Join(homePath, path)
+		state := candidateReadinessState(fullPath)
+		out.StateCounts[state]++
+		actionable := candidateStateActionable(state)
+		if actionable {
+			out.ActionableCount++
+		}
 		at := info.ModTime()
 		aged := &orientAgedItem{
 			Kind:       "candidate:" + kind,
@@ -335,9 +359,46 @@ func candidateInboxCount(homePath, dir, kind string, now time.Time) (int, *orien
 			AgeSeconds: ageSeconds(now, at),
 			Age:        formatDuration(ageSeconds(now, at)),
 		}
-		oldest = olderAgedItem(oldest, aged)
+		out.Oldest = olderAgedItem(out.Oldest, aged)
+		if actionable {
+			out.OldestActionable = olderAgedItem(out.OldestActionable, aged)
+		}
 	}
-	return count, oldest
+	return out
+}
+
+func candidateReadinessState(path string) string {
+	file, err := os.Open(path)
+	if err != nil {
+		return "unreadable"
+	}
+	defer file.Close()
+	var payload struct {
+		State  string `json:"state"`
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(file).Decode(&payload); err != nil {
+		return "unreadable"
+	}
+	state := strings.TrimSpace(payload.State)
+	if state == "" {
+		state = strings.TrimSpace(payload.Status)
+	}
+	if state == "" {
+		return "unspecified"
+	}
+	return state
+}
+
+func candidateStateActionable(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "", "unspecified", "proposed", "pending", "needs_review", "review_required", "blocked":
+		return true
+	case "promoted", "rejected", "parked", "done", "recorded", "resolved", "accepted", "applied", "ok", "no_promote":
+		return false
+	default:
+		return true
+	}
 }
 
 func reviewQueueAgedItem(item reviewartifact.QueueItem, now time.Time) *orientAgedItem {
@@ -517,12 +578,17 @@ func printOrientOperatorReport(report orientOperatorReport) {
 	fmt.Printf("# operator orient %s\n", report.GeneratedAt)
 	fmt.Println()
 	fmt.Println("NEEDS-ME")
-	fmt.Printf("- candidates: total=%d oldest=%s\n", report.NeedsMe.CandidateTotal, agedLabel(report.NeedsMe.OldestItem))
+	fmt.Printf("- candidates: actionable=%d total=%d oldest_actionable=%s oldest_raw=%s\n",
+		report.NeedsMe.CandidateActionable,
+		report.NeedsMe.CandidateTotal,
+		agedLabel(report.NeedsMe.OldestActionableItem),
+		agedLabel(report.NeedsMe.OldestItem),
+	)
 	for _, inbox := range report.NeedsMe.CandidateInboxes {
 		if inbox.Count == 0 {
 			continue
 		}
-		fmt.Printf("  - %s: %d (%s)\n", inbox.Kind, inbox.Count, inbox.Dir)
+		fmt.Printf("  - %s: actionable=%d total=%d (%s)\n", inbox.Kind, inbox.ActionableCount, inbox.Count, inbox.Dir)
 	}
 	fmt.Printf("- reviews: review_required=%d ready_to_apply=%d pending_panel_needs_human=%d\n",
 		report.NeedsMe.ReviewRequired,
