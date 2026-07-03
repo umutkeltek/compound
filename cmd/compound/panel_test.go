@@ -76,6 +76,33 @@ func TestPanelRunCallerRequiresLMStudioContextPreflightForLocalDefault(t *testin
 	}
 }
 
+func TestPanelRunCallerUsesHostContextLimit(t *testing.T) {
+	localBaseURL := "http://" + "127.0.0.1" + ":1234/v1"
+	caller, refs := panelRunCaller(panelRunArgs{openAICompatibleURL: localBaseURL, hostContextLimit: 65536})
+	gateway, ok := caller.(panel.GatewayCaller)
+	if !ok {
+		t.Fatalf("caller = %T, want GatewayCaller", caller)
+	}
+	if !gateway.RequireLoadedContextMax {
+		t.Fatal("local LM Studio gateway should still preflight loaded context")
+	}
+	if gateway.ContextPolicy.HostContextLimitTokens != 65536 {
+		t.Fatalf("host context limit = %d, want 65536", gateway.ContextPolicy.HostContextLimitTokens)
+	}
+	if !containsString(refs, "context:host_context_limit=65536") {
+		t.Fatalf("evidence refs = %+v, want host context limit ref", refs)
+	}
+}
+
+func TestPanelRunArgsUsesHostContextLimitEnv(t *testing.T) {
+	t.Setenv("COMPOUND_PANEL_HOST_CONTEXT_LIMIT", "32768")
+	localBaseURL := "http://" + "127.0.0.1" + ":1234/v1"
+	parsed := parsePanelRunArgs([]string{"--plan", "prun_env", "--openai-compatible-url", localBaseURL})
+	if parsed.hostContextLimit != 32768 {
+		t.Fatalf("host context limit = %d, want 32768", parsed.hostContextLimit)
+	}
+}
+
 func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

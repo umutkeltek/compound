@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/localmodel"
 )
 
 func TestGatewayCallerSuccess(t *testing.T) {
@@ -109,6 +111,36 @@ func TestGatewayCallerPreflightAllowsLoadedMaxContext(t *testing.T) {
 	}
 	if err := caller.Preflight(context.Background(), Run{Route: RoutePlan{LensLane: LaneRef{ModelID: "lens-lane"}, JudgeLane: LaneRef{ModelID: "judge-lane"}}}); err != nil {
 		t.Fatalf("preflight: %v", err)
+	}
+}
+
+func TestGatewayCallerPreflightUsesHostContextLimit(t *testing.T) {
+	loadedContext := 65536
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":                    "served-model",
+				"state":                 "loaded",
+				"max_context_length":    262144,
+				"loaded_context_length": loadedContext,
+			}},
+		})
+	}))
+	defer server.Close()
+	caller := GatewayCaller{
+		BaseURL:                 server.URL + "/v1",
+		HTTPClient:              server.Client(),
+		RequireLoadedContextMax: true,
+		ContextPolicy:           localmodel.Policy{HostContextLimitTokens: 65536},
+		ModelResolver:           func(LaneRef) string { return "served-model" },
+	}
+	if err := caller.Preflight(context.Background(), Run{Route: RoutePlan{LensLane: LaneRef{ModelID: "lens-lane"}}}); err != nil {
+		t.Fatalf("preflight with host context cap: %v", err)
+	}
+	caller.ContextPolicy.HostContextLimitTokens = 131072
+	err := caller.Preflight(context.Background(), Run{Route: RoutePlan{LensLane: LaneRef{ModelID: "lens-lane"}}})
+	if err == nil || !strings.Contains(err.Error(), "loaded_context_length=65536 below desired_context=131072") {
+		t.Fatalf("err = %v, want desired context cap failure", err)
 	}
 }
 

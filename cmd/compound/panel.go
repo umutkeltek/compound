@@ -12,12 +12,13 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/localmodel"
 	"compound/internal/panel"
 )
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--json]|plan --target-kind K [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -244,6 +245,7 @@ type panelRunArgs struct {
 	modelOverrides       map[string]string
 	gatewayFlags         bool
 	skipContextPreflight bool
+	hostContextLimit     int
 }
 
 func parsePanelRunArgs(args []string) panelRunArgs {
@@ -270,6 +272,9 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 		case "--skip-loaded-context-preflight":
 			parsed.skipContextPreflight = true
 			parsed.gatewayFlags = true
+		case "--host-context-limit":
+			parsed.hostContextLimit = parsePanelRunNonNegative(requirePanelValue(args, &i, "panel run"), "--host-context-limit")
+			parsed.gatewayFlags = true
 		case "--apply":
 			parsed.apply = true
 		case "--json":
@@ -286,6 +291,9 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 		fmt.Fprintln(os.Stderr, panelRunUsage())
 		os.Exit(2)
 	}
+	if parsed.hostContextLimit == 0 {
+		parsed.hostContextLimit = parseOptionalPanelRunEnvInt("COMPOUND_PANEL_HOST_CONTEXT_LIMIT")
+	}
 	if parsed.apply && !fixtureSet && parsed.gatewayFlags && strings.TrimSpace(effectiveBaseURL) == "" {
 		fmt.Fprintln(os.Stderr, panelRunUsage())
 		os.Exit(2)
@@ -298,7 +306,7 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 }
 
 func panelRunUsage() string {
-	return "usage: compound panel run --plan <run_id> [(--fixtures <dir>|--openai-compatible-url U) [--apply]|--apply] [--api-key-env ENV] [--model-override lane=model]... [--skip-loaded-context-preflight] [--json]"
+	return "usage: compound panel run --plan <run_id> [(--fixtures <dir>|--openai-compatible-url U) [--apply]|--apply] [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]"
 }
 
 func panelRunRequestsExecution(parsed panelRunArgs) bool {
@@ -332,11 +340,15 @@ func panelRunCaller(parsed panelRunArgs) (panel.LensCaller, []string) {
 	}
 	overrides := parsed.modelOverrides
 	refs := panelModelOverrideEvidence(overrides)
+	if parsed.hostContextLimit > 0 {
+		refs = append(refs, fmt.Sprintf("context:host_context_limit=%d", parsed.hostContextLimit))
+	}
 	baseURL := firstNonEmptyString(parsed.openAICompatibleURL, os.Getenv("COMPOUND_PANEL_BASE_URL"))
 	return panel.GatewayCaller{
 		BaseURL:                 baseURL,
 		APIKey:                  apiKey,
 		RequireLoadedContextMax: !parsed.skipContextPreflight && panelBaseURLLooksLikeLMStudio(baseURL),
+		ContextPolicy:           localmodel.Policy{HostContextLimitTokens: parsed.hostContextLimit},
 		ModelResolver: func(lane panel.LaneRef) string {
 			if overrides != nil {
 				if model := strings.TrimSpace(overrides[lane.ModelID]); model != "" {
@@ -346,6 +358,23 @@ func panelRunCaller(parsed panelRunArgs) (panel.LensCaller, []string) {
 			return lane.ModelID
 		},
 	}, refs
+}
+
+func parseOptionalPanelRunEnvInt(name string) int {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0
+	}
+	return parsePanelRunNonNegative(raw, name)
+}
+
+func parsePanelRunNonNegative(raw, name string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		fmt.Fprintf(os.Stderr, "panel run: %s must be non-negative integer\n", name)
+		os.Exit(2)
+	}
+	return n
 }
 
 func panelBaseURLLooksLikeLMStudio(raw string) bool {
