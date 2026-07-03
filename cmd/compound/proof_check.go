@@ -141,6 +141,9 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
 		cmd.Env = os.Environ()
+		if proofCheckUsesGo(step) {
+			cmd.Env = append(cmd.Env, "GOTOOLCHAIN=local")
+		}
 		output, err = cmd.CombinedOutput()
 	}
 	result.DurationMS = time.Since(start).Milliseconds()
@@ -150,6 +153,10 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 		result.ExitCode = proofCheckExitCode(err)
 	}
 	return result
+}
+
+func proofCheckUsesGo(step proofCheckStep) bool {
+	return len(step.Command) > 0 && step.Command[0] == "go"
 }
 
 func proofCheckExitCode(err error) int {

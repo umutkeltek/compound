@@ -269,6 +269,23 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 	}
 }
 
+func TestProofCheckGoStepsUseLocalToolchain(t *testing.T) {
+	dir := t.TempDir()
+	goPath := filepath.Join(dir, "go")
+	if err := os.WriteFile(goPath, []byte("#!/bin/sh\nprintf 'GOTOOLCHAIN=%s\\n' \"$GOTOOLCHAIN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	result := runProofCheckStep(t.TempDir(), proofCheckStep{
+		Name:     "go-test",
+		Command:  []string{"go", "version"},
+		ProofRef: "go-version-local-toolchain",
+	})
+	if result.Status != "ok" || !strings.Contains(result.OutputTail, "GOTOOLCHAIN=local") {
+		t.Fatalf("proof-check go env = %+v", result)
+	}
+}
+
 func TestKnowledgeExtractCLIUsesFixtureAndWritesCandidate(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

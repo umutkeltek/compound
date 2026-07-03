@@ -128,6 +128,44 @@ func TestDoctorSetupRejectsOldGoVersion(t *testing.T) {
 	}
 }
 
+func TestDoctorSetupReadsGoVersionWithLocalToolchain(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example\n\ngo 1.26.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(t.TempDir(), "bin")
+	var sawLocal bool
+	report := DoctorSetup(SetupOptions{
+		RepoRoot:   repo,
+		InstallDir: installDir,
+		Path:       installDir,
+		GoVersion: func(env []string) (string, error) {
+			for _, item := range env {
+				if item == "GOTOOLCHAIN=local" {
+					sawLocal = true
+				}
+			}
+			return "go version go1.26.4 darwin/arm64", nil
+		},
+		LookPath: func(name string) (string, error) {
+			switch name {
+			case "go":
+				return "/usr/bin/go", nil
+			case "compound":
+				return filepath.Join(installDir, "compound"), nil
+			default:
+				return "", os.ErrNotExist
+			}
+		},
+	})
+	if !sawLocal {
+		t.Fatal("DoctorSetup did not force GOTOOLCHAIN=local for go version")
+	}
+	if check := setupCheckNamed(report, "setup.go_toolchain"); !check.OK || !strings.Contains(check.Detail, "go1.26.4") {
+		t.Fatalf("go check = %+v", check)
+	}
+}
+
 func TestResolvePrecedence(t *testing.T) {
 	env := t.TempDir()
 	t.Setenv("COMPOUND_HOME", env)

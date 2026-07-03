@@ -217,6 +217,7 @@ type SetupOptions struct {
 	Path            string
 	GoVersionOutput string
 	LookPath        func(string) (string, error)
+	GoVersion       func(env []string) (string, error)
 }
 
 func DoctorSetup(opts SetupOptions) SetupReport {
@@ -254,9 +255,7 @@ func DoctorSetup(opts SetupOptions) SetupReport {
 		if requiredGo != "" {
 			versionOut := strings.TrimSpace(opts.GoVersionOutput)
 			if versionOut == "" {
-				if out, err := exec.Command("go", "version").CombinedOutput(); err == nil {
-					versionOut = strings.TrimSpace(string(out))
-				}
+				versionOut, _ = runGoVersion(opts.GoVersion)
 			}
 			if versionOut == "" {
 				goOK = false
@@ -303,6 +302,18 @@ func DoctorSetup(opts SetupOptions) SetupReport {
 		Fix:      "install Bun from https://bun.sh when using the optional console",
 	})
 	return report
+}
+
+func runGoVersion(fn func(env []string) (string, error)) (string, error) {
+	env := append(os.Environ(), "GOTOOLCHAIN=local")
+	if fn != nil {
+		out, err := fn(env)
+		return strings.TrimSpace(out), err
+	}
+	cmd := exec.Command("go", "version")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
 
 func defaultInstallDir(homeDir string) string {
