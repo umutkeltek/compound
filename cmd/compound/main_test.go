@@ -7291,6 +7291,67 @@ func TestMemoryCandidateRelationsRemainStructuralEdges(t *testing.T) {
 	}
 }
 
+func TestMemoryGraphCommandSupportsDirectionAndKind(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(entity string) {
+		got, err := store.Capture([]mem.Candidate{{
+			Entity:          entity,
+			Predicate:       "kind",
+			Object:          "industry",
+			ObservationDate: cliTestNow.Format(time.RFC3339),
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "trace_cli_graph_" + entity,
+			SnippetHash:     "sha256:" + entity,
+			Visibility:      "operational",
+		}}, cliTestNow)
+		if err != nil {
+			t.Fatalf("capture %s: %v", entity, err)
+		}
+		if _, err := store.Adjudicate(got[0].ID, "promote", "work_cli_graph", cliTestNow); err != nil {
+			t.Fatalf("promote %s: %v", entity, err)
+		}
+	}
+	for _, entity := range []string{"industry:us-eu-saas", "industry:saas", "industry:tech-2026", "industry:fintech", "noise:benchmark"} {
+		mk(entity)
+	}
+	if _, err := store.Relate("industry:us-eu-saas", "part_of", "industry:saas", 0.9, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Relate("industry:saas", "part_of", "industry:tech-2026", 0.9, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Relate("industry:fintech", "part_of", "industry:tech-2026", 0.9, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Relate("industry:us-eu-saas", "relates", "noise:benchmark", 0.9, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"graph", "industry:us-eu-saas", "--direction", "up", "--kind", "part_of", "--depth", "2"})
+	})
+	for _, want := range []string{"industry:us-eu-saas.kind = industry", "industry:saas.kind = industry", "industry:tech-2026.kind = industry"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("graph output missing %q:\n%s", want, out)
+		}
+	}
+	for _, forbidden := range []string{"industry:fintech.kind = industry", "noise:benchmark.kind = industry", "-relates->"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("graph output included forbidden %q:\n%s", forbidden, out)
+		}
+	}
+}
+
 func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

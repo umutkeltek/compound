@@ -134,3 +134,71 @@ func TestStructuredExtractor(t *testing.T) {
 		t.Errorf("object form should yield 1 candidate, 1 relation; got %d/%d (%v)", len(ext2.Candidates), len(ext2.Relations), err)
 	}
 }
+
+func TestRecallGraphDirectionalPartOfZoom(t *testing.T) {
+	s := newStore(t)
+	mk := func(e string) {
+		c, _ := s.Capture([]Candidate{cand(e, "kind", "industry", "")}, t0)
+		if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+			t.Fatalf("promote %s: %v", e, err)
+		}
+	}
+	for _, entity := range []string{"industry:us-eu-saas", "industry:saas", "industry:tech-2026", "industry:fintech", "noise:benchmark"} {
+		mk(entity)
+	}
+	if _, err := s.Relate("industry:us-eu-saas", "part_of", "industry:saas", 0.9, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Relate("industry:saas", "part_of", "industry:tech-2026", 0.9, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Relate("industry:fintech", "part_of", "industry:tech-2026", 0.9, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Relate("industry:us-eu-saas", "relates", "noise:benchmark", 0.9, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	up, err := s.RecallGraphOpts("industry:us-eu-saas", GraphOpts{Depth: 2, Budget: 20, Direction: "up", Kinds: []string{"part_of"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEntities(t, up.Entities, []string{"industry:saas", "industry:tech-2026", "industry:us-eu-saas"})
+	assertMissingEntities(t, up.Entities, []string{"industry:fintech", "noise:benchmark"})
+
+	down, err := s.RecallGraphOpts("industry:tech-2026", GraphOpts{Depth: 2, Budget: 20, Direction: "down", Kinds: []string{"part_of"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEntities(t, down.Entities, []string{"industry:fintech", "industry:saas", "industry:tech-2026", "industry:us-eu-saas"})
+	assertMissingEntities(t, down.Entities, []string{"noise:benchmark"})
+}
+
+func assertEntities(t *testing.T, got []string, want []string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, e := range got {
+		seen[e] = true
+	}
+	for _, e := range want {
+		if !seen[e] {
+			t.Fatalf("missing entity %q in %v", e, got)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("entities = %v, want exactly %v", got, want)
+	}
+}
+
+func assertMissingEntities(t *testing.T, got []string, forbidden []string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, e := range got {
+		seen[e] = true
+	}
+	for _, e := range forbidden {
+		if seen[e] {
+			t.Fatalf("unexpected entity %q in %v", e, got)
+		}
+	}
+}

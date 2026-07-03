@@ -164,10 +164,12 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory candidate <trace.json>"
 	case "adjudicate":
 		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W]"
+	case "graph":
+		return "usage: compound memory graph <seed> [--depth N] [--budget N] [--min-conf F] [--direction up|down] [--kind KIND[,KIND]...]"
 	case "engine-config":
 		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain] [--clear] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
+		return "usage: compound memory <candidate <trace.json>|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
 	}
 }
 
@@ -2462,6 +2464,8 @@ func cmdMemory(args []string) {
 	case "graph":
 		depth, budget := 2, 20
 		minConf := 0.0
+		direction := flag("--direction")
+		kinds := flagCSVValues(rest, "--kind", "--kinds")
 		if v := flag("--depth"); v != "" {
 			depth, _ = strconv.Atoi(v)
 		}
@@ -2471,7 +2475,7 @@ func cmdMemory(args []string) {
 		if v := flag("--min-conf"); v != "" {
 			minConf, _ = strconv.ParseFloat(v, 64)
 		}
-		sg, err := store.RecallGraph(firstPos(map[string]bool{"--depth": true, "--budget": true, "--min-conf": true}), depth, budget, minConf)
+		sg, err := store.RecallGraphOpts(firstPos(map[string]bool{"--depth": true, "--budget": true, "--min-conf": true, "--direction": true, "--kind": true, "--kinds": true}), mem.GraphOpts{Depth: depth, Budget: budget, MinConf: minConf, Direction: direction, Kinds: kinds})
 		die(err)
 		fmt.Println("# " + sg.Coverage)
 		if len(sg.SeedEntities) > 0 {

@@ -47,8 +47,10 @@ claims.jsonl
 positions.jsonl
 patterns.jsonl
 edges.jsonl
-scope_assignments.jsonl
 ```
+
+Layered scope currently rides typed edges such as `part_of`; a separate
+`scope_assignments.jsonl` ledger is not implemented.
 
 Retrieval engines are rebuildable views. They may own indexes, ranking, embeddings,
 and low-level query execution, but they must not own visibility, promotion,

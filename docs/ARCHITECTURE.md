@@ -63,7 +63,8 @@ must not become separate authority centers.
 ## Information placement
 
 - **Compound-owned** canonical ledger objects (append-only JSONL under one ledger root):
-  `evidence`, `entities`, `claims`, `positions`, `patterns`, `edges`, `scope_assignments`.
+  `evidence`, `entities`, `claims`, `positions`, `patterns`, `edges`. Scope is represented today by typed
+  edges such as `part_of`; no separate `scope_assignments` ledger is implemented.
 - **Source-in-place**: external sources (repo files, notes, decision docs, runtime contracts,
   transcripts) stay where they belong; compound stores durable identifiers, evidence refs, claims,
   and citations. It does not copy every source into one folder to make it findable.

@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Memory graph zoom note: `internal/mem` exposes `RecallGraphOpts` with optional `Direction` (`up`/`down`) and relation-kind filters; `compound memory graph` accepts `--direction up|down` and repeatable/comma `--kind`, so `part_of` chains can zoom generic-to-specific without pulling sibling subtrees or unrelated relation kinds.
+
 Knowledge conversation-edge note: `fixtures/knowledge/chatgpt-conversation-export.json` proves private `source.kind=chatgpt` conversation exports enter the generic `compound.knowledge_export.v0.1` door with item event time, private evidence/candidate visibility, 4000-char bounded quotes, exact reimport reuse, and cross-source echo folding; no conversation-specific core package or importer branch exists.
 
 Epistemics doctrine note: `docs/architecture/epistemics.md` is a doctor-parseable doctrine table mapping principles to existing `internal/` object families and `compound` proof commands; strict architecture doctor fails missing/short/phantom rows so doctrine cannot drift back to prose-only guidance.

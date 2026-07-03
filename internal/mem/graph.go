@@ -1,10 +1,8 @@
 package mem
 
-// Task-shaped recall: instead of a flat top-k, seed-match entities, walk BOUNDED typed edges
-// around the seeds, and return a budget-trimmed subgraph + a COVERAGE verdict — on a gap it names
-// what is missing rather than fabricating (the pattern the graphify/codegraph audit converged on).
-// Relate-edges are entity-level and confidence+provenance tagged; they coexist with the claim-level
-// supersedes edges in the same append-only edges log (recall filters by kind).
+// Task-shaped recall: instead of flat top-k, seed-match entities, walk bounded
+// typed edges around seeds, return a budget-trimmed subgraph plus a coverage
+// verdict. On gaps it names what is missing rather than fabricating.
 
 import (
 	"encoding/json"
@@ -14,14 +12,11 @@ import (
 	"time"
 )
 
-// RelationKinds are the entity-level edge kinds task-shaped recall traverses (claim-level
-// "supersedes" is the version chain and is NOT a relation). The richer set (refines/supports/
-// mentions/owns/part_of) is schema parity with the Gen-1 memory.EdgeType — the last capability the
-// converging memory stack needed on the spine before the Gen-1 packages can retire.
+// RelationKinds are entity-level edge kinds task-shaped recall traverses.
+// Claim-level version/review edges are stored in the same log but excluded.
 var RelationKinds = []string{"relates", "contradicts", "depends_on", "refines", "supports", "mentions", "owns", "part_of"}
 
-// RelationHint is an extracted relation between two entities (the LLM proposes these; the
-// reference extractor passes them through). Promoted into the ledger as a relate-edge.
+// RelationHint is an extracted relation between two entities.
 type RelationHint struct {
 	From       string  `json:"from"`
 	To         string  `json:"to"`
@@ -29,22 +24,19 @@ type RelationHint struct {
 	Confidence float64 `json:"confidence"`
 }
 
-// Extraction is what an Extractor turns a trace into: candidate facts + relation hints. The LLM
-// extractor (free model via the gateway) produces this from raw text; StructuredExtractor parses
-// an already-structured trace so the whole path is provable without a live model.
+// Extraction is what an Extractor turns a trace into: candidate facts plus relation hints.
 type Extraction struct {
 	Candidates []Candidate    `json:"candidates"`
 	Relations  []RelationHint `json:"relations"`
 }
 
-// Extractor turns a raw trace into an Extraction. Swappable: StructuredExtractor (deterministic,
-// here) vs an LLM extractor (routed through the model gateway, free lane for extract — deferred).
+// Extractor turns a raw trace into an Extraction.
 type Extractor interface {
 	Extract(trace []byte) (Extraction, error)
 }
 
-// StructuredExtractor parses a trace that is either a bare []Candidate (back-compat) or an
-// {candidates, relations} object. It is the deterministic reference; the LLM extractor is the swap.
+// StructuredExtractor parses either a bare []Candidate for compatibility or a
+// {candidates, relations} object.
 type StructuredExtractor struct{}
 
 func (StructuredExtractor) Extract(trace []byte) (Extraction, error) {
@@ -59,14 +51,14 @@ func (StructuredExtractor) Extract(trace []byte) (Extraction, error) {
 	return Extraction{Candidates: cands}, nil
 }
 
-// Relate records an entity-level relation as a confidence+provenance-tagged edge. Relations are
-// structural (not claims), so they are not candidate-adjudicated; recall confidence-gates them.
+// Relate records an entity-level relation edge. Relations are structural, not
+// claims, so they are not candidate-adjudicated; recall confidence-gates them.
 func (s *Store) Relate(from, kind, to string, conf float64, now time.Time) (Edge, error) {
 	if !oneOf(kind, RelationKinds) {
 		return Edge{}, fmt.Errorf("relation kind must be one of %v, got %q", RelationKinds, kind)
 	}
 	if strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
-		return Edge{}, fmt.Errorf("relate needs a from and a to entity")
+		return Edge{}, fmt.Errorf("relate needs entity")
 	}
 	var e Edge
 	err := s.withLock(func() error {
@@ -80,7 +72,7 @@ func (s *Store) Relate(from, kind, to string, conf float64, now time.Time) (Edge
 	return e, err
 }
 
-// loadRelations reads entity-level relation edges, excluding claim-level version/reinforcement edges.
+// loadEdges reads every edge in the append-only edge log.
 func (s *Store) loadEdges() ([]Edge, error) {
 	var out []Edge
 	err := readJSONL(s.edgesLog(), func(line []byte) error {
@@ -109,8 +101,8 @@ func (s *Store) loadRelations(minConf float64) ([]Edge, error) {
 	return out, err
 }
 
-// Subgraph is the result of task-shaped recall: the seed-matched entities, the bounded set of
-// entities reached, their current claims, the relations among them, and a coverage verdict.
+// Subgraph is the result of task-shaped recall: seed-matched entities, bounded
+// reached entities, their current claims, relations among them, and coverage.
 type Subgraph struct {
 	Seed         string   `json:"seed"`
 	SeedEntities []string `json:"seed_entities"`
@@ -122,10 +114,24 @@ type Subgraph struct {
 	Coverage     string   `json:"coverage"`
 }
 
-// RecallGraph does task-shaped recall: seed-match -> bounded typed-edge BFS (depth + entity
-// budget) -> the connected subgraph of current claims + relations, plus a coverage verdict. It
-// never fabricates: a seed that matches nothing says so.
+// GraphOpts controls bounded graph recall. Direction is empty for the legacy
+// undirected walk, "up" for From->To traversal, and "down" for To->From.
+type GraphOpts struct {
+	Depth     int
+	Budget    int
+	MinConf   float64
+	Direction string
+	Kinds     []string
+}
+
+// RecallGraph keeps the original undirected graph recall API.
 func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Subgraph, error) {
+	return s.RecallGraphOpts(seed, GraphOpts{Depth: depth, Budget: budget, MinConf: minConf})
+}
+
+// RecallGraphOpts does task-shaped recall with optional relation-kind and
+// direction filters. It never fabricates: a seed that matches nothing says so.
+func (s *Store) RecallGraphOpts(seed string, opts GraphOpts) (Subgraph, error) {
 	res := Subgraph{Seed: seed}
 	cur, err := s.currentVisible()
 	if err != nil {
@@ -133,37 +139,60 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 	}
 	res.SeedEntities = matchSeed(cur, seed)
 	if len(res.SeedEntities) == 0 {
-		res.Coverage = fmt.Sprintf("seed %q matched no entity — not fabricating", seed)
+		res.Coverage = fmt.Sprintf("seed %q matched no entity - not fabricating", seed)
 		return res, nil
 	}
-	rels, err := s.loadRelations(minConf)
+	if opts.Direction != "" && opts.Direction != "up" && opts.Direction != "down" {
+		return res, fmt.Errorf("graph direction must be empty, up, or down; got %q", opts.Direction)
+	}
+	kindSet := map[string]bool{}
+	for _, kind := range opts.Kinds {
+		if !oneOf(kind, RelationKinds) {
+			return res, fmt.Errorf("graph relation kind must be one of %v, got %q", RelationKinds, kind)
+		}
+		kindSet[kind] = true
+	}
+	rels, err := s.loadRelations(opts.MinConf)
 	if err != nil {
 		return res, err
 	}
+	if len(kindSet) > 0 {
+		filtered := make([]Edge, 0, len(rels))
+		for _, e := range rels {
+			if kindSet[e.Kind] {
+				filtered = append(filtered, e)
+			}
+		}
+		rels = filtered
+	}
 
-	// BFS over (undirected) relations from the seed entities, bounded by depth and entity budget.
 	adj := map[string][]Edge{}
 	for _, e := range rels {
-		adj[e.From] = append(adj[e.From], e)
-		adj[e.To] = append(adj[e.To], e)
+		switch opts.Direction {
+		case "up":
+			adj[e.From] = append(adj[e.From], e)
+		case "down":
+			adj[e.To] = append(adj[e.To], e)
+		default:
+			adj[e.From] = append(adj[e.From], e)
+			adj[e.To] = append(adj[e.To], e)
+		}
 	}
+
 	seen := map[string]bool{}
 	frontier := append([]string{}, res.SeedEntities...)
 	for _, e := range frontier {
 		seen[e] = true
 	}
-	for d := 0; d < depth && len(frontier) > 0; d++ {
+	for d := 0; d < opts.Depth && len(frontier) > 0; d++ {
 		var next []string
 		for _, ent := range frontier {
-			for _, e := range adj[ent] {
-				other := e.To
-				if other == ent {
-					other = e.From
-				}
-				if seen[other] {
+			for _, edge := range adj[ent] {
+				other := graphOther(ent, edge, opts.Direction)
+				if other == "" || seen[other] {
 					continue
 				}
-				if budget > 0 && len(seen) >= budget {
+				if opts.Budget > 0 && len(seen) >= opts.Budget {
 					res.BudgetHit = true
 					continue
 				}
@@ -181,6 +210,7 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 		res.Entities = append(res.Entities, e)
 	}
 	sort.Strings(res.Entities)
+
 	entSet := seen
 	for _, c := range cur {
 		if entSet[c.Entity] {
@@ -188,9 +218,7 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 		}
 	}
 	sort.Slice(res.Claims, func(i, j int) bool { return res.Claims[i].Seq < res.Claims[j].Seq })
-	// ALL confidence-gated relations among the reached entities — including frontier cross-edges the
-	// BFS never traversed (it stops expanding at the depth boundary but the edge still connects two
-	// in-set entities), deduped.
+
 	emitted := map[string]bool{}
 	for _, e := range rels {
 		if entSet[e.From] && entSet[e.To] {
@@ -204,14 +232,35 @@ func (s *Store) RecallGraph(seed string, depth, budget int, minConf float64) (Su
 
 	budgetNote := ""
 	if res.BudgetHit {
-		budgetNote = fmt.Sprintf(" (budget %d hit — subgraph truncated)", budget)
+		budgetNote = fmt.Sprintf(" (budget %d hit - subgraph truncated)", opts.Budget)
 	}
 	res.Coverage = fmt.Sprintf("subgraph from %d seed(s): %d entities, %d claims, %d relations, depth %d%s",
 		len(res.SeedEntities), len(res.Entities), len(res.Claims), len(res.Relations), res.DepthReached, budgetNote)
 	return res, nil
 }
 
-// matchSeed returns entities whose name or any current-claim text contains a seed token.
+func graphOther(ent string, edge Edge, direction string) string {
+	switch direction {
+	case "up":
+		if edge.From == ent {
+			return edge.To
+		}
+	case "down":
+		if edge.To == ent {
+			return edge.From
+		}
+	default:
+		if edge.From == ent {
+			return edge.To
+		}
+		if edge.To == ent {
+			return edge.From
+		}
+	}
+	return ""
+}
+
+// matchSeed returns entities whose name or current-claim text contains the seed token.
 func matchSeed(cur []Claim, seed string) []string {
 	terms := strings.Fields(strings.ToLower(seed))
 	if len(terms) == 0 {
@@ -235,4 +284,6 @@ func matchSeed(cur []Claim, seed string) []string {
 	return out
 }
 
-func relKey(e Edge) string { return e.From + "|" + e.Kind + "|" + e.To }
+func relKey(e Edge) string {
+	return e.From + "|" + e.Kind + "|" + e.To
+}
