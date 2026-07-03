@@ -973,6 +973,48 @@ func TestSessionEndClosesWork(t *testing.T) {
 	}
 }
 
+func TestSessionEndWithoutWorkIDRecordsReceiptEvent(t *testing.T) {
+	homePath := t.TempDir()
+	deps := baseDeps()
+	deps.HomePath = homePath
+	fx := Fixture{
+		Hook:      "session-end",
+		Harness:   "claude_code",
+		SessionID: "sess_live_end",
+		Cwd:       "/repo/product",
+		Summary:   "live session ended",
+	}
+	res, err := Run(fx, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Event.HookName != "SessionEnd" || res.Event.IDs.SessionID != "sess_live_end" || res.Event.IDs.WorkID != "" {
+		t.Fatalf("event ids = %+v hook=%s, want session-only SessionEnd", res.Event.IDs, res.Event.HookName)
+	}
+	if got := kinds(res.Produced); len(got) != 0 {
+		t.Fatalf("produced = %v, want no receipt/transition without work id", got)
+	}
+	eventPath := filepath.Join(homePath, "events", res.Event.Header.ID+".json")
+	b, err := os.ReadFile(eventPath)
+	if err != nil {
+		t.Fatalf("read persisted hook event: %v", err)
+	}
+	var persisted envelope.HookEvent
+	if err := json.Unmarshal(b, &persisted); err != nil {
+		t.Fatalf("parse persisted hook event: %v", err)
+	}
+	if persisted.IDs.SessionID != "sess_live_end" || persisted.IDs.WorkID != "" {
+		t.Fatalf("persisted ids = %+v, want session-only", persisted.IDs)
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatalf("read hook event stream: %v", err)
+	}
+	if !strings.Contains(string(stream), `"hook_name":"SessionEnd"`) || !strings.Contains(string(stream), `"session_id":"sess_live_end"`) {
+		t.Fatalf("hook event stream missing SessionEnd/session_id:\n%s", string(stream))
+	}
+}
+
 func TestUnknownHookRejected(t *testing.T) {
 	if _, err := Run(Fixture{Hook: "frobnicate", Harness: "claude_code"}, baseDeps(), fixedNow); err == nil {
 		t.Error("unknown hook should be rejected")

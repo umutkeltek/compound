@@ -3535,6 +3535,12 @@ func runHookCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	if parsed.Live && strings.TrimSpace(parsed.ParityLogDir) != "" {
+		if err := writeLiveHookParityLog(parsed.ParityLogDir, res, time.Now()); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+	}
 	if parsed.Live {
 		printJSON(liveHookResponse(parsed.HookName, res))
 	} else {
@@ -3574,6 +3580,14 @@ func parseHookArgs(args []string) (hookCommandArgs, error) {
 			parsed.Harness = args[i]
 			continue
 		}
+		if arg == "--parity-log" {
+			if i+1 >= len(args) {
+				return parsed, fmt.Errorf(hookUsage)
+			}
+			i++
+			parsed.ParityLogDir = args[i]
+			continue
+		}
 		if parsed.FixturePath != "" {
 			return parsed, fmt.Errorf(hookUsage)
 		}
@@ -3586,6 +3600,9 @@ func parseHookArgs(args []string) (hookCommandArgs, error) {
 		return parsed, nil
 	}
 	if parsed.FixturePath == "" {
+		return parsed, fmt.Errorf(hookUsage)
+	}
+	if parsed.ParityLogDir != "" {
 		return parsed, fmt.Errorf(hookUsage)
 	}
 	return parsed, nil

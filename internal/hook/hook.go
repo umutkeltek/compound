@@ -54,8 +54,9 @@ type Fixture struct {
 	Task           string                        `json:"task,omitempty"`
 	Mode           string                        `json:"mode,omitempty"`
 	RepoKind       string                        `json:"repo_kind,omitempty"`
-	Prompt         string                        `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
-	Action         *envelope.ActionIntent        `json:"action,omitempty"`  // pre-tool-use
+	Prompt         string                        `json:"prompt,omitempty"` // user-prompt-submit; only hashed, never stored raw
+	Action         *envelope.ActionIntent        `json:"action,omitempty"` // pre-tool-use
+	SessionID      string                        `json:"session_id,omitempty"`
 	WorkID         string                        `json:"work_id,omitempty"` // session-end
 	MoveType       string                        `json:"move_type,omitempty"`
 	Outcome        string                        `json:"outcome,omitempty"`
@@ -432,7 +433,13 @@ func postToolUse(name string, fx Fixture, now time.Time) (Result, error) {
 
 func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
 	if fx.WorkID == "" {
-		return Result{}, fmt.Errorf("session-end fixture needs a work_id (the receipt belongs to a work)")
+		if strings.TrimSpace(fx.SessionID) == "" {
+			return Result{}, fmt.Errorf("session-end fixture needs work_id or session_id")
+		}
+		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.Cwd, fx.Summary}, "\x00"))
+		ev := newEvent(name, fx, status(deps, fx.Harness, name), inputHash, nil, now)
+		summary := fmt.Sprintf("recorded %s receipt event for session %s", name, fx.SessionID)
+		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 	}
 	if deps.Store == nil {
 		return Result{}, fmt.Errorf("session-end needs a work store (run `compound home init`)")
@@ -472,7 +479,7 @@ func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []strin
 			ID:            idFor("hook_", fx.Harness, name, inputHash, ts(now)),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
 			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
-			IDs:           envelope.IDs{WorkID: fx.WorkID},
+			IDs:           envelope.IDs{WorkID: fx.WorkID, SessionID: fx.SessionID},
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
 			Privacy:       "private",
 			Risk:          "tier0",

@@ -91,6 +91,57 @@ func TestHookLivePreToolUseMapsClaudeWriteInput(t *testing.T) {
 	}
 }
 
+func TestHookLiveSessionEndRecordsEventAndParity(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	parityDir := t.TempDir()
+	input := `{"hook_event_name":"SessionEnd","session_id":"sess_live_end","cwd":"/repo/product","transcript_path":"/tmp/claude-transcript.jsonl"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"session-end", "--live", "--harness", "claude-code", "--parity-log", parityDir})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("live session-end exit = %d\n%s", code, out)
+	}
+	var resp claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse live response: %v\n%s", err, out)
+	}
+	if resp.HookSpecificOutput.HookEventName != "SessionEnd" {
+		t.Fatalf("live session-end response = %+v", resp.HookSpecificOutput)
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatalf("read hook event stream: %v", err)
+	}
+	if !strings.Contains(string(stream), `"hook_name":"SessionEnd"`) || !strings.Contains(string(stream), `"session_id":"sess_live_end"`) {
+		t.Fatalf("hook event stream missing session-end event:\n%s", string(stream))
+	}
+	entries, err := os.ReadDir(parityDir)
+	if err != nil {
+		t.Fatalf("read parity dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("parity entries = %d, want 1", len(entries))
+	}
+	parityBytes, err := os.ReadFile(filepath.Join(parityDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read parity file: %v", err)
+	}
+	var parity liveHookParityRecord
+	if err := json.Unmarshal(parityBytes, &parity); err != nil {
+		t.Fatalf("parse parity file: %v\n%s", err, string(parityBytes))
+	}
+	if parity.HookName != "SessionEnd" || parity.SessionID != "sess_live_end" || parity.WorkID != "" || len(parity.ProducedKinds) != 0 {
+		t.Fatalf("parity record = %+v, want session-only SessionEnd", parity)
+	}
+}
+
 func withStdin(t *testing.T, raw string, fn func()) {
 	t.Helper()
 	old := os.Stdin

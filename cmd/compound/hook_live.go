@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,14 +16,15 @@ import (
 	"compound/internal/policy"
 )
 
-const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code>"
+const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code> [--parity-log <dir>]"
 
 type hookCommandArgs struct {
-	HookName    string
-	FixturePath string
-	Enforce     bool
-	Live        bool
-	Harness     string
+	HookName     string
+	FixturePath  string
+	Enforce      bool
+	Live         bool
+	Harness      string
+	ParityLogDir string
 }
 
 type claudeLiveHookInput struct {
@@ -33,6 +35,7 @@ type claudeLiveHookInput struct {
 	ToolName       string         `json:"tool_name"`
 	ToolInput      map[string]any `json:"tool_input"`
 	Matcher        string         `json:"matcher"`
+	TranscriptPath string         `json:"transcript_path"`
 	WorkID         string         `json:"work_id"`
 	CompoundWorkID string         `json:"compound_work_id"`
 }
@@ -46,6 +49,20 @@ type claudeHookSpecificOutput struct {
 
 type claudeLiveHookResponse struct {
 	HookSpecificOutput claudeHookSpecificOutput `json:"hookSpecificOutput"`
+}
+
+type liveHookParityRecord struct {
+	SchemaVersion string   `json:"schema_version"`
+	HookName      string   `json:"hook_name"`
+	Harness       string   `json:"harness"`
+	EventID       string   `json:"event_id"`
+	Status        string   `json:"status"`
+	InputHash     string   `json:"input_hash,omitempty"`
+	SummaryHash   string   `json:"summary_hash,omitempty"`
+	ProducedKinds []string `json:"produced_kinds"`
+	WorkID        string   `json:"work_id,omitempty"`
+	SessionID     string   `json:"session_id,omitempty"`
+	CreatedAt     string   `json:"created_at"`
 }
 
 func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error) {
@@ -97,10 +114,11 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		}
 	case "session-end", "stop":
 		fx.WorkID = firstNonEmpty(in.WorkID, in.CompoundWorkID)
-		if fx.WorkID == "" {
-			return hook.Fixture{}, fmt.Errorf("%s live stdin needs work_id or compound_work_id", parsed.HookName)
+		fx.SessionID = strings.TrimSpace(in.SessionID)
+		if fx.WorkID == "" && fx.SessionID == "" {
+			return hook.Fixture{}, fmt.Errorf("%s live stdin needs work_id, compound_work_id, or session_id", parsed.HookName)
 		}
-		fx.Summary = "closed from live hook event " + firstNonEmpty(in.SessionID, "unknown-session")
+		fx.Summary = "session-end receipt from live hook event " + firstNonEmpty(fx.SessionID, fx.WorkID, "unknown-session")
 	}
 	return fx, nil
 }
@@ -188,6 +206,46 @@ func liveHookResponse(hookName string, res hook.Result) claudeLiveHookResponse {
 		}
 	}
 	return claudeLiveHookResponse{HookSpecificOutput: out}
+}
+
+func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	record := liveHookParityRecord{
+		SchemaVersion: "compound.hook_live_parity.v0.1",
+		HookName:      res.Event.HookName,
+		Harness:       res.Event.Harness,
+		EventID:       res.Event.Header.ID,
+		Status:        res.Event.Status,
+		InputHash:     res.Event.InputHash,
+		SummaryHash:   shortHash(res.Summary),
+		ProducedKinds: liveProducedKinds(res.Produced),
+		WorkID:        res.Event.IDs.WorkID,
+		SessionID:     res.Event.IDs.SessionID,
+		CreatedAt:     now.UTC().Format(time.RFC3339),
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	name := fmt.Sprintf("%s-%s.json", strings.ToLower(res.Event.HookName), res.Event.Header.ID)
+	return os.WriteFile(filepath.Join(dir, name), b, 0o644)
+}
+
+func liveProducedKinds(produced []envelope.Envelope) []string {
+	out := make([]string, 0, len(produced))
+	for _, item := range produced {
+		if item == nil {
+			continue
+		}
+		out = append(out, item.Kind())
+	}
+	return out
 }
 
 func livePermissionDecision(res hook.Result) (string, string) {
