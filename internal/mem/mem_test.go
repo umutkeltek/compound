@@ -202,6 +202,88 @@ func TestRecallRelevanceGate(t *testing.T) {
 	}
 }
 
+func TestRecallAndTimelineResolveCanonicalEntityToken(t *testing.T) {
+	s := newStore(t)
+	c, _ := s.Capture([]Candidate{cand("compound", "capability_authority_surface", "owned graph", "")}, t0)
+	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	recall, err := s.Recall("Compound", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recall.Entity != "compound" || len(recall.Claims) != 1 || recall.Claims[0].Predicate != "capability_authority_surface" {
+		t.Fatalf("recall Compound = entity %q claims %+v; want canonical compound claim", recall.Entity, recall.Claims)
+	}
+
+	timeline, err := s.Timeline("Compound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline) != 1 || timeline[0].Entity != "compound" {
+		t.Fatalf("timeline Compound = %+v; want canonical compound claim", timeline)
+	}
+}
+
+func TestRecallResolvesEntityRegistryAlias(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.RegisterEntity(Entity{Slug: "project:compound", Kind: "project", Aliases: []string{"Compound"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := s.Capture([]Candidate{cand("project:compound", "status", "active", "")}, t0)
+	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	recall, err := s.Recall("Compound", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recall.Entity != "project:compound" || len(recall.Claims) != 1 {
+		t.Fatalf("recall Compound alias = entity %q claims %+v; want project:compound", recall.Entity, recall.Claims)
+	}
+}
+
+func TestRecallPrefersUniqueCaseFoldedClaimBeforeAlias(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.RegisterEntity(Entity{Slug: "repo:compound", Kind: "repo", Aliases: []string{"compound"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := s.Capture([]Candidate{cand("compound", "capability_authority_surface", "owned graph", "")}, t0)
+	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	recall, err := s.Recall("Compound", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recall.Entity != "compound" || len(recall.Claims) != 1 {
+		t.Fatalf("recall Compound = entity %q claims %+v; want unique lower-case claim before alias", recall.Entity, recall.Claims)
+	}
+}
+
+func TestRecallDoesNotGuessAmbiguousCaseFoldedEntity(t *testing.T) {
+	s := newStore(t)
+	first, _ := s.Capture([]Candidate{cand("compound", "status", "lower", "")}, t0)
+	if _, err := s.Adjudicate(first[0].ID, "promote", "", t0); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := s.Capture([]Candidate{cand("Compound", "status", "title", "")}, t0)
+	if _, err := s.Adjudicate(second[0].ID, "promote", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	recall, err := s.Recall("COMPOUND", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recall.Entity != "COMPOUND" || len(recall.Claims) != 0 {
+		t.Fatalf("ambiguous case-folded recall guessed entity %q claims %+v", recall.Entity, recall.Claims)
+	}
+}
+
 func TestRecallIncludeEvidenceSurfacesAnnotatedCandidatesOnlyWhenRequested(t *testing.T) {
 	s := newStore(t)
 	got, err := s.Capture([]Candidate{cand("knowledge:paper:alpha", "finding", "useful", "")}, t0)

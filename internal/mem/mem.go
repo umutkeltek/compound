@@ -542,11 +542,15 @@ type RecallResult struct {
 // (visibility/retired/confidence) run BEFORE the fold — never a post-filter. It returns a
 // coverage verdict and never fabricates: an empty result says so plainly.
 func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
-	res := RecallResult{Entity: entity}
 	claims, err := s.loadClaims()
 	if err != nil {
-		return res, err
+		return RecallResult{Entity: entity}, err
 	}
+	entity, err = s.canonicalRecallEntity(entity, claims, opts.IncludeEvidence)
+	if err != nil {
+		return RecallResult{Entity: entity}, err
+	}
+	res := RecallResult{Entity: entity}
 	asOf := opts.AsOfSeq
 	if asOf == 0 {
 		asOf = s.maxSeq(claims)
@@ -646,6 +650,10 @@ func (s *Store) Timeline(entity string) ([]Claim, error) {
 	if err != nil {
 		return nil, err
 	}
+	entity, err = s.canonicalRecallEntity(entity, claims, false)
+	if err != nil {
+		return nil, err
+	}
 	var out []Claim
 	for _, c := range claims {
 		if c.Entity == entity {
@@ -654,6 +662,61 @@ func (s *Store) Timeline(entity string) ([]Claim, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out, nil
+}
+
+func (s *Store) canonicalRecallEntity(entity string, claims []Claim, includeEvidence bool) (string, error) {
+	entity = strings.TrimSpace(entity)
+	if entity == "" {
+		return entity, nil
+	}
+	for _, c := range claims {
+		if c.Entity == entity {
+			return entity, nil
+		}
+	}
+	matches := map[string]struct{}{}
+	for _, c := range claims {
+		if strings.EqualFold(c.Entity, entity) {
+			matches[c.Entity] = struct{}{}
+		}
+	}
+	if len(matches) == 1 {
+		for match := range matches {
+			return match, nil
+		}
+	}
+	if len(matches) > 1 {
+		return entity, nil
+	}
+	if r, err := s.ResolveEntity(entity); err != nil {
+		return "", err
+	} else if r.Status == "resolved" {
+		return r.Slug, nil
+	} else if r.Status == "multi" {
+		return entity, nil
+	}
+
+	if includeEvidence {
+		candidates, err := s.AllCandidates()
+		if err != nil {
+			return "", err
+		}
+		for _, c := range candidates {
+			if c.Entity == entity {
+				return entity, nil
+			}
+			if strings.EqualFold(c.Entity, entity) {
+				matches[c.Entity] = struct{}{}
+			}
+		}
+	}
+	if len(matches) != 1 {
+		return entity, nil
+	}
+	for match := range matches {
+		return match, nil
+	}
+	return entity, nil
 }
 
 // currentClaim returns the current claim for entity+predicate as of asOf (0 = now), if any.
