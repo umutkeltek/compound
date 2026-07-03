@@ -57,6 +57,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Distiller request record note: `distiller request --record` artifacts under `reviews/distiller-requests` annotate the review queue as recorded replay packets with source refs, not human review debt; invalid request JSON remains blocked.
+
 Hook input hash note: context-producing hooks hash normalized hook, harness, cwd, task, repo-kind, mode, and prompt digest, so same prompt/task in different scope does not collide and raw prompt text stays out of artifacts.
 
 Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown; `output_ref` points directly at the injection markdown.

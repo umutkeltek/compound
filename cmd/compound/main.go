@@ -4435,6 +4435,7 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	distiller.AnnotateImprovementQueue(&report)
+	distiller.AnnotateRequestQueue(&report)
 	panel.AnnotateVerdictQueue(&report)
 	projection.AnnotateProjectionRegenerationQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)

@@ -11,6 +11,7 @@ import (
 )
 
 const LLMRequestRecordRefPrefix = "distiller_request:"
+const LLMRequestRecordArea = "distiller-requests"
 
 type LLMRequestRecord struct {
 	ID   string
@@ -33,7 +34,7 @@ func RecordLLMExtractionRequest(homePath string, req LLMExtractionRequest) (LLMR
 		return LLMRequestRecord{}, err
 	}
 	id := reviewartifact.ID("llmreq_", req.TraceRef, string(data))
-	path, err := reviewartifact.WriteJSON(homePath, "distiller-requests", id+".json", req, " ")
+	path, err := reviewartifact.WriteJSON(homePath, LLMRequestRecordArea, id+".json", req, " ")
 	if err != nil {
 		return LLMRequestRecord{}, err
 	}
@@ -42,6 +43,41 @@ func RecordLLMExtractionRequest(homePath string, req LLMExtractionRequest) (LLMR
 		Ref:  LLMRequestRecordRefPrefix + id,
 		Path: path,
 	}, nil
+}
+
+func AnnotateRequestQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != LLMRequestRecordArea {
+			continue
+		}
+		annotateRequestQueueItem(item)
+	}
+}
+
+func annotateRequestQueueItem(item *reviewartifact.QueueItem) {
+	if strings.TrimSpace(item.JSONPath) == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "distiller request record path missing"
+		item.NextAction = "regenerate distiller request --record"
+		return
+	}
+	req, err := LoadLLMExtractionRequest("", item.JSONPath)
+	if err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = err.Error()
+		item.NextAction = "regenerate distiller request --record"
+		return
+	}
+	item.Status = "recorded"
+	item.Readiness = "replayable_request_recorded"
+	item.BlockedReason = ""
+	item.SourceKind = "distiller-llm-extraction-request"
+	item.EvidenceRefs = reviewartifact.Unique(append(item.EvidenceRefs, req.SourceRefs...))
+	item.NextAction = "distiller request replay packet recorded; use its distiller_request ref with distiller run/extract"
 }
 
 func LoadLLMExtractionRequest(homePath, selector string) (LLMExtractionRequest, error) {
@@ -78,7 +114,7 @@ func LLMExtractionRequestPath(homePath, selector string) (string, error) {
 	if err := validateLLMRequestRecordID(id); err != nil {
 		return "", err
 	}
-	return filepath.Join(homePath, "reviews", "distiller-requests", id+".json"), nil
+	return filepath.Join(homePath, "reviews", LLMRequestRecordArea, id+".json"), nil
 }
 
 func validateLLMRequestRecordID(id string) error {

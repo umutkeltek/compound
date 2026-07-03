@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/reviewartifact"
 )
 
 func TestLLMExtractionRequestPathResolvesRecordedRefsSafely(t *testing.T) {
@@ -29,4 +31,45 @@ func TestLLMExtractionRequestPathResolvesRecordedRefsSafely(t *testing.T) {
 	if path != plain {
 		t.Fatalf("plain path = %q, want %q", path, plain)
 	}
+}
+
+func TestAnnotateRequestQueueMarksReplayPacketsRecorded(t *testing.T) {
+	homePath := t.TempDir()
+	req := LLMExtractionRequest{
+		SchemaVersion: LLMExtractionSchemaVersion,
+		TraceRef:      "trace_queue_record",
+		SourceRefs:    []string{"raw_trace:trace_queue_record"},
+		Instructions:  []string{"fixture request"},
+	}
+	record, err := RecordLLMExtractionRequest(homePath, req)
+	if err != nil {
+		t.Fatalf("record request: %v", err)
+	}
+
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: "distiller-requests"}, t0)
+	if err != nil {
+		t.Fatalf("queue: %v", err)
+	}
+	AnnotateRequestQueue(&queue)
+	reviewartifact.Recount(&queue)
+
+	if queue.Counts.Total != 1 || queue.Counts.OK != 1 || queue.Counts.ReviewRequired != 0 {
+		t.Fatalf("queue counts = %+v, want recorded replay packet ok", queue.Counts)
+	}
+	item := queue.Items[0]
+	if item.ID != record.ID || item.Status != "recorded" || item.Readiness != "replayable_request_recorded" {
+		t.Fatalf("queue item = %+v, want recorded replay packet", item)
+	}
+	if item.NextAction == "" || !stringSliceContains(item.EvidenceRefs, "raw_trace:trace_queue_record") {
+		t.Fatalf("queue item missing replay metadata: %+v", item)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
