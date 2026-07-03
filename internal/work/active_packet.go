@@ -20,41 +20,47 @@ const (
 // It does not import packets, mutate work, or claim the packet is complete
 // unless the WorkEnvelope -> ContextPack -> Receipt -> Transition chain exists.
 type ActivePacketProofReport struct {
-	SchemaVersion      string          `json:"schema_version"`
-	AuthorityRef       string          `json:"authority_ref"`
-	Status             string          `json:"status"`
-	GeneratedAt        string          `json:"generated_at"`
-	CanonicalSurface   string          `json:"canonical_surface"`
-	Source             string          `json:"source"`
-	WorkID             string          `json:"work_id,omitempty"`
-	State              string          `json:"state,omitempty"`
-	ContextPackID      string          `json:"context_pack_id,omitempty"`
-	ReceiptID          string          `json:"receipt_id,omitempty"`
-	TransitionID       string          `json:"transition_id,omitempty"`
-	PacketEvidenceRefs []string        `json:"packet_evidence_refs,omitempty"`
-	VerificationIDs    []string        `json:"verification_ids,omitempty"`
-	ProofChain         []string        `json:"proof_chain,omitempty"`
-	Checks             map[string]bool `json:"checks"`
-	Integrity          []string        `json:"integrity,omitempty"`
-	NextAction         string          `json:"next_action"`
-	ProofBoundary      string          `json:"proof_boundary"`
+	SchemaVersion             string          `json:"schema_version"`
+	AuthorityRef              string          `json:"authority_ref"`
+	Status                    string          `json:"status"`
+	GeneratedAt               string          `json:"generated_at"`
+	CanonicalSurface          string          `json:"canonical_surface"`
+	Source                    string          `json:"source"`
+	WorkID                    string          `json:"work_id,omitempty"`
+	State                     string          `json:"state,omitempty"`
+	ContextPackID             string          `json:"context_pack_id,omitempty"`
+	ReceiptID                 string          `json:"receipt_id,omitempty"`
+	TransitionID              string          `json:"transition_id,omitempty"`
+	PacketEvidenceRefs        []string        `json:"packet_evidence_refs,omitempty"`
+	ExpectedPacketEvidenceRef string          `json:"expected_packet_evidence_ref,omitempty"`
+	VerificationIDs           []string        `json:"verification_ids,omitempty"`
+	ProofChain                []string        `json:"proof_chain,omitempty"`
+	Checks                    map[string]bool `json:"checks"`
+	Integrity                 []string        `json:"integrity,omitempty"`
+	NextAction                string          `json:"next_action"`
+	ProofBoundary             string          `json:"proof_boundary"`
 }
 
-func (s *Store) ActivePacketProof(now time.Time, surface string) (ActivePacketProofReport, error) {
+func (s *Store) ActivePacketProof(now time.Time, surface string, expectedPacketEvidenceRef ...string) (ActivePacketProofReport, error) {
 	surface = strings.TrimSpace(surface)
 	if surface == "" {
 		surface = DefaultActivePacketSurface
 	}
+	expectedRef := ""
+	if len(expectedPacketEvidenceRef) > 0 {
+		expectedRef = strings.TrimSpace(expectedPacketEvidenceRef[0])
+	}
 	report := ActivePacketProofReport{
-		SchemaVersion:    ActivePacketProofSchemaVersion,
-		AuthorityRef:     ActivePacketProofAuthorityRef,
-		Status:           "missing",
-		GeneratedAt:      now.UTC().Format(time.RFC3339),
-		CanonicalSurface: surface,
-		Source:           "compound_work_proof",
-		Checks:           map[string]bool{},
-		NextAction:       "import and close active packet through Compound WorkEnvelope, Receipt, and Transition",
-		ProofBoundary:    "WorkEnvelope -> ContextPack -> Receipt -> Transition; packet markdown is source evidence/fallback",
+		SchemaVersion:             ActivePacketProofSchemaVersion,
+		AuthorityRef:              ActivePacketProofAuthorityRef,
+		Status:                    "missing",
+		GeneratedAt:               now.UTC().Format(time.RFC3339),
+		CanonicalSurface:          surface,
+		Source:                    "compound_work_proof",
+		ExpectedPacketEvidenceRef: expectedRef,
+		Checks:                    map[string]bool{},
+		NextAction:                "import and close active packet through Compound WorkEnvelope, Receipt, and Transition",
+		ProofBoundary:             "WorkEnvelope -> ContextPack -> Receipt -> Transition; packet markdown is source evidence/fallback",
 	}
 
 	works, err := s.ListWithArchived()
@@ -102,6 +108,9 @@ func (s *Store) ActivePacketProof(now time.Time, surface string) (ActivePacketPr
 		"receipt_work_matches":    s.receiptWorkMatches(item.ReceiptID, item.WorkID),
 		"transition_exists":       item.TransitionID != "",
 		"transition_work_matches": s.transitionWorkMatches(item.TransitionID, item.WorkID),
+	}
+	if expectedRef != "" {
+		report.Checks["source_packet_matches"] = packetRefsContain(report.PacketEvidenceRefs, expectedRef)
 	}
 	report.ProofChain = compactStrings(item.WorkID, item.ContextPackID, item.ReceiptID, item.TransitionID)
 	if allChecks(report.Checks) && len(report.Integrity) == 0 {
@@ -151,6 +160,19 @@ func packetEvidenceRefs(refs []string) []string {
 		}
 	}
 	return out
+}
+
+func packetRefsContain(refs []string, want string) bool {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return false
+	}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func integrityForWork(integrity []string, workID string) []string {

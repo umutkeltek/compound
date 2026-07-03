@@ -34,6 +34,14 @@ type PacketImportReport struct {
 	Work         envelope.WorkEnvelope `json:"work"`
 }
 
+type PacketSourceProof struct {
+	PacketTitle      string `json:"packet_title"`
+	EvidenceRef      string `json:"evidence_ref"`
+	SourceDigest     string `json:"source_digest"`
+	SourceRef        string `json:"source_ref"`
+	CanonicalSurface string `json:"canonical_surface"`
+}
+
 type packetSource struct {
 	Title            string
 	Date             string
@@ -46,6 +54,20 @@ type packetSource struct {
 	Digest           string
 	EvidenceRef      string
 	SourceRef        string
+}
+
+func PacketSourceProofForPath(path string) (PacketSourceProof, error) {
+	src, err := LoadPacket(path)
+	if err != nil {
+		return PacketSourceProof{}, err
+	}
+	return PacketSourceProof{
+		PacketTitle:      src.Title,
+		EvidenceRef:      src.EvidenceRef,
+		SourceDigest:     src.Digest,
+		SourceRef:        src.SourceRef,
+		CanonicalSurface: "packet:" + slug(src.Title),
+	}, nil
 }
 
 // ImportPacket turns a markdown execution/goal packet into a WorkEnvelope. The

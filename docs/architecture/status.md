@@ -55,6 +55,8 @@ They must not be resurrected or imported. Any missing capability should land on 
 
 ## Commands
 
+Active packet proof note: `work active-packet-proof --source-packet <packet.md>` and `workbench --source-packet <packet.md>` compare the current packet evidence ref against the proof chain, so stale terminal packet proof reports risk instead of `source_packet_terminal`.
+
 CLI safety note: `compound capability ... --help`, plus guarded `work`, `memory`, and `route cost-doctor` subcommand help paths, return usage before opening runtime state, so help requests cannot consume receipts, import graph data, validate work/memory fields, or open provider ledgers.
 
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.

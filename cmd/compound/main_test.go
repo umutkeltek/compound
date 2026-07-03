@@ -1237,6 +1237,112 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 	}
 }
 
+func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	imported, err := store.ImportPacket(packetPath, work.PacketImportOptions{
+		Owner:         "compound-core",
+		State:         "ready",
+		ContextPackID: "ctx_packet",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(homePath, "context", "packs"), 0o755); err != nil {
+		t.Fatalf("mkdir context packs: %v", err)
+	}
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            "ctx_packet",
+			CreatedAt:     cliTestNow.Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "compound-cli-test"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD:          "packet context",
+		Included:           []envelope.IncludedRef{},
+		Excluded:           []envelope.ExcludedRef{},
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		RequiredChecks:     []string{},
+		Avoid:              []string{},
+	}
+	packJSON, err := json.MarshalIndent(pack, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal context pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "context", "packs", "ctx_packet.json"), packJSON, 0o644); err != nil {
+		t.Fatalf("write context pack: %v", err)
+	}
+	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", RunID: "run_packet"}, cliTestNow.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance running: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", VerificationID: "packet-work-contract:active-packet-lifecycle"}, cliTestNow.Add(3*time.Second)); err != nil {
+		t.Fatalf("advance verifying: %v", err)
+	}
+	if _, err := store.Close(imported.Work.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "active packet proof command",
+		Changed:   true,
+		ProofRefs: []string{"packet-work-contract:active-packet-lifecycle"},
+	}, cliTestNow.Add(4*time.Second)); err != nil {
+		t.Fatalf("close packet: %v", err)
+	}
+
+	data, err := os.ReadFile(packetPath)
+	if err != nil {
+		t.Fatalf("read packet fixture: %v", err)
+	}
+	changedPacket := filepath.Join(t.TempDir(), "goal-packet.md")
+	if err := os.WriteFile(changedPacket, append(data, []byte("\nFreshness proof line.\n")...), 0o644); err != nil {
+		t.Fatalf("write changed packet: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{"active-packet-proof", "--source-packet", changedPacket, "--json"})
+	})
+	var report work.ActivePacketProofReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse active packet proof: %v\n%s", err, out)
+	}
+	if report.Status != "risk" || report.WorkID != imported.Work.ID || report.Checks["source_packet_matches"] {
+		t.Fatalf("active packet proof should flag changed source packet, got %+v", report)
+	}
+	if report.ExpectedPacketEvidenceRef == "" || containsString(report.PacketEvidenceRefs, report.ExpectedPacketEvidenceRef) {
+		t.Fatalf("expected packet evidence not recorded as mismatch: %+v", report)
+	}
+
+	workbenchOut := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--recent", "10", "--source-packet", changedPacket})
+	})
+	var workbenchReport work.WorkbenchReport
+	if err := json.Unmarshal([]byte(workbenchOut), &workbenchReport); err != nil {
+		t.Fatalf("parse workbench report: %v\n%s", err, workbenchOut)
+	}
+	if workbenchReport.ActivePacketProof == nil ||
+		workbenchReport.ActivePacketProof.Status != "risk" ||
+		workbenchReport.ActivePacketProof.Checks["source_packet_matches"] ||
+		workbenchReport.DispatchNext.WaitReason != "active_packet_proof_risk" {
+		t.Fatalf("workbench should surface changed source packet risk: proof=%+v dispatch=%+v", workbenchReport.ActivePacketProof, workbenchReport.DispatchNext)
+	}
+}
+
 func TestWorkDispatchPlanCommandRecordsProposalWithoutClaiming(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

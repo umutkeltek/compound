@@ -95,7 +95,7 @@ Governance is enforced at adapters: **a mutating adapter rejects a mutation lack
 
 ## Knowledge / domain contracts
 
-`compound work active-packet-proof [--surface S]` is the read-only proof owner for active packet serving. It filters WorkEnvelopes by canonical surface and reports `ok` only when the WorkEnvelope, ContextPack, Receipt, and Transition chain all match. OS/dashboard readers consume this command before falling back to packet markdown or brain pointers as source evidence.
+`compound work active-packet-proof [--surface S] [--source-packet packet.md]` is the read-only proof owner for active packet serving. It filters WorkEnvelopes by canonical surface and reports `ok` only when the WorkEnvelope, ContextPack, Receipt, and Transition chain all match; when a source packet is supplied, it also checks that the current packet hash/evidence ref matches the proof chain before serving terminal proof. OS/dashboard readers consume this command before falling back to packet markdown or brain pointers as source evidence.
 
 | Contract | Purpose | Key fields / lifecycle |
 |---|---|---|

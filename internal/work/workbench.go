@@ -12,10 +12,11 @@ import (
 
 // WorkbenchOptions controls the read-only workbench projection.
 type WorkbenchOptions struct {
-	RecentLimit         int
-	Actor               string
-	ActivePacketSurface string
-	IncludeArchived     bool
+	RecentLimit                     int
+	Actor                           string
+	ActivePacketSurface             string
+	ActivePacketExpectedEvidenceRef string
+	IncludeArchived                 bool
 }
 
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
@@ -166,7 +167,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	for _, warning := range warnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
-	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface)
+	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface, opts.ActivePacketExpectedEvidenceRef)
 	report.ActivePacketProof = activePacket
 	for _, warning := range activeWarnings {
 		report.Integrity = append(report.Integrity, warning)
@@ -191,8 +192,8 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	return report, nil
 }
 
-func (s *Store) workbenchActivePacketProof(now time.Time, surface string) (*ActivePacketProofReport, []string) {
-	proof, err := s.ActivePacketProof(now, surface)
+func (s *Store) workbenchActivePacketProof(now time.Time, surface, expectedPacketEvidenceRef string) (*ActivePacketProofReport, []string) {
+	proof, err := s.ActivePacketProof(now, surface, expectedPacketEvidenceRef)
 	if err != nil {
 		return nil, []string{"active-packet-proof unreadable: " + err.Error()}
 	}

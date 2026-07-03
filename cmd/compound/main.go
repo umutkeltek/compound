@@ -4152,7 +4152,7 @@ func flagCSVValues(args []string, names ...string) []string {
 	return out
 }
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--review-area A] [--include-archived]"
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--capability-task T] [--capability-harness H] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -4192,6 +4192,7 @@ func cmdWorkbench(args []string) {
 	recent := 5
 	actor := "codex"
 	activePacketSurface := ""
+	activePacketExpectedRef := ""
 	capabilityTask := ""
 	capabilityHarness := ""
 	reviewArea := ""
@@ -4212,6 +4213,21 @@ func cmdWorkbench(args []string) {
 			if activePacketSurface == "" {
 				fmt.Fprintln(os.Stderr, "error: --active-packet-surface must be non-empty")
 				os.Exit(2)
+			}
+		case "--source-packet":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			proof, err := work.PacketSourceProofForPath(args[i])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			activePacketExpectedRef = proof.EvidenceRef
+			if activePacketSurface == "" {
+				activePacketSurface = proof.CanonicalSurface
 			}
 		case "--capability-task":
 			if i+1 >= len(args) {
@@ -4275,10 +4291,11 @@ func cmdWorkbench(args []string) {
 		}
 	}
 	report, err := store.Workbench(time.Now(), work.WorkbenchOptions{
-		RecentLimit:         recent,
-		Actor:               actor,
-		ActivePacketSurface: activePacketSurface,
-		IncludeArchived:     includeArchived,
+		RecentLimit:                     recent,
+		Actor:                           actor,
+		ActivePacketSurface:             activePacketSurface,
+		ActivePacketExpectedEvidenceRef: activePacketExpectedRef,
+		IncludeArchived:                 includeArchived,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -5092,11 +5109,17 @@ func cmdWork(args []string) {
 			fmt.Printf("%s  %-10s %s\n", w.ID, w.State, w.SuccessPredicate)
 		}
 	case "active-packet-proof":
-		usage := "usage: compound work active-packet-proof [--surface canonical_surface] [--json]"
+		usage := "usage: compound work active-packet-proof [--surface canonical_surface] [--source-packet packet.md] [--json]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json":
 			case "--surface":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			case "--source-packet":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -5107,7 +5130,17 @@ func cmdWork(args []string) {
 				os.Exit(2)
 			}
 		}
-		report, err := store.ActivePacketProof(time.Now(), flag("--surface"))
+		activePacketSurface := flag("--surface")
+		activePacketExpectedRef := ""
+		if sourcePacket := flag("--source-packet"); sourcePacket != "" {
+			proof, err := work.PacketSourceProofForPath(sourcePacket)
+			die(err)
+			activePacketExpectedRef = proof.EvidenceRef
+			if strings.TrimSpace(activePacketSurface) == "" {
+				activePacketSurface = proof.CanonicalSurface
+			}
+		}
+		report, err := store.ActivePacketProof(time.Now(), activePacketSurface, activePacketExpectedRef)
 		die(err)
 		if has("--json") {
 			printJSON(report)
