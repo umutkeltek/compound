@@ -1,0 +1,15 @@
+{
+  "schema_version": "compound.console.system_topology.v0.1",
+  "notes": "SYNTHETIC demo topology — the public repo's fallback so the Map renders without a private overlay. Every system here is fake. Real operators put their topology at ~/.compound/config/system-topology.json (private runtime, never committed).",
+  "nodes": [
+    { "id": "example-capture", "name": "Example capture edge", "description": "Synthetic demo — a knowledge source feeding the distiller.", "lane": "capture", "accent": "orange", "glyph": "E", "status": "live", "projection": "knowledge-sources" },
+    { "id": "example-storage", "name": "Example bulk store", "description": "Synthetic demo — raw storage outside the core.", "lane": "storage", "accent": "blue", "glyph": "E", "status": "planned", "projection": "static" },
+    { "id": "capability", "name": "Capability graph", "description": "Skills / tools / procedures / MCPs / lenses.", "lane": "meaning", "accent": "violet", "glyph": "K", "status": "live", "projection": "capability-authority" },
+    { "id": "memory", "name": "Memory ledger", "description": "Promoted claims, entities, evidence, edges.", "lane": "meaning", "accent": "violet", "glyph": "M", "status": "live", "projection": "ledger-stats" },
+    { "id": "example-outward", "name": "Example surface", "description": "Synthetic demo — an outward product surface.", "lane": "outward", "accent": "green", "glyph": "E", "status": "planned", "projection": "static" }
+  ],
+  "edges": [
+    { "from": "example-capture", "to": "memory", "label": "envelopes", "status": "live" },
+    { "from": "memory", "to": "example-outward", "label": "claims", "status": "planned" }
+  ]
+}

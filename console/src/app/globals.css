@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #f4f5f7;
+  --color-card: #ffffff;
+  --color-line: #e8eaef;
+  --color-ink: #101828;
+  --color-ink-2: #51606f;
+  --color-ink-3: #98a2b3;
+  --color-accent-blue: #3b82f6;
+  --color-accent-green: #10b981;
+  --color-accent-orange: #f59e0b;
+  --color-accent-pink: #ec4899;
+  --color-accent-violet: #8b5cf6;
+  --color-accent-red: #ef4444;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html {
+  background: var(--color-canvas);
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-size: 14px;
+}
+
+/* Card primitive — white, hairline border, soft radius, quiet shadow */
+.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+/* Small-caps section label */
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Sidebar nav item */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  color: var(--color-ink-2);
+  font-weight: 500;
+  font-size: 13.5px;
+}
+.nav-item:hover {
+  background: #f1f3f6;
+  color: var(--color-ink);
+}
+.nav-item[data-active="true"] {
+  background: #eef2ff;
+  color: #3730a3;
+}
+.nav-item[data-soon="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Thin scrollbars for board columns */
+.board-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.board-scroll::-webkit-scrollbar-thumb {
+  background: #d8dde5;
+  border-radius: 8px;
+}
