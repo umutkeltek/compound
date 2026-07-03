@@ -61,7 +61,7 @@ Hook input hash note: context-producing hooks hash normalized hook, harness, cwd
 
 Hook context side-effect note: context-producing hooks list the full persisted artifact chain in `HookEvent.side_effects`: redacted request, dated EffectiveContract, ContextPack, and harness-facing injection markdown; `output_ref` points directly at the injection markdown.
 
-Distiller runtime-source note: `distiller.LoadRuntimeSources` follows safe relative JSON `HookEvent.side_effects`, validates typed envelopes, dedupes already-loaded work/context artifacts, includes ContextRequest/EffectiveContract envelopes as grounded extraction sources, and preserves HookEvent `output_ref` in structured LLM envelopes.
+Distiller runtime-source note: `distiller.LoadRuntimeSources` follows safe relative JSON `HookEvent.side_effects`, validates typed envelopes, dedupes already-loaded work/context artifacts, includes ContextRequest/EffectiveContract envelopes as grounded extraction sources, preserves HookEvent `output_ref` in structured LLM envelopes, and includes output refs in request `source_refs` so grounded extraction can cite them.
 
 Active packet proof note: `work active-packet-proof --source-packet <packet.md>` and `workbench --source-packet <packet.md>` compare the current packet evidence ref against the proof chain, so stale terminal packet proof reports risk instead of `source_packet_terminal`.
 

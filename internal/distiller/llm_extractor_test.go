@@ -319,10 +319,27 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	if req.Envelopes[0].OutputRef != hook.OutputRef {
 		t.Fatalf("extra envelope output_ref = %q, want %q", req.Envelopes[0].OutputRef, hook.OutputRef)
 	}
-	for _, want := range []string{"raw_trace:trace_spine", "context_pack:ctx_distill", "work:work_distill", "receipt:rec_distill", "proof:request-packet", "artifact:request-packet", "hook_event:hook_distill"} {
+	for _, want := range []string{"raw_trace:trace_spine", "context_pack:ctx_distill", "work:work_distill", "receipt:rec_distill", "proof:request-packet", "artifact:request-packet", "hook_event:hook_distill", hook.OutputRef} {
 		if !hasString(req.SourceRefs, want) {
 			t.Fatalf("source refs missing %q: %v", want, req.SourceRefs)
 		}
+	}
+	raw := []byte(`{
+		"schema_version":"compound.distiller.llm_extraction.v0.1",
+		"trace_ref":"trace_spine",
+		"extractor":"fixture",
+		"model":"fixture-model",
+		"source_refs":["artifact_request_packet"],
+		"candidates":[
+			{"kind":"memory","entity":"distiller","predicate":"output_ref_grounding","object":"hook output refs are citeable","confidence":0.91,"evidence_refs":["artifact_request_packet"]}
+		]
+	}`)
+	trace, err := NewGroundedLLMExtractor(req).Extract(raw, DefaultPolicy())
+	if err != nil {
+		t.Fatalf("grounded output_ref extraction: %v", err)
+	}
+	if len(trace.Candidates) != 1 || !hasString(trace.Candidates[0].EvidenceRefs, hook.OutputRef) {
+		t.Fatalf("output_ref evidence not preserved: %+v", trace.Candidates)
 	}
 	if req.PriorCoverage.CurrentClaims != 1 || req.PriorCoverage.Decisions != 1 {
 		t.Fatalf("prior coverage = %+v", req.PriorCoverage)

@@ -220,6 +220,7 @@ func BuildLLMExtractionRequestFromSources(traceRef string, src LLMExtractionSour
 		req.Envelopes = append(req.Envelopes, summary)
 		addSourceRef(&req, summary.Kind+":"+summary.ID)
 		addSourceRefs(&req, summary.EvidenceRefs)
+		addSourceRef(&req, summary.OutputRef)
 	}
 	if len(src.RawTrace) > 0 {
 		addSourceRef(&req, "raw_trace:"+traceRef)
