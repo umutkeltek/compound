@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -254,5 +255,97 @@ func TestImprovementReviewRequiresEditedDecisionAndProofWithoutMutatingTruth(t *
 	}
 	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("improvement-review must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestAnnotateImprovementQueueClosesReviewedPlan(t *testing.T) {
+	home := t.TempDir()
+	candidateID := "cand_reviewed_method"
+	dir := filepath.Join(home, candidates.InboxDir(candidates.MethodUpgrade))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidate := Candidate{
+		ID:           candidateID,
+		Kind:         KindMethodUpgrade,
+		Subject:      "distiller.offline-request-grounding",
+		Statement:    "bind offline response evidence refs to request source refs",
+		Confidence:   0.92,
+		EvidenceRefs: []string{"receipt:rec_before", "receipt:rec_after"},
+		Verdict:      Park,
+	}
+	data, err := json.MarshalIndent(candidate, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, candidateID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	targetPath := filepath.Join(t.TempDir(), "distiller.go")
+	if err := os.WriteFile(targetPath, []byte("package distiller\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildImprovementPlan(home, candidateID, targetPath, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, err := RecordImprovementPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ImprovementReviewArea}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateImprovementQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Readiness != "blocked" {
+		t.Fatalf("unedited review should remain blocked review debt: counts=%+v item=%+v", queue.Counts, queue.Items[0])
+	}
+
+	var review ImprovementReview
+	reviewData, err := os.ReadFile(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(reviewData, &review); err != nil {
+		t.Fatal(err)
+	}
+	review.Decision = ImprovementReviewDecisionReject
+	review.Rationale = "Current implementation already binds offline response refs to request source refs; no additional method change."
+	review.Confidence = 0.92
+	edited, err := yaml.Marshal(review)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.ReviewYAMLPath, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadImprovementReview(paths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := RecordImprovementReview(home, loaded, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	queue, err = reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ImprovementReviewArea}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateImprovementQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.Total != 1 || queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 {
+		t.Fatalf("reviewed improvement should close queue debt: counts=%+v item=%+v", queue.Counts, queue.Items[0])
+	}
+	item := queue.Items[0]
+	if item.Status != "recorded" || item.Readiness != "review_recorded" || len(item.Actions) != 0 || !strings.Contains(item.NextAction, "reject") {
+		t.Fatalf("reviewed improvement item not terminal: %+v", item)
+	}
+	if !containsString(item.ExtraPaths, report.ReviewedPath) {
+		t.Fatalf("reviewed path missing from queue item: path=%s item=%+v", report.ReviewedPath, item)
 	}
 }

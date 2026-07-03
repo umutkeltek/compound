@@ -18,6 +18,7 @@ const (
 	ImprovementPlanSchemaVersion           = "compound.distiller.improvement_plan.v0.1"
 	ImprovementReviewSchemaVersion         = "compound.distiller.improvement_review.v0.1"
 	ReviewedImprovementSchemaVersion       = "compound.distiller.reviewed_improvement.v0.1"
+	ImprovementReviewArea                  = "distiller-improvements"
 	ImprovementReviewDecisionAccept        = "accept"
 	ImprovementReviewDecisionReject        = "reject"
 	ImprovementReviewDecisionKeepReviewing = "keep_reviewing"
@@ -217,7 +218,7 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 	if plan.ID == "" {
 		return ImprovementPlanPaths{}, fmt.Errorf("improvement plan id required")
 	}
-	dir, err := reviewartifact.Dir(homePath, "distiller-improvements")
+	dir, err := reviewartifact.Dir(homePath, ImprovementReviewArea)
 	if err != nil {
 		return ImprovementPlanPaths{}, err
 	}
@@ -226,10 +227,10 @@ func RecordImprovementPlan(homePath string, plan ImprovementPlan) (ImprovementPl
 		ReviewPath:     filepath.Join(dir, plan.ID+".md"),
 		ReviewYAMLPath: filepath.Join(dir, plan.ID+".review.yaml"),
 	}
-	if _, err := reviewartifact.Write(homePath, "distiller-improvements", plan.ID, plan, "  ", RenderImprovementPlanReview(plan)); err != nil {
+	if _, err := reviewartifact.Write(homePath, ImprovementReviewArea, plan.ID, plan, "  ", RenderImprovementPlanReview(plan)); err != nil {
 		return paths, err
 	}
-	if _, err := reviewartifact.WriteRaw(homePath, "distiller-improvements", plan.ID+".review.yaml", []byte(RenderImprovementReviewYAMLDraft(plan))); err != nil {
+	if _, err := reviewartifact.WriteRaw(homePath, ImprovementReviewArea, plan.ID+".review.yaml", []byte(RenderImprovementReviewYAMLDraft(plan))); err != nil {
 		return paths, err
 	}
 	return paths, nil
@@ -361,7 +362,7 @@ func RecordImprovementReview(homePath string, review ImprovementReview, now time
 			"does not promote memory truth",
 		},
 	}
-	path, err := reviewartifact.WriteJSON(homePath, "distiller-improvements", review.ReviewID+".reviewed.json", reviewed, " ")
+	path, err := reviewartifact.WriteJSON(homePath, ImprovementReviewArea, review.ReviewID+".reviewed.json", reviewed, " ")
 	if err != nil {
 		return ImprovementReviewReport{}, err
 	}
@@ -430,7 +431,7 @@ func readImprovementPlan(homePath, planID string) (ImprovementPlan, error) {
 	if planID == "" {
 		return ImprovementPlan{}, fmt.Errorf("plan_id required")
 	}
-	path := filepath.Join(homePath, "reviews", "distiller-improvements", planID+".json")
+	path := filepath.Join(homePath, "reviews", ImprovementReviewArea, planID+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ImprovementPlan{}, fmt.Errorf("read distiller improvement plan %s: %w", path, err)
@@ -482,4 +483,104 @@ func improvementReviewStatus(decision string) string {
 	default:
 		return "needs_review"
 	}
+}
+
+func AnnotateImprovementQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != ImprovementReviewArea {
+			continue
+		}
+		annotateImprovementQueueItem(item)
+	}
+}
+
+func annotateImprovementQueueItem(item *reviewartifact.QueueItem) {
+	if strings.TrimSpace(item.JSONPath) == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "distiller improvement plan path missing"
+		item.NextAction = "regenerate distiller improvement-plan"
+		return
+	}
+	if reviewed, reviewedPath, ok := reviewedImprovementForPlan(*item); ok {
+		item.Status = "recorded"
+		item.Readiness = "review_recorded"
+		item.BlockedReason = ""
+		item.Actions = nil
+		item.ExtraPaths = reviewartifact.Unique(append(item.ExtraPaths, reviewedPath))
+		item.EvidenceRefs = reviewartifact.Unique(append(item.EvidenceRefs, reviewed.EvidenceRefs...))
+		item.NextAction = fmt.Sprintf("distiller improvement review recorded: %s; no source mutation performed", reviewed.Decision)
+		return
+	}
+	reviewYAML := improvementReviewYAMLPath(*item)
+	if reviewYAML == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "distiller improvement review YAML draft missing"
+		item.NextAction = "regenerate distiller improvement-plan to create review YAML draft"
+		return
+	}
+	argv := []string{"compound", "distiller", "improvement-review", reviewYAML}
+	item.Actions = []reviewartifact.Action{{
+		ID:             "record_distiller_improvement_review",
+		Label:          "Record distiller improvement review",
+		Command:        strings.Join(argv, " "),
+		Argv:           argv,
+		RequiresReview: true,
+	}}
+	if _, err := LoadImprovementReview(reviewYAML); err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "review YAML draft unreadable: " + err.Error()
+		item.NextAction = "edit distiller improvement review YAML before recording"
+		return
+	}
+	item.Readiness = "ready_to_apply"
+	item.NextAction = "record reviewed distiller improvement decision; review command does not mutate policy, prompts, code, eval corpus, or memory"
+}
+
+func improvementReviewYAMLPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, ".review.yaml") {
+			return path
+		}
+	}
+	if strings.TrimSpace(item.JSONPath) == "" {
+		return ""
+	}
+	path := filepath.Join(filepath.Dir(item.JSONPath), item.ID+".review.yaml")
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return ""
+}
+
+func reviewedImprovementForPlan(item reviewartifact.QueueItem) (ReviewedImprovement, string, bool) {
+	if strings.TrimSpace(item.JSONPath) == "" {
+		return ReviewedImprovement{}, "", false
+	}
+	dir := filepath.Dir(item.JSONPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ReviewedImprovement{}, "", false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var reviewed ReviewedImprovement
+		if err := json.Unmarshal(data, &reviewed); err != nil {
+			continue
+		}
+		if reviewed.PlanID == item.ID {
+			return reviewed, path, true
+		}
+	}
+	return ReviewedImprovement{}, "", false
 }
