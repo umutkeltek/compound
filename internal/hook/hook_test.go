@@ -54,10 +54,11 @@ func TestSessionStartProducesContract(t *testing.T) {
 		t.Error("session-start should return an orientation summary")
 	}
 	req := res.Produced[0].(*envelope.ContextRequest)
+	ec := res.Produced[1].(*envelope.EffectiveContract)
 	if req.IntentTextRef != "sha256:"+hashStr("audit") {
 		t.Fatalf("intent_text_ref = %q, want task hash", req.IntentTextRef)
 	}
-	if req.RequestedMode != "execute" || req.Constraints.AllowRawCorpus || req.Constraints.AllowPrivateMemory || req.Constraints.AllowProvisionalReviews {
+	if req.RequestedMode != "observe" || ec.TaskMode != "observe" || req.Constraints.AllowRawCorpus || req.Constraints.AllowPrivateMemory || req.Constraints.AllowProvisionalReviews {
 		t.Fatalf("unexpected context request constraints: %+v mode=%q", req.Constraints, req.RequestedMode)
 	}
 	if res.Injection != nil {
@@ -352,10 +353,14 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 		t.Fatalf("produced = %v, want [context_request effective_contract context_pack work]", got)
 	}
 	req := res.Produced[0].(*envelope.ContextRequest)
+	ec := res.Produced[1].(*envelope.EffectiveContract)
 	pack := res.Produced[2].(*envelope.ContextPack)
 	cand := res.Produced[3].(*envelope.WorkEnvelope)
 	if req.IntentTextRef != "sha256:"+hashStr(raw) {
 		t.Fatalf("intent_text_ref = %q, want prompt hash", req.IntentTextRef)
+	}
+	if req.RequestedMode != "execute" || ec.TaskMode != "execute" {
+		t.Fatalf("hook mode mismatch: request=%q contract=%q", req.RequestedMode, ec.TaskMode)
 	}
 	if cand.State != "proposed" || cand.IDs.ContextPackID != pack.Header.ID {
 		t.Fatalf("work state/context = %q/%q, want proposed/%q", cand.State, cand.IDs.ContextPackID, pack.Header.ID)

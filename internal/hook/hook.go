@@ -52,6 +52,7 @@ type Fixture struct {
 	Harness        string                        `json:"harness"`
 	Cwd            string                        `json:"cwd,omitempty"`
 	Task           string                        `json:"task,omitempty"`
+	Mode           string                        `json:"mode,omitempty"`
 	RepoKind       string                        `json:"repo_kind,omitempty"`
 	Prompt         string                        `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
 	Action         *envelope.ActionIntent        `json:"action,omitempty"`  // pre-tool-use
@@ -144,7 +145,8 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 }
 
 func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
-	in, err := orientationInput(fx, deps)
+	mode := hookRequestedMode(name, fx)
+	in, err := orientationInput(fx, deps, mode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -161,7 +163,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 			return Result{}, err
 		}
 	}
-	req := buildContextRequest(name, fx, ec, pack, now)
+	req := buildContextRequest(name, fx, ec, pack, mode, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Task), nil, now)
 	ev.IDs.ContextPackID = pack.Header.ID
 	var injection *InjectionArtifact
@@ -181,7 +183,8 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if fx.Task != "" {
 		pred = "address: " + fx.Task
 	}
-	in, err := orientationInput(fx, deps)
+	mode := hookRequestedMode(name, fx)
+	in, err := orientationInput(fx, deps, mode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -198,7 +201,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 			return Result{}, err
 		}
 	}
-	req := buildContextRequest(name, fx, ec, pack, now)
+	req := buildContextRequest(name, fx, ec, pack, mode, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.Prompt), nil, now)
 	ev.IDs.ContextPackID = pack.Header.ID
 	var injection *InjectionArtifact
@@ -232,12 +235,12 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	return Result{Event: ev, Produced: produced, Summary: summary, Injection: injection}, nil
 }
 
-func orientationInput(fx Fixture, deps Deps) (contract.Input, error) {
+func orientationInput(fx Fixture, deps Deps, mode string) (contract.Input, error) {
 	kind, via, err := contract.ResolveRepoKindWithHome(deps.HomePath, fx.RepoKind, fx.Cwd)
 	if err != nil {
 		return contract.Input{}, err
 	}
-	return contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via}, nil
+	return contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via, Mode: mode}, nil
 }
 
 func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
@@ -480,16 +483,12 @@ func newEvent(name string, fx Fixture, st, inputHash string, sideEffects []strin
 	}
 }
 
-func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract, pack envelope.ContextPack, now time.Time) envelope.ContextRequest {
+func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract, pack envelope.ContextPack, mode string, now time.Time) envelope.ContextRequest {
 	intentRef := ""
 	if strings.TrimSpace(fx.Prompt) != "" {
 		intentRef = "sha256:" + hashStr(fx.Prompt)
 	} else if strings.TrimSpace(fx.Task) != "" {
 		intentRef = "sha256:" + hashStr(fx.Task)
-	}
-	mode := "execute"
-	if strings.TrimSpace(fx.Task) == "" {
-		mode = "observe"
 	}
 	return envelope.ContextRequest{
 		Header: envelope.Header{
@@ -516,6 +515,23 @@ func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract,
 			AllowRawCorpus:          false,
 			AllowProvisionalReviews: false,
 		},
+	}
+}
+
+func hookRequestedMode(name string, fx Fixture) string {
+	if mode := strings.TrimSpace(fx.Mode); mode != "" {
+		return mode
+	}
+	switch name {
+	case "SessionStart":
+		return "observe"
+	case "UserPromptSubmit":
+		return "execute"
+	default:
+		if strings.TrimSpace(fx.Task) == "" {
+			return "observe"
+		}
+		return "execute"
 	}
 }
 

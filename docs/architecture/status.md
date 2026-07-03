@@ -65,6 +65,8 @@ Contract command status note: `compound contract compile` records durable Effect
 
 ContextPack hook status note: active hook refs appear in both `active_hooks`/`hook_roster` and `included[]` with runtime/current reasons, while task-excluded hooks remain in `excluded[]`, so context consumers can compare included vs excluded hook decisions through the same surface.
 
+Hook context mode status note: hook context artifacts use one requested-mode decision for both `ContextRequest.requested_mode` and `EffectiveContract.task_mode`: `session-start` orients in `observe`, while `user-prompt-submit` creates execute-mode proposed work context.
+
 Receipt consumer status note: `Receipt.EffectiveChanged` is the read/consume rule for Workbench, operator orient, and CapabilityGraph receipt mining; completed proof-bearing non-`audit_only` receipts count changed even if an older receipt stored `state_delta.changed=false`.
 
 Work command status note: `work create-plan` emits a create command with planned `--work-id` and envelope fields; `work create --work-id` preserves that root id through admission before lifecycle write. `work close` treats completed proof-bearing non-`audit_only` moves as changed receipt deltas even when the closer omits `--changed`, so Workbench/operator tags and receipt mining do not mislabel landed deltas as unchanged.
