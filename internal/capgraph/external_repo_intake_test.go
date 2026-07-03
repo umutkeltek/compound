@@ -510,12 +510,15 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 		t.Fatalf("graph import follow-up count/meaning missing: count=%v omitted=%d meaning=%q", refreshed.SourceListGraphImportNextCount, refreshed.SourceListGraphImportNextOmitted, refreshed.SourceListGraphImportNextMeaning)
 	}
 
-	manifest, err := LoadSkillManifest(reviewReport.ManifestPath)
+	importReport, err := ImportExternalRepoReviewedManifests(home, sourceListPath, 0, time.Date(2026, 7, 2, 4, 5, 9, 0, time.UTC))
 	if err != nil {
-		t.Fatalf("load reviewed manifest: %v", err)
+		t.Fatalf("import reviewed manifests: %v", err)
 	}
-	if _, err := ApplySkillManifest(home, manifest, time.Date(2026, 7, 2, 4, 5, 9, 0, time.UTC)); err != nil {
-		t.Fatalf("apply reviewed manifest: %v", err)
+	if importReport.Status != "ok" || importReport.PendingImportCount != 1 || importReport.ImportedCount != 1 || len(importReport.Items) != 1 {
+		t.Fatalf("import report = %+v", importReport)
+	}
+	if importReport.Items[0].Repo != "example/review" || importReport.Items[0].NodeID != "procedure:external-repo-example-review-workflow" || importReport.Items[0].NodeStatus != "needs_review" {
+		t.Fatalf("import item missing graph context: %+v", importReport.Items[0])
 	}
 	importedRefresh, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
 	if err != nil {
@@ -523,6 +526,17 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	}
 	if importedRefresh.SourceListByCapabilityGraphStatus["imported"] != 1 || len(importedRefresh.SourceListGraphImportNext) != 0 {
 		t.Fatalf("imported manifest should leave no graph-import follow-up: status=%+v next=%+v", importedRefresh.SourceListByCapabilityGraphStatus, importedRefresh.SourceListGraphImportNext)
+	}
+	store, err := Open(home)
+	if err != nil {
+		t.Fatalf("open graph: %v", err)
+	}
+	surfaced, err := store.Surface("example review workflow")
+	if err != nil {
+		t.Fatalf("surface imported review workflow: %v", err)
+	}
+	if hasSurfaced(surfaced, "procedure:external-repo-example-review-workflow") {
+		t.Fatalf("needs_review imported manifest must not surface: %+v", surfaced)
 	}
 
 	archiveReviewAreaFilesForTest(t, home, capabilityEvaluationReviewArea, time.Date(2026, 7, 2, 4, 6, 0, 0, time.UTC))

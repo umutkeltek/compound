@@ -8671,6 +8671,39 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 			t.Fatalf("human source-list output missing graph-import follow-up %q:\n%s", want, humanAfterEvalReview)
 		}
 	}
+	importJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake-import-reviewed", "--source-list", sourceListPath, "--json"})
+	})
+	var importReport capgraph.ExternalRepoReviewedManifestImportReport
+	if err := json.Unmarshal([]byte(importJSON), &importReport); err != nil {
+		t.Fatalf("external-intake-import-reviewed --json parse: %v\n%s", err, importJSON)
+	}
+	if importReport.Status != "ok" || importReport.PendingImportCount != 1 || importReport.ImportedCount != 1 || len(importReport.Items) != 1 {
+		t.Fatalf("external-intake-import-reviewed report = %+v", importReport)
+	}
+	afterImportJSON := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--source-list", sourceListPath, "--json"})
+	})
+	var afterImport capgraph.ExternalRepoIntakeReport
+	if err := json.Unmarshal([]byte(afterImportJSON), &afterImport); err != nil {
+		t.Fatalf("external-intake after graph import --json parse: %v\n%s", err, afterImportJSON)
+	}
+	if afterImport.SourceListByCapabilityGraphStatus["imported"] != 1 || len(afterImport.SourceListGraphImportNext) != 0 {
+		t.Fatalf("graph import should clear follow-up queue: status=%+v next=%+v", afterImport.SourceListByCapabilityGraphStatus, afterImport.SourceListGraphImportNext)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatalf("open graph after import: %v", err)
+	}
+	hits, err := store.Surface("external repo example review workflow")
+	if err != nil {
+		t.Fatalf("surface after import: %v", err)
+	}
+	for _, hit := range hits {
+		if hit.Node.ID == importReport.Items[0].NodeID {
+			t.Fatalf("needs_review imported node should not surface: %+v", hits)
+		}
+	}
 }
 
 func writeJSONFile(t *testing.T, body string) string {

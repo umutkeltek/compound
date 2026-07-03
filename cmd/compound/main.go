@@ -288,7 +288,7 @@ usage:
   compound distiller import-conversation-mining <report.json> [--mined-tags rows.jsonl] [--lossiness lossiness.json]
                                                                  mined conversation source quality -> SourceObservation/no-promote; no Dream execution or memory promotion
   compound distiller run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
@@ -340,7 +340,7 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -751,6 +751,37 @@ func cmdCapability(args []string) {
 		}
 		for _, row := range report.HighValue {
 			fmt.Printf("- review_next: %s decision=%s lane=%s owner=%s\n", row.Repo, row.Decision, row.Lane, row.Owner)
+		}
+	case "external-intake-import-reviewed":
+		sourceListPath := flagValue(rest, "--source-list")
+		if sourceListPath == "" {
+			sourceListPath = flagValue(rest, "--repo-file")
+		}
+		if sourceListPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound capability external-intake-import-reviewed --source-list <file> [--limit N] [--json]")
+			os.Exit(2)
+		}
+		limit, err := intFlag(rest, "--limit")
+		die(err)
+		report, err := capgraph.ImportExternalRepoReviewedManifests(homePath, sourceListPath, limit, time.Now())
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability external-intake-import-reviewed %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- source_list: %s total=%d\n", report.SourceListPath, report.SourceListTotal)
+		fmt.Printf("- pending_import: %d\n", report.PendingImportCount)
+		if report.ImportLimit > 0 {
+			fmt.Printf("- import_limit: %d\n", report.ImportLimit)
+		}
+		fmt.Printf("- imported: %d\n", report.ImportedCount)
+		if report.OmittedPendingCount > 0 {
+			fmt.Printf("- omitted_pending: %d\n", report.OmittedPendingCount)
+		}
+		for _, item := range report.Items {
+			fmt.Printf("- imported_manifest: %s node=%s node_status=%s manifest=%s\n", item.Repo, item.NodeID, item.NodeStatus, item.ManifestPath)
 		}
 	case "external-intake-review-plan":
 		sourceListPath := flagValue(rest, "--source-list")

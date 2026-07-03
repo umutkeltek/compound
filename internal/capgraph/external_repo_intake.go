@@ -16,6 +16,7 @@ import (
 const (
 	ExternalRepoIntakeReportSchemaVersion     = "compound.capability.external_repo_intake_report.v0.1"
 	ExternalRepoIntakeReviewPlanSchemaVersion = "compound.capability.external_repo_intake_review_plan.v0.1"
+	ExternalRepoReviewedManifestImportVersion = "compound.capability.external_repo_reviewed_manifest_import.v0.1"
 	ExternalRepoIntakeReviewArea              = "external-repo-intake"
 	ExternalRepoIntakeAuthorityRef            = "compound://reviews/external-repo-intake"
 )
@@ -174,6 +175,30 @@ type ExternalRepoIntakeReviewPlanItem struct {
 	ReviewYAMLPath        string   `json:"review_yaml_path,omitempty"`
 }
 
+type ExternalRepoReviewedManifestImportReport struct {
+	SchemaVersion       string                                   `json:"schema_version"`
+	Status              string                                   `json:"status"`
+	AuthorityRef        string                                   `json:"authority_ref"`
+	SourceListPath      string                                   `json:"source_list_path"`
+	SourceListTotal     int                                      `json:"source_list_total,omitempty"`
+	PendingImportCount  int                                      `json:"pending_import_count"`
+	ImportLimit         int                                      `json:"import_limit,omitempty"`
+	ImportedCount       int                                      `json:"imported_count"`
+	OmittedPendingCount int                                      `json:"omitted_pending_count,omitempty"`
+	Items               []ExternalRepoReviewedManifestImportItem `json:"items,omitempty"`
+	Boundaries          []string                                 `json:"boundaries,omitempty"`
+}
+
+type ExternalRepoReviewedManifestImportItem struct {
+	Repo         string   `json:"repo"`
+	NodeID       string   `json:"node_id"`
+	NodeStatus   string   `json:"node_status"`
+	ManifestPath string   `json:"manifest_path"`
+	Status       string   `json:"status"`
+	NodeIDs      []string `json:"node_ids,omitempty"`
+	EdgeIDs      []string `json:"edge_ids,omitempty"`
+}
+
 func ExternalRepoIntakeReportForHome(homePath string, repoQuery ...string) (ExternalRepoIntakeReport, error) {
 	query := ""
 	if len(repoQuery) > 0 {
@@ -311,6 +336,92 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 	if len(metadata.Boundaries) > 0 {
 		report.Boundaries = metadata.Boundaries
 	}
+	return report, nil
+}
+
+func ImportExternalRepoReviewedManifests(homePath, sourceListPath string, limit int, now time.Time) (ExternalRepoReviewedManifestImportReport, error) {
+	report := ExternalRepoReviewedManifestImportReport{
+		SchemaVersion:  ExternalRepoReviewedManifestImportVersion,
+		Status:         "blocked",
+		AuthorityRef:   "compound://registries/capability-graph",
+		SourceListPath: strings.TrimSpace(sourceListPath),
+		Boundaries: []string{
+			"imports reviewed capability-evaluation manifests only",
+			"uses existing import-skills graph mutation boundary",
+			"does not clone repos or install served skills",
+			"needs_review manifests remain non-surfacing graph nodes",
+		},
+	}
+	if limit < 0 {
+		return report, fmt.Errorf("limit must be >= 0")
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	intake, err := ExternalRepoIntakeReportForHomeWithSourceList(homePath, sourceListPath)
+	if err != nil {
+		return report, err
+	}
+	report.SourceListTotal = intake.SourceListTotal
+	pending := limitSourceListFollowUps(filterSourceListGraphImportFollowUps(intake.SourceListItems), 0)
+	report.PendingImportCount = len(pending)
+	report.ImportLimit = limit
+	if limit > 0 && len(pending) > limit {
+		report.OmittedPendingCount = len(pending) - limit
+		pending = pending[:limit]
+	}
+	if intake.Status != "ok" {
+		report.Status = intake.Status
+		return report, nil
+	}
+	if len(pending) == 0 {
+		report.Status = "no_pending_import"
+		return report, nil
+	}
+
+	type preparedImport struct {
+		item     ExternalRepoReviewedManifestImportItem
+		manifest SkillManifest
+	}
+	prepared := make([]preparedImport, 0, len(pending))
+	for _, sourceItem := range pending {
+		match := sourceItem.Matches[0]
+		manifestPath := strings.TrimSpace(match.CapabilityEvaluationManifestPath)
+		if manifestPath == "" {
+			return report, fmt.Errorf("external repo %s missing reviewed manifest path", match.Repo)
+		}
+		manifest, err := LoadSkillManifest(manifestPath)
+		if err != nil {
+			return report, fmt.Errorf("load reviewed manifest %s: %w", manifestPath, err)
+		}
+		if validation := ValidateSkillManifest(manifest); validation.Status != "ok" {
+			return report, fmt.Errorf("validate reviewed manifest %s: %s", manifestPath, validation.Status)
+		}
+		prepared = append(prepared, preparedImport{
+			item: ExternalRepoReviewedManifestImportItem{
+				Repo:         match.Repo,
+				NodeID:       match.CapabilityEvaluationNodeID,
+				NodeStatus:   match.CapabilityEvaluationNodeStatus,
+				ManifestPath: manifestPath,
+				Status:       "pending",
+			},
+			manifest: manifest,
+		})
+	}
+
+	for _, entry := range prepared {
+		applied, err := ApplySkillManifest(homePath, entry.manifest, now)
+		if err != nil {
+			return report, fmt.Errorf("apply reviewed manifest %s: %w", entry.item.ManifestPath, err)
+		}
+		item := entry.item
+		item.Status = "imported"
+		item.NodeIDs = append([]string(nil), applied.NodeIDs...)
+		item.EdgeIDs = append([]string(nil), applied.EdgeIDs...)
+		report.Items = append(report.Items, item)
+		report.ImportedCount++
+	}
+	report.Status = "ok"
 	return report, nil
 }
 
