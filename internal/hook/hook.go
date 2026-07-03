@@ -84,6 +84,9 @@ type InjectionArtifact struct {
 	ContextRequestID   string `json:"context_request_id"`
 	ContextRequestRef  string `json:"context_request_ref"`
 	ContextRequestPath string `json:"context_request_path"`
+	ContractID         string `json:"contract_id"`
+	ContractRef        string `json:"contract_ref"`
+	ContractPath       string `json:"contract_path"`
 	ContextPackID      string `json:"context_pack_id"`
 	ContextPackRef     string `json:"context_pack_ref"`
 	ContextPackPath    string `json:"context_pack_path"`
@@ -173,7 +176,7 @@ func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, er
 		if err != nil {
 			return Result{}, err
 		}
-		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContextPackRef, injection.Ref)
+		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{&req, &ec, &pack}, Summary: pack.SummaryMD, Injection: injection}, nil
 }
@@ -211,7 +214,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if err != nil {
 			return Result{}, err
 		}
-		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContextPackRef, injection.Ref)
+		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
 	}
 	create := work.CreateInput{Owner: fx.Harness, SuccessPredicate: pred, DesiredOutcome: fx.Task, State: "proposed"}
 	if injection != nil {
@@ -539,7 +542,12 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 	if pack.IDs.ContractID != ec.ID {
 		return nil, fmt.Errorf("context pack contract_id %q does not match effective contract %q", pack.IDs.ContractID, ec.ID)
 	}
-	if _, err := contract.RecordEffectiveContract(homePath, ec); err != nil {
+	contractPaths, err := contract.RecordEffectiveContract(homePath, ec)
+	if err != nil {
+		return nil, err
+	}
+	contractRef, err := filepath.Rel(homePath, contractPaths.ContractPath)
+	if err != nil {
 		return nil, err
 	}
 	requestRef := filepath.Join("context", "requests", req.Header.ID+".json")
@@ -568,6 +576,9 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 		ContextRequestID:   req.Header.ID,
 		ContextRequestRef:  requestRef,
 		ContextRequestPath: requestPath,
+		ContractID:         ec.ID,
+		ContractRef:        contractRef,
+		ContractPath:       contractPaths.ContractPath,
 		ContextPackID:      pack.Header.ID,
 		ContextPackRef:     packRef,
 		ContextPackPath:    packPaths.PackPath,

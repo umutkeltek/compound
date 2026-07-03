@@ -193,7 +193,11 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if pack.IDs.ContractID == "" {
 		t.Fatal("context pack missing contract_id")
 	}
-	contractPath := filepath.Join(homePath, "contracts", "effective", fixedNow.UTC().Format("2006-01-02"), pack.IDs.ContractID+".json")
+	contractRef := filepath.Join("contracts", "effective", fixedNow.UTC().Format("2006-01-02"), pack.IDs.ContractID+".json")
+	contractPath := filepath.Join(homePath, contractRef)
+	if res.Injection.ContractID != pack.IDs.ContractID || res.Injection.ContractRef != contractRef || res.Injection.ContractPath != contractPath {
+		t.Fatalf("contract injection artifact = %q/%q/%q, want %q/%q/%q", res.Injection.ContractID, res.Injection.ContractRef, res.Injection.ContractPath, pack.IDs.ContractID, contractRef, contractPath)
+	}
 	contractBytes, err := os.ReadFile(contractPath)
 	if err != nil {
 		t.Fatalf("read effective contract artifact: %v", err)
@@ -235,8 +239,8 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 			t.Fatalf("injection leaked forbidden content %q:\n%s", forbidden, text)
 		}
 	}
-	if got := res.Event.SideEffects; len(got) != 3 || got[0] != res.Injection.ContextRequestRef || got[1] != res.Injection.ContextPackRef || got[2] != res.Injection.Ref {
-		t.Fatalf("side effects = %v, want request, context pack, injection refs", got)
+	if got := res.Event.SideEffects; len(got) != 4 || got[0] != res.Injection.ContextRequestRef || got[1] != contractRef || got[2] != res.Injection.ContextPackRef || got[3] != res.Injection.Ref {
+		t.Fatalf("side effects = %v, want request, contract, context pack, injection refs", got)
 	}
 }
 
@@ -419,6 +423,10 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 	if cand.State != "proposed" || cand.IDs.ContextPackID != pack.Header.ID {
 		t.Fatalf("work state/context = %q/%q, want proposed/%q", cand.State, cand.IDs.ContextPackID, pack.Header.ID)
 	}
+	contractRef := filepath.Join("contracts", "effective", fixedNow.UTC().Format("2006-01-02"), pack.IDs.ContractID+".json")
+	if res.Injection.ContractID != pack.IDs.ContractID || res.Injection.ContractRef != contractRef {
+		t.Fatalf("contract injection artifact = %q/%q, want %q/%q", res.Injection.ContractID, res.Injection.ContractRef, pack.IDs.ContractID, contractRef)
+	}
 	stored, events, err := store.Show(cand.ID)
 	if err != nil {
 		t.Fatalf("show stored work: %v", err)
@@ -463,6 +471,9 @@ func TestUserPromptPersistsProposedWorkWithContext(t *testing.T) {
 	}
 	if !containsString(res.Event.SideEffects, filepath.Join("work", "work", cand.ID+".json")) {
 		t.Fatalf("side effects = %v, want persisted work ref", res.Event.SideEffects)
+	}
+	if !containsString(res.Event.SideEffects, contractRef) {
+		t.Fatalf("side effects = %v, want contract ref %s", res.Event.SideEffects, contractRef)
 	}
 }
 
