@@ -319,6 +319,9 @@ func TestExecuteDryRunBlocksGatewayMeteredLaneWithoutUSDBudget(t *testing.T) {
 	if got.Status != "blocked" || got.StoppedReason != "budget:metered_lane_requires_max_usd_micros" {
 		t.Fatalf("blocked run = status %q reason %q", got.Status, got.StoppedReason)
 	}
+	if !strings.Contains(got.NextAction, "--max-usd-micros") || !strings.Contains(got.NextAction, "--max-items or --max-tokens") {
+		t.Fatalf("blocked run next_action = %q", got.NextAction)
+	}
 	store, err := Open(home)
 	if err != nil {
 		t.Fatal(err)
@@ -327,8 +330,8 @@ func TestExecuteDryRunBlocksGatewayMeteredLaneWithoutUSDBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load saved run: %v", err)
 	}
-	if loaded.Status != got.Status || loaded.StoppedReason != got.StoppedReason {
-		t.Fatalf("saved blocked run = status %q reason %q, want status %q reason %q", loaded.Status, loaded.StoppedReason, got.Status, got.StoppedReason)
+	if loaded.Status != got.Status || loaded.StoppedReason != got.StoppedReason || loaded.NextAction != got.NextAction {
+		t.Fatalf("saved blocked run = status %q reason %q next %q, want status %q reason %q next %q", loaded.Status, loaded.StoppedReason, loaded.NextAction, got.Status, got.StoppedReason, got.NextAction)
 	}
 	if rows := routeEvidenceRows(t, home); rows != 0 {
 		t.Fatalf("metered budget block should happen before route calls; route evidence rows = %d", rows)

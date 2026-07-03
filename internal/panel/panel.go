@@ -37,6 +37,7 @@ type Run struct {
 	CountsAfter   map[string]int  `json:"counts_after"`
 	EvidenceRefs  []string        `json:"evidence_refs"`
 	StoppedReason string          `json:"stopped_reason,omitempty"`
+	NextAction    string          `json:"next_action,omitempty"`
 }
 
 type Target struct {

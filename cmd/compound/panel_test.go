@@ -285,6 +285,27 @@ func TestPanelRunCLILiveGatewayEndToEnd(t *testing.T) {
 	}
 }
 
+func TestPanelRunHumanOutputShowsBlockedNextAction(t *testing.T) {
+	out := captureStdout(t, func() {
+		printPanelRun(panel.Run{
+			ID:            "prun_blocked_budget",
+			Status:        "blocked",
+			TargetKind:    "memory_candidate",
+			StoppedReason: "budget:metered_lane_requires_max_usd_micros",
+			NextAction:    "create a new panel plan with explicit --max-usd-micros plus --max-items or --max-tokens, then run only that bounded plan",
+		})
+	})
+	for _, want := range []string{
+		"- status: blocked",
+		"- stopped_reason: budget:metered_lane_requires_max_usd_micros",
+		"- next_action: create a new panel plan with explicit --max-usd-micros plus --max-items or --max-tokens",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("panel run output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func panelCLIRouteEvidenceRows(t *testing.T, homePath string) int {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl"))

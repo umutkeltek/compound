@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Panel blocked-run guidance note: panel runs that stop at no-lane, metered-budget, budget-limit, or target-failure boundaries persist `next_action` alongside `stopped_reason`, so `panel show` / `--json` consumers know whether to refresh route evidence, create a bounded new plan, or inspect route evidence before retrying.
+
 Panel memory-review note: `compound panel plan --target-kind memory_candidate` defaults to current `proposed` memory candidates, matching `orient --operator` actionable memory debt. Explicit `--state parked` remains available for parked backlog review, but parked memory candidates are not the default review queue.
 
 Panel public-knowledge privacy note: proposed arXiv `knowledge_extraction` memory candidates default to not privacy-sensitive, carrying `privacy_default:not_sensitive:public_arxiv_memory_candidate`, so public paper-review panels use ordinary non-sensitive route lanes without requiring operator override. Other memory candidates remain privacy-sensitive by default.

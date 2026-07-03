@@ -53,6 +53,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		err := ErrBlockedNoLane{Class: lensCapabilityClass}
 		run.Status = "blocked"
 		run.StoppedReason = err.Error()
+		run.NextAction = blockedNoLaneNextAction(lensCapabilityClass)
 		_ = store.SaveRun(run)
 		return run, err
 	}
@@ -60,6 +61,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		err := ErrBlockedNoLane{Class: judgeCapabilityClass}
 		run.Status = "blocked"
 		run.StoppedReason = err.Error()
+		run.NextAction = blockedNoLaneNextAction(judgeCapabilityClass)
 		_ = store.SaveRun(run)
 		return run, err
 	}
@@ -70,6 +72,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		err := fmt.Errorf("budget:metered_lane_requires_max_usd_micros")
 		run.Status = "blocked"
 		run.StoppedReason = err.Error()
+		run.NextAction = meteredBudgetBlockNextAction()
 		if saveErr := store.SaveRun(run); saveErr != nil {
 			return run, fmt.Errorf("%w; additionally failed to save blocked panel run: %v", err, saveErr)
 		}
@@ -84,6 +87,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		run.EvidenceRefs = appendUniqueString(run.EvidenceRefs, "cost_unknown")
 	}
 	run.Status = "running"
+	run.NextAction = ""
 	if err := store.SaveRun(run); err != nil {
 		return run, err
 	}
@@ -113,6 +117,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		if run.Budget.MaxItems > 0 && processed >= run.Budget.MaxItems {
 			run.Status = "stopped_budget"
 			run.StoppedReason = "budget:max_items"
+			run.NextAction = "create a new panel plan with a higher --max-items bound only if more verdicts are still worth reviewing"
 			if err := store.SaveRun(run); err != nil {
 				return run, err
 			}
@@ -131,9 +136,11 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		if run.Budget.MaxTotalTokens > 0 && tokensUsed >= run.Budget.MaxTotalTokens && len(existingFindings) < len(run.Targets) {
 			run.Status = "stopped_budget"
 			run.StoppedReason = "budget:max_total_tokens"
+			run.NextAction = "create a new panel plan with a higher --max-tokens bound only if more verdicts are still worth reviewing"
 		} else {
 			run.Status = "running"
 			run.StoppedReason = ""
+			run.NextAction = ""
 		}
 		if err := store.SaveRun(run); err != nil {
 			return run, err
@@ -144,6 +151,7 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 	}
 	run.Status = "verdicts_recorded"
 	run.StoppedReason = ""
+	run.NextAction = ""
 	run.CountsAfter = copyCounts(run.CountsBefore)
 	if err := store.SaveRun(run); err != nil {
 		return run, err
@@ -173,12 +181,25 @@ func laneIsMetered(lane LaneRef) bool {
 	}
 }
 
+func blockedNoLaneNextAction(class string) string {
+	class = strings.TrimSpace(class)
+	if class == "" {
+		class = "panel"
+	}
+	return "refresh route/model capability evidence or choose explicit lane for " + class + "; do not execute panel until a governed route is available"
+}
+
+func meteredBudgetBlockNextAction() string {
+	return "create a new panel plan with explicit --max-usd-micros plus --max-items or --max-tokens, then run only that bounded plan"
+}
+
 func failDryRun(store *Store, run Run, targetRef string, cause error) (Run, error) {
 	if cause == nil {
 		return run, nil
 	}
 	run.Status = "failed"
 	run.StoppedReason = truncateStoppedReason("target " + strings.TrimSpace(targetRef) + ": " + cause.Error())
+	run.NextAction = "inspect stopped_reason and recorded route evidence, then create a narrower plan or fix the target before retrying"
 	if err := store.SaveRun(run); err != nil {
 		return run, fmt.Errorf("%w; additionally failed to save failed panel run: %v", cause, err)
 	}

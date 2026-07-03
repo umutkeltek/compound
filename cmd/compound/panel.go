@@ -390,6 +390,9 @@ func printPanelRun(run panel.Run) {
 	if run.StoppedReason != "" {
 		fmt.Printf("- stopped_reason: %s\n", run.StoppedReason)
 	}
+	if run.NextAction != "" {
+		fmt.Printf("- next_action: %s\n", run.NextAction)
+	}
 	if run.WorkID != "" {
 		fmt.Printf("- work: %s\n", run.WorkID)
 	}
