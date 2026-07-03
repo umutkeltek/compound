@@ -224,6 +224,9 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 	if len(report.SourceListReviewNext) != 1 || report.SourceListReviewNext[0].Matches[0].Repo != "example/review" {
 		t.Fatalf("source-list review_next = %+v", report.SourceListReviewNext)
 	}
+	if report.SourceListReviewNextCount == nil || *report.SourceListReviewNextCount != 1 || report.SourceListEvalNextCount == nil || *report.SourceListEvalNextCount != 0 {
+		t.Fatalf("source-list follow-up counts missing: review=%v eval=%v", report.SourceListReviewNextCount, report.SourceListEvalNextCount)
+	}
 	if report.SourceListReviewNextMeaning != "owner_review_suggestions_not_open_review_debt" || report.SourceListEvalNextMeaning != "focused_capability_evaluation_follow_up_queue" {
 		t.Fatalf("source-list follow-up meanings missing: review=%q eval=%q", report.SourceListReviewNextMeaning, report.SourceListEvalNextMeaning)
 	}

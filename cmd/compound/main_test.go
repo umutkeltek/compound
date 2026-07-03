@@ -8132,6 +8132,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if len(sourceListReport.SourceListReviewNext) != 1 || sourceListReport.SourceListReviewNext[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list review_next missing match: %+v", sourceListReport.SourceListReviewNext)
 	}
+	if sourceListReport.SourceListReviewNextCount == nil || *sourceListReport.SourceListReviewNextCount != 1 || sourceListReport.SourceListEvalNextCount == nil || *sourceListReport.SourceListEvalNextCount != 0 {
+		t.Fatalf("source-list follow-up counts missing: review=%v eval=%v", sourceListReport.SourceListReviewNextCount, sourceListReport.SourceListEvalNextCount)
+	}
 	if sourceListReport.SourceListReviewNextMeaning != "owner_review_suggestions_not_open_review_debt" || sourceListReport.SourceListEvalNextMeaning != "focused_capability_evaluation_follow_up_queue" {
 		t.Fatalf("source-list follow-up meanings missing: review=%q eval=%q", sourceListReport.SourceListReviewNextMeaning, sourceListReport.SourceListEvalNextMeaning)
 	}
@@ -8206,6 +8209,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	}
 	if len(afterReview.SourceListReviewNext) != 0 || len(afterReview.SourceListEvalNext) != 1 {
 		t.Fatalf("recorded owner review should move source-list item from review-next to evaluation-next: %+v", afterReview)
+	}
+	if afterReview.SourceListReviewNextCount == nil || *afterReview.SourceListReviewNextCount != 0 || afterReview.SourceListEvalNextCount == nil || *afterReview.SourceListEvalNextCount != 1 {
+		t.Fatalf("recorded owner review follow-up counts missing: review=%v eval=%v", afterReview.SourceListReviewNextCount, afterReview.SourceListEvalNextCount)
 	}
 	evalMatch := afterReview.SourceListEvalNext[0].Matches[0]
 	if evalMatch.OwnerReviewStatus != "recorded" || evalMatch.OwnerReviewPath == "" || evalMatch.OwnerReviewNextAction == "" {

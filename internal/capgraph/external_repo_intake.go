@@ -51,6 +51,8 @@ type ExternalRepoIntakeReport struct {
 	SourceListByCapabilityEvaluationStatus map[string]int               `json:"source_list_counts_by_capability_evaluation_status,omitempty"`
 	SourceListReviewNextMeaning            string                       `json:"source_list_review_next_meaning,omitempty"`
 	SourceListEvalNextMeaning              string                       `json:"source_list_evaluation_next_meaning,omitempty"`
+	SourceListReviewNextCount              *int                         `json:"source_list_review_next_count,omitempty"`
+	SourceListEvalNextCount                *int                         `json:"source_list_evaluation_next_count,omitempty"`
 	SourceListReviewNext                   []ExternalRepoSourceListItem `json:"source_list_review_next,omitempty"`
 	SourceListEvalNext                     []ExternalRepoSourceListItem `json:"source_list_evaluation_next,omitempty"`
 	SourceListItems                        []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
@@ -282,6 +284,10 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 		}
 		report.SourceListReviewNext = sourceListReviewNext(items, 12)
 		report.SourceListEvalNext = sourceListEvaluationNext(items, 12)
+		reviewNextCount := len(report.SourceListReviewNext)
+		evalNextCount := len(report.SourceListEvalNext)
+		report.SourceListReviewNextCount = &reviewNextCount
+		report.SourceListEvalNextCount = &evalNextCount
 		report.SourceListReviewNextMeaning = "owner_review_suggestions_not_open_review_debt"
 		report.SourceListEvalNextMeaning = "focused_capability_evaluation_follow_up_queue"
 	}
