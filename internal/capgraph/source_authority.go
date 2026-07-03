@@ -21,25 +21,27 @@ const (
 // source. The source file remains evidence/rollback input; the Compound graph is
 // the surface future consumers should treat as authority.
 type SourceAuthorityRecord struct {
-	SchemaVersion       string   `json:"schema_version"`
-	ID                  string   `json:"id"`
-	CreatedAt           string   `json:"created_at"`
-	SourcePath          string   `json:"source_path"`
-	SourceKind          string   `json:"source_kind"`
-	SourceOwner         string   `json:"source_owner"`
-	SourceClass         string   `json:"source_class"`
-	SourceRevision      string   `json:"source_revision"`
-	ImportedVia         string   `json:"imported_via"`
-	AuthorityRef        string   `json:"authority_ref"`
-	AuthorityStatus     string   `json:"authority_status"`
-	SourceRole          string   `json:"source_role"`
-	Retires             string   `json:"retires"`
-	Rollback            string   `json:"rollback"`
-	NodeIDs             []string `json:"node_ids"`
-	EdgeIDs             []string `json:"edge_ids"`
-	SourceObservationID string   `json:"source_observation_id,omitempty"`
-	NoPromoteIDs        []string `json:"no_promote_ids,omitempty"`
-	EvidenceRefs        []string `json:"evidence_refs"`
+	SchemaVersion          string   `json:"schema_version"`
+	ID                     string   `json:"id"`
+	CreatedAt              string   `json:"created_at"`
+	SourceObservedAt       string   `json:"source_observed_at,omitempty"`
+	SourceAgeHoursAtImport int      `json:"source_age_hours_at_import"`
+	SourcePath             string   `json:"source_path"`
+	SourceKind             string   `json:"source_kind"`
+	SourceOwner            string   `json:"source_owner"`
+	SourceClass            string   `json:"source_class"`
+	SourceRevision         string   `json:"source_revision"`
+	ImportedVia            string   `json:"imported_via"`
+	AuthorityRef           string   `json:"authority_ref"`
+	AuthorityStatus        string   `json:"authority_status"`
+	SourceRole             string   `json:"source_role"`
+	Retires                string   `json:"retires"`
+	Rollback               string   `json:"rollback"`
+	NodeIDs                []string `json:"node_ids"`
+	EdgeIDs                []string `json:"edge_ids"`
+	SourceObservationID    string   `json:"source_observation_id,omitempty"`
+	NoPromoteIDs           []string `json:"no_promote_ids,omitempty"`
+	EvidenceRefs           []string `json:"evidence_refs"`
 }
 
 type SourceAuthorityInput struct {
@@ -48,6 +50,7 @@ type SourceAuthorityInput struct {
 	SourceOwner         string
 	SourceClass         string
 	SourceRevision      string
+	SourceObservedAt    string
 	ImportedVia         string
 	NodeIDs             []string
 	EdgeIDs             []string
@@ -97,26 +100,42 @@ func RecordSourceAuthority(homePath string, in SourceAuthorityInput, now time.Ti
 	if now.IsZero() {
 		now = time.Now()
 	}
+	sourceKind := firstNonEmpty(in.SourceKind, "generated_view")
+	sourceClass := firstNonEmpty(in.SourceClass, "source")
+	sourceObservedAt := strings.TrimSpace(in.SourceObservedAt)
+	if sourceObservedAt == "" {
+		sourceObservedAt = now.UTC().Format(time.RFC3339)
+	}
+	sourceObservedTime, err := time.Parse(time.RFC3339, sourceObservedAt)
+	if err != nil {
+		return SourceAuthorityRecord{}, fmt.Errorf("source_observed_at must be RFC3339: %w", err)
+	}
+	sourceAgeHours := int(now.UTC().Sub(sourceObservedTime.UTC()).Hours())
+	if sourceAgeHours < 0 {
+		sourceAgeHours = 0
+	}
 	rec := SourceAuthorityRecord{
-		SchemaVersion:       SourceAuthoritySchemaVersion,
-		ID:                  sourceAuthorityID(in.SourcePath, in.SourceRevision, in.ImportedVia),
-		CreatedAt:           now.UTC().Format(time.RFC3339),
-		SourcePath:          strings.TrimSpace(in.SourcePath),
-		SourceKind:          firstNonEmpty(in.SourceKind, "generated_view"),
-		SourceOwner:         firstNonEmpty(in.SourceOwner, "capability-source"),
-		SourceClass:         firstNonEmpty(in.SourceClass, "source"),
-		SourceRevision:      strings.TrimSpace(in.SourceRevision),
-		ImportedVia:         strings.TrimSpace(in.ImportedVia),
-		AuthorityRef:        CapabilityGraphAuthorityRef,
-		AuthorityStatus:     "compound_authoritative",
-		SourceRole:          "evidence_only_input",
-		Retires:             "source_view_authority:" + strings.TrimSpace(in.SourcePath),
-		Rollback:            "re-import this source revision or a newer source; source file remains unchanged",
-		NodeIDs:             cleanSorted(in.NodeIDs),
-		EdgeIDs:             cleanSorted(in.EdgeIDs),
-		SourceObservationID: strings.TrimSpace(in.SourceObservationID),
-		NoPromoteIDs:        cleanSorted(in.NoPromoteIDs),
-		EvidenceRefs:        cleanSorted(in.EvidenceRefs),
+		SchemaVersion:          SourceAuthoritySchemaVersion,
+		ID:                     sourceAuthorityID(sourceKind, sourceClass, in.SourceRevision, in.ImportedVia),
+		CreatedAt:              now.UTC().Format(time.RFC3339),
+		SourceObservedAt:       sourceObservedTime.UTC().Format(time.RFC3339),
+		SourceAgeHoursAtImport: sourceAgeHours,
+		SourcePath:             strings.TrimSpace(in.SourcePath),
+		SourceKind:             sourceKind,
+		SourceOwner:            firstNonEmpty(in.SourceOwner, "capability-source"),
+		SourceClass:            sourceClass,
+		SourceRevision:         strings.TrimSpace(in.SourceRevision),
+		ImportedVia:            strings.TrimSpace(in.ImportedVia),
+		AuthorityRef:           CapabilityGraphAuthorityRef,
+		AuthorityStatus:        "compound_authoritative",
+		SourceRole:             "evidence_only_input",
+		Retires:                "source_view_authority:" + strings.TrimSpace(in.SourcePath),
+		Rollback:               "re-import this source revision or a newer source; source file remains unchanged",
+		NodeIDs:                cleanSorted(in.NodeIDs),
+		EdgeIDs:                cleanSorted(in.EdgeIDs),
+		SourceObservationID:    strings.TrimSpace(in.SourceObservationID),
+		NoPromoteIDs:           cleanSorted(in.NoPromoteIDs),
+		EvidenceRefs:           cleanSorted(in.EvidenceRefs),
 	}
 	if len(rec.NodeIDs) == 0 {
 		return SourceAuthorityRecord{}, fmt.Errorf("source authority requires at least one imported node")
@@ -145,6 +164,7 @@ func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
 		if strings.TrimSpace(rec.ID) == "" {
 			return fmt.Errorf("source authority record missing id")
 		}
+		backfillSourceAuthorityRecord(&rec)
 		if _, seen := byID[rec.ID]; !seen {
 			order = append(order, rec.ID)
 		}
@@ -156,6 +176,25 @@ func LoadSourceAuthority(homePath string) ([]SourceAuthorityRecord, error) {
 		out = append(out, byID[id])
 	}
 	return out, err
+}
+
+func backfillSourceAuthorityRecord(rec *SourceAuthorityRecord) {
+	if strings.TrimSpace(rec.SourceObservedAt) == "" {
+		rec.SourceObservedAt = rec.CreatedAt
+	}
+	if rec.SourceAgeHoursAtImport != 0 {
+		return
+	}
+	importedAt, importedErr := time.Parse(time.RFC3339, rec.CreatedAt)
+	observedAt, observedErr := time.Parse(time.RFC3339, rec.SourceObservedAt)
+	if importedErr != nil || observedErr != nil {
+		return
+	}
+	ageHours := int(importedAt.UTC().Sub(observedAt.UTC()).Hours())
+	if ageHours < 0 {
+		ageHours = 0
+	}
+	rec.SourceAgeHoursAtImport = ageHours
 }
 
 // AuthorityRevision returns a content digest for the graph authority state that
@@ -186,8 +225,8 @@ func sourceAuthorityLog(homePath string) string {
 	return filepath.Join(homePath, "registries", "capability-source-authority.jsonl")
 }
 
-func sourceAuthorityID(path, revision, via string) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{path, revision, via}, "|")))
+func sourceAuthorityID(kind, class, revision, via string) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{kind, class, revision, via}, "|")))
 	return "capsrc_" + hex.EncodeToString(sum[:])[:12]
 }
 

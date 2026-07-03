@@ -68,6 +68,72 @@ func readNonEmptyLines(t *testing.T, path string) []string {
 	return out
 }
 
+func TestRecordSourceAuthorityDedupesSameRevisionAcrossSnapshotPaths(t *testing.T) {
+	home, _ := newStore(t)
+	first, err := RecordSourceAuthority(home, SourceAuthorityInput{
+		SourcePath:     "imports/mcporter-list-20260701T000000Z.json",
+		SourceKind:     "catalog",
+		SourceOwner:    "tool-topology",
+		SourceClass:    "mcporter-json",
+		SourceRevision: "sha256:same-snapshot",
+		ImportedVia:    "compound capability import-topology",
+		NodeIDs:        []string{"mcp:context7"},
+		EvidenceRefs:   []string{"mcporter_json:same"},
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RecordSourceAuthority(home, SourceAuthorityInput{
+		SourcePath:     "imports/mcporter-list-20260704T000000Z.json",
+		SourceKind:     "catalog",
+		SourceOwner:    "tool-topology",
+		SourceClass:    "mcporter-json",
+		SourceRevision: "sha256:same-snapshot",
+		ImportedVia:    "compound capability import-topology",
+		NodeIDs:        []string{"mcp:context7"},
+		EvidenceRefs:   []string{"mcporter_json:same"},
+	}, t0.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("same source revision should reuse source authority id: first=%s second=%s", first.ID, second.ID)
+	}
+	records, err := LoadSourceAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("same source revision should keep one source record, got %d: %+v", len(records), records)
+	}
+	if records[0].SourcePath != "imports/mcporter-list-20260704T000000Z.json" {
+		t.Fatalf("latest source path should win, got %q", records[0].SourcePath)
+	}
+}
+
+func TestLoadSourceAuthorityBackfillsLegacyObservedAt(t *testing.T) {
+	home, _ := newStore(t)
+	logPath := sourceAuthorityLog(home)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"schema_version":"compound.capability_source_authority.v0.1","id":"capsrc_legacy","created_at":"2026-07-01T00:00:00Z","source_path":"imports/mcporter-list.json","source_kind":"catalog","source_owner":"tool-topology","source_class":"mcporter-json","source_revision":"sha256:legacy","imported_via":"compound capability import-topology","authority_ref":"compound://registries/capability-graph","authority_status":"compound_authoritative","source_role":"evidence_only_input","retires":"source_view_authority:imports/mcporter-list.json","rollback":"re-import source","node_ids":["mcp:context7"],"edge_ids":[],"evidence_refs":["mcporter_json:legacy"]}` + "\n"
+	if err := os.WriteFile(logPath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := LoadSourceAuthority(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v", records)
+	}
+	if records[0].SourceObservedAt != "2026-07-01T00:00:00Z" || records[0].SourceAgeHoursAtImport != 0 {
+		t.Fatalf("legacy source timing not backfilled: %+v", records[0])
+	}
+}
+
 func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	home, s := newStore(t)
 	if err := s.Add(Node{ID: "skill:pricing", Kind: "skill", Name: "Pricing", Triggers: []string{"pricing"}}); err != nil {

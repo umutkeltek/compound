@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Capability source freshness note: `compound capability tool-boundary-doctor` reads capability source-authority records and reports `source_freshness` with per-source age, max-age, and refresh command; stale imported MCP/tool/skill snapshots warn through the existing boundary doctor instead of creating a separate registry.
+
 ASC daily source note: `tools/asc_daily_signals.ts` is a rented Bun edge that converts any App Store Connect daily snapshot collector output into `compound.product_signal_export.v0.1` files and applies them only through `compound product signal`; `product doctor` warns when a registered app-store product has no ASC signal or its latest ASC signal is older than 48h, with an exact fix command. `ops/launchd/` is only an optional macOS scheduler example; any scheduler that can run the same command is valid.
 
 Memory graph zoom note: `internal/mem` exposes `RecallGraphOpts` with optional `Direction` (`up`/`down`) and relation-kind filters; `compound memory graph` accepts `--direction up|down` and repeatable/comma `--kind`, so `part_of` chains can zoom generic-to-specific without pulling sibling subtrees or unrelated relation kinds.

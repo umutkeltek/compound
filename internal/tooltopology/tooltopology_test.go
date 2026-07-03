@@ -237,6 +237,74 @@ func TestDoctorBoundaryReportsNonExecutingMCPAndPluginInventory(t *testing.T) {
 	}
 }
 
+func TestDoctorBoundaryWarnsOnStaleCapabilitySourceRecords(t *testing.T) {
+	home := t.TempDir()
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addBoundaryDoctorNodes(t, store)
+	staleImport := time.Now().UTC().Add(-15 * 24 * time.Hour)
+	if _, err := capgraph.RecordSourceAuthority(home, capgraph.SourceAuthorityInput{
+		SourcePath:     "fixtures/imports/mcporter-list-20260701T000000Z.json",
+		SourceKind:     "catalog",
+		SourceOwner:    "tool-topology",
+		SourceClass:    "mcporter-json",
+		SourceRevision: "sha256:stale",
+		ImportedVia:    "compound capability import-topology",
+		NodeIDs:        []string{"mcp:context7", "tool:agent-browser"},
+		EvidenceRefs:   []string{"mcporter_json:stale"},
+	}, staleImport); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := DoctorBoundary(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "warn" {
+		t.Fatalf("status = %s, want warn: %+v", report.Status, report.Checks)
+	}
+	if !hasBoundaryCheck(report, "source_freshness", "warn") {
+		t.Fatalf("missing stale source_freshness warning: %+v", report.Checks)
+	}
+	if detail := boundaryCheckDetail(report, "source_freshness"); !strings.Contains(detail, "mcporter list --json") || !strings.Contains(detail, "compound capability import-topology") {
+		t.Fatalf("freshness detail should include exact refresh command, got %q", detail)
+	}
+}
+
+func TestDoctorBoundaryAcceptsFreshCapabilitySourceRecords(t *testing.T) {
+	home := t.TempDir()
+	store, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addBoundaryDoctorNodes(t, store)
+	if _, err := capgraph.RecordSourceAuthority(home, capgraph.SourceAuthorityInput{
+		SourcePath:     "fixtures/imports/mcporter-list-20260704T000000Z.json",
+		SourceKind:     "catalog",
+		SourceOwner:    "tool-topology",
+		SourceClass:    "mcporter-json",
+		SourceRevision: "sha256:fresh",
+		ImportedVia:    "compound capability import-topology",
+		NodeIDs:        []string{"mcp:context7", "tool:agent-browser"},
+		EvidenceRefs:   []string{"mcporter_json:fresh"},
+	}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := DoctorBoundary(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("status = %s, want ok: %+v", report.Status, report.Checks)
+	}
+	if !hasBoundaryCheck(report, "source_freshness", "ok") {
+		t.Fatalf("missing fresh source_freshness check: %+v", report.Checks)
+	}
+}
+
 func TestDoctorBoundaryFailsWhenPluginAdapterSurfaces(t *testing.T) {
 	home := t.TempDir()
 	store, err := capgraph.Open(home)
@@ -271,6 +339,28 @@ func hasBoundaryCheck(report BoundaryDoctorReport, name, status string) bool {
 		}
 	}
 	return false
+}
+
+func boundaryCheckDetail(report BoundaryDoctorReport, name string) string {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check.Detail
+		}
+	}
+	return ""
+}
+
+func addBoundaryDoctorNodes(t *testing.T, store *capgraph.Store) {
+	t.Helper()
+	for _, node := range []capgraph.Node{
+		{ID: "mcp:context7", Kind: "mcp", Name: "context7", Triggers: []string{"docs"}, Weight: 1},
+		{ID: "tool:agent-browser", Kind: "tool", Name: "agent-browser", Triggers: []string{"browser"}, Weight: 1},
+		{ID: "adapter:plugin:browser-openai-bundled", Kind: "adapter", Name: "browser plugin adapter", Triggers: []string{"plugin", "browser"}, Weight: 1, Retired: true},
+	} {
+		if err := store.Add(node); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func validTopology() Topology {
