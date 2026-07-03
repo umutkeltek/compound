@@ -166,6 +166,23 @@ func validCLIContextPack() envelope.ContextPack {
 	}
 }
 
+func writeCLIContextPackArtifact(t *testing.T, homePath, id string) {
+	t.Helper()
+	pack := validCLIContextPack()
+	pack.ID = id
+	path := filepath.Join(homePath, "context", "packs", id+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir context packs: %v", err)
+	}
+	data, err := json.MarshalIndent(pack, "", " ")
+	if err != nil {
+		t.Fatalf("marshal context pack: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write context pack: %v", err)
+	}
+}
+
 func TestHomeArchiveCommandsRoundTrip(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -673,6 +690,7 @@ func TestWorkCreateCLIWiresEnvelopeFields(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
+	writeCLIContextPackArtifact(t, homePath, "ctx_cli_create")
 
 	out := captureStdout(t, func() {
 		cmdWork([]string{
@@ -768,6 +786,7 @@ func TestWorkImportPacketReadyClosesThroughReceiptTransition(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
+	writeCLIContextPackArtifact(t, homePath, "ctx_packet_cli")
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
 	out := captureStdout(t, func() {
 		cmdWork([]string{"import-packet", packetPath, "--state", "ready", "--context-pack", "ctx_packet_cli"})
@@ -1179,6 +1198,7 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open work: %v", err)
 	}
+	writeCLIContextPackArtifact(t, homePath, "ctx_packet")
 	imported, err := store.ImportPacket(filepath.Join("..", "..", "fixtures", "work", "goal-packet.md"), work.PacketImportOptions{
 		Owner:         "compound-core",
 		State:         "ready",
@@ -1186,37 +1206,6 @@ func TestWorkActivePacketProofCommand(t *testing.T) {
 	}, cliTestNow)
 	if err != nil {
 		t.Fatalf("import packet: %v", err)
-	}
-	contextDir := filepath.Join(homePath, "context", "packs")
-	if err := os.MkdirAll(contextDir, 0o755); err != nil {
-		t.Fatalf("mkdir context packs: %v", err)
-	}
-	pack := envelope.ContextPack{
-		Header: envelope.Header{
-			SchemaVersion: envelope.SVContextPack,
-			ID:            "ctx_packet",
-			CreatedAt:     cliTestNow.Format(time.RFC3339),
-			Producer:      envelope.Producer{Kind: "test", Name: "compound-cli-test"},
-			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
-			Privacy:       "private",
-			Risk:          "tier1",
-			Uncertainty:   envelope.Uncertainty{Level: "known"},
-		},
-		SummaryMD:          "cli test context pack",
-		Included:           []envelope.IncludedRef{},
-		Excluded:           []envelope.ExcludedRef{},
-		ActiveInstructions: []string{},
-		ActiveHooks:        []string{},
-		ActiveDecisions:    []string{},
-		RequiredChecks:     []string{},
-		Avoid:              []string{},
-	}
-	packJSON, err := json.MarshalIndent(pack, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal context pack: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(contextDir, "ctx_packet.json"), packJSON, 0o644); err != nil {
-		t.Fatalf("write context pack: %v", err)
 	}
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)
@@ -1292,6 +1281,7 @@ func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
 		t.Fatalf("open work: %v", err)
 	}
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	writeCLIContextPackArtifact(t, homePath, "ctx_packet")
 	imported, err := store.ImportPacket(packetPath, work.PacketImportOptions{
 		Owner:         "compound-core",
 		State:         "ready",
@@ -1299,36 +1289,6 @@ func TestWorkActivePacketProofDetectsChangedSourcePacket(t *testing.T) {
 	}, cliTestNow)
 	if err != nil {
 		t.Fatalf("import packet: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(homePath, "context", "packs"), 0o755); err != nil {
-		t.Fatalf("mkdir context packs: %v", err)
-	}
-	pack := envelope.ContextPack{
-		Header: envelope.Header{
-			SchemaVersion: envelope.SVContextPack,
-			ID:            "ctx_packet",
-			CreatedAt:     cliTestNow.Format(time.RFC3339),
-			Producer:      envelope.Producer{Kind: "test", Name: "compound-cli-test"},
-			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
-			Privacy:       "private",
-			Risk:          "tier1",
-			Uncertainty:   envelope.Uncertainty{Level: "known"},
-		},
-		SummaryMD:          "packet context",
-		Included:           []envelope.IncludedRef{},
-		Excluded:           []envelope.ExcludedRef{},
-		ActiveInstructions: []string{},
-		ActiveHooks:        []string{},
-		ActiveDecisions:    []string{},
-		RequiredChecks:     []string{},
-		Avoid:              []string{},
-	}
-	packJSON, err := json.MarshalIndent(pack, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal context pack: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(homePath, "context", "packs", "ctx_packet.json"), packJSON, 0o644); err != nil {
-		t.Fatalf("write context pack: %v", err)
 	}
 	if _, err := store.Claim(imported.Work.ID, "codex", cliTestNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet: %v", err)

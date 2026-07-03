@@ -26,6 +26,7 @@ func newStore(t *testing.T) *Store {
 // reference the chain (context pack -> runs -> artifacts).
 func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	s := newStore(t)
+	writeContextPack(t, s, "ctx_abc123")
 	w, err := s.Create(CreateInput{Owner: "memory-lane", SuccessPredicate: "timeline shows old->new", ContextPackID: "ctx_abc123", DesiredOutcome: "alive memory"}, fixedNow)
 	if err != nil {
 		t.Fatalf("create: %v", err)

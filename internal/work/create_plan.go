@@ -129,6 +129,9 @@ func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAtta
 	if !plan.Policy.Allowed {
 		return w, fmt.Errorf("cannot create work %s: policy %s (decision %s)", w.ID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
 	}
+	if err := s.validateContextPackRef(w.IDs.ContextPackID); err != nil {
+		return w, err
+	}
 	state := w.State
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID

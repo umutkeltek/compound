@@ -138,6 +138,28 @@ func (s *Store) Create(in CreateInput, now time.Time) (envelope.WorkEnvelope, er
 	return s.admitWork(plan, now, "created", attached)
 }
 
+func (s *Store) validateContextPackRef(contextPackID string) error {
+	contextPackID = strings.TrimSpace(contextPackID)
+	if contextPackID == "" {
+		return nil
+	}
+	var pack envelope.ContextPack
+	path := filepath.Join(s.home, "context", "packs", contextPackID+".json")
+	if err := s.readJSON(path, &pack); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("context_pack_id %q does not resolve to %s", contextPackID, filepath.ToSlash(filepath.Join("context", "packs", contextPackID+".json")))
+		}
+		return fmt.Errorf("read context_pack_id %q: %w", contextPackID, err)
+	}
+	if pack.ID != contextPackID {
+		return fmt.Errorf("context_pack_id %q does not match artifact id %q", contextPackID, pack.ID)
+	}
+	if err := pack.Validate(); err != nil {
+		return fmt.Errorf("context_pack_id %q invalid: %w", contextPackID, err)
+	}
+	return nil
+}
+
 // --- show / list ---
 
 func (s *Store) Get(workID string) (envelope.WorkEnvelope, error) {
@@ -319,6 +341,9 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	}
 	if !plan.Policy.Allowed {
 		return w, fmt.Errorf("cannot advance work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
+	}
+	if err := s.validateContextPackRef(in.ContextPackID); err != nil {
+		return w, err
 	}
 	from := w.State
 	w.State = in.To

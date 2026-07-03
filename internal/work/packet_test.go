@@ -157,6 +157,7 @@ func TestImportedPacketCanDriveReceiptTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	writeContextPack(t, store, "ctx_packet")
 	report, err := store.ImportPacket(packetPath, PacketImportOptions{
 		State:         "ready",
 		ContextPackID: "ctx_packet",

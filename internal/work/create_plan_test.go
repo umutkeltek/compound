@@ -111,6 +111,7 @@ func TestCreateRejectsInvalidExplicitWorkID(t *testing.T) {
 
 func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
 	s := newStore(t)
+	writeContextPack(t, s, "ctx_create")
 	w, err := s.Create(CreateInput{
 		Owner:            "compound-core",
 		Actor:            "codex",
@@ -139,6 +140,26 @@ func TestCreateRecordsAdmissionPolicyBeforeWork(t *testing.T) {
 	}
 	if len(events) != 1 || !contains(events[0].Attached, ai.ID) || !contains(events[0].Attached, w.PolicyDecisionID) || !contains(events[0].Attached, "ctx_create") {
 		t.Fatalf("create event missing policy/context attachments: %+v", events)
+	}
+}
+
+func TestCreateRejectsMissingContextPack(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		SuccessPredicate: "create refuses missing context pack",
+		ContextPackID:    "ctx_missing",
+	}, fixedNow)
+	if err == nil || !strings.Contains(err.Error(), `context_pack_id "ctx_missing"`) {
+		t.Fatalf("expected missing context pack error, got %v", err)
+	}
+	works, listErr := s.List()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(works) != 0 {
+		t.Fatalf("missing context pack create must not persist work: %+v", works)
 	}
 }
 

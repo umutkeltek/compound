@@ -13,6 +13,7 @@ import (
 func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	writeContextPack(t, s, "ctx_packet")
 	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
 		Owner:         "compound-core",
 		State:         "ready",
@@ -21,7 +22,6 @@ func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import packet: %v", err)
 	}
-	writeContextPack(t, s, "ctx_packet")
 	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet work: %v", err)
 	}
@@ -62,6 +62,7 @@ func TestActivePacketProofReportsClosedPacketChain(t *testing.T) {
 func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
+	writeContextPack(t, s, "ctx_packet")
 	imported, err := s.ImportPacket(packetPath, PacketImportOptions{
 		Owner:         "compound-core",
 		State:         "ready",
@@ -70,7 +71,6 @@ func TestActivePacketProofReportsArchivedClosedPacketChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import packet: %v", err)
 	}
-	writeContextPack(t, s, "ctx_packet")
 	if _, err := s.Claim(imported.Work.ID, "codex", fixedNow.Add(time.Second)); err != nil {
 		t.Fatalf("claim packet work: %v", err)
 	}
