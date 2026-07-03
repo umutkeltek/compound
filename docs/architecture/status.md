@@ -18,6 +18,8 @@ Panel route-proof note: panel apply receipts include route evidence refs from le
 
 Panel execution-failure note: `compound panel run` persists target execution failures as `status=failed` with `stopped_reason`, instead of leaving no-verdict runs in `running`; route evidence already recorded before the failure remains available for diagnosis.
 
+Panel run-apply note: `compound panel run --plan ... --fixtures DIR --apply` or gateway flags with `--apply` executes the dry run first and calls `panel.Apply` only after `verdicts_recorded`; standalone `--apply` keeps the existing apply-only path.
+
 Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.
 
 Proof-check status note: `compound proof-check [--json] [--dry-run] [--repo P]` runs the deterministic local verification bundle: `go test -count=1 ./...`, `go vet ./...`, `go build ./...`, `git diff --check`, strict architecture doctor, memory doctor, and public redact scanning of changed files. This is Stage 4 deterministic execution support: repeated proof chores become one command instead of ad hoc operator ritual.

@@ -100,10 +100,7 @@ func cmdPanel(args []string) {
 		die(err)
 		run, err := store.LoadRun(parsed.planID)
 		die(err)
-		if parsed.apply {
-			run, err = panel.Apply(homePath, run, time.Now)
-			die(err)
-		} else {
+		if panelRunRequestsExecution(parsed) {
 			caller, evidenceRefs := panelRunCaller(parsed)
 			run.EvidenceRefs = appendPanelEvidenceRefs(run.EvidenceRefs, evidenceRefs...)
 			run, err = panel.ExecuteDryRun(context.Background(), homePath, run, caller, time.Now)
@@ -120,6 +117,10 @@ func cmdPanel(args []string) {
 				}
 				die(err)
 			}
+		}
+		if parsed.apply && run.Status == "verdicts_recorded" {
+			run, err = panel.Apply(homePath, run, time.Now)
+			die(err)
 		}
 		if parsed.jsonOut {
 			printJSON(run)
@@ -285,7 +286,7 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 		fmt.Fprintln(os.Stderr, panelRunUsage())
 		os.Exit(2)
 	}
-	if parsed.apply && (fixtureSet || parsed.gatewayFlags) {
+	if parsed.apply && !fixtureSet && parsed.gatewayFlags && strings.TrimSpace(effectiveBaseURL) == "" {
 		fmt.Fprintln(os.Stderr, panelRunUsage())
 		os.Exit(2)
 	}
@@ -297,7 +298,17 @@ func parsePanelRunArgs(args []string) panelRunArgs {
 }
 
 func panelRunUsage() string {
-	return "usage: compound panel run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--skip-loaded-context-preflight] [--json]"
+	return "usage: compound panel run --plan <run_id> [(--fixtures <dir>|--openai-compatible-url U) [--apply]|--apply] [--api-key-env ENV] [--model-override lane=model]... [--skip-loaded-context-preflight] [--json]"
+}
+
+func panelRunRequestsExecution(parsed panelRunArgs) bool {
+	if strings.TrimSpace(parsed.fixtures) != "" {
+		return true
+	}
+	if strings.TrimSpace(parsed.openAICompatibleURL) != "" {
+		return true
+	}
+	return parsed.apply && parsed.gatewayFlags
 }
 
 func parsePanelModelOverride(value string) (string, string) {

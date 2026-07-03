@@ -140,6 +140,43 @@ func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 	}
 }
 
+func TestPanelRunCLIExecutesAndAppliesInOneCommand(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdRoute([]string{"import-model-capabilities", filepath.Join("..", "..", "fixtures", "panel", "model-capabilities.yaml")})
+	})
+	captureStdout(t, func() {
+		cmdPanel([]string{"import-lenses", filepath.Join("..", "..", "fixtures", "panel", "lens-manifest.yaml")})
+	})
+	seedPanelCLITarget(t, homePath, "mcand_example_api_clean")
+
+	planOut := captureStdout(t, func() {
+		cmdPanel([]string{"plan", "--target-kind", "memory_candidate", "--target", "mcand_example_api_clean", "--state", "parked", "--not-privacy-sensitive", "synthetic fixtures", "--limit", "1", "--max-items", "1", "--json"})
+	})
+	var planned panel.Run
+	if err := json.Unmarshal([]byte(planOut), &planned); err != nil {
+		t.Fatalf("parse plan JSON: %v\n%s", err, planOut)
+	}
+
+	runOut := captureStdout(t, func() {
+		cmdPanel([]string{"run", "--plan", planned.ID, "--fixtures", filepath.Join("..", "..", "fixtures", "panel"), "--apply", "--json"})
+	})
+	var applied panel.Run
+	if err := json.Unmarshal([]byte(runOut), &applied); err != nil {
+		t.Fatalf("parse applied run JSON: %v\n%s", err, runOut)
+	}
+	if applied.Status != "applied" || applied.ReceiptID == "" || applied.TransitionID == "" {
+		t.Fatalf("applied run = %+v, want applied with receipt and transition", applied)
+	}
+	if len(applied.Findings) != 1 || !applied.Findings[0].Application.Applied || applied.Findings[0].Application.ClaimRef == "" {
+		t.Fatalf("finding application = %+v, want promoted claim", applied.Findings)
+	}
+}
+
 func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
