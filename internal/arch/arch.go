@@ -51,6 +51,7 @@ var Classification = map[string]Class{
 	// shared leaf
 	"breadth":        Leaf,
 	"candidates":     Leaf,
+	"release":        Leaf,
 	"reviewartifact": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
 	"mem": MemTarget,

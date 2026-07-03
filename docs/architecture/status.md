@@ -23,6 +23,7 @@ Panel run-apply note: `compound panel run --plan ... --fixtures DIR --apply` or 
 Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.
 
 Proof-check status note: `compound proof-check [--json] [--dry-run] [--repo P]` runs the deterministic local verification bundle: `go test -count=1 ./...`, `go vet ./...`, `go build ./...`, `git diff --check`, strict architecture doctor, memory doctor, and public redact scanning of changed files. This is Stage 4 deterministic execution support: repeated proof chores become one command instead of ad hoc operator ritual.
+Public export status note: `compound release export-public [--target archive.tar.gz]` writes a public source archive from `git archive HEAD`, not a raw working-tree zip, and fails if tracked export entries include private/runtime roots (`docs_private/`, `.claude/`, `.compound-private/`, `Plans/`, `memory/`, `bin/`), Finder metadata, nested `.git`, root built binary, or `*.private.md`.
 Private plan-draft hygiene note: root `Plans/` is ignored like `docs_private/`; operator packet drafts stay private overlay and do not enter public proof/redact changed-file scans until deliberately promoted into tracked docs or fixtures.
 
 Route outcome status note: `compound route outcome-review` resolves existing joins by `--route-id`/`--route-evidence` plus `--receipt`/`--receipt-id`, or by `--work-id` when the work event log points to a receipt and the route ledger links that receipt/work. Supported joins record as route evidence, not review debt; remorse/failed joins remain the only path to route observations/no-promote.
@@ -52,6 +53,7 @@ Capability status note: `capgraph` owns `compound capability skill-plan`; skill 
 |---|---|---|
 | `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook`, `localmodel` | canonical | runtime spine |
 | `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
+| `release` | canonical leaf | public source export gate over `git archive HEAD`; validates tracked archive entries do not include private/runtime surfaces |
 | `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans |
 | `distiller` | canonical | trace/runtime-work/LLM-response -> richer prior state -> candidate set -> critique -> adjudication input; doctor surfaces eval/method/policy/capability debt and turns eval/method/policy/failure/taste candidates into reviewed eval-plan/improvement-plan/rule-plan/taste-plan artifacts |
 | `schema` | canonical | JSON Schema export plus contract-aware validation for envelope/runtime/candidate/capability/product/route adapter contracts; structural schemas are exported, semantic checks stay with owning runtime validators |
