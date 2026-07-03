@@ -253,7 +253,7 @@ usage:
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
   compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
-  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--capability-limit N] read-only open work / receipt / transition board; optional bounded capability offers; no dispatch
+  compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional bounded capability offers and route plan; no dispatch
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
   compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
@@ -4222,12 +4222,13 @@ func validateKnownFlags(args []string, valueFlags, boolFlags map[string]bool) er
 
 const workbenchCapabilityOfferLimit = 12
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--capability-task T] [--capability-harness H] [--capability-limit N] [--review-area A] [--include-archived]"
+const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
-	CapabilitySurface *capgraph.SurfaceReport `json:"capability_surface,omitempty"`
-	ReviewQueue       *workbenchReviewQueue   `json:"review_queue,omitempty"`
+	CapabilitySurface *capgraph.SurfaceReport            `json:"capability_surface,omitempty"`
+	RoutePlan         *routeevidence.CapabilityRoutePlan `json:"route_plan,omitempty"`
+	ReviewQueue       *workbenchReviewQueue              `json:"review_queue,omitempty"`
 }
 
 type workbenchReviewQueue struct {
@@ -4266,6 +4267,8 @@ func cmdWorkbench(args []string) {
 	capabilityTask := ""
 	capabilityHarness := ""
 	capabilityLimit := workbenchCapabilityOfferLimit
+	routeClass := ""
+	routePrivacySensitive := false
 	reviewArea := ""
 	includeArchived := false
 	for i := 0; i < len(args); i++ {
@@ -4334,6 +4337,19 @@ func cmdWorkbench(args []string) {
 				os.Exit(2)
 			}
 			capabilityLimit = n
+		case "--route-class":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			routeClass = strings.TrimSpace(args[i])
+			if routeClass == "" {
+				fmt.Fprintln(os.Stderr, "error: --route-class must be non-empty")
+				os.Exit(2)
+			}
+		case "--route-privacy-sensitive":
+			routePrivacySensitive = true
 		case "--review-area":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, workbenchUsage)
@@ -4402,13 +4418,24 @@ func cmdWorkbench(args []string) {
 		surface = surface.LimitOffers(capabilityLimit)
 		capabilitySurface = &surface
 	}
+	var routePlan *routeevidence.CapabilityRoutePlan
+	if routeClass != "" {
+		plan, err := routeevidence.PlanCapabilityRoute(homePath, routeClass, routeevidence.CapabilityRoutePlanOptions{
+			PrivacySensitive: routePrivacySensitive,
+		}, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		routePlan = &plan
+	}
 	reviewReport, err := buildReviewQueueReport(homePath, reviewArea, includeArchived)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 	reviewQueue := buildWorkbenchReviewQueue(reviewReport)
-	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, ReviewQueue: &reviewQueue}
+	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
 		return
@@ -4436,6 +4463,29 @@ func cmdWorkbench(args []string) {
 				break
 			}
 			fmt.Printf("capability_offer: %s %-28s score %.1f [%s]\n", offer.Kind, offer.ID, offer.Score, offer.Why)
+		}
+	}
+	if routePlan != nil {
+		fmt.Printf("route_plan status=%s class=%q privacy_sensitive=%t lanes=%d omitted=%d authority=%s\n",
+			routePlan.Status,
+			routePlan.CapabilityClass,
+			routePlan.PrivacySensitive,
+			len(routePlan.Chain),
+			len(routePlan.Omitted),
+			routePlan.AuthorityRef,
+		)
+		for i, lane := range routePlan.Chain {
+			if i >= 3 {
+				break
+			}
+			fmt.Printf("route_lane: %d %s tier=%s cost_class=%s role=%s harness=%s\n",
+				lane.Position,
+				lane.ModelID,
+				lane.Tier,
+				lane.CostClass,
+				lane.GateRole,
+				lane.Harness,
+			)
 		}
 	}
 	fmt.Printf("review_queue total=%d review_required=%d ready_to_apply=%d ok=%d authority=%s\n",

@@ -990,6 +990,58 @@ func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
 	}
 }
 
+func TestWorkbenchCommandCanAttachRoutePlan(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdRoute([]string{"import-model-capabilities", filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")})
+	})
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--route-class", "classify-extract", "--route-privacy-sensitive"})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("workbench JSON did not parse: %v\n%s", err, out)
+	}
+	if report.RoutePlan == nil {
+		t.Fatalf("route plan missing: %+v", report)
+	}
+	plan := report.RoutePlan
+	if plan.SchemaVersion != routeevidence.CapabilityRoutePlanSchemaVersion ||
+		plan.AuthorityRef != routeevidence.ModelCapabilitiesAuthorityRef ||
+		plan.CapabilityClass != "classify-extract" ||
+		!plan.PrivacySensitive ||
+		plan.Status != "planned" {
+		t.Fatalf("unexpected route plan: %+v", plan)
+	}
+	if len(plan.Chain) != 1 || plan.Chain[0].Tier != "local-batch" || plan.Chain[0].ModelID != "mac/qwen-fixture" {
+		t.Fatalf("privacy-sensitive route should surface only local-batch lane: %+v", plan.Chain)
+	}
+	if len(plan.Omitted) != 2 {
+		t.Fatalf("privacy-sensitive route should preserve omitted non-local lanes: %+v", plan.Omitted)
+	}
+
+	human := captureStdout(t, func() {
+		cmdWorkbench([]string{"--route-class", "classify-extract", "--route-privacy-sensitive"})
+	})
+	for _, want := range []string{
+		`route_plan status=planned class="classify-extract" privacy_sensitive=true lanes=1 omitted=2 authority=compound://registries/model-router`,
+		"route_lane: 2 mac/qwen-fixture",
+		"open: none",
+	} {
+		if !strings.Contains(human, want) {
+			t.Fatalf("human workbench route output missing %q:\n%s", want, human)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("workbench route plan must not promote claims, stat err=%v", err)
+	}
+}
+
 func TestWorkbenchCapabilitySurfaceIsBounded(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
