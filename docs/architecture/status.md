@@ -1,5 +1,7 @@
 # Package & Command Status
 
+Panel memory-review note: `compound panel plan --target-kind memory_candidate` defaults to current `proposed` memory candidates, matching `orient --operator` actionable memory debt. Explicit `--state parked` remains available for parked backlog review, but parked memory candidates are not the default review queue.
+
 Skill-surfacing feedback readiness note: consumed skill-surfacing feedback reports with no remaining/proposed/all-miss items are terminal in `orient --operator` only when matching source/no-promote evidence exists for their content hash; unconsumed feedback still surfaces actionable.
 
 Proof-check status note: `compound proof-check [--json] [--dry-run] [--repo P]` runs the deterministic local verification bundle: `go test -count=1 ./...`, `go vet ./...`, `go build ./...`, `git diff --check`, strict architecture doctor, memory doctor, and public redact scanning of changed files. This is Stage 4 deterministic execution support: repeated proof chores become one command instead of ad hoc operator ritual.

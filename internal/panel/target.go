@@ -193,7 +193,7 @@ func targetStateSet(states []string) map[string]bool {
 		}
 	}
 	if len(out) == 0 {
-		out["parked"] = true
+		out["proposed"] = true
 	}
 	return out
 }

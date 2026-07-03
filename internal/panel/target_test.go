@@ -76,10 +76,10 @@ func TestLoadMemoryCandidateTargetsFiltersStateAndMapsVisibility(t *testing.T) {
 
 	limited, err := LoadMemoryCandidateTargets(homePath, nil, 1)
 	if err != nil {
-		t.Fatalf("load default parked targets: %v", err)
+		t.Fatalf("load default proposed targets: %v", err)
 	}
-	if len(limited) != 1 || limited[0].Ref != "mcand_alpha" {
-		t.Fatalf("default parked/limit result = %+v, want mcand_alpha only", limited)
+	if len(limited) != 1 || limited[0].Ref != "mcand_beta" {
+		t.Fatalf("default proposed/limit result = %+v, want mcand_beta only", limited)
 	}
 }
 
