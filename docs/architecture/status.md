@@ -13,6 +13,7 @@ Gen-1 memory stack migrated into the spine memory family and retired.
 - Top-level Gen-1 verbs are tombstones only; do not import or route through retired packages.
 - Canonical surfaces are `compound memory ...` plus `compound distiller ...`.
 - `memory recall` and `memory timeline` resolve entity tokens exact-claim first, then a unique case-folded claim entity, then the entity registry; ambiguous case-folded entities stay unresolved rather than guessed.
+- `memory doctor` includes a `recall-quality` hop over a current visible claim, so embedding/sync green cannot hide broken canonical entity recall.
 
 Capability status note: `capgraph` owns `compound capability skill-plan`; skill candidates now produce reviewed node drafts under `COMPOUND_HOME/reviews/capability-skills/` before any graph import or skill-file write.
 

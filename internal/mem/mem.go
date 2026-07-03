@@ -885,6 +885,7 @@ func (s *Store) DoctorWithEngine(eng Engine) Report {
 	} else {
 		add("retrieval", "empty", "no claims to retrieve")
 	}
+	s.doctorRecallQualityHop(add)
 
 	// authority framing: every claim must carry provenance (derivation + evidence).
 	missing := 0
@@ -905,6 +906,60 @@ func (s *Store) DoctorWithEngine(eng Engine) Report {
 		r.Note = "a memory hop FAILED — fix at that hop, not 'memory missing'"
 	}
 	return r
+}
+
+func (s *Store) doctorRecallQualityHop(add func(name, status, detail string)) {
+	cur, err := s.currentVisible()
+	if err != nil {
+		add("recall-quality", "fail", "cannot read current claims: "+err.Error())
+		return
+	}
+	if len(cur) == 0 {
+		add("recall-quality", "empty", "no current visible claims to probe")
+		return
+	}
+	foldCounts := map[string]int{}
+	for _, c := range cur {
+		if alternateCaseProbe(c.Entity) == "" {
+			continue
+		}
+		foldCounts[strings.ToLower(c.Entity)]++
+	}
+	for _, c := range cur {
+		probe := alternateCaseProbe(c.Entity)
+		if probe == "" || foldCounts[strings.ToLower(c.Entity)] != 1 {
+			continue
+		}
+		rr, err := s.Recall(probe, RecallOpts{})
+		if err != nil {
+			add("recall-quality", "fail", fmt.Sprintf("%q probe failed: %v", probe, err))
+			return
+		}
+		for _, got := range rr.Claims {
+			if got.Entity == c.Entity {
+				add("recall-quality", "ok", fmt.Sprintf("%q resolved %q with %d current claim(s)", probe, c.Entity, len(rr.Claims)))
+				return
+			}
+		}
+		add("recall-quality", "fail", fmt.Sprintf("%q did not resolve canonical entity %q: %s", probe, c.Entity, rr.Coverage))
+		return
+	}
+	add("recall-quality", "empty", "no unambiguous alternate-case entity to probe")
+}
+
+func alternateCaseProbe(entity string) string {
+	runes := []rune(strings.TrimSpace(entity))
+	for i, r := range runes {
+		switch {
+		case 'a' <= r && r <= 'z':
+			runes[i] = r - ('a' - 'A')
+			return string(runes)
+		case 'A' <= r && r <= 'Z':
+			runes[i] = r + ('a' - 'A')
+			return string(runes)
+		}
+	}
+	return ""
 }
 
 func (s *Store) doctorEngineHop(eng Engine, add func(name, status, detail string)) {

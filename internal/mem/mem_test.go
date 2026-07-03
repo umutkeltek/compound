@@ -332,11 +332,35 @@ func TestDoctorReportsHops(t *testing.T) {
 	if !r.OK {
 		t.Errorf("doctor should be OK after a clean promote; note=%q", r.Note)
 	}
-	want := map[string]string{"capture": "ok", "promotion": "ok", "sync/embedding": "skipped", "retrieval": "ok", "authority": "ok"}
+	want := map[string]string{"capture": "ok", "promotion": "ok", "sync/embedding": "skipped", "retrieval": "ok", "recall-quality": "ok", "authority": "ok"}
+	seen := map[string]bool{}
 	for _, h := range r.Hops {
+		seen[h.Name] = true
 		if exp, ok := want[h.Name]; ok && h.Status != exp {
 			t.Errorf("hop %q status = %q, want %q (%s)", h.Name, h.Status, exp, h.Detail)
 		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("missing hop %q", name)
+		}
+	}
+}
+
+func TestDoctorReportsRecallQualityHop(t *testing.T) {
+	s := newStore(t)
+	c, _ := s.Capture([]Candidate{cand("compound", "capability_authority_surface", "owned graph", "")}, t0)
+	if _, err := s.Adjudicate(c[0].ID, "promote", "", t0); err != nil {
+		t.Fatal(err)
+	}
+
+	r := s.Doctor()
+	h := hopByName(t, r, "recall-quality")
+	if h.Status != "ok" {
+		t.Fatalf("recall-quality hop status=%q detail=%q", h.Status, h.Detail)
+	}
+	if !strings.Contains(h.Detail, "Compound") || !strings.Contains(h.Detail, "compound") {
+		t.Fatalf("recall-quality detail should name probe and canonical entity, got %q", h.Detail)
 	}
 }
 
