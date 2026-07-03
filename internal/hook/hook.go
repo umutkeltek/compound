@@ -637,7 +637,7 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 			omitted = len(shown) - maxInjectionActiveMemoryRefs
 			shown = shown[:maxInjectionActiveMemoryRefs]
 		}
-		writeStringList(&b, "Active Memory", shown)
+		writeActiveMemoryList(&b, pack, shown)
 		if omitted > 0 {
 			fmt.Fprintf(&b, "- %d more active memory ref(s) omitted from digest budget\n", omitted)
 		}
@@ -645,6 +645,37 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	writeStringList(&b, "Required Checks", pack.RequiredChecks)
 	writeStringList(&b, "Avoid", pack.Avoid)
 	return b.String()
+}
+
+func writeActiveMemoryList(b *strings.Builder, pack envelope.ContextPack, refs []string) {
+	if len(refs) == 0 {
+		return
+	}
+	b.WriteString("\n## Active Memory\n")
+	for _, ref := range refs {
+		line := activeMemoryLine(pack, ref)
+		if line == "" {
+			fmt.Fprintf(b, "- `%s`\n", safeMD(ref))
+			continue
+		}
+		fmt.Fprintf(b, "- `%s` - %s\n", safeMD(ref), safeMD(line))
+	}
+}
+
+func activeMemoryLine(pack envelope.ContextPack, ref string) string {
+	for _, included := range pack.Included {
+		if included.Ref != ref {
+			continue
+		}
+		reason := strings.TrimSpace(included.Reason)
+		if strings.HasPrefix(reason, "Compound memory ledger claim;") {
+			if _, line, ok := strings.Cut(reason, ":"); ok {
+				return strings.TrimSpace(line)
+			}
+		}
+		return reason
+	}
+	return ""
 }
 
 func writeStringList(b *strings.Builder, title string, xs []string) {

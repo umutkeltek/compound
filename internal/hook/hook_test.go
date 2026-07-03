@@ -231,13 +231,20 @@ func TestRenderInjectionEmitsActiveMemorySection(t *testing.T) {
 	pack := envelope.ContextPack{
 		SummaryMD:    "summary",
 		ActiveMemory: []string{"claim://claim_a", "claim://claim_b"},
+		Included: []envelope.IncludedRef{{
+			Ref:    "claim://claim_a",
+			Reason: "Compound memory ledger claim; source stores indexes evidence, not authority: compound.capability_authority_surface = Compound owns capability graph runtime surface",
+		}},
 	}
 	pack.Header.ID = "ctx_test"
 	text := renderInjection("hookev_test", pack)
 	if !strings.Contains(text, "## Active Memory") {
 		t.Fatalf("injection missing Active Memory section:\n%s", text)
 	}
-	for _, want := range []string{"`claim://claim_a`", "`claim://claim_b`"} {
+	for _, want := range []string{
+		"`claim://claim_a` - compound.capability_authority_surface = Compound owns capability graph runtime surface",
+		"`claim://claim_b`",
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("injection missing active memory ref %q:\n%s", want, text)
 		}
