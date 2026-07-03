@@ -8053,6 +8053,9 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if sourceListReport.SourceListByDecision["keep_needs_review"] != 1 || sourceListReport.SourceListByLane["freshness_research_skill_candidate"] != 1 || sourceListReport.SourceListByOwner["deep-research"] != 1 {
 		t.Fatalf("source-list aggregate counts missing: decision=%+v lane=%+v owner=%+v", sourceListReport.SourceListByDecision, sourceListReport.SourceListByLane, sourceListReport.SourceListByOwner)
 	}
+	if sourceListReport.SourceListByOwnerReviewStatus["pending"] != 1 || sourceListReport.SourceListByCapabilityEvaluationStatus["blocked_on_owner_review"] != 1 {
+		t.Fatalf("source-list status counts missing: owner_review=%+v capability_eval=%+v", sourceListReport.SourceListByOwnerReviewStatus, sourceListReport.SourceListByCapabilityEvaluationStatus)
+	}
 	if len(sourceListReport.SourceListReviewNext) != 1 || sourceListReport.SourceListReviewNext[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list review_next missing match: %+v", sourceListReport.SourceListReviewNext)
 	}
@@ -8061,6 +8064,18 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	}
 	if sourceListReport.SourceListItems[0].Status != "known" || sourceListReport.SourceListItems[0].Matches[0].Repo != "example/research" {
 		t.Fatalf("source-list known item missing match: %+v", sourceListReport.SourceListItems)
+	}
+	sourceListText := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake", "--source-list", sourceListPath})
+	})
+	for _, want := range []string{
+		"- source_list_owner_review.pending: 1",
+		"- source_list_capability_evaluation.blocked_on_owner_review: 1",
+		"owner_review=pending capability_evaluation=blocked_on_owner_review",
+	} {
+		if !strings.Contains(sourceListText, want) {
+			t.Fatalf("source-list text missing %q:\n%s", want, sourceListText)
+		}
 	}
 	reviewPlanJSON := captureStdout(t, func() {
 		cmdCapability([]string{"external-intake-review-plan", "--source-list", sourceListPath, "--json"})

@@ -651,6 +651,12 @@ func cmdCapability(args []string) {
 			for _, owner := range sortedMapKeys(report.SourceListByOwner) {
 				fmt.Printf("- source_list_owner.%s: %d\n", owner, report.SourceListByOwner[owner])
 			}
+			for _, status := range sortedMapKeys(report.SourceListByOwnerReviewStatus) {
+				fmt.Printf("- source_list_owner_review.%s: %d\n", status, report.SourceListByOwnerReviewStatus[status])
+			}
+			for _, status := range sortedMapKeys(report.SourceListByCapabilityEvaluationStatus) {
+				fmt.Printf("- source_list_capability_evaluation.%s: %d\n", status, report.SourceListByCapabilityEvaluationStatus[status])
+			}
 			if report.SourceListReviewNextMeaning != "" || report.SourceListEvalNextMeaning != "" {
 				fmt.Printf("- source_list_follow_up: review_next=%d meaning=%s evaluation_next=%d meaning=%s\n", len(report.SourceListReviewNext), report.SourceListReviewNextMeaning, len(report.SourceListEvalNext), report.SourceListEvalNextMeaning)
 			}
@@ -672,7 +678,7 @@ func cmdCapability(args []string) {
 					continue
 				}
 				first := item.Matches[0]
-				fmt.Printf("- source_list_known: %s matches=%d first=%s decision=%s owner=%s\n", item.Query, item.MatchCount, first.Repo, first.Decision, first.Owner)
+				fmt.Printf("- source_list_known: %s matches=%d first=%s decision=%s owner=%s owner_review=%s capability_evaluation=%s\n", item.Query, item.MatchCount, first.Repo, first.Decision, first.Owner, capgraph.ExternalRepoOwnerReviewStatus(first), capgraph.ExternalRepoCapabilityEvaluationStatus(first))
 			}
 		}
 		if report.RepoQuery != "" {

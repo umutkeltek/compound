@@ -215,6 +215,12 @@ func TestExternalRepoIntakeReportSourceListCoverage(t *testing.T) {
 	if report.SourceListByDecision["merge_existing"] != 1 || report.SourceListByDecision["keep_needs_review"] != 1 || report.SourceListByLane["external_skill_candidate"] != 1 || report.SourceListByLane["harness_reference"] != 1 || report.SourceListByOwner["procedure:skill-ops"] != 1 || report.SourceListByOwner["Agent Workbench / harness adapters"] != 1 {
 		t.Fatalf("source-list aggregate counts missing: decision=%+v lane=%+v owner=%+v", report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner)
 	}
+	if report.SourceListByOwnerReviewStatus["not_required"] != 1 || report.SourceListByOwnerReviewStatus["pending"] != 1 {
+		t.Fatalf("source-list owner review status counts missing: %+v", report.SourceListByOwnerReviewStatus)
+	}
+	if report.SourceListByCapabilityEvaluationStatus["not_required"] != 1 || report.SourceListByCapabilityEvaluationStatus["blocked_on_owner_review"] != 1 {
+		t.Fatalf("source-list capability evaluation status counts missing: %+v", report.SourceListByCapabilityEvaluationStatus)
+	}
 	if len(report.SourceListReviewNext) != 1 || report.SourceListReviewNext[0].Matches[0].Repo != "example/review" {
 		t.Fatalf("source-list review_next = %+v", report.SourceListReviewNext)
 	}
@@ -487,6 +493,9 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	match := refreshed.SourceListItems[0].Matches[0]
 	if match.CapabilityEvaluationStatus != "recorded" || match.CapabilityEvaluationPath != reviewReport.ReviewedPath || match.CapabilityEvaluationDecision != "keep_needs_review" || match.CapabilityEvaluationNodeStatus != "needs_review" {
 		t.Fatalf("capability evaluation review context missing: match=%+v review=%+v", match, reviewReport)
+	}
+	if refreshed.SourceListByOwnerReviewStatus["recorded"] != 1 || refreshed.SourceListByCapabilityEvaluationStatus["recorded"] != 1 {
+		t.Fatalf("reviewed source-list status counts missing: owner=%+v eval=%+v", refreshed.SourceListByOwnerReviewStatus, refreshed.SourceListByCapabilityEvaluationStatus)
 	}
 
 	archiveReviewAreaFilesForTest(t, home, capabilityEvaluationReviewArea, time.Date(2026, 7, 2, 4, 6, 0, 0, time.UTC))

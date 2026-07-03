@@ -21,40 +21,42 @@ const (
 )
 
 type ExternalRepoIntakeReport struct {
-	SchemaVersion               string                       `json:"schema_version"`
-	AuthorityRef                string                       `json:"authority_ref"`
-	Status                      string                       `json:"status"`
-	BatchCount                  int                          `json:"batch_count"`
-	LatestBatchID               string                       `json:"latest_batch_id,omitempty"`
-	LatestSummaryPath           string                       `json:"latest_summary_path,omitempty"`
-	MapPath                     string                       `json:"map_path,omitempty"`
-	SourceObservationPath       string                       `json:"source_observation_path,omitempty"`
-	CandidateCount              int                          `json:"candidate_count,omitempty"`
-	CountsByDecision            map[string]int               `json:"counts_by_decision,omitempty"`
-	CountsByLane                map[string]int               `json:"counts_by_lane,omitempty"`
-	OpenReviewCount             int                          `json:"open_review_count,omitempty"`
-	MergeExistingCount          int                          `json:"merge_existing_count,omitempty"`
-	ReferenceOnlyCount          int                          `json:"reference_only_count,omitempty"`
-	SourceObservationID         string                       `json:"source_observation_id,omitempty"`
-	SourceCandidateIDs          []string                     `json:"source_candidate_ids,omitempty"`
-	NoPromoteIDs                []string                     `json:"no_promote_ids,omitempty"`
-	RepoQuery                   string                       `json:"repo_query,omitempty"`
-	Matches                     []ExternalRepoIntakeDecision `json:"matches,omitempty"`
-	SourceListPath              string                       `json:"source_list_path,omitempty"`
-	SourceListTotal             int                          `json:"source_list_total,omitempty"`
-	SourceListKnown             int                          `json:"source_list_known,omitempty"`
-	SourceListUnknown           int                          `json:"source_list_unknown,omitempty"`
-	SourceListByDecision        map[string]int               `json:"source_list_counts_by_decision,omitempty"`
-	SourceListByLane            map[string]int               `json:"source_list_counts_by_lane,omitempty"`
-	SourceListByOwner           map[string]int               `json:"source_list_counts_by_owner,omitempty"`
-	SourceListReviewNextMeaning string                       `json:"source_list_review_next_meaning,omitempty"`
-	SourceListEvalNextMeaning   string                       `json:"source_list_evaluation_next_meaning,omitempty"`
-	SourceListReviewNext        []ExternalRepoSourceListItem `json:"source_list_review_next,omitempty"`
-	SourceListEvalNext          []ExternalRepoSourceListItem `json:"source_list_evaluation_next,omitempty"`
-	SourceListItems             []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
-	HighValue                   []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
-	Recent                      []ExternalRepoIntakeDecision `json:"recent,omitempty"`
-	Boundaries                  []string                     `json:"boundaries"`
+	SchemaVersion                          string                       `json:"schema_version"`
+	AuthorityRef                           string                       `json:"authority_ref"`
+	Status                                 string                       `json:"status"`
+	BatchCount                             int                          `json:"batch_count"`
+	LatestBatchID                          string                       `json:"latest_batch_id,omitempty"`
+	LatestSummaryPath                      string                       `json:"latest_summary_path,omitempty"`
+	MapPath                                string                       `json:"map_path,omitempty"`
+	SourceObservationPath                  string                       `json:"source_observation_path,omitempty"`
+	CandidateCount                         int                          `json:"candidate_count,omitempty"`
+	CountsByDecision                       map[string]int               `json:"counts_by_decision,omitempty"`
+	CountsByLane                           map[string]int               `json:"counts_by_lane,omitempty"`
+	OpenReviewCount                        int                          `json:"open_review_count,omitempty"`
+	MergeExistingCount                     int                          `json:"merge_existing_count,omitempty"`
+	ReferenceOnlyCount                     int                          `json:"reference_only_count,omitempty"`
+	SourceObservationID                    string                       `json:"source_observation_id,omitempty"`
+	SourceCandidateIDs                     []string                     `json:"source_candidate_ids,omitempty"`
+	NoPromoteIDs                           []string                     `json:"no_promote_ids,omitempty"`
+	RepoQuery                              string                       `json:"repo_query,omitempty"`
+	Matches                                []ExternalRepoIntakeDecision `json:"matches,omitempty"`
+	SourceListPath                         string                       `json:"source_list_path,omitempty"`
+	SourceListTotal                        int                          `json:"source_list_total,omitempty"`
+	SourceListKnown                        int                          `json:"source_list_known,omitempty"`
+	SourceListUnknown                      int                          `json:"source_list_unknown,omitempty"`
+	SourceListByDecision                   map[string]int               `json:"source_list_counts_by_decision,omitempty"`
+	SourceListByLane                       map[string]int               `json:"source_list_counts_by_lane,omitempty"`
+	SourceListByOwner                      map[string]int               `json:"source_list_counts_by_owner,omitempty"`
+	SourceListByOwnerReviewStatus          map[string]int               `json:"source_list_counts_by_owner_review_status,omitempty"`
+	SourceListByCapabilityEvaluationStatus map[string]int               `json:"source_list_counts_by_capability_evaluation_status,omitempty"`
+	SourceListReviewNextMeaning            string                       `json:"source_list_review_next_meaning,omitempty"`
+	SourceListEvalNextMeaning              string                       `json:"source_list_evaluation_next_meaning,omitempty"`
+	SourceListReviewNext                   []ExternalRepoSourceListItem `json:"source_list_review_next,omitempty"`
+	SourceListEvalNext                     []ExternalRepoSourceListItem `json:"source_list_evaluation_next,omitempty"`
+	SourceListItems                        []ExternalRepoSourceListItem `json:"source_list_items,omitempty"`
+	HighValue                              []ExternalRepoIntakeDecision `json:"high_value,omitempty"`
+	Recent                                 []ExternalRepoIntakeDecision `json:"recent,omitempty"`
+	Boundaries                             []string                     `json:"boundaries"`
 }
 
 type ExternalRepoIntakeDecision struct {
@@ -268,10 +270,12 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 		report.SourceListByDecision = map[string]int{}
 		report.SourceListByLane = map[string]int{}
 		report.SourceListByOwner = map[string]int{}
+		report.SourceListByOwnerReviewStatus = map[string]int{}
+		report.SourceListByCapabilityEvaluationStatus = map[string]int{}
 		for _, item := range items {
 			if item.Status == "known" {
 				report.SourceListKnown++
-				countSourceListMatches(item, report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner)
+				countSourceListMatches(item, report.SourceListByDecision, report.SourceListByLane, report.SourceListByOwner, report.SourceListByOwnerReviewStatus, report.SourceListByCapabilityEvaluationStatus)
 			} else {
 				report.SourceListUnknown++
 			}
@@ -289,7 +293,7 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 	return report, nil
 }
 
-func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane, byOwner map[string]int) {
+func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane, byOwner, byOwnerReviewStatus, byCapabilityEvaluationStatus map[string]int) {
 	if len(item.Matches) == 0 {
 		return
 	}
@@ -297,6 +301,31 @@ func countSourceListMatches(item ExternalRepoSourceListItem, byDecision, byLane,
 	incrementNonEmpty(byDecision, decision.Decision)
 	incrementNonEmpty(byLane, decision.Lane)
 	incrementNonEmpty(byOwner, decision.Owner)
+	incrementNonEmpty(byOwnerReviewStatus, ExternalRepoOwnerReviewStatus(decision))
+	incrementNonEmpty(byCapabilityEvaluationStatus, ExternalRepoCapabilityEvaluationStatus(decision))
+}
+
+func ExternalRepoOwnerReviewStatus(decision ExternalRepoIntakeDecision) string {
+	if strings.TrimSpace(decision.Decision) != "keep_needs_review" {
+		return "not_required"
+	}
+	if strings.TrimSpace(decision.OwnerReviewStatus) == "recorded" {
+		return "recorded"
+	}
+	return "pending"
+}
+
+func ExternalRepoCapabilityEvaluationStatus(decision ExternalRepoIntakeDecision) string {
+	if strings.TrimSpace(decision.Decision) != "keep_needs_review" {
+		return "not_required"
+	}
+	if ExternalRepoOwnerReviewStatus(decision) != "recorded" {
+		return "blocked_on_owner_review"
+	}
+	if strings.TrimSpace(decision.CapabilityEvaluationStatus) == "recorded" {
+		return "recorded"
+	}
+	return "pending"
 }
 
 func incrementNonEmpty(counts map[string]int, key string) {
