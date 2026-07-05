@@ -7339,10 +7339,83 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
+	if args[0] == "import-os-absorption" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority import-os-absorption <matrix.json>")
+			os.Exit(2)
+		}
+		report, err := authority.ImportOSAbsorptionMatrix(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority import-os-absorption:", err)
+			os.Exit(1)
+		}
+		printJSON(report)
+		return
+	}
+	if args[0] == "os-absorption" {
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound authority os-absorption [--json]")
+			os.Exit(2)
+		}
+		matrix, err := authority.LoadOSAbsorptionMatrix(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority os-absorption:", err)
+			os.Exit(1)
+		}
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(matrix)
+			return
+		}
+		absorbed := 0
+		pending := 0
+		for _, row := range matrix.Rows {
+			switch row.Status {
+			case "absorbed", "wrapper", "evidence_only", "retired":
+				absorbed++
+			case "pending":
+				pending++
+			}
+		}
+		fmt.Printf("os absorption authority: %s\n", matrix.AuthorityRef)
+		fmt.Printf("rows: %d absorbed=%d pending=%d\n", len(matrix.Rows), absorbed, pending)
+		fmt.Printf("source: %s %s\n", matrix.SourceMatrixPath, matrix.SourceMatrixRevision)
+		return
+	}
+	if args[0] == "os-absorption-doctor" {
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound authority os-absorption-doctor [--json]")
+			os.Exit(2)
+		}
+		report, err := authority.OSAbsorptionDoctor(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "authority os-absorption-doctor:", err)
+			os.Exit(1)
+		}
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(report)
+			if report.Status != "ok" {
+				os.Exit(1)
+			}
+			return
+		}
+		fmt.Printf("os absorption doctor: %s\n", report.Status)
+		fmt.Printf("rows: %d auto_proved=%d pending_with_gate=%d missing=%d failed_auto=%d\n", report.RowCount, report.AutoProofCount, report.PendingWithGateCount, report.MissingRequiredCount, report.FailedAutoProofCount)
+		for _, check := range report.Checks {
+			fmt.Printf("- %s: %s", check.Name, check.Status)
+			if check.Detail != "" {
+				fmt.Printf(" (%s)", check.Detail)
+			}
+			fmt.Println()
+		}
+		if report.Status != "ok" {
+			os.Exit(1)
+		}
+		return
+	}
 	if args[0] == "import-job-roster" {
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound authority import-job-roster <cron-jobs.json>")
