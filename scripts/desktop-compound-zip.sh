@@ -5,26 +5,29 @@ usage() {
   cat <<'USAGE'
 usage: scripts/desktop-compound-zip.sh [options]
 
-Create a Desktop audit zip from the current compound checkout:
+Create a Desktop snapshot zip from the current compound checkout:
   1. remove existing ~/Desktop/compound and ~/Desktop/compound.zip
   2. copy the compound repo to ~/Desktop/compound
-  3. prune heavyweight/runtime/private surfaces
-  4. prune top-level external memory projects
-  5. zip ~/Desktop/compound.zip
+  3. remove top-level external memory projects except the keep list
+  4. zip ~/Desktop/compound.zip
 
-Defaults are upload-safe:
-  - excludes .git, node_modules, .next, __MACOSX, .DS_Store
-  - excludes root runtime/private paths: compound, bin/, home/, docs_private/,
-    .compound-private/, .claude/, Plans/, *.private.md
-  - excludes top-level memory/* except names in the keep-memory list
+Default mode matches a local hand copy more closely:
+  - keeps scripts, tools, console source, private docs, .claude, .git,
+    node_modules, .next, root binaries, and other local audit material
+  - removes Finder/system junk: .DS_Store, __MACOSX
+  - removes top-level memory/* external clones except names in the keep list
+
+Use --upload-safe for the smaller public-audit bundle:
+  - also excludes .git, node_modules, .next, root binary, bin/, home/,
+    docs_private/, .compound-private/, .claude/, Plans/, and *.private.md
 
 Options:
   --repo PATH              Source repo. Default: git root for this script.
   --desktop PATH           Destination desktop directory. Default: ~/Desktop.
   --name NAME              Staged folder name. Default: compound.
   --zip NAME               Zip filename. Default: compound.zip.
-  --include-private        Keep docs_private/, .claude/, Plans/, and *.private.md.
-                           Still excludes heavy/runtime paths and nested git dirs.
+  --upload-safe            Produce the smaller public-audit bundle.
+  --include-private        With --upload-safe, keep private docs and .claude.
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
   --no-default-memory      Clear the default keep-memory list.
@@ -35,9 +38,9 @@ Environment:
   COMPOUND_KEEP_MEMORY_PROJECTS="name other-name" overrides the default keep list.
 
 Notes:
-  The memory pruning only applies to top-level memory/* external clones. It does
-  not remove Compound source surfaces like internal/mem, docs/memory-architecture.md,
-  or console memory pages.
+  Memory pruning only applies to top-level memory/* external clones. It does not
+  remove Compound source surfaces like internal/mem, docs/memory-architecture.md,
+  prototype-ts/src/memory, or console memory pages.
 USAGE
 }
 
@@ -56,7 +59,8 @@ repo_path="$repo_root"
 desktop_path="${COMPOUND_DESKTOP:-$HOME/Desktop}"
 stage_name="${COMPOUND_STAGE_NAME:-compound}"
 zip_name="${COMPOUND_ZIP_NAME:-compound.zip}"
-include_private=0
+upload_safe=0
+include_private=1
 dry_run=0
 
 keep_memory=()
@@ -88,6 +92,11 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "--zip requires a file name"
       zip_name="$2"
       shift 2
+      ;;
+    --upload-safe)
+      upload_safe=1
+      include_private=0
+      shift
       ;;
     --include-private)
       include_private=1
@@ -149,12 +158,6 @@ rsync_args=(
   --delete
   --exclude ".DS_Store"
   --exclude "__MACOSX/"
-  --exclude ".git/"
-  --exclude "node_modules/"
-  --exclude ".next/"
-  --exclude "/compound"
-  --exclude "/bin/"
-  --exclude "/home/"
   --filter "+ /memory/"
 )
 
@@ -164,20 +167,31 @@ for name in "${keep_memory[@]}"; do
 done
 rsync_args+=(--filter "- /memory/***")
 
-if [[ "$include_private" -eq 0 ]]; then
+if [[ "$upload_safe" -eq 1 ]]; then
   rsync_args+=(
-    --exclude "/docs_private/"
-    --exclude "/.compound-private/"
-    --exclude "/.claude/"
-    --exclude "/Plans/"
-    --exclude "*.private.md"
+    --exclude ".git/"
+    --exclude "node_modules/"
+    --exclude ".next/"
+    --exclude "/compound"
+    --exclude "/bin/"
+    --exclude "/home/"
   )
+  if [[ "$include_private" -eq 0 ]]; then
+    rsync_args+=(
+      --exclude "/docs_private/"
+      --exclude "/.compound-private/"
+      --exclude "/.claude/"
+      --exclude "/Plans/"
+      --exclude "*.private.md"
+    )
+  fi
 fi
 
-printf '# compound Desktop audit zip\n'
+printf '# compound Desktop snapshot zip\n'
 printf -- '- source: %s\n' "$repo_real"
 printf -- '- stage: %s\n' "$stage_path"
 printf -- '- zip: %s\n' "$zip_path"
+printf -- '- mode: %s\n' "$([[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local)"
 printf -- '- include_private: %s\n' "$include_private"
 printf -- '- keep_memory: %s\n' "${keep_memory[*]:-(none)}"
 
