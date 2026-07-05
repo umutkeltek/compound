@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { CopyCmd } from "@/components/CopyCmd";
+import { DecisionForm } from "@/components/DecisionForm";
 import { Chip, StateBadge } from "@/components/ui";
 import { arr, str, type Json } from "@/lib/compound";
 import { shortText } from "@/lib/work-data";
@@ -13,6 +14,12 @@ function shellArg(arg: string): string {
 function commandText(command: unknown): string {
   const parts = arr(command).map(String).filter(Boolean);
   return parts.map(shellArg).join(" ");
+}
+
+function numberText(value: unknown): string {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  return n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
 function cardCopy(card: Json, work: Json): { label: string; question: string; body: string; chip: string } {
@@ -30,10 +37,9 @@ function cardCopy(card: Json, work: Json): { label: string; question: string; bo
   }
 
   if (kind === "memory_candidate_adjudication") {
-    const candidateId = str(card.candidate_id);
     return {
       label: "Memory review",
-      question: candidateId ? `Should ${candidateId} become memory?` : "Should this candidate become memory?",
+      question: "Should this become memory?",
       body: `This is the small-batch conversation memory task${workId ? ` for ${workId}` : ""}. Compound found one candidate and panel evidence, but promotion stays parked until you decide.`,
       chip: "no auto-promotion",
     };
@@ -62,6 +68,140 @@ function TinyList({ title, items }: { title: string; items: string[] }) {
         ))}
       </ul>
     </details>
+  );
+}
+
+function MemoryCandidatePreview({ card }: { card: Json }) {
+  if (str(card.kind) !== "memory_candidate_adjudication") return null;
+
+  const candidateId = str(card.candidate_id);
+  const object = str(card.candidate_object);
+  const predicate = str(card.candidate_predicate);
+  const entity = str(card.candidate_entity);
+  const state = str(card.candidate_state);
+  const visibility = str(card.candidate_visibility);
+  const sourceRef = str(card.candidate_source_ref);
+  const candidateConfidence = numberText(card.candidate_confidence);
+  const panelConfidence = numberText(card.panel_confidence);
+  const panelDecision = str(card.panel_decision);
+  const panelRationale = str(card.panel_rationale);
+  const findingCount = Number(card.panel_finding_count) || 0;
+  const riskCount = Number(card.panel_risk_count) || 0;
+  const failedCount = Number(card.panel_failed_count) || 0;
+
+  return (
+    <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/60 px-3 py-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {candidateId ? <Chip tone="violet">{candidateId}</Chip> : null}
+        {state ? <Chip tone="gray">{state}</Chip> : null}
+        {visibility ? <Chip tone="gray">{visibility}</Chip> : null}
+        {candidateConfidence ? <Chip tone="orange">claim {candidateConfidence}</Chip> : null}
+        {panelDecision ? <Chip tone="blue">panel {panelDecision}</Chip> : null}
+        {panelConfidence ? <Chip tone="orange">panel {panelConfidence}</Chip> : null}
+      </div>
+
+      {object ? (
+        <p className="mt-2 text-[13px] font-medium leading-relaxed text-ink">{shortText(object, 360)}</p>
+      ) : (
+        <p className="mt-2 text-[12.5px] leading-relaxed text-ink-3">
+          Candidate text is not present in the workbench projection.
+        </p>
+      )}
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {predicate ? (
+          <div>
+            <div className="section-label mb-1">Claim type</div>
+            <code className="mono break-all text-[11px] text-ink-3">{predicate}</code>
+          </div>
+        ) : null}
+        {entity ? (
+          <div>
+            <div className="section-label mb-1">Source entity</div>
+            <code className="mono break-all text-[11px] text-ink-3">{entity}</code>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-1.5 text-[11.5px] text-ink-3">
+        <span>{findingCount} panel finding{findingCount === 1 ? "" : "s"}</span>
+        <span>·</span>
+        <span>{riskCount} caution{riskCount === 1 ? "" : "s"}</span>
+        {failedCount ? (
+          <>
+            <span>·</span>
+            <span>{failedCount} failed lens</span>
+          </>
+        ) : null}
+      </div>
+
+      {panelRationale ? (
+        <p className="mt-2 text-[12px] leading-relaxed text-ink-3">{shortText(panelRationale, 260)}</p>
+      ) : null}
+      {sourceRef ? <code className="mono mt-2 block break-all text-[10.5px] text-ink-3">{sourceRef}</code> : null}
+    </div>
+  );
+}
+
+function MemoryDecisionForm({ card }: { card: Json }) {
+  const candidateId = str(card.candidate_id);
+  if (!candidateId || str(card.kind) !== "memory_candidate_adjudication") return null;
+
+  return (
+    <DecisionForm
+      itemId={candidateId}
+      formSpec={{
+        area: "memory-adjudicate",
+        defaultOption: "park",
+        options: [
+          {
+            value: "park",
+            label: "Keep parked",
+            tone: "orange",
+            description: "Keep as evidence. It will not enter ambient recall.",
+            argv: ["memory", "adjudicate", candidateId, "--verdict", "park"],
+          },
+          {
+            value: "no_promote",
+            label: "Do not promote",
+            tone: "gray",
+            description: "Keep the candidate, but block promotion from this source.",
+            argv: ["memory", "adjudicate", candidateId, "--verdict", "no_promote"],
+          },
+          {
+            value: "reject",
+            label: "Reject",
+            tone: "red",
+            description: "Mark it wrong or noisy so it is not reused.",
+            argv: ["memory", "adjudicate", candidateId, "--verdict", "reject"],
+          },
+          {
+            value: "promote",
+            label: "Promote",
+            tone: "green",
+            description: "Accept as durable memory. Pick the evidence basis below.",
+            argv: ["memory", "adjudicate", candidateId, "--verdict", "promote"],
+          },
+        ],
+        fields: [
+          {
+            name: "basis",
+            type: "select",
+            label: "Promotion reason",
+            required: true,
+            defaultValue: "explicit_confirmation",
+            showForOptions: ["promote"],
+            options: [
+              { value: "explicit_confirmation", label: "I confirm this" },
+              { value: "curated_page", label: "Curated page" },
+              { value: "decision_record", label: "Decision record" },
+              { value: "runtime_proof", label: "Runtime proof" },
+              { value: "trusted_deterministic_import", label: "Trusted import" },
+            ],
+          },
+        ],
+      }}
+    />
   );
 }
 
@@ -94,6 +234,8 @@ export function WorkNeedCard({ work, card }: { work: Json; card: Json }) {
       </div>
 
       <p className="mt-2 text-[12.5px] leading-relaxed text-ink-2">{copy.body}</p>
+      <MemoryCandidatePreview card={card} />
+      <MemoryDecisionForm card={card} />
 
       {command ? (
         <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2">

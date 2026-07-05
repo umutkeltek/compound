@@ -198,8 +198,19 @@ type WorkbenchReviewCard struct {
 	CandidateID         string   `json:"candidate_id,omitempty"`
 	CandidateState      string   `json:"candidate_state,omitempty"`
 	CandidateEntity     string   `json:"candidate_entity,omitempty"`
+	CandidatePredicate  string   `json:"candidate_predicate,omitempty"`
+	CandidateObject     string   `json:"candidate_object,omitempty"`
+	CandidateConfidence *float64 `json:"candidate_confidence,omitempty"`
+	CandidateVisibility string   `json:"candidate_visibility,omitempty"`
+	CandidateSourceRef  string   `json:"candidate_source_ref,omitempty"`
 	PanelRunID          string   `json:"panel_run_id,omitempty"`
 	PanelRunRef         string   `json:"panel_run_ref,omitempty"`
+	PanelDecision       string   `json:"panel_decision,omitempty"`
+	PanelConfidence     *float64 `json:"panel_confidence,omitempty"`
+	PanelRationale      string   `json:"panel_rationale,omitempty"`
+	PanelFindingCount   int      `json:"panel_finding_count,omitempty"`
+	PanelRiskCount      int      `json:"panel_risk_count,omitempty"`
+	PanelFailedCount    int      `json:"panel_failed_count,omitempty"`
 	PromotionSummaryRef string   `json:"promotion_summary_ref,omitempty"`
 	PromotionCount      *int     `json:"promotion_count,omitempty"`
 	Command             []string `json:"command,omitempty"`
@@ -987,10 +998,11 @@ func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArti
 	if candidateID == "" {
 		return nil
 	}
-	state, entity := s.memoryCandidateReviewState(candidateID)
-	if state == "promoted" || state == "rejected" || state == "no_promote" {
+	candidate := s.memoryCandidateReviewSummary(candidateID)
+	if candidate.State == "promoted" || candidate.State == "rejected" || candidate.State == "no_promote" {
 		return nil
 	}
+	panelSummary := s.panelRunReviewSummary(panel.Ref)
 	command := []string{"compound", "workbench", "--json"}
 	if panel.ID != "" {
 		command = []string{"compound", "panel", "show", panel.ID, "--json"}
@@ -1002,10 +1014,21 @@ func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArti
 		Title:               title,
 		WorkID:              workID,
 		CandidateID:         candidateID,
-		CandidateState:      state,
-		CandidateEntity:     entity,
+		CandidateState:      candidate.State,
+		CandidateEntity:     candidate.Entity,
+		CandidatePredicate:  candidate.Predicate,
+		CandidateObject:     candidate.Object,
+		CandidateConfidence: candidate.Confidence,
+		CandidateVisibility: candidate.Visibility,
+		CandidateSourceRef:  candidate.SourceRef,
 		PanelRunID:          panel.ID,
 		PanelRunRef:         panel.Ref,
+		PanelDecision:       panelSummary.Decision,
+		PanelConfidence:     panelSummary.Confidence,
+		PanelRationale:      panelSummary.Rationale,
+		PanelFindingCount:   panelSummary.FindingCount,
+		PanelRiskCount:      panelSummary.RiskCount,
+		PanelFailedCount:    panelSummary.FailedCount,
 		PromotionSummaryRef: promotion.Ref,
 		PromotionCount:      promotion.Count,
 		Command:             command,
@@ -1083,21 +1106,98 @@ func firstCandidateRef(refs []string) string {
 	return ""
 }
 
-func (s *Store) memoryCandidateReviewState(id string) (string, string) {
+type memoryCandidateReviewSummary struct {
+	State      string
+	Entity     string
+	Predicate  string
+	Object     string
+	Confidence *float64
+	Visibility string
+	SourceRef  string
+}
+
+type panelRunReviewSummary struct {
+	Decision     string
+	Confidence   *float64
+	Rationale    string
+	FindingCount int
+	RiskCount    int
+	FailedCount  int
+}
+
+func (s *Store) memoryCandidateReviewSummary(id string) memoryCandidateReviewSummary {
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return "", ""
+		return memoryCandidateReviewSummary{}
 	}
 	path := filepath.Join(s.home, candidates.InboxDir(candidates.Memory), id+".json")
 	var payload struct {
-		ID     string `json:"id"`
-		State  string `json:"state"`
-		Entity string `json:"entity"`
+		ID             string   `json:"id"`
+		State          string   `json:"state"`
+		Entity         string   `json:"entity"`
+		Predicate      string   `json:"predicate"`
+		Object         string   `json:"object"`
+		Confidence     *float64 `json:"confidence"`
+		Visibility     string   `json:"visibility"`
+		SourceTraceRef string   `json:"source_trace_ref"`
 	}
 	if err := s.readJSON(path, &payload); err != nil {
-		return "", ""
+		return memoryCandidateReviewSummary{}
 	}
-	return strings.TrimSpace(payload.State), strings.TrimSpace(payload.Entity)
+	return memoryCandidateReviewSummary{
+		State:      strings.TrimSpace(payload.State),
+		Entity:     strings.TrimSpace(payload.Entity),
+		Predicate:  strings.TrimSpace(payload.Predicate),
+		Object:     strings.TrimSpace(payload.Object),
+		Confidence: payload.Confidence,
+		Visibility: strings.TrimSpace(payload.Visibility),
+		SourceRef:  strings.TrimSpace(payload.SourceTraceRef),
+	}
+}
+
+func (s *Store) panelRunReviewSummary(ref string) panelRunReviewSummary {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return panelRunReviewSummary{}
+	}
+	path := filepath.Join(s.home, ref)
+	var payload struct {
+		Findings []struct {
+			LensFindings []struct {
+				Status   string `json:"status"`
+				Findings []struct {
+					Severity string `json:"severity"`
+				} `json:"findings"`
+			} `json:"lens_findings"`
+			Synthesis struct {
+				Decision   string   `json:"decision"`
+				Confidence *float64 `json:"confidence"`
+				Rationale  string   `json:"rationale"`
+			} `json:"synthesis"`
+		} `json:"findings"`
+	}
+	if err := s.readJSON(path, &payload); err != nil || len(payload.Findings) == 0 {
+		return panelRunReviewSummary{}
+	}
+	finding := payload.Findings[0]
+	out := panelRunReviewSummary{
+		Decision:   strings.TrimSpace(finding.Synthesis.Decision),
+		Confidence: finding.Synthesis.Confidence,
+		Rationale:  strings.TrimSpace(finding.Synthesis.Rationale),
+	}
+	for _, lens := range finding.LensFindings {
+		if strings.TrimSpace(lens.Status) == "failed" {
+			out.FailedCount++
+		}
+		for _, item := range lens.Findings {
+			out.FindingCount++
+			switch strings.ToLower(strings.TrimSpace(item.Severity)) {
+			case "high", "medium", "error":
+				out.RiskCount++
+			}
+		}
+	}
+	return out
 }
 
 func reviewartifactOrDash(s string) string {

@@ -850,9 +850,14 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeJSONFile(t, filepath.Join(candidateDir, "cand_reviewed_conversation.json"), map[string]any{
-		"id":     "cand_reviewed_conversation",
-		"state":  "parked",
-		"entity": "knowledge:chatgpt:fixture",
+		"id":               "cand_reviewed_conversation",
+		"state":            "parked",
+		"entity":           "knowledge:chatgpt:fixture",
+		"predicate":        "proposes_strategy",
+		"object":           "Compound should show the actual memory candidate before asking for judgment.",
+		"confidence":       0.72,
+		"visibility":       "private",
+		"source_trace_ref": "knowledge_extraction:kx_fixture",
 	})
 	writeJSONFile(t, filepath.Join(runDir, "panel-run-single-prun_fixture.json"), map[string]any{
 		"schema_version": "compound.panel_run.v0.1",
@@ -863,6 +868,32 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 			"ref":          "cand_reviewed_conversation",
 			"privacy":      "private",
 			"state_before": "proposed",
+		}},
+		"findings": []map[string]any{{
+			"target_ref": "cand_reviewed_conversation",
+			"lens_findings": []map[string]any{
+				{
+					"lens_ref": "lens:evidence-strength",
+					"status":   "completed",
+					"findings": []map[string]any{{
+						"claim":    "candidate has evidence",
+						"severity": "medium",
+					}},
+				},
+				{
+					"lens_ref": "lens:inversion-falsification",
+					"status":   "failed",
+					"findings": []map[string]any{{
+						"claim":    "schema mismatch",
+						"severity": "error",
+					}},
+				},
+			},
+			"synthesis": map[string]any{
+				"decision":   "needs_human",
+				"confidence": 0.75,
+				"rationale":  "operator should inspect the claim before promotion",
+			},
 		}},
 	})
 	writeJSONFile(t, filepath.Join(runDir, "knowledge-extract-summary.json"), map[string]any{
@@ -921,6 +952,18 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 	if card.CandidateID != "cand_reviewed_conversation" ||
 		card.CandidateState != "parked" ||
 		card.CandidateEntity != "knowledge:chatgpt:fixture" ||
+		card.CandidatePredicate != "proposes_strategy" ||
+		card.CandidateObject != "Compound should show the actual memory candidate before asking for judgment." ||
+		card.CandidateConfidence == nil ||
+		*card.CandidateConfidence != 0.72 ||
+		card.CandidateVisibility != "private" ||
+		card.CandidateSourceRef != "knowledge_extraction:kx_fixture" ||
+		card.PanelDecision != "needs_human" ||
+		card.PanelConfidence == nil ||
+		*card.PanelConfidence != 0.75 ||
+		card.PanelFindingCount != 2 ||
+		card.PanelRiskCount != 2 ||
+		card.PanelFailedCount != 1 ||
 		card.PanelRunID != "prun_fixture" ||
 		card.PanelRunRef != filepath.ToSlash(filepath.Join("runs", held.ID, "panel-run-single-prun_fixture.json")) ||
 		card.PromotionSummaryRef != filepath.ToSlash(filepath.Join("runs", held.ID, "promoted-chatgpt-claims.json")) ||

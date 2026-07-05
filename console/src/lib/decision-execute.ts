@@ -125,6 +125,14 @@ async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json
     ) as Json | null;
   }
   if (spec.area === "memory-adjudicate") {
+    const workbench = await runJson(["workbench", "--json"]);
+    for (const work of arr(workbench?.open)) {
+      for (const card of arr(work.review_cards)) {
+        if (str(card.kind) === "memory_candidate_adjudication" && str(card.candidate_id) === itemId) {
+          return { ...card, id: itemId } as Json;
+        }
+      }
+    }
     const data = await runJson(["memory", "candidates", "--json", "--include-evidence"]);
     return (arr(data?.items).find((it) => str(it.id) === itemId) ?? null) as Json | null;
   }
