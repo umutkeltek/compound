@@ -651,12 +651,12 @@ func checkWorkbenchActionCardContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -701,12 +701,12 @@ func checkHomeDoctorOperationalHygieneContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -765,12 +765,12 @@ func checkConversationPreflightImportSafetyContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -1117,6 +1117,38 @@ func missingPhrases(source, text string, phrases []string) []string {
 		}
 	}
 	return out
+}
+
+func readPackageText(repoRoot, relDir string) (string, error) {
+	dir := filepath.Join(repoRoot, filepath.FromSlash(relDir))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return "", err
+		}
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	return b.String(), nil
+}
+
+func readContractText(repoRoot, rel string) (string, error) {
+	if rel == "cmd/compound" {
+		return readPackageText(repoRoot, rel)
+	}
+	b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func presentPhrases(source, text string, phrases []string) []string {
@@ -2396,7 +2428,7 @@ func checkObservationBatchContract(repoRoot string) []Finding {
 			"compound panel plan --target-kind capability_observation",
 			"no truth promotion",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound": {
 			"source observe-batch",
 			"source intake",
 			"intake-work-plan",
@@ -2529,12 +2561,12 @@ func checkObservationBatchContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	for _, rel := range []string{
 		"fixtures/observation/gsc-product-metric.json",
@@ -2686,7 +2718,7 @@ func checkSourceObservationVerdictContract(repoRoot string) []Finding {
 			"ledger\", \"claims.jsonl",
 			"ledger\", \"product-signals.jsonl",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound": {
 			"source observation-verdict-plan",
 			"BuildSourceObservationVerdictPlan",
 			"RecordSourceObservationVerdictPlan",
@@ -2719,12 +2751,12 @@ func checkSourceObservationVerdictContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -2814,12 +2846,12 @@ func checkPanelCapabilityFeedbackContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -3102,12 +3134,12 @@ func checkExternalRepoContextEvaluationContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
@@ -3147,12 +3179,12 @@ func checkExternalRepoIntakeStateProjectionContract(repoRoot string) []Finding {
 	}
 	var failures []string
 	for rel, phrases := range requiredByFile {
-		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		text, err := readContractText(repoRoot, rel)
 		if err != nil {
 			failures = append(failures, rel+" unreadable: "+err.Error())
 			continue
 		}
-		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+		failures = append(failures, missingPhrases(rel, text, phrases)...)
 	}
 	if len(failures) > 0 {
 		sort.Strings(failures)
