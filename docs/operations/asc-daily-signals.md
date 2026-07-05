@@ -119,8 +119,9 @@ ProductSignal ledger idempotency.
 Scheduling is deployment-specific. Use cron, systemd timers, launchd, GitHub
 Actions, a hosted worker, or any other scheduler that can run the same command
 with private config and an ASC-producing command available. The bundled launchd
-plist is only a macOS example. Loading or unloading a scheduler is a manual
-deployment action, not part of public-core setup:
+plist is only a macOS example and collects the previous calendar day with
+`date -v-1d +%F`, because same-day ASC sales insights can report `unavailable`.
+Loading or unloading a scheduler is a manual deployment action, not part of public-core setup:
 
 ```bash
 mkdir -p "${HOME}/Library/LaunchAgents"
