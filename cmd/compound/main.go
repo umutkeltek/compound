@@ -70,6 +70,8 @@ func main() {
 		cmdRuntime(os.Args[2:])
 	case "projection":
 		cmdProjection(os.Args[2:])
+	case "system":
+		cmdSystem(os.Args[2:])
 	case "product":
 		cmdProduct(os.Args[2:])
 	case "source":
@@ -90,6 +92,8 @@ func main() {
 		cmdOrient(os.Args[2:])
 	case "work":
 		cmdWork(os.Args[2:])
+	case "packets":
+		cmdPackets(os.Args[2:])
 	case "workbench":
 		cmdWorkbench(os.Args[2:])
 	case "proof-check":
@@ -1465,6 +1469,8 @@ func cmdSource(args []string) {
 		cmdSourceObserve(args[1:])
 	case "observe-batch":
 		cmdSourceObserveBatch(args[1:])
+	case "observations":
+		cmdSourceObservations(args[1:])
 	case "intake":
 		cmdSourceIntake(args[1:])
 	case "intake-work-plan":
@@ -1480,7 +1486,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -1524,6 +1530,34 @@ func cmdSourceObserve(args []string) {
 	}
 	for _, id := range report.NoPromoteIDs {
 		fmt.Printf("- no_promote: %s\n", id)
+	}
+}
+
+func cmdSourceObservations(args []string) {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "--json") {
+		fmt.Fprintln(os.Stderr, "usage: compound source observations [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := sourceobs.ListSourceObservations(homePath, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observations:", err)
+		os.Exit(1)
+	}
+	if len(args) == 1 && args[0] == "--json" {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("# source observations\n\n")
+	fmt.Printf("- candidates: %d\n", report.Counts.TotalCandidates)
+	fmt.Printf("- source_observations: %d\n", report.Counts.SourceObservations)
+	fmt.Printf("- no_promote: %d\n", report.Counts.NoPromoteDecisions)
+	for _, item := range report.Items {
+		fmt.Printf("- observation: %s candidate=%s verdict=%s promote_allowed=%t\n", item.SourceObservationID, item.CandidateID, item.Verdict, item.PromoteAllowed)
 	}
 }
 

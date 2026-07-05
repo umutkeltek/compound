@@ -1,0 +1,228 @@
+package projection
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const SystemMapSchemaVersion = "compound.system_map_projection.v0.1"
+
+type SystemMapProjection struct {
+	SchemaVersion string                    `json:"schema_version"`
+	GeneratedAt   string                    `json:"generated_at"`
+	SourceRefs    []string                  `json:"source_refs"`
+	Nodes         []SystemMapNode           `json:"nodes"`
+	Edges         []SystemMapEdge           `json:"edges"`
+	Stats         map[string]SystemMapStats `json:"stats"`
+}
+
+type SystemMapNode struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Lane         string   `json:"lane"`
+	Accent       string   `json:"accent,omitempty"`
+	Glyph        string   `json:"glyph,omitempty"`
+	Status       string   `json:"status"`
+	ReviewID     string   `json:"reviewId,omitempty"`
+	Projection   string   `json:"projection"`
+	Volume       string   `json:"volume,omitempty"`
+	EvidenceRefs []string `json:"evidenceRefs,omitempty"`
+}
+
+type SystemMapEdge struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Label  string `json:"label"`
+	Status string `json:"status"`
+}
+
+type SystemMapStats struct {
+	Live    int `json:"live"`
+	NotLive int `json:"notLive"`
+}
+
+type systemMapFile struct {
+	Nodes []SystemMapNode `json:"nodes"`
+	Edges []SystemMapEdge `json:"edges"`
+}
+
+func BuildSystemMap(homePath, repoPath string, now time.Time) (SystemMapProjection, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	file, sourceRefs, err := loadSystemMapFile(homePath, repoPath)
+	if err != nil {
+		return SystemMapProjection{}, err
+	}
+	nodes := make([]SystemMapNode, 0, len(file.Nodes))
+	for _, node := range file.Nodes {
+		hydrateSystemMapNode(homePath, &node)
+		nodes = append(nodes, node)
+	}
+	stats := map[string]SystemMapStats{}
+	for _, lane := range []string{"capture", "storage", "meaning", "outward"} {
+		stats[lane] = SystemMapStats{}
+	}
+	for _, node := range nodes {
+		lane := strings.TrimSpace(node.Lane)
+		if lane == "" {
+			lane = "unknown"
+		}
+		s := stats[lane]
+		if strings.TrimSpace(node.Status) == "live" {
+			s.Live++
+		} else {
+			s.NotLive++
+		}
+		stats[lane] = s
+	}
+	return SystemMapProjection{
+		SchemaVersion: SystemMapSchemaVersion,
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		SourceRefs:    sourceRefs,
+		Nodes:         nodes,
+		Edges:         file.Edges,
+		Stats:         stats,
+	}, nil
+}
+
+func loadSystemMapFile(homePath, repoPath string) (systemMapFile, []string, error) {
+	candidates := []string{}
+	if strings.TrimSpace(homePath) != "" {
+		candidates = append(candidates, filepath.Join(homePath, "config", "system-topology.json"))
+	}
+	if strings.TrimSpace(repoPath) != "" {
+		candidates = append(candidates, filepath.Join(repoPath, "fixtures", "map", "topology.json"))
+	}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return systemMapFile{}, nil, err
+		}
+		var file systemMapFile
+		if err := json.Unmarshal(data, &file); err != nil {
+			return systemMapFile{}, nil, err
+		}
+		if file.Nodes == nil {
+			file.Nodes = []SystemMapNode{}
+		}
+		if file.Edges == nil {
+			file.Edges = []SystemMapEdge{}
+		}
+		return file, []string{path}, nil
+	}
+	return systemMapFile{Nodes: []SystemMapNode{}, Edges: []SystemMapEdge{}}, []string{}, nil
+}
+
+func hydrateSystemMapNode(homePath string, node *SystemMapNode) {
+	switch strings.TrimSpace(node.Projection) {
+	case "capability-authority":
+		nodes := countJSONLLines(filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
+		edges := countJSONLLines(filepath.Join(homePath, "registries", "capability-edges.jsonl"))
+		node.Volume = countPair(nodes, "nodes", edges, "edges")
+	case "product-authority":
+		signals := countJSONLLines(filepath.Join(homePath, "ledger", "product-signals.jsonl"))
+		reviews := countJSONLLines(filepath.Join(homePath, "ledger", "product-reviews.jsonl"))
+		node.Volume = countPair(signals, "signals", reviews, "reviews")
+	case "route-authority":
+		rows := countJSONLLines(filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl"))
+		node.Volume = countLabel(rows, "route evidence")
+	case "ledger-stats":
+		claims := countJSONLLines(filepath.Join(homePath, "ledger", "claims.jsonl"))
+		entities := countJSONLLines(filepath.Join(homePath, "ledger", "entities.jsonl"))
+		evidence := countJSONLLines(filepath.Join(homePath, "ledger", "evidence.jsonl"))
+		node.Volume = countTriple(claims, "claims", entities, "entities", evidence, "evidence")
+	case "knowledge-sources":
+		path := filepath.Join(homePath, "registries", "knowledge-sources.jsonl")
+		node.Volume = countLabel(countJSONLLines(path), "sources")
+		node.EvidenceRefs = knowledgeSourceKinds(path)
+	case "external-intake-map":
+		node.Volume = countLabel(countDirs(filepath.Join(homePath, "inbox", "external-repo-intake")), "repos")
+		if strings.TrimSpace(node.ReviewID) != "" {
+			node.EvidenceRefs = append(node.EvidenceRefs, node.ReviewID)
+		}
+	}
+}
+
+func countJSONLLines(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func countDirs(path string) int {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			count++
+		}
+	}
+	return count
+}
+
+func knowledgeSourceKinds(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			continue
+		}
+		for _, key := range []string{"source_kind", "kind"} {
+			if value, ok := row[key].(string); ok && strings.TrimSpace(value) != "" {
+				seen[strings.TrimSpace(value)] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for value := range seen {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func countLabel(count int, label string) string {
+	return strings.TrimSpace(strings.Join([]string{itoa(count), label}, " "))
+}
+
+func countPair(a int, alabel string, b int, blabel string) string {
+	return countLabel(a, alabel) + " · " + countLabel(b, blabel)
+}
+
+func countTriple(a int, alabel string, b int, blabel string, c int, clabel string) string {
+	return countPair(a, alabel, b, blabel) + " · " + countLabel(c, clabel)
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
+}

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, num } from "@/lib/compound";
+import { COMPOUND_HOME, num, runJson } from "@/lib/compound";
 import {
   getCapabilityAuthority,
   getKnowledgeSourceCount,
@@ -44,6 +44,21 @@ async function loadTopologyFile(): Promise<TopologyFile> {
 
 /** Hydrate the topology with live numbers from real projections. */
 export async function loadTopology(): Promise<TopologySnapshot> {
+  const projected = await runJson(["system", "map", "--json"]);
+  if (projected && Array.isArray(projected.nodes) && Array.isArray(projected.edges)) {
+    return {
+      nodes: projected.nodes as SystemNode[],
+      edges: projected.edges as TopologyEdge[],
+      stats: (projected.stats as TopologySnapshot["stats"]) ?? {
+        capture: { live: 0, notLive: 0 },
+        storage: { live: 0, notLive: 0 },
+        meaning: { live: 0, notLive: 0 },
+        outward: { live: 0, notLive: 0 },
+      },
+      generatedAt: typeof projected.generated_at === "string" ? projected.generated_at : new Date().toISOString(),
+    };
+  }
+
   const [file, cap, prod, route, ledger, ksCount, ksKinds] = await Promise.all([
     loadTopologyFile(),
     getCapabilityAuthority(),
