@@ -15,6 +15,100 @@ import {
   str,
 } from "@/lib/compound";
 
+type DecisionExecutionRefs = {
+  action_refs: string[];
+  action_intent_ids: string[];
+  policy_decision_ids: string[];
+  receipt_ids: string[];
+  transition_ids: string[];
+  proof_refs: string[];
+  work_ids: string[];
+  review_ids: string[];
+  candidate_ids: string[];
+};
+
+const REF_KEYS: Record<string, keyof DecisionExecutionRefs> = {
+  action_ref: "action_refs",
+  action_refs: "action_refs",
+  action_intent: "action_intent_ids",
+  action_intent_id: "action_intent_ids",
+  action_intent_ids: "action_intent_ids",
+  policy_decision: "policy_decision_ids",
+  policy_decision_id: "policy_decision_ids",
+  policy_decision_ids: "policy_decision_ids",
+  receipt: "receipt_ids",
+  receipt_id: "receipt_ids",
+  receipt_ids: "receipt_ids",
+  transition: "transition_ids",
+  transition_id: "transition_ids",
+  transition_ids: "transition_ids",
+  proof_ref: "proof_refs",
+  proof_refs: "proof_refs",
+  work: "work_ids",
+  work_id: "work_ids",
+  work_ids: "work_ids",
+  review: "review_ids",
+  review_id: "review_ids",
+  review_ids: "review_ids",
+  candidate: "candidate_ids",
+  candidate_id: "candidate_ids",
+  candidate_ids: "candidate_ids",
+};
+
+const ID_PATTERNS: Array<[keyof DecisionExecutionRefs, RegExp]> = [
+  ["action_intent_ids", /\bact_[a-z0-9_]+\b/g],
+  ["policy_decision_ids", /\bpd_[a-z0-9_]+\b/g],
+  ["receipt_ids", /\b(?:receipt|rec)_[a-z0-9_]+\b/g],
+  ["transition_ids", /\b(?:transition|tr)_[a-z0-9_]+\b/g],
+  ["work_ids", /\bwork_[a-z0-9_]+\b/g],
+  ["review_ids", /\brev_[a-z0-9_]+\b/g],
+  ["candidate_ids", /\bcand_[a-z0-9_]+\b/g],
+];
+
+function emptyRefs(): DecisionExecutionRefs {
+  return {
+    action_refs: [],
+    action_intent_ids: [],
+    policy_decision_ids: [],
+    receipt_ids: [],
+    transition_ids: [],
+    proof_refs: [],
+    work_ids: [],
+    review_ids: [],
+    candidate_ids: [],
+  };
+}
+
+function addRef(refs: DecisionExecutionRefs, key: keyof DecisionExecutionRefs, value: string) {
+  const clean = value.trim().replace(/^["']|["']$/g, "").replace(/[,.]$/g, "");
+  if (!clean || refs[key].includes(clean)) return;
+  refs[key].push(clean);
+}
+
+function addDelimitedRefs(refs: DecisionExecutionRefs, key: keyof DecisionExecutionRefs, raw: string) {
+  for (const part of raw.split(/[,\s]+/)) addRef(refs, key, part);
+}
+
+function extractDecisionRefs(...texts: string[]): DecisionExecutionRefs {
+  const refs = emptyRefs();
+  const text = texts.join("\n");
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim().replace(/^-\s*/, "");
+    const match = trimmed.match(/^([a-zA-Z_]+):\s*(.+)$/);
+    if (!match) continue;
+    const key = REF_KEYS[match[1].toLowerCase()];
+    if (!key) continue;
+    addDelimitedRefs(refs, key, match[2]);
+  }
+
+  for (const [key, pattern] of ID_PATTERNS) {
+    const matches = text.match(pattern) ?? [];
+    for (const match of matches) addRef(refs, key, match);
+  }
+  return refs;
+}
+
 async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json | null> {
   if (spec.source === "reviews") {
     const data = await runJson(["reviews", "--json", "--area", spec.area]);
@@ -96,13 +190,19 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
 
   try {
     const result = await runCompound(argv);
-    return Response.json({ ok: true, stdout: result.stdout, stderr: result.stderr });
+    return Response.json({
+      ok: true,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      refs: extractDecisionRefs(result.stdout, result.stderr),
+    });
   } catch (error) {
     const failure = compoundFailure(error);
     return Response.json({
       ok: false,
       stdout: failure.stdout,
       stderr: failure.stderr || failure.message,
+      refs: extractDecisionRefs(failure.stdout, failure.stderr || failure.message),
     });
   }
 }
