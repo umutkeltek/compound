@@ -13,7 +13,7 @@ export default function LineageIndex() {
             How a datum arrived and what it feeds — source → evidence → candidate → adjudication → claim → outward.
           </p>
         </div>
-        <FreshnessChip source="~/.compound/ledger" />
+        <FreshnessChip source="compound system lineage --json" />
       </div>
 
       <Card>

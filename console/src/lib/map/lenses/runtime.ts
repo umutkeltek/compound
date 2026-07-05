@@ -7,8 +7,8 @@ import { readRouteEvidence } from "@/lib/map/route-evidence";
 /*
  * Runtime lens — "what is happening right now."
  * executors + open work + models(recent routing) hung off the real workbench.
- * Sources: compound workbench --json, ~/.compound/work/leases/*.json,
- *          ~/.compound/ledger/execution-route-evidence.jsonl.
+ * Sources: compound workbench --json, compound work leases --json,
+ *          compound route evidence-authority --json --recent N.
  */
 
 const COL = { executor: 0, work: 360, gateway: 720, model: 720, dispatch: 1080 };
@@ -49,8 +49,8 @@ export async function buildRuntimeLens(): Promise<LensGraph> {
   const edges: LensEdge[] = [];
   const sources = [
     "compound workbench --json → open[]/counts/dispatch_next",
-    "~/.compound/work/leases/*.json",
-    "~/.compound/ledger/execution-route-evidence.jsonl (recent 200)",
+    "compound work leases --json",
+    "compound route evidence-authority --json --recent 200",
   ];
 
   const generatedAt = workbench ? str(workbench.generated_at) : "";
@@ -167,7 +167,7 @@ export async function buildRuntimeLens(): Promise<LensGraph> {
       sublabel: "rented plane · route evidence",
       accent: nodeKindAccent("gateway"),
       position: { x: COL.gateway, y: -ROW },
-      sources: ["~/.compound/ledger/execution-route-evidence.jsonl"],
+      sources: ["compound route evidence-authority --json --recent 200"],
       cli: "compound route evidence-authority --json",
       raw: { note: "route evidence is metadata, not task success" },
     });
@@ -180,7 +180,7 @@ export async function buildRuntimeLens(): Promise<LensGraph> {
         sublabel: `${agg.count} routes · ${Math.round(agg.tokens / 1000)}k tok`,
         accent: nodeKindAccent("model"),
         position: { x: COL.model, y: i * ROW },
-        sources: ["~/.compound/ledger/execution-route-evidence.jsonl → selected_target.model"],
+        sources: ["compound route evidence-authority --json --recent 200 → recent[].model"],
         cli: "compound route evidence-authority --json",
         raw: { model, ...agg },
       });

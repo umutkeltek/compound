@@ -32,7 +32,7 @@ export default async function MemoryGraphPage({
             Seed at the center; edge-neighbors in the outer ring.
           </p>
         </div>
-        <FreshnessChip source="~/.compound/ledger" />
+        <FreshnessChip source="compound system memory-graph --json" />
       </div>
 
       <MemorySeedSearch initial={seed} />

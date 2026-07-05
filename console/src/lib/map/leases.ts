@@ -1,11 +1,11 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
+import { arr, COMPOUND_HOME, privateFallbacksEnabled, runJson, str } from "@/lib/compound";
 
 /*
- * Work leases: one JSON file per claimed work_id under ~/.compound/work/leases.
- * Filename == work_id. Read-only.
+ * Work leases: projection-first via `compound work leases --json`; direct lease
+ * file reads are only the opt-in private fallback. Filename == work_id.
  */
 
 export type Lease = {
@@ -15,6 +15,15 @@ export type Lease = {
 };
 
 export async function readLeases(): Promise<Lease[]> {
+  const projected = await runJson(["work", "leases", "--json"]);
+  if (projected) {
+    return arr(projected.leases).map((lease) => ({
+      work_id: str(lease.work_id),
+      by: str(lease.by),
+      claimed_at: lease.claimed_at,
+    }));
+  }
+
   if (!privateFallbacksEnabled()) return [];
 
   const dir = path.join(COMPOUND_HOME, "work", "leases");

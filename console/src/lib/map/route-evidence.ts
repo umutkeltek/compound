@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
+import { arr, COMPOUND_HOME, num, privateFallbacksEnabled, runJson, str } from "@/lib/compound";
 
 /*
  * Execution route evidence — metadata only (no prompts/responses/secrets).
@@ -26,6 +26,29 @@ export type RouteRecord = {
 export async function readRouteEvidence(
   limit = 200,
 ): Promise<{ records: RouteRecord[]; mtime: string | null }> {
+  const projected = await runJson(["route", "evidence-authority", "--json", "--recent", String(limit)]);
+  if (projected) {
+    return {
+      records: arr(projected.recent).map((row) => ({
+        id: str(row.id),
+        request_id: str(row.request_id),
+        work_id: str(row.work_id),
+        transition_id: str(row.transition_id),
+        client_profile: str(row.client_profile),
+        protocol: str(row.protocol),
+        selected_target: {
+          provider: str(row.provider),
+          model: str(row.model),
+          protocol: str(row.protocol),
+        },
+        usage: { total_tokens: num(row.total_tokens) },
+        cost_micros: num(row.cost_micros),
+        status: str(row.status),
+      })),
+      mtime: null,
+    };
+  }
+
   if (!privateFallbacksEnabled()) return { records: [], mtime: null };
 
   const file = path.join(

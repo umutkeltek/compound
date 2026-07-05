@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, num, privateFallbacksEnabled, runJson, str, type Json } from "@/lib/compound";
+import { arr, COMPOUND_HOME, num, privateFallbacksEnabled, runJson, str, type Json } from "@/lib/compound";
 
 /*
  * Real projections the System Map hydrates from. Every number on the map comes
@@ -42,7 +42,24 @@ export type LedgerStats = {
   knowledgeImports: number;
 };
 
+async function getSystemStatsProjection(): Promise<Json | null> {
+  return runJson(["system", "stats", "--json"]);
+}
+
 export async function getLedgerStats(): Promise<LedgerStats> {
+  const projected = await getSystemStatsProjection();
+  if (projected) {
+    return {
+      entities: num(projected.entities),
+      claims: num(projected.claims),
+      edges: num(projected.edges),
+      evidence: num(projected.evidence),
+      routeEvidence: num(projected.route_evidence),
+      noPromote: num(projected.no_promote),
+      knowledgeImports: num(projected.knowledge_imports),
+    };
+  }
+
   const ledger = path.resolve(COMPOUND_HOME, "ledger");
   const [
     entities,
@@ -65,11 +82,17 @@ export async function getLedgerStats(): Promise<LedgerStats> {
 }
 
 export async function getKnowledgeSourceCount(): Promise<number> {
+  const projected = await getSystemStatsProjection();
+  if (projected) return num(projected.knowledge_sources);
+
   return countLines(path.resolve(COMPOUND_HOME, "registries", "knowledge-sources.jsonl"));
 }
 
 /** Names of the active capture sources (for the capture node's evidence list). */
 export async function getKnowledgeSourceKinds(): Promise<string[]> {
+  const projected = await getSystemStatsProjection();
+  if (projected) return arr(projected.knowledge_source_kinds).map(str).filter(Boolean);
+
   if (!privateFallbacksEnabled()) return [];
 
 	try {
@@ -95,6 +118,9 @@ export async function getKnowledgeSourceKinds(): Promise<string[]> {
 }
 
 export async function getIntakeRepoCount(): Promise<number> {
+  const projected = await getSystemStatsProjection();
+  if (projected) return num(projected.intake_repos);
+
   if (!privateFallbacksEnabled()) return 0;
 
 	try {

@@ -1,13 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, privateFallbacksEnabled, type Json } from "@/lib/compound";
+import { COMPOUND_HOME, privateFallbacksEnabled, runJson, type Json } from "@/lib/compound";
 
 /*
  * The dense web: entities hold claims; claims connect to claims via typed edges
  * (supports / contradicts / supersedes / depends_on / part_of). This loads an
  * ego-graph around a seed (entity slug or claim id) — seed's claims in the
- * inner ring, their edge-neighbors in the outer ring. Reads ~/.compound only.
+ * inner ring, their edge-neighbors in the outer ring. The CLI projection owns
+ * the runtime schema; private ledger reads are only the opt-in fallback.
  */
 
 export type MemoryNode = {
@@ -69,6 +70,10 @@ export async function loadMemoryEgoGraph(
   seed: string,
   opts: { maxNodes?: number } = {},
 ): Promise<EgoGraph> {
+  const maxNodes = opts.maxNodes ?? 60;
+  const projected = await runJson(["system", "memory-graph", seed, "--max-nodes", String(maxNodes), "--json"]);
+  if (projected) return projected as unknown as EgoGraph;
+
   if (!privateFallbacksEnabled()) {
     return {
       seed,
@@ -80,7 +85,6 @@ export async function loadMemoryEgoGraph(
     };
   }
 
-  const maxNodes = opts.maxNodes ?? 60;
   const [claims, edges] = await Promise.all([
     readJsonl(path.join(LEDGER, "claims.jsonl")),
     readJsonl(path.join(LEDGER, "edges.jsonl")),

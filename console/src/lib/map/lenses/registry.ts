@@ -2,15 +2,13 @@ import { num, runJson } from "@/lib/compound";
 import type { LensGraph, LensNode, LensEdge } from "@/lib/map/lens";
 import { edgeKindAccent, nodeKindAccent } from "@/lib/map/lens";
 import {
-  readCapabilityEdges,
-  readCapabilityNodes,
-  readDecisionSourceAuthority,
+  readCapabilityGraph,
   type CapNode,
 } from "@/lib/map/capability-graph";
 
 /*
  * Registry lens — "how the parts connect."
- * Nodes = capability graph (raw jsonl truth) + a decisions cluster.
+ * Nodes = capability graph projection + a decisions cluster.
  * Default group="kind" collapses 736 nodes to per-kind clusters; group="none"
  * expands the full graph in a deterministic column-by-kind grid (no layout dep).
  *
@@ -31,29 +29,26 @@ export async function buildRegistryLens(
   opts: { group?: "kind" | "none" } = {},
 ): Promise<LensGraph> {
   const group = opts.group ?? "kind";
-  const [{ nodes: capNodes, mtime: nmt }, { edges: capEdges, mtime: emt }, { decisions }, auth] =
-    await Promise.all([
-      readCapabilityNodes(),
-      readCapabilityEdges(),
-      readDecisionSourceAuthority(),
-      authorityCounts(),
-    ]);
+  const [{ nodes: capNodes, edges: capEdges, decisions, mtime }, auth] = await Promise.all([
+    readCapabilityGraph(),
+    authorityCounts(),
+  ]);
 
   const byId = new Map<string, CapNode>();
   for (const n of capNodes) byId.set(n.id, n);
 
   const uniqueNodes = byId.size;
-  const generatedAt = [nmt, emt].filter(Boolean).sort().pop() || new Date().toISOString();
+  const generatedAt = mtime || new Date().toISOString();
   const sources = [
-    `~/.compound/registries/capability-nodes.jsonl (${capNodes.length} lines, ${uniqueNodes} unique)`,
-    `~/.compound/registries/capability-edges.jsonl (${capEdges.length} lines)`,
+    `compound capability graph --json → nodes (${capNodes.length} rows, ${uniqueNodes} unique)`,
+    `compound capability graph --json → edges (${capEdges.length} rows)`,
     auth
       ? `compound capability authority --json (deduped view: ${auth.n} nodes / ${auth.e} edges)`
       : "compound capability authority --json (deduped view)",
-    `~/.compound/registries/decision-source-authority.jsonl (${decisions.length})`,
+    `compound capability graph --json → decisions (${decisions.length})`,
   ];
   const note =
-    `Graph truth = capability-nodes.jsonl: ${capNodes.length} lines / ${uniqueNodes} unique nodes, ${capEdges.length} edge lines.` +
+    `Graph truth = compound capability graph --json: ${capNodes.length} nodes / ${uniqueNodes} unique nodes, ${capEdges.length} edges.` +
     (auth ? ` Deduped authority view: ${auth.n} nodes / ${auth.e} edges — both cited.` : "");
 
   /* decisions that retire a capability → retired_by edges (rare, honest) */
@@ -97,7 +92,7 @@ export async function buildRegistryLens(
       accent: nodeKindAccent(k),
       position: { x: (i % perRow) * 260, y: Math.floor(i / perRow) * 200 },
       group: "kind",
-      sources: [`~/.compound/registries/capability-nodes.jsonl → kind=${k}`],
+      sources: [`compound capability graph --json → nodes kind=${k}`],
       cli: "compound capability authority --json",
       raw: { kind: k, count: kindCount.get(k) },
     }));
@@ -113,7 +108,7 @@ export async function buildRegistryLens(
         accent: nodeKindAccent("decision"),
         position: { x: (i % perRow) * 260, y: Math.floor(i / perRow) * 200 },
         group: "kind",
-        sources: ["~/.compound/registries/decision-source-authority.jsonl"],
+        sources: ["compound capability graph --json → decisions"],
         cli: "compound decisions authority --json",
         raw: { decisions: decisions.length },
       });
@@ -185,7 +180,7 @@ export async function buildRegistryLens(
       position: pos.get(id) ?? { x: 0, y: 0 },
       group: k,
       sources: real
-        ? ["~/.compound/registries/capability-nodes.jsonl"]
+        ? ["compound capability graph --json → nodes"]
         : ["synthesized from edge endpoint (absent from nodes.jsonl)"],
       cli: "compound capability authority --json",
       raw: real ?? { id, synthesized: true },

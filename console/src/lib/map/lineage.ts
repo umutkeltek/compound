@@ -1,14 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, getWork, privateFallbacksEnabled, type Json } from "@/lib/compound";
+import { COMPOUND_HOME, getWork, privateFallbacksEnabled, runJson, type Json } from "@/lib/compound";
 
 /*
  * Lineage trace — for any id (claim / candidate / evidence / work / entity),
  * reconstruct its path through the spine: source → evidence → candidate →
- * adjudication → claim → outward. Reads the private ledger in ~/.compound;
- * the repo holds only this mechanism. Honest: if a step can't be found, it's
- * omitted — never fabricated.
+ * adjudication → claim → outward. The CLI projection owns the runtime schema;
+ * private ledger/candidate reads are only the opt-in fallback. Honest: if a
+ * step can't be found, it's omitted — never fabricated.
  */
 
 export type LineageStep = {
@@ -65,6 +65,9 @@ export async function traceLineage(queryId: string): Promise<Lineage> {
   const id = queryId.trim();
   const steps: LineageStep[] = [];
   let resolvedAs = id;
+
+  const projected = await runJson(["system", "lineage", id, "--json"]);
+  if (projected) return projected as unknown as Lineage;
 
   if (!privateFallbacksEnabled()) {
     if (id.startsWith("work_")) {

@@ -19,7 +19,7 @@ export default async function LineagePage({ params }: { params: Promise<{ id: st
             How a datum arrived and what it feeds — source → evidence → candidate → adjudication → claim.
           </p>
         </div>
-        <FreshnessChip source="~/.compound/ledger" />
+        <FreshnessChip source="compound system lineage --json" />
       </div>
 
       <LineageSearch initial={queryId} />

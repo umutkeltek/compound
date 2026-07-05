@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
+import { arr, COMPOUND_HOME, privateFallbacksEnabled, runJson } from "@/lib/compound";
 
 /*
  * The capability graph is the richest "how the parts connect" surface.
@@ -68,26 +68,56 @@ async function readJsonl(
 
 const reg = (f: string) => path.join(COMPOUND_HOME, "registries", f);
 
+export async function readCapabilityGraph(): Promise<{
+  nodes: CapNode[];
+  edges: CapEdge[];
+  decisions: DecisionAuthority[];
+  mtime: string | null;
+}> {
+  const projected = await runJson(["capability", "graph", "--json"]);
+  if (projected) {
+    return {
+      nodes: arr(projected.nodes) as CapNode[],
+      edges: arr(projected.edges) as CapEdge[],
+      decisions: arr(projected.decisions) as DecisionAuthority[],
+      mtime: null,
+    };
+  }
+
+  const [{ rows: nodeRows, mtime: nodeMtime }, { rows: edgeRows, mtime: edgeMtime }, { rows: decisionRows, mtime: decisionMtime }] =
+    await Promise.all([
+      readJsonl(reg("capability-nodes.jsonl")),
+      readJsonl(reg("capability-edges.jsonl")),
+      readJsonl(reg("decision-source-authority.jsonl")),
+    ]);
+  return {
+    nodes: nodeRows as unknown as CapNode[],
+    edges: edgeRows as unknown as CapEdge[],
+    decisions: decisionRows as unknown as DecisionAuthority[],
+    mtime: [nodeMtime, edgeMtime, decisionMtime].filter(Boolean).sort().pop() ?? null,
+  };
+}
+
 export async function readCapabilityNodes(): Promise<{
   nodes: CapNode[];
   mtime: string | null;
 }> {
-  const { rows, mtime } = await readJsonl(reg("capability-nodes.jsonl"));
-  return { nodes: rows as unknown as CapNode[], mtime };
+  const { nodes, mtime } = await readCapabilityGraph();
+  return { nodes, mtime };
 }
 
 export async function readCapabilityEdges(): Promise<{
   edges: CapEdge[];
   mtime: string | null;
 }> {
-  const { rows, mtime } = await readJsonl(reg("capability-edges.jsonl"));
-  return { edges: rows as unknown as CapEdge[], mtime };
+  const { edges, mtime } = await readCapabilityGraph();
+  return { edges, mtime };
 }
 
 export async function readDecisionSourceAuthority(): Promise<{
   decisions: DecisionAuthority[];
   mtime: string | null;
 }> {
-  const { rows, mtime } = await readJsonl(reg("decision-source-authority.jsonl"));
-  return { decisions: rows as unknown as DecisionAuthority[], mtime };
+  const { decisions, mtime } = await readCapabilityGraph();
+  return { decisions, mtime };
 }
