@@ -40,5 +40,6 @@ compound installed
 next:
   compound workbench
   compound proof-check --json
-  cd console && bun install && bun run dev
+  cd console && bun install
+  compound console --operator
 EOF

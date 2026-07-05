@@ -99,13 +99,23 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
   const waitReason = str(next.wait_reason);
   const blockedOn = arr(next.blocked_on).map(String);
   const admissionPreviews = arr(workbench?.admission_previews);
-  const admissionPreview = admissionPreviews[0] ?? null;
+  const continuableAdmissionPreviews = admissionPreviews.filter(
+    (preview) =>
+      Boolean(str(preview?.work_id)) &&
+      Boolean(preview?.policy_allowed) &&
+      !Boolean(preview?.requires_operator) &&
+      !str(preview?.admission_blocked_reason) &&
+      str(preview?.staleness) === "fresh",
+  );
+  const blockedAdmissionPreviewCount = admissionPreviews.length - continuableAdmissionPreviews.length;
+  const admissionPreview = continuableAdmissionPreviews[0] ?? null;
   const admissionPreviewWorkId = str(admissionPreview?.work_id);
   const inboxItems = open.filter((work) => ["proposed", "admitted"].includes(str(work.state)));
   const inboxItem = inboxItems[0] ?? null;
-  const intakeCount = inboxItems.length + admissionPreviews.length;
+  const intakeCount = inboxItems.length + continuableAdmissionPreviews.length;
   const readyCount = open.filter((work) => str(work.state) === "ready").length;
-  const operatorGateCount = open.filter((work) => ["blocked", "held"].includes(str(work.state))).length;
+  const operatorGateCount =
+    open.filter((work) => ["blocked", "held"].includes(str(work.state))).length + blockedAdmissionPreviewCount;
   let continueRequest: ContinueRequest | null = null;
 
   let title = "Nothing to continue";
