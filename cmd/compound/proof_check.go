@@ -27,13 +27,15 @@ type proofCheckReport struct {
 }
 
 type proofCheckStep struct {
-	Name       string   `json:"name"`
-	Command    []string `json:"command"`
-	ProofRef   string   `json:"proof_ref"`
-	Status     string   `json:"status"`
-	ExitCode   int      `json:"exit_code,omitempty"`
-	DurationMS int64    `json:"duration_ms,omitempty"`
-	OutputTail string   `json:"output_tail,omitempty"`
+	Name          string   `json:"name"`
+	Command       []string `json:"command"`
+	Dir           string   `json:"dir,omitempty"`
+	SkipIfMissing string   `json:"skip_if_missing,omitempty"`
+	ProofRef      string   `json:"proof_ref"`
+	Status        string   `json:"status"`
+	ExitCode      int      `json:"exit_code,omitempty"`
+	DurationMS    int64    `json:"duration_ms,omitempty"`
+	OutputTail    string   `json:"output_tail,omitempty"`
 }
 
 func cmdProofCheck(args []string) {
@@ -94,7 +96,7 @@ func runProofCheck(repoPath string, dryRun bool, now time.Time) (proofCheckRepor
 			result.Status = "planned"
 		} else {
 			result = runProofCheckStep(repo, step)
-			if result.Status != "ok" {
+			if result.Status == "failed" {
 				report.Status = "failed"
 			}
 		}
@@ -175,6 +177,10 @@ func proofCheckSteps() ([]proofCheckStep, error) {
 		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "go-vet-all"},
 		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all"},
 		{Name: "diff-check", Command: []string{"git", "diff", "--check"}, ProofRef: "diff-check"},
+		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
+		{Name: "console-smoke", Command: []string{"node", "scripts/smoke.mjs"}, Dir: "console", ProofRef: "console-smoke"},
+		{Name: "console-mutation-gate-smoke", Command: []string{"node", "scripts/mutation-guard-smoke.mjs"}, Dir: "console", ProofRef: "console-mutation-gate-smoke"},
+		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
 		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
 		{Name: "codex-pretooluse-wrapper", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-wrapper-proof"},
@@ -189,13 +195,26 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 	result.Status = "ok"
 	var output []byte
 	var err error
+	if step.SkipIfMissing != "" {
+		if _, lookErr := exec.LookPath(step.SkipIfMissing); lookErr != nil {
+			result.Status = "skipped"
+			result.OutputTail = fmt.Sprintf("%s missing; skipped %s\n", step.SkipIfMissing, step.Name)
+			result.DurationMS = time.Since(start).Milliseconds()
+			return result
+		}
+	}
 	if step.Name == "redact-public" {
 		output, err = runProofCheckRedact(repo)
 	} else if step.Name == "codex-pretooluse-wrapper" {
 		output, err = runProofCheckCodexPreToolUseWrapper(repo, step)
+	} else if step.Name == "bun-tools-test" {
+		output, err = runProofCheckBunTools(repo)
 	} else {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
+		if step.Dir != "" {
+			cmd.Dir = filepath.Join(repo, step.Dir)
+		}
 		cmd.Env = os.Environ()
 		if proofCheckUsesGo(step) {
 			cmd.Env = append(cmd.Env, "GOTOOLCHAIN=local")
@@ -227,6 +246,28 @@ func runProofCheckCodexPreToolUseWrapper(repo string, step proofCheckStep) ([]by
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+tmpHome)
 	cmd.Stdin = strings.NewReader(input)
+	return cmd.CombinedOutput()
+}
+
+func runProofCheckBunTools(repo string) ([]byte, error) {
+	matches, err := filepath.Glob(filepath.Join(repo, "tools", "*.test.ts"))
+	if err != nil {
+		return nil, err
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no tools/*.test.ts files found")
+	}
+	args := []string{"test"}
+	for _, match := range matches {
+		rel, err := filepath.Rel(repo, match)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "."+string(filepath.Separator)+rel)
+	}
+	cmd := exec.Command("bun", args...)
+	cmd.Dir = repo
+	cmd.Env = os.Environ()
 	return cmd.CombinedOutput()
 }
 
