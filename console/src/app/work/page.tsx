@@ -14,7 +14,6 @@ const LANES: {
   states: string[];
   tint: string;
   empty: string;
-  showDecisionForm?: boolean;
 }[] = [
   {
     key: "intake",
@@ -47,7 +46,6 @@ const LANES: {
     states: ["blocked", "held"],
     tint: "#8b5cf6",
     empty: "Nothing needs your decision.",
-    showDecisionForm: false,
   },
 ];
 
@@ -57,14 +55,12 @@ function Column({
   tint,
   items,
   empty,
-  showDecisionForm = true,
 }: {
   title: string;
   description: string;
   tint: string;
   items: WorkCardData[];
   empty: string;
-  showDecisionForm?: boolean;
 }) {
   return (
     <div className="flex w-[328px] shrink-0 flex-col gap-3">
@@ -80,9 +76,7 @@ function Column({
       </div>
       <div className="flex flex-col gap-3">
         {items.length ? (
-          items.map((work) => (
-            <WorkCard key={work.displayId} work={work} showDecisionForm={showDecisionForm} />
-          ))
+          items.map((work) => <WorkCard key={work.displayId} work={work} />)
         ) : (
           <EmptyState>{empty}</EmptyState>
         )}
@@ -241,7 +235,6 @@ export default async function WorkBoard() {
                 description={column.description}
                 tint={column.tint}
                 empty={column.empty}
-                showDecisionForm={column.showDecisionForm}
                 items={open.filter((work) => column.states.includes(str(work.state)))}
               />
             ))}

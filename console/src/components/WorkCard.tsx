@@ -1,9 +1,7 @@
 import Link from "next/link";
 
-import { DecisionForm } from "@/components/DecisionForm";
 import { Chip, MoveChip, StateBadge } from "@/components/ui";
 import { ago, str } from "@/lib/compound";
-import { specFor } from "@/lib/decision-registry";
 import { shortText, WorkCardData } from "@/lib/work-data";
 
 const EDGE: Record<string, string> = {
@@ -19,31 +17,27 @@ const EDGE: Record<string, string> = {
   cancelled: "#9aa4b2",
 };
 
+function operatorNextAction(action: string): string {
+  const normalized = action.toLowerCase();
+  if (normalized.includes("claim before touching")) return "Ready to start.";
+  if (normalized.includes("advance running")) return "Ready to run.";
+  if (normalized.includes("advance verifying")) return "Waiting for run evidence or a check.";
+  if (normalized.includes("close") || normalized.includes("completed")) return "Ready to finish with proof.";
+  return action;
+}
+
 export function WorkCard({
   work,
   compact = false,
-  showDecisionForm = true,
 }: {
   work: WorkCardData;
   compact?: boolean;
-  showDecisionForm?: boolean;
 }) {
   const state = str(work.state);
   const id = work.displayId;
   const title = work.packet?.title || str(work.canonical_surface) || str(work.success_predicate) || id;
   const objective = work.packet?.objective || str(work.desired_outcome) || str(work.success_predicate);
-
-  // Registry-driven lifecycle: options are the allowed transitions for this state.
-  const spec = specFor("work-advance");
-  const options = spec?.optionsFor ? spec.optionsFor(work) : [];
-  const formSpec = spec
-    ? {
-        area: spec.area,
-        options,
-        fields: spec.fields,
-        defaultOption: spec.defaultOption ?? options[0]?.value,
-      }
-    : null;
+  const nextAction = str(work.next_action);
 
   return (
     <div
@@ -71,13 +65,20 @@ export function WorkCard({
         {str(work.claimed_at) ? <span>{ago(work.claimed_at)}</span> : null}
         <MoveChip move={str(work.move) || str(work.move_type)} />
       </div>
-      {!compact && str(work.next_action) ? (
+      {!compact && nextAction ? (
         <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11.5px] leading-relaxed text-ink-3">
-          {str(work.next_action)}
+          {operatorNextAction(nextAction)}
         </p>
       ) : null}
-      {showDecisionForm && formSpec && options.length > 0 ? (
-        <DecisionForm formSpec={formSpec} itemId={id} argvPreview={options[0]?.argv ?? null} />
+      {!compact ? (
+        <div className="flex justify-end border-t border-line pt-2">
+          <Link
+            href={`/work/${id}`}
+            className="rounded-lg bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 hover:bg-slate-200"
+          >
+            Open
+          </Link>
+        </div>
       ) : null}
     </div>
   );
