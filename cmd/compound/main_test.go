@@ -3120,6 +3120,35 @@ func TestWorkbenchCommandShowsDispatchStepRuns(t *testing.T) {
 	}
 }
 
+func TestWorkbenchCommandShowsContinueRuns(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	ready, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "workbench command sees continue run"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	run, err := store.ContinueRun(cliTestNow, work.ContinueRunOptions{
+		ContinueOptions: work.ContinueOptions{Actor: "codex", ExpectWorkID: ready.ID},
+		MaxSteps:        5,
+	})
+	if err != nil {
+		t.Fatalf("continue run: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--recent", "10"})
+	})
+	if !strings.Contains(out, "continue_runs=1") || !strings.Contains(out, "wait=run_evidence") || !strings.Contains(out, run.ID) {
+		t.Fatalf("workbench output missing continue run:\n%s", out)
+	}
+}
+
 func TestWorkbenchCommandDispatchNextUsesActor(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -1,4 +1,5 @@
 import { DecisionCard } from "@/components/DecisionCard";
+import { ChangedProofStream } from "@/components/ChangedProofStream";
 import { NeedsMeStream } from "@/components/NeedsMeStream";
 import { WorkCard } from "@/components/WorkCard";
 import {
@@ -6,7 +7,6 @@ import {
   Chip,
   EmptyState,
   FreshnessChip,
-  MoveChip,
   SectionLabel,
   Stat,
   StateBadge,
@@ -33,6 +33,8 @@ export default async function Dashboard() {
     ["in_progress", "running", "verifying", "claimed"].includes(str(work.state)),
   );
   const recent = arr(workbench?.recent);
+  const continueRuns = arr(workbench?.continue_runs);
+  const dispatchStepRuns = arr(workbench?.dispatch_step_runs);
 
   const reviewRows = externalReviewRows(reviews);
 
@@ -83,7 +85,13 @@ export default async function Dashboard() {
       <div className="grid gap-4 md:grid-cols-3">
         <Stat label="Needs me" value={needsMeTotal} accent="orange" glyph="!" sub="reviews + work + memory" />
         <Stat label="Running" value={running.length} accent="blue" glyph="▶" sub="claimed / in flight" />
-        <Stat label="Changed" value={recent.length} accent="green" glyph="Δ" sub="recent terminal receipts" />
+        <Stat
+          label="Changed"
+          value={recent.length + continueRuns.length + dispatchStepRuns.length}
+          accent="green"
+          glyph="Δ"
+          sub="proof + movement"
+        />
       </div>
 
       <section>
@@ -158,42 +166,30 @@ export default async function Dashboard() {
       <section>
         <SectionLabel>Changed</SectionLabel>
         <Card
-          title="Recent landings"
+          title="Proof stream"
           accent="green"
           glyph="Δ"
           right={
             <span className="text-[11px]">
               <span className="font-semibold text-emerald-600">{productiveRecent} productive</span>
               <span className="text-ink-3"> · </span>
+              <span className="text-ink-3">{continueRuns.length + dispatchStepRuns.length} moved</span>
+              <span className="text-ink-3"> · </span>
               <span className={grinding ? "font-semibold text-red-500" : "text-ink-3"}>
                 {lowYieldRecent} low-yield
               </span>
               {grinding ? (
-                <span className="ml-1.5 rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">
-                  grinding
-                </span>
+                <>
+                  <span className="text-ink-3"> · </span>
+                  <span className="rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">
+                    grinding
+                  </span>
+                </>
               ) : null}
             </span>
           }
         >
-          {recent.length ? (
-            <ul className="flex flex-col gap-2">
-              {recent.slice(0, 8).map((item, index) => (
-                <li key={index} className="flex items-center justify-between gap-3 rounded-lg px-1 py-1.5">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="mono truncate text-[12px]">{str(item.work_id) || str(item.id)}</span>
-                    <StateBadge state={str(item.state)} />
-                    <MoveChip move={str(item.move) || str(item.move_type)} />
-                  </div>
-                  <span className="mono shrink-0 text-[11px] text-ink-3">
-                    {str(item.receipt) || str(item.receipt_id)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState>No recent terminal work in the report.</EmptyState>
-          )}
+          <ChangedProofStream recent={recent} continueRuns={continueRuns} dispatchStepRuns={dispatchStepRuns} />
         </Card>
       </section>
     </div>

@@ -4764,6 +4764,9 @@ func cmdWorkbench(args []string) {
 	if report.Counts.DispatchStepRuns > 0 {
 		fmt.Printf("dispatch_step_runs=%d\n", report.Counts.DispatchStepRuns)
 	}
+	if report.Counts.ContinueRuns > 0 {
+		fmt.Printf("continue_runs=%d\n", report.Counts.ContinueRuns)
+	}
 	if report.Counts.AdmissionPreviews > 0 {
 		fmt.Printf("admission_previews=%d\n", report.Counts.AdmissionPreviews)
 		for i, preview := range report.AdmissionPreviews {
@@ -4949,6 +4952,13 @@ func cmdWorkbench(args []string) {
 	if len(report.DispatchStepRuns) > 0 {
 		fmt.Println("dispatch_step_runs:")
 		for _, run := range report.DispatchStepRuns {
+			fmt.Printf("- %s status=%s steps=%d wait=%s next=%s\n",
+				run.ID, run.Status, run.StepCount, emptyDash(run.WaitReason), emptyDash(run.NextAction))
+		}
+	}
+	if len(report.ContinueRuns) > 0 {
+		fmt.Println("continue_runs:")
+		for _, run := range report.ContinueRuns {
 			fmt.Printf("- %s status=%s steps=%d wait=%s next=%s\n",
 				run.ID, run.Status, run.StepCount, emptyDash(run.WaitReason), emptyDash(run.NextAction))
 		}

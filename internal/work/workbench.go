@@ -36,6 +36,7 @@ type WorkbenchReport struct {
 	AdmissionPreviews []WorkbenchAdmissionPreview `json:"admission_previews,omitempty"`
 	DispatchNext      WorkbenchDispatchNext       `json:"dispatch_next"`
 	DispatchStepRuns  []DispatchStepRunSummary    `json:"dispatch_step_runs,omitempty"`
+	ContinueRuns      []ContinueRunSummary        `json:"continue_runs,omitempty"`
 	Integrity         []string                    `json:"integrity,omitempty"`
 }
 
@@ -49,6 +50,7 @@ type WorkbenchCounts struct {
 	RunObservations   int            `json:"run_observations"`
 	RunArtifacts      int            `json:"run_artifacts"`
 	DispatchStepRuns  int            `json:"dispatch_step_runs"`
+	ContinueRuns      int            `json:"continue_runs"`
 	AdmissionPreviews int            `json:"admission_previews"`
 	MissingReceipt    int            `json:"missing_receipt"`
 	MissingTransition int            `json:"missing_transition"`
@@ -56,6 +58,21 @@ type WorkbenchCounts struct {
 }
 
 type DispatchStepRunSummary struct {
+	ID          string   `json:"id"`
+	GeneratedAt string   `json:"generated_at"`
+	Status      string   `json:"status"`
+	Actor       string   `json:"actor"`
+	StepCount   int      `json:"step_count"`
+	CanContinue bool     `json:"can_continue"`
+	WaitReason  string   `json:"wait_reason,omitempty"`
+	BlockedOn   []string `json:"blocked_on,omitempty"`
+	NextAction  string   `json:"next_action,omitempty"`
+	ResultPath  string   `json:"result_path,omitempty"`
+	StepActions []string `json:"step_actions,omitempty"`
+	StepWorkIDs []string `json:"step_work_ids,omitempty"`
+}
+
+type ContinueRunSummary struct {
 	ID          string   `json:"id"`
 	GeneratedAt string   `json:"generated_at"`
 	Status      string   `json:"status"`
@@ -307,6 +324,12 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	report.DispatchStepRuns = runs
 	report.Counts.DispatchStepRuns = len(runs)
 	for _, warning := range warnings {
+		report.Integrity = append(report.Integrity, warning)
+	}
+	continueRuns, continueWarnings := s.workbenchContinueRuns(opts.RecentLimit)
+	report.ContinueRuns = continueRuns
+	report.Counts.ContinueRuns = len(continueRuns)
+	for _, warning := range continueWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
 	activePacket, activeWarnings := s.workbenchActivePacketProof(now, opts.ActivePacketSurface, opts.ActivePacketExpectedEvidenceRef)
@@ -1125,6 +1148,59 @@ func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, 
 			}
 		}
 		summary = s.resolveDispatchStepRunSummary(summary)
+		out = append(out, summary)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].GeneratedAt != out[j].GeneratedAt {
+			return out[i].GeneratedAt > out[j].GeneratedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, warnings
+}
+
+func (s *Store) workbenchContinueRuns(limit int) ([]ContinueRunSummary, []string) {
+	dir := filepath.Join(s.home, "continue-runs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{"continue-runs unreadable: " + err.Error()}
+	}
+	var out []ContinueRunSummary
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var result ContinueRunResult
+		if err := s.readJSON(path, &result); err != nil {
+			warnings = append(warnings, "continue run "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		summary := ContinueRunSummary{
+			ID:          result.ID,
+			GeneratedAt: result.GeneratedAt,
+			Status:      result.Status,
+			Actor:       result.Actor,
+			StepCount:   result.StepCount,
+			CanContinue: result.CanContinue,
+			WaitReason:  result.WaitReason,
+			BlockedOn:   append([]string{}, result.BlockedOn...),
+			NextAction:  result.NextAction,
+			ResultPath:  path,
+		}
+		for _, step := range result.Steps {
+			summary.StepActions = append(summary.StepActions, step.Action)
+			if step.WorkID != "" {
+				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
+			}
+		}
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {

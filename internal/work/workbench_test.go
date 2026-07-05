@@ -438,6 +438,41 @@ func TestWorkbenchSurfacesDispatchStepRunSummaries(t *testing.T) {
 	}
 }
 
+func TestWorkbenchSurfacesContinueRunSummaries(t *testing.T) {
+	s := newStore(t)
+	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "workbench sees continue run"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.ContinueRun(fixedNow, ContinueRunOptions{
+		ContinueOptions: ContinueOptions{Actor: "codex", ExpectWorkID: ready.ID},
+		MaxSteps:        5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.ContinueRuns != 1 || len(report.ContinueRuns) != 1 {
+		t.Fatalf("continue run summaries missing: counts=%+v runs=%+v", report.Counts, report.ContinueRuns)
+	}
+	summary := report.ContinueRuns[0]
+	if summary.ID != run.ID || summary.Status != "waiting" || summary.StepCount != 2 || summary.WaitReason != "run_evidence" {
+		t.Fatalf("continue run summary = %+v run=%+v", summary, run)
+	}
+	if len(summary.StepActions) != 2 || summary.StepActions[0] != "claim" || summary.StepActions[1] != "advance" {
+		t.Fatalf("continue run actions = %+v", summary.StepActions)
+	}
+	if !contains(summary.StepWorkIDs, ready.ID) || !contains(summary.BlockedOn, "work.run_evidence:"+ready.ID) {
+		t.Fatalf("continue run refs missing: %+v", summary)
+	}
+	if summary.ResultPath != run.ResultPath {
+		t.Fatalf("continue run path = %q, want %q", summary.ResultPath, run.ResultPath)
+	}
+}
+
 func TestWorkbenchResolvesNoOpenWorkDispatchStepRun(t *testing.T) {
 	s := newStore(t)
 	run, err := s.DispatchStepRun(fixedNow, DispatchStepRunOptions{
