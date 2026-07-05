@@ -11,9 +11,10 @@ Create a Desktop snapshot zip from the current compound checkout:
   3. remove top-level external memory projects except the keep list
   4. zip ~/Desktop/compound.zip
 
-Default mode matches a local hand copy more closely:
+Default mode is for a ChatGPT Pro source audit:
   - keeps scripts, tools, console source, private docs, .claude, .git,
-    node_modules, .next, root binaries, and other local audit material
+    root binaries, and other local audit material
+  - excludes dependency/build artifacts: node_modules, .next
   - removes Finder/system junk: .DS_Store, __MACOSX
   - removes top-level memory/* external clones except names in the keep list
 
@@ -27,6 +28,7 @@ Options:
   --name NAME              Staged folder name. Default: compound.
   --zip NAME               Zip filename. Default: compound.zip.
   --upload-safe            Produce the smaller public-audit bundle.
+  --include-node-modules   Keep dependency/build artifacts in the local snapshot.
   --include-private        With --upload-safe, keep private docs and .claude.
   --keep-memory NAME       Keep top-level memory/NAME. Can be repeated.
                            Default keep list: compound.
@@ -61,6 +63,7 @@ stage_name="${COMPOUND_STAGE_NAME:-compound}"
 zip_name="${COMPOUND_ZIP_NAME:-compound.zip}"
 upload_safe=0
 include_private=1
+include_node_modules=0
 dry_run=0
 
 keep_memory=()
@@ -96,6 +99,10 @@ while [[ $# -gt 0 ]]; do
     --upload-safe)
       upload_safe=1
       include_private=0
+      shift
+      ;;
+    --include-node-modules)
+      include_node_modules=1
       shift
       ;;
     --include-private)
@@ -167,11 +174,16 @@ for name in "${keep_memory[@]}"; do
 done
 rsync_args+=(--filter "- /memory/***")
 
+if [[ "$include_node_modules" -eq 0 ]]; then
+  rsync_args+=(
+    --exclude "node_modules/"
+    --exclude ".next/"
+  )
+fi
+
 if [[ "$upload_safe" -eq 1 ]]; then
   rsync_args+=(
     --exclude ".git/"
-    --exclude "node_modules/"
-    --exclude ".next/"
     --exclude "/compound"
     --exclude "/bin/"
     --exclude "/home/"
@@ -193,6 +205,7 @@ printf -- '- stage: %s\n' "$stage_path"
 printf -- '- zip: %s\n' "$zip_path"
 printf -- '- mode: %s\n' "$([[ "$upload_safe" -eq 1 ]] && printf upload-safe || printf full-local)"
 printf -- '- include_private: %s\n' "$include_private"
+printf -- '- include_node_modules: %s\n' "$include_node_modules"
 printf -- '- keep_memory: %s\n' "${keep_memory[*]:-(none)}"
 
 run rm -rf -- "$stage_path" "$zip_path"
