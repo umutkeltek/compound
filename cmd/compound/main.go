@@ -163,7 +163,7 @@ func workUsage(sub string) string {
 	case "import-packet":
 		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
 	default:
-		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
+		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
 	}
 }
 
@@ -1530,34 +1530,6 @@ func cmdSourceObserve(args []string) {
 	}
 	for _, id := range report.NoPromoteIDs {
 		fmt.Printf("- no_promote: %s\n", id)
-	}
-}
-
-func cmdSourceObservations(args []string) {
-	if len(args) > 1 || (len(args) == 1 && args[0] != "--json") {
-		fmt.Fprintln(os.Stderr, "usage: compound source observations [--json]")
-		os.Exit(2)
-	}
-	homePath, err := home.Resolve("")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		os.Exit(1)
-	}
-	report, err := sourceobs.ListSourceObservations(homePath, time.Now())
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "source observations:", err)
-		os.Exit(1)
-	}
-	if len(args) == 1 && args[0] == "--json" {
-		printJSON(report)
-		return
-	}
-	fmt.Printf("# source observations\n\n")
-	fmt.Printf("- candidates: %d\n", report.Counts.TotalCandidates)
-	fmt.Printf("- source_observations: %d\n", report.Counts.SourceObservations)
-	fmt.Printf("- no_promote: %d\n", report.Counts.NoPromoteDecisions)
-	for _, item := range report.Items {
-		fmt.Printf("- observation: %s candidate=%s verdict=%s promote_allowed=%t\n", item.SourceObservationID, item.CandidateID, item.Verdict, item.PromoteAllowed)
 	}
 }
 
@@ -6144,6 +6116,35 @@ func cmdWork(args []string) {
 			fmt.Printf("- integrity: %s\n", item)
 		}
 		fmt.Printf("- next: %s\n", report.NextAction)
+	case "proof-chain-doctor":
+		usage := "usage: compound work proof-chain-doctor [--include-archived] [--json]"
+		for _, arg := range rest {
+			switch arg {
+			case "--include-archived", "--json":
+			default:
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+		}
+		report, err := store.ProofChainDoctor(time.Now(), work.ProofChainDoctorOptions{IncludeArchived: has("--include-archived")})
+		die(err)
+		if has("--json") {
+			printJSON(report)
+		} else {
+			fmt.Printf("# work proof-chain-doctor %s\n\n", report.Status)
+			fmt.Printf("- works_checked: %d\n", report.Counts.WorksChecked)
+			fmt.Printf("- terminal_checked: %d\n", report.Counts.TerminalChecked)
+			fmt.Printf("- complete: %d\n", report.Counts.Complete)
+			if len(report.Findings) > 0 {
+				fmt.Printf("- findings: %d\n", len(report.Findings))
+				for _, finding := range report.Findings {
+					fmt.Printf("- %s %s: %s\n", finding.WorkID, finding.Code, finding.Message)
+				}
+			}
+		}
+		if report.Status != "ok" {
+			os.Exit(1)
+		}
 	case "dispatch-plan":
 		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md preview-only] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
@@ -6781,7 +6782,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|create|import-packet|show|list|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 }

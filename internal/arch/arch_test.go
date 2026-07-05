@@ -102,6 +102,25 @@ func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {
 	}
 }
 
+func TestStatusHotPathFailsOnProofJournalEntries(t *testing.T) {
+	repo := t.TempDir()
+	statusDir := filepath.Join(repo, "docs", "architecture")
+	if err := os.MkdirAll(statusDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# Package & Command Status\n\n- 2026-07-05: go test ./... passed for latest proof run\n"
+	if err := os.WriteFile(filepath.Join(statusDir, "status.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkStatusHotPath(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one status proof-journal failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "proof-journal") {
+		t.Fatalf("failure should name proof-journal drift: %+v", findings[0])
+	}
+}
+
 func TestConvergenceDebtIsObservable(t *testing.T) {
 	r := Doctor("", false)
 	for _, f := range r.Findings {
@@ -250,6 +269,16 @@ func TestWorkbenchActionCardContractResolved(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Message, "required inputs validation stop conditions") {
 		t.Fatalf("finding should name action-card gates: %+v", findings)
+	}
+}
+
+func TestWorkProofChainContractResolved(t *testing.T) {
+	findings := checkWorkProofChainContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("work proof-chain contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "receipt/transition") {
+		t.Fatalf("finding should describe terminal receipt/transition proof: %+v", findings)
 	}
 }
 

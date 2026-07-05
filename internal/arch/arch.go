@@ -93,6 +93,7 @@ type Report struct {
 // They load from an optional private list (docs_private/leak-tokens.txt, one token per line) so the
 // public core stays clean while a private overlay can enforce its own vocabulary.
 var genericLeak = regexp.MustCompile(`(?i)(/Users/[a-z]|/home/[a-z]|[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})`)
+var statusProofJournalLine = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:20[0-9]{2}-[0-9]{2}-[0-9]{2}\b|proof log:|verification run:|test run:|commit [0-9a-f]{7,40}\b)`)
 
 // loadPrivateLeakTokens reads operator-specific forbidden tokens from docs_private/leak-tokens.txt
 // (gitignored). It also reports whether the file was PRESENT, so the caller can fail CLOSED: an
@@ -138,6 +139,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkRouteOutcomeContract(repoRoot)...)
 		f = append(f, checkKnowledgePageContract(repoRoot)...)
 		f = append(f, checkWorkPacketContract(repoRoot)...)
+		f = append(f, checkWorkProofChainContract(repoRoot)...)
 		f = append(f, checkMCPorterTopologyContract(repoRoot)...)
 		f = append(f, checkPluginServingContract(repoRoot)...)
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
@@ -248,7 +250,16 @@ func checkStatusHotPath(repoRoot string) []Finding {
 	if lines > MaxStatusHotPathLines {
 		return []Finding{{"status-hot-path", Fail, "docs/architecture/status.md is " + itoa(lines) + " lines; keep the hot status surface at or below " + itoa(MaxStatusHotPathLines) + " lines and move proof journal entries to docs/architecture/archive/"}}
 	}
-	return []Finding{{"status-hot-path", Info, "docs/architecture/status.md hot path is " + itoa(lines) + "/" + itoa(MaxStatusHotPathLines) + " lines"}}
+	var journalLines []string
+	for i, line := range strings.Split(string(b), "\n") {
+		if statusProofJournalLine.MatchString(line) {
+			journalLines = append(journalLines, "line "+itoa(i+1))
+		}
+	}
+	if len(journalLines) > 0 {
+		return []Finding{{"status-hot-path", Fail, "docs/architecture/status.md contains proof-journal shaped entries (" + strings.Join(journalLines, ", ") + "); keep status as current owner/surface map and move dated proof logs to docs/architecture/archive/"}}
+	}
+	return []Finding{{"status-hot-path", Info, "docs/architecture/status.md hot path is " + itoa(lines) + "/" + itoa(MaxStatusHotPathLines) + " lines with no proof-journal entries"}}
 }
 
 func lineCount(b []byte) int {
@@ -1376,6 +1387,51 @@ func checkWorkPacketContract(repoRoot string) []Finding {
 		return []Finding{{"packet-work-contract", Fail, "public docs do not describe work import-packet as packet-hash proposed WorkEnvelope source evidence with no packet mutation, proof/receipt/transition, or memory promotion"}}
 	}
 	return []Finding{{"packet-work-contract", Info, "work packet import stays source-backed proposed work, not proof"}}
+}
+
+// checkWorkProofChainContract keeps terminal work from drifting into "closed
+// because state says so". Completed/failed work must remain mechanically tied to
+// readable Receipt and Transition envelopes with the same work_id.
+func checkWorkProofChainContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/work/proof_chain_doctor.go": {
+			"ProofChainDoctor",
+			"MissingReceipt",
+			"MissingTransition",
+			"MismatchedWorkID",
+			"transition_missing_receipt_ref",
+			"terminalProofRequired",
+			"rec.Validate()",
+			"tr.Validate()",
+		},
+		"cmd/compound/main.go": {
+			"proof-chain-doctor",
+			"ProofChainDoctorOptions",
+			"--include-archived",
+		},
+		"internal/work/proof_chain_doctor_test.go": {
+			"TestProofChainDoctorReportsCleanTerminalWork",
+			"TestProofChainDoctorFailsTerminalWorkMissingReceiptTransition",
+			"TestProofChainDoctorFailsMismatchedTerminalWorkID",
+		},
+		"cmd/compound/work_proof_chain_doctor_test.go": {
+			"TestWorkProofChainDoctorCLIJSON",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			failures = append(failures, rel+" missing: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"work-proof-chain-contract", Fail, "terminal work proof-chain doctor drifted: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"work-proof-chain-contract", Info, "terminal work proof-chain doctor verifies receipt/transition existence, validity, and work_id linkage"}}
 }
 
 // checkMCPorterTopologyContract keeps real MCP catalog ingestion from drifting
