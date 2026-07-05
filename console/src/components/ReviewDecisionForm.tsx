@@ -35,14 +35,17 @@ export function ReviewDecisionForm({
     setResult(null);
 
     const form = new FormData(event.currentTarget);
-    const response = await fetch("/api/reviews/record", {
+    const response = await fetch("/api/decision/execute", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        id: reviewId,
-        decision: form.get("decision"),
-        rationale: form.get("rationale"),
-        confidence: form.get("confidence"),
+        area: "external-repo-intake",
+        itemId: reviewId,
+        option: form.get("decision"),
+        fields: {
+          rationale: form.get("rationale"),
+          confidence: form.get("confidence"),
+        },
       }),
     });
     const body = (await response.json()) as Result;

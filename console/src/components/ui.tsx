@@ -93,7 +93,6 @@ const MOVE_TONE: Record<string, Accent> = {
   outward_delta: "green",
   memory_delta: "violet",
   rule_delta: "blue",
-  landed_owner: "green",
   control_plane_repair: "gray",
   audit_only: "gray",
 };

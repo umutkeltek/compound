@@ -1,9 +1,12 @@
-import { compoundFailure, runCompound } from "@/lib/compound";
-import { workActionArgv } from "@/lib/work-data";
+import { consoleMutationBlockedResponse } from "@/lib/console-mutations";
+import { executeDecision } from "@/lib/decision-execute";
 
 const WORK_ID_RE = /^work_[a-z0-9]{6,}$/;
 
 export async function POST(request: Request) {
+  const blocked = consoleMutationBlockedResponse(request);
+  if (blocked) return blocked;
+
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -21,16 +24,16 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, stderr: "invalid work action" }, { status: 400 });
   }
 
-  const args = workActionArgv(id, action);
-  try {
-    const result = await runCompound(args);
-    return Response.json({ ok: true, stdout: result.stdout, stderr: result.stderr });
-  } catch (error) {
-    const failure = compoundFailure(error);
-    return Response.json({
-      ok: false,
-      stdout: failure.stdout,
-      stderr: failure.stderr || failure.message,
-    });
-  }
+  return executeDecision({
+    area: "work-advance",
+    itemId: id,
+    option: action === "admit" ? "admitted" : "cancelled",
+    fields:
+      action === "cancel"
+        ? {
+            summary: "operator cancelled proposed work",
+            move_type: "audit_only",
+          }
+        : {},
+  });
 }

@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { arr, COMPOUND_HOME, runJson, type Json, str } from "@/lib/compound";
+import { arr, COMPOUND_HOME, privateFallbacksEnabled, runJson, type Json, str } from "@/lib/compound";
 
 const MEMORY_INBOX = path.resolve(COMPOUND_HOME, "inbox", "memory-candidates");
 const KNOWLEDGE_EXTRACTION_INBOX = path.resolve(COMPOUND_HOME, "inbox", "knowledge-extractions");
@@ -52,6 +52,11 @@ async function consoleSourceFor(candidate: Json): Promise<Json | null> {
   }
 
   const out: Json = {};
+  if (!privateFallbacksEnabled()) {
+    if (evidence) out.evidence_ref = evidence;
+    return Object.keys(out).length ? out : null;
+  }
+
   if (extractionId && /^kx_[a-z0-9]+$/i.test(extractionId)) {
     const extractionPath = path.resolve(KNOWLEDGE_EXTRACTION_INBOX, `${extractionId}.json`);
     out.extraction_id = extractionId;
@@ -86,6 +91,8 @@ async function loadFromProjection(filterState?: string): Promise<MemoryCandidate
 }
 
 async function loadFromInbox(filterState?: string): Promise<MemoryCandidate[]> {
+  if (!privateFallbacksEnabled()) return [];
+
   let entries: string[];
   try {
     entries = await readdir(MEMORY_INBOX);

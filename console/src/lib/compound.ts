@@ -9,6 +9,10 @@ const exec = promisify(execFile);
 export const COMPOUND_HOME =
   process.env.COMPOUND_HOME || `${homedir()}/.compound`;
 
+export function privateFallbacksEnabled(): boolean {
+  return process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS === "1";
+}
+
 function resolveBin(): string {
   const candidates = [
     process.env.COMPOUND_BIN,

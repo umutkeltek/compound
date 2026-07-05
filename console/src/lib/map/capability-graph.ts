@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME } from "@/lib/compound";
+import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
 
 /*
  * The capability graph is the richest "how the parts connect" surface.
@@ -41,6 +41,8 @@ export type DecisionAuthority = {
 async function readJsonl(
   file: string,
 ): Promise<{ rows: Record<string, unknown>[]; mtime: string | null }> {
+  if (!privateFallbacksEnabled()) return { rows: [], mtime: null };
+
   try {
     const text = await readFile(file, "utf8");
     let mtime: string | null = null;

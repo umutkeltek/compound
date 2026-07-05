@@ -61,7 +61,7 @@ export default async function Dashboard() {
   };
   const recentTypes = recent.map((r) => str(r.move_type) || str(r.move));
   const productiveRecent = recentTypes.filter((t) =>
-    ["outward_delta", "memory_delta", "rule_delta", "landed_owner"].includes(t),
+    ["outward_delta", "memory_delta", "rule_delta"].includes(t),
   ).length;
   const lowYieldRecent = recentTypes.filter((t) =>
     ["control_plane_repair", "audit_only"].includes(t),

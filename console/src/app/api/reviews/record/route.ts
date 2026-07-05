@@ -1,12 +1,13 @@
-import { readFile, writeFile } from "node:fs/promises";
-
-import { compoundFailure, runCompound } from "@/lib/compound";
-import { externalReviewYamlPath } from "@/lib/review-data";
-import { isReviewDecision, replaceReviewDecisionFields } from "@/lib/review-yaml";
+import { consoleMutationBlockedResponse } from "@/lib/console-mutations";
+import { executeDecision } from "@/lib/decision-execute";
+import { isReviewDecision } from "@/lib/review-yaml";
 
 const REVIEW_ID_RE = /^extrepo_[a-z0-9]{6,}$/;
 
 export async function POST(request: Request) {
+  const blocked = consoleMutationBlockedResponse(request);
+  if (blocked) return blocked;
+
   let body: Record<string, unknown>;
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -32,25 +33,10 @@ export async function POST(request: Request) {
     return Response.json({ ok: false, stderr: "external repo review confidence must be numeric" }, { status: 400 });
   }
 
-  const yamlPath = externalReviewYamlPath(id);
-  try {
-    const source = await readFile(yamlPath, "utf8");
-    const updated = replaceReviewDecisionFields(source, { decision, rationale, confidence });
-    await writeFile(yamlPath, updated, "utf8");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "failed to update review YAML";
-    return Response.json({ ok: false, stderr: message }, { status: 400 });
-  }
-
-  try {
-    const result = await runCompound(["capability", "external-intake-review", yamlPath]);
-    return Response.json({ ok: true, stdout: result.stdout, stderr: result.stderr });
-  } catch (error) {
-    const failure = compoundFailure(error);
-    return Response.json({
-      ok: false,
-      stdout: failure.stdout,
-      stderr: failure.stderr || failure.message,
-    });
-  }
+  return executeDecision({
+    area: "external-repo-intake",
+    itemId: id,
+    option: decision,
+    fields: { rationale, confidence: String(confidence) },
+  });
 }

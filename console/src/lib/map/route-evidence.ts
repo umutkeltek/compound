@@ -1,7 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME } from "@/lib/compound";
+import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
 
 /*
  * Execution route evidence — metadata only (no prompts/responses/secrets).
@@ -26,6 +26,8 @@ export type RouteRecord = {
 export async function readRouteEvidence(
   limit = 200,
 ): Promise<{ records: RouteRecord[]; mtime: string | null }> {
+  if (!privateFallbacksEnabled()) return { records: [], mtime: null };
+
   const file = path.join(
     COMPOUND_HOME,
     "ledger",

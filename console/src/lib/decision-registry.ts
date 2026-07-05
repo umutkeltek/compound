@@ -172,7 +172,6 @@ export const MOVE_TYPES = [
   { value: "outward_delta", label: "Outward delta" },
   { value: "memory_delta", label: "Memory delta" },
   { value: "rule_delta", label: "Rule delta" },
-  { value: "landed_owner", label: "Landed owner" },
   { value: "control_plane_repair", label: "Control-plane repair" },
   { value: "audit_only", label: "Audit only" },
 ];

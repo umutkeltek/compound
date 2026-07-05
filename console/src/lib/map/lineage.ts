@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, getWork, type Json } from "@/lib/compound";
+import { COMPOUND_HOME, getWork, privateFallbacksEnabled, type Json } from "@/lib/compound";
 
 /*
  * Lineage trace — for any id (claim / candidate / evidence / work / entity),
@@ -65,6 +65,23 @@ export async function traceLineage(queryId: string): Promise<Lineage> {
   const id = queryId.trim();
   const steps: LineageStep[] = [];
   let resolvedAs = id;
+
+  if (!privateFallbacksEnabled()) {
+    if (id.startsWith("work_")) {
+      resolvedAs = `work ${id}`;
+      const work = await getWork(id);
+      if (!work) return { queryId: id, resolvedAs, found: false, steps };
+      steps.push({
+        kind: "work",
+        label: id,
+        detail: str(work.desired_outcome) || str(work.success_predicate),
+        timestamp: str(work.created_at),
+        refs: [id],
+      });
+      return { queryId: id, resolvedAs, found: true, steps };
+    }
+    return { queryId: id, resolvedAs: "private fallback disabled", found: false, steps };
+  }
 
   const [claims, evidence, adjudications] = await Promise.all([
     readJsonl(path.join(LEDGER, "claims.jsonl")),

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, type Json } from "@/lib/compound";
+import { COMPOUND_HOME, privateFallbacksEnabled, type Json } from "@/lib/compound";
 
 /*
  * The dense web: entities hold claims; claims connect to claims via typed edges
@@ -69,6 +69,17 @@ export async function loadMemoryEgoGraph(
   seed: string,
   opts: { maxNodes?: number } = {},
 ): Promise<EgoGraph> {
+  if (!privateFallbacksEnabled()) {
+    return {
+      seed,
+      resolvedAs: "private fallback disabled",
+      nodes: [],
+      links: [],
+      truncated: false,
+      found: false,
+    };
+  }
+
   const maxNodes = opts.maxNodes ?? 60;
   const [claims, edges] = await Promise.all([
     readJsonl(path.join(LEDGER, "claims.jsonl")),

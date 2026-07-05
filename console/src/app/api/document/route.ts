@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME } from "@/lib/compound";
+import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
 
 const MAX_BYTES = 1024 * 1024;
 const EVIDENCE_REF_RE = /^ev_[a-z0-9]+$/;
@@ -57,6 +57,16 @@ export async function GET(request: Request) {
   const rawPath = url.searchParams.get("path")?.trim() ?? "";
 
   try {
+    if (!privateFallbacksEnabled()) {
+      return Response.json(
+        {
+          ok: false,
+          stderr: "direct document reads disabled; set COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1 for private local inspection",
+        },
+        { status: 403 },
+      );
+    }
+
     if (evidenceRef) {
       if (!EVIDENCE_REF_RE.test(evidenceRef)) {
         return Response.json({ ok: false, stderr: "invalid evidence ref" }, { status: 400 });

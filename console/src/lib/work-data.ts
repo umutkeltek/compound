@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { arr, getWorkbench, Json, str } from "@/lib/compound";
+import { arr, getWorkbench, Json, privateFallbacksEnabled, str } from "@/lib/compound";
 
 export type PacketSummary = {
   path: string;
@@ -125,6 +125,7 @@ export function shortText(value: string, max = 300): string {
 
 export async function packetForSurface(surface: string): Promise<PacketSummary | null> {
   if (!surface.startsWith("packet:")) return null;
+  if (!privateFallbacksEnabled()) return null;
   const wanted = surface.slice("packet:".length);
 
   try {

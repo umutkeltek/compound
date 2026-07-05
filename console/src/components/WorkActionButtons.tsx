@@ -32,10 +32,21 @@ export function WorkActionButtons({
   async function execute(action: WorkAction) {
     setPending(true);
     setResult(null);
-    const response = await fetch("/api/work/act", {
+    const response = await fetch("/api/decision/execute", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: workId, action }),
+      body: JSON.stringify({
+        area: "work-advance",
+        itemId: workId,
+        option: action === "admit" ? "admitted" : "cancelled",
+        fields:
+          action === "cancel"
+            ? {
+                summary: "operator cancelled proposed work",
+                move_type: "audit_only",
+              }
+            : {},
+      }),
     });
     const body = (await response.json()) as Result;
     setResult(body);

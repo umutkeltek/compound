@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, num, runJson, str, type Json } from "@/lib/compound";
+import { COMPOUND_HOME, num, privateFallbacksEnabled, runJson, str, type Json } from "@/lib/compound";
 
 /*
  * Real projections the System Map hydrates from. Every number on the map comes
@@ -10,6 +10,8 @@ import { COMPOUND_HOME, num, runJson, str, type Json } from "@/lib/compound";
  */
 
 async function countLines(file: string): Promise<number> {
+  if (!privateFallbacksEnabled()) return 0;
+
   try {
     const source = await readFile(file, "utf8");
     return source.split(/\r?\n/).filter((l) => l.trim().length > 0).length;
@@ -68,7 +70,9 @@ export async function getKnowledgeSourceCount(): Promise<number> {
 
 /** Names of the active capture sources (for the capture node's evidence list). */
 export async function getKnowledgeSourceKinds(): Promise<string[]> {
-  try {
+  if (!privateFallbacksEnabled()) return [];
+
+	try {
     const source = await readFile(
       path.resolve(COMPOUND_HOME, "registries", "knowledge-sources.jsonl"),
       "utf8",
@@ -91,7 +95,9 @@ export async function getKnowledgeSourceKinds(): Promise<string[]> {
 }
 
 export async function getIntakeRepoCount(): Promise<number> {
-  try {
+  if (!privateFallbacksEnabled()) return 0;
+
+	try {
     const dir = path.resolve(COMPOUND_HOME, "inbox", "external-repo-intake");
     const entries = await readdir(dir, { withFileTypes: true });
     return entries.filter((e) => e.isDirectory()).length;

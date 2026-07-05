@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME } from "@/lib/compound";
+import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
 
 /*
  * Work leases: one JSON file per claimed work_id under ~/.compound/work/leases.
@@ -15,6 +15,8 @@ export type Lease = {
 };
 
 export async function readLeases(): Promise<Lease[]> {
+  if (!privateFallbacksEnabled()) return [];
+
   const dir = path.join(COMPOUND_HOME, "work", "leases");
   let files: string[];
   try {
