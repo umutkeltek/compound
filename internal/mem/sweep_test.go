@@ -99,6 +99,12 @@ func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T)
 	if report.ContradictionProposals[0].CandidateIDs[0] != contradictingCandidates[0].ID {
 		t.Fatalf("contradiction should link candidate %q: %+v", contradictingCandidates[0].ID, report.ContradictionProposals[0])
 	}
+	if report.ReopenedClaims[0].State != ClaimStateNeedsReview ||
+		report.ReopenedClaims[0].ReviewRef != report.ContradictionProposals[0].ID ||
+		len(report.ReopenedClaims[0].CandidateIDs) != 1 ||
+		report.ReopenedClaims[0].CandidateIDs[0] != contradictingCandidates[0].ID {
+		t.Fatalf("reopened claim marker incomplete: %+v", report.ReopenedClaims[0])
+	}
 
 	claims, err := s.loadClaims()
 	if err != nil {
@@ -137,5 +143,24 @@ func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T)
 	}
 	if len(reviewRecall.Claims) != 1 || reviewRecall.Claims[0].State != ClaimStateNeedsReview {
 		t.Fatalf("IncludeNeedsReview recall = %+v, want reopened claim visible", reviewRecall.Claims)
+	}
+
+	timeline, err := s.Timeline("project:api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(timeline) != 1 ||
+		timeline[0].State != ClaimStateNeedsReview ||
+		len(timeline[0].ReviewRefs) != 1 ||
+		timeline[0].ReviewRefs[0] != report.ContradictionProposals[0].ID {
+		t.Fatalf("timeline should expose reopened claim review state: %+v", timeline)
+	}
+
+	again, err := s.SynthesisSweep([]string{"contradict"}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ReviewDebtCount != 0 || len(again.ReopenedClaims) != 0 {
+		t.Fatalf("second contradiction sweep should not duplicate review markers: %+v", again.ReopenedClaims)
 	}
 }

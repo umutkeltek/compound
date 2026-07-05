@@ -400,6 +400,88 @@ func TestOperationalArchiveMovesTerminalHistoryAndRestores(t *testing.T) {
 	}
 }
 
+func TestOperationalArchiveMovesStaleCreatePlansAndRestores(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	staleBody := `{"schema_version":"compound.work_create_plan.v0.1","id":"wcrp_stale","generated_at":"2026-06-29T10:00:00Z","status":"create_policy_allowed","work_id":"work_stale_plan","policy":{"allowed":true}}` + "\n"
+	freshBody := `{"schema_version":"compound.work_create_plan.v0.1","id":"wcrp_fresh","generated_at":"2026-06-30T11:30:00Z","status":"create_policy_allowed","work_id":"work_fresh_plan","policy":{"allowed":true}}` + "\n"
+	admittedBody := `{"schema_version":"compound.work_create_plan.v0.1","id":"wcrp_admitted","generated_at":"2026-06-29T10:00:00Z","status":"create_policy_allowed","work_id":"work_admitted_plan","policy":{"allowed":true}}` + "\n"
+	writeHomeFile(t, h, "create-plans/wcrp_stale.json", staleBody)
+	writeHomeFile(t, h, "create-plans/wcrp_fresh.json", freshBody)
+	writeHomeFile(t, h, "create-plans/wcrp_admitted.json", admittedBody)
+	writeHomeFile(t, h, "work/work/work_admitted_plan.json", `{"id":"work_admitted_plan","state":"ready"}`)
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"create-plan"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 1 || report.Counts["create-plan"] != 1 || report.Entries[0].OriginalPath != "create-plans/wcrp_stale.json" {
+		t.Fatalf("create-plan archive report = %+v", report)
+	}
+	assertMissing(t, filepath.Join(h, "create-plans/wcrp_stale.json"))
+	if got := mustReadHomeFile(t, h, "create-plans/wcrp_fresh.json"); got != freshBody {
+		t.Fatalf("fresh create-plan changed: %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "create-plans/wcrp_admitted.json"); got != admittedBody {
+		t.Fatalf("admitted create-plan changed: %q", got)
+	}
+
+	restore, err := RestoreOperationalArchive(h, OperationalRestoreOptions{IDs: []string{report.Entries[0].ID}}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore.RestoredCount != 1 {
+		t.Fatalf("restore report = %+v", restore)
+	}
+	if got := mustReadHomeFile(t, h, "create-plans/wcrp_stale.json"); got != staleBody {
+		t.Fatalf("restored stale create-plan not byte-identical:\n got %q\nwant %q", got, staleBody)
+	}
+	report, err = ArchiveOperationalHistory(h, OperationalArchiveOptions{
+		Kinds:  []string{"create-plan"},
+		Paths:  []string{"create-plans/wcrp_fresh.json"},
+		DryRun: true,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 1 || report.Counts["create-plan"] != 1 || report.Entries[0].Status != "explicit_unadmitted" || report.Entries[0].OriginalPath != "create-plans/wcrp_fresh.json" {
+		t.Fatalf("explicit fresh create-plan dry-run = %+v", report)
+	}
+	if got := mustReadHomeFile(t, h, "create-plans/wcrp_fresh.json"); got != freshBody {
+		t.Fatalf("dry-run moved fresh create-plan:\n got %q\nwant %q", got, freshBody)
+	}
+	report, err = ArchiveOperationalHistory(h, OperationalArchiveOptions{
+		Kinds: []string{"create-plan"},
+		Paths: []string{"create-plans/wcrp_fresh.json"},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 1 || report.Entries[0].Status != "explicit_unadmitted" {
+		t.Fatalf("explicit fresh create-plan archive = %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(h, "create-plans", "wcrp_fresh.json")); !os.IsNotExist(err) {
+		t.Fatalf("fresh create-plan should move out of hot store: %v", err)
+	}
+	report, err = ArchiveOperationalHistory(h, OperationalArchiveOptions{
+		Kinds:  []string{"create-plan"},
+		Paths:  []string{"create-plans/wcrp_admitted.json"},
+		DryRun: true,
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 0 {
+		t.Fatalf("admitted create-plan must not archive by explicit path: %+v", report)
+	}
+	if got := mustReadHomeFile(t, h, "create-plans/wcrp_admitted.json"); got != admittedBody {
+		t.Fatalf("admitted create-plan changed:\n got %q\nwant %q", got, admittedBody)
+	}
+}
+
 func TestOperationalArchiveKeepsOperatorPendingPanelVerdictsHot(t *testing.T) {
 	now := archiveTestNow
 	h := filepath.Join(t.TempDir(), ".compound")

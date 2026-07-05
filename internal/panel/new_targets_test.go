@@ -39,6 +39,40 @@ func TestLoadSkillCandidateTargetsSkipsDecisionSidecarAndLimit(t *testing.T) {
 	}
 }
 
+func TestLoadDecisionCandidateTargetsFiltersNonParkAndLimit(t *testing.T) {
+	home := t.TempDir()
+	writeDecisionCandidateForPanelTest(t, home, "dc_a_available", candidates.Park)
+	writeDecisionCandidateForPanelTest(t, home, "dc_b_rejected", candidates.Reject)
+	writeDecisionCandidateForPanelTest(t, home, "dc_c_available", candidates.Park)
+
+	got, err := LoadDecisionCandidateTargets(home, 1)
+	if err != nil {
+		t.Fatalf("load limited decision targets: %v", err)
+	}
+	if len(got) != 1 || got[0].Ref != "dc_a_available" || got[0].Kind != "decision_candidate" || got[0].Visibility != "internal" {
+		t.Fatalf("limited decision targets = %+v", got)
+	}
+
+	all, err := LoadDecisionCandidateTargets(home, 0)
+	if err != nil {
+		t.Fatalf("load all decision targets: %v", err)
+	}
+	if refs := targetRefsForPanelTest(all); strings.Join(refs, ",") != "dc_a_available,dc_c_available" {
+		t.Fatalf("decision target refs = %v", refs)
+	}
+	if !strings.Contains(all[0].Summary, "scope=routing") || !strings.Contains(all[0].Summary, "verdict=park") {
+		t.Fatalf("decision summary = %q", all[0].Summary)
+	}
+
+	input, err := LoadTargetInput(home, "decision_candidate", "dc_a_available")
+	if err != nil {
+		t.Fatalf("load decision target input: %v", err)
+	}
+	if input.Ref != "dc_a_available" || !strings.Contains(string(input.Payload), `"falsifier"`) {
+		t.Fatalf("decision target input = %+v payload=%s", input, string(input.Payload))
+	}
+}
+
 func TestLoadCapabilityObservationTargetsFiltersVerdictsAndLimit(t *testing.T) {
 	home := t.TempDir()
 	writeCapabilityObservationForPanelTest(t, home, "cobs_a_pending", "")
@@ -66,6 +100,7 @@ func TestBuildPlanNewTargetKindsPrivacyDefaults(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writeSkillReviewForPanelTest(t, home, "scr_panel_synthetic_promote")
 	writeCapabilityObservationFixtureForPanelTest(t, home, "cobs_panel_synthetic_park")
+	writeDecisionCandidateForPanelTest(t, home, "dc_panel_review", candidates.Park)
 
 	skillRun, err := BuildPlan(home, PlanInput{TargetKind: "skill_candidate", TargetRefs: []string{"scr_panel_synthetic_promote"}}, fixedPanelNow)
 	if err != nil {
@@ -74,8 +109,8 @@ func TestBuildPlanNewTargetKindsPrivacyDefaults(t *testing.T) {
 	if !containsString(skillRun.EvidenceRefs, "privacy_default:not_sensitive:skill_candidate") {
 		t.Fatalf("skill privacy evidence = %v", skillRun.EvidenceRefs)
 	}
-	if len(skillRun.LensSet.Included) != 4 {
-		t.Fatalf("skill lenses = %d, want 4: %+v", len(skillRun.LensSet.Included), skillRun.LensSet.Included)
+	if len(skillRun.LensSet.Included) != 5 {
+		t.Fatalf("skill lenses = %d, want 5: %+v", len(skillRun.LensSet.Included), skillRun.LensSet.Included)
 	}
 
 	capRun, err := BuildPlan(home, PlanInput{TargetKind: "capability_observation", TargetRefs: []string{"cobs_panel_synthetic_park"}}, fixedPanelNow)
@@ -85,8 +120,22 @@ func TestBuildPlanNewTargetKindsPrivacyDefaults(t *testing.T) {
 	if !containsString(capRun.EvidenceRefs, "privacy_default:not_sensitive:capability_observation") {
 		t.Fatalf("capability privacy evidence = %v", capRun.EvidenceRefs)
 	}
-	if len(capRun.LensSet.Included) != 3 || capRun.CountsBefore["awaiting_verdict"] != 1 {
+	if len(capRun.LensSet.Included) != 4 || capRun.CountsBefore["awaiting_verdict"] != 1 {
 		t.Fatalf("capability plan lenses/counts = %d/%v", len(capRun.LensSet.Included), capRun.CountsBefore)
+	}
+
+	decisionRun, err := BuildPlan(home, PlanInput{TargetKind: "decision_candidate", TargetRefs: []string{"dc_panel_review"}, Domain: "reasoning-lenses", Task: "review falsifier and second-order decision effects"}, fixedPanelNow)
+	if err != nil {
+		t.Fatalf("build decision plan: %v", err)
+	}
+	if !containsString(decisionRun.EvidenceRefs, "privacy_default:not_sensitive:decision_candidate") {
+		t.Fatalf("decision privacy evidence = %v", decisionRun.EvidenceRefs)
+	}
+	if len(decisionRun.Targets) != 1 || decisionRun.Targets[0].StateBefore != candidates.Park {
+		t.Fatalf("decision targets = %+v", decisionRun.Targets)
+	}
+	if len(decisionRun.LensSet.Included) != 7 || !includedLensRefsForPanelTest(decisionRun.LensSet.Included)["lens:decision-falsifier-review"] {
+		t.Fatalf("decision plan lenses = %d/%+v", len(decisionRun.LensSet.Included), decisionRun.LensSet.Included)
 	}
 }
 
@@ -326,6 +375,29 @@ func writeCapabilityObservationForPanelTest(t *testing.T, home, id, verdict stri
 	}
 }
 
+func writeDecisionCandidateForPanelTest(t *testing.T, home, id, verdict string) {
+	t.Helper()
+	target := decisionCandidateTarget{
+		ID:         id,
+		Kind:       string(candidates.Decision),
+		Subject:    "decision:routing-frontier-judge",
+		Statement:  "Use paid frontier lanes only for final judgment when cheaper lanes already produced evidence.",
+		Detail:     "Keeps model cost bounded while preserving quality gates.",
+		Confidence: 0.84,
+		Qualifiers: map[string]string{
+			"scope":          "routing",
+			"owner":          "compound",
+			"falsifier":      "cheap lanes repeatedly miss material defects",
+			"review_trigger": "after three route-evidence regressions",
+		},
+		EvidenceRefs: []string{"trace://panel/decision", "receipt://panel/decision"},
+		Verdict:      verdict,
+	}
+	if err := candidates.WriteCandidate(home, candidates.Decision, id, target); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeJSONFileForPanelTest(t *testing.T, path string, payload any) {
 	t.Helper()
 	data, err := json.MarshalIndent(payload, "", " ")
@@ -344,6 +416,14 @@ func targetRefsForPanelTest(inputs []TargetInput) []string {
 	refs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
 		refs = append(refs, input.Ref)
+	}
+	return refs
+}
+
+func includedLensRefsForPanelTest(included []IncludedLens) map[string]bool {
+	refs := make(map[string]bool, len(included))
+	for _, lens := range included {
+		refs[lens.Ref] = true
 	}
 	return refs
 }

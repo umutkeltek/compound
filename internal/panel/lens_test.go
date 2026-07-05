@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/reviewartifact"
 )
 
 func TestSelectLensesIncludesAndExcludesReasons(t *testing.T) {
@@ -104,7 +105,7 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
-	if !first.Changed || first.NodesChanged != 11 || first.PromptsChanged != 12 || !first.AuthorityAppended {
+	if !first.Changed || first.NodesChanged != 16 || first.PromptsChanged != 17 || !first.AuthorityAppended {
 		t.Fatalf("first import result = %+v, want lens and judge prompt content changed", first)
 	}
 	nodesBefore := readTestFile(t, filepath.Join(homePath, "registries", "capability-nodes.jsonl"))
@@ -138,15 +139,15 @@ func TestImportLensManifestIdempotent(t *testing.T) {
 			lensCount++
 		}
 	}
-	if lensCount != 11 {
-		t.Fatalf("lens node count = %d, want 11", lensCount)
+	if lensCount != 16 {
+		t.Fatalf("lens node count = %d, want 16", lensCount)
 	}
 	selection, err := SelectLenses(homePath, "memory_candidate")
 	if err != nil {
 		t.Fatalf("select imported lenses: %v", err)
 	}
-	if len(selection.Included) != 6 || len(selection.Excluded) != 5 {
-		t.Fatalf("imported memory_candidate selection = %+v, want six included and five non-memory excluded", selection)
+	if len(selection.Included) != 6 || len(selection.Excluded) != 10 {
+		t.Fatalf("imported memory_candidate selection = %+v, want six included and ten non-memory excluded", selection)
 	}
 }
 
@@ -183,6 +184,76 @@ func TestSelectLensesWithContextSelectsDomainLenses(t *testing.T) {
 	}
 	if len(social.MissingDomainLens) != 0 {
 		t.Fatalf("social missing domain lens = %+v, want none", social.MissingDomainLens)
+	}
+
+	memoryIngestion, err := SelectLensesWithContext(homePath, "memory_candidate", LensContext{Domain: "memory-ingestion", Task: "conversation memory recall proof"})
+	if err != nil {
+		t.Fatalf("select memory-ingestion lenses: %v", err)
+	}
+	if !selectionIncludesLens(memoryIngestion, "lens:memory-ingestion-admission", lensReasonDomainTriggerMatch) {
+		t.Fatalf("memory-ingestion selection missing admission lens: %+v", memoryIngestion.IncludedRefs)
+	}
+	if selectionIncludesLens(memoryIngestion, "lens:paid-app-commercial-fit", "") || selectionIncludesLens(memoryIngestion, "lens:social-distribution-mechanics", "") {
+		t.Fatalf("memory-ingestion unexpectedly included unrelated domain lens: %+v", memoryIngestion.IncludedRefs)
+	}
+	if len(memoryIngestion.MissingDomainLens) != 0 {
+		t.Fatalf("memory-ingestion missing domain lens = %+v, want none", memoryIngestion.MissingDomainLens)
+	}
+
+	codebase, err := SelectLensesWithContext(homePath, "capability_observation", LensContext{Domain: "codebase-design", Task: "adapt operating-system skill without copying; run seam deletion test"})
+	if err != nil {
+		t.Fatalf("select codebase-design lenses: %v", err)
+	}
+	if !selectionIncludesLens(codebase, "lens:codebase-seam-deletion-test", lensReasonDomainTriggerMatch) {
+		t.Fatalf("codebase-design selection missing seam deletion lens: %+v", codebase.IncludedRefs)
+	}
+	if selectionIncludesLens(codebase, "lens:paid-app-commercial-fit", "") || selectionIncludesLens(codebase, "lens:social-distribution-mechanics", "") {
+		t.Fatalf("codebase-design unexpectedly included unrelated domain lens: %+v", codebase.IncludedRefs)
+	}
+	if len(codebase.MissingDomainLens) != 0 {
+		t.Fatalf("codebase-design missing domain lens = %+v, want none", codebase.MissingDomainLens)
+	}
+
+	antiPattern, err := SelectLensesWithContext(homePath, "capability_observation", LensContext{Domain: "anti-pattern-detectors", Task: "detect map-as-work and skill-folder-copying redirects into consumed proof"})
+	if err != nil {
+		t.Fatalf("select anti-pattern-detectors lenses: %v", err)
+	}
+	if !selectionIncludesLens(antiPattern, "lens:anti-pattern-operational-detector", lensReasonDomainTriggerMatch) {
+		t.Fatalf("anti-pattern-detectors selection missing operational detector lens: %+v", antiPattern.IncludedRefs)
+	}
+	if len(antiPattern.MissingDomainLens) != 0 {
+		t.Fatalf("anti-pattern-detectors missing domain lens = %+v, want none", antiPattern.MissingDomainLens)
+	}
+
+	skillCreator, err := SelectLensesWithContext(homePath, "skill_candidate", LensContext{Domain: "skill-creator", Task: "judge whether the skill fires and changes outcome"})
+	if err != nil {
+		t.Fatalf("select skill-creator lenses: %v", err)
+	}
+	if !selectionIncludesLens(skillCreator, "lens:skill-trigger-outcome-fit", lensReasonTriggerMatch) {
+		t.Fatalf("skill-creator selection missing trigger outcome lens: %+v", skillCreator.IncludedRefs)
+	}
+	if selectionIncludesLens(skillCreator, "lens:codebase-seam-deletion-test", "") {
+		t.Fatalf("skill-creator unexpectedly included seam deletion lens: %+v", skillCreator.IncludedRefs)
+	}
+	if len(skillCreator.MissingDomainLens) != 0 {
+		t.Fatalf("skill-creator missing domain lens = %+v, want none", skillCreator.MissingDomainLens)
+	}
+
+	decisionReview, err := SelectLensesWithContext(homePath, "decision_candidate", LensContext{Domain: "reasoning-lenses", Task: "review falsifier and second-order decision effects"})
+	if err != nil {
+		t.Fatalf("select decision review lenses: %v", err)
+	}
+	if !selectionIncludesLens(decisionReview, "lens:decision-falsifier-review", lensReasonTriggerMatch) {
+		t.Fatalf("decision review selection missing falsifier lens: %+v", decisionReview.IncludedRefs)
+	}
+	if !selectionIncludesLens(decisionReview, "lens:inversion-falsification", lensReasonTriggerMatch) {
+		t.Fatalf("decision review selection missing generic inversion lens: %+v", decisionReview.IncludedRefs)
+	}
+	if selectionIncludesLens(decisionReview, "lens:codebase-seam-deletion-test", "") || selectionIncludesLens(decisionReview, "lens:skill-trigger-outcome-fit", "") {
+		t.Fatalf("decision review unexpectedly included adaptation lenses: %+v", decisionReview.IncludedRefs)
+	}
+	if len(decisionReview.MissingDomainLens) != 0 {
+		t.Fatalf("decision review missing domain lens = %+v, want none", decisionReview.MissingDomainLens)
 	}
 }
 
@@ -248,14 +319,335 @@ func TestLensManifestFixtureHasRequiredPrompts(t *testing.T) {
 		"comparison-contract-fidelity",
 		"comparison-cost-latency",
 		"inversion-falsification",
+		"codebase-seam-deletion-test",
+		"skill-trigger-outcome-fit",
+		"anti-pattern-operational-detector",
 	} {
 		if !strings.Contains(string(data), "id: "+id) {
 			t.Fatalf("manifest missing lens %s", id)
 		}
 	}
-	if got := strings.Count(string(data), `{"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}`); got != 11 {
-		t.Fatalf("strict JSON contract count = %d, want 11", got)
+	if got := strings.Count(string(data), `{"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}`); got != 16 {
+		t.Fatalf("strict JSON contract count = %d, want 16", got)
 	}
+}
+
+func TestPanelCapabilityFeedbackReviewAppliesGraphEdgesOnlyAfterReview(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 5, 0, 30, 0, 0, time.UTC)
+
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID:       "lens:decision-falsifier-review",
+		Kind:     "lens",
+		Name:     "Decision Falsifier Review",
+		Triggers: []string{"decision_candidate"},
+		Weight:   1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run := Run{
+		SchemaVersion: RunSchemaVersion,
+		ID:            "prun_feedback_review",
+		CreatedAt:     now.Format(time.RFC3339),
+		Status:        "verdicts_recorded",
+		TargetKind:    "decision_candidate",
+		Targets:       []Target{{Ref: "dc_feedback", Privacy: "internal", StateBefore: "parked"}},
+		LensSet: LensSet{Included: []IncludedLens{{
+			Ref:    "lens:decision-falsifier-review",
+			Reason: "domain_trigger_match",
+			Weight: 1.12,
+		}}},
+	}
+	target := TargetInput{
+		Kind:    "decision_candidate",
+		Ref:     "dc_feedback",
+		Summary: "Decision candidate missing falsifier review trigger",
+		Payload: []byte(`{"id":"dc_feedback","kind":"decision","statement":"adopt capability"}`),
+	}
+	lenses := []LensFinding{{
+		LensRef:          "lens:decision-falsifier-review",
+		RouteEvidenceRef: "route:panel-feedback",
+		Status:           "completed",
+		Findings: []Finding{{
+			Claim:        "decision lacks falsifier",
+			Severity:     "high",
+			EvidenceRefs: []string{"candidate:dc_feedback"},
+		}},
+	}}
+	synthesis := Synthesis{
+		SchemaVersion: SynthesisSchemaVersion,
+		Decision:      "park",
+		Confidence:    0.82,
+		Rationale:     "Park until falsifier review trigger exists.",
+	}
+	verdictPath, err := writeVerdictArtifact(home, run, target, lenses, synthesis, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPanelCapabilityFeedbackPlan(home, verdictPath, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.FeedbackCandidates) != 1 {
+		t.Fatalf("feedback candidates = %+v, want one", plan.FeedbackCandidates)
+	}
+	candidate := plan.FeedbackCandidates[0]
+	if candidate.NodeID != "lens:decision-falsifier-review" || candidate.EdgeKind != capgraph.EdValidatedBy || !strings.Contains(candidate.Context, "decision_candidate") {
+		t.Fatalf("feedback candidate = %+v", candidate)
+	}
+	paths, err := RecordPanelCapabilityFeedbackPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statsBefore, err := graph.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statsBefore.EdgeCount != 0 {
+		t.Fatalf("plan must not mutate graph edges: %+v", statsBefore)
+	}
+
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: PanelCapabilityFeedbackReviewArea}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateCapabilityFeedbackQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 {
+		t.Fatalf("queue counts = %+v items=%+v", queue.Counts, queue.Items)
+	}
+	if len(queue.Items) != 1 || queue.Items[0].DecisionCard == nil || !strings.Contains(queue.Items[0].DecisionCard.CanonicalActionHint, "panel feedback-review") {
+		t.Fatalf("queue item missing feedback review action: %+v", queue.Items)
+	}
+
+	if _, err := LoadPanelCapabilityFeedbackReview(paths.ReviewYAMLPath); err == nil {
+		t.Fatal("unedited review YAML should be rejected")
+	}
+	reviewDraft := string(mustReadPanelFeedbackFile(t, paths.ReviewYAMLPath))
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_apply_feedback_reject_keep_needs_review", "apply_feedback")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_apply_or_reject", "apply")
+	reviewDraft = strings.ReplaceAll(reviewDraft, `rationale: ""`, `rationale: "reviewed lens useful evidence decision candidate review"`)
+	reviewDraft = strings.ReplaceAll(reviewDraft, `reviewed_by: ""`, `reviewed_by: "codex"`)
+	editedReview := paths.ReviewYAMLPath + ".edited.yaml"
+	if err := os.WriteFile(editedReview, []byte(reviewDraft), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	review, err := LoadPanelCapabilityFeedbackReview(editedReview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := RecordPanelCapabilityFeedbackReview(home, review, editedReview, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "applied_feedback" || report.AppliedEdges != 1 {
+		t.Fatalf("review report = %+v", report)
+	}
+	statsAfter, err := graph.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statsAfter.EdgeKindCounts[capgraph.EdValidatedBy] != 1 {
+		t.Fatalf("validated edge not applied: %+v", statsAfter)
+	}
+
+	queue, err = reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: PanelCapabilityFeedbackReviewArea}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateCapabilityFeedbackQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Items[0].Readiness != "no_action" {
+		t.Fatalf("reviewed queue should be terminal: counts=%+v item=%+v", queue.Counts, queue.Items[0])
+	}
+}
+
+func TestAntiPatternDetectorVerdictFeedsCapabilityFeedbackPlan(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 5, 1, 10, 0, 0, time.UTC)
+
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID:       "lens:anti-pattern-operational-detector",
+		Kind:     "lens",
+		Name:     "Anti-Pattern Operational Detector",
+		Triggers: []string{"anti-pattern-detectors"},
+		Weight:   1.14,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	run := Run{
+		SchemaVersion: RunSchemaVersion,
+		ID:            "prun_anti_pattern_feedback",
+		CreatedAt:     now.Format(time.RFC3339),
+		Status:        "verdicts_recorded",
+		TargetKind:    "capability_observation",
+		Targets:       []Target{{Ref: "capobs_anti_pattern_prompt_only", Privacy: "internal", StateBefore: "park"}},
+		LensSet: LensSet{Included: []IncludedLens{{
+			Ref:    "lens:anti-pattern-operational-detector",
+			Reason: "domain_trigger_match",
+			Weight: 1.14,
+		}}},
+	}
+	target := TargetInput{
+		Kind:       "capability_observation",
+		Ref:        "capobs_anti_pattern_prompt_only",
+		Visibility: "internal",
+		Summary:    "Anti-pattern rules listed as prose without consumer proof",
+		Payload:    []byte(`{"id":"capobs_anti_pattern_prompt_only","kind":"capability_observation","state":"park","summary":"anti-pattern prose lacks redirect proof"}`),
+	}
+	lenses := []LensFinding{{
+		LensRef:          "lens:anti-pattern-operational-detector",
+		RouteEvidenceRef: "route:anti-pattern-detector",
+		Status:           "completed",
+		Findings: []Finding{{
+			Claim:        "anti-pattern list lacks trigger redirect consumer proof silence retirement guard",
+			Severity:     "high",
+			EvidenceRefs: []string{"candidate:capobs_anti_pattern_prompt_only", "anti_pattern:trigger", "anti_pattern:redirect", "anti_pattern:consumer", "anti_pattern:proof", "anti_pattern:silence", "anti_pattern:retirement"},
+		}},
+	}}
+	synthesis := Synthesis{
+		SchemaVersion: SynthesisSchemaVersion,
+		Decision:      "needs_human",
+		Confidence:    0.84,
+		Rationale:     "review whether detector should validate, miss, or false-trigger capability surfacing",
+	}
+	verdictPath, err := writeVerdictArtifact(home, run, target, lenses, synthesis, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPanelCapabilityFeedbackPlan(home, verdictPath, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "review_required" || len(plan.FeedbackCandidates) != 1 {
+		t.Fatalf("feedback plan = %+v", plan)
+	}
+	candidate := plan.FeedbackCandidates[0]
+	if candidate.NodeID != "lens:anti-pattern-operational-detector" || candidate.EdgeKind != capgraph.EdMissedWhen {
+		t.Fatalf("feedback candidate = %+v, want detector missed_when redirect candidate", candidate)
+	}
+	if !strings.Contains(candidate.Context, "capability_observation") ||
+		!strings.Contains(candidate.Context, "anti-pattern list lacks") ||
+		!strings.Contains(candidate.Context, "trigger redirect consumer proof silence retirement") {
+		t.Fatalf("feedback candidate context = %q, want target and finding details", candidate.Context)
+	}
+	paths, err := RecordPanelCapabilityFeedbackPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: PanelCapabilityFeedbackReviewArea}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateCapabilityFeedbackQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.ActionableCount != 1 {
+		t.Fatalf("feedback queue counts = %+v item=%+v paths=%+v", queue.Counts, queue.Items, paths)
+	}
+	stats, err := graph.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.EdgeCount != 0 {
+		t.Fatalf("feedback plan must not mutate capability graph edges: %+v", stats)
+	}
+}
+
+func TestAntiPatternDetectorFindingPreservesOperationalRedirectEvidence(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 5, 2, 55, 0, 0, time.UTC)
+	graph, err := capgraph.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID:       "lens:anti-pattern-operational-detector",
+		Kind:     "lens",
+		Name:     "Anti-Pattern Operational Detector",
+		Triggers: []string{"anti-pattern-detectors"},
+		Weight:   1.14,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run := Run{
+		SchemaVersion: RunSchemaVersion,
+		ID:            "prun_anti_pattern_redirect_contract",
+		CreatedAt:     now.Format(time.RFC3339),
+		Status:        "verdicts_recorded",
+		TargetKind:    "capability_observation",
+		Targets:       []Target{{Ref: "capobs_prompt_only_detector", Privacy: "internal", StateBefore: "park"}},
+		LensSet: LensSet{Included: []IncludedLens{{
+			Ref:    "lens:anti-pattern-operational-detector",
+			Reason: "domain_trigger_match",
+			Weight: 1.14,
+		}}},
+	}
+	target := TargetInput{
+		Kind:       "capability_observation",
+		Ref:        "capobs_prompt_only_detector",
+		Visibility: "internal",
+		Summary:    "anti-pattern prose has trigger words but no consumer proof",
+		Payload:    []byte(`{"id":"capobs_prompt_only_detector","kind":"capability_observation","state":"park"}`),
+	}
+	lenses := []LensFinding{{
+		LensRef:          "lens:anti-pattern-operational-detector",
+		RouteEvidenceRef: "route:anti-pattern-detector",
+		Status:           "completed",
+		Findings: []Finding{{
+			Claim:        "anti-pattern detector lacks trigger redirect consumer proof silence retirement contract",
+			Severity:     "high",
+			EvidenceRefs: []string{"anti_pattern:trigger", "anti_pattern:redirect", "anti_pattern:consumer", "anti_pattern:proof", "anti_pattern:silence", "anti_pattern:retirement"},
+		}},
+	}}
+	verdictPath, err := writeVerdictArtifact(home, run, target, lenses, Synthesis{
+		SchemaVersion: SynthesisSchemaVersion,
+		Decision:      "needs_human",
+		Confidence:    0.86,
+		Rationale:     "prompt-only anti-pattern detector needs an operational redirect before promotion",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := BuildPanelCapabilityFeedbackPlan(home, verdictPath, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.FeedbackCandidates) != 1 {
+		t.Fatalf("feedback candidates = %+v, want one", plan.FeedbackCandidates)
+	}
+	candidate := plan.FeedbackCandidates[0]
+	if candidate.EdgeKind != capgraph.EdMissedWhen || candidate.NodeID != "lens:anti-pattern-operational-detector" {
+		t.Fatalf("feedback candidate = %+v, want missed_when detector candidate", candidate)
+	}
+	for _, ref := range []string{"anti_pattern:trigger", "anti_pattern:redirect", "anti_pattern:consumer", "anti_pattern:proof", "anti_pattern:silence", "anti_pattern:retirement"} {
+		if !containsString(candidate.EvidenceRefs, ref) {
+			t.Fatalf("feedback candidate evidence refs = %v, missing %s", candidate.EvidenceRefs, ref)
+		}
+	}
+	if !strings.Contains(candidate.Context, "trigger redirect consumer proof silence retirement") ||
+		!strings.Contains(candidate.Rationale, "missed_when") ||
+		!strings.Contains(candidate.Rationale, "redirect context") {
+		t.Fatalf("feedback candidate lost operational redirect semantics: %+v", candidate)
+	}
+}
+
+func mustReadPanelFeedbackFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func selectionIncludesLens(selection LensSelection, ref, reason string) bool {

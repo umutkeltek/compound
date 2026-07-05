@@ -1,6 +1,8 @@
 package work
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 )
 
 const CreatePlanSchemaVersion = "compound.work_create_plan.v0.1"
+const AdmitCreatePlanReportSchemaVersion = "compound.work_create_plan_admission.v0.1"
 
 type CreatePlanOptions struct {
 	Actor         string
@@ -23,6 +26,7 @@ type CreatePlanOptions struct {
 	TargetKind    string
 	TargetID      string
 	TargetPath    string
+	ActionContext *WorkActionContext
 	Record        bool
 }
 
@@ -37,6 +41,22 @@ type CreatePolicySummary struct {
 	Reasons          []string `json:"reasons,omitempty"`
 	Obligations      []string `json:"obligations,omitempty"`
 	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
+}
+
+type WorkActionContext struct {
+	Kind               string   `json:"kind,omitempty"`
+	SourceRef          string   `json:"source_ref,omitempty"`
+	SourceID           string   `json:"source_id,omitempty"`
+	Title              string   `json:"title,omitempty"`
+	ActionSummary      string   `json:"action_summary,omitempty"`
+	Command            []string `json:"command,omitempty"`
+	RequiredInputs     []string `json:"required_inputs,omitempty"`
+	ExpectedValidation []string `json:"expected_validation,omitempty"`
+	StopConditions     []string `json:"stop_conditions,omitempty"`
+	Boundary           string   `json:"boundary,omitempty"`
+	Proof              string   `json:"proof,omitempty"`
+	RequiresOperator   bool     `json:"requires_operator,omitempty"`
+	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 }
 
 type CreatePlan struct {
@@ -55,8 +75,36 @@ type CreatePlan struct {
 	ActionIntent  envelope.ActionIntent   `json:"action_intent"`
 	Decision      envelope.PolicyDecision `json:"policy_decision"`
 	Work          envelope.WorkEnvelope   `json:"work"`
+	ActionContext *WorkActionContext      `json:"action_context,omitempty"`
 	NoAction      string                  `json:"no_action,omitempty"`
 	Warnings      []string                `json:"warnings,omitempty"`
+}
+
+type AdmitCreatePlanOptions struct {
+	Actor string
+	Note  string
+}
+
+type AdmitCreatePlanReport struct {
+	SchemaVersion    string                `json:"schema_version"`
+	ID               string                `json:"id"`
+	GeneratedAt      string                `json:"generated_at"`
+	Status           string                `json:"status"`
+	Actor            string                `json:"actor,omitempty"`
+	PlanID           string                `json:"plan_id"`
+	PlanPath         string                `json:"plan_path,omitempty"`
+	WorkID           string                `json:"work_id"`
+	WorkState        string                `json:"work_state"`
+	WorkOwner        string                `json:"work_owner,omitempty"`
+	ActionIntentID   string                `json:"action_intent_id,omitempty"`
+	PolicyDecisionID string                `json:"policy_decision_id,omitempty"`
+	PolicyOutcome    string                `json:"policy_outcome,omitempty"`
+	PolicyAllowed    bool                  `json:"policy_allowed"`
+	AdmissionNote    string                `json:"admission_note,omitempty"`
+	NoAction         string                `json:"no_action,omitempty"`
+	Work             envelope.WorkEnvelope `json:"work"`
+	ActionContext    *WorkActionContext    `json:"action_context,omitempty"`
+	Warnings         []string              `json:"warnings,omitempty"`
 }
 
 func (s *Store) CreatePlan(in CreateInput, now time.Time, opts CreatePlanOptions) (CreatePlan, error) {
@@ -65,6 +113,158 @@ func (s *Store) CreatePlan(in CreateInput, now time.Time, opts CreatePlanOptions
 		opts.Actor = in.Actor
 	}
 	return s.createPlanForWork(w, now, opts)
+}
+
+func LoadCreatePlan(path string) (CreatePlan, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return CreatePlan{}, fmt.Errorf("create-plan path required")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CreatePlan{}, err
+	}
+	var plan CreatePlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return CreatePlan{}, fmt.Errorf("parse create-plan %s: %w", path, err)
+	}
+	if strings.TrimSpace(plan.PlanPath) == "" {
+		plan.PlanPath = path
+	}
+	return plan, nil
+}
+
+func (s *Store) AdmitCreatePlanPath(path string, now time.Time, opts AdmitCreatePlanOptions) (AdmitCreatePlanReport, error) {
+	plan, err := LoadCreatePlan(path)
+	if err != nil {
+		return AdmitCreatePlanReport{}, err
+	}
+	return s.AdmitCreatePlan(plan, path, now, opts)
+}
+
+func (s *Store) AdmitCreatePlan(plan CreatePlan, planPath string, now time.Time, opts AdmitCreatePlanOptions) (AdmitCreatePlanReport, error) {
+	planPath = strings.TrimSpace(firstNonEmpty(planPath, plan.PlanPath))
+	if err := validateCreatePlanForAdmission(plan); err != nil {
+		return AdmitCreatePlanReport{}, err
+	}
+	actor := strings.TrimSpace(opts.Actor)
+	if actor == "" {
+		actor = firstNonEmpty(plan.Actor, plan.Work.Owner, "compound")
+	}
+	note := strings.TrimSpace(opts.Note)
+	if note == "" {
+		note = "admitted_from_create_plan"
+	}
+	report := admitCreatePlanReport(plan, planPath, now, actor, note)
+	if existing, err := s.Get(plan.WorkID); err == nil {
+		if !sameCreatePlanWork(existing, plan.Work) {
+			return report, fmt.Errorf("work %s already exists but does not match create-plan %s", plan.WorkID, plan.ID)
+		}
+		report.Status = "already_admitted"
+		report.NoAction = "work already exists; create-plan admission left lifecycle unchanged"
+		report.Work = existing
+		report.WorkState = existing.State
+		report.WorkOwner = existing.Owner
+		return report, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return report, err
+	}
+	w, err := s.admitWork(plan, now, note, []string{"create_plan:" + plan.ID})
+	if err != nil {
+		return report, err
+	}
+	report.Status = "admitted"
+	report.Work = w
+	report.WorkState = w.State
+	report.WorkOwner = w.Owner
+	return report, nil
+}
+
+func validateCreatePlanForAdmission(plan CreatePlan) error {
+	if plan.SchemaVersion != CreatePlanSchemaVersion {
+		return fmt.Errorf("create-plan schema_version must be %s, got %q", CreatePlanSchemaVersion, plan.SchemaVersion)
+	}
+	if strings.TrimSpace(plan.ID) == "" || strings.TrimSpace(plan.WorkID) == "" {
+		return fmt.Errorf("create-plan id and work_id required")
+	}
+	if plan.Status != "create_policy_allowed" {
+		return fmt.Errorf("create-plan %s status must be create_policy_allowed, got %q", plan.ID, plan.Status)
+	}
+	if !plan.Policy.Allowed {
+		return fmt.Errorf("create-plan %s policy is not allowed: %s", plan.ID, plan.Policy.Outcome)
+	}
+	if strings.TrimSpace(plan.Work.ID) != plan.WorkID {
+		return fmt.Errorf("create-plan %s work.id %q does not match work_id %q", plan.ID, plan.Work.ID, plan.WorkID)
+	}
+	if strings.TrimSpace(plan.WorkState) != "" && plan.Work.State != plan.WorkState {
+		return fmt.Errorf("create-plan %s work.state %q does not match work_state %q", plan.ID, plan.Work.State, plan.WorkState)
+	}
+	if err := plan.Work.Validate(); err != nil {
+		return fmt.Errorf("create-plan %s work invalid: %w", plan.ID, err)
+	}
+	if err := plan.ActionIntent.Validate(); err != nil {
+		return fmt.Errorf("create-plan %s action_intent invalid: %w", plan.ID, err)
+	}
+	if err := plan.Decision.Validate(); err != nil {
+		return fmt.Errorf("create-plan %s policy_decision invalid: %w", plan.ID, err)
+	}
+	if plan.ActionIntent.IDs.WorkID != plan.WorkID || plan.Decision.IDs.WorkID != plan.WorkID {
+		return fmt.Errorf("create-plan %s admission envelopes are not bound to work %s", plan.ID, plan.WorkID)
+	}
+	if plan.Policy.ActionIntentID != plan.ActionIntent.ID || plan.Policy.PolicyDecisionID != plan.Decision.ID {
+		return fmt.Errorf("create-plan %s policy summary does not match admission envelopes", plan.ID)
+	}
+	if plan.Decision.ActionIntentID != plan.ActionIntent.ID {
+		return fmt.Errorf("create-plan %s policy decision does not reference action intent %s", plan.ID, plan.ActionIntent.ID)
+	}
+	return nil
+}
+
+func admitCreatePlanReport(plan CreatePlan, planPath string, now time.Time, actor, note string) AdmitCreatePlanReport {
+	return AdmitCreatePlanReport{
+		SchemaVersion:    AdmitCreatePlanReportSchemaVersion,
+		ID:               idFor("wcar_", plan.ID, plan.WorkID, ts(now)),
+		GeneratedAt:      now.UTC().Format(time.RFC3339),
+		Status:           "pending",
+		Actor:            actor,
+		PlanID:           plan.ID,
+		PlanPath:         planPath,
+		WorkID:           plan.WorkID,
+		WorkState:        plan.WorkState,
+		WorkOwner:        plan.WorkOwner,
+		ActionIntentID:   plan.ActionIntent.ID,
+		PolicyDecisionID: plan.Decision.ID,
+		PolicyOutcome:    plan.Policy.Outcome,
+		PolicyAllowed:    plan.Policy.Allowed,
+		AdmissionNote:    note,
+		Work:             plan.Work,
+		ActionContext:    cloneWorkActionContext(plan.ActionContext),
+	}
+}
+
+func sameCreatePlanWork(existing, planned envelope.WorkEnvelope) bool {
+	return existing.ID == planned.ID &&
+		existing.Owner == planned.Owner &&
+		existing.State == planned.State &&
+		existing.SuccessPredicate == planned.SuccessPredicate &&
+		existing.DesiredOutcome == planned.DesiredOutcome &&
+		existing.IDs.ContextPackID == planned.IDs.ContextPackID &&
+		existing.Risk == planned.Risk &&
+		existing.Privacy == planned.Privacy &&
+		sameStringSlice(existing.NonGoals, planned.NonGoals) &&
+		sameStringSlice(existing.EvidenceRefs, planned.EvidenceRefs)
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts CreatePlanOptions) (CreatePlan, error) {
@@ -102,6 +302,7 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 		ActionIntent:  ai,
 		Decision:      pd,
 		Work:          w,
+		ActionContext: normalizeWorkActionContext(opts.ActionContext),
 		NoAction:      "create lifecycle-ready but policy does not allow it",
 		Warnings: []string{
 			"does not create work",
@@ -183,6 +384,44 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 		cmd = append(cmd, "--privacy", w.Privacy)
 	}
 	return cmd
+}
+
+func normalizeWorkActionContext(ctx *WorkActionContext) *WorkActionContext {
+	if ctx == nil {
+		return nil
+	}
+	out := cloneWorkActionContext(ctx)
+	out.Kind = strings.TrimSpace(out.Kind)
+	out.SourceRef = strings.TrimSpace(out.SourceRef)
+	out.SourceID = strings.TrimSpace(out.SourceID)
+	out.Title = strings.TrimSpace(out.Title)
+	out.Boundary = strings.TrimSpace(out.Boundary)
+	out.Proof = strings.TrimSpace(out.Proof)
+	out.Command = compactStrings(out.Command...)
+	out.ActionSummary = strings.TrimSpace(out.ActionSummary)
+	out.RequiredInputs = compactStrings(out.RequiredInputs...)
+	out.ExpectedValidation = compactStrings(out.ExpectedValidation...)
+	out.StopConditions = compactStrings(out.StopConditions...)
+	out.EvidenceRefs = compactStrings(out.EvidenceRefs...)
+	if out.Kind == "" && out.SourceRef == "" && out.SourceID == "" && out.Title == "" && out.ActionSummary == "" &&
+		len(out.Command) == 0 && len(out.RequiredInputs) == 0 && len(out.ExpectedValidation) == 0 &&
+		len(out.StopConditions) == 0 && out.Boundary == "" && out.Proof == "" && len(out.EvidenceRefs) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneWorkActionContext(ctx *WorkActionContext) *WorkActionContext {
+	if ctx == nil {
+		return nil
+	}
+	out := *ctx
+	out.Command = append([]string{}, ctx.Command...)
+	out.RequiredInputs = append([]string{}, ctx.RequiredInputs...)
+	out.ExpectedValidation = append([]string{}, ctx.ExpectedValidation...)
+	out.StopConditions = append([]string{}, ctx.StopConditions...)
+	out.EvidenceRefs = append([]string{}, ctx.EvidenceRefs...)
+	return &out
 }
 
 func (s *Store) RecordCreatePlan(plan CreatePlan) (string, error) {

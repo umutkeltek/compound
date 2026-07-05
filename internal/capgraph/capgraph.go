@@ -198,6 +198,7 @@ type SurfaceReport struct {
 	Offers             []Surfaced            `json:"offers"`
 	OfferSummaries     []SurfaceOfferSummary `json:"offer_summaries"`
 	MatchedTokenCounts []MatchedTokenCount   `json:"matched_token_counts,omitempty"`
+	MatchedEvidence    []SurfacingConstraint `json:"matched_evidence,omitempty"`
 }
 
 type SurfaceOfferSummary struct {
@@ -348,7 +349,9 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 	if err != nil {
 		return nil, err
 	}
+	feedbackTokens := rawContextTokenSet(task)
 	tokens := tokenSet(task)
+	pruneLegacyAdaptationMetaTokens(tokens, task)
 
 	// learned context → node adjustments
 	add := map[string]float64{}
@@ -364,13 +367,19 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 			continue
 		}
 		ctx := strings.TrimPrefix(e.From, "context:")
-		if e.From == ctx || !tokens[ctx] { // not a context edge, or its token isn't in the task
+		if e.From == ctx { // not a context edge
 			continue
 		}
 		switch e.Kind {
 		case EdMissedWhen:
+			if !contextTokenMatches(tokens, ctx) {
+				continue
+			}
 			add[e.To] += e.Confidence
 		case EdFalseTriggeredBy:
+			if !contextTokenMatches(feedbackTokens, ctx) {
+				continue
+			}
 			sub[e.To] += e.Confidence
 		}
 	}
@@ -860,6 +869,76 @@ func tokenSet(s string) map[string]bool {
 	return out
 }
 
+func contextTokenMatches(tokens map[string]bool, ctx string) bool {
+	ctx = strings.TrimSpace(strings.ToLower(ctx))
+	if ctx == "" {
+		return false
+	}
+	if tokens[ctx] {
+		return true
+	}
+	if strings.HasSuffix(ctx, "y") {
+		if tokens[strings.TrimSuffix(ctx, "y")+"ies"] {
+			return true
+		}
+	}
+	if strings.HasSuffix(ctx, "s") {
+		return tokens[strings.TrimSuffix(ctx, "s")]
+	}
+	return tokens[ctx+"s"]
+}
+
+func rawContextTokenSet(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	}) {
+		tok = strings.TrimSpace(tok)
+		if tok != "" {
+			out[tok] = true
+		}
+	}
+	return out
+}
+
+var legacyAdaptationMetaTokens = map[string]bool{
+	"anti":     true,
+	"aware":    true,
+	"consumed": true,
+	"context":  true,
+	"material": true,
+	"pattern":  true,
+	"patterns": true,
+	"proof":    true,
+	"runtime":  true,
+}
+
+func pruneLegacyAdaptationMetaTokens(tokens map[string]bool, task string) {
+	if !legacyAdaptationTask(task) {
+		return
+	}
+	for tok := range legacyAdaptationMetaTokens {
+		delete(tokens, tok)
+	}
+}
+
+func legacyAdaptationTask(task string) bool {
+	text := strings.ToLower(task)
+	hasLegacySubject := strings.Contains(text, "operating-system") ||
+		strings.Contains(text, "legacy") ||
+		strings.Contains(text, "old system") ||
+		strings.Contains(text, "old-system") ||
+		strings.Contains(text, "old operating")
+	if !hasLegacySubject {
+		return false
+	}
+	return strings.Contains(text, "adapt") ||
+		strings.Contains(text, "absorb") ||
+		strings.Contains(text, "migrat") ||
+		strings.Contains(text, "translate") ||
+		strings.Contains(text, "port")
+}
+
 func surfaceTriggerScore(taskTokens map[string]bool, n Node) (float64, []string) {
 	matched := map[string]bool{}
 	for _, trigger := range n.Triggers {
@@ -978,6 +1057,11 @@ var capabilityTokenStopWords = map[string]bool{
 	"mcp": true, "plugin": true, "plugins": true,
 	"task": true, "tasks": true, "tool": true, "tools": true,
 	"workflow": true, "workflows": true,
+	// Control-plane adaptation prompts often mention old systems and instructions
+	// generically. The private adaptation doctrine carries that trigger; graph
+	// surfacing should require a more specific capability token.
+	"everything": true, "instruction": true, "instructions": true,
+	"operating": true, "prompt": true, "prompts": true, "system": true, "systems": true,
 	// Agent describes the caller/role across too many tools and skills. Let
 	// concrete task words like harness, adapter, workbench, browser, or MCP match.
 	"agent": true, "agents": true,

@@ -14,18 +14,19 @@ import (
 const ClosePlanSchemaVersion = "compound.work_close_plan.v0.1"
 
 type ClosePlanOptions struct {
-	Actor         string
-	Outcome       string
-	MoveType      string
-	Capability    string
-	Action        string
-	MutationClass string
-	Reversibility string
-	BlastRadius   string
-	TargetKind    string
-	TargetID      string
-	TargetPath    string
-	Record        bool
+	Actor          string
+	Outcome        string
+	MoveType       string
+	ActionPlanPath string
+	Capability     string
+	Action         string
+	MutationClass  string
+	Reversibility  string
+	BlastRadius    string
+	TargetKind     string
+	TargetID       string
+	TargetPath     string
+	Record         bool
 }
 
 type ClosePolicySummary struct {
@@ -42,28 +43,32 @@ type ClosePolicySummary struct {
 }
 
 type ClosePlan struct {
-	SchemaVersion   string                  `json:"schema_version"`
-	ID              string                  `json:"id"`
-	GeneratedAt     string                  `json:"generated_at"`
-	Status          string                  `json:"status"`
-	Mode            string                  `json:"mode"`
-	Actor           string                  `json:"actor"`
-	WorkID          string                  `json:"work_id"`
-	WorkState       string                  `json:"work_state"`
-	Outcome         string                  `json:"outcome"`
-	MoveType        string                  `json:"move_type"`
-	WorkOwner       string                  `json:"work_owner,omitempty"`
-	PlanPath        string                  `json:"plan_path,omitempty"`
-	CloseCommand    []string                `json:"close_command,omitempty"`
-	ProofRefs       []string                `json:"proof_refs,omitempty"`
-	ArtifactIDs     []string                `json:"artifact_ids,omitempty"`
-	VerificationIDs []string                `json:"verification_ids,omitempty"`
-	RunObservations []RunObservationSummary `json:"run_observations,omitempty"`
-	Policy          ClosePolicySummary      `json:"policy"`
-	ActionIntent    envelope.ActionIntent   `json:"action_intent"`
-	Decision        envelope.PolicyDecision `json:"policy_decision"`
-	NoAction        string                  `json:"no_action,omitempty"`
-	Warnings        []string                `json:"warnings,omitempty"`
+	SchemaVersion           string                  `json:"schema_version"`
+	ID                      string                  `json:"id"`
+	GeneratedAt             string                  `json:"generated_at"`
+	Status                  string                  `json:"status"`
+	Mode                    string                  `json:"mode"`
+	Actor                   string                  `json:"actor"`
+	WorkID                  string                  `json:"work_id"`
+	WorkState               string                  `json:"work_state"`
+	Outcome                 string                  `json:"outcome"`
+	MoveType                string                  `json:"move_type"`
+	WorkOwner               string                  `json:"work_owner,omitempty"`
+	PlanPath                string                  `json:"plan_path,omitempty"`
+	CloseCommand            []string                `json:"close_command,omitempty"`
+	ProofRefs               []string                `json:"proof_refs,omitempty"`
+	ArtifactIDs             []string                `json:"artifact_ids,omitempty"`
+	VerificationIDs         []string                `json:"verification_ids,omitempty"`
+	RunObservations         []RunObservationSummary `json:"run_observations,omitempty"`
+	ActionExecutionPlanPath string                  `json:"action_execution_plan_path,omitempty"`
+	ActionExecutionPlanID   string                  `json:"action_execution_plan_id,omitempty"`
+	ExpectedValidation      []string                `json:"expected_validation,omitempty"`
+	ReceiptDraft            envelope.Receipt        `json:"receipt_draft,omitempty"`
+	Policy                  ClosePolicySummary      `json:"policy"`
+	ActionIntent            envelope.ActionIntent   `json:"action_intent"`
+	Decision                envelope.PolicyDecision `json:"policy_decision"`
+	NoAction                string                  `json:"no_action,omitempty"`
+	Warnings                []string                `json:"warnings,omitempty"`
 }
 
 func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (ClosePlan, error) {
@@ -71,14 +76,46 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	if workID == "" {
 		return ClosePlan{}, fmt.Errorf("close-plan requires <work_id>")
 	}
+
+	actionPlanPath := strings.TrimSpace(opts.ActionPlanPath)
+	var actionPlan *ActionExecutionPlan
+	if actionPlanPath != "" {
+		loaded, err := LoadActionExecutionPlan(actionPlanPath)
+		if err != nil {
+			return ClosePlan{}, err
+		}
+		if loaded.WorkID != workID {
+			return ClosePlan{}, fmt.Errorf("action execution plan belongs to work %s, not %s", loaded.WorkID, workID)
+		}
+		if err := loaded.ReceiptDraft.Validate(); err != nil {
+			return ClosePlan{}, fmt.Errorf("action execution plan receipt draft invalid: %w", err)
+		}
+		actionPlan = &loaded
+	}
+
 	outcome := strings.TrimSpace(opts.Outcome)
+	if outcome == "" && actionPlan != nil {
+		outcome = strings.TrimSpace(actionPlan.ReceiptDraft.Outcome)
+	}
 	if outcome == "" {
-		return ClosePlan{}, fmt.Errorf("close-plan requires --outcome <state>")
+		return ClosePlan{}, fmt.Errorf("close-plan requires --outcome <state> or --action-plan with receipt_draft.outcome")
 	}
 	moveType := strings.TrimSpace(opts.MoveType)
-	if moveType == "" {
-		return ClosePlan{}, fmt.Errorf("close-plan requires --move-type <type>")
+	if moveType == "" && actionPlan != nil {
+		moveType = strings.TrimSpace(actionPlan.ReceiptDraft.MoveType)
 	}
+	if moveType == "" {
+		return ClosePlan{}, fmt.Errorf("close-plan requires --move-type <type> or --action-plan with receipt_draft.move_type")
+	}
+	if actionPlan != nil {
+		if strings.TrimSpace(opts.Outcome) != "" && strings.TrimSpace(actionPlan.ReceiptDraft.Outcome) != "" && outcome != actionPlan.ReceiptDraft.Outcome {
+			return ClosePlan{}, fmt.Errorf("close-plan outcome %q does not match action execution receipt draft outcome %q", outcome, actionPlan.ReceiptDraft.Outcome)
+		}
+		if strings.TrimSpace(opts.MoveType) != "" && strings.TrimSpace(actionPlan.ReceiptDraft.MoveType) != "" && moveType != actionPlan.ReceiptDraft.MoveType {
+			return ClosePlan{}, fmt.Errorf("close-plan move_type %q does not match action execution receipt draft move_type %q", moveType, actionPlan.ReceiptDraft.MoveType)
+		}
+	}
+
 	w, err := s.Get(workID)
 	if err != nil {
 		return ClosePlan{}, err
@@ -101,36 +138,70 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 	}
 	observations, observationWarnings := s.workbenchRunObservations(w.ID)
 	proofRefs := mergeUnique(w.ArtifactIDs, w.VerificationIDs)
+	var expectedValidation []string
+	var receiptDraft envelope.Receipt
+	if actionPlan != nil {
+		proofRefs = mergeUnique(proofRefs, actionPlan.ProofRefs, actionPlan.ReceiptDraft.ProofRefs)
+		expectedValidation = append([]string{}, actionPlan.ReceiptDraft.StateDelta.Verification...)
+		receiptDraft = actionPlan.ReceiptDraft
+	}
 	plan := ClosePlan{
-		SchemaVersion:   ClosePlanSchemaVersion,
-		ID:              idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
-		GeneratedAt:     now.UTC().Format(time.RFC3339),
-		Status:          "not_closeable",
-		Mode:            "proposal_only",
-		Actor:           actor,
-		WorkID:          w.ID,
-		WorkState:       w.State,
-		Outcome:         outcome,
-		MoveType:        moveType,
-		WorkOwner:       w.Owner,
-		ProofRefs:       proofRefs,
-		ArtifactIDs:     append([]string{}, w.ArtifactIDs...),
-		VerificationIDs: append([]string{}, w.VerificationIDs...),
-		RunObservations: observations,
-		Policy:          summarizeClosePolicy(pd, source),
-		ActionIntent:    ai,
-		Decision:        pd,
+		SchemaVersion:      ClosePlanSchemaVersion,
+		ID:                 idFor("wclp_", workID, actor, outcome, moveType, ts(now)),
+		GeneratedAt:        now.UTC().Format(time.RFC3339),
+		Status:             "not_closeable",
+		Mode:               "proposal_only",
+		Actor:              actor,
+		WorkID:             w.ID,
+		WorkState:          w.State,
+		Outcome:            outcome,
+		MoveType:           moveType,
+		WorkOwner:          w.Owner,
+		ProofRefs:          proofRefs,
+		ArtifactIDs:        append([]string{}, w.ArtifactIDs...),
+		VerificationIDs:    append([]string{}, w.VerificationIDs...),
+		RunObservations:    observations,
+		ExpectedValidation: expectedValidation,
+		ReceiptDraft:       receiptDraft,
+		Policy:             summarizeClosePolicy(pd, source),
+		ActionIntent:       ai,
+		Decision:           pd,
 		Warnings: []string{
 			"does not close work",
 			"does not emit receipt or transition",
 			"does not enforce policy; it reports close gate decision",
 		},
 	}
+	if actionPlan != nil {
+		plan.ActionExecutionPlanPath = actionPlanPath
+		plan.ActionExecutionPlanID = actionPlan.ID
+		plan.Warnings = append(plan.Warnings, "action execution receipt draft consumed; close only after expected validation is satisfied")
+	}
 	for _, warning := range observationWarnings {
 		plan.Warnings = append(plan.Warnings, "run observation: "+warning)
 	}
 	if (outcome == "completed" || outcome == "failed") && len(proofRefs) == 0 && len(observations) == 0 {
 		plan.Warnings = append(plan.Warnings, "no artifact, verification, or observed-run evidence attached")
+	}
+	if actionPlan != nil {
+		switch {
+		case strings.TrimSpace(actionPlan.ActionIntent.ID) == "":
+			plan.NoAction = "action execution plan missing action_intent.id"
+		case !stringIn(w.RunIDs, actionPlan.ActionIntent.ID):
+			plan.NoAction = fmt.Sprintf("action execution plan %s not recorded on work; run: compound work act %s --plan %s", actionPlan.ID, w.ID, actionPlanPath)
+		case actionPlan.Status != "action_execution_policy_allowed":
+			plan.NoAction = fmt.Sprintf("action execution plan status %q is not closeable", actionPlan.Status)
+		}
+		if plan.NoAction != "" {
+			if opts.Record {
+				path, err := s.RecordClosePlan(plan)
+				if err != nil {
+					return ClosePlan{}, err
+				}
+				plan.PlanPath = path
+			}
+			return plan, nil
+		}
 	}
 	switch {
 	case !terminalStates[outcome]:
@@ -159,6 +230,15 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.PlanPath = path
 	}
 	return plan, nil
+}
+
+func stringIn(set []string, v string) bool {
+	for _, item := range set {
+		if item == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) RecordClosePlan(plan ClosePlan) (string, error) {

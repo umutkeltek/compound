@@ -185,6 +185,339 @@ func TestRetiredSurfaceReferencesRequireToolResolverRetirement(t *testing.T) {
 	}
 }
 
+func TestPrivateAdaptationSteeringResolved(t *testing.T) {
+	findings := checkPrivateAdaptationSteering(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("adaptation steering check failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "context-aware OS adaptation") {
+		t.Fatalf("finding should name consumed adaptation steering: %+v", findings)
+	}
+}
+
+func TestPrivateAdaptationSteeringFailsOnShallowRule(t *testing.T) {
+	repo := writeAdaptationSteeringFixtureRepo(t,
+		"# COMPOUND Goal Prompt\n\nMove everything from operating-system into Compound.\n",
+		"# Operating-System Adaptation Rule\n\nCopy useful instructions.\n",
+		"# Superseded Goal Prompt Pointer\n\nThis is not a second goal prompt. Use codex-goal-prompt.md. Superseded.\n",
+	)
+	findings := checkPrivateAdaptationSteering(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{"context-aware adaptation", "silence condition", "proof", "retirement"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestPrivateAdaptationSteeringFailsOnDuplicatePromptBody(t *testing.T) {
+	repo := writeAdaptationSteeringFixtureRepo(t,
+		goodAdaptationGoalPromptFixture(),
+		goodAdaptationRuleFixture(),
+		"# COMPOUND Goal Prompt\n\n## Goal Lanes\n\nThis stale file is pretending to be active again.\n",
+	)
+	findings := checkPrivateAdaptationSteering(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "second active goal prompt") || !strings.Contains(findings[0].Message, "pointer-only") {
+		t.Fatalf("failure should name duplicate prompt and pointer-only contract: %+v", findings)
+	}
+}
+
+func TestPrivateAdaptationSteeringFailsOnStalePromptHistory(t *testing.T) {
+	repo := writeAdaptationSteeringFixtureRepo(t,
+		goodAdaptationGoalPromptFixture()+"\n\n## Latest Verified State (old)\nold state\n\n## Latest Verified State (older)\nolder state\n",
+		goodAdaptationRuleFixture(),
+		"# Superseded Goal Prompt Pointer\n\nThis not second goal prompt. Use codex-goal-prompt.md. Superseded.\n",
+	)
+	findings := checkPrivateAdaptationSteering(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "too many Latest Verified State") {
+		t.Fatalf("failure should name stale prompt history: %+v", findings)
+	}
+}
+
+func TestWorkbenchActionCardContractResolved(t *testing.T) {
+	findings := checkWorkbenchActionCardContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("workbench action card contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "required inputs validation stop conditions") {
+		t.Fatalf("finding should name action-card gates: %+v", findings)
+	}
+}
+
+func TestWorkbenchActionCardContractFailsOnShallowSurface(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"internal/work/workbench.go":      "type WorkbenchAdjacentAction struct { ID string; RequiresOperator bool }\n",
+		"internal/work/workbench_test.go": "func TestAction(t *testing.T) { _ = \"operator required\" }\n",
+		"cmd/compound/main.go":            "func render() { println(\"adjacent_non_packet_action\") }\n",
+		"cmd/compound/main_test.go":       "func TestRender(t *testing.T) { _ = \"adjacent_non_packet_action\" }\n",
+		"docs/architecture/status.md":     "Workbench shows operator-required adjacent actions.\n",
+	})
+	findings := checkWorkbenchActionCardContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{"required_inputs", "action_expected_validation", "stop_conditions"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestConversationPreflightImportSafetyContractResolved(t *testing.T) {
+	findings := checkConversationPreflightImportSafetyContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("conversation preflight import-safety contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "import_safety") {
+		t.Fatalf("finding should name import_safety proof: %+v", findings)
+	}
+}
+
+func TestConversationPreflightImportSafetyContractFailsOnShallowReport(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"tools/chatgpt_conversation_preflight.ts":      "type PreflightReport = { status: \"ok\" | \"fail\" };\n",
+		"tools/chatgpt_conversation_preflight.test.ts": "test(\"preflight\", () => { expect(report.status).toBe(\"ok\"); });\n",
+		"internal/work/workbench.go":                   "func action() { _ = \"conversation-preflight-private-export\" }\n",
+		"docs/architecture/status.md":                  "ChatGPT capture edge note: conversation preflight exists.\n",
+	})
+	findings := checkConversationPreflightImportSafetyContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{
+		"ImportSafetyReport",
+		"report.import_safety.private_evidence_count",
+		"import_safety proves private bounded evidence/candidates and zero temp promoted claims",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestOperatorNeedsMeCandidateAuthorityContractResolved(t *testing.T) {
+	findings := checkOperatorNeedsMeCandidateAuthorityContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("operator needs-me candidate authority contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "memory candidate authority") {
+		t.Fatalf("finding should name memory candidate authority: %+v", findings)
+	}
+}
+
+func TestOperatorNeedsMeCandidateAuthorityContractFailsOnRawMemoryCounts(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"cmd/compound/orient_operator.go":      "func candidateInboxSummary() { _ = \"raw inbox proposed\" }\n",
+		"cmd/compound/orient_operator_test.go": "func TestOrientOperator(t *testing.T) { _ = \"candidate_actionable\" }\n",
+		"docs/architecture/status.md":          "Operator orient lists candidate counts.\n",
+	})
+	findings := checkOperatorNeedsMeCandidateAuthorityContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{
+		"memoryCandidateInboxSummary",
+		"TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe",
+		"Operator needs-me candidate authority note",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestOperatorOrientAdjacentProgressContractResolved(t *testing.T) {
+	findings := checkOperatorOrientAdjacentProgressContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("operator orient adjacent progress contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "held-valve adjacent progress") {
+		t.Fatalf("finding should name held-valve adjacent progress: %+v", findings)
+	}
+}
+
+func TestOperatorOrientAdjacentProgressContractFailsOnShallowSurface(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"cmd/compound/orient_operator.go":      "type orientRunning struct { OpenCount int }\n",
+		"cmd/compound/orient_operator_test.go": "func TestOrientOperator(t *testing.T) { _ = \"open\" }\n",
+		"docs/architecture/status.md":          "Operator orientation lists open work.\n",
+	})
+	findings := checkOperatorOrientAdjacentProgressContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{"adjacent_progress", "session_context", "TestOrientOperatorSurfacesHeldValveAdjacentProgress", "Operator orientation adjacent-progress doctor note"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestOperatorSourceControlProjectionContractResolved(t *testing.T) {
+	findings := checkOperatorSourceControlProjectionContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("operator source-control projection contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "source-control cleanup reviews") {
+		t.Fatalf("finding should name source-control cleanup reviews: %+v", findings)
+	}
+}
+
+func TestOperatorSourceControlProjectionContractFailsOnShallowSurface(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"cmd/compound/orient_operator.go":      "type orientNeedsMe struct { ReviewRequired int }\n",
+		"cmd/compound/orient_operator_test.go": "func TestOrientOperator(t *testing.T) { _ = \"git status\" }\n",
+		"docs/architecture/status.md":          "Operator orientation says check git status manually.\n",
+	})
+	findings := checkOperatorSourceControlProjectionContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{"source_control", "TestOrientOperatorCarriesSourceControlReviewProjection", "Operator source-control projection note"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestASCDailySignalsPublicBoundaryContractResolved(t *testing.T) {
+	findings := checkASCDailySignalsPublicBoundaryContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("ASC daily signals public boundary contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "product-signal normalization") {
+		t.Fatalf("finding should name product-signal normalization: %+v", findings)
+	}
+}
+
+func TestASCDailySignalsPublicBoundaryContractFailsOnPrivateCollectorDependency(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"docs/operations/asc-daily-signals.md": "# ASC Daily Signals\n\nUse a named private collector and launchd for ASC. This requires launchd.\n",
+		"docs/architecture/status.md":          "ASC daily source note: a private collector fetches app data.\n",
+	})
+	findings := checkASCDailySignalsPublicBoundaryContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{
+		"any collector can produce ASC-shaped output",
+		"ASC daily signals public-boundary note",
+		"still contains stale phrase \"requires launchd\"",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func TestReviewSurfaceCoverageContractResolved(t *testing.T) {
+	findings := checkReviewSurfaceCoverageContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("review surface coverage contract failed against real repo: %+v", findings)
+	}
+	if !strings.Contains(findings[0].Message, "decision/action coverage") {
+		t.Fatalf("finding should name review affordance coverage: %+v", findings)
+	}
+}
+
+func TestReviewSurfaceCoverageContractFailsOnRawArtifactList(t *testing.T) {
+	repo := writeWorkbenchActionCardFixtureRepo(t, map[string]string{
+		"internal/reviewartifact/queue.go":               "type QueueCounts struct { Total int `json:\"total\"` }\nfunc Queue() {}\n",
+		"internal/reviewartifact/reviewartifact_test.go": "func TestQueue(t *testing.T) { _ = \"total\" }\n",
+		"cmd/compound/main.go":                           "func cmdReviews() { println(\"reviews total\") }\n",
+		"cmd/compound/main_test.go":                      "func TestReviews(t *testing.T) { _ = \"reviews total\" }\n",
+		"docs/architecture/status.md":                    "Review queue lists review artifacts.\n",
+	})
+	findings := checkReviewSurfaceCoverageContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	msg := findings[0].Message
+	for _, want := range []string{"decision_card_count", "review_surface", "review_required_missing_action"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("failure should name missing %q: %+v", want, findings)
+		}
+	}
+}
+
+func writeWorkbenchActionCardFixtureRepo(t *testing.T, files map[string]string) string {
+	t.Helper()
+	repo := t.TempDir()
+	for rel, body := range files {
+		path := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return repo
+}
+
+func writeAdaptationSteeringFixtureRepo(t *testing.T, prompt, rule, pointer string) string {
+	t.Helper()
+	repo := t.TempDir()
+	planDir := filepath.Join(repo, "docs_private", "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planDir, "codex-goal-prompt.md"), []byte(prompt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planDir, "OPERATING-SYSTEM-ADAPTATION-RULE.md"), []byte(rule), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planDir, "codex-goal-prompt-compounding-runtime.md"), []byte(pointer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+func goodAdaptationGoalPromptFixture() string {
+	return strings.Join([]string{
+		"# COMPOUND Goal Prompt",
+		"Absorb operating-system by context-aware adaptation, not copy/paste.",
+		"Pick a consequential bounded move.",
+		"Public Compound stays generic; private dogfood adapters feed generic doors.",
+		"Held operator valves are constraints, not mission failure.",
+		"Oracle is evidence, not authority.",
+		"Do not report Compound as globally blocked while adjacent proof work exists.",
+		"## Context-Aware Adaptation Rules",
+		"Every adaptation names a silence condition, proof command, old-owner, and public/private boundary.",
+		"Instruction tuning preserves trigger, action, boundary, and proof.",
+	}, "\n")
+}
+
+func goodAdaptationRuleFixture() string {
+	return strings.Join([]string{
+		"# Operating-System Adaptation Rule",
+		"## Instruction Tuning Standard",
+		"- Trigger: when the rule should load.",
+		"- Action: what changes.",
+		"- Boundary: what it must not touch.",
+		"- Silence condition: when it should not load.",
+		"- Proof: the command/test/projection that consumes it.",
+		"- Retirement: the old surface becomes evidence-only.",
+		"Only merge and proof count as compounding system deltas.",
+	}, "\n")
+}
+
 func TestDistillerDuplicateContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool
@@ -684,6 +1017,112 @@ func TestHookSourceControlContractFailsOnRawTargetDocs(t *testing.T) {
 	}
 }
 
+func TestHookLiveParityContextSpineContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "hook-live-parity-context-spine-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("hook live parity context-spine contract check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected hook-live-parity-context-spine-contract finding")
+	}
+}
+
+func TestHookLiveParityContextSpineContractFailsOnDocsOnlyClaim(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "hook-live-parity-context-spine-contract: `hook session-start --live --parity-log` records context request, effective contract, context pack, and injection refs.\n"
+	if err := os.WriteFile(filepath.Join(docs, "runtime.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkHookLiveParityContextSpineContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Warn {
+		t.Fatalf("findings = %+v, want one warning for missing live hook source", findings)
+	}
+	if !strings.Contains(findings[0].Message, "cmd/compound/hook_live.go") {
+		t.Fatalf("failure should name missing live hook source: %+v", findings)
+	}
+}
+
+func TestHookReadinessActionContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "hook-readiness-action-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("hook readiness action contract failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected hook-readiness-action-contract finding")
+	}
+}
+
+func TestHookReadinessActionContractFailsOnProseOnlyActions(t *testing.T) {
+	repo := t.TempDir()
+	docs := filepath.Join(repo, "docs", "architecture")
+	if err := os.MkdirAll(docs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	text := "Hook readiness authority note: contract hooks-authority reports pre_tool_use_readiness actions before any registration flip.\n"
+	if err := os.WriteFile(filepath.Join(docs, "status.md"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "contract"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "internal", "contract", "contract.go"), []byte("type InstalledHookRuntimeReadiness struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "envelope"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "internal", "envelope", "envelope.go"), []byte("type HookReadiness struct{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "internal", "contract", "contract_test.go"), []byte("func TestReadiness(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "cmd", "compound"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "main_test.go"), []byte("func TestHooksAuthority(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "internal", "work", "workbench.go"), []byte("func Workbench() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "cmd", "compound", "proof_check.go"), []byte("func ProofCheck() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkHookReadinessActionContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "prove_fixture_hook") ||
+		!strings.Contains(findings[0].Message, "prove_live_wrapper_gate") ||
+		!strings.Contains(findings[0].Message, "codex-pretooluse-wrapper-proof") ||
+		!strings.Contains(findings[0].Message, "expected_exit_code") ||
+		!strings.Contains(findings[0].Message, "operator_live_adapter_required") {
+		t.Fatalf("failure should name missing action cards: %+v", findings)
+	}
+}
+
 func TestStandingGrantContractResolved(t *testing.T) {
 	r := Doctor(repoRoot, false)
 	var saw bool
@@ -773,6 +1212,73 @@ func TestProductContractContractResolved(t *testing.T) {
 	}
 }
 
+func TestProductLoopOpenHypothesisContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "product-loop-open-hypothesis-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("product loop open-hypothesis check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected product-loop-open-hypothesis-contract finding")
+	}
+}
+
+func TestOperatorProductLoopProjectionContractResolved(t *testing.T) {
+	r := Doctor(repoRoot, false)
+	var saw bool
+	for _, f := range r.Findings {
+		if f.Check != "operator-product-loop-projection-contract" {
+			continue
+		}
+		saw = true
+		if f.Severity == Fail {
+			t.Fatalf("operator product-loop projection check failed against real repo: %s", f.Message)
+		}
+	}
+	if !saw {
+		t.Fatal("expected operator-product-loop-projection-contract finding")
+	}
+}
+
+func TestOperatorProductLoopProjectionContractFailsWithoutReadModelConsumer(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteArchFixture(t, repo, "cmd/compound/orient_operator.go", strings.Join([]string{
+		"ProductLoops *orientProductLoops",
+		"json:\"product_loops,omitempty\"",
+		"OpenHypothesesByMissingSignalSource",
+		"ClosedReviewsByNextAction",
+		"product_loops: products=%d open_hypothesis_debt=%d closed_review_actions=%d",
+		"compound\", \"product\", \"loops\"",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "cmd/compound/orient_operator_test.go", strings.Join([]string{
+		"TestOrientOperatorCarriesProductLoopEvidenceDebtProjection",
+		"seedOrientProductLoopProjectionHome",
+		"missing_signal_source=posthog",
+		"closed_review_next=keep screenshot one more window",
+		"compound product loops",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "docs/architecture/status.md", strings.Join([]string{
+		"Operator product-loop projection note",
+		"`compound orient --operator --json.product_loops`",
+		"`product.BuildLoopModel` read model",
+		"`compound product loops` as drill-down",
+	}, "\n"))
+	findings := checkOperatorProductLoopProjectionContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want missing product.BuildLoopModel failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "product.BuildLoopModel") ||
+		!strings.Contains(findings[0].Message, "buildOrientProductLoops") {
+		t.Fatalf("failure should name missing read-model consumer: %+v", findings)
+	}
+}
+
 func TestProductContractContractFailsWithoutReleaseSource(t *testing.T) {
 	repo := t.TempDir()
 	docs := filepath.Join(repo, "docs")
@@ -825,6 +1331,205 @@ func TestCapabilityEvaluationContractResolved(t *testing.T) {
 	}
 	if !saw {
 		t.Fatal("expected capability-evaluation-contract finding")
+	}
+}
+
+func TestSourceObservationVerdictContractResolved(t *testing.T) {
+	findings := checkSourceObservationVerdictContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("source observation verdict contract failed against real repo: %+v", findings)
+	}
+}
+
+func TestPanelCapabilityFeedbackContractResolved(t *testing.T) {
+	findings := checkPanelCapabilityFeedbackContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("panel capability feedback contract failed against real repo: %+v", findings)
+	}
+}
+
+func TestExternalRepoContextEvaluationContractResolved(t *testing.T) {
+	findings := checkExternalRepoContextEvaluationContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("external repo context-evaluation contract failed against real repo: %+v", findings)
+	}
+}
+
+func TestExternalRepoContextEvaluationContractFailsWithoutDecisionCard(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_intake.go", strings.Join([]string{
+		"ExternalRepoContextEvaluationStep",
+		"EvaluationPlan",
+		"externalRepoContextEvaluationPlan",
+		"existing-owner-fit",
+		"capability-shape-fit",
+		"risk-cost-fit",
+		"Context-Aware Evaluation Plan",
+		"silence:",
+		"proof:",
+		"retirement:",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_review.go", strings.Join([]string{
+		"evaluation lens: ",
+		"evaluation_step_count",
+		"no clone/install/serve/auth/graph mutation/memory promotion",
+		"externalRepoIntakeDecisionChoices",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_intake_test.go", strings.Join([]string{
+		"item.EvaluationPlan",
+		"hasExternalRepoEvaluationStep",
+		"harness-fit",
+		"DecisionCard.Meta",
+		"evaluation lens: harness-fit",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_evaluation_plan.go", strings.Join([]string{
+		"contextPlan := externalRepoContextEvaluationPlan(report.Repo, match)",
+		"externalRepoContextEvaluationSignals(contextPlan)",
+		"context_evaluation_proofs",
+		"context_evaluation_retirement",
+		"context_evaluation_step_count",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/evaluation_plan.go", strings.Join([]string{
+		"signalStringSlice(eval.Signals, \"context_evaluation_lenses\")",
+		"context lens ",
+		"silence condition reviewed",
+		"context evaluation proof: ",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/evaluation_review_queue.go", strings.Join([]string{
+		"signalStringSlice(plan.Signals, \"context_evaluation_lenses\")",
+		"context_evaluation_silence",
+		"context_evaluation_retirement",
+		"indexedSignal",
+		"evaluation lens: ",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "docs/architecture/status.md", strings.Join([]string{
+		"External repo context-evaluation note",
+		"`compound reviews --area external-repo-intake --json`",
+		"context-aware evaluation plan",
+		"trigger/action/boundary/silence/proof/retirement",
+		"capability-evaluation plans and decision cards",
+		"`context lens ...` review gates",
+		"`evaluation lens: ...` reasons",
+		"no clone/install/serve/auth/graph mutation/memory promotion",
+	}, "\n"))
+	findings := checkExternalRepoContextEvaluationContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "externalRepoIntakeDecisionCard") {
+		t.Fatalf("failure should name missing decision-card builder: %+v", findings)
+	}
+}
+
+func TestExternalRepoContextEvaluationContractFailsWithoutCapabilityEvaluationPropagation(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_intake.go", strings.Join([]string{
+		"ExternalRepoContextEvaluationStep",
+		"EvaluationPlan",
+		"externalRepoContextEvaluationPlan",
+		"existing-owner-fit",
+		"capability-shape-fit",
+		"risk-cost-fit",
+		"Context-Aware Evaluation Plan",
+		"silence:",
+		"proof:",
+		"retirement:",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_review.go", strings.Join([]string{
+		"externalRepoIntakeDecisionCard",
+		"evaluation lens: ",
+		"evaluation_step_count",
+		"no clone/install/serve/auth/graph mutation/memory promotion",
+		"externalRepoIntakeDecisionChoices",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_intake_test.go", strings.Join([]string{
+		"item.EvaluationPlan",
+		"hasExternalRepoEvaluationStep",
+		"harness-fit",
+		"DecisionCard.Meta",
+		"evaluation lens: harness-fit",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_evaluation_plan.go", strings.Join([]string{
+		"contextPlan := externalRepoContextEvaluationPlan(report.Repo, match)",
+		"externalRepoContextEvaluationSignals(contextPlan)",
+		"context_evaluation_proofs",
+		"context_evaluation_retirement",
+		"context_evaluation_step_count",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/evaluation_plan.go", strings.Join([]string{
+		"signalStringSlice(eval.Signals, \"context_evaluation_lenses\")",
+		"context lens ",
+		"silence condition reviewed",
+		"context evaluation proof: ",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/evaluation_review_queue.go", strings.Join([]string{
+		"signalStringSlice(plan.Signals, \"context_evaluation_lenses\")",
+		"context_evaluation_silence",
+		"context_evaluation_retirement",
+		"indexedSignal",
+		"evaluation lens: ",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "docs/architecture/status.md", strings.Join([]string{
+		"External repo context-evaluation note",
+		"`compound reviews --area external-repo-intake --json`",
+		"context-aware evaluation plan",
+		"trigger/action/boundary/silence/proof/retirement",
+		"capability-evaluation plans and decision cards",
+		"`context lens ...` review gates",
+		"`evaluation lens: ...` reasons",
+		"no clone/install/serve/auth/graph mutation/memory promotion",
+	}, "\n"))
+
+	findings := checkExternalRepoContextEvaluationContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "external_repo_evaluation_plan.go") ||
+		!strings.Contains(findings[0].Message, "context_evaluation_lenses") {
+		t.Fatalf("failure should name missing capability-evaluation context propagation: %+v", findings)
+	}
+}
+
+func TestExternalRepoIntakeStateProjectionContractResolved(t *testing.T) {
+	findings := checkExternalRepoIntakeStateProjectionContract(repoRoot)
+	if len(findings) != 1 || findings[0].Severity == Fail {
+		t.Fatalf("external repo intake state projection contract failed against real repo: %+v", findings)
+	}
+}
+
+func TestExternalRepoIntakeStateProjectionContractFailsWithoutOpenOwnerDebt(t *testing.T) {
+	repo := t.TempDir()
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_intake.go", strings.Join([]string{
+		`json:"open_review_count"`,
+		"annotateExternalRepoDecisionState",
+		"countPendingExternalRepoOwnerReviews",
+		"ExternalRepoCapabilityEvaluationStatus",
+		"ExternalRepoCapabilityGraphStatus",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "internal/capgraph/external_repo_intake_test.go", strings.Join([]string{
+		"default report should keep raw decision count but clear owner-review debt",
+		`CapabilityEvaluationStatus != "pending"`,
+		`CapabilityGraphStatus != "blocked_on_capability_evaluation"`,
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "cmd/compound/main.go", strings.Join([]string{
+		"keep_needs_review_decision",
+		"high_value: %s decision=%s lane=%s owner_review=%s capability_evaluation=%s graph=%s owner=%s",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "cmd/compound/main_test.go", strings.Join([]string{
+		"default external-intake text should distinguish raw decision count from open owner-review debt",
+		"owner_review=recorded capability_evaluation=pending graph=blocked_on_capability_evaluation",
+	}, "\n"))
+	mustWriteArchFixture(t, repo, "docs/architecture/status.md", strings.Join([]string{
+		"Default `capability external-intake` separates raw `keep_needs_review` classification from actual `open_owner_reviews`",
+		"high-value rows show owner-review, capability-evaluation, and graph status",
+		"instead of calling recorded/imported rows review-next work",
+	}, "\n"))
+	findings := checkExternalRepoIntakeStateProjectionContract(repo)
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "open_owner_reviews") {
+		t.Fatalf("failure should name missing open owner-review debt label: %+v", findings)
 	}
 }
 
@@ -1173,5 +1878,16 @@ func TestPluginServingContractFailsWhenDocsMakePluginsExecutable(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Message, "retired adapter") || !strings.Contains(findings[0].Message, "non-surfacing") {
 		t.Fatalf("failure should name retired/non-surfacing plugin boundary: %+v", findings)
+	}
+}
+
+func mustWriteArchFixture(t *testing.T, repo, rel, text string) {
+	t.Helper()
+	path := filepath.Join(repo, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(text+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

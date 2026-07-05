@@ -96,6 +96,7 @@ const (
 type OperationalArchiveOptions struct {
 	DryRun bool
 	Kinds  []string
+	Paths  []string
 }
 
 type OperationalRestoreOptions struct {
@@ -423,7 +424,7 @@ func ArchiveOperationalHistory(homePath string, opts OperationalArchiveOptions, 
 	for _, entry := range active {
 		alreadyArchived[entry.OriginalPath] = true
 	}
-	candidates, err := operationalArchiveCandidates(homePath, opts)
+	candidates, err := operationalArchiveCandidates(homePath, opts, now)
 	if err != nil {
 		return OperationalArchiveReport{}, err
 	}
@@ -487,8 +488,12 @@ func RestoreOperationalArchive(homePath string, opts OperationalRestoreOptions, 
 	return report, nil
 }
 
-func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions) ([]operationalCandidate, error) {
+func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions, now time.Time) ([]operationalCandidate, error) {
 	kinds, err := operationalArchiveKinds(opts.Kinds)
+	if err != nil {
+		return nil, err
+	}
+	paths, err := operationalArchivePathFilter(opts.Paths)
 	if err != nil {
 		return nil, err
 	}
@@ -521,6 +526,29 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 		}
 		out = append(out, candidates...)
 	}
+	if kinds["create-plan"] {
+		candidates, err := staleCreatePlanCandidates(homePath, now)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidates...)
+		if len(paths) > 0 {
+			candidates, err := explicitCreatePlanCandidates(homePath, paths, now)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, candidates...)
+		}
+	}
+	if len(paths) > 0 {
+		filtered := out[:0]
+		for _, candidate := range out {
+			if paths[candidate.OriginalPath] {
+				filtered = append(filtered, candidate)
+			}
+		}
+		out = filtered
+	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].OriginalPath < out[j].OriginalPath
 	})
@@ -528,7 +556,7 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 }
 
 func operationalArchiveKinds(values []string) (map[string]bool, error) {
-	allowed := map[string]bool{"work": true, "lease": true, "review": true, "comparison": true}
+	allowed := map[string]bool{"work": true, "lease": true, "review": true, "comparison": true, "create-plan": true}
 	out := map[string]bool{}
 	for _, value := range values {
 		for _, part := range strings.Split(value, ",") {
@@ -546,6 +574,25 @@ func operationalArchiveKinds(values []string) (map[string]bool, error) {
 		out["lease"] = true
 		out["review"] = true
 		out["comparison"] = true
+		out["create-plan"] = true
+	}
+	return out, nil
+}
+
+func operationalArchivePathFilter(values []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = filepath.ToSlash(strings.TrimSpace(part))
+			if part == "" {
+				continue
+			}
+			part = strings.TrimPrefix(part, "./")
+			if err := validateArchivePath(part); err != nil {
+				return nil, err
+			}
+			out[part] = true
+		}
 	}
 	return out, nil
 }
@@ -620,6 +667,132 @@ func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 		default:
 			return nil, err
 		}
+	}
+	return out, nil
+}
+
+const staleCreatePlanAfter = 24 * time.Hour
+
+func explicitCreatePlanCandidates(homePath string, paths map[string]bool, now time.Time) ([]operationalCandidate, error) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var out []operationalCandidate
+	for rel := range paths {
+		if !strings.HasPrefix(rel, "create-plans/") || filepath.Ext(rel) != ".json" {
+			continue
+		}
+		candidate, ok, err := explicitCreatePlanCandidate(homePath, rel, now)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, candidate)
+		}
+	}
+	return out, nil
+}
+
+func explicitCreatePlanCandidate(homePath, rel string, now time.Time) (operationalCandidate, bool, error) {
+	path := filepath.Join(homePath, filepath.FromSlash(rel))
+	var plan struct {
+		SchemaVersion string `json:"schema_version"`
+		ID            string `json:"id"`
+		GeneratedAt   string `json:"generated_at"`
+		Status        string `json:"status"`
+		WorkID        string `json:"work_id"`
+		Policy        struct {
+			Allowed bool `json:"allowed"`
+		} `json:"policy"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return operationalCandidate{}, false, nil
+		}
+		return operationalCandidate{}, false, err
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return operationalCandidate{}, false, fmt.Errorf("parse create-plan %s: %w", path, err)
+	}
+	if plan.SchemaVersion != "compound.work_create_plan.v0.1" ||
+		strings.TrimSpace(plan.Status) != "create_policy_allowed" ||
+		!plan.Policy.Allowed ||
+		strings.TrimSpace(plan.ID) == "" ||
+		strings.TrimSpace(plan.WorkID) == "" {
+		return operationalCandidate{}, false, nil
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "work", plan.WorkID+".json")); err == nil {
+		return operationalCandidate{}, false, nil
+	} else if !os.IsNotExist(err) {
+		return operationalCandidate{}, false, err
+	}
+	generatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.GeneratedAt))
+	if err != nil {
+		return operationalCandidate{}, false, fmt.Errorf("parse create-plan generated_at %s: %w", path, err)
+	}
+	if now.UTC().Sub(generatedAt.UTC()) >= staleCreatePlanAfter {
+		return operationalCandidate{}, false, nil
+	}
+	return operationalCandidate{Kind: "create-plan", Status: "explicit_unadmitted", OriginalPath: rel}, true, nil
+}
+
+func staleCreatePlanCandidates(homePath string, now time.Time) ([]operationalCandidate, error) {
+	dir := filepath.Join(homePath, "create-plans")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	var out []operationalCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var plan struct {
+			SchemaVersion string `json:"schema_version"`
+			ID            string `json:"id"`
+			GeneratedAt   string `json:"generated_at"`
+			Status        string `json:"status"`
+			WorkID        string `json:"work_id"`
+			Policy        struct {
+				Allowed bool `json:"allowed"`
+			} `json:"policy"`
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(data, &plan); err != nil {
+			return nil, fmt.Errorf("parse create-plan %s: %w", path, err)
+		}
+		if plan.SchemaVersion != "compound.work_create_plan.v0.1" ||
+			strings.TrimSpace(plan.Status) != "create_policy_allowed" ||
+			!plan.Policy.Allowed ||
+			strings.TrimSpace(plan.ID) == "" ||
+			strings.TrimSpace(plan.WorkID) == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(homePath, "work", "work", plan.WorkID+".json")); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		generatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(plan.GeneratedAt))
+		if err != nil {
+			return nil, fmt.Errorf("parse create-plan generated_at %s: %w", path, err)
+		}
+		if now.UTC().Sub(generatedAt.UTC()) < staleCreatePlanAfter {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join("create-plans", entry.Name()))
+		out = append(out, operationalCandidate{Kind: "create-plan", Status: "stale_unadmitted", OriginalPath: rel})
 	}
 	return out, nil
 }

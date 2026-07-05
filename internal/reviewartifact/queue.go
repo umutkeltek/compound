@@ -32,44 +32,49 @@ type QueueReport struct {
 
 // QueueCounts summarizes review artifact status without interpreting domain payloads.
 type QueueCounts struct {
-	Total          int            `json:"total"`
-	ReviewRequired int            `json:"review_required"`
-	ReadyToApply   int            `json:"ready_to_apply"`
-	OK             int            `json:"ok"`
-	ByArea         map[string]int `json:"by_area"`
-	ByStatus       map[string]int `json:"by_status"`
+	Total                             int            `json:"total"`
+	ReviewRequired                    int            `json:"review_required"`
+	ReadyToApply                      int            `json:"ready_to_apply"`
+	OK                                int            `json:"ok"`
+	DecisionCardCount                 int            `json:"decision_card_count"`
+	ActionableCount                   int            `json:"actionable_count"`
+	ReviewRequiredMissingDecisionCard int            `json:"review_required_missing_decision_card"`
+	ReviewRequiredMissingAction       int            `json:"review_required_missing_action"`
+	ByArea                            map[string]int `json:"by_area"`
+	ByStatus                          map[string]int `json:"by_status"`
 }
 
 // QueueItem describes one review artifact JSON payload and nearby review files.
 type QueueItem struct {
-	Area                    string   `json:"area"`
-	ID                      string   `json:"id"`
-	Status                  string   `json:"status"`
-	CreatedAt               string   `json:"created_at,omitempty"`
-	JSONPath                string   `json:"json_path"`
-	MarkdownPath            string   `json:"markdown_path,omitempty"`
-	ExtraPaths              []string `json:"extra_paths,omitempty"`
-	SourceKind              string   `json:"source_kind,omitempty"`
-	SourceRoot              string   `json:"source_root,omitempty"`
-	SourcePath              string   `json:"source_path,omitempty"`
-	TargetPath              string   `json:"target_path,omitempty"`
-	TargetHash              string   `json:"target_hash,omitempty"`
-	CandidateID             string   `json:"candidate_id,omitempty"`
-	Owner                   string   `json:"owner,omitempty"`
-	NotToDo                 string   `json:"not_to_do,omitempty"`
-	Boundaries              []string `json:"boundaries,omitempty"`
-	RepairCount             int      `json:"repair_count,omitempty"`
-	EvidenceRefs            []string `json:"evidence_refs,omitempty"`
-	GraphDecisionHint       string   `json:"graph_decision_hint,omitempty"`
-	GraphDecisionConfidence float64  `json:"graph_decision_confidence,omitempty"`
-	GraphDuplicateRisk      float64  `json:"graph_duplicate_risk,omitempty"`
-	GraphEvidenceStrength   float64  `json:"graph_evidence_strength,omitempty"`
-	GraphAuditRisk          string   `json:"graph_audit_risk,omitempty"`
-	GraphTopOverlapScore    int      `json:"graph_top_overlap_score,omitempty"`
-	Readiness               string   `json:"readiness,omitempty"`
-	BlockedReason           string   `json:"blocked_reason,omitempty"`
-	NextAction              string   `json:"next_action,omitempty"`
-	Actions                 []Action `json:"actions,omitempty"`
+	Area                    string        `json:"area"`
+	ID                      string        `json:"id"`
+	Status                  string        `json:"status"`
+	CreatedAt               string        `json:"created_at,omitempty"`
+	JSONPath                string        `json:"json_path"`
+	MarkdownPath            string        `json:"markdown_path,omitempty"`
+	ExtraPaths              []string      `json:"extra_paths,omitempty"`
+	SourceKind              string        `json:"source_kind,omitempty"`
+	SourceRoot              string        `json:"source_root,omitempty"`
+	SourcePath              string        `json:"source_path,omitempty"`
+	TargetPath              string        `json:"target_path,omitempty"`
+	TargetHash              string        `json:"target_hash,omitempty"`
+	CandidateID             string        `json:"candidate_id,omitempty"`
+	Owner                   string        `json:"owner,omitempty"`
+	NotToDo                 string        `json:"not_to_do,omitempty"`
+	Boundaries              []string      `json:"boundaries,omitempty"`
+	RepairCount             int           `json:"repair_count,omitempty"`
+	EvidenceRefs            []string      `json:"evidence_refs,omitempty"`
+	GraphDecisionHint       string        `json:"graph_decision_hint,omitempty"`
+	GraphDecisionConfidence float64       `json:"graph_decision_confidence,omitempty"`
+	GraphDuplicateRisk      float64       `json:"graph_duplicate_risk,omitempty"`
+	GraphEvidenceStrength   float64       `json:"graph_evidence_strength,omitempty"`
+	GraphAuditRisk          string        `json:"graph_audit_risk,omitempty"`
+	GraphTopOverlapScore    int           `json:"graph_top_overlap_score,omitempty"`
+	Readiness               string        `json:"readiness,omitempty"`
+	BlockedReason           string        `json:"blocked_reason,omitempty"`
+	NextAction              string        `json:"next_action,omitempty"`
+	Actions                 []Action      `json:"actions,omitempty"`
+	DecisionCard            *DecisionCard `json:"decision_card,omitempty"`
 }
 
 // Action is a non-mutating operator hint attached by the domain owner that
@@ -78,6 +83,35 @@ type Action struct {
 	ID             string   `json:"id"`
 	Label          string   `json:"label"`
 	Command        string   `json:"command"`
+	Argv           []string `json:"argv,omitempty"`
+	RequiresReview bool     `json:"requires_review,omitempty"`
+}
+
+// DecisionCard is a read-only, operator-facing explanation of a review item.
+// It is deliberately generic so renderers do not parse owner-specific payloads.
+type DecisionCard struct {
+	Claim               string               `json:"claim"`
+	Why                 []DecisionCardReason `json:"why"`
+	Choices             []DecisionCardChoice `json:"choices"`
+	PanelLean           string               `json:"panel_lean,omitempty"`
+	OptionalRationale   bool                 `json:"optional_rationale,omitempty"`
+	CanonicalActionHint string               `json:"canonical_action_hint,omitempty"`
+	Boundary            []string             `json:"boundary,omitempty"`
+	Meta                map[string]string    `json:"meta,omitempty"`
+}
+
+type DecisionCardReason struct {
+	Label    string `json:"label"`
+	Question string `json:"question,omitempty"`
+	Severity string `json:"severity,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+type DecisionCardChoice struct {
+	ID             string   `json:"id"`
+	Label          string   `json:"label"`
+	Effect         string   `json:"effect"`
+	Command        string   `json:"command,omitempty"`
 	Argv           []string `json:"argv,omitempty"`
 	RequiresReview bool     `json:"requires_review,omitempty"`
 }
@@ -169,13 +203,29 @@ func Recount(report *QueueReport) {
 		if item.Readiness == "ready_to_apply" {
 			report.Counts.ReadyToApply++
 		}
+		if item.DecisionCard != nil {
+			report.Counts.DecisionCardCount++
+		}
+		if len(item.Actions) > 0 {
+			report.Counts.ActionableCount++
+		}
 		switch item.Status {
 		case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
 			report.Counts.OK++
 		default:
 			report.Counts.ReviewRequired++
+			if itemNeedsReviewCard(item) && item.DecisionCard == nil {
+				report.Counts.ReviewRequiredMissingDecisionCard++
+			}
+			if itemNeedsReviewCard(item) && len(item.Actions) == 0 {
+				report.Counts.ReviewRequiredMissingAction++
+			}
 		}
 	}
+}
+
+func itemNeedsReviewCard(item QueueItem) bool {
+	return item.Status == "review_required" || item.Readiness == "needs_review"
 }
 
 func queueItem(root, path string) (QueueItem, error) {

@@ -316,6 +316,7 @@ var targetKinds = map[string]bool{
 	"memory_candidate":       true,
 	"skill_candidate":        true,
 	"capability_observation": true,
+	"decision_candidate":     true,
 	"comparison":             true,
 	"external_repo":          true,
 }

@@ -160,6 +160,12 @@ func BuildCapabilityEvaluationPlan(homePath string, set CapabilityEvaluationSet,
 			"does not promote memory truth",
 		},
 	}
+	for _, lens := range signalStringSlice(eval.Signals, "context_evaluation_lenses") {
+		plan.RequiredReview = append(plan.RequiredReview, "context lens "+lens+" proof and silence condition reviewed")
+	}
+	for _, proof := range signalStringSlice(eval.Signals, "context_evaluation_proofs") {
+		plan.NodeDraft.RequiredEvidence = append(plan.NodeDraft.RequiredEvidence, "context evaluation proof: "+proof)
+	}
 	sort.Strings(plan.ReviewChoices)
 	return plan, nil
 }
@@ -587,6 +593,30 @@ func signalString(signals map[string]any, key string) string {
 		return v.String()
 	default:
 		return fmt.Sprint(v)
+	}
+}
+
+func signalStringSlice(signals map[string]any, key string) []string {
+	if signals == nil {
+		return nil
+	}
+	value, ok := signals[key]
+	if !ok {
+		return nil
+	}
+	switch v := value.(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
 	}
 }
 

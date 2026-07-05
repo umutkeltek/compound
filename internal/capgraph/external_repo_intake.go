@@ -33,7 +33,7 @@ type ExternalRepoIntakeReport struct {
 	CandidateCount                         int                          `json:"candidate_count,omitempty"`
 	CountsByDecision                       map[string]int               `json:"counts_by_decision,omitempty"`
 	CountsByLane                           map[string]int               `json:"counts_by_lane,omitempty"`
-	OpenReviewCount                        int                          `json:"open_review_count,omitempty"`
+	OpenReviewCount                        int                          `json:"open_review_count"`
 	MergeExistingCount                     int                          `json:"merge_existing_count,omitempty"`
 	ReferenceOnlyCount                     int                          `json:"reference_only_count,omitempty"`
 	SourceObservationID                    string                       `json:"source_observation_id,omitempty"`
@@ -150,29 +150,42 @@ type ExternalRepoIntakeReviewPlanReport struct {
 }
 
 type ExternalRepoIntakeReviewPlanItem struct {
-	ID                    string   `json:"id"`
-	Status                string   `json:"status"`
-	CreatedAt             string   `json:"created_at"`
-	Readiness             string   `json:"readiness"`
-	SourceKind            string   `json:"source_kind"`
-	SourcePath            string   `json:"source_path"`
-	TargetPath            string   `json:"target_path,omitempty"`
-	SourceListQuery       string   `json:"source_list_query"`
-	NormalizedRepo        string   `json:"normalized_repo"`
-	Repo                  string   `json:"repo"`
-	Decision              string   `json:"decision"`
-	Lane                  string   `json:"lane,omitempty"`
-	Owner                 string   `json:"owner,omitempty"`
-	NextAction            string   `json:"next_action,omitempty"`
-	NotToDo               string   `json:"not_to_do,omitempty"`
-	GraphDecisionHint     string   `json:"graph_decision_hint,omitempty"`
-	GraphEvidenceStrength float64  `json:"graph_evidence_strength,omitempty"`
-	EvidenceRefs          []string `json:"evidence_refs,omitempty"`
-	Boundaries            []string `json:"boundaries,omitempty"`
-	ReviewQuestions       []string `json:"review_questions,omitempty"`
-	JSONPath              string   `json:"json_path,omitempty"`
-	MarkdownPath          string   `json:"markdown_path,omitempty"`
-	ReviewYAMLPath        string   `json:"review_yaml_path,omitempty"`
+	ID                    string                              `json:"id"`
+	Status                string                              `json:"status"`
+	CreatedAt             string                              `json:"created_at"`
+	Readiness             string                              `json:"readiness"`
+	SourceKind            string                              `json:"source_kind"`
+	SourcePath            string                              `json:"source_path"`
+	TargetPath            string                              `json:"target_path,omitempty"`
+	SourceListQuery       string                              `json:"source_list_query"`
+	NormalizedRepo        string                              `json:"normalized_repo"`
+	Repo                  string                              `json:"repo"`
+	Decision              string                              `json:"decision"`
+	Lane                  string                              `json:"lane,omitempty"`
+	Owner                 string                              `json:"owner,omitempty"`
+	NextAction            string                              `json:"next_action,omitempty"`
+	NotToDo               string                              `json:"not_to_do,omitempty"`
+	GraphDecisionHint     string                              `json:"graph_decision_hint,omitempty"`
+	GraphEvidenceStrength float64                             `json:"graph_evidence_strength,omitempty"`
+	EvidenceRefs          []string                            `json:"evidence_refs,omitempty"`
+	Boundaries            []string                            `json:"boundaries,omitempty"`
+	ReviewQuestions       []string                            `json:"review_questions,omitempty"`
+	EvaluationPlan        []ExternalRepoContextEvaluationStep `json:"evaluation_plan,omitempty"`
+	JSONPath              string                              `json:"json_path,omitempty"`
+	MarkdownPath          string                              `json:"markdown_path,omitempty"`
+	ReviewYAMLPath        string                              `json:"review_yaml_path,omitempty"`
+}
+
+type ExternalRepoContextEvaluationStep struct {
+	ID             string `json:"id"`
+	Lens           string `json:"lens"`
+	Trigger        string `json:"trigger"`
+	Question       string `json:"question"`
+	EvidenceNeeded string `json:"evidence_needed"`
+	Boundary       string `json:"boundary"`
+	Silence        string `json:"silence"`
+	Proof          string `json:"proof"`
+	Retirement     string `json:"retirement"`
 }
 
 type ExternalRepoReviewedManifestImportReport struct {
@@ -283,13 +296,14 @@ func externalRepoIntakeReportForHome(homePath, repoQuery, sourceListPath string)
 	report.CandidateCount = latest.CandidateCount
 	report.CountsByDecision = copyIntMap(latest.CountsByDecision)
 	report.CountsByLane = copyIntMap(latest.CountsByLane)
-	report.OpenReviewCount = latest.CountsByDecision["keep_needs_review"]
 	report.MergeExistingCount = latest.CountsByDecision["merge_existing"]
 	report.ReferenceOnlyCount = latest.CountsByDecision["reference_only"]
 	report.SourceObservationID, report.SourceCandidateIDs, report.NoPromoteIDs = parseExternalRepoSourceObserve(latest.SourceObserveOutput)
 
 	metadata := loadExternalRepoIntakeMap(latest.MapPath)
 	decisions := enrichExternalRepoDecisions(latest.Decisions, metadata)
+	decisions = annotateExternalRepoDecisionState(homePath, decisions)
+	report.OpenReviewCount = countPendingExternalRepoOwnerReviews(decisions)
 	if repoQuery != "" {
 		report.RepoQuery = repoQuery
 		report.Matches = externalRepoMatchesForQuery(homePath, decisions, repoQuery)
@@ -455,8 +469,8 @@ func ExternalRepoCapabilityEvaluationStatus(decision ExternalRepoIntakeDecision)
 	if ExternalRepoOwnerReviewStatus(decision) != "recorded" {
 		return "blocked_on_owner_review"
 	}
-	if strings.TrimSpace(decision.CapabilityEvaluationStatus) == "recorded" {
-		return "recorded"
+	if status := strings.TrimSpace(decision.CapabilityEvaluationStatus); status != "" {
+		return status
 	}
 	return "pending"
 }
@@ -468,7 +482,11 @@ func ExternalRepoCapabilityGraphStatus(decision ExternalRepoIntakeDecision) stri
 	if ExternalRepoOwnerReviewStatus(decision) != "recorded" {
 		return "blocked_on_owner_review"
 	}
-	if ExternalRepoCapabilityEvaluationStatus(decision) != "recorded" {
+	evaluationStatus := ExternalRepoCapabilityEvaluationStatus(decision)
+	if evaluationStatus == "review_required" {
+		return "blocked_on_evaluation_review"
+	}
+	if evaluationStatus != "recorded" {
 		return "blocked_on_capability_evaluation"
 	}
 	if strings.TrimSpace(decision.CapabilityGraphStatus) != "" {
@@ -478,6 +496,36 @@ func ExternalRepoCapabilityGraphStatus(decision ExternalRepoIntakeDecision) stri
 		return "reviewed_manifest_pending_import"
 	}
 	return "reviewed_manifest_missing"
+}
+
+func annotateExternalRepoDecisionState(homePath string, decisions []ExternalRepoIntakeDecision) []ExternalRepoIntakeDecision {
+	if len(decisions) == 0 {
+		return decisions
+	}
+	out := annotateExternalRepoOwnerReviews(homePath, decisions)
+	out = annotateExternalRepoCapabilityEvaluations(homePath, out)
+	for i := range out {
+		if strings.TrimSpace(out[i].OwnerReviewStatus) == "" {
+			out[i].OwnerReviewStatus = ExternalRepoOwnerReviewStatus(out[i])
+		}
+		if strings.TrimSpace(out[i].CapabilityEvaluationStatus) == "" {
+			out[i].CapabilityEvaluationStatus = ExternalRepoCapabilityEvaluationStatus(out[i])
+		}
+		if strings.TrimSpace(out[i].CapabilityGraphStatus) == "" {
+			out[i].CapabilityGraphStatus = ExternalRepoCapabilityGraphStatus(out[i])
+		}
+	}
+	return out
+}
+
+func countPendingExternalRepoOwnerReviews(decisions []ExternalRepoIntakeDecision) int {
+	count := 0
+	for _, decision := range decisions {
+		if strings.TrimSpace(decision.Decision) == "keep_needs_review" && ExternalRepoOwnerReviewStatus(decision) == "pending" {
+			count++
+		}
+	}
+	return count
 }
 
 func incrementNonEmpty(counts map[string]int, key string) {
@@ -511,7 +559,7 @@ func filterSourceListFollowUps(items []ExternalRepoSourceListItem, reviewed bool
 		if isReviewed != reviewed {
 			continue
 		}
-		if reviewed && match.CapabilityEvaluationStatus == "recorded" {
+		if reviewed && ExternalRepoCapabilityEvaluationStatus(match) != "pending" {
 			continue
 		}
 		out = append(out, item)
@@ -634,7 +682,93 @@ func externalRepoIntakeReviewPlanItem(report ExternalRepoIntakeReport, sourceIte
 			"What existing surface would this merge into or retire instead of creating a parallel system?",
 			"What boundary must stay true even if the repo remains useful as reference evidence?",
 		},
+		EvaluationPlan: externalRepoContextEvaluationPlan(repo, match),
 	}
+}
+
+func externalRepoContextEvaluationPlan(repo string, match ExternalRepoIntakeDecision) []ExternalRepoContextEvaluationStep {
+	context := strings.ToLower(strings.Join([]string{
+		repo,
+		match.Lane,
+		match.Owner,
+		match.NextReviewStep,
+		match.NotToDo,
+	}, " "))
+	steps := []ExternalRepoContextEvaluationStep{
+		{
+			ID:             "existing-owner-fit",
+			Lens:           "owner-fit",
+			Trigger:        "external repo is marked keep_needs_review by source-list intake",
+			Question:       "Which existing Compound owner should consume the repo's useful behavior?",
+			EvidenceNeeded: "recorded external-intake review with owner, rationale, confidence, and next proof",
+			Boundary:       "do not create a new registry, skill, hook, MCP, plugin, or package before owner fit is recorded",
+			Silence:        "stay silent for reference_only, reject, unknown repos, and ordinary product work",
+			Proof:          "compound reviews --area external-repo-intake --json exposes this plan on the review card",
+			Retirement:     "repo remains source evidence until a later reviewed manifest narrows or retires an old owner",
+		},
+		{
+			ID:             "capability-shape-fit",
+			Lens:           "capability-fit",
+			Trigger:        "owner review records keep_needs_review and names a next proof",
+			Question:       "What trigger, action, boundary, silence, proof, and retirement would this capability add?",
+			EvidenceNeeded: "external-intake-evaluation-plan output plus reviewed capability-evaluation YAML",
+			Boundary:       "no CapabilityGraph mutation, install, clone, serve, auth, or tool execution during evaluation",
+			Silence:        "stay silent until owner review is recorded; do not evaluate merge_existing/reference_only as adoption",
+			Proof:          "capability evaluation plan is review_required, not active, and graph import remains a separate gate",
+			Retirement:     "only a reviewed manifest may narrow an old owner or add a graph offer; never adopt repo wholesale",
+		},
+		{
+			ID:             "risk-cost-fit",
+			Lens:           "risk-cost",
+			Trigger:        "repo could affect public/private boundary, auth, spend, execution, or operator workload",
+			Question:       "What can this repo make cheaper or safer, and what new maintenance burden does it create?",
+			EvidenceNeeded: "explicit not_to_do boundary, duplicate-risk/evidence-strength fields, and required next proof",
+			Boundary:       "treat external repo as evidence only; no public/private leak, credentials, accounts, or private bodies",
+			Silence:        "stay silent when the repo is only a reference or the expected savings do not beat adoption cost",
+			Proof:          "review card names boundary and next proof before any downstream evaluation can run",
+			Retirement:     "drop, park, or keep as reference if it adds surfaces without retiring or narrowing anything",
+		},
+	}
+	if strings.Contains(context, "harness") || strings.Contains(context, "agent") || strings.Contains(context, "browser") || strings.Contains(context, "hook") {
+		steps = append(steps, ExternalRepoContextEvaluationStep{
+			ID:             "harness-fit",
+			Lens:           "harness-fit",
+			Trigger:        "repo claims agent, harness, browser, hook, or executor behavior",
+			Question:       "Does this improve Compound's replaceable-executor path without making the executor source of truth?",
+			EvidenceNeeded: "parity test, hook/context-pack proof, or receipt showing the old path can be narrowed",
+			Boundary:       "do not register hooks, mutate harness config, or grant tool auth from intake",
+			Silence:        "stay silent for non-harness repos and for harness ideas without a parity proof",
+			Proof:          "later slice proves a shim, doctor, or ContextPack consumer; intake only records the evaluation need",
+			Retirement:     "old harness-specific prompt or script becomes evidence-only after Compound owns the behavior",
+		})
+	}
+	if strings.Contains(context, "design") || strings.Contains(context, "ui") || strings.Contains(context, "ux") || strings.Contains(context, "visual") || strings.Contains(context, "taste") {
+		steps = append(steps, ExternalRepoContextEvaluationStep{
+			ID:             "taste-fit",
+			Lens:           "taste-fit",
+			Trigger:        "repo claims design, UI, UX, visual, or taste capability",
+			Question:       "What concrete standard or example would improve product taste without becoming vague prose?",
+			EvidenceNeeded: "before/after fixture, design-standard example, or reviewable taste criterion",
+			Boundary:       "do not import style prose as ambient instruction or make public core depend on private taste examples",
+			Silence:        "stay silent for non-design repos and for taste claims without examples",
+			Proof:          "future capability evaluation includes a fixture or example-based standard, not adjectives alone",
+			Retirement:     "old design note remains reference until a consumed standard or skill node proves value",
+		})
+	}
+	if strings.Contains(context, "product") || strings.Contains(context, "marketing") || strings.Contains(context, "social") || strings.Contains(context, "distribution") || strings.Contains(context, "analytics") {
+		steps = append(steps, ExternalRepoContextEvaluationStep{
+			ID:             "product-loop-fit",
+			Lens:           "product-loop-fit",
+			Trigger:        "repo claims product, marketing, distribution, social, or analytics loop behavior",
+			Question:       "How would the repo close change -> signal -> hypothesis -> observed result -> next move?",
+			EvidenceNeeded: "signal source, receipt shape, hypothesis/update path, and public/private boundary",
+			Boundary:       "no posting, public mutation, spend, analytics auth, or private account access during intake",
+			Silence:        "stay silent for repos that do not touch product feedback loops",
+			Proof:          "future product loop proof names a signal and next bounded move before any automation",
+			Retirement:     "external service stays a rented adapter feeding Compound receipts, not product-loop authority",
+		})
+	}
+	return steps
 }
 
 func renderExternalRepoIntakeReviewPlanMarkdown(item ExternalRepoIntakeReviewPlanItem) string {
@@ -664,6 +798,20 @@ func renderExternalRepoIntakeReviewPlanMarkdown(item ExternalRepoIntakeReviewPla
 		fmt.Fprintln(&b)
 		for _, question := range item.ReviewQuestions {
 			fmt.Fprintf(&b, "- %s\n", question)
+		}
+	}
+	if len(item.EvaluationPlan) > 0 {
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "## Context-Aware Evaluation Plan")
+		fmt.Fprintln(&b)
+		for _, step := range item.EvaluationPlan {
+			fmt.Fprintf(&b, "- %s (%s): %s\n", step.ID, step.Lens, step.Question)
+			fmt.Fprintf(&b, "  - trigger: %s\n", step.Trigger)
+			fmt.Fprintf(&b, "  - evidence_needed: %s\n", step.EvidenceNeeded)
+			fmt.Fprintf(&b, "  - boundary: %s\n", step.Boundary)
+			fmt.Fprintf(&b, "  - silence: %s\n", step.Silence)
+			fmt.Fprintf(&b, "  - proof: %s\n", step.Proof)
+			fmt.Fprintf(&b, "  - retirement: %s\n", step.Retirement)
 		}
 	}
 	if len(item.Boundaries) > 0 {
@@ -712,6 +860,73 @@ func externalRepoMatchesForQuery(homePath string, decisions []ExternalRepoIntake
 	matches = append(matches, matchExternalRepoEvaluationReferences(homePath, query, matches)...)
 	matches = annotateExternalRepoOwnerReviews(homePath, matches)
 	return annotateExternalRepoCapabilityEvaluations(homePath, matches)
+}
+
+func ExternalRepoMatchedEvidenceForTask(homePath, task string, limit int) ([]SurfacingConstraint, error) {
+	report, err := ExternalRepoIntakeReportForHome(homePath, task)
+	if err != nil {
+		return nil, err
+	}
+	if report.Status != "ok" || len(report.Matches) == 0 {
+		return nil, nil
+	}
+	matches := report.Matches
+	if limit > 0 && len(matches) > limit {
+		matches = matches[:limit]
+	}
+	out := make([]SurfacingConstraint, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, SurfacingConstraint{
+			Kind:       "external_repo_review_evidence",
+			Ref:        ExternalRepoIntakeAuthorityRef + "/" + normalizeExternalRepoQuery(match.Repo),
+			Detail:     externalRepoMatchedEvidenceDetail(match),
+			Confidence: externalRepoMatchedEvidenceConfidence(match),
+		})
+	}
+	return out, nil
+}
+
+func externalRepoMatchedEvidenceDetail(match ExternalRepoIntakeDecision) string {
+	parts := []string{
+		"repo=" + match.Repo,
+		"decision=" + match.Decision,
+		"evidence only; not adoption or execution",
+	}
+	if match.Owner != "" {
+		parts = append(parts, "owner="+match.Owner)
+	}
+	if match.Lane != "" {
+		parts = append(parts, "lane="+match.Lane)
+	}
+	if match.CapabilityGraphStatus != "" {
+		parts = append(parts, "capability_graph="+match.CapabilityGraphStatus)
+	}
+	if match.CapabilityEvaluationNodeStatus != "" {
+		parts = append(parts, "node_status="+match.CapabilityEvaluationNodeStatus)
+	}
+	if match.NextReviewStep != "" {
+		parts = append(parts, "next="+match.NextReviewStep)
+	}
+	if match.NotToDo != "" {
+		parts = append(parts, "boundary="+match.NotToDo)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func externalRepoMatchedEvidenceConfidence(match ExternalRepoIntakeDecision) float64 {
+	if match.EvidenceStrength > 0 {
+		return match.EvidenceStrength
+	}
+	switch match.Decision {
+	case "keep_needs_review":
+		return 0.72
+	case "merge_existing":
+		return 0.66
+	case "reference_only":
+		return 0.58
+	default:
+		return 0.5
+	}
 }
 
 func externalRepoSourceListCoverage(homePath string, decisions []ExternalRepoIntakeDecision, path string) ([]ExternalRepoSourceListItem, error) {
@@ -818,6 +1033,8 @@ func annotateExternalRepoCapabilityEvaluations(homePath string, matches []Extern
 			match.CapabilityEvaluationNextAction = review.NextAction
 			if importedNodeIDs[review.NodeID] {
 				match.CapabilityGraphStatus = "imported"
+			} else if review.Status != "recorded" {
+				match.CapabilityGraphStatus = "blocked_on_evaluation_review"
 			} else if review.ManifestPath != "" {
 				match.CapabilityGraphStatus = "reviewed_manifest_pending_import"
 			} else {
@@ -852,19 +1069,7 @@ func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]e
 		return out
 	}
 	for _, item := range queue.Items {
-		if item.Area != capabilityEvaluationReviewArea || item.Status != "recorded" {
-			continue
-		}
-		reviewedPath := capabilityEvaluationReviewedPath(item)
-		if reviewedPath == "" {
-			continue
-		}
-		data, err := os.ReadFile(reviewedPath)
-		if err != nil {
-			continue
-		}
-		var review CapabilityEvaluationReviewReport
-		if err := json.Unmarshal(data, &review); err != nil {
+		if item.Area != capabilityEvaluationReviewArea {
 			continue
 		}
 		planData, err := os.ReadFile(item.JSONPath)
@@ -880,6 +1085,40 @@ func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]e
 		if key == "" {
 			continue
 		}
+		if item.Status == "review_required" {
+			if _, exists := out[key]; exists {
+				continue
+			}
+			out[key] = externalRepoCapabilityEvaluationReview{
+				Status:       "review_required",
+				Path:         capabilityEvaluationReviewYAMLPath(item),
+				NodeID:       plan.NodeDraft.NodeID,
+				NodeStatus:   plan.Status,
+				ManifestPath: capabilityEvaluationManifestDraftPath(item),
+				NextAction:   "review capability evaluation YAML before any graph import",
+			}
+			if out[key].Path == "" {
+				review := out[key]
+				review.Path = item.JSONPath
+				out[key] = review
+			}
+			continue
+		}
+		if item.Status != "recorded" {
+			continue
+		}
+		reviewedPath := capabilityEvaluationReviewedPath(item)
+		if reviewedPath == "" {
+			continue
+		}
+		data, err := os.ReadFile(reviewedPath)
+		if err != nil {
+			continue
+		}
+		var review CapabilityEvaluationReviewReport
+		if err := json.Unmarshal(data, &review); err != nil {
+			continue
+		}
 		out[key] = externalRepoCapabilityEvaluationReview{
 			Status:       "recorded",
 			Path:         reviewedPath,
@@ -891,6 +1130,24 @@ func externalRepoCapabilityEvaluationReviewsByRepo(homePath string) map[string]e
 		}
 	}
 	return out
+}
+
+func capabilityEvaluationReviewYAMLPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, ".review.yaml") {
+			return path
+		}
+	}
+	return ""
+}
+
+func capabilityEvaluationManifestDraftPath(item reviewartifact.QueueItem) string {
+	for _, path := range item.ExtraPaths {
+		if strings.HasSuffix(path, ".skill-manifest.yaml") {
+			return path
+		}
+	}
+	return ""
 }
 
 func capabilityEvaluationReviewedPath(item reviewartifact.QueueItem) string {
@@ -993,10 +1250,12 @@ func matchExternalRepoDecisions(decisions []ExternalRepoIntakeDecision, query st
 		return nil
 	}
 	var out []ExternalRepoIntakeDecision
+	seen := map[string]bool{}
 	for _, decision := range decisions {
 		haystack := normalizeExternalRepoQuery(decision.Repo)
 		if haystack == needle || strings.Contains(haystack, needle) || strings.Contains(needle, haystack) {
 			out = append(out, decision)
+			seen[haystack] = true
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1005,7 +1264,69 @@ func matchExternalRepoDecisions(decisions []ExternalRepoIntakeDecision, query st
 		}
 		return out[i].Lane < out[j].Lane
 	})
+	out = append(out, matchExternalRepoDecisionsByContext(decisions, query, seen)...)
 	return out
+}
+
+type externalRepoContextMatch struct {
+	decision ExternalRepoIntakeDecision
+	score    int
+}
+
+func matchExternalRepoDecisionsByContext(decisions []ExternalRepoIntakeDecision, query string, seen map[string]bool) []ExternalRepoIntakeDecision {
+	queryTokens := tokenSet(query)
+	if len(queryTokens) == 0 {
+		return nil
+	}
+	var matches []externalRepoContextMatch
+	for _, decision := range decisions {
+		key := normalizeExternalRepoQuery(decision.Repo)
+		if seen[key] {
+			continue
+		}
+		score := externalRepoContextScore(queryTokens, decision)
+		if score < 2 {
+			continue
+		}
+		seen[key] = true
+		matches = append(matches, externalRepoContextMatch{decision: decision, score: score})
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		if matches[i].decision.EvidenceStrength != matches[j].decision.EvidenceStrength {
+			return matches[i].decision.EvidenceStrength > matches[j].decision.EvidenceStrength
+		}
+		return matches[i].decision.Repo < matches[j].decision.Repo
+	})
+	out := make([]ExternalRepoIntakeDecision, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, match.decision)
+	}
+	return out
+}
+
+func externalRepoContextScore(queryTokens map[string]bool, decision ExternalRepoIntakeDecision) int {
+	fields := []string{
+		decision.Repo,
+		decision.Lane,
+		decision.Owner,
+		decision.NextReviewStep,
+		decision.NotToDo,
+		decision.GraphHint,
+		decision.CapabilityEvaluationDecision,
+		decision.CapabilityEvaluationNodeID,
+		decision.CapabilityEvaluationNextAction,
+	}
+	contextTokens := tokenSet(strings.Join(fields, " "))
+	score := 0
+	for token := range queryTokens {
+		if contextTokens[token] {
+			score++
+		}
+	}
+	return score
 }
 
 func matchExternalRepoEvaluationReferences(homePath, query string, existing []ExternalRepoIntakeDecision) []ExternalRepoIntakeDecision {

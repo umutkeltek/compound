@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/candidates"
 )
 
 func TestListCandidatesFiltersCountsAndEvidenceGate(t *testing.T) {
@@ -142,6 +144,94 @@ func TestListCandidatesAppliesAdmissionToLegacySourceRows(t *testing.T) {
 	}
 	if persisted.State != "proposed" || persisted.Reason != "" {
 		t.Fatalf("persisted candidate mutated by list projection: %+v", persisted)
+	}
+}
+
+func TestListCandidatesIncludeEvidenceAddsCardContext(t *testing.T) {
+	s := newStore(t)
+	ev, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "chatgpt",
+		SourceID:   "conversation:abc",
+		QuoteText:  "On June 8, keep the old memory engine only as a temporary bridge.",
+		EventTime:  "2026-06-08T09:00:00Z",
+		Actor:      "user",
+		Visibility: "private",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := s.Capture([]Candidate{{
+		Entity:          "project:compound",
+		Predicate:       "memory_engine_strategy",
+		Object:          "own the breadth engine; rent legacy indexes only as bridges",
+		ObservationDate: "2026-07-01",
+		Confidence:      0.93,
+		Derivation:      "deterministic",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  ev.ID,
+		SnippetHash:     ev.ContentHash,
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := s.Adjudicate(prior[0].ID, "promote", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.Capture([]Candidate{{
+		Entity:          "project:compound",
+		Predicate:       "memory_engine_strategy",
+		Object:          "keep the old memory engine as the source of truth",
+		ObservationDate: "2026-06-08",
+		Confidence:      0.72,
+		Derivation:      "extracted",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  ev.ID,
+		SnippetHash:     ev.ContentHash,
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.ListCandidates(t0, CandidateListOptions{State: "proposed", IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.Matched != 1 || report.Items[0].ID != next[0].ID {
+		t.Fatalf("report items = %+v", report.Items)
+	}
+	data, err := json.Marshal(report.Items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		ObservationDate string `json:"observation_date"`
+		Evidence        struct {
+			Ref       string `json:"ref"`
+			Quote     string `json:"quote"`
+			SourceID  string `json:"source_id"`
+			EventTime string `json:"event_time"`
+		} `json:"evidence"`
+		BelievedBefore struct {
+			ClaimID   string `json:"claim_id"`
+			Object    string `json:"object"`
+			CreatedAt string `json:"created_at"`
+		} `json:"believed_before"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ObservationDate != "2026-06-08" {
+		t.Fatalf("observation date = %q", got.ObservationDate)
+	}
+	if got.Evidence.Ref != ev.ID || got.Evidence.SourceID != "conversation:abc" || got.Evidence.EventTime != "2026-06-08T09:00:00Z" {
+		t.Fatalf("evidence context = %+v", got.Evidence)
+	}
+	if !strings.Contains(got.Evidence.Quote, "temporary bridge") {
+		t.Fatalf("evidence quote = %q", got.Evidence.Quote)
+	}
+	if got.BelievedBefore.ClaimID != promoted.Claim.ID || got.BelievedBefore.Object != promoted.Claim.Object || got.BelievedBefore.CreatedAt == "" {
+		t.Fatalf("believed_before = %+v, want claim %+v", got.BelievedBefore, promoted.Claim)
 	}
 }
 

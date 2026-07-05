@@ -182,6 +182,27 @@ func externalRepoCapabilityName(value string, match ExternalRepoIntakeDecision) 
 func externalRepoCapabilityEvaluation(report ExternalRepoCapabilityEvaluationPlanReport, match ExternalRepoIntakeDecision, now time.Time) CapabilityEvaluation {
 	nextProof := reviewartifact.FirstNonEmpty(report.OwnerReviewNextAction, match.NextReviewStep)
 	risks := reviewartifact.FirstNonEmpty(match.NotToDo, "do not adopt wholesale or create a parallel owner")
+	contextPlan := externalRepoContextEvaluationPlan(report.Repo, match)
+	signals := map[string]any{
+		"kind":                      "external_repo_workflow",
+		"cluster":                   reviewartifact.FirstNonEmpty(match.Lane, "external-repo-intake"),
+		"source_family":             "external-repo-intake",
+		"external_repo":             report.Repo,
+		"source_list_query":         report.SourceListQuery,
+		"existing_owner":            report.Owner,
+		"owner_review_status":       report.OwnerReviewStatus,
+		"owner_review_decision":     report.OwnerReviewDecision,
+		"owner_review_path":         report.OwnerReviewPath,
+		"required_next_proof":       nextProof,
+		"main_risks":                risks,
+		"graph_hint":                reviewartifact.FirstNonEmpty(match.GraphHint, match.Decision),
+		"intake_authority":          ExternalRepoIntakeAuthorityRef,
+		"evaluation_boundary":       "focused evaluation only; no external repo activation",
+		"capability_evaluation_via": "external-intake-evaluation-plan",
+	}
+	for key, value := range externalRepoContextEvaluationSignals(contextPlan) {
+		signals[key] = value
+	}
 	return CapabilityEvaluation{
 		SchemaVersion:    1,
 		ID:               reviewartifact.ID("capability-evaluation.external-repo.", report.Repo, report.Capability, report.OwnerReviewPath),
@@ -191,29 +212,42 @@ func externalRepoCapabilityEvaluation(report ExternalRepoCapabilityEvaluationPla
 		Verdict:          report.Verdict,
 		RubricNormalized: externalRepoEvaluationConfidence(match.EvidenceStrength),
 		RubricScores: map[string]any{
-			"owner_review_recorded": 1,
-			"evidence_strength":     match.EvidenceStrength,
-			"duplicate_risk":        match.DuplicateRisk,
+			"owner_review_recorded":         1,
+			"evidence_strength":             match.EvidenceStrength,
+			"duplicate_risk":                match.DuplicateRisk,
+			"context_evaluation_step_count": len(contextPlan),
 		},
-		Signals: map[string]any{
-			"kind":                      "external_repo_workflow",
-			"cluster":                   reviewartifact.FirstNonEmpty(match.Lane, "external-repo-intake"),
-			"source_family":             "external-repo-intake",
-			"external_repo":             report.Repo,
-			"source_list_query":         report.SourceListQuery,
-			"existing_owner":            report.Owner,
-			"owner_review_status":       report.OwnerReviewStatus,
-			"owner_review_decision":     report.OwnerReviewDecision,
-			"owner_review_path":         report.OwnerReviewPath,
-			"required_next_proof":       nextProof,
-			"main_risks":                risks,
-			"graph_hint":                reviewartifact.FirstNonEmpty(match.GraphHint, match.Decision),
-			"intake_authority":          ExternalRepoIntakeAuthorityRef,
-			"evaluation_boundary":       "focused evaluation only; no external repo activation",
-			"capability_evaluation_via": "external-intake-evaluation-plan",
-		},
+		Signals:        signals,
 		LocalStateOnly: true,
 	}
+}
+
+func externalRepoContextEvaluationSignals(steps []ExternalRepoContextEvaluationStep) map[string]any {
+	out := map[string]any{}
+	for _, step := range steps {
+		addSignalString(out, "context_evaluation_lenses", step.Lens)
+		addSignalString(out, "context_evaluation_questions", step.Question)
+		addSignalString(out, "context_evaluation_triggers", step.Trigger)
+		addSignalString(out, "context_evaluation_boundaries", step.Boundary)
+		addSignalString(out, "context_evaluation_silence", step.Silence)
+		addSignalString(out, "context_evaluation_proofs", step.Proof)
+		addSignalString(out, "context_evaluation_retirement", step.Retirement)
+	}
+	return out
+}
+
+func addSignalString(signals map[string]any, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	current, _ := signals[key].([]string)
+	for _, existing := range current {
+		if existing == value {
+			return
+		}
+	}
+	signals[key] = append(current, value)
 }
 
 func externalRepoEvaluationConfidence(value float64) float64 {

@@ -36,6 +36,97 @@ func TestHookLiveSessionStartEmitsAdditionalContext(t *testing.T) {
 	}
 }
 
+func TestHookLiveCodexSessionStartEmitsCodexContext(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	input := `{"hook_event_name":"SessionStart","session_id":"sess_codex_live","cwd":"/repo/control","prompt":"continue Compound hook adapter work"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"session-start", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("codex live session-start exit = %d\n%s", code, out)
+	}
+	var resp codexLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse codex live response: %v\n%s", err, out)
+	}
+	if resp.SchemaVersion != "compound.codex_live_hook_response.v0.1" ||
+		resp.HookName != "SessionStart" ||
+		resp.Status != "ok" ||
+		resp.EventID == "" ||
+		strings.TrimSpace(resp.AdditionalContext) == "" {
+		t.Fatalf("codex live session-start response = %+v", resp)
+	}
+}
+
+func TestHookLiveSessionStartParityRecordsContextSpineRefs(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	parityDir := t.TempDir()
+	input := `{"hook_event_name":"SessionStart","session_id":"sess_live_context","cwd":"/repo/control","prompt":"continue held-valve-adjacent Compound work"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"session-start", "--live", "--harness", "claude-code", "--parity-log", parityDir})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("live session-start exit = %d\n%s", code, out)
+	}
+	var resp claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse live response: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(resp.HookSpecificOutput.AdditionalContext) == "" {
+		t.Fatalf("live session-start did not emit additional context: %+v", resp.HookSpecificOutput)
+	}
+	entries, err := os.ReadDir(parityDir)
+	if err != nil {
+		t.Fatalf("read parity dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("parity entries = %d, want 1", len(entries))
+	}
+	parityBytes, err := os.ReadFile(filepath.Join(parityDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read parity record: %v", err)
+	}
+	var parity liveHookParityRecord
+	if err := json.Unmarshal(parityBytes, &parity); err != nil {
+		t.Fatalf("parse parity record: %v\n%s", err, string(parityBytes))
+	}
+	if parity.HookName != "SessionStart" ||
+		parity.ContextRequestID == "" ||
+		parity.ContractID == "" ||
+		parity.ContextPackID == "" ||
+		parity.ContextRequestRef == "" ||
+		parity.ContractRef == "" ||
+		parity.ContextPackRef == "" ||
+		parity.InjectionRef == "" ||
+		!stringSliceContains(parity.ProducedKinds, "context_request") ||
+		!stringSliceContains(parity.ProducedKinds, "effective_contract") ||
+		!stringSliceContains(parity.ProducedKinds, "context_pack") {
+		t.Fatalf("session-start parity record lost context spine refs: %+v", parity)
+	}
+	for _, ref := range []string{parity.ContextRequestRef, parity.ContractRef, parity.ContextPackRef, parity.InjectionRef} {
+		if strings.HasPrefix(ref, "/") || strings.Contains(ref, "..") {
+			t.Fatalf("parity ref should be relative and home-scoped, got %q", ref)
+		}
+		if _, err := os.Stat(filepath.Join(homePath, ref)); err != nil {
+			t.Fatalf("parity ref %q missing backing artifact: %v\nrecord=%s", ref, err, string(parityBytes))
+		}
+	}
+}
+
 func TestHookLiveUserPromptSubmitEmitsAdditionalContext(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -57,6 +148,35 @@ func TestHookLiveUserPromptSubmitEmitsAdditionalContext(t *testing.T) {
 	if resp.HookSpecificOutput.HookEventName != "UserPromptSubmit" ||
 		!strings.Contains(resp.HookSpecificOutput.AdditionalContext, "tighten onboarding copy") {
 		t.Fatalf("live user-prompt-submit response = %+v", resp.HookSpecificOutput)
+	}
+}
+
+func TestHookLiveCodexUserPromptSubmitEmitsCodexContext(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	input := `{"hook_event_name":"UserPromptSubmit","session_id":"sess_codex_prompt","cwd":"/repo/product","prompt":"tighten onboarding copy"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"user-prompt-submit", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("codex live user-prompt-submit exit = %d\n%s", code, out)
+	}
+	var resp codexLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse codex live response: %v\n%s", err, out)
+	}
+	if resp.SchemaVersion != "compound.codex_live_hook_response.v0.1" ||
+		resp.HookName != "UserPromptSubmit" ||
+		resp.Status != "ok" ||
+		resp.EventID == "" ||
+		!strings.Contains(resp.AdditionalContext, "tighten onboarding copy") {
+		t.Fatalf("codex live user-prompt-submit response = %+v", resp)
 	}
 }
 
@@ -88,6 +208,40 @@ func TestHookLivePreToolUseMapsClaudeWriteInput(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events")); err != nil {
 		t.Fatalf("live hook should persist event artifacts in temp home: %v", err)
+	}
+}
+
+func TestHookLiveCodexPreToolUseEmitsCodexPolicyDecision(t *testing.T) {
+	homePath := t.TempDir()
+	repo := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	target := filepath.Join(repo, "README.md")
+	input := `{"hook_event_name":"PreToolUse","session_id":"sess_codex_pretool","cwd":` +
+		quoteJSON(repo) + `,"tool_name":"Write","tool_input":{"file_path":` + quoteJSON(target) + `}}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("codex live pre-tool-use exit = %d\n%s", code, out)
+	}
+	var resp codexLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse codex live response: %v\n%s", err, out)
+	}
+	if resp.SchemaVersion != "compound.codex_live_hook_response.v0.1" ||
+		resp.HookName != "PreToolUse" ||
+		resp.Status != "ok" ||
+		resp.EventID == "" {
+		t.Fatalf("codex live pre-tool-use response = %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events")); err != nil {
+		t.Fatalf("codex live hook should persist event artifacts in temp home: %v", err)
 	}
 }
 

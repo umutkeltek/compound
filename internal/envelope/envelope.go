@@ -171,15 +171,28 @@ type MutationPolicy struct {
 	IrreversibleRequiresHuman bool `json:"irreversible_requires_human"`
 }
 type HookReadiness struct {
-	Harness         string `json:"harness"`
-	Hook            string `json:"hook"`
-	NativeBlock     bool   `json:"native_block"`
-	Installed       bool   `json:"installed"`
-	InstalledRef    string `json:"installed_ref,omitempty"`
-	Status          string `json:"status"`
-	AdapterRequired bool   `json:"adapter_required,omitempty"`
-	AdapterCommand  string `json:"adapter_command,omitempty"`
-	Reason          string `json:"reason,omitempty"`
+	Harness         string                `json:"harness"`
+	Hook            string                `json:"hook"`
+	NativeBlock     bool                  `json:"native_block"`
+	Installed       bool                  `json:"installed"`
+	InstalledRef    string                `json:"installed_ref,omitempty"`
+	Status          string                `json:"status"`
+	AdapterRequired bool                  `json:"adapter_required,omitempty"`
+	AdapterCommand  string                `json:"adapter_command,omitempty"`
+	Reason          string                `json:"reason,omitempty"`
+	Actions         []HookReadinessAction `json:"actions,omitempty"`
+}
+
+type HookReadinessAction struct {
+	Kind             string `json:"kind"`
+	Label            string `json:"label"`
+	Command          string `json:"command,omitempty"`
+	ExpectedExitCode int    `json:"expected_exit_code,omitempty"`
+	ExpectedStatus   string `json:"expected_status,omitempty"`
+	Boundary         string `json:"boundary,omitempty"`
+	Proof            string `json:"proof,omitempty"`
+	Rollback         string `json:"rollback,omitempty"`
+	RequiresOperator bool   `json:"requires_operator,omitempty"`
 }
 
 type HookRosterEntry struct {

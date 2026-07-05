@@ -246,6 +246,273 @@ func TestPackWithCapabilitiesIncludesProjectionContextByRepoKind(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesOffersOSAdaptationSteeringForControlPlaneTask(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOSAdaptationRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "adapt one umut-os capability into Compound context-aware authority",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	offer := findCapabilityOffer(pack, osAdaptationCapabilityRef)
+	if offer == nil {
+		t.Fatalf("control-plane OS adaptation task should get adaptation offer: %+v", pack.CapabilityOffers)
+	}
+	if offer.Kind != "doctrine" || !strings.Contains(offer.Why, "trigger=old-system+adaptation") {
+		t.Fatalf("offer should explain trigger metadata: %+v", offer)
+	}
+	if !hasOfferConstraint(offer.Required, "context_rule", osAdaptationRuleRef) {
+		t.Fatalf("offer missing required private rule ref: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "trigger", "context://old-system-adaptation-task") {
+		t.Fatalf("offer missing explicit trigger constraint: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "action", "compound://runtime/context-pack-adaptation-contract") {
+		t.Fatalf("offer missing explicit action constraint: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "boundary", "compound://boundary/public-private") {
+		t.Fatalf("offer missing explicit boundary constraint: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "silence", "context://ordinary-product-library-work") {
+		t.Fatalf("offer missing explicit silence constraint: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "proof_gate", "compound://architecture-doctor/adaptation-steering") {
+		t.Fatalf("offer missing architecture doctor proof gate: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "retirement", "compound://adaptation/old-owner-narrowing") {
+		t.Fatalf("offer missing retirement/narrowing constraint: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Conflicts, "conflicts_with", "pattern://copy-old-instructions-verbatim") {
+		t.Fatalf("offer missing copy-paste conflict: %+v", offer.Conflicts)
+	}
+	if !hasOfferConstraint(offer.Evidence, "source_revision", osAdaptationRuleRef) {
+		t.Fatalf("offer missing source revision evidence: %+v", offer.Evidence)
+	}
+	if !strings.Contains(offer.CostRiskNote, "stays silent") {
+		t.Fatalf("offer should carry silence condition: %+v", offer)
+	}
+	if !hasIncluded(pack, osAdaptationCapabilityRef) {
+		t.Fatalf("ContextPack should include adaptation capability ref: %+v", pack.Included)
+	}
+	included, _ := findIncludedRef(pack, osAdaptationCapabilityRef)
+	if included.SourceClass != "private_overlay" || !strings.Contains(included.Reason, "no private body injection") {
+		t.Fatalf("included ref should stay private-overlay refs-only: %+v", included)
+	}
+	if rev := sourceRev(pack.SourceRevisions, osAdaptationRuleRef); !strings.HasPrefix(rev, "sha256:") {
+		t.Fatalf("ContextPack missing adaptation rule source revision: %+v", pack.SourceRevisions)
+	}
+	if !strings.Contains(pack.SummaryMD, "context-aware OS adaptation offer included") {
+		t.Fatalf("summary should mention adaptation offer: %s", pack.SummaryMD)
+	}
+}
+
+func TestPackWithCapabilitiesOSAdaptationSteeringStaysSilentForProductContext(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOSAdaptationRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "adapt one umut-os capability into Compound context-aware authority",
+		RepoKind:    "product",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer := findCapabilityOffer(pack, osAdaptationCapabilityRef); offer != nil {
+		t.Fatalf("product context must not receive control-plane adaptation offer: %+v", offer)
+	}
+	if hasIncluded(pack, osAdaptationCapabilityRef) {
+		t.Fatalf("product context must not include adaptation steering ref: %+v", pack.Included)
+	}
+	if rev := sourceRev(pack.SourceRevisions, osAdaptationRuleRef); rev != "" {
+		t.Fatalf("product context must not consume adaptation rule source revision: %+v", pack.SourceRevisions)
+	}
+}
+
+func TestPackWithCapabilitiesOSAdaptationSteeringStaysSilentForOrdinaryControlPlaneWork(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOSAdaptationRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "repair product signal projection counters",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer := findCapabilityOffer(pack, osAdaptationCapabilityRef); offer != nil {
+		t.Fatalf("ordinary control-plane work must not carry OS adaptation steering: %+v", offer)
+	}
+	if hasIncluded(pack, osAdaptationCapabilityRef) {
+		t.Fatalf("ordinary control-plane work must not include adaptation steering ref: %+v", pack.Included)
+	}
+	if rev := sourceRev(pack.SourceRevisions, osAdaptationRuleRef); rev != "" {
+		t.Fatalf("ordinary control-plane work must not consume adaptation rule source revision: %+v", pack.SourceRevisions)
+	}
+}
+
+func TestCompileWithRuntimeIncludesOSAdaptationSteeringOffer(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOSAdaptationRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "adapt one operating-system hook into Compound ContextPack authority",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	offer := findEffectiveContractCapabilityOffer(ec, osAdaptationCapabilityRef)
+	if offer == nil {
+		t.Fatalf("effective contract should carry adaptation steering offer: %+v", ec.CapabilityOffers)
+	}
+	if !hasOfferConstraint(offer.Required, "action", "compound://runtime/context-pack-adaptation-contract") ||
+		!hasOfferConstraint(offer.Required, "silence", "context://ordinary-product-library-work") {
+		t.Fatalf("effective contract adaptation offer should carry action and silence constraints: %+v", offer.Required)
+	}
+	if rev := sourceRev(ec.SourceRevisions, osAdaptationRuleRef); !strings.HasPrefix(rev, "sha256:") {
+		t.Fatalf("effective contract missing adaptation rule source revision: %+v", ec.SourceRevisions)
+	}
+}
+
+func TestPackWithCapabilitiesOffersOracleSecondOpinionForHighLeverageDoctrineTask(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOracleSecondOpinionRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "change memory governance and public private policy; ask Oracle for architecture second opinion",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	offer := findCapabilityOffer(pack, oracleSecondOpinionCapabilityRef)
+	if offer == nil {
+		t.Fatalf("high-leverage governance task should get Oracle second-opinion offer: %+v", pack.CapabilityOffers)
+	}
+	if offer.Kind != "procedure" || !strings.Contains(offer.Why, "trigger=high-leverage-governance") {
+		t.Fatalf("offer should explain trigger metadata: %+v", offer)
+	}
+	for _, tc := range []struct {
+		kind string
+		ref  string
+	}{
+		{"context_rule", oracleSecondOpinionRuleRef},
+		{"trigger", "context://high-leverage-governance-change"},
+		{"action", "compound://runtime/oracle-second-opinion-evidence"},
+		{"writeback", "compound://source-observe/second-opinion-evidence"},
+		{"boundary", "compound://boundary/oracle-evidence-not-authority"},
+		{"silence", "context://ordinary-deterministic-work"},
+		{"proof_gate", "compound://proof/local-state-delta-after-oracle"},
+		{"retirement", "compound://adaptation/oracle-backend-narrowing"},
+	} {
+		if !hasOfferConstraint(offer.Required, tc.kind, tc.ref) {
+			t.Fatalf("offer missing %s/%s constraint: %+v", tc.kind, tc.ref, offer.Required)
+		}
+	}
+	if !hasOfferConstraint(offer.Conflicts, "conflicts_with", "pattern://oracle-as-authority") {
+		t.Fatalf("offer missing oracle-as-authority conflict: %+v", offer.Conflicts)
+	}
+	if !hasOfferConstraint(offer.Evidence, "source_revision", oracleSecondOpinionRuleRef) {
+		t.Fatalf("offer missing source revision evidence: %+v", offer.Evidence)
+	}
+	if !hasIncluded(pack, oracleSecondOpinionCapabilityRef) {
+		t.Fatalf("ContextPack should include Oracle second-opinion ref: %+v", pack.Included)
+	}
+	if rev := sourceRev(pack.SourceRevisions, oracleSecondOpinionRuleRef); !strings.HasPrefix(rev, "sha256:") {
+		t.Fatalf("ContextPack missing Oracle rule source revision: %+v", pack.SourceRevisions)
+	}
+}
+
+func TestPackWithCapabilitiesOracleSecondOpinionStaysSilentForOrdinaryWork(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOracleSecondOpinionRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "repair product signal projection counters",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer := findCapabilityOffer(pack, oracleSecondOpinionCapabilityRef); offer != nil {
+		t.Fatalf("ordinary work must not carry Oracle second-opinion offer: %+v", offer)
+	}
+	if hasIncluded(pack, oracleSecondOpinionCapabilityRef) {
+		t.Fatalf("ordinary work must not include Oracle second-opinion ref: %+v", pack.Included)
+	}
+	if rev := sourceRev(pack.SourceRevisions, oracleSecondOpinionRuleRef); rev != "" {
+		t.Fatalf("ordinary work must not consume Oracle rule source revision: %+v", pack.SourceRevisions)
+	}
+}
+
+func TestCompileWithRuntimeIncludesOracleSecondOpinionOffer(t *testing.T) {
+	home := t.TempDir()
+	repo := writeOracleSecondOpinionRuleFixture(t)
+	in := Input{
+		Harness:     "codex",
+		Cwd:         repo,
+		Task:        "redesign hook spine ownership boundary; ask oracle for second opinion",
+		RepoKind:    "control-plane",
+		RepoKindVia: "flag",
+		Mode:        "execute",
+	}
+	ec, err := CompileWithRuntime(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ec.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	offer := findEffectiveContractCapabilityOffer(ec, oracleSecondOpinionCapabilityRef)
+	if offer == nil {
+		t.Fatalf("effective contract should carry Oracle second-opinion offer: %+v", ec.CapabilityOffers)
+	}
+	if !hasOfferConstraint(offer.Required, "action", "compound://runtime/oracle-second-opinion-evidence") ||
+		!hasOfferConstraint(offer.Required, "writeback", "compound://source-observe/second-opinion-evidence") ||
+		!hasOfferConstraint(offer.Required, "proof_gate", "compound://proof/local-state-delta-after-oracle") {
+		t.Fatalf("effective contract Oracle offer should carry action, writeback, and proof constraints: %+v", offer.Required)
+	}
+	if rev := sourceRev(ec.SourceRevisions, oracleSecondOpinionRuleRef); !strings.HasPrefix(rev, "sha256:") {
+		t.Fatalf("effective contract missing Oracle rule source revision: %+v", ec.SourceRevisions)
+	}
+}
+
 func TestPackWithCapabilitiesIncludesExternalRepoIntakeMatches(t *testing.T) {
 	home := t.TempDir()
 	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-01-test")
@@ -318,6 +585,19 @@ func TestPackWithCapabilitiesIncludesExternalRepoIntakeMatches(t *testing.T) {
 	}
 	if !strings.Contains(pack.SummaryMD, "1 external repo intake match(es) included") {
 		t.Fatalf("summary missing external intake count: %s", pack.SummaryMD)
+	}
+
+	in.Task = "evaluate hooks memory skill graph architecture pattern for Compound from external operating-system reference"
+	contextual, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextualRef, ok := findIncludedRef(contextual, externalRepoIntakeRef("affaan-m/ECC"))
+	if !ok {
+		t.Fatalf("contextual task should include external repo intake evidence: %+v", contextual.Included)
+	}
+	if !strings.Contains(contextualRef.Reason, "owner=Compound architecture / hooks / memory / skill graph") {
+		t.Fatalf("contextual external repo reason should preserve owner metadata: %s", contextualRef.Reason)
 	}
 
 	in.Task = "Should we adopt a repository that has not been reviewed?"
@@ -1031,6 +1311,67 @@ func TestInstalledHookGateReadinessFlagsFailOpenCodex(t *testing.T) {
 	if !strings.Contains(codex.AdapterCommand, "hook pre-tool-use --enforce") {
 		t.Fatalf("codex adapter command = %q", codex.AdapterCommand)
 	}
+	proof := findHookGateAction(codex.Actions, "prove_fixture_gate")
+	if proof == nil ||
+		proof.ExpectedExitCode != 3 ||
+		proof.ExpectedStatus != "fail_open_or_blocked" ||
+		!strings.Contains(proof.Command, "COMPOUND_HOME=$(mktemp -d)") ||
+		!strings.Contains(proof.Command, "fixtures/hooks/pre-tool-use.codex.json") ||
+		proof.RequiresOperator {
+		t.Fatalf("codex fixture proof action = %+v", proof)
+	}
+	live := findHookGateAction(codex.Actions, "prove_live_wrapper_gate")
+	if live == nil ||
+		live.ExpectedStatus != "ok" ||
+		!strings.Contains(live.Command, "compound hook pre-tool-use --live --harness codex") ||
+		!strings.Contains(live.Proof, "compound.codex_live_hook_response.v0.1") ||
+		live.RequiresOperator {
+		t.Fatalf("codex live wrapper proof action = %+v", live)
+	}
+	wrapper := findHookGateAction(codex.Actions, "operator_wrapper_required")
+	if wrapper == nil || !wrapper.RequiresOperator || !strings.Contains(wrapper.Proof, "hooks-authority") {
+		t.Fatalf("codex wrapper action = %+v", wrapper)
+	}
+	if len(claude.Actions) != 0 {
+		t.Fatalf("native blocking claude gate should not emit action cards: %+v", claude.Actions)
+	}
+}
+
+func TestInstalledHookRuntimeReadinessAddsMissingAdapterActions(t *testing.T) {
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+		Hooks: []InstalledHook{
+			{Harness: "codex", Name: "SessionStart", Event: "SessionStart", Ref: "hook://codex/SessionStart", Status: "current"},
+			{Harness: "claude_code", Name: "SessionStart", Event: "SessionStart", Ref: "hook://claude_code/SessionStart", Status: "current"},
+		},
+	}
+	rows := InstalledHookRuntimeReadinessRows(manifest, []HookRuntimeSupport{
+		{Harness: "codex", Hook: "SessionStart", FixturePresent: true, FixtureRef: "fixtures/hooks/session-start.json"},
+		{Harness: "claude_code", Hook: "SessionStart", FixturePresent: true, FixtureRef: "fixtures/hooks/session-start.json", LiveAdapter: true, LiveCommand: "compound hook session-start --live --harness claude-code"},
+	})
+	codex := contractHookReadiness(rows, "codex", "SessionStart")
+	if codex == nil || codex.Status != "missing_live_adapter" {
+		t.Fatalf("codex readiness = %+v", codex)
+	}
+	fixture := findHookGateAction(codex.Actions, "prove_fixture_hook")
+	if fixture == nil ||
+		fixture.RequiresOperator ||
+		!strings.Contains(fixture.Command, "COMPOUND_HOME=$(mktemp -d)") ||
+		!strings.Contains(fixture.Command, "compound hook session-start fixtures/hooks/session-start.json") {
+		t.Fatalf("codex fixture hook action = %+v", fixture)
+	}
+	shim := findHookGateAction(codex.Actions, "operator_live_adapter_required")
+	if shim == nil ||
+		!shim.RequiresOperator ||
+		!strings.Contains(shim.Command, "compound hook session-start --live --harness codex") ||
+		!strings.Contains(shim.Proof, "compound contract hooks-authority") ||
+		!strings.Contains(shim.Rollback, "compound contract hooks-authority") {
+		t.Fatalf("codex live adapter action = %+v", shim)
+	}
+	claude := contractHookReadiness(rows, "claude_code", "SessionStart")
+	if claude == nil || claude.Status != "ready" || len(claude.Actions) != 0 {
+		t.Fatalf("claude ready row should not emit action cards: %+v", claude)
+	}
 }
 
 func TestPackWithCapabilitiesRecordsMissingWriteGateForMutationTask(t *testing.T) {
@@ -1076,7 +1417,8 @@ hooks:
 		t.Fatalf("context pack excluded=%v, want missing write gate reason", pack.Excluded)
 	}
 	if !containsStringWith(pack.RequiredChecks, "pre_write_gate codex/PreToolUse status=missing_gate") ||
-		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce FIXTURE_JSON") {
+		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce fixtures/hooks/pre-tool-use.codex.json") ||
+		!containsStringWith(pack.RequiredChecks, "expected_exit_code=3") {
 		t.Fatalf("context pack required_checks = %v, want pre-write adapter check", pack.RequiredChecks)
 	}
 
@@ -1147,6 +1489,19 @@ hooks:
 	if codexReadiness.AdapterCommand == "" {
 		t.Fatalf("effective contract hook readiness missing adapter command: %+v", codexReadiness)
 	}
+	if action := findEnvelopeHookAction(codexReadiness.Actions, "prove_fixture_gate"); action == nil ||
+		action.ExpectedExitCode != 3 ||
+		!strings.Contains(action.Command, "fixtures/hooks/pre-tool-use.codex.json") {
+		t.Fatalf("effective contract hook readiness missing fixture action: %+v", codexReadiness.Actions)
+	}
+	if action := findEnvelopeHookAction(codexReadiness.Actions, "prove_live_wrapper_gate"); action == nil ||
+		action.ExpectedStatus != "ok" ||
+		!strings.Contains(action.Command, "compound hook pre-tool-use --live --harness codex") {
+		t.Fatalf("effective contract hook readiness missing live wrapper action: %+v", codexReadiness.Actions)
+	}
+	if action := findEnvelopeHookAction(codexReadiness.Actions, "operator_wrapper_required"); action == nil || !action.RequiresOperator {
+		t.Fatalf("effective contract hook readiness missing operator action: %+v", codexReadiness.Actions)
+	}
 	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
 	if err != nil {
 		t.Fatal(err)
@@ -1155,8 +1510,19 @@ hooks:
 	if packReadiness == nil || packReadiness.Status != "missing_gate" || !packReadiness.AdapterRequired {
 		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
 	}
+	if action := findEnvelopeHookAction(packReadiness.Actions, "prove_fixture_gate"); action == nil ||
+		action.ExpectedExitCode != 3 ||
+		!strings.Contains(action.Command, "fixtures/hooks/pre-tool-use.codex.json") {
+		t.Fatalf("context pack hook readiness missing fixture action: %+v", packReadiness.Actions)
+	}
+	if action := findEnvelopeHookAction(packReadiness.Actions, "prove_live_wrapper_gate"); action == nil ||
+		action.ExpectedStatus != "ok" ||
+		!strings.Contains(action.Command, "compound hook pre-tool-use --live --harness codex") {
+		t.Fatalf("context pack hook readiness missing live wrapper action: %+v", packReadiness.Actions)
+	}
 	if !containsStringWith(pack.RequiredChecks, "pre_write_gate codex/PreToolUse status=missing_gate") ||
-		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce FIXTURE_JSON") {
+		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce fixtures/hooks/pre-tool-use.codex.json") ||
+		!containsStringWith(pack.RequiredChecks, "expected_exit_code=3") {
 		t.Fatalf("context pack required_checks = %v, want pre-write adapter check", pack.RequiredChecks)
 	}
 	readOnly := in
@@ -1700,6 +2066,34 @@ func TestPackWithCapabilitiesIncludesExplicitPrivateChatGPTConversationClaim(t *
 	if contains(productPack.ActiveMemory, ref) {
 		t.Fatalf("product repo active_memory = %v, must not include private conversation claim %s", productPack.ActiveMemory, ref)
 	}
+	if _, ok := findIncludedRef(productPack, ref); ok {
+		t.Fatalf("product repo included refs must not smuggle private conversation claim %s", ref)
+	}
+	if reason := excludedRefReason(productPack.Excluded, ref); !strings.Contains(reason, "forbids personal-corpus") {
+		t.Fatalf("product repo excluded reason for %s = %q, want personal-corpus policy block", ref, reason)
+	}
+	productContract, err := CompileWithRuntime(product, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(productContract.ActiveMemory, ref) {
+		t.Fatalf("product effective contract active_memory = %v, must not include private conversation claim %s", productContract.ActiveMemory, ref)
+	}
+	if reason := excludedRefReason(productContract.Excluded, ref); !strings.Contains(reason, "forbids personal-corpus") {
+		t.Fatalf("product effective contract excluded reason for %s = %q, want personal-corpus policy block", ref, reason)
+	}
+	library := matching
+	library.RepoKind = "library"
+	libraryPack, err := PackWithCapabilities(library, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(libraryPack.ActiveMemory, ref) {
+		t.Fatalf("library repo active_memory = %v, must not include private conversation claim %s", libraryPack.ActiveMemory, ref)
+	}
+	if reason := excludedRefReason(libraryPack.Excluded, ref); !strings.Contains(reason, "forbids personal-corpus") {
+		t.Fatalf("library repo excluded reason for %s = %q, want personal-corpus policy block", ref, reason)
+	}
 }
 
 func TestPackWithCapabilitiesIgnoresStopwordOnlyTaskOverlap(t *testing.T) {
@@ -2030,6 +2424,58 @@ func hasExcluded(pack envelope.ContextPack, ref string) bool {
 	return false
 }
 
+func writeOSAdaptationRuleFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	planDir := filepath.Join(repo, "docs_private", "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rule := strings.Join([]string{
+		"# Operating-System Adaptation Rule",
+		"## Instruction Tuning Standard",
+		"- Trigger: old operating-system material is being adapted into Compound.",
+		"- Action: translate it into a consumed command, hook, projection, doctor, ContextPack, or product loop.",
+		"- Boundary: do not copy private paths, accounts, skill bodies, or prompt blocks.",
+		"- Silence condition: ordinary product/library tasks do not load this.",
+		"- Proof: a command/test/projection consumes the translated behavior.",
+		"- Retirement: the old owner becomes narrower, retired, or evidence-only.",
+		"Only merge and proof count.",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(planDir, "OPERATING-SYSTEM-ADAPTATION-RULE.md"), []byte(rule), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
+func writeOracleSecondOpinionRuleFixture(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	planDir := filepath.Join(repo, "docs_private", "plan")
+	if err := os.MkdirAll(planDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rule := strings.Join([]string{
+		"# Oracle Second-Opinion Rule",
+		"## Trigger",
+		"- high-leverage doctrine, governance, public/private, hook, spine, routing, or memory changes.",
+		"## Action",
+		"- ask Oracle with files attached; save answer privately; decide locally.",
+		"## Boundary",
+		"- Oracle evidence is not authority; do not edit config or expose private bodies.",
+		"## Silence",
+		"- ordinary deterministic implementation and tests.",
+		"## Proof",
+		"- saved private answer plus local tests/doctor/installed command.",
+		"## Retirement",
+		"- retire when a generic second-opinion adapter owns this path.",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(planDir, "ORACLE-SECOND-OPINION-RULE.md"), []byte(rule), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return repo
+}
+
 func excludedReason(pack envelope.ContextPack, ref string) string {
 	return excludedRefReason(pack.Excluded, ref)
 }
@@ -2070,6 +2516,15 @@ func findEnvelopeHookReadiness(readiness []envelope.HookReadiness, harness, hook
 	return nil
 }
 
+func findEnvelopeHookAction(actions []envelope.HookReadinessAction, kind string) *envelope.HookReadinessAction {
+	for i := range actions {
+		if actions[i].Kind == kind {
+			return &actions[i]
+		}
+	}
+	return nil
+}
+
 func findEnvelopeHookRoster(roster []envelope.HookRosterEntry, ref string) *envelope.HookRosterEntry {
 	for i := range roster {
 		if roster[i].Ref == ref {
@@ -2101,6 +2556,15 @@ func contractHookReadiness(rows []InstalledHookRuntimeReadiness, harnessName, ho
 	for i := range rows {
 		if rows[i].Harness == harnessName && rows[i].Hook == hookName {
 			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func findHookGateAction(actions []HookGateAction, kind string) *HookGateAction {
+	for i := range actions {
+		if actions[i].Kind == kind {
+			return &actions[i]
 		}
 	}
 	return nil

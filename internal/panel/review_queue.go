@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 )
 
@@ -18,18 +19,31 @@ func AnnotateVerdictQueue(report *reviewartifact.QueueReport) {
 	if report == nil {
 		return
 	}
+	if !hasPanelVerdictQueueItems(report.Items) {
+		return
+	}
 	homePath := homeFromReviewRoot(report.ReviewRoot)
 	applications := verdictApplicationsByArtifact(report.ReviewRoot)
+	memoryTargets := memoryCandidatePanelTargets(homePath)
 	for i := range report.Items {
 		item := &report.Items[i]
 		if item.Area != verdictReviewArea {
 			continue
 		}
-		annotateVerdictQueueItem(item, applications, homePath)
+		annotateVerdictQueueItem(item, applications, homePath, memoryTargets)
 	}
 }
 
-func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[string]verdictApplication, homePath string) {
+func hasPanelVerdictQueueItems(items []reviewartifact.QueueItem) bool {
+	for _, item := range items {
+		if item.Area == verdictReviewArea {
+			return true
+		}
+	}
+	return false
+}
+
+func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[string]verdictApplication, homePath string, memoryTargets map[string]memoryCandidatePanelTarget) {
 	verdict, ok := verdictFromQueueItem(*item)
 	if !ok {
 		item.Status = "blocked"
@@ -63,7 +77,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.NextAction = fmt.Sprintf("panel verdict already applied by %s (target=%s decision=%s mapped=%s)", app.RunID, target, strings.TrimSpace(verdict.Synthesis.Decision), app.Application.MappedVerdict)
 		return
 	}
-	if nextAction, ok := resolvedPanelVerdictTarget(homePath, verdict); ok {
+	if nextAction, ok := resolvedPanelVerdictTarget(homePath, verdict, memoryTargets); ok {
 		item.Status = "resolved"
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
@@ -96,6 +110,8 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	}
 	item.Readiness = "needs_review"
 	item.BlockedReason = ""
+	item.DecisionCard = buildPanelDecisionCard(*item, verdict)
+	item.Actions = panelDecisionCardActions(item.DecisionCard)
 	target := panelVerdictTarget(verdict.Target)
 	failedLenses := failedLensCount(verdict.LensFindings)
 	switch decision {
@@ -108,9 +124,240 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	}
 }
 
+func buildPanelDecisionCard(item reviewartifact.QueueItem, verdict verdictArtifactPayload) *reviewartifact.DecisionCard {
+	card := &reviewartifact.DecisionCard{
+		Claim:               panelDecisionClaim(verdict),
+		PanelLean:           panelLean(verdict.Synthesis),
+		OptionalRationale:   true,
+		CanonicalActionHint: "Record the human review, then run the selected canonical memory adjudication command. Renderers must not write review or memory state directly.",
+		Boundary: []string{
+			"read-only projection",
+			"operator choice required before mutation",
+			"no console-side state writes",
+			"verdict-record plus memory adjudicate are the canonical mutation path",
+		},
+		Meta: map[string]string{
+			"verdict_id":  verdict.ID,
+			"run_id":      verdict.RunID,
+			"target_kind": strings.TrimSpace(verdict.Target.Kind),
+			"target_ref":  strings.TrimSpace(verdict.Target.Ref),
+			"review_path": item.JSONPath,
+		},
+	}
+	if rationale := panelVerdictPlainRationale(item.MarkdownPath, verdict.Synthesis.Rationale); rationale != "" {
+		card.Why = append(card.Why, reviewartifact.DecisionCardReason{
+			Label:  "panel rationale",
+			Detail: rationale,
+		})
+	}
+	for _, finding := range verdict.LensFindings {
+		card.Why = append(card.Why, panelLensReasons(finding)...)
+	}
+	card.Choices = panelDecisionChoices(item.JSONPath, verdict.Target)
+	return card
+}
+
+func panelDecisionClaim(verdict verdictArtifactPayload) string {
+	var payload map[string]any
+	if len(verdict.Target.Payload) > 0 && json.Unmarshal(verdict.Target.Payload, &payload) == nil {
+		if object, ok := payload["object"].(string); ok && strings.TrimSpace(object) != "" {
+			return oneLine(object)
+		}
+	}
+	if s := strings.TrimSpace(verdict.Target.Summary); s != "" {
+		return oneLine(s)
+	}
+	target := panelVerdictTarget(verdict.Target)
+	if target == "" {
+		return "A panel verdict needs an operator decision."
+	}
+	return "A panel verdict for this " + target + " needs an operator decision."
+}
+
+func panelLean(s Synthesis) string {
+	decision := strings.TrimSpace(s.Decision)
+	if decision == "" {
+		decision = "unknown"
+	}
+	if s.Confidence > 0 {
+		return fmt.Sprintf("%s (confidence %.2f)", decision, s.Confidence)
+	}
+	return decision
+}
+
+func panelVerdictPlainRationale(markdownPath, fallback string) string {
+	if rationale := markdownSection(markdownPath, "## Rationale"); rationale != "" {
+		return rationale
+	}
+	return oneLine(fallback)
+}
+
+func markdownSection(path, heading string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	inSection := false
+	var out []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == heading {
+			inSection = true
+			continue
+		}
+		if inSection && strings.HasPrefix(trimmed, "## ") {
+			break
+		}
+		if inSection && trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return oneLine(strings.Join(out, " "))
+}
+
+func panelLensReasons(finding LensFinding) []reviewartifact.DecisionCardReason {
+	label, question := panelLensLabelQuestion(finding.LensRef)
+	if len(finding.Findings) == 0 {
+		if finding.Error == "" {
+			return nil
+		}
+		return []reviewartifact.DecisionCardReason{{
+			Label:    label,
+			Question: question,
+			Severity: "error",
+			Detail:   oneLine(finding.Error),
+		}}
+	}
+	out := make([]reviewartifact.DecisionCardReason, 0, len(finding.Findings))
+	for _, f := range finding.Findings {
+		out = append(out, reviewartifact.DecisionCardReason{
+			Label:    label,
+			Question: question,
+			Severity: strings.TrimSpace(f.Severity),
+			Detail:   oneLine(f.Claim),
+		})
+	}
+	return out
+}
+
+func panelLensLabelQuestion(ref string) (string, string) {
+	lower := strings.ToLower(ref)
+	switch {
+	case strings.Contains(lower, "evidence-strength"):
+		return "evidence strength", "How well is this supported?"
+	case strings.Contains(lower, "fossilization-risk"):
+		return "fossilization risk", "Could this harden into a false permanent rule?"
+	case strings.Contains(lower, "inversion-falsification"):
+		return "inversion / falsification", "Could this be overstated backwards?"
+	case strings.Contains(lower, "duplicate"):
+		return "duplicate risk", "Do we already believe something like this?"
+	case strings.Contains(lower, "contradiction"):
+		return "contradiction risk", "Do we already believe something against this?"
+	case strings.Contains(lower, "privacy"):
+		return "privacy risk", "Anything sensitive?"
+	default:
+		label := strings.TrimPrefix(strings.TrimSpace(ref), "lens:")
+		if label == "" {
+			label = "panel lens"
+		}
+		return label, "What did this lens notice?"
+	}
+}
+
+func panelDecisionChoices(reviewPath string, target TargetInput) []reviewartifact.DecisionCardChoice {
+	if strings.TrimSpace(target.Kind) != "memory_candidate" || strings.TrimSpace(target.Ref) == "" {
+		return nil
+	}
+	choices := []struct {
+		id     string
+		label  string
+		effect string
+	}{
+		{"promote", "Promote", "Becomes ambient canon, recallable and citeable in future work."},
+		{"park", "Park", "Kept as evidence but not ambient; can resurface when new evidence arrives."},
+		{"reject", "Reject", "Discarded as noise for this memory lane."},
+		{"no_promote", "No-promote", "Records that this was declined so echoes stop re-asking."},
+	}
+	out := make([]reviewartifact.DecisionCardChoice, 0, len(choices))
+	for _, choice := range choices {
+		cmd := panelChoiceCommand(reviewPath, target.Ref, choice.id)
+		out = append(out, reviewartifact.DecisionCardChoice{
+			ID:             choice.id,
+			Label:          choice.label,
+			Effect:         choice.effect,
+			Command:        cmd,
+			Argv:           []string{"/bin/sh", "-lc", cmd},
+			RequiresReview: true,
+		})
+	}
+	return out
+}
+
+func panelChoiceCommand(reviewPath, candidateID, verdict string) string {
+	reviewCmd := "compound panel verdict-record --review " + shellQuote(reviewPath) + " --rationale \"$RATIONALE\" --reviewed-by umut"
+	adjudicateCmd := "compound memory adjudicate " + shellQuote(candidateID) + " --verdict " + shellQuote(verdict)
+	return reviewCmd + " && " + adjudicateCmd
+}
+
+func panelDecisionCardActions(card *reviewartifact.DecisionCard) []reviewartifact.Action {
+	if card == nil {
+		return nil
+	}
+	out := make([]reviewartifact.Action, 0, len(card.Choices))
+	for _, choice := range card.Choices {
+		out = append(out, reviewartifact.Action{
+			ID:             "decision:" + choice.ID,
+			Label:          choice.Label,
+			Command:        choice.Command,
+			Argv:           choice.Argv,
+			RequiresReview: choice.RequiresReview,
+		})
+	}
+	return out
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func oneLine(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
 type verdictApplication struct {
 	RunID       string
 	Application Application
+}
+
+type memoryCandidatePanelTarget struct {
+	State       string
+	Annotations []mem.CandidateAnnotation
+}
+
+func memoryCandidatePanelTargets(homePath string) map[string]memoryCandidatePanelTarget {
+	if strings.TrimSpace(homePath) == "" {
+		return nil
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil
+	}
+	candidates, err := store.AllCandidates()
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]memoryCandidatePanelTarget, len(candidates))
+	for _, candidate := range candidates {
+		out[candidate.ID] = memoryCandidatePanelTarget{
+			State:       candidate.State,
+			Annotations: append([]mem.CandidateAnnotation(nil), candidate.Annotations...),
+		}
+	}
+	return out
 }
 
 func verdictApplicationsByArtifact(reviewRoot string) map[string]verdictApplication {
@@ -212,14 +459,19 @@ func terminalPanelApplication(app Application, decision string) bool {
 	return mapped != "needs_human" && mapped != "needs_trial"
 }
 
-func resolvedPanelVerdictTarget(homePath string, verdict verdictArtifactPayload) (string, bool) {
+func resolvedPanelVerdictTarget(homePath string, verdict verdictArtifactPayload, memoryTargets map[string]memoryCandidatePanelTarget) (string, bool) {
 	if strings.TrimSpace(homePath) == "" {
 		return "", false
 	}
-	if strings.TrimSpace(verdict.Target.Kind) != "comparison" || strings.TrimSpace(verdict.Target.Ref) == "" {
+	kind := strings.TrimSpace(verdict.Target.Kind)
+	ref := strings.TrimSpace(verdict.Target.Ref)
+	if kind == "memory_candidate" {
+		return resolvedMemoryCandidatePanelTarget(ref, memoryTargets)
+	}
+	if kind != "comparison" || ref == "" {
 		return "", false
 	}
-	path := comparisonCandidatePath(homePath, verdict.Target.Ref)
+	path := comparisonCandidatePath(homePath, ref)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false
@@ -235,6 +487,25 @@ func resolvedPanelVerdictTarget(homePath string, verdict verdictArtifactPayload)
 		return fmt.Sprintf("comparison target already judged; no panel action needed (target=%s verdict=%s)", target, verdictText), true
 	}
 	return fmt.Sprintf("comparison target already judged; no panel action needed (target=%s verdict=%s source=%s)", target, verdictText, filepath.Base(source)), true
+}
+
+func resolvedMemoryCandidatePanelTarget(candidateID string, memoryTargets map[string]memoryCandidatePanelTarget) (string, bool) {
+	candidateID = strings.TrimSpace(candidateID)
+	if candidateID == "" {
+		return "", false
+	}
+	item, ok := memoryTargets[candidateID]
+	if !ok {
+		return "", false
+	}
+	state := strings.TrimSpace(item.State)
+	if state == "" || state == "proposed" {
+		return "", false
+	}
+	if len(item.Annotations) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("memory candidate already %s with %d annotation(s); panel verdict no longer open review debt (target=memory_candidate/%s)", state, len(item.Annotations), candidateID), true
 }
 
 func verdictFromQueueItem(item reviewartifact.QueueItem) (verdictArtifactPayload, bool) {

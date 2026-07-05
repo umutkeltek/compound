@@ -222,6 +222,8 @@ func loadPlanTargetInputs(homePath, targetKind string, states []string) ([]Targe
 		return LoadSkillCandidateTargets(homePath, 0)
 	case "capability_observation":
 		return LoadCapabilityObservationTargets(homePath, 0)
+	case "decision_candidate":
+		return LoadDecisionCandidateTargets(homePath, 0)
 	case "comparison":
 		return LoadComparisonTargets(homePath, 0)
 	default:

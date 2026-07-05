@@ -382,6 +382,47 @@ func TestQueueEmptyReviews(t *testing.T) {
 	}
 }
 
+func TestRecountTracksReviewCardCoverage(t *testing.T) {
+	report := QueueReport{Items: []QueueItem{
+		{
+			Area:      "capability-evaluation-intake",
+			ID:        "needs_card",
+			Status:    "review_required",
+			Readiness: "needs_review",
+		},
+		{
+			Area:      "panel-verdicts",
+			ID:        "has_card",
+			Status:    "review_required",
+			Readiness: "needs_review",
+			DecisionCard: &DecisionCard{
+				Claim: "Review this item.",
+			},
+			Actions: []Action{{
+				ID:             "record",
+				Label:          "Record",
+				Command:        "compound example",
+				RequiresReview: true,
+			}},
+		},
+		{
+			Area:   "external-repo-intake",
+			ID:     "recorded",
+			Status: "recorded",
+		},
+	}}
+	Recount(&report)
+	if report.Counts.Total != 3 || report.Counts.ReviewRequired != 2 || report.Counts.OK != 1 {
+		t.Fatalf("basic counts = %+v", report.Counts)
+	}
+	if report.Counts.DecisionCardCount != 1 || report.Counts.ActionableCount != 1 {
+		t.Fatalf("coverage counts = %+v", report.Counts)
+	}
+	if report.Counts.ReviewRequiredMissingDecisionCard != 1 || report.Counts.ReviewRequiredMissingAction != 1 {
+		t.Fatalf("missing coverage counts = %+v", report.Counts)
+	}
+}
+
 func TestQueueExcludesArchivedReviewsByDefaultAndIncludesWhenAsked(t *testing.T) {
 	homePath := filepath.Join(t.TempDir(), ".compound")
 	if err := home.Init(homePath, "test", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)); err != nil {

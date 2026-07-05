@@ -54,6 +54,7 @@ type ClaimPlan struct {
 	Policy        ClaimPolicySummary      `json:"policy"`
 	ActionIntent  envelope.ActionIntent   `json:"action_intent"`
 	Decision      envelope.PolicyDecision `json:"policy_decision"`
+	ActionContext *WorkActionContext      `json:"action_context,omitempty"`
 	NoAction      string                  `json:"no_action,omitempty"`
 	Warnings      []string                `json:"warnings,omitempty"`
 }
@@ -113,6 +114,10 @@ func (s *Store) ClaimPlan(workID string, now time.Time, opts ClaimPlanOptions) (
 		}
 	} else {
 		plan.NoAction = fmt.Sprintf("cannot claim from state %q", w.State)
+	}
+	if actionContext, warnings := s.actionContextForWork(w); actionContext != nil || len(warnings) > 0 {
+		plan.ActionContext = actionContext
+		plan.Warnings = append(plan.Warnings, warnings...)
 	}
 	if opts.Record {
 		path, err := s.RecordClaimPlan(plan)

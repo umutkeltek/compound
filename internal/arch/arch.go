@@ -39,6 +39,7 @@ var Classification = map[string]Class{
 	"home":           Spine,
 	"hook":           Spine,
 	"localmodel":     Spine,
+	"observation":    Spine,
 	"panel":          Spine,
 	"policy":         Spine,
 	"product":        Spine,
@@ -142,15 +143,35 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkMemoryEngineContract(repoRoot)...)
 		f = append(f, checkHarnessEntrypointContract(repoRoot)...)
 		f = append(f, checkHookSourceControlContract(repoRoot)...)
+		f = append(f, checkHookLiveParityContextSpineContract(repoRoot)...)
+		f = append(f, checkHookReadinessActionContract(repoRoot)...)
 		f = append(f, checkStandingGrantContract(repoRoot)...)
 		f = append(f, checkPlacementGuardContract(repoRoot)...)
 		f = append(f, checkProductContractContract(repoRoot)...)
+		f = append(f, checkProductLoopOpenHypothesisContract(repoRoot)...)
+		f = append(f, checkOperatorProductLoopProjectionContract(repoRoot)...)
+		f = append(f, checkObservationBatchContract(repoRoot)...)
+		f = append(f, checkOperatorObservationReviewProjectionContract(repoRoot)...)
+		f = append(f, checkProductObservationVerdictContract(repoRoot)...)
+		f = append(f, checkSourceObservationVerdictContract(repoRoot)...)
+		f = append(f, checkPanelCapabilityFeedbackContract(repoRoot)...)
 		f = append(f, checkCapabilityEvaluationContract(repoRoot)...)
+		f = append(f, checkExternalRepoContextEvaluationContract(repoRoot)...)
+		f = append(f, checkExternalRepoIntakeStateProjectionContract(repoRoot)...)
 		f = append(f, checkConversationMiningContract(repoRoot)...)
 		f = append(f, checkConversationCoverageContract(repoRoot)...)
 		f = append(f, checkDecisionSourceAuthorityContract(repoRoot)...)
 		f = append(f, checkDistillerImprovementReviewContract(repoRoot)...)
 		f = append(f, checkEpistemicsDoctrine(repoRoot)...)
+		f = append(f, checkPrivateAdaptationSteering(repoRoot)...)
+		f = append(f, checkReviewSurfaceCoverageContract(repoRoot)...)
+		f = append(f, checkWorkbenchActionCardContract(repoRoot)...)
+		f = append(f, checkHomeDoctorOperationalHygieneContract(repoRoot)...)
+		f = append(f, checkConversationPreflightImportSafetyContract(repoRoot)...)
+		f = append(f, checkOperatorNeedsMeCandidateAuthorityContract(repoRoot)...)
+		f = append(f, checkOperatorOrientAdjacentProgressContract(repoRoot)...)
+		f = append(f, checkOperatorSourceControlProjectionContract(repoRoot)...)
+		f = append(f, checkASCDailySignalsPublicBoundaryContract(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
@@ -370,6 +391,757 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 		return []Finding{{"retired-surface", Fail, "public docs must state generated tool-resolver authority is retired to compound://registries/capability-graph and remains evidence-only rollback input"}}
 	}
 	return []Finding{{"retired-surface", Info, "capability graph replaced public old-skill-matrix debt; generated tool-resolver authority retired as evidence-only input"}}
+}
+
+// checkPrivateAdaptationSteering keeps the operator-only goal prompt from
+// drifting back into holistic OS migration or duplicate runtime prompts. Public
+// clones normally do not carry docs_private/plan; absence is not a failure.
+func checkPrivateAdaptationSteering(repoRoot string) []Finding {
+	planDir := filepath.Join(repoRoot, "docs_private", "plan")
+	if st, err := os.Stat(planDir); err != nil || !st.IsDir() {
+		return []Finding{{"adaptation-steering", Info, "docs_private/plan absent; public clone uses roadmap fallback"}}
+	}
+
+	var failures []string
+	canonicalPath := filepath.Join(planDir, "codex-goal-prompt.md")
+	canonical, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		failures = append(failures, "missing canonical codex-goal-prompt.md: "+err.Error())
+	} else {
+		text := strings.ToLower(string(canonical))
+		required := []string{
+			"## context-aware adaptation rules",
+			"context-aware adaptation",
+			"not copy/paste",
+			"silence condition",
+			"proof command",
+			"old-owner",
+			"public/private boundary",
+			"trigger, action, boundary, and proof",
+			"consequential bounded move",
+			"public compound stays generic",
+			"private dogfood adapters feed generic doors",
+			"held operator valves",
+			"oracle is evidence, not authority",
+			"do not report compound as globally blocked",
+		}
+		failures = append(failures, missingPhrases("codex-goal-prompt.md", text, required)...)
+		forbidden := []string{
+			"current likely next move",
+			"do rebuild asc",
+		}
+		failures = append(failures, presentPhrases("codex-goal-prompt.md", text, forbidden)...)
+		lineCount := strings.Count(string(canonical), "\n") + 1
+		if lineCount > 220 {
+			failures = append(failures, "codex-goal-prompt.md too long for active steering prompt; keep session archive in CODEX-WORKLOG.md")
+		}
+		if latestCount := strings.Count(text, "## latest verified state"); latestCount > 1 {
+			failures = append(failures, "codex-goal-prompt.md has too many Latest Verified State blocks; keep only current state and move history to CODEX-WORKLOG.md")
+		}
+	}
+
+	rulePath := filepath.Join(planDir, "OPERATING-SYSTEM-ADAPTATION-RULE.md")
+	rule, err := os.ReadFile(rulePath)
+	if err != nil {
+		failures = append(failures, "missing OPERATING-SYSTEM-ADAPTATION-RULE.md: "+err.Error())
+	} else {
+		text := strings.ToLower(string(rule))
+		required := []string{
+			"## instruction tuning standard",
+			"trigger:",
+			"action:",
+			"boundary:",
+			"silence condition:",
+			"proof:",
+			"retirement:",
+			"only merge and proof count",
+		}
+		failures = append(failures, missingPhrases("OPERATING-SYSTEM-ADAPTATION-RULE.md", text, required)...)
+	}
+
+	pointerPath := filepath.Join(planDir, "codex-goal-prompt-compounding-runtime.md")
+	if b, err := os.ReadFile(pointerPath); err == nil {
+		text := strings.ToLower(string(b))
+		required := []string{
+			"this is not a second goal prompt",
+			"codex-goal-prompt.md",
+			"superseded",
+		}
+		failures = append(failures, missingPhrases("codex-goal-prompt-compounding-runtime.md", text, required)...)
+		if strings.Contains(text, "## current-style candidate moves") || strings.Contains(text, "## goal lanes") {
+			failures = append(failures, "codex-goal-prompt-compounding-runtime.md still contains active prompt sections; keep it pointer-only")
+		}
+	}
+
+	failures = append(failures, duplicateGoalPromptBodies(planDir)...)
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"adaptation-steering", Fail, "private adaptation steering is shallow or duplicated: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"adaptation-steering", Info, "private goal prompt enforces context-aware OS adaptation, consequential bounded moves, generic public/private collector boundary, and duplicate prompt is pointer-only"}}
+}
+
+// checkWorkbenchActionCardContract keeps held-valve adjacent actions from
+// drifting back into vague "operator required" prose. The Workbench is a
+// consumed runtime surface, so operator-gated cards must expose machine-readable
+// inputs, validation, and stop gates across JSON, text, tests, and public status.
+func checkWorkbenchActionCardContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/work/workbench.go": {
+			"RequiredInputs",
+			"ExpectedValidation",
+			"StopConditions",
+			"staleness,omitempty",
+			"admit_command,omitempty",
+			"retire_command,omitempty",
+			"requires_operator",
+			"admission_blocked_reason",
+			"retire_dry_run_command,omitempty",
+			"requires_operator,omitempty",
+			"admission_blocked_reason,omitempty",
+			"admitCommand = nil",
+			"operator-only admission preview",
+			"\"--kind\", \"create-plan\"",
+			"workbenchAdmissionPreviewStaleAfter",
+			"withAdjacentActionGates",
+			"RequiresOperator: true",
+			"conversation-memory-review-gate",
+			"compound\", \"panel\", \"plan\"",
+			"\"--target-kind\", \"memory_candidate\"",
+			"\"--privacy-sensitive\"",
+			"\"--max-items\", \"1\"",
+			"no compound memory adjudicate --verdict promote is run",
+			"review plan would run adjudication or promotion",
+			"RunArtifacts       []WorkbenchRunArtifact",
+			"ReviewCards        []WorkbenchReviewCard",
+			"GateID",
+			"SourceKind",
+			"workbenchReviewCards",
+			"workbenchOperatorGateCards",
+			"RequiresOperator",
+			"AdmissionBlockedReason",
+			"source_private_config_gate",
+			"PromotionSummaryRef",
+			"workbenchRunArtifacts",
+			"runs\", workID",
+			"promotion_summary",
+			"TargetRefs   []string",
+			"hasSourcePrivateConfigCard",
+			"hasMemoryCandidateReviewCard",
+			"!hasSourcePrivateConfigCard",
+			"!hasMemoryCandidateReviewCard",
+		},
+		"internal/work/review_card_plan.go": {
+			"ReviewCardWorkPlanReportSchemaVersion",
+			"BuildReviewCardWorkPlan",
+			"BuildReviewCardWorkDraft",
+			"workbench_review_card",
+			"plan_work_from_workbench_review_card",
+			"card.RequiresOperator",
+			"do not execute review-card command while creating or admitting work-plan",
+			"do not clear the source held WorkEnvelope from this proposal",
+		},
+		"internal/work/review_card_plan_test.go": {
+			"TestReviewCardWorkPlanRecordsASCOperatorGateProposalOnly",
+			"TestReviewCardWorkPlanRecordsMemoryCandidateCardWithoutPromotion",
+			"admitting review-card proposal must not clear source held work",
+			"review-card work-plan should not admit work",
+		},
+		"internal/work/workbench_test.go": {
+			"len(action.RequiredInputs) == 0",
+			"len(action.ExpectedValidation) == 0",
+			"len(action.StopConditions) == 0",
+			"TestWorkbenchMarksOldAdmissionPreviewsStale",
+			"stale admission preview",
+			"RetireCommand",
+			"RetireDryRun",
+			"source observation would promote truth",
+			"conversation-memory-review-gate",
+			"--target-kind memory_candidate",
+			"--privacy-sensitive",
+			"--max-items 1",
+			"compound memory adjudicate --verdict promote is not run",
+			"TestWorkbenchSurfacesRunArtifactsForHeldWork",
+			"TestWorkbenchSurfacesASCOperatorGateCardForHeldWork",
+			"run artifact leaked absolute/private path",
+			"promotion summary should preserve zero promoted claims",
+			"review card should expose exact parked candidate/panel/promotion boundary",
+			"ASC operator gate card should expose exact read-only private-config valve",
+		},
+		"cmd/compound/main.go": {
+			"action_required_inputs:",
+			"action_expected_validation:",
+			"action_stop_conditions:",
+			"run_artifacts=%d",
+			"run_artifact: %s kind=%s status=%s target=%s count=%s",
+			"staleness=%s",
+			"admit: %s",
+			"retire_dry_run: %s",
+			"retire: %s",
+			"operator_required: true",
+			"blocked_reason:",
+			"review-card-plan",
+			"BuildReviewCardWorkPlan",
+		},
+		"cmd/compound/main_test.go": {
+			"action_required_inputs:",
+			"action_expected_validation:",
+			"action_stop_conditions:",
+			"staleness=fresh",
+			"admit: compound work admit-plan",
+			"conversation-memory-review-gate",
+			"generic conversation review gate should be suppressed by exact review card",
+			"run_artifacts=2",
+			"kind=review_card",
+			"promotion summary remains zero before explicit promotion",
+			"generic ASC preflight should be suppressed by exact review card",
+			"generic conversation review gate should be suppressed by exact review card",
+			"panel-run-single-prun_cli_fixture.json",
+			"TestWorkReviewCardPlanCLIAdmitsCardThroughWorkbenchPreview",
+			"workbench_review_card",
+		},
+		"cmd/compound/orient_operator.go": {
+			"MemoryReviewCardCount",
+			"MemoryReviewCards",
+			"OperatorGateCardCount",
+			"OperatorGateCards",
+			"orientMemoryReviewCards",
+			"orientOperatorGateCards",
+			"memory_review_cards:",
+			"operator_gate_cards:",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorSurfacesMemoryReviewCardsFromHeldRunArtifacts",
+			"TestOrientOperatorSurfacesASCGateCardsForHeldWork",
+			"cand_orient_conversation_review",
+			"asc-private-config",
+			"promoted=0",
+			"operator_required=true",
+			"blocked_reason: operator required inputs",
+		},
+		"docs/architecture/status.md": {
+			"required_inputs[]",
+			"expected_validation[]",
+			"stop_conditions[]",
+			"Admission previews carry staleness",
+			"admit_command",
+			"retire_dry_run_command",
+			"retire_command",
+			"archive-history --kind create-plan",
+			"import_safety",
+			"conversation-memory-review-gate",
+			"memory_candidate",
+			"review-card-plan --card",
+			"workbench_review_card",
+			"consumed_non_packet_actions",
+			"Workbench run-artifact note",
+			"`run_artifacts[]`",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"workbench-action-card-contract", Fail, "Workbench adjacent action cards lost held-valve gates: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"workbench-action-card-contract", Info, "Workbench operator-gated action cards expose required inputs validation stop conditions through consumed surfaces"}}
+}
+
+// checkHomeDoctorOperationalHygieneContract keeps home doctor from degrading
+// into text-only hygiene warnings. Dirty operational history must surface exact
+// reversible archive-history commands and stop gates without clearing held work.
+func checkHomeDoctorOperationalHygieneContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"cmd/compound/main.go": {
+			"compound.home_doctor_report.v0.1",
+			"OperationalHygieneActions",
+			"homeDoctorHygieneAction",
+			"operational_hygiene_actions",
+			"archive-terminal-work",
+			"archive-stale-leases",
+			"compound\", \"home\", \"archive-history\", \"--kind\", \"work\"",
+			"compound\", \"home\", \"archive-history\", \"--kind\", \"lease\"",
+			"workbench held/open work would be cleared",
+		},
+		"cmd/compound/main_test.go": {
+			"home doctor --json should parse",
+			"archive-terminal-work",
+			"archive-stale-leases",
+			"dry_run: compound home archive-history --kind work --dry-run",
+			"dry_run: compound home archive-history --kind lease --dry-run",
+		},
+		"docs/architecture/status.md": {
+			"home doctor --json",
+			"operational_hygiene_actions",
+			"archive-history --kind work|lease",
+		},
+		"docs/architecture/contracts/README.md": {
+			"compound.home_doctor_report.v0.1",
+			"operational_hygiene_actions",
+			"archive-history --kind work|lease",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"home-doctor-operational-hygiene-contract", Fail, "home doctor lost JSON hygiene actions: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"home-doctor-operational-hygiene-contract", Info, "home doctor exposes JSON operational hygiene repair actions through archive-history gates"}}
+}
+
+// checkConversationPreflightImportSafetyContract keeps the private
+// conversation import preflight from degrading into an export-only smoke test.
+// The report itself must prove bounded private evidence/candidates and no temp
+// promoted claims before any operator can choose a live import.
+func checkConversationPreflightImportSafetyContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"tools/chatgpt_conversation_preflight.ts": {
+			"type ImportSafetyReport = {",
+			"evidence_count: number;",
+			"private_evidence_count: number;",
+			"max_imported_quote_chars: number;",
+			"candidate_count: number;",
+			"private_candidate_count: number;",
+			"candidate_trace_refs_match_evidence: boolean;",
+			"promoted_claim_count: number;",
+			"import_safety: ImportSafetyReport;",
+			"function buildImportSafetyReport",
+			"imported_evidence_private",
+			"imported_evidence_quote_bound",
+			"imported_candidates_private",
+			"candidate_trace_refs_match_evidence",
+			"no_temp_promoted_claims",
+		},
+		"tools/chatgpt_conversation_preflight.test.ts": {
+			"report.import_safety.evidence_count",
+			"report.import_safety.private_evidence_count",
+			"report.import_safety.max_imported_quote_chars",
+			"report.import_safety.candidate_count",
+			"report.import_safety.private_candidate_count",
+			"report.import_safety.candidate_trace_refs_match_evidence",
+			"report.import_safety.promoted_claim_count",
+			"imported_evidence_private",
+			"candidate_trace_refs_match_evidence",
+			"no_temp_promoted_claims",
+		},
+		"internal/work/workbench.go": {
+			"conversation-preflight-private-export",
+			"import_safety checks pass",
+			"import_safety proves private bounded evidence/candidates and zero temp promoted claims",
+		},
+		"docs/architecture/status.md": {
+			"ChatGPT capture edge note",
+			"`tools/chatgpt_conversation_preflight.ts` wraps that edge",
+			"`import_safety` privacy/quote/candidate/no-claim checks",
+			"Conversation preflight import-safety doctor note",
+			"No conversation-specific core package, live import, or promotion path exists.",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"conversation-preflight-import-safety-contract", Fail, "conversation preflight lost import_safety proof gates: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"conversation-preflight-import-safety-contract", Info, "conversation preflight import_safety proves private bounded evidence/candidates and zero temp promoted claims"}}
+}
+
+// checkOperatorNeedsMeCandidateAuthorityContract keeps `orient --operator`
+// needs-me counts aligned with consumed authorities. Memory candidate debt must
+// come from the memory candidate authority, because raw inbox files can remain
+// proposed after admission classifies them as parked source evidence.
+func checkOperatorNeedsMeCandidateAuthorityContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"cmd/compound/orient_operator.go": {
+			"memoryCandidateInboxSummary",
+			"store.ListCandidates(now, mem.CandidateListOptions{})",
+			"if kind == candidates.Memory",
+			"candidateStateActionable(item.State)",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe",
+			"raw candidate state",
+			"authority-parked non-actionable source metadata",
+			"memory state_counts[parked]",
+		},
+		"docs/architecture/status.md": {
+			"Operator needs-me candidate authority note",
+			"`orient --operator` counts memory candidate debt from `compound://memory/candidates`",
+			"raw inbox files can remain `proposed`",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"operator-needs-me-candidate-authority-contract", Fail, "operator needs-me candidate counts lost consumed authority: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"operator-needs-me-candidate-authority-contract", Info, "operator needs-me memory debt consumes memory candidate authority instead of raw inbox state"}}
+}
+
+// checkOperatorOrientAdjacentProgressContract keeps the compact operator front
+// door from hiding Workbench adjacent progress when direct work is held on
+// operator valves. This is the anti-loop contract for `orient --operator`.
+func checkOperatorOrientAdjacentProgressContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"cmd/compound/orient_operator.go": {
+			"AdjacentProgress",
+			"json:\"adjacent_progress,omitempty\"",
+			"AdmissionPreviewCount",
+			"AdmissionPreviews",
+			"json:\"admission_previews,omitempty\"",
+			"orientAdmissionPreviews",
+			"workbench_review_card",
+			"SessionContext",
+			"json:\"session_context,omitempty\"",
+			"buildOrientSessionContext",
+			"buildOrientAdjacentProgress",
+			"orientOpenWorkNextAction",
+			"continue held-valve-adjacent Compound work without clearing operator-only valves",
+			"held on operator valve; use running.adjacent_progress actions:",
+			"HeldWorkIDs",
+			"PacketCandidateCount",
+			"NonPacketActionIDs",
+			"ConsumedNonPacketActionCount",
+			"ConsumedNonPacketActionIDs",
+			"json:\"consumed_non_packet_action_count,omitempty\"",
+			"json:\"consumed_non_packet_action_ids,omitempty\"",
+			"SESSION-CONTEXT",
+			"admission_previews: %d",
+			"source_review_card=%s",
+			"[]string{\"compound\", \"orient\", \"--harness\", harness, \"--repo-kind\", repoKind, \"--task\", task}",
+			"adjacent_progress: available=%t held=%d non_packet_actions=%d consumed_non_packet_actions=%d packet_candidates=%d",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorSurfacesHeldValveAdjacentProgress",
+			"operator-gate-\" + asc.ID + \"-app-store-connect-private-config",
+			"conversation-preflight-private-export",
+			"conversation-memory-review-gate",
+			"second-opinion-evidence-recovery",
+			"codex-pretooluse-wrapper-proof",
+			"resolve policy/source-control hold",
+			"workbench.adjacent_progress",
+			"TestOrientOperatorSurfacesAdmissionPreviewReviewCardContext",
+			"admission_previews: 1",
+			"action_context=workbench_review_card",
+			"SESSION-CONTEXT",
+			"compound orient --harness codex --repo-kind control-plane --task continue held-valve-adjacent",
+			"adjacent_progress: available=true",
+		},
+		"cmd/compound/proof_check.go": {
+			"recordProofCheckRuntimeArtifact",
+			"proof-check-installed-runtime",
+			"architecture-doctor-strict",
+			"workbench-projection-refresh",
+			"codex-pretooluse-wrapper-proof",
+			"runProofCheckCodexPreToolUseWrapper",
+			"workbench\", \"--json\"",
+			"adjacent Workbench action",
+			"Do not rerun",
+			"artifact_ref,omitempty",
+		},
+		"cmd/compound/main_test.go": {
+			"TestProofCheckArtifactConsumesVerificationAdjacentActions",
+			"proof-check-installed-runtime",
+			"architecture-doctor-strict",
+			"workbench-projection-refresh",
+			"codex-pretooluse-wrapper-proof",
+			"ConsumedNonPacketActions",
+			"ConsumedEvidenceRefs",
+		},
+		"docs/architecture/status.md": {
+			"Operator orientation adjacent-progress note",
+			"compound orient --operator --json.running.adjacent_progress",
+			"--json.session_context",
+			"running.admission_previews[]",
+			"workbench_review_card",
+			"ContextPack command",
+			"proof-producing non-packet actions",
+			"proof-check-installed-runtime",
+			"consumed_non_packet_actions",
+			"open_work[].next_action",
+			"Operator orientation adjacent-progress doctor note",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"operator-orient-adjacent-progress-contract", Fail, "operator orient lost held-valve adjacent-progress projection: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"operator-orient-adjacent-progress-contract", Info, "operator orient surfaces Workbench held-valve adjacent progress through JSON text tests and status"}}
+}
+
+func checkOperatorSourceControlProjectionContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"cmd/compound/orient_operator.go": {
+			"SourceControl",
+			"json:\"source_control,omitempty\"",
+			"buildOrientSourceControl",
+			"SourceControlCleanupReviewArea",
+			"authority.ReadGitSnapshot",
+			"head_review_recorded",
+			"source-control dirty without a cleanup receipt",
+			"source_control: live=%s changed=%d",
+			"source_control_review:",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorCarriesSourceControlReviewProjection",
+			"head_review_recorded=true",
+			"source-control cleanup reviews",
+			"source-control snapshot",
+			"inspect cleanup receipts",
+		},
+		"docs/architecture/status.md": {
+			"Operator source-control projection note",
+			"`compound orient --operator --json.needs_me.source_control`",
+			"reviewed dirty git evidence",
+			"does not stage, clean, commit, reset, stash, push, or discard",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"operator-source-control-projection-contract", Fail, "operator orient lost source-control cleanup projection: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"operator-source-control-projection-contract", Info, "operator orient consumes source-control cleanup reviews plus live git snapshot without mutating repo"}}
+}
+
+// checkASCDailySignalsPublicBoundaryContract keeps product-signal source docs
+// from drifting back into private collector architecture. App Store Connect
+// collection is an edge concern; public Compound owns mapping, validation,
+// idempotency, staleness, receipts, and projection.
+func checkASCDailySignalsPublicBoundaryContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"docs/operations/asc-daily-signals.md": {
+			"Compound does not own App Store Connect fetching",
+			"any collector can produce ASC-shaped output",
+			"Compound only normalizes",
+			"Keep private app IDs, vendor IDs, credentials",
+			"The bridge does not call ASC",
+			"assume any specific upstream collector",
+			"Scheduling is deployment-specific",
+		},
+		"docs/architecture/status.md": {
+			"ASC daily signals public-boundary note",
+			"source collector",
+			"private adapter",
+			"product-signal",
+			"apply_results",
+			"asc-sales-series-bridge-proof",
+			"named private collectors",
+		},
+		"internal/work/workbench.go": {
+			"asc-sales-series-bridge-proof",
+			"bun\", \"test\", \"tools/asc_sales_series_bridge.test.ts",
+			"temp COMPOUND_HOME bridge apply proof passes",
+			"apply_results shows signal_count and transition_count",
+			"bridge report lacks apply_results",
+		},
+		"internal/work/workbench_test.go": {
+			"asc-sales-series-bridge-proof",
+			"bun test tools/asc_sales_series_bridge.test.ts",
+			"apply_results shows signal_count and transition_count",
+		},
+		"cmd/compound/orient_operator.go": {
+			"asc-sales-series-bridge-proof",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"asc-sales-series-bridge-proof",
+		},
+		"cmd/compound/main_test.go": {
+			"asc-sales-series-bridge-proof",
+			"action_command: bun test tools/asc_sales_series_bridge.test.ts",
+			"apply_results shows signal_count and transition_count",
+		},
+		"tools/asc_sales_series_bridge.ts": {
+			"type ApplyResult = {",
+			"signal_count: number;",
+			"transition_count: number;",
+			"apply_results",
+			"countMatches(stdout, /^# product signal /gm)",
+			"countMatches(stdout, /^- transition: /gm)",
+		},
+		"tools/asc_sales_series_bridge.test.ts": {
+			"report.apply_results",
+			"signal_count: 1",
+			"transition_count: 1",
+		},
+	}
+	forbiddenByFile := map[string][]string{
+		"docs/operations/asc-daily-signals.md": {
+			"must use launchd",
+			"requires launchd",
+			"/Users/",
+		},
+	}
+
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	for rel, phrases := range forbiddenByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, presentPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"asc-daily-signals-public-boundary-contract", Fail, "ASC daily signal docs lost generic public/private source boundary: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"asc-daily-signals-public-boundary-contract", Info, "ASC daily signal docs keep collectors private/generic while Compound owns product-signal normalization"}}
+}
+
+// checkReviewSurfaceCoverageContract keeps review queues from drifting back into
+// raw artifact lists. Pending review items must expose whether they have
+// decision cards and actions, including missing-affordance counters renderers can
+// alert on.
+func checkReviewSurfaceCoverageContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/reviewartifact/queue.go": {
+			"DecisionCardCount                 int            `json:\"decision_card_count\"`",
+			"ActionableCount                   int            `json:\"actionable_count\"`",
+			"ReviewRequiredMissingDecisionCard int            `json:\"review_required_missing_decision_card\"`",
+			"ReviewRequiredMissingAction       int            `json:\"review_required_missing_action\"`",
+			"itemNeedsReviewCard",
+		},
+		"internal/reviewartifact/reviewartifact_test.go": {
+			"DecisionCardCount",
+			"ActionableCount",
+			"ReviewRequiredMissingDecisionCard",
+			"ReviewRequiredMissingAction",
+			"missing coverage counts",
+		},
+		"cmd/compound/main.go": {
+			"review_surface decision_cards=",
+			"missing_cards=",
+			"missing_actions=",
+		},
+		"cmd/compound/main_test.go": {
+			"review_surface decision_cards=",
+			"ReviewRequiredMissingDecisionCard",
+			"ReviewRequiredMissingAction",
+		},
+		"docs/architecture/status.md": {
+			"Review queue surface-coverage note",
+			"decision_card_count",
+			"actionable_count",
+			"review_required_missing_decision_card",
+			"review_required_missing_action",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"review-surface-coverage-contract", Fail, "Review queue surface lost decision/action coverage gates: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"review-surface-coverage-contract", Info, "review queue reports decision/action coverage and missing-affordance counters through consumed surfaces"}}
+}
+
+func missingPhrases(source, text string, phrases []string) []string {
+	var out []string
+	for _, phrase := range phrases {
+		if !strings.Contains(text, phrase) {
+			out = append(out, source+" missing "+strconv(phrase))
+		}
+	}
+	return out
+}
+
+func presentPhrases(source, text string, phrases []string) []string {
+	var out []string
+	for _, phrase := range phrases {
+		if strings.Contains(text, phrase) {
+			out = append(out, source+" still contains stale phrase "+strconv(phrase))
+		}
+	}
+	return out
+}
+
+func duplicateGoalPromptBodies(planDir string) []string {
+	var out []string
+	_ = filepath.WalkDir(planDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		name := filepath.Base(path)
+		if name == "codex-goal-prompt.md" {
+			return nil
+		}
+		if !strings.Contains(name, "goal") && !strings.Contains(name, "prompt") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		text := strings.ToLower(string(b))
+		if strings.Contains(text, "# compound goal prompt") || strings.Contains(text, "## goal lanes") || strings.Contains(text, "## context-aware adaptation rules") {
+			out = append(out, name+" appears to contain a second active goal prompt")
+		}
+		return nil
+	})
+	return out
 }
 
 // checkDistillerDuplicateContract keeps the public distiller contract aligned
@@ -848,6 +1620,162 @@ func checkHookSourceControlContract(repoRoot string) []Finding {
 	return []Finding{{"hook-source-control-contract", Info, "hook source-control gate normalizes target identity before policy and git inspection"}}
 }
 
+// checkHookLiveParityContextSpineContract keeps live hook parity from becoming
+// a status-only log. SessionStart parity must cite the generated context spine
+// artifacts so harness-native context can be traced back to owned Compound
+// state.
+func checkHookLiveParityContextSpineContract(repoRoot string) []Finding {
+	hasDocs := false
+	docs := filepath.Join(repoRoot, "docs")
+	_ = filepath.WalkDir(docs, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		low := strings.ToLower(string(b))
+		if strings.Contains(low, "hook-live-parity-context-spine-contract") &&
+			strings.Contains(low, "--parity-log") &&
+			strings.Contains(low, "context request") &&
+			strings.Contains(low, "effective contract") &&
+			strings.Contains(low, "context pack") &&
+			strings.Contains(low, "injection") {
+			hasDocs = true
+		}
+		return nil
+	})
+
+	hookBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "hook_live.go"))
+	if err != nil {
+		return []Finding{{"hook-live-parity-context-spine-contract", Warn, "could not read cmd/compound/hook_live.go: " + err.Error()}}
+	}
+	hookText := string(hookBytes)
+	hasRecordFields := strings.Contains(hookText, "type liveHookParityRecord struct") &&
+		strings.Contains(hookText, "ContextRequestID") &&
+		strings.Contains(hookText, "ContextRequestRef") &&
+		strings.Contains(hookText, "ContractID") &&
+		strings.Contains(hookText, "ContractRef") &&
+		strings.Contains(hookText, "ContextPackID") &&
+		strings.Contains(hookText, "ContextPackRef") &&
+		strings.Contains(hookText, "InjectionRef")
+	hasInjectionWrite := strings.Contains(hookText, "record.ContextRequestID = res.Injection.ContextRequestID") &&
+		strings.Contains(hookText, "record.ContractRef = res.Injection.ContractRef") &&
+		strings.Contains(hookText, "record.ContextPackRef = res.Injection.ContextPackRef") &&
+		strings.Contains(hookText, "record.InjectionRef = res.Injection.Ref")
+
+	testBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "hook_live_test.go"))
+	if err != nil {
+		return []Finding{{"hook-live-parity-context-spine-contract", Warn, "could not read cmd/compound/hook_live_test.go: " + err.Error()}}
+	}
+	testText := string(testBytes)
+	hasRegression := strings.Contains(testText, "TestHookLiveSessionStartParityRecordsContextSpineRefs") &&
+		strings.Contains(testText, "context_request") &&
+		strings.Contains(testText, "effective_contract") &&
+		strings.Contains(testText, "context_pack") &&
+		strings.Contains(testText, "os.Stat(filepath.Join(homePath, ref))")
+
+	if !hasDocs || !hasRecordFields || !hasInjectionWrite || !hasRegression {
+		return []Finding{{"hook-live-parity-context-spine-contract", Fail, "live hook parity must document and test SessionStart context-spine refs: liveHookParityRecord context request/effective contract/context pack/injection refs, injection writeback, and temp-home artifact proof"}}
+	}
+	return []Finding{{"hook-live-parity-context-spine-contract", Info, "live hook parity records context spine refs with artifact proof"}}
+}
+
+// checkHookReadinessActionContract keeps hook readiness rows actionable without
+// letting agents flip hook registration. Missing live-adapter rows must carry
+// fixture proof and operator-only shim actions with verification/rollback text.
+func checkHookReadinessActionContract(repoRoot string) []Finding {
+	statusBytes, err := os.ReadFile(filepath.Join(repoRoot, "docs", "architecture", "status.md"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read docs/architecture/status.md: " + err.Error()}}
+	}
+	status := strings.ToLower(string(statusBytes))
+	hasDocs := strings.Contains(status, "hook-readiness-action-contract") &&
+		strings.Contains(status, "codex sessionstart/userpromptsubmit") &&
+		strings.Contains(status, "ready") &&
+		strings.Contains(status, "contextpack") &&
+		strings.Contains(status, "effectivecontract") &&
+		strings.Contains(status, "prove_fixture_hook") &&
+		strings.Contains(status, "prove_live_wrapper_gate") &&
+		strings.Contains(status, "expected_exit_code") &&
+		strings.Contains(status, "operator_live_adapter_required") &&
+		strings.Contains(status, "compound contract hooks-authority") &&
+		strings.Contains(status, "before any registration flip")
+
+	contractBytes, err := os.ReadFile(filepath.Join(repoRoot, "internal", "contract", "contract.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read internal/contract/contract.go: " + err.Error()}}
+	}
+	contractText := string(contractBytes)
+	envelopeBytes, err := os.ReadFile(filepath.Join(repoRoot, "internal", "envelope", "envelope.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read internal/envelope/envelope.go: " + err.Error()}}
+	}
+	envelopeText := string(envelopeBytes)
+	hasSource := strings.Contains(contractText, "hookRuntimeReadinessActions") &&
+		strings.Contains(envelopeText, "type HookReadinessAction struct") &&
+		strings.Contains(envelopeText, "Actions         []HookReadinessAction") &&
+		strings.Contains(contractText, "envelopeHookReadinessActions") &&
+		strings.Contains(contractText, "hookReadinessAction") &&
+		strings.Contains(contractText, "prove_fixture_hook") &&
+		strings.Contains(contractText, "ExpectedExitCode") &&
+		strings.Contains(contractText, "prove_live_wrapper_gate") &&
+		strings.Contains(contractText, "codexPreToolUseLiveWrapperProofCommand") &&
+		strings.Contains(contractText, "operator_live_adapter_required") &&
+		strings.Contains(contractText, "compound contract hooks-authority") &&
+		strings.Contains(contractText, "must not flip registration")
+
+	contractTestBytes, err := os.ReadFile(filepath.Join(repoRoot, "internal", "contract", "contract_test.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read internal/contract/contract_test.go: " + err.Error()}}
+	}
+	contractTest := string(contractTestBytes)
+	hasContractTest := strings.Contains(contractTest, "TestInstalledHookRuntimeReadinessAddsMissingAdapterActions") &&
+		strings.Contains(contractTest, "prove_fixture_hook") &&
+		strings.Contains(contractTest, "ExpectedExitCode") &&
+		strings.Contains(contractTest, "prove_live_wrapper_gate") &&
+		strings.Contains(contractTest, "findEnvelopeHookAction") &&
+		strings.Contains(contractTest, "context pack hook readiness missing live wrapper action") &&
+		strings.Contains(contractTest, "operator_live_adapter_required") &&
+		strings.Contains(contractTest, "compound hook session-start --live --harness codex")
+	workbenchBytes, err := os.ReadFile(filepath.Join(repoRoot, "internal", "work", "workbench.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read internal/work/workbench.go: " + err.Error()}}
+	}
+	workbenchText := string(workbenchBytes)
+	hasWorkbenchAction := strings.Contains(workbenchText, "codex-pretooluse-wrapper-proof") &&
+		strings.Contains(workbenchText, "compound hook pre-tool-use --live --harness codex") &&
+		strings.Contains(workbenchText, "no registration flip")
+	proofCheckBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "proof_check.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read cmd/compound/proof_check.go: " + err.Error()}}
+	}
+	proofCheckText := string(proofCheckBytes)
+	hasProofCheck := strings.Contains(proofCheckText, "codex-pretooluse-wrapper-proof") &&
+		strings.Contains(proofCheckText, "runProofCheckCodexPreToolUseWrapper") &&
+		strings.Contains(proofCheckText, "COMPOUND_HOME=")
+
+	cliTestBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "main_test.go"))
+	if err != nil {
+		return []Finding{{"hook-readiness-action-contract", Warn, "could not read cmd/compound/main_test.go: " + err.Error()}}
+	}
+	cliTest := string(cliTestBytes)
+	hasCLITest := strings.Contains(cliTest, `findHookReadiness(authorityReport.HookReadiness, "codex", "SessionStart")`) &&
+		strings.Contains(cliTest, `findHookReadiness(authorityReport.HookReadiness, "codex", "UserPromptSubmit")`) &&
+		strings.Contains(cliTest, `got.Status != "ready"`) &&
+		strings.Contains(cliTest, `findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex")`) &&
+		strings.Contains(cliTest, `"missing_gate"`) &&
+		strings.Contains(cliTest, `"prove_live_wrapper_gate"`) &&
+		strings.Contains(cliTest, "codex-pretooluse-wrapper-proof") &&
+		strings.Contains(cliTest, "ExpectedExitCode")
+
+	if !hasDocs || !hasSource || !hasContractTest || !hasWorkbenchAction || !hasProofCheck || !hasCLITest {
+		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must prove Codex context hooks ready/quiet and keep missing-live-adapter rows exposing prove_fixture_hook, prove_live_wrapper_gate, codex-pretooluse-wrapper-proof, expected_exit_code, and operator_live_adapter_required action cards with exact commands, proof-check consumption, hooks-authority verification, rollback text, source tests, CLI tests, and public status guard"}}
+	}
+	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness proves Codex context hooks ready while missing-live-adapter rows expose fixture, live wrapper, and operator-only shim actions"}}
+}
+
 // checkStandingGrantContract keeps autonomy grants from drifting back to
 // unconditional allow-list entries. Grants must describe a scoped envelope and
 // leave final enforcement in PolicyDecision/Gate.
@@ -998,6 +1926,852 @@ func checkProductContractContract(repoRoot string) []Finding {
 // checkCapabilityEvaluationContract keeps scored capability-evaluation records
 // from drifting into capability offers or promotion authority. Evaluations
 // critique already-known graph nodes; they do not mint executable skills.
+// checkProductLoopOpenHypothesisContract keeps product loops from becoming a
+// status-only list of hypothesis ids. Open hypotheses must carry the measurement
+// and next-action contract so a future agent can advance the loop.
+func checkProductLoopOpenHypothesisContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/product/loops.go": {
+			"OpenHypothesesByMissingSignalSource",
+			"SignalsWithoutHypothesis",
+			"LoopSignalHypothesisGap",
+			"ClosedReviewsByNextAction",
+			"ActionCards",
+			"[]LoopActionCard",
+			"type LoopActionCard struct",
+			"validateLoopActionCard",
+			"loopProductActionConsumptionIndex",
+			"ConsumedByWorkIDs",
+			"product_action_card:",
+			"ListWithArchived",
+			"product_signal_import",
+			"product_signal_hypothesis_review",
+			"product_review_plan",
+			"product_next_bounded_move",
+			"signalWithoutHypothesisActionCard",
+			"Metrics           []string `json:\"metrics,omitempty\"`",
+			"ObservationWindow string   `json:\"observation_window,omitempty\"`",
+			"NextAction        string   `json:\"next_action,omitempty\"`",
+			"EvidenceRefs      []string `json:\"evidence_refs,omitempty\"`",
+			"Metrics:           compact(h.Metrics)",
+			"NextAction:        h.NextAction",
+		},
+		"cmd/compound/product_loops.go": {
+			"renderLoopMissingSignalSources",
+			"renderLoopSignalHypothesisGaps",
+			"renderLoopReviewNextActions",
+			"renderLoopActionCards",
+			"open_hypotheses_by_missing_signal_source",
+			"signals_without_hypothesis",
+			"closed_reviews_by_next_action",
+			"action_cards",
+			"consumed=true",
+			"metrics=",
+			"window=",
+			"next=",
+			"renderLoopHypotheses",
+		},
+		"internal/product/loops_test.go": {
+			"open hypothesis should expose measurement/review contract",
+			"searchHypothesis.Metrics[0] != \"gsc_clicks\"",
+			"searchHypothesis.NextAction",
+			"TestDryRunDerivedHypothesisClosesAfterSignalReview",
+			"BuildOutboundDryRunEvidencePlan",
+			"RecordOutboundDryRunEvidencePlan",
+			"ApplyOutboundDryRunEvidenceReview",
+			"BuildReviewPlan",
+			"findLoopMissingSignalSource",
+			"findLoopSignalHypothesisGap",
+			"findLoopReviewNextAction",
+			"findLoopActionCard",
+			"TestBuildLoopModelSuppressesConsumedClosedReviewActionCard",
+			"seedCompletedProductActionWork",
+			"consumed closed review must not remain in top-level action cards",
+			"product_signal_import",
+			"product_signal_hypothesis_review",
+			"product_review_plan",
+			"product_next_bounded_move",
+			"signal-without-hypothesis group should expose reviewed synthesis card",
+			"reviewed hypothesis should leave open set",
+			"loop history should retain applied review and signal ref",
+		},
+		"cmd/compound/product_loops_test.go": {
+			"TestProductLoopsTextPrintsOpenHypothesisContract",
+			"metrics=distribution_draft_quality",
+			"next=wait for real distribution signal evidence before review",
+			"open_hypotheses_by_missing_signal_source",
+			"product_signal_import",
+			"command=compound product signal",
+		},
+		"cmd/compound/main_test.go": {
+			"cmdProduct([]string{\"loops\", \"--json\", \"--product\", \"product:focus_notes\"})",
+			"reviewed hypothesis should leave open_hypotheses",
+			"product loops should retain review history with signal ref",
+			"product loops should group closed review by next action",
+			"TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue",
+			"product.ProductActionReviewArea",
+			"action-plan",
+			"action-review",
+			"action-work-plan",
+			"action-work-plan should not admit work",
+			"admit-plan",
+			"admit-plan should not mutate product timeline",
+			"admission_previews=1",
+			"runnable action context",
+			"prepare ready with reviewed action context",
+			"advance-plan text missing action context",
+			"claim-plan text missing action context",
+			"observe-run text missing action context",
+			"action-plan text missing receipt-ready boundary",
+			"act --plan did not record planned action",
+		},
+		"internal/product/action_plan.go": {
+			"ProductActionReviewArea",
+			"BuildActionPlan",
+			"RecordActionPlan",
+			"ApplyActionReview",
+			"ActionWorkDraft",
+			"BuildActionWorkDraft",
+			"ExpectedValidation",
+			"StopConditions",
+			"LoopActionCard",
+			"loop.SignalsWithoutHypothesis",
+			"product_signal_change_event:",
+			"product_signal:",
+			"do not run the action command while generating this work-plan preview",
+			"does not mutate ProductSignal",
+			"does not admit action card into WorkEnvelope execution",
+		},
+		"internal/product/action_plan_test.go": {
+			"TestActionPlanMakesLoopActionCardReviewableWithoutProductMutation",
+			"ProductActionReviewArea",
+			"product_next_bounded_move",
+			"product_signal_hypothesis_review",
+			"product_signal:sig_loop_unmatched",
+			"BuildActionWorkDraft",
+			"action work draft should preserve command/boundary/proof/evidence",
+			"action review must not mutate product loop ledgers",
+			"recorded action review should make queue terminal",
+		},
+		"internal/work/workbench.go": {
+			"AdmissionPreviews",
+			"workbenchAdmissionPreviews",
+			"create-plans",
+			"workbenchCreatePlanIsAdmissionPreview",
+			"prepare ready with reviewed action context",
+		},
+		"internal/work/workbench_test.go": {
+			"TestWorkbenchSurfacesAdmissionPreviewsWithoutAdmittingWork",
+			"create-plan should not write work lifecycle events",
+			"admission preview must not become dispatchable work",
+			"admitted work should retire admission preview",
+		},
+		"internal/work/create_plan.go": {
+			"WorkActionContext",
+			"AdmitCreatePlanReport",
+			"AdmitCreatePlanPath",
+			"AdmitCreatePlan",
+			"validateCreatePlanForAdmission",
+			"admitted_from_create_plan",
+			"create_plan:",
+		},
+		"internal/work/create_plan_test.go": {
+			"TestAdmitCreatePlanCreatesWorkAndRetiresPreview",
+			"TestCreatePlanActionContextReachesWorkbenchAndDispatch",
+			"admitted work should retire admission preview",
+			"dispatch candidate missing action context",
+			"ready advance-plan",
+			"claim-plan",
+			"observe-run",
+			"verifying workbench",
+			"repeat admission should be idempotent",
+		},
+		"internal/work/advance_plan.go": {
+			"ActionContext",
+			"actionContextForWork",
+		},
+		"internal/work/claim_plan.go": {
+			"ActionContext",
+			"actionContextForWork",
+		},
+		"internal/work/run_observation.go": {
+			"ActionContext",
+			"actionContextForWork",
+		},
+		"internal/work/action_execution_plan.go": {
+			"ActionExecutionPlan",
+			"ReceiptDraft",
+			"ActionCommand",
+			"RequiredInputs",
+			"ExpectedValidation",
+			"StopConditions",
+			"Boundary",
+			"Proof",
+			"RecordCommand",
+			"CloseCommand",
+			"close-plan",
+			"--action-plan",
+			"does not execute action_context command",
+		},
+		"internal/work/close_plan.go": {
+			"ActionPlanPath",
+			"ActionExecutionPlanID",
+			"ReceiptDraft",
+			"ExpectedValidation",
+			"not recorded",
+			"LoadActionExecutionPlan",
+		},
+		"internal/work/action_execution_plan_test.go": {
+			"TestActionExecutionPlanConsumesActionContextWithoutExecuting",
+			"TestActionExecutionPlanRequiresClaimedOrRunningWork",
+			"receipt draft missing action proof boundary",
+			"action execution planning mutated work",
+		},
+		"internal/work/close_plan_test.go": {
+			"TestClosePlanConsumesRecordedActionExecutionPlanReceiptDraft",
+			"not recorded",
+			"ReceiptDraft",
+			"ExpectedValidation",
+		},
+		"cmd/compound/main.go": {
+			"action-work-plan",
+			"action-plan",
+			"ActionContext",
+			"action_context:",
+			"ActionExecutionPlan",
+			"LoadActionExecutionPlan",
+			"record_after_execution",
+			"close_after_validation",
+			"--action-plan",
+			"action_execution_plan:",
+			"expected_validation:",
+			"plan.ActionContext",
+			"result.ActionContext",
+			"admit-plan",
+			"store.AdmitCreatePlanPath",
+			"product.BuildActionWorkDraft",
+			"workStore.CreatePlan",
+			"plan_work_from_reviewed_product_action",
+			"admission_previews=",
+			"admission_preview:",
+		},
+		"internal/product/review_queue.go": {
+			"ProductActionReviewArea",
+			"annotateProductActionReviewItem",
+			"compound\", \"product\", \"action-review\"",
+			"record_product_action_review",
+		},
+		"docs/architecture/status.md": {
+			"`compound product loops`",
+			"open hypotheses",
+			"metrics/window/next-action contract",
+			"missing signal source",
+			"closed reviews by next action",
+			"action cards",
+			"product_signal_import",
+			"product_review_plan",
+			"product_next_bounded_move",
+			"dry-run-derived hypothesis",
+			"leaves open_hypotheses",
+			"ProductSignal",
+			"Product action-card status note",
+			"`compound product action-plan --product <id> --card <card_id>`",
+			"`reviews/product-action-cards`",
+			"`compound product action-review <review.yaml>`",
+			"`compound product action-work-plan --reviewed <reviewed.json>`",
+			"`compound work admit-plan --plan <create-plan.json>`",
+			"`action_context`",
+			"`action_summary`",
+			"review-gate `product action-plan` command is not completion proof",
+			"`work advance-plan <id> --to ready`",
+			"`claim-plan`",
+			"`observe-run`",
+			"`work action-plan <id>`",
+			"`work act <id> --plan <action-execution-plan.json>`",
+			"`work close-plan <id> --action-plan <action-execution-plan.json>`",
+			"receipt-close path",
+			"does not execute the reviewed action command",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"product-loop-open-hypothesis-contract", Fail, "product loop open hypotheses lost measurement/next-action contract: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"product-loop-open-hypothesis-contract", Info, "product loops expose open hypothesis metrics/window/next-action contracts"}}
+}
+
+// checkOperatorProductLoopProjectionContract keeps the operator front door from
+// drifting back to work-only status while product loops already expose evidence
+// debt. `orient --operator` must consume the product read model, not recreate it.
+func checkOperatorProductLoopProjectionContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"cmd/compound/orient_operator.go": {
+			"ProductLoops",
+			"*orientProductLoops",
+			"json:\"product_loops,omitempty\"",
+			"buildOrientProductLoops",
+			"product.BuildLoopModel",
+			"OpenHypothesesByMissingSignalSource",
+			"ClosedReviewsByNextAction",
+			"ActionCardCount",
+			"orientLoopActionCard",
+			"orientLoopActionCards",
+			"product_loops: products=%d open_hypothesis_debt=%d closed_review_actions=%d action_cards=%d",
+			"compound\", \"product\", \"loops\"",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorCarriesProductLoopEvidenceDebtProjection",
+			"seedOrientProductLoopProjectionHome",
+			"missing_signal_source=posthog",
+			"closed_review_next=keep screenshot one more window",
+			"product_signal_import",
+			"product_next_bounded_move",
+			"action_cards=",
+			"compound product action-plan",
+		},
+		"docs/architecture/status.md": {
+			"Operator product-loop projection note",
+			"`compound orient --operator --json.product_loops`",
+			"`product.BuildLoopModel` read model",
+			"action cards",
+			"`compound product action-plan` review gate",
+			"`compound product loops` as drill-down",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"operator-product-loop-projection-contract", Fail, "operator orient lost product-loop evidence debt projection: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"operator-product-loop-projection-contract", Info, "operator orient consumes product loop evidence-debt projection"}}
+}
+
+// checkObservationBatchContract keeps external platforms behind one generic
+// observation grammar instead of letting provider-specific connector concepts
+// become core authority.
+func checkObservationBatchContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/observation/observation.go": {
+			"compound.observation_batch.v0.1",
+			"RecordSourceIntakeReport",
+			"IntakeProjectionCommand",
+			"RouteProductSignal",
+			"RouteKnowledgeExport",
+			"RouteTraceEnvelope",
+			"RouteRouteEvidence",
+			"RouteSourceObservation",
+			"RouteCandidateOnly",
+			"RouteBlockedPrivate",
+			"product.AdaptSignalExport",
+			"product.ApplySignal",
+			"ApplySourceObservations",
+			"ApplyKnowledge",
+			"ApplyRouteEvidence",
+			"ApplyEvents",
+			"SourceObservationDocument",
+			"sourceobs.Apply",
+			"SourceObservationApplyResult",
+			"KnowledgeExportDocument",
+			"knowledge.Import",
+			"KnowledgeApplyResult",
+			"RouteEvidenceDocument",
+			"routeevidence.RecordJoined",
+			"RouteEvidenceApplyResult",
+			"EventSourceRow",
+			"eventsource.ImportOSEvents",
+			"EventApplyResult",
+		},
+		"internal/observation/intake.go": {
+			"compound.source_intake_projection.v0.1",
+			"compound://sources/intake",
+			"LoadSourceIntakeProjection",
+			"RecordSourceIntakeReport",
+			"SourceIntakeActionCard",
+			"ActionCardCount",
+			"RequiredInputs",
+			"ExpectedValidation",
+			"StopConditions",
+			"AppliedIDs",
+			"BlockedRows",
+			"SourceCapturedAt",
+			"NextCommand",
+			"knowledge_extraction_pending",
+			"sourceIntakeOpenKnowledgeExtractionIDs",
+			"compound\", \"knowledge\", \"extract\", \"--item\"",
+			"requested action would run bulk --pending extraction",
+			"sourceIntakeRows",
+		},
+		"internal/observation/intake_work.go": {
+			"compound.source_intake_work_plan_report.v0.1",
+			"BuildSourceIntakeWorkPlan",
+			"BuildSourceIntakeWorkDraft",
+			"source_intake_action_card",
+			"work.CreatePlan",
+			"WorkActionContext",
+			"RequiredInputs",
+			"ExpectedValidation",
+			"StopConditions",
+			"do not execute the source-intake action command while creating or admitting this work-plan",
+		},
+		"internal/observation/review.go": {
+			"ObservationReviewArea",
+			"observation-candidates",
+			"CandidateReviewResult",
+			"candidates.CapabilityObs",
+			"panel.SelectLensesWithContext",
+			"reviewartifact.DecisionCard",
+			"compound panel plan --target-kind capability_observation",
+			"no truth promotion",
+		},
+		"cmd/compound/main.go": {
+			"source observe-batch",
+			"source intake",
+			"intake-work-plan",
+			"--dry-run",
+			"--apply-product-signals",
+			"--apply-source-observations",
+			"--apply-knowledge",
+			"--apply-route-evidence",
+			"--apply-events",
+			"--review-candidates",
+			"LoadSourceIntakeProjection",
+			"BuildSourceIntakeWorkPlan",
+			"observation.AnnotateReviewQueue",
+		},
+		"cmd/compound/orient_operator.go": {
+			"SourceIntake",
+			"buildOrientSourceIntake",
+			"ActionCardCount",
+			"ActionCards",
+			`"compound", "source", "intake", "--json"`,
+			"LoadSourceIntakeProjection",
+		},
+		"cmd/compound/main_test.go": {
+			"TestSourceIntakeCLIAndOrientConsumeRecordedObservationBatches",
+			"TestSourceIntakeWorkPlanCLIAdmitsActionCardThroughWorkbenchPreview",
+			"TestSourceObserveBatchCLIAppliesGeneratedSourceObservation",
+			"TestSourceObserveBatchCLIAppliesContentToKnowledge",
+			"TestSourceObserveBatchCLIAppliesRouteEvidence",
+			"TestSourceObserveBatchCLIAppliesEventsToTraceEnvelope",
+			"generated-system-source.json",
+			"content-knowledge-export.json",
+			"route-evidence.json",
+			"event-trace-envelope.json",
+			"product-signals.jsonl",
+			"TestSourceObserveBatchCLIRecordsCandidateReviewMaterial",
+			"writeObservationPanelFixtureResponses",
+			"cmdPanel([]string{\"run\", \"--plan\"",
+			"\"panel-verdicts\"",
+		},
+		"internal/observation/observation_test.go": {
+			"TestSourceIntakeProjectionSummarizesRecordedObservationBatches",
+			"TestSourceIntakeProjectionBuildsActionCardsForRowsNeedingAttention",
+			"TestSourceIntakeActionCardBuildsWorkCreatePlanContext",
+			"knowledge_extraction_pending",
+			"done extraction should not keep source-intake card",
+			"stale_source",
+			"skipped_route",
+			"blocked_private_input",
+			"unsupported_kind",
+			"LoadSourceIntakeProjection",
+			"RouteBlockedPrivate",
+			"AppliedIDs",
+			"BlockedRows",
+		},
+		"fixtures/observation/generated-system-source.json": {
+			"generated_view",
+			"compound_projection",
+			"obs_fixture_generated_workbench",
+		},
+		"fixtures/observation/content-knowledge-export.json": {
+			"web_capture",
+			"research_note",
+			"obs_fixture_content_knowledge",
+		},
+		"fixtures/observation/route-evidence.json": {
+			"route_gateway",
+			"execution_route",
+			"obs_fixture_route_evidence",
+		},
+		"fixtures/observation/event-trace-envelope.json": {
+			"event_stream",
+			"workflow:observation-intake",
+			"obs_fixture_event_trace",
+		},
+		"docs/architecture/status.md": {
+			"ObservationBatch status note",
+			"`compound source observe-batch <batch.json> --dry-run --json`",
+			"`compound.observation_batch.v0.1`",
+			"generic observation grammar",
+			"ProductSignal",
+			"KnowledgeExport",
+			"TraceEnvelope",
+			"ExecutionRouteEvidence",
+			"SourceObservation",
+			"`--apply-knowledge`",
+			"`--apply-events`",
+			"`compound source intake --json`",
+			"`compound.source_intake_projection.v0.1`",
+			"`knowledge_extraction_pending`",
+			"`compound knowledge extract --item`",
+			"`compound source intake-work-plan --card <card_id> --json`",
+			"`work admit-plan`",
+			"`action-plan`",
+			"`close-plan`",
+			"`compound orient --operator --json.needs_me.source_intake`",
+			"`eventsource.ImportOSEvents`",
+			"`knowledge.Import`",
+			"extraction requests",
+			"`--apply-source-observations`",
+			"`sourceobs.Apply`",
+			"`NoPromoteDecision`",
+			"candidate/review material",
+			"`--review-candidates`",
+			"`compound reviews --area observation-candidates --json`",
+			"`compound panel plan --target-kind capability_observation`",
+			"`compound panel run --plan <run_id> --fixtures <dir> --json`",
+			"`panel-verdicts`",
+			"no external account",
+			"no credentials",
+		},
+		"docs/architecture/contracts/README.md": {
+			"ObservationBatch contract note",
+			"`--apply-source-observations`",
+			"`--apply-knowledge`",
+			"`knowledge.Import`",
+			"`--apply-route-evidence`",
+			"`routeevidence.RecordJoined`",
+			"`--apply-events`",
+			"`compound source intake --json`",
+			"`compound.source_intake_projection.v0.1`",
+			"`compound source intake-work-plan --card <card_id> --json`",
+			"`work admit-plan`",
+			"`action-plan`",
+			"`close-plan`",
+			"`eventsource.ImportOSEvents`",
+			"`sourceobs.Apply`",
+			"`NoPromoteDecision`",
+			"does not mutate ProductSignal except the explicit product-signal mode",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	for _, rel := range []string{
+		"fixtures/observation/gsc-product-metric.json",
+		"fixtures/observation/asc-product-metric.json",
+		"fixtures/observation/social-distribution-feedback.json",
+		"fixtures/observation/support-comment.json",
+	} {
+		if _, err := os.Stat(filepath.Join(repoRoot, filepath.FromSlash(rel))); err != nil {
+			failures = append(failures, rel+" missing")
+		}
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"observation-batch-contract", Fail, "ObservationBatch generic seam lost: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"observation-batch-contract", Info, "ObservationBatch routes external payloads through existing meaning owners"}}
+}
+
+func checkOperatorObservationReviewProjectionContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"cmd/compound/orient_operator.go": {
+			"ObservationReviews",
+			"json:\"observation_reviews,omitempty\"",
+			"buildOrientObservationReviews",
+			"observation.ObservationReviewArea",
+			"panel-verdicts",
+			"candidates.CapabilityObs",
+			"observation_reviews: candidate_reviews=%d panel_verdicts=%d total=%d",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorCarriesObservationReviewDebtProjection",
+			"observe-batch",
+			"--review-candidates",
+			"observation_reviews: candidate_reviews=1 panel_verdicts=1 total=2",
+			"observation candidates: compound reviews --area observation-candidates",
+			"observation panel verdicts: compound reviews --area panel-verdicts",
+		},
+		"docs/architecture/status.md": {
+			"Operator observation-review projection note",
+			"`compound orient --operator --json.needs_me.observation_reviews`",
+			"`observation-candidates`",
+			"`panel-verdicts`",
+			"`compound reviews --area observation-candidates`",
+			"`compound reviews --area panel-verdicts`",
+			"lens output evidence/candidate material",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"operator-observation-review-projection-contract", Fail, "operator orient lost observation review debt projection: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"operator-observation-review-projection-contract", Info, "operator orient consumes observation candidate and panel verdict review debt projection"}}
+}
+
+func checkProductObservationVerdictContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/product/observation_verdict.go": {
+			"ObservationVerdictReviewArea",
+			"product-observation-verdicts",
+			"BuildObservationVerdictPlan",
+			"panel.LoadVerdictArtifact",
+			"ApplyObservationVerdictReview",
+			"create_hypothesis_candidate",
+			"record_product_observation_verdict_review",
+			"writeHypothesisCandidate",
+			"does not mutate ProductSignal ledger",
+			"does not apply panel verdicts",
+		},
+		"internal/product/review_queue.go": {
+			"ObservationVerdictReviewArea",
+			"annotateObservationVerdictItem",
+		},
+		"internal/product/observation_verdict_test.go": {
+			"TestObservationVerdictPlanCreatesReviewGatedProductHypothesisMaterial",
+			"product_observation_verdict_review:",
+			"ledger\", \"product-signals.jsonl",
+		},
+		"cmd/compound/main.go": {
+			"observation-verdict-plan",
+			"BuildObservationVerdictPlan",
+			"RecordObservationVerdictPlan",
+			"observation-verdict-review",
+			"ApplyObservationVerdictReview",
+		},
+		"cmd/compound/main_test.go": {
+			"TestSourceObserveBatchCLIRecordsCandidateReviewMaterial",
+			"observation-verdict-plan",
+			"observation-verdict-review",
+			"record_product_observation_verdict_review",
+			"product-signals.jsonl",
+		},
+		"docs/architecture/status.md": {
+			"Product observation-verdict bridge note",
+			"`compound product observation-verdict-plan --verdict <panel-verdict.json>`",
+			"`compound reviews --area product-observation-verdicts --json`",
+			"`compound product observation-verdict-review <review.yaml>`",
+			"parked product hypothesis candidate",
+			"does not mutate ProductSignal",
+		},
+		"docs/architecture/contracts/README.md": {
+			"ProductObservationVerdict",
+			"`product-observation-verdicts`",
+			"panel verdict evidence",
+			"parked `product_hypothesis` candidate",
+			"does not apply panel verdicts",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"product-observation-verdict-contract", Fail, "product consumer for observation panel verdicts lost: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"product-observation-verdict-contract", Info, "product consumes observation panel verdict evidence through review-gated hypothesis material"}}
+}
+
+func checkSourceObservationVerdictContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/sourceobs/observation_verdict.go": {
+			"SourceObservationVerdictReviewArea",
+			"source-observation-verdicts",
+			"BuildSourceObservationVerdictPlan",
+			"panel.LoadVerdictArtifact",
+			"ApplySourceObservationVerdictReview",
+			"RecordNoPromote",
+			"record_source_observation_verdict_review",
+			"does not promote memory or source truth",
+			"does not mutate ProductSignal ledger",
+		},
+		"internal/sourceobs/sourceobs_test.go": {
+			"TestSourceObservationVerdictPlanRecordsNoPromoteEvidence",
+			"TestSourceObservationVerdictPlanParksUnsupportedNoOwnerVerdict",
+			"ledger\", \"claims.jsonl",
+			"ledger\", \"product-signals.jsonl",
+		},
+		"cmd/compound/main.go": {
+			"source observation-verdict-plan",
+			"BuildSourceObservationVerdictPlan",
+			"RecordSourceObservationVerdictPlan",
+			"source observation-verdict-review",
+			"ApplySourceObservationVerdictReview",
+			"sourceobs.AnnotateObservationVerdictQueue",
+		},
+		"cmd/compound/main_test.go": {
+			"TestSourceObservationVerdictCLIRecordsNoPromoteEvidence",
+			"source-observation-verdicts",
+			"record_source_observation_verdict_review",
+			"product-signals.jsonl",
+		},
+		"docs/architecture/status.md": {
+			"Source observation-verdict bridge note",
+			"`compound source observation-verdict-plan --verdict <panel-verdict.json>`",
+			"`compound reviews --area source-observation-verdicts --json`",
+			"`compound source observation-verdict-review <review.yaml>`",
+			"source-owned `NoPromoteDecision`",
+			"unsupported no-owner parked evidence",
+			"do not apply panel verdicts",
+		},
+		"docs/architecture/contracts/README.md": {
+			"SourceObservationVerdict",
+			"`source-observation-verdicts`",
+			"source-owned `NoPromoteDecision`",
+			"unsupported no-owner parked evidence",
+			"does not apply panel verdicts",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"source-observation-verdict-contract", Fail, "source consumer for non-product observation panel verdicts lost: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"source-observation-verdict-contract", Info, "sourceobs consumes non-product observation panel verdict evidence through no-promote review material"}}
+}
+
+func checkPanelCapabilityFeedbackContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/panel/capability_feedback.go": {
+			"PanelCapabilityFeedbackReviewArea",
+			"capability-panel-feedback",
+			"BuildPanelCapabilityFeedbackPlan",
+			"RecordPanelCapabilityFeedbackPlan",
+			"RecordPanelCapabilityFeedbackReview",
+			"AnnotateCapabilityFeedbackQueue",
+			"panelCapabilityFeedbackEdgeKind",
+			"capgraph.EdValidatedBy",
+			"capgraph.EdMissedWhen",
+			"capgraph.EdFalseTriggeredBy",
+			"lens:anti-pattern-operational-detector",
+			"redirect context",
+			"review artifact only; no graph mutation during plan",
+			"feedback-review is the only command that may write CapabilityGraph feedback edges",
+		},
+		"fixtures/panel/lens-manifest.yaml": {
+			"anti-pattern-operational-detector",
+			"A valid detector has trigger, redirect behavior, consumer path, proof/guard, boundary, silence condition, and retirement/no-promote outcome.",
+			"reviewed capability-feedback path can learn validated_by, missed_when, or false_triggered_by",
+		},
+		"internal/panel/lens_test.go": {
+			"anti-pattern-detectors",
+			"lens:anti-pattern-operational-detector",
+			"want six included and ten non-memory excluded",
+			"TestPanelCapabilityFeedbackReviewAppliesGraphEdgesOnlyAfterReview",
+			"TestAntiPatternDetectorVerdictFeedsCapabilityFeedbackPlan",
+			"TestAntiPatternDetectorFindingPreservesOperationalRedirectEvidence",
+			"anti_pattern:trigger",
+			"anti_pattern:retirement",
+			"want missed_when detector candidate",
+			"feedback plan must not mutate capability graph edges",
+		},
+		"cmd/compound/panel.go": {
+			"feedback-plan --verdict",
+			"feedback-review <review.yaml>",
+			"BuildPanelCapabilityFeedbackPlan",
+			"RecordPanelCapabilityFeedbackReview",
+		},
+		"cmd/compound/main.go": {
+			"panel.AnnotateCapabilityFeedbackQueue",
+		},
+		"cmd/compound/panel_test.go": {
+			"TestPanelFeedbackPlanReviewCLIFeedsCapabilityGraph",
+			"PanelCapabilityFeedbackReviewArea",
+			"EdgeKindCounts[capgraph.EdValidatedBy]",
+			"lens:anti-pattern-operational-detector",
+		},
+		"cmd/compound/orient_operator.go": {
+			"CapabilityFeedback",
+			"BuildPanelCapabilityFeedbackImpact",
+			"capability_feedback: pending=%d applied_reviews=%d applied_edges=%d",
+			"Label: \"capability authority\"",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorCarriesReviewedCapabilityFeedbackImpact",
+			"capability_feedback: pending=0 applied_reviews=1 applied_edges=1",
+			"compound reviews --area capability-panel-feedback",
+			"compound capability authority",
+		},
+		"docs/architecture/status.md": {
+			"Panel capability-feedback note",
+			"`compound panel feedback-plan --verdict <panel-verdict.json>`",
+			"`compound reviews --area capability-panel-feedback --json`",
+			"`compound panel feedback-review <review.yaml>`",
+			"review-gated CapabilityGraph feedback",
+			"`anti-pattern-operational-detector`",
+		},
+		"docs/architecture/contracts/README.md": {
+			"Panel capability feedback note",
+			"`compound panel feedback-plan --verdict <panel-verdict.json>`",
+			"`capability-panel-feedback`",
+			"`compound panel feedback-review <review.yaml>`",
+			"does not auto-mutate CapabilityGraph",
+			"`anti-pattern-operational-detector`",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"panel-capability-feedback-contract", Fail, "panel verdict capability feedback path lost: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"panel-capability-feedback-contract", Info, "panel verdicts feed reviewed CapabilityGraph feedback, anti-pattern detector findings, and operator orient exposes reviewed impact"}}
+}
+
 func checkCapabilityEvaluationContract(repoRoot string) []Finding {
 	hasImportEvaluations := false
 	hasEvidenceOnly := false
@@ -1078,6 +2852,257 @@ func checkCapabilityEvaluationContract(repoRoot string) []Finding {
 		return []Finding{{"capability-evaluation-contract", Fail, "public docs claim capability evaluation-review mutates graph state; import-skills must remain the graph mutation boundary"}}
 	}
 	return []Finding{{"capability-evaluation-contract", Info, "capability evaluations stay evidence-only; review YAML gates activation before import-skills mutates graph offers"}}
+}
+
+func checkExternalRepoContextEvaluationContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/capgraph/external_repo_intake.go": {
+			"ExternalRepoContextEvaluationStep",
+			"EvaluationPlan",
+			"externalRepoContextEvaluationPlan",
+			"matchExternalRepoDecisionsByContext",
+			"ExternalRepoMatchedEvidenceForTask",
+			"external_repo_review_evidence",
+			"existing-owner-fit",
+			"capability-shape-fit",
+			"risk-cost-fit",
+			"Context-Aware Evaluation Plan",
+			"silence:",
+			"proof:",
+			"retirement:",
+		},
+		"internal/capgraph/external_repo_review.go": {
+			"externalRepoIntakeDecisionCard",
+			"evaluation lens: ",
+			"evaluation_step_count",
+			"no clone/install/serve/auth/graph mutation/memory promotion",
+			"externalRepoIntakeDecisionChoices",
+		},
+		"internal/capgraph/external_repo_evaluation_plan.go": {
+			"contextPlan := externalRepoContextEvaluationPlan(report.Repo, match)",
+			"externalRepoContextEvaluationSignals(contextPlan)",
+			"context_evaluation_lenses",
+			"context_evaluation_proofs",
+			"context_evaluation_retirement",
+			"context_evaluation_step_count",
+		},
+		"internal/capgraph/evaluation_plan.go": {
+			"signalStringSlice(eval.Signals, \"context_evaluation_lenses\")",
+			"context lens ",
+			"silence condition reviewed",
+			"context evaluation proof: ",
+		},
+		"internal/capgraph/evaluation_review_queue.go": {
+			"signalStringSlice(plan.Signals, \"context_evaluation_lenses\")",
+			"context_evaluation_silence",
+			"context_evaluation_retirement",
+			"indexedSignal",
+			"evaluation lens: ",
+		},
+		"internal/capgraph/outbound_distribution_plan.go": {
+			"OutboundDistributionPlanAuthorityRef",
+			"BuildOutboundDistributionPlan",
+			"evidence_only",
+			"tier3_public_distribution_policy",
+			"product_loop_target",
+			"dry_run_receipt",
+			"no_social_auth_or_posting",
+			"VerdictPath",
+			"Boundary",
+		},
+		"internal/capgraph/outbound_distribution_plan_test.go": {
+			"TestOutboundDistributionPlanConsumesMatchedExternalRepoEvidence",
+			"gitroomhq/postiz-app",
+			"Panniantong/Agent-Reach",
+			"cobusgreyling/loop-engineering",
+			"no_distribution_evidence",
+			"no_social_auth_or_posting",
+			"TestOutboundDistributionVerdictPlanRecordsReviewArtifactsWithoutMutation",
+			"ReviewRequiredMissingDecisionCard",
+			"outbound-distribution-verdict-review",
+		},
+		"internal/capgraph/outbound_distribution_verdict.go": {
+			"OutboundDistributionVerdictPlanSchemaVersion",
+			"BuildOutboundDistributionVerdictPlan",
+			"RecordOutboundDistributionVerdictPlan",
+			"RecordOutboundDistributionVerdictReview",
+			"AnnotateOutboundDistributionVerdictQueue",
+			"dry_run_receipt_ref",
+			"adopt_for_dry_run",
+			"does not mutate ProductSignal ledgers",
+			"no social auth/post/reply/spend/public side effect",
+		},
+		"internal/capgraph/outbound_distribution_dry_run.go": {
+			"OutboundDistributionDryRunReceiptSchemaVersion",
+			"BuildOutboundDistributionDryRunReceipt",
+			"RecordOutboundDistributionDryRunReceipt",
+			"RecordOutboundDistributionDryRunReview",
+			"AnnotateOutboundDistributionDryRunQueue",
+			"public side effects/auth/external requests/posting/spend",
+			"does not mutate product signals",
+			"accept_as_product_loop_evidence",
+		},
+		"internal/capgraph/outbound_distribution_dry_run_test.go": {
+			"TestOutboundDistributionDryRunReceiptConsumesAdoptedVerdictWithoutProductMutation",
+			"TestOutboundDistributionDryRunReceiptRejectsPublicSideEffects",
+			"public_side_effects",
+			"ReviewRequired",
+		},
+		"internal/product/outbound_dry_run.go": {
+			"OutboundDryRunEvidencePlanSchemaVersion",
+			"BuildOutboundDryRunEvidencePlan",
+			"RecordOutboundDryRunEvidencePlan",
+			"ApplyOutboundDryRunEvidenceReview",
+			"AnnotateOutboundDryRunEvidenceQueue",
+			"does not mutate ProductSignal ledger",
+			"does not publish or authenticate social accounts",
+			"create_hypothesis_candidate",
+		},
+		"internal/capgraph/external_repo_intake_test.go": {
+			"item.EvaluationPlan",
+			"hasExternalRepoEvaluationStep",
+			"TestExternalRepoIntakeReportMatchesTaskContextEvidence",
+			"harness-fit",
+			"DecisionCard.Meta",
+			"evaluation lens: harness-fit",
+		},
+		"cmd/compound/main.go": {
+			"ExternalRepoMatchedEvidenceForTask",
+			"report.MatchedEvidence",
+			"outbound-distribution-plan",
+			"outbound-distribution-verdict-plan",
+			"outbound-distribution-verdict-review",
+			"outbound-distribution-dry-run-receipt",
+			"outbound-distribution-dry-run-review",
+			"outbound-dry-run-plan",
+			"outbound-dry-run-review",
+			"BuildOutboundDistributionPlan",
+			"BuildOutboundDistributionVerdictPlan",
+			"AnnotateOutboundDistributionVerdictQueue",
+			"AnnotateOutboundDistributionDryRunQueue",
+			"AnnotateOutboundDryRunEvidenceQueue",
+			"report.RequiredGates",
+		},
+		"cmd/compound/main_test.go": {
+			"TestCapabilitySurfaceReportCarriesExternalRepoEvidenceWithoutOfferingIt",
+			"matched external repo evidence",
+			"must not become an offer",
+			"TestCapabilityOutboundDistributionPlanJSON",
+			"TestCapabilityOutboundDistributionVerdictPlanAndReviewCLI",
+			"TestCapabilityOutboundDistributionDryRunReceiptCLI",
+			"# product outbound-dry-run-plan",
+			"# product outbound-dry-run-review",
+			"product.OutboundDryRunEvidenceReviewArea",
+			"product-signals.jsonl",
+			"tier3_public_distribution_policy",
+			"product_loop_target",
+			"auto-post",
+			"ReviewRequiredMissingDecisionCard",
+		},
+		"cmd/compound/orient_operator.go": {
+			"AdaptationIntake",
+			"buildOrientAdaptationIntake",
+			"ExternalRepoIntakeReviewArea",
+			"capability-evaluation-intake",
+			"adaptation_intake",
+			"already reviewed/recorded",
+		},
+		"cmd/compound/orient_operator_test.go": {
+			"TestOrientOperatorCarriesAdaptationIntakeProjection",
+			"external_repos=1 open=0 reviewed=1 capability_evaluations=1",
+			"already reviewed/recorded",
+			"external repo intake",
+			"capability evaluation intake",
+		},
+		"docs/architecture/status.md": {
+			"External repo context-evaluation note",
+			"`compound reviews --area external-repo-intake --json`",
+			"`compound orient --operator --json.needs_me.adaptation_intake`",
+			"context-aware evaluation plan",
+			"trigger/action/boundary/silence/proof/retirement",
+			"capability-evaluation plans and decision cards",
+			"`context lens ...` review gates",
+			"`evaluation lens: ...` reasons",
+			"Task-context queries can include matched external repo evidence",
+			"capability surface `matched_evidence`",
+			"imported `needs_review` graph nodes stay non-offers",
+			"`compound capability outbound-distribution-plan --task`",
+			"evidence-only outbound distribution review",
+			"Tier-3/product-loop gates",
+			"no social auth or posting",
+			"`compound capability outbound-distribution-verdict-plan`",
+			"`compound reviews --area outbound-distribution-verdicts --json`",
+			"dry-run receipt requirement",
+			"`compound capability outbound-distribution-dry-run-receipt`",
+			"`compound reviews --area outbound-distribution-dry-runs --json`",
+			"`compound product outbound-dry-run-plan`",
+			"`compound reviews --area product-outbound-dry-runs --json`",
+			"`compound product outbound-dry-run-review`",
+			"no public side effects",
+			"does not mutate product signals",
+			"does not mutate ProductSignal",
+			"no clone/install/serve/auth/graph mutation/memory promotion",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"external-repo-context-evaluation-contract", Fail, "external repo intake lost context-aware evaluation plan surface: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"external-repo-context-evaluation-contract", Info, "external repo intake review cards expose context-aware evaluation plans before capability adoption"}}
+}
+
+func checkExternalRepoIntakeStateProjectionContract(repoRoot string) []Finding {
+	requiredByFile := map[string][]string{
+		"internal/capgraph/external_repo_intake.go": {
+			"json:\"open_review_count\"",
+			"annotateExternalRepoDecisionState",
+			"countPendingExternalRepoOwnerReviews",
+			"ExternalRepoCapabilityEvaluationStatus",
+			"ExternalRepoCapabilityGraphStatus",
+		},
+		"internal/capgraph/external_repo_intake_test.go": {
+			"default report should keep raw decision count but clear owner-review debt",
+			"CapabilityEvaluationStatus != \"pending\"",
+			"CapabilityGraphStatus != \"blocked_on_capability_evaluation\"",
+		},
+		"cmd/compound/main.go": {
+			"keep_needs_review_decision",
+			"open_owner_reviews",
+			"high_value: %s decision=%s lane=%s owner_review=%s capability_evaluation=%s graph=%s owner=%s",
+		},
+		"cmd/compound/main_test.go": {
+			"default external-intake text should distinguish raw decision count from open owner-review debt",
+			"owner_review=recorded capability_evaluation=pending graph=blocked_on_capability_evaluation",
+		},
+		"docs/architecture/status.md": {
+			"Default `capability external-intake` separates raw `keep_needs_review` classification from actual `open_owner_reviews`",
+			"high-value rows show owner-review, capability-evaluation, and graph status",
+			"instead of calling recorded/imported rows review-next work",
+		},
+	}
+	var failures []string
+	for rel, phrases := range requiredByFile {
+		b, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			failures = append(failures, rel+" unreadable: "+err.Error())
+			continue
+		}
+		failures = append(failures, missingPhrases(rel, string(b), phrases)...)
+	}
+	if len(failures) > 0 {
+		sort.Strings(failures)
+		return []Finding{{"external-repo-intake-state-projection-contract", Fail, "external repo default projection can confuse classification with open review debt: " + strings.Join(failures, "; ")}}
+	}
+	return []Finding{{"external-repo-intake-state-projection-contract", Info, "external repo default projection separates raw classification from open owner-review debt and shows evaluation state"}}
 }
 
 func checkConversationMiningContract(repoRoot string) []Finding {

@@ -35,6 +35,14 @@ type PlannedCommand = {
   args: string[];
 };
 
+type ApplyResult = {
+  product_id: string;
+  asc_app_id: string;
+  metric: string;
+  signal_count: number;
+  transition_count: number;
+};
+
 type SkippedApp = {
   product_id: string;
   asc_app_id: string;
@@ -214,14 +222,25 @@ function formatDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function applyCommands(commands: PlannedCommand[], compoundBin: string): string[] {
+function applyCommands(commands: PlannedCommand[], compoundBin: string): ApplyResult[] {
   return commands.map((command) => {
     const result = spawnSync(compoundBin, command.args, { encoding: "utf8" });
     if (result.status !== 0) {
       throw new Error(`compound ${command.args.join(" ")} failed: ${result.stderr || result.stdout}`);
     }
-    return result.stdout.trim();
+    const stdout = result.stdout.trim();
+    return {
+      product_id: command.product_id,
+      asc_app_id: command.asc_app_id,
+      metric: command.metric,
+      signal_count: countMatches(stdout, /^# product signal /gm),
+      transition_count: countMatches(stdout, /^- transition: /gm),
+    };
   });
+}
+
+function countMatches(text: string, pattern: RegExp): number {
+  return Array.from(text.matchAll(pattern)).length;
 }
 
 export { loadSalesRows, parseMetricList, planSalesSeriesApplications };
@@ -253,6 +272,7 @@ if (import.meta.main) {
       after: plan.after,
       planned: plan.commands.length,
       applied: applied.length,
+      apply_results: args.apply ? applied : undefined,
       skipped: plan.skipped,
       commands: args.apply ? undefined : plan.commands.map((command) => [opts.compoundBin, ...command.args]),
     };

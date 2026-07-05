@@ -34,6 +34,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/knowledge"
 	"compound/internal/mem"
+	"compound/internal/observation"
 	"compound/internal/panel"
 	"compound/internal/policy"
 	"compound/internal/product"
@@ -149,12 +150,16 @@ func hasUsageFlag(args []string) bool {
 
 func workUsage(sub string) string {
 	switch sub {
+	case "admit-plan":
+		return "usage: compound work admit-plan --plan <create-plan.json> [--by A] [--json]"
+	case "review-card-plan":
+		return "usage: compound work review-card-plan --card <workbench_review_card_id> [--actor A] [--json]"
 	case "create":
 		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready|running] [--context-pack ctx] [--risk tier1] [--privacy private]"
 	case "import-packet":
 		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
 	default:
-		return "usage: compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ..."
+		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
 	}
 }
 
@@ -257,12 +262,12 @@ func usage() {
 
 usage:
   compound version
-  compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore
+compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; archive-history accepts --kind work|lease|review|comparison|create-plan and --path <rel>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-  compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> one work_id: intent -> context -> action -> receipt -> transition
+compound work <create-plan|admit-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
   compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
@@ -304,7 +309,7 @@ compound memory <candidate|candidates|import-page|adjudicate|recall|timeline|que
   compound distiller import-session-lenses <multi-lens.json>
                                                                  existing session distill lenses -> SourceObservation/no-promote; no row import or memory promotion
   compound distiller run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-  compound capability <add|surface|observe|consume|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+compound capability <add|surface|observe|consume|list|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound local-models advise [--lm-studio-url U] [--required MODEL]... [--min-context MODEL=TOKENS]... [--host-context-limit N] [--idle-ttl DURATION] [--json] local model context/load/unload advice with lifecycle intents; reads configured local provider, no mutation
   compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
@@ -313,9 +318,9 @@ compound memory <candidate|candidates|import-page|adjudicate|recall|timeline|que
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml> | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
-compound source observe <source-observation.yaml>              SourceObservation -> inbox candidate + no-promote
+compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] SourceObservation or generic ObservationBatch intake
 compound event import-os <events.ndjson> | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; optional trace-backed review finding producer
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
@@ -351,13 +356,19 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 	if err != nil {
 		return capgraph.SurfaceReport{}, err
 	}
-	return capgraph.NewSurfaceReport(task, harness, offers, stats, len(records)), nil
+	report := capgraph.NewSurfaceReport(task, harness, offers, stats, len(records))
+	matchedEvidence, err := capgraph.ExternalRepoMatchedEvidenceForTask(homePath, task, 5)
+	if err != nil {
+		return capgraph.SurfaceReport{}, err
+	}
+	report.MatchedEvidence = matchedEvidence
+	return report, nil
 }
 
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -676,6 +687,177 @@ func cmdCapability(args []string) {
 				rec.Retires,
 			)
 		}
+	case "outbound-distribution-plan":
+		task := flagValue(rest, "--task")
+		if task == "" {
+			p := posn(map[string]bool{"--task": true})
+			task = strings.TrimSpace(strings.Join(p, " "))
+		}
+		if task == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound capability outbound-distribution-plan --task <task> [--json]")
+			os.Exit(2)
+		}
+		report, err := capgraph.BuildOutboundDistributionPlan(homePath, task, time.Now())
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability outbound-distribution-plan %s\n", report.Status)
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		fmt.Printf("- adoption_level: %s\n", report.AdoptionLevel)
+		fmt.Printf("- candidates: %d\n", len(report.Candidates))
+		for _, gate := range report.RequiredGates {
+			fmt.Printf("- gate: %s ref=%s\n", gate.Kind, gate.Ref)
+		}
+		for _, candidate := range report.Candidates {
+			fmt.Printf("- candidate: %s role=%s decision=%s graph=%s node=%s next=%s\n",
+				candidate.Repo,
+				candidate.Role,
+				candidate.Decision,
+				candidate.CapabilityGraphStatus,
+				candidate.NodeStatus,
+				candidate.NextReviewStep,
+			)
+		}
+		for _, boundary := range report.Boundaries {
+			fmt.Printf("- boundary: %s\n", boundary)
+		}
+		if report.NextAction != "" {
+			fmt.Printf("- next_action: %s\n", report.NextAction)
+		}
+	case "outbound-distribution-verdict-plan":
+		opts := capgraph.OutboundDistributionVerdictPlanOptions{
+			Task:              flagValue(rest, "--task"),
+			ProductID:         flagValue(rest, "--product"),
+			ChangeEvent:       flagValue(rest, "--change-event"),
+			Hypothesis:        flagValue(rest, "--hypothesis"),
+			ObservationWindow: flagValue(rest, "--observation-window"),
+			DryRunReceiptRef:  flagValue(rest, "--dry-run-receipt"),
+			TargetPath:        flagValue(rest, "--target"),
+		}
+		if opts.ProductID == "" {
+			opts.ProductID = flagValue(rest, "--product-id")
+		}
+		if opts.Task == "" || opts.ProductID == "" || opts.ChangeEvent == "" || opts.Hypothesis == "" || opts.ObservationWindow == "" || opts.DryRunReceiptRef == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound capability outbound-distribution-verdict-plan --task <task> --product <product_id> --change-event <text> --hypothesis <text> --observation-window <window> --dry-run-receipt <ref> [--target <file>] [--json]")
+			os.Exit(2)
+		}
+		plan, err := capgraph.BuildOutboundDistributionVerdictPlan(homePath, opts, time.Now())
+		die(err)
+		paths, err := capgraph.RecordOutboundDistributionVerdictPlan(homePath, plan)
+		die(err)
+		report := struct {
+			SchemaVersion  string                                   `json:"schema_version"`
+			Status         string                                   `json:"status"`
+			Plan           capgraph.OutboundDistributionVerdictPlan `json:"plan"`
+			PlanPath       string                                   `json:"plan_path"`
+			ReviewPath     string                                   `json:"review_path"`
+			ReviewYAMLPath string                                   `json:"review_yaml_path"`
+		}{
+			SchemaVersion:  capgraph.OutboundDistributionVerdictPlanSchemaVersion,
+			Status:         plan.Status,
+			Plan:           plan,
+			PlanPath:       paths.PlanPath,
+			ReviewPath:     paths.ReviewPath,
+			ReviewYAMLPath: paths.ReviewYAMLPath,
+		}
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability outbound-distribution-verdict-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- product: %s\n", plan.ProductID)
+		fmt.Printf("- candidates: %d\n", len(plan.Candidates))
+		fmt.Printf("- adoption_level: %s\n", plan.AdoptionLevel)
+		fmt.Printf("- dry_run_receipt: %s\n", plan.DryRunReceiptRef)
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "outbound-distribution-verdict-review":
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability outbound-distribution-verdict-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := capgraph.LoadOutboundDistributionVerdictReview(p[0])
+		die(err)
+		report, err := capgraph.RecordOutboundDistributionVerdictReview(homePath, review, p[0], time.Now())
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability outbound-distribution-verdict-review %s\n\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- plan: %s\n", report.PlanID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
+	case "outbound-distribution-dry-run-receipt":
+		opts := capgraph.OutboundDistributionDryRunReceiptOptions{
+			VerdictReviewPath: flagValue(rest, "--verdict-review"),
+			AdapterOutputPath: flagValue(rest, "--adapter-output"),
+			TargetPath:        flagValue(rest, "--target"),
+		}
+		if opts.VerdictReviewPath == "" || opts.AdapterOutputPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound capability outbound-distribution-dry-run-receipt --verdict-review <reviewed.json> --adapter-output <adapter-output.json> [--target <file>] [--json]")
+			os.Exit(2)
+		}
+		report, err := capgraph.BuildOutboundDistributionDryRunReceipt(homePath, opts, time.Now())
+		die(err)
+		paths, err := capgraph.RecordOutboundDistributionDryRunReceipt(homePath, report)
+		die(err)
+		out := struct {
+			SchemaVersion  string                                           `json:"schema_version"`
+			Status         string                                           `json:"status"`
+			Report         capgraph.OutboundDistributionDryRunReceiptReport `json:"report"`
+			ReportPath     string                                           `json:"report_path"`
+			ReviewPath     string                                           `json:"review_path"`
+			ReviewYAMLPath string                                           `json:"review_yaml_path"`
+		}{
+			SchemaVersion:  capgraph.OutboundDistributionDryRunReceiptReportSchemaVersion,
+			Status:         report.Status,
+			Report:         report,
+			ReportPath:     paths.ReportPath,
+			ReviewPath:     paths.ReviewPath,
+			ReviewYAMLPath: paths.ReviewYAMLPath,
+		}
+		if hasFlag(rest, "--json") {
+			printJSON(out)
+			return
+		}
+		fmt.Printf("# capability outbound-distribution-dry-run-receipt %s\n\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- plan: %s\n", report.PlanID)
+		fmt.Printf("- adoption_level: %s\n", report.AdoptionLevel)
+		fmt.Printf("- artifacts: %d\n", len(report.Artifacts))
+		fmt.Printf("- report: %s\n", paths.ReportPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "outbound-distribution-dry-run-review":
+		p := posn(nil)
+		if len(p) != 1 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability outbound-distribution-dry-run-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := capgraph.LoadOutboundDistributionDryRunReview(p[0])
+		die(err)
+		report, err := capgraph.RecordOutboundDistributionDryRunReview(homePath, review, p[0], time.Now())
+		die(err)
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# capability outbound-distribution-dry-run-review %s\n\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- plan: %s\n", report.PlanID)
+		fmt.Printf("- receipt: %s\n", report.ReceiptID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
 	case "external-intake":
 		repoQuery := flagValue(rest, "--repo")
 		sourceListPath := flagValue(rest, "--source-list")
@@ -701,7 +883,8 @@ func cmdCapability(args []string) {
 			fmt.Printf("- latest_batch: %s\n", report.LatestBatchID)
 		}
 		fmt.Printf("- candidates: %d\n", report.CandidateCount)
-		fmt.Printf("- keep_needs_review: %d\n", report.OpenReviewCount)
+		fmt.Printf("- keep_needs_review_decision: %d\n", report.CountsByDecision["keep_needs_review"])
+		fmt.Printf("- open_owner_reviews: %d\n", report.OpenReviewCount)
 		fmt.Printf("- merge_existing: %d\n", report.MergeExistingCount)
 		fmt.Printf("- reference_only: %d\n", report.ReferenceOnlyCount)
 		if report.SourceObservationID != "" {
@@ -769,7 +952,7 @@ func cmdCapability(args []string) {
 			return
 		}
 		for _, row := range report.HighValue {
-			fmt.Printf("- review_next: %s decision=%s lane=%s owner=%s\n", row.Repo, row.Decision, row.Lane, row.Owner)
+			fmt.Printf("- high_value: %s decision=%s lane=%s owner_review=%s capability_evaluation=%s graph=%s owner=%s\n", row.Repo, row.Decision, row.Lane, row.OwnerReviewStatus, row.CapabilityEvaluationStatus, row.CapabilityGraphStatus, row.Owner)
 		}
 	case "external-intake-import-reviewed":
 		sourceListPath := flagValue(rest, "--source-list")
@@ -1155,6 +1338,9 @@ func cmdCapability(args []string) {
 			return
 		}
 		fmt.Printf("# %d capabilit(ies) surfaced for %q (offered, NOT executed)\n", report.OfferCount, report.Task)
+		for _, evidence := range report.MatchedEvidence {
+			fmt.Printf(" evidence: %s ref=%s confidence=%.2f detail=%s\n", evidence.Kind, evidence.Ref, evidence.Confidence, evidence.Detail)
+		}
 		for _, h := range report.Offers {
 			fmt.Printf("  %-28s %-12s score %.1f  [%s]\n", h.Node.ID, h.Node.Kind, h.Score, h.Why)
 			printCapabilityConstraints(h.Constraints)
@@ -1267,10 +1453,38 @@ func formatEdgeKindCounts(counts map[string]int) string {
 	return strings.Join(parts, " ")
 }
 
-// cmdSource imports existing-system SourceObservation records into Compound-owned
-// candidate/no-promote state. It observes; it never promotes source truth.
+// cmdSource imports external/source observations into Compound-owned intake
+// state. It observes; it never promotes source truth.
 func cmdSource(args []string) {
-	if len(args) != 2 || args[0] != "observe" {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, sourceUsage())
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "observe":
+		cmdSourceObserve(args[1:])
+	case "observe-batch":
+		cmdSourceObserveBatch(args[1:])
+	case "intake":
+		cmdSourceIntake(args[1:])
+	case "intake-work-plan":
+		cmdSourceIntakeWorkPlan(args[1:])
+	case "observation-verdict-plan":
+		cmdSourceObservationVerdictPlan(args[1:])
+	case "observation-verdict-review":
+		cmdSourceObservationVerdictReview(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, sourceUsage())
+		os.Exit(2)
+	}
+}
+
+func sourceUsage() string {
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+}
+
+func cmdSourceObserve(args []string) {
+	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: compound source observe <source-observation.yaml>")
 		os.Exit(2)
 	}
@@ -1279,7 +1493,7 @@ func cmdSource(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	obs, err := sourceobs.Load(args[1])
+	obs, err := sourceobs.Load(args[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "source observe:", err)
 		os.Exit(1)
@@ -1311,6 +1525,298 @@ func cmdSource(args []string) {
 	for _, id := range report.NoPromoteIDs {
 		fmt.Printf("- no_promote: %s\n", id)
 	}
+}
+
+func cmdSourceObserveBatch(args []string) {
+	jsonOut := false
+	dryRun := false
+	applyProductSignals := false
+	applySourceObservations := false
+	applyKnowledge := false
+	applyRouteEvidence := false
+	applyEvents := false
+	reviewCandidates := false
+	var paths []string
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOut = true
+		case "--dry-run":
+			dryRun = true
+		case "--apply-product-signals":
+			applyProductSignals = true
+		case "--apply-source-observations":
+			applySourceObservations = true
+		case "--apply-knowledge":
+			applyKnowledge = true
+		case "--apply-route-evidence":
+			applyRouteEvidence = true
+		case "--apply-events":
+			applyEvents = true
+		case "--review-candidates":
+			reviewCandidates = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				fmt.Fprintln(os.Stderr, "source observe-batch: unknown arg", arg)
+				os.Exit(2)
+			}
+			paths = append(paths, arg)
+		}
+	}
+	modeCount := 0
+	for _, enabled := range []bool{dryRun, applyProductSignals, applySourceObservations, applyKnowledge, applyRouteEvidence, applyEvents, reviewCandidates} {
+		if enabled {
+			modeCount++
+		}
+	}
+	if len(paths) != 1 || modeCount != 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound source observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json]")
+		os.Exit(2)
+	}
+	batch, err := observation.LoadBatch(paths[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observe-batch:", err)
+		os.Exit(1)
+	}
+	var store *mem.Store
+	homePath := ""
+	if applyProductSignals || applyKnowledge {
+		store, homePath = openMemStore()
+	}
+	if applySourceObservations || applyRouteEvidence || applyEvents || reviewCandidates {
+		homePath, err = home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+	}
+	report, err := observation.ObserveBatch(homePath, store, batch, paths[0], observation.Options{ApplyProductSignals: applyProductSignals, ReviewCandidates: reviewCandidates, ApplySourceObservations: applySourceObservations, ApplyKnowledge: applyKnowledge, ApplyRouteEvidence: applyRouteEvidence, ApplyEvents: applyEvents}, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observe-batch:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			fmt.Fprintln(os.Stderr, "source observe-batch:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("# observation batch\n\n")
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- source: %s %s\n", report.Source.Kind, report.Source.Ref)
+	fmt.Printf("- subject: %s %s\n", report.Subject.Kind, report.Subject.ID)
+	fmt.Printf("- dry_run: %t\n", report.DryRun)
+	for _, decision := range report.Decisions {
+		fmt.Printf("- route: %s -> %s owner=%s reason=%s\n", decision.ObservationID, decision.Route, decision.Owner, decision.Reason)
+	}
+	for _, result := range report.ProductApplyResults {
+		fmt.Printf("- applied_product_signal: %s signals=%s transitions=%s\n", result.ObservationID, strings.Join(result.SignalIDs, ","), strings.Join(result.TransitionIDs, ","))
+	}
+	for _, result := range report.SourceObservationApplyResults {
+		fmt.Printf("- applied_source_observation: %s source_observation=%s candidates=%s no_promote=%s next=%s\n", result.ObservationID, result.SourceObservationID, strings.Join(result.CandidateIDs, ","), strings.Join(result.NoPromoteIDs, ","), strings.Join(result.NextCommand, " "))
+	}
+	for _, result := range report.KnowledgeApplyResults {
+		fmt.Printf("- applied_knowledge: %s evidence=%s candidates=%s extractions=%s next=%s\n", result.ObservationID, strings.Join(result.EvidenceIDs, ","), strings.Join(result.CandidateIDs, ","), strings.Join(result.ExtractionIDs, ","), strings.Join(result.NextCommand, " "))
+	}
+	for _, result := range report.RouteEvidenceApplyResults {
+		fmt.Printf("- applied_route_evidence: %s route_evidence=%s transition=%s next=%s\n", result.ObservationID, result.RouteEvidenceID, result.TransitionID, strings.Join(result.NextCommand, " "))
+	}
+	for _, result := range report.EventApplyResults {
+		fmt.Printf("- applied_events: observations=%s traces=%s source_authority=%s next=%s\n", strings.Join(result.ObservationIDs, ","), strings.Join(result.TraceIDs, ","), result.SourceAuthorityID, strings.Join(result.NextCommand, " "))
+	}
+	for _, result := range report.CandidateReviewResults {
+		fmt.Printf("- observation_candidate_review: %s candidate=%s review=%s\n", result.ObservationID, result.CandidateID, result.ReviewYAMLPath)
+	}
+}
+
+func cmdSourceIntake(args []string) {
+	jsonOut := false
+	limit := 0
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--limit":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound source intake [--limit N] [--json]")
+				os.Exit(2)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "source intake: --limit must be non-negative integer")
+				os.Exit(2)
+			}
+			limit = n
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound source intake [--limit N] [--json]")
+			os.Exit(2)
+		}
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	projection, err := observation.LoadSourceIntakeProjection(homePath, time.Now(), limit)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source intake:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		if err := json.NewEncoder(os.Stdout).Encode(projection); err != nil {
+			fmt.Fprintln(os.Stderr, "source intake:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("# source intake\n\n")
+	fmt.Printf("- status: %s\n", projection.Status)
+	fmt.Printf("- records: %d\n", projection.RecordCount)
+	fmt.Printf("- rows: %d\n", projection.RowCount)
+	fmt.Printf("- applied: %d\n", projection.Counts.Applied)
+	fmt.Printf("- review_recorded: %d\n", projection.Counts.ReviewRecorded)
+	fmt.Printf("- blocked_private: %d\n", projection.Counts.BlockedPrivate)
+	fmt.Printf("- action_required: %d\n", projection.Counts.ActionRequired)
+	fmt.Printf("- action_cards: %d\n", projection.ActionCardCount)
+	for _, card := range projection.ActionCards {
+		fmt.Printf("- action_card: %s row=%s route=%s next=%s proof=%s\n", card.Kind, card.RowID, card.Route, strings.Join(card.Command, " "), card.Proof)
+	}
+	for _, row := range projection.Rows {
+		fmt.Printf("- %s %s owner=%s status=%s source=%s subject=%s next=%s\n", row.ObservationID, row.Route, row.Owner, row.Status, row.SourceKind, row.SubjectID, strings.Join(row.NextCommand, " "))
+	}
+}
+
+func cmdSourceIntakeWorkPlan(args []string) {
+	cardID := ""
+	actor := "codex"
+	jsonOut := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--card":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound source intake-work-plan --card <card_id> [--actor A] [--json]")
+				os.Exit(2)
+			}
+			cardID = args[i+1]
+			i++
+		case "--actor":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound source intake-work-plan --card <card_id> [--actor A] [--json]")
+				os.Exit(2)
+			}
+			actor = args[i+1]
+			i++
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound source intake-work-plan --card <card_id> [--actor A] [--json]")
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(cardID) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound source intake-work-plan --card <card_id> [--actor A] [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source intake-work-plan:", err)
+		os.Exit(1)
+	}
+	report, err := observation.BuildSourceIntakeWorkPlan(homePath, workStore, cardID, time.Now(), observation.SourceIntakeWorkPlanOptions{Actor: actor})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source intake-work-plan:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("# source intake-work-plan %s\n\n", report.SourceIntake.CardID)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- card_kind: %s\n", report.SourceIntake.CardKind)
+	fmt.Printf("- row: %s\n", report.SourceIntake.RowID)
+	fmt.Printf("- route: %s\n", report.SourceIntake.Route)
+	fmt.Printf("- work: %s\n", report.WorkPlan.WorkID)
+	fmt.Printf("- work_state: %s\n", report.WorkPlan.WorkState)
+	fmt.Printf("- policy: %s allowed=%t\n", report.WorkPlan.Policy.Outcome, report.WorkPlan.Policy.Allowed)
+	fmt.Printf("- plan: %s\n", report.WorkPlan.PlanPath)
+	if len(report.SourceIntake.ActionCommand) > 0 {
+		fmt.Printf("- action_command: %s\n", strings.Join(report.SourceIntake.ActionCommand, " "))
+	}
+	fmt.Printf("- proof: %s\n", report.SourceIntake.Proof)
+}
+
+func cmdSourceObservationVerdictPlan(args []string) {
+	verdictPath := flagValue(args, "--verdict")
+	targetPath := flagValue(args, "--target")
+	if verdictPath == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound source observation-verdict-plan --verdict <panel-verdict.json> [--target file]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	plan, err := sourceobs.BuildSourceObservationVerdictPlan(homePath, verdictPath, targetPath, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observation verdict plan:", err)
+		os.Exit(1)
+	}
+	paths, err := sourceobs.RecordSourceObservationVerdictPlan(homePath, plan)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observation verdict plan:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# source observation-verdict-plan %s\n\n", plan.ID)
+	fmt.Printf("- status: %s\n", plan.Status)
+	fmt.Printf("- owner_status: %s\n", plan.OwnerStatus)
+	fmt.Printf("- owner: %s %s\n", plan.OwnerKind, plan.OwnerRef)
+	fmt.Printf("- verdict: %s\n", plan.VerdictID)
+	fmt.Printf("- candidate: %s\n", plan.TargetRef)
+	fmt.Printf("- panel_decision: %s\n", plan.PanelDecision)
+	fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
+	fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+	fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+	fmt.Printf("- plan: %s\n", paths.PlanPath)
+	fmt.Printf("- review: %s\n", paths.ReviewPath)
+	fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+}
+
+func cmdSourceObservationVerdictReview(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: compound source observation-verdict-review <review.yaml>")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	review, err := sourceobs.LoadSourceObservationVerdictReview(args[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observation verdict review:", err)
+		os.Exit(1)
+	}
+	report, err := sourceobs.ApplySourceObservationVerdictReview(homePath, review, args[0], time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source observation verdict review:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("# source observation-verdict-review %s\n\n", report.ReviewID)
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- verdict: %s\n", report.VerdictID)
+	fmt.Printf("- decision: %s\n", report.Decision)
+	fmt.Printf("- owner: %s %s\n", report.OwnerKind, report.OwnerRef)
+	fmt.Printf("- no_promote: %s\n", report.NoPromoteID)
+	fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
 }
 
 func cmdEvent(args []string) {
@@ -3544,7 +4050,7 @@ func runHookCommand(args []string) int {
 		}
 	}
 	if parsed.Live {
-		printJSON(liveHookResponse(parsed.HookName, res))
+		printJSON(liveHookResponse(parsed.Harness, parsed.HookName, res))
 	} else {
 		printJSON(res)
 	}
@@ -4603,8 +5109,44 @@ func cmdWorkbench(args []string) {
 	if report.Counts.RunObservations > 0 {
 		fmt.Printf("run_observations=%d\n", report.Counts.RunObservations)
 	}
+	if report.Counts.RunArtifacts > 0 {
+		fmt.Printf("run_artifacts=%d\n", report.Counts.RunArtifacts)
+	}
 	if report.Counts.DispatchStepRuns > 0 {
 		fmt.Printf("dispatch_step_runs=%d\n", report.Counts.DispatchStepRuns)
+	}
+	if report.Counts.AdmissionPreviews > 0 {
+		fmt.Printf("admission_previews=%d\n", report.Counts.AdmissionPreviews)
+		for i, preview := range report.AdmissionPreviews {
+			if i >= 3 {
+				break
+			}
+			fmt.Printf("admission_preview: %s owner=%s state=%s staleness=%s age=%s plan=%s\n", preview.WorkID, preview.WorkOwner, preview.WorkState, emptyDash(preview.Staleness), emptyDash(preview.Age), preview.PlanPath)
+			if preview.NextAction != "" {
+				fmt.Printf("  next_action: %s\n", preview.NextAction)
+			}
+			if preview.RequiresOperator {
+				fmt.Printf("  operator_required: true\n")
+			}
+			if preview.AdmissionBlockedReason != "" {
+				fmt.Printf("  blocked_reason: %s\n", preview.AdmissionBlockedReason)
+			}
+			if preview.ActionSummary != "" {
+				fmt.Printf(" action_summary: %s\n", preview.ActionSummary)
+			}
+			if len(preview.AdmitCommand) > 0 {
+				fmt.Printf("  admit: %s\n", strings.Join(preview.AdmitCommand, " "))
+			}
+			if len(preview.RetireDryRun) > 0 {
+				fmt.Printf("  retire_dry_run: %s\n", strings.Join(preview.RetireDryRun, " "))
+			}
+			if len(preview.RetireCommand) > 0 {
+				fmt.Printf("  retire: %s\n", strings.Join(preview.RetireCommand, " "))
+			}
+			if preview.ActionContext != nil && len(preview.ActionContext.Command) > 0 {
+				fmt.Printf("  action_context: %s proof=%s\n", strings.Join(preview.ActionContext.Command, " "), emptyDash(preview.ActionContext.Proof))
+			}
+		}
 	}
 	if capabilitySurface != nil {
 		fmt.Printf("capability_surface status=%s offers=%d showing=%d omitted=%d task=%q harness=%q authority=%s\n",
@@ -4675,6 +5217,39 @@ func cmdWorkbench(args []string) {
 			fmt.Printf(" work=%s", report.DispatchNext.WorkID)
 		}
 		fmt.Println()
+		if adjacent := report.DispatchNext.AdjacentProgress; adjacent != nil {
+			fmt.Printf("adjacent_progress: available=%t packet_candidates=%d consumed_non_packet_actions=%d reason=%s\n", adjacent.Available, adjacent.PacketCandidateCount, len(adjacent.ConsumedNonPacketActions), adjacent.Reason)
+			if adjacent.NextAction != "" {
+				fmt.Printf("adjacent_next: %s\n", adjacent.NextAction)
+			}
+			if len(adjacent.Command) > 0 {
+				fmt.Printf("adjacent_command: %s\n", strings.Join(adjacent.Command, " "))
+			}
+			for i, action := range adjacent.ConsumedNonPacketActions {
+				if i >= 3 {
+					break
+				}
+				fmt.Printf("consumed_adjacent_action: %s kind=%s evidence=%s\n", action.ID, action.Kind, strings.Join(action.ConsumedEvidenceRefs, ","))
+			}
+			for i, action := range adjacent.NonPacketActions {
+				if i >= 3 {
+					break
+				}
+				fmt.Printf("adjacent_non_packet_action: %s kind=%s operator=%t proof=%s\n", action.ID, action.Kind, action.RequiresOperator, action.Proof)
+				if len(action.Command) > 0 {
+					fmt.Printf(" action_command: %s\n", strings.Join(action.Command, " "))
+				}
+				if len(action.RequiredInputs) > 0 {
+					fmt.Printf(" action_required_inputs: %s\n", strings.Join(action.RequiredInputs, ", "))
+				}
+				if len(action.ExpectedValidation) > 0 {
+					fmt.Printf(" action_expected_validation: %s\n", strings.Join(action.ExpectedValidation, ", "))
+				}
+				if len(action.StopConditions) > 0 {
+					fmt.Printf(" action_stop_conditions: %s\n", strings.Join(action.StopConditions, ", "))
+				}
+			}
+		}
 	}
 	if len(report.Integrity) > 0 {
 		fmt.Println("integrity:")
@@ -4689,12 +5264,29 @@ func cmdWorkbench(args []string) {
 		for _, item := range report.Open {
 			fmt.Printf("- %s %-10s %-14s %s\n", item.WorkID, item.State, item.OpenReason, item.SuccessPredicate)
 			fmt.Printf("  next: %s\n", item.NextAction)
+			if item.ActionContext != nil && len(item.ActionContext.Command) > 0 {
+				fmt.Printf("  action_context: %s proof=%s\n", strings.Join(item.ActionContext.Command, " "), emptyDash(item.ActionContext.Proof))
+			}
 			if item.ClaimedBy != "" {
 				fmt.Printf("  claimed_by: %s\n", item.ClaimedBy)
 			}
 			if len(item.RunObservations) > 0 {
 				latest := item.RunObservations[0]
 				fmt.Printf("  observed_run: %s trace=%s policy=%s\n", latest.ID, latest.TraceID, latest.PolicyDecisionID)
+			}
+			if len(item.RunArtifacts) > 0 {
+				artifact := item.RunArtifacts[0]
+				count := "-"
+				if artifact.Count != nil {
+					count = strconv.Itoa(*artifact.Count)
+				}
+				target := "-"
+				if len(artifact.TargetRefs) > 0 {
+					target = artifact.TargetRefs[0]
+				} else if len(artifact.CandidateIDs) > 0 {
+					target = artifact.CandidateIDs[0]
+				}
+				fmt.Printf("  run_artifact: %s kind=%s status=%s target=%s count=%s\n", artifact.Ref, artifact.Kind, emptyDash(artifact.Status), target, count)
 			}
 		}
 	}
@@ -4721,17 +5313,23 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	}
 	decisions.AnnotateLifecycleRepairQueue(&report)
 	product.AnnotateReviewQueue(&report)
+	product.AnnotateOutboundDryRunEvidenceQueue(&report)
 	authority.AnnotateJobHealthQueue(&report)
 	authority.AnnotateSourceControlCleanupQueue(&report)
 	runtimebinding.AnnotateRepairQueue(&report)
 	capgraph.AnnotateCapabilityEvaluationQueue(&report)
 	capgraph.AnnotateExternalRepoIntakeQueue(&report)
+	capgraph.AnnotateOutboundDistributionVerdictQueue(&report)
+	capgraph.AnnotateOutboundDistributionDryRunQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
 	distiller.AnnotateImprovementQueue(&report)
 	distiller.AnnotateRequestQueue(&report)
+	observation.AnnotateReviewQueue(&report)
 	panel.AnnotateVerdictQueue(&report)
+	panel.AnnotateCapabilityFeedbackQueue(&report)
 	projection.AnnotateProjectionRegenerationQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)
+	sourceobs.AnnotateObservationVerdictQueue(&report)
 	annotateSynthesisReviewQueue(&report)
 	reviewartifact.Recount(&report)
 	return report, nil
@@ -4810,6 +5408,9 @@ func cmdReviews(args []string) {
 		return
 	}
 	fmt.Printf("reviews total=%d review_required=%d ready_to_apply=%d ok=%d\n", report.Counts.Total, report.Counts.ReviewRequired, report.Counts.ReadyToApply, report.Counts.OK)
+	if report.Counts.DecisionCardCount > 0 || report.Counts.ActionableCount > 0 || report.Counts.ReviewRequiredMissingDecisionCard > 0 || report.Counts.ReviewRequiredMissingAction > 0 {
+		fmt.Printf("review_surface decision_cards=%d actionable=%d missing_cards=%d missing_actions=%d\n", report.Counts.DecisionCardCount, report.Counts.ActionableCount, report.Counts.ReviewRequiredMissingDecisionCard, report.Counts.ReviewRequiredMissingAction)
+	}
 	if len(report.Counts.ByArea) > 0 {
 		fmt.Println("areas:")
 		for _, area := range sortedMapKeys(report.Counts.ByArea) {
@@ -5355,6 +5956,49 @@ func cmdWork(args []string) {
 		if plan.PlanPath != "" {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
+	case "admit-plan":
+		planPath := firstNonEmpty(flag("--plan"), pos())
+		if planPath == "" {
+			fmt.Fprintln(os.Stderr, workUsage("admit-plan"))
+			os.Exit(2)
+		}
+		report, err := store.AdmitCreatePlanPath(planPath, time.Now(), work.AdmitCreatePlanOptions{
+			Actor: firstNonEmpty(flag("--by"), flag("--actor")),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("admit-plan %s status=%s work=%s state=%s policy=%s allowed=%v\n", report.PlanID, report.Status, report.WorkID, report.WorkState, report.PolicyOutcome, report.PolicyAllowed)
+		if report.NoAction != "" {
+			fmt.Printf("no_action: %s\n", report.NoAction)
+		}
+		if report.PlanPath != "" {
+			fmt.Printf("plan: %s\n", report.PlanPath)
+		}
+	case "review-card-plan":
+		cardID := firstNonEmpty(flag("--card"), pos())
+		if cardID == "" {
+			fmt.Fprintln(os.Stderr, workUsage("review-card-plan"))
+			os.Exit(2)
+		}
+		report, err := store.BuildReviewCardWorkPlan(cardID, time.Now(), work.ReviewCardWorkPlanOptions{
+			Actor: firstNonEmpty(flag("--actor"), flag("--by")),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("review-card-plan %s status=%s work=%s card=%s kind=%s\n", report.WorkPlan.ID, report.Status, report.WorkPlan.WorkID, report.ReviewCard.CardID, report.ReviewCard.CardKind)
+		fmt.Printf("action_context: %s\n", strings.Join(report.ReviewCard.ActionCommand, " "))
+		if len(report.ReviewCard.RequiredInputs) > 0 {
+			fmt.Printf("required_inputs: %s\n", strings.Join(report.ReviewCard.RequiredInputs, " | "))
+		}
+		if report.WorkPlan.PlanPath != "" {
+			fmt.Printf("plan: %s\n", report.WorkPlan.PlanPath)
+		}
 	case "create":
 		w, err := store.Create(work.CreateInput{
 			WorkID:           flag("--work-id"),
@@ -5501,6 +6145,9 @@ func cmdWork(args []string) {
 			fmt.Printf("dispatch-plan %s status=%s selected=%s action=%s\n", plan.ID, plan.Status, plan.Selected.WorkID, plan.Selected.Action)
 			if len(plan.Selected.Command) > 0 {
 				fmt.Printf("command: %s\n", strings.Join(plan.Selected.Command, " "))
+			}
+			if plan.Selected.ActionContext != nil && len(plan.Selected.ActionContext.Command) > 0 {
+				fmt.Printf("action_context: %s proof=%s\n", strings.Join(plan.Selected.ActionContext.Command, " "), emptyDash(plan.Selected.ActionContext.Proof))
 			}
 		} else {
 			fmt.Printf("dispatch-plan %s status=%s no_action=%s\n", plan.ID, plan.Status, plan.NoAction)
@@ -5780,6 +6427,9 @@ func cmdWork(args []string) {
 		if len(plan.ClaimCommand) > 0 {
 			fmt.Printf("command: %s\n", strings.Join(plan.ClaimCommand, " "))
 		}
+		if plan.ActionContext != nil && len(plan.ActionContext.Command) > 0 {
+			fmt.Printf("action_context: %s proof=%s\n", strings.Join(plan.ActionContext.Command, " "), emptyDash(plan.ActionContext.Proof))
+		}
 		if plan.NoAction != "" {
 			fmt.Printf("no_action: %s\n", plan.NoAction)
 		}
@@ -5837,6 +6487,9 @@ func cmdWork(args []string) {
 		if len(plan.AdvanceCommand) > 0 {
 			fmt.Printf("command: %s\n", strings.Join(plan.AdvanceCommand, " "))
 		}
+		if plan.ActionContext != nil && len(plan.ActionContext.Command) > 0 {
+			fmt.Printf("action_context: %s proof=%s\n", strings.Join(plan.ActionContext.Command, " "), emptyDash(plan.ActionContext.Proof))
+		}
 		if plan.NoAction != "" {
 			fmt.Printf("no_action: %s\n", plan.NoAction)
 		}
@@ -5872,33 +6525,18 @@ func cmdWork(args []string) {
 			return
 		}
 		fmt.Printf("%s observed trace=%s state=%s policy=%s\n", result.WorkID, result.TraceID, result.State, result.PolicyDecisionID)
+		if result.ActionContext != nil && len(result.ActionContext.Command) > 0 {
+			fmt.Printf("action_context: %s proof=%s\n", strings.Join(result.ActionContext.Command, " "), emptyDash(result.ActionContext.Proof))
+		}
 		if result.ResultPath != "" {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
-	case "act":
-		workID := pos()
-		intentFile := flag("--intent")
-		if workID == "" || intentFile == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound work act <work_id> --intent <action-intent.json>")
-			os.Exit(2)
-		}
-		ai := loadActionIntent(intentFile)
-		ai.IDs.WorkID = workID // bind the action to this work
-		pd := policy.Evaluate(ai, policyConfig(), time.Now())
-		printJSON(pd)
-		if !policy.Allowed(pd) {
-			fmt.Fprintf(os.Stderr, "BLOCKED: policy %s — action NOT recorded\n", pd.Outcome)
-			os.Exit(gateExit(pd))
-		}
-		w, err := store.RecordAction(workID, ai, pd, time.Now())
-		die(err)
-		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
-	case "close-plan":
-		usage := "usage: compound work close-plan <work_id> --outcome completed|failed|cancelled --move-type <type> [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+	case "action-plan":
+		usage := "usage: compound work action-plan <work_id> [--actor A] [--move-type type] [--receipt-outcome completed|failed|blocked|no_op] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run":
-			case "--outcome", "--move-type", "--actor", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
+			case "--actor", "--move-type", "--receipt-outcome", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -5911,23 +6549,130 @@ func cmdWork(args []string) {
 				}
 			}
 		}
-		if pos() == "" || flag("--outcome") == "" || flag("--move-type") == "" {
+		if pos() == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		plan, err := store.ActionExecutionPlan(pos(), time.Now(), work.ActionExecutionPlanOptions{
+			Actor:          flag("--actor"),
+			Capability:     flag("--capability"),
+			Action:         flag("--action"),
+			MutationClass:  flag("--mutation-class"),
+			Reversibility:  flag("--reversibility"),
+			BlastRadius:    flag("--blast-radius"),
+			TargetKind:     flag("--target-kind"),
+			TargetID:       flag("--target-id"),
+			TargetPath:     flag("--target-path"),
+			MoveType:       flag("--move-type"),
+			ReceiptOutcome: flag("--receipt-outcome"),
+			Record:         !has("--dry-run"),
+		})
+		die(err)
+		if has("--json") {
+			printJSON(plan)
+			return
+		}
+		fmt.Printf("action-plan %s status=%s work=%s state=%s policy=%s allowed=%v\n", plan.ID, plan.Status, plan.WorkID, plan.WorkState, plan.Policy.Outcome, plan.Policy.Allowed)
+		if plan.ActionSummary != "" {
+			fmt.Printf("action_summary: %s\n", plan.ActionSummary)
+		}
+		if len(plan.ActionCommand) > 0 {
+			fmt.Printf("action_command: %s\n", strings.Join(plan.ActionCommand, " "))
+		}
+		if len(plan.RequiredInputs) > 0 {
+			fmt.Printf("required_inputs: %s\n", strings.Join(plan.RequiredInputs, ", "))
+		}
+		if len(plan.ExpectedValidation) > 0 {
+			fmt.Printf("expected_validation: %s\n", strings.Join(plan.ExpectedValidation, ", "))
+		}
+		if len(plan.StopConditions) > 0 {
+			fmt.Printf("stop_conditions: %s\n", strings.Join(plan.StopConditions, ", "))
+		}
+		if plan.Boundary != "" {
+			fmt.Printf("boundary: %s\n", plan.Boundary)
+		}
+		if plan.Proof != "" {
+			fmt.Printf("proof: %s\n", plan.Proof)
+		}
+		if len(plan.RecordCommand) > 0 {
+			fmt.Printf("record_after_execution: %s\n", strings.Join(plan.RecordCommand, " "))
+		}
+		if len(plan.CloseCommand) > 0 {
+			fmt.Printf("close_after_validation: %s\n", strings.Join(plan.CloseCommand, " "))
+		}
+		if plan.NoAction != "" {
+			fmt.Printf("no_action: %s\n", plan.NoAction)
+		}
+		if plan.PlanPath != "" {
+			fmt.Printf("plan: %s\n", plan.PlanPath)
+		}
+	case "act":
+		workID := pos()
+		intentFile := flag("--intent")
+		planFile := flag("--plan")
+		if workID == "" || (intentFile == "" && planFile == "") || (intentFile != "" && planFile != "") {
+			fmt.Fprintln(os.Stderr, "usage: compound work act <work_id> (--intent <action-intent.json> | --plan <action-execution-plan.json>)")
+			os.Exit(2)
+		}
+		var ai envelope.ActionIntent
+		var pd envelope.PolicyDecision
+		if planFile != "" {
+			plan, err := work.LoadActionExecutionPlan(planFile)
+			die(err)
+			if plan.WorkID != workID {
+				die(fmt.Errorf("action plan belongs to work %s, not %s", plan.WorkID, workID))
+			}
+			ai = plan.ActionIntent
+			pd = plan.Decision
+		} else {
+			ai = loadActionIntent(intentFile)
+			ai.IDs.WorkID = workID // bind the action to this work
+			pd = policy.Evaluate(ai, policyConfig(), time.Now())
+		}
+		printJSON(pd)
+		if !policy.Allowed(pd) {
+			fmt.Fprintf(os.Stderr, "BLOCKED: policy %s — action NOT recorded\n", pd.Outcome)
+			os.Exit(gateExit(pd))
+		}
+		w, err := store.RecordAction(workID, ai, pd, time.Now())
+		die(err)
+		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
+	case "close-plan":
+		usage := "usage: compound work close-plan <work_id> (--action-plan <action-execution-plan.json> | --outcome completed|failed|cancelled --move-type <type>) [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--json", "--dry-run":
+			case "--outcome", "--move-type", "--actor", "--action-plan", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				if strings.HasPrefix(rest[i], "-") {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+			}
+		}
+		if pos() == "" || (flag("--action-plan") == "" && (flag("--outcome") == "" || flag("--move-type") == "")) {
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
 		plan, err := store.ClosePlan(pos(), time.Now(), work.ClosePlanOptions{
-			Actor:         flag("--actor"),
-			Outcome:       flag("--outcome"),
-			MoveType:      flag("--move-type"),
-			Capability:    flag("--capability"),
-			Action:        flag("--action"),
-			MutationClass: flag("--mutation-class"),
-			Reversibility: flag("--reversibility"),
-			BlastRadius:   flag("--blast-radius"),
-			TargetKind:    flag("--target-kind"),
-			TargetID:      flag("--target-id"),
-			TargetPath:    flag("--target-path"),
-			Record:        !has("--dry-run"),
+			Actor:          flag("--actor"),
+			Outcome:        flag("--outcome"),
+			MoveType:       flag("--move-type"),
+			ActionPlanPath: flag("--action-plan"),
+			Capability:     flag("--capability"),
+			Action:         flag("--action"),
+			MutationClass:  flag("--mutation-class"),
+			Reversibility:  flag("--reversibility"),
+			BlastRadius:    flag("--blast-radius"),
+			TargetKind:     flag("--target-kind"),
+			TargetID:       flag("--target-id"),
+			TargetPath:     flag("--target-path"),
+			Record:         !has("--dry-run"),
 		})
 		die(err)
 		if has("--json") {
@@ -5946,6 +6691,12 @@ func cmdWork(args []string) {
 		}
 		if len(plan.RunObservations) > 0 {
 			fmt.Printf("run_observations: %d\n", len(plan.RunObservations))
+		}
+		if plan.ActionExecutionPlanID != "" {
+			fmt.Printf("action_execution_plan: %s\n", plan.ActionExecutionPlanID)
+		}
+		if len(plan.ExpectedValidation) > 0 {
+			fmt.Printf("expected_validation: %s\n", strings.Join(plan.ExpectedValidation, ", "))
 		}
 		if plan.NoAction != "" {
 			fmt.Printf("no_action: %s\n", plan.NoAction)
@@ -5996,7 +6747,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
 		os.Exit(2)
 	}
 }
@@ -6265,8 +7016,8 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 		hookRuntimeSupport("claude_code", "PreToolUse", "fixtures/hooks/pre-tool-use.claude.json", true),
 		hookRuntimeSupport("claude_code", "PostToolUse", "fixtures/hooks/post-tool-use.json", true),
 		hookRuntimeSupport("claude_code", "SessionEnd", "", true),
-		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", false),
-		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", false),
+		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", true),
+		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", false),
 	}
 }
@@ -6423,7 +7174,12 @@ func cmdHome(args []string) {
 	case "where":
 		fmt.Println(resolve())
 	case "doctor", "":
-		printHomeDoctor(home.Doctor(resolve()))
+		report := home.Doctor(resolve())
+		if hasFlag(args, "--json") {
+			printJSON(buildHomeDoctorReport(report))
+			return
+		}
+		printHomeDoctor(report)
 	case "backup":
 		report, err := home.Backup(resolve(), flagValue(args, "--target"), time.Now())
 		if err != nil {
@@ -6470,9 +7226,14 @@ func cmdHome(args []string) {
 		}
 		printHomeRestoreReport(report)
 	case "archive-history":
+		if hasUsageFlag(args) {
+			fmt.Println("usage: compound home archive-history [--kind work|lease|review|comparison|create-plan] [--path rel] [--dry-run]")
+			return
+		}
 		report, err := home.ArchiveOperationalHistory(resolve(), home.OperationalArchiveOptions{
 			DryRun: hasFlag(args, "--dry-run"),
 			Kinds:  valuesFlag(args, "--kind"),
+			Paths:  valuesFlag(args, "--path"),
 		}, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "home archive-history:", err)
@@ -6480,6 +7241,10 @@ func cmdHome(args []string) {
 		}
 		printHomeOperationalArchiveReport("archive-history", report)
 	case "restore-history":
+		if hasUsageFlag(args) {
+			fmt.Println("usage: compound home restore-history (--all|--id id[,id...]) [--dry-run]")
+			return
+		}
 		report, err := home.RestoreOperationalArchive(resolve(), home.OperationalRestoreOptions{
 			DryRun: hasFlag(args, "--dry-run"),
 			All:    hasFlag(args, "--all"),
@@ -6501,7 +7266,7 @@ func cmdHome(args []string) {
 		}
 		printHomeCompactReport(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]; archive-history [--kind work|lease|review|comparison|create-plan] [--path rel] [--dry-run]")
 		os.Exit(2)
 	}
 }
@@ -6520,6 +7285,119 @@ func homeCleanStr(b bool) string {
 	return "DIRTY"
 }
 
+type homeDoctorJSONReport struct {
+	SchemaVersion              string                    `json:"schema_version"`
+	Home                       string                    `json:"home"`
+	Kind                       string                    `json:"kind,omitempty"`
+	ManifestOK                 bool                      `json:"manifest_ok"`
+	DirsOK                     int                       `json:"dirs_ok"`
+	DirsTotal                  int                       `json:"dirs_total"`
+	InsideGitRepo              bool                      `json:"inside_git_repo"`
+	GeneratedStateInRepoSource bool                      `json:"generated_state_in_repo_source"`
+	OperationalHygiene         homeDoctorHygieneReport   `json:"operational_hygiene"`
+	OperationalHygieneActions  []homeDoctorHygieneAction `json:"operational_hygiene_actions,omitempty"`
+	Setup                      home.SetupReport          `json:"setup"`
+	SetupOK                    bool                      `json:"setup_ok"`
+	Verdict                    string                    `json:"verdict"`
+}
+
+type homeDoctorHygieneReport struct {
+	OK                   bool     `json:"ok"`
+	TerminalHotWorkCount int      `json:"terminal_hot_work_count"`
+	StaleLeaseCount      int      `json:"stale_lease_count"`
+	TerminalHotWork      []string `json:"terminal_hot_work,omitempty"`
+	StaleLeases          []string `json:"stale_leases,omitempty"`
+}
+
+type homeDoctorHygieneAction struct {
+	ID                 string   `json:"id"`
+	Kind               string   `json:"kind"`
+	Title              string   `json:"title"`
+	Command            []string `json:"command"`
+	DryRunCommand      []string `json:"dry_run_command,omitempty"`
+	ExpectedValidation []string `json:"expected_validation,omitempty"`
+	StopConditions     []string `json:"stop_conditions,omitempty"`
+	Boundary           string   `json:"boundary"`
+	Proof              string   `json:"proof"`
+}
+
+func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
+	smell := r.InsideGitRepo && r.Manifest.HomeKind != "local"
+	operational := homeDoctorHygieneReport{OK: r.HygieneOK}
+	if hygiene, err := home.OperationalHygiene(r.Home); err == nil {
+		operational.TerminalHotWork = append([]string{}, hygiene.TerminalHotWork...)
+		operational.StaleLeases = append([]string{}, hygiene.StaleLeases...)
+	}
+	operational.TerminalHotWorkCount = len(operational.TerminalHotWork)
+	operational.StaleLeaseCount = len(operational.StaleLeases)
+	verdict := "ok"
+	if !r.OK || smell {
+		verdict = "fail"
+	}
+	return homeDoctorJSONReport{
+		SchemaVersion:              "compound.home_doctor_report.v0.1",
+		Home:                       r.Home,
+		Kind:                       r.Manifest.HomeKind,
+		ManifestOK:                 r.ManifestOK,
+		DirsOK:                     r.DirsOK,
+		DirsTotal:                  len(home.Dirs),
+		InsideGitRepo:              r.InsideGitRepo,
+		GeneratedStateInRepoSource: smell,
+		OperationalHygiene:         operational,
+		OperationalHygieneActions:  buildHomeDoctorHygieneActions(operational),
+		Setup:                      r.Setup,
+		SetupOK:                    r.SetupOK,
+		Verdict:                    verdict,
+	}
+}
+
+func buildHomeDoctorHygieneActions(h homeDoctorHygieneReport) []homeDoctorHygieneAction {
+	var actions []homeDoctorHygieneAction
+	if h.TerminalHotWorkCount > 0 {
+		actions = append(actions, homeDoctorHygieneAction{
+			ID:            "archive-terminal-work",
+			Kind:          "operational_hygiene_repair",
+			Title:         "Archive terminal WorkEnvelope history",
+			Command:       []string{"compound", "home", "archive-history", "--kind", "work"},
+			DryRunCommand: []string{"compound", "home", "archive-history", "--kind", "work", "--dry-run"},
+			ExpectedValidation: []string{
+				"terminal_hot_work_count becomes 0",
+				"receipts, transitions, and archive index remain resolvable",
+				"held/open WorkEnvelope state remains visible in workbench",
+			},
+			StopConditions: []string{
+				"dry-run includes non-terminal work",
+				"archive-history reports unexpected kind",
+				"workbench held/open work would be cleared",
+			},
+			Boundary: "reversible COMPOUND_HOME operational archive only; no held/open work clearing, no receipts/transitions deletion, no external side effects",
+			Proof:    "home doctor --json reports terminal_hot_work_count=0 and workbench still shows held valves after archive-history",
+		})
+	}
+	if h.StaleLeaseCount > 0 {
+		actions = append(actions, homeDoctorHygieneAction{
+			ID:            "archive-stale-leases",
+			Kind:          "operational_hygiene_repair",
+			Title:         "Archive stale WorkEnvelope leases",
+			Command:       []string{"compound", "home", "archive-history", "--kind", "lease"},
+			DryRunCommand: []string{"compound", "home", "archive-history", "--kind", "lease", "--dry-run"},
+			ExpectedValidation: []string{
+				"stale_lease_count becomes 0",
+				"leases for live non-terminal work remain hot",
+				"held WorkEnvelope state remains visible in workbench",
+			},
+			StopConditions: []string{
+				"dry-run includes a lease for live non-terminal work",
+				"archive-history reports unexpected kind",
+				"workbench held/open work would be cleared",
+			},
+			Boundary: "reversible COMPOUND_HOME lease archive only; no held/open work clearing, no work state mutation, no external side effects",
+			Proof:    "home doctor --json reports stale_lease_count=0 and workbench still shows held valves after archive-history",
+		})
+	}
+	return actions
+}
+
 func printHomeDoctor(r home.Report) {
 	// generated state must not be tracked: a global home inside a git repo is the
 	// smell; a --local home inside a repo is fine if it is gitignored.
@@ -6533,6 +7411,21 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("operational_hygiene: %s\n", homeCleanStr(r.HygieneOK))
 	for _, item := range r.Hygiene {
 		fmt.Printf("%s: %s\n", item.Name, homeCleanStr(item.OK))
+	}
+	for _, action := range buildHomeDoctorReport(r).OperationalHygieneActions {
+		fmt.Printf("hygiene_action: %s kind=%s\n", action.ID, action.Kind)
+		fmt.Printf("  command: %s\n", strings.Join(action.Command, " "))
+		if len(action.DryRunCommand) > 0 {
+			fmt.Printf("  dry_run: %s\n", strings.Join(action.DryRunCommand, " "))
+		}
+		if len(action.ExpectedValidation) > 0 {
+			fmt.Printf("  expected_validation: %s\n", strings.Join(action.ExpectedValidation, "; "))
+		}
+		if len(action.StopConditions) > 0 {
+			fmt.Printf("  stop_conditions: %s\n", strings.Join(action.StopConditions, "; "))
+		}
+		fmt.Printf("  boundary: %s\n", action.Boundary)
+		fmt.Printf("  proof: %s\n", action.Proof)
 	}
 	fmt.Printf("setup: %s\n", homeOKStr(r.SetupOK))
 	fmt.Printf("setup.install_dir: %s\n", r.Setup.InstallDir)
@@ -7267,7 +8160,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> [--actor A] [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -7576,6 +8469,39 @@ func cmdProduct(args []string) {
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- signal_draft: %s\n", paths.SignalDraftPath)
+	case "observation-verdict-plan":
+		verdictPath := flagValue(args[1:], "--verdict")
+		targetPath := flagValue(args[1:], "--target")
+		if verdictPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product observation-verdict-plan --verdict <panel-verdict.json> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := product.BuildObservationVerdictPlan(homePath, verdictPath, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product observation-verdict-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := product.RecordObservationVerdictPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product observation-verdict-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product observation-verdict-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- product: %s\n", plan.ProductID)
+		fmt.Printf("- verdict: %s\n", plan.VerdictID)
+		fmt.Printf("- panel_decision: %s\n", plan.PanelDecision)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "review-plan":
 		hypothesisID := flagValue(args[1:], "--hypothesis")
 		signalID := flagValue(args[1:], "--signal")
@@ -7599,6 +8525,41 @@ func cmdProduct(args []string) {
 		fmt.Printf("- product: %s\n", plan.ProductID)
 		fmt.Printf("- hypothesis: %s\n", plan.HypothesisID)
 		fmt.Printf("- signal: %s\n", plan.SignalID)
+		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "action-plan":
+		productID := flagValue(args[1:], "--product")
+		cardID := flagValue(args[1:], "--card")
+		targetPath := flagValue(args[1:], "--target")
+		if productID == "" || cardID == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product action-plan --product <product_id> --card <card_id> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := product.BuildActionPlan(homePath, productID, cardID, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := product.RecordActionPlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product action-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- product: %s\n", plan.ProductID)
+		fmt.Printf("- card: %s\n", plan.CardID)
+		fmt.Printf("- card_kind: %s\n", plan.CardKind)
 		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
 		if plan.TargetPath != "" {
 			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
@@ -7646,6 +8607,39 @@ func cmdProduct(args []string) {
 		fmt.Printf("- plan: %s\n", paths.PlanPath)
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "outbound-dry-run-plan":
+		reviewedReceiptPath := flagValue(args[1:], "--reviewed-receipt")
+		targetPath := flagValue(args[1:], "--target")
+		if reviewedReceiptPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>]")
+			os.Exit(2)
+		}
+		plan, err := product.BuildOutboundDryRunEvidencePlan(homePath, reviewedReceiptPath, targetPath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product outbound-dry-run-plan:", err)
+			os.Exit(1)
+		}
+		paths, err := product.RecordOutboundDryRunEvidencePlan(homePath, plan)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product outbound-dry-run-plan:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product outbound-dry-run-plan %s\n\n", plan.ID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- product: %s\n", plan.ProductID)
+		fmt.Printf("- receipt: %s\n", plan.ReceiptID)
+		fmt.Printf("- review_id: %s\n", plan.ReviewDraft.ReviewID)
+		if plan.TargetPath != "" {
+			fmt.Printf("- target_exists: %t\n", plan.TargetExists)
+		}
+		if plan.TargetHash != "" {
+			fmt.Printf("- target_hash: %s\n", plan.TargetHash)
+		}
+		fmt.Printf("- required_evidence: %d\n", len(plan.ReviewDraft.RequiredEvidence))
+		fmt.Printf("- evidence_refs: %d\n", len(plan.EvidenceRefs))
+		fmt.Printf("- plan: %s\n", paths.PlanPath)
+		fmt.Printf("- review: %s\n", paths.ReviewPath)
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "review":
 		if len(args) != 2 {
 			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml>")
@@ -7668,6 +8662,177 @@ func cmdProduct(args []string) {
 		fmt.Printf("- result: %s\n", report.Result)
 		fmt.Printf("- evidence: %s\n", report.EvidenceID)
 		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		if report.TransitionID != "" {
+			fmt.Printf("- transition: %s\n", report.TransitionID)
+		}
+	case "observation-verdict-review":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product observation-verdict-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := product.LoadObservationVerdictReview(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product observation verdict review:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplyObservationVerdictReview(homePath, store, review, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product observation verdict review:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product observation-verdict-review %s\n\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- verdict: %s\n", report.VerdictID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- evidence: %s\n", report.EvidenceID)
+		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		if report.HypothesisID != "" {
+			fmt.Printf("- hypothesis: %s\n", report.HypothesisID)
+		}
+		if report.TransitionID != "" {
+			fmt.Printf("- transition: %s\n", report.TransitionID)
+		}
+	case "action-review":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product action-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := product.LoadActionReview(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action review:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplyActionReview(homePath, review, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action review:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product action-review %s\n\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- card: %s\n", report.CardID)
+		fmt.Printf("- card_kind: %s\n", report.CardKind)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
+	case "action-work-plan":
+		reviewedPath := flagValue(args[1:], "--reviewed")
+		actor := flagValue(args[1:], "--actor")
+		jsonOut := hasFlag(args[1:], "--json")
+		if actor == "" {
+			actor = "codex"
+		}
+		if reviewedPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product action-work-plan --reviewed <reviewed.json> [--actor A] [--json]")
+			os.Exit(2)
+		}
+		draft, err := product.BuildActionWorkDraft(homePath, reviewedPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action work-plan:", err)
+			os.Exit(1)
+		}
+		workStore, err := work.Open(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action work-plan:", err)
+			os.Exit(1)
+		}
+		plan, err := workStore.CreatePlan(work.CreateInput{
+			WorkID:           draft.WorkID,
+			Owner:            draft.WorkOwner,
+			Actor:            actor,
+			SuccessPredicate: draft.SuccessPredicate,
+			DesiredOutcome:   draft.DesiredOutcome,
+			NonGoals:         draft.NonGoals,
+			EvidenceRefs:     draft.EvidenceRefs,
+			State:            "proposed",
+			Risk:             "tier2",
+			Privacy:          "private",
+		}, time.Now(), work.CreatePlanOptions{
+			Actor:         actor,
+			Capability:    "product.action_review",
+			Action:        "plan_work_from_reviewed_product_action",
+			MutationClass: "local_reversible",
+			Reversibility: "easy",
+			BlastRadius:   "local",
+			TargetKind:    "product_action_review",
+			TargetID:      draft.ReviewReportID,
+			TargetPath:    reviewedPath,
+			ActionContext: &work.WorkActionContext{
+				Kind:               "product_action_review",
+				SourceRef:          "compound://reviews/" + product.ProductActionReviewArea + "/" + filepath.Base(reviewedPath),
+				SourceID:           draft.ReviewReportID,
+				Title:              draft.CardTitle,
+				ActionSummary:      draft.ActionSummary,
+				Command:            draft.ActionCommand,
+				RequiredInputs:     draft.RequiredInputs,
+				ExpectedValidation: draft.ExpectedValidation,
+				StopConditions:     draft.StopConditions,
+				Boundary:           draft.Boundary,
+				Proof:              draft.Proof,
+				EvidenceRefs:       draft.EvidenceRefs,
+			},
+			Record: true,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product action work-plan:", err)
+			os.Exit(1)
+		}
+		out := struct {
+			SchemaVersion string                  `json:"schema_version"`
+			Status        string                  `json:"status"`
+			ProductAction product.ActionWorkDraft `json:"product_action"`
+			WorkPlan      work.CreatePlan         `json:"work_plan"`
+		}{
+			SchemaVersion: "compound.product_action_work_plan_report.v0.1",
+			Status:        "recorded",
+			ProductAction: draft,
+			WorkPlan:      plan,
+		}
+		if jsonOut {
+			printJSON(out)
+			return
+		}
+		fmt.Printf("# product action-work-plan %s\n\n", draft.ID)
+		fmt.Printf("- status: %s\n", out.Status)
+		fmt.Printf("- product: %s\n", draft.ProductID)
+		fmt.Printf("- review: %s\n", draft.ReviewReportID)
+		fmt.Printf("- work: %s\n", plan.WorkID)
+		fmt.Printf("- work_state: %s\n", plan.WorkState)
+		fmt.Printf("- policy: %s allowed=%t\n", plan.Policy.Outcome, plan.Policy.Allowed)
+		fmt.Printf("- plan: %s\n", plan.PlanPath)
+		if draft.ActionSummary != "" {
+			fmt.Printf("- action_summary: %s\n", draft.ActionSummary)
+		}
+		if len(draft.ActionCommand) > 0 {
+			fmt.Printf("- action_command: %s\n", strings.Join(draft.ActionCommand, " "))
+		}
+		fmt.Printf("- proof: %s\n", draft.Proof)
+	case "outbound-dry-run-review":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound product outbound-dry-run-review <review.yaml>")
+			os.Exit(2)
+		}
+		review, err := product.LoadOutboundDryRunEvidenceReview(args[1])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product outbound dry-run review:", err)
+			os.Exit(1)
+		}
+		report, err := product.ApplyOutboundDryRunEvidenceReview(homePath, store, review, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "product outbound dry-run review:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("# product outbound-dry-run-review %s\n\n", report.ReviewID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- product: %s\n", report.ProductID)
+		fmt.Printf("- receipt: %s\n", report.ReceiptID)
+		fmt.Printf("- decision: %s\n", report.Decision)
+		fmt.Printf("- evidence: %s\n", report.EvidenceID)
+		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
+		if report.HypothesisID != "" {
+			fmt.Printf("- hypothesis: %s\n", report.HypothesisID)
+		}
 		if report.TransitionID != "" {
 			fmt.Printf("- transition: %s\n", report.TransitionID)
 		}

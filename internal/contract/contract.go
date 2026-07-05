@@ -28,8 +28,12 @@ import (
 )
 
 const (
-	defaultRepoKind          = "product"
-	memoryRelevanceSourceRef = "memory://relevance-gated"
+	defaultRepoKind                  = "product"
+	memoryRelevanceSourceRef         = "memory://relevance-gated"
+	osAdaptationRuleRef              = "private-plan://operating-system-adaptation-rule"
+	osAdaptationCapabilityRef        = "capability://doctrine:context-aware-os-adaptation"
+	oracleSecondOpinionRuleRef       = "private-plan://oracle-second-opinion-rule"
+	oracleSecondOpinionCapabilityRef = "capability://procedure:oracle-second-opinion"
 	// repoMarker is the file a repo commits to self-declare its kind. Generic and
 	// leak-free: compound reads the marker, it does not heuristically sniff paths.
 	repoMarker = ".compound/repo.yaml"
@@ -266,15 +270,28 @@ type InstalledHooksImportReport struct {
 }
 
 type HookGateReadiness struct {
-	Harness         string `json:"harness"`
-	Hook            string `json:"hook"`
-	NativeBlock     bool   `json:"native_block"`
-	Installed       bool   `json:"installed"`
-	InstalledRef    string `json:"installed_ref,omitempty"`
-	Status          string `json:"status"`
-	AdapterRequired bool   `json:"adapter_required,omitempty"`
-	AdapterCommand  string `json:"adapter_command,omitempty"`
-	Reason          string `json:"reason,omitempty"`
+	Harness         string           `json:"harness"`
+	Hook            string           `json:"hook"`
+	NativeBlock     bool             `json:"native_block"`
+	Installed       bool             `json:"installed"`
+	InstalledRef    string           `json:"installed_ref,omitempty"`
+	Status          string           `json:"status"`
+	AdapterRequired bool             `json:"adapter_required,omitempty"`
+	AdapterCommand  string           `json:"adapter_command,omitempty"`
+	Reason          string           `json:"reason,omitempty"`
+	Actions         []HookGateAction `json:"actions,omitempty"`
+}
+
+type HookGateAction struct {
+	Kind             string `json:"kind"`
+	Label            string `json:"label"`
+	Command          string `json:"command,omitempty"`
+	ExpectedExitCode int    `json:"expected_exit_code,omitempty"`
+	ExpectedStatus   string `json:"expected_status,omitempty"`
+	Boundary         string `json:"boundary,omitempty"`
+	Proof            string `json:"proof,omitempty"`
+	Rollback         string `json:"rollback,omitempty"`
+	RequiresOperator bool   `json:"requires_operator,omitempty"`
 }
 
 type HookRuntimeSupport struct {
@@ -287,16 +304,17 @@ type HookRuntimeSupport struct {
 }
 
 type InstalledHookRuntimeReadiness struct {
-	Harness        string `json:"harness"`
-	Hook           string `json:"hook"`
-	Installed      bool   `json:"installed"`
-	InstalledRef   string `json:"installed_ref,omitempty"`
-	FixturePresent bool   `json:"fixture_present"`
-	FixtureRef     string `json:"fixture_ref,omitempty"`
-	LiveAdapter    bool   `json:"live_adapter"`
-	LiveCommand    string `json:"live_command,omitempty"`
-	Status         string `json:"status"`
-	Reason         string `json:"reason,omitempty"`
+	Harness        string           `json:"harness"`
+	Hook           string           `json:"hook"`
+	Installed      bool             `json:"installed"`
+	InstalledRef   string           `json:"installed_ref,omitempty"`
+	FixturePresent bool             `json:"fixture_present"`
+	FixtureRef     string           `json:"fixture_ref,omitempty"`
+	LiveAdapter    bool             `json:"live_adapter"`
+	LiveCommand    string           `json:"live_command,omitempty"`
+	Status         string           `json:"status"`
+	Reason         string           `json:"reason,omitempty"`
+	Actions        []HookGateAction `json:"actions,omitempty"`
 }
 
 type InstalledHooksSourceAuthority struct {
@@ -396,6 +414,18 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 		}
 		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev}})
 	}
+	if offer, rev, ok, err := osAdaptationSteeringOffer(in); err != nil {
+		return ec, err
+	} else if ok {
+		ec.CapabilityOffers = append(ec.CapabilityOffers, offer)
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{rev})
+	}
+	if offer, rev, ok, err := oracleSecondOpinionOffer(in); err != nil {
+		return ec, err
+	} else if ok {
+		ec.CapabilityOffers = append(ec.CapabilityOffers, offer)
+		ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, []envelope.SourceRev{rev})
+	}
 	decisions, decisionRevs, excludedDecisions, err := loadDecisionRefs(homePath, in)
 	if err != nil {
 		return ec, err
@@ -403,14 +433,15 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	ec.ActiveDecisions = decisions
 	ec.Excluded = append(ec.Excluded, excludedDecisions...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, decisionRevs)
-	memoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
+	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
 	if err != nil {
 		return ec, err
 	}
+	ec.Excluded = append(ec.Excluded, excludedMemoryRefs...)
 	for _, ref := range memoryRefs {
 		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
 	}
-	if len(memoryRefs) > 0 {
+	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 {
 		rev, err := memoryLedgerRevision(homePath)
 		if err != nil {
 			return ec, err
@@ -574,10 +605,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if len(decisions) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
 	}
-	memoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
+	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
 	if err != nil {
 		return pack, err
 	}
+	pack.Excluded = append(pack.Excluded, excludedMemoryRefs...)
 	for _, ref := range memoryRefs {
 		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
 		pack.Included = append(pack.Included, envelope.IncludedRef{
@@ -588,7 +620,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			Status:      "current",
 		})
 	}
-	if len(memoryRefs) > 0 {
+	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 {
 		rev, err := memoryLedgerRevision(homePath)
 		if err != nil {
 			return pack, err
@@ -599,6 +631,14 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			lines = append(lines, ref.Line)
 		}
 		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
+	}
+	pack, err = appendOSAdaptationSteeringOffer(pack, in)
+	if err != nil {
+		return pack, err
+	}
+	pack, err = appendOracleSecondOpinionOffer(pack, in)
+	if err != nil {
+		return pack, err
 	}
 	surfaced, surfacedTotal, err := surfaceCapabilityHits(homePath, in)
 	if err != nil {
@@ -687,6 +727,283 @@ func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int,
 		surfaced = surfaced[:maxContextCapabilityOffers]
 	}
 	return surfaced, surfacedTotal, nil
+}
+
+func appendOSAdaptationSteeringOffer(pack envelope.ContextPack, in Input) (envelope.ContextPack, error) {
+	offer, rev, ok, err := osAdaptationSteeringOffer(in)
+	if err != nil {
+		return pack, err
+	}
+	if !ok {
+		return pack, nil
+	}
+	pack.CapabilityOffers = append(pack.CapabilityOffers, offer)
+	pack.Included = append(pack.Included, envelope.IncludedRef{
+		Ref:         osAdaptationCapabilityRef,
+		SourceClass: "private_overlay",
+		Reason:      "ContextPack selected private OS-adaptation rule for a control-plane task that mentions adapting old operating-system material; refs only, no private body injection",
+		Confidence:  1,
+		Status:      "current",
+	})
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{rev})
+	pack.SummaryMD += " 1 context-aware OS adaptation offer included; private rule is refs-only and not imported as authority."
+	return pack, nil
+}
+
+func osAdaptationSteeringOffer(in Input) (envelope.CapabilityOffer, envelope.SourceRev, bool, error) {
+	if !shouldOfferOSAdaptationSteering(in) {
+		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, nil
+	}
+	rulePath := findUp(in.Cwd, filepath.Join("docs_private", "plan", "OPERATING-SYSTEM-ADAPTATION-RULE.md"))
+	if rulePath == "" {
+		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, nil
+	}
+	rule, err := os.ReadFile(rulePath)
+	if err != nil {
+		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, err
+	}
+	offer := envelope.CapabilityOffer{
+		Ref:   osAdaptationCapabilityRef,
+		Kind:  "doctrine",
+		Name:  "Context-aware operating-system adaptation",
+		Score: 1,
+		Why:   "private adaptation rule matched control-plane task: trigger=old-system+adaptation; silence=ordinary product/library work",
+		Required: []envelope.CapabilityOfferConstraint{
+			{
+				Kind:       "context_rule",
+				Ref:        osAdaptationRuleRef,
+				Detail:     "translate old OS material into trigger/action/boundary/silence/proof/retirement metadata before Compound authority",
+				Confidence: 1,
+			},
+			{
+				Kind:       "trigger",
+				Ref:        "context://old-system-adaptation-task",
+				Detail:     "load only when a control-plane task explicitly adapts, migrates, ports, or translates old operating-system, umut-os, brain, skill, hook, registry, or instruction material into Compound",
+				Confidence: 1,
+			},
+			{
+				Kind:       "action",
+				Ref:        "compound://runtime/context-pack-adaptation-contract",
+				Detail:     "translate old material into a consumed command, hook, projection, doctor, panel, ContextPack, product loop, or proof command",
+				Confidence: 1,
+			},
+			{
+				Kind:       "boundary",
+				Ref:        "compound://boundary/public-private",
+				Detail:     "refs only; do not inject private rule bodies, personal paths, accounts, app IDs, credentials, product data, or private corpus text into public Compound surfaces",
+				Confidence: 1,
+			},
+			{
+				Kind:       "silence",
+				Ref:        "context://ordinary-product-library-work",
+				Detail:     "stay silent for ordinary product/library work and for control-plane tasks that do not mention old-system adaptation",
+				Confidence: 1,
+			},
+			{
+				Kind:       "proof_gate",
+				Ref:        "compound://architecture-doctor/adaptation-steering",
+				Detail:     "strict architecture doctor catches shallow private steering or duplicate active prompts",
+				Confidence: 1,
+			},
+			{
+				Kind:       "retirement",
+				Ref:        "compound://adaptation/old-owner-narrowing",
+				Detail:     "before claiming proof, name the old owner that becomes narrower, retired, or explicitly evidence-only",
+				Confidence: 1,
+			},
+		},
+		Conflicts: []envelope.CapabilityOfferConstraint{
+			{
+				Kind:       "conflicts_with",
+				Ref:        "pattern://copy-old-instructions-verbatim",
+				Detail:     "do not copy old AGENTS.md, skill bodies, prompt blocks, paths, accounts, or private corpus text into Compound",
+				Confidence: 1,
+			},
+		},
+		Evidence: []envelope.CapabilityOfferConstraint{
+			{
+				Kind:       "source_revision",
+				Ref:        osAdaptationRuleRef,
+				Detail:     "private rule body consumed by hash only; body is not injected",
+				Confidence: 1,
+			},
+		},
+		CostRiskNote: "Use only for Compound control-plane adaptation work; stays silent for ordinary product/library tasks and never imports old-system content by itself.",
+	}
+	return offer, envelope.SourceRev{Source: osAdaptationRuleRef, Rev: "sha256:" + hashBytes(rule)}, true, nil
+}
+
+func appendOracleSecondOpinionOffer(pack envelope.ContextPack, in Input) (envelope.ContextPack, error) {
+	offer, rev, ok, err := oracleSecondOpinionOffer(in)
+	if err != nil {
+		return pack, err
+	}
+	if !ok {
+		return pack, nil
+	}
+	pack.CapabilityOffers = append(pack.CapabilityOffers, offer)
+	pack.Included = append(pack.Included, envelope.IncludedRef{
+		Ref:         oracleSecondOpinionCapabilityRef,
+		SourceClass: "private_overlay",
+		Reason:      "ContextPack selected private Oracle second-opinion rule for a high-leverage control-plane task; refs only, no private rule body injection",
+		Confidence:  1,
+		Status:      "current",
+	})
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{rev})
+	pack.SummaryMD += " 1 Oracle second-opinion offer included; private rule is refs-only and Oracle output remains evidence, not authority."
+	return pack, nil
+}
+
+func oracleSecondOpinionOffer(in Input) (envelope.CapabilityOffer, envelope.SourceRev, bool, error) {
+	if !shouldOfferOracleSecondOpinion(in) {
+		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, nil
+	}
+	rulePath := findUp(in.Cwd, filepath.Join("docs_private", "plan", "ORACLE-SECOND-OPINION-RULE.md"))
+	if rulePath == "" {
+		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, nil
+	}
+	rule, err := os.ReadFile(rulePath)
+	if err != nil {
+		return envelope.CapabilityOffer{}, envelope.SourceRev{}, false, err
+	}
+	offer := envelope.CapabilityOffer{
+		Ref:   oracleSecondOpinionCapabilityRef,
+		Kind:  "procedure",
+		Name:  "Oracle second-opinion evidence",
+		Score: 1,
+		Why:   "private Oracle rule matched control-plane task: trigger=high-leverage-governance; silence=ordinary deterministic work",
+		Required: []envelope.CapabilityOfferConstraint{
+			{
+				Kind:       "context_rule",
+				Ref:        oracleSecondOpinionRuleRef,
+				Detail:     "ask Oracle only as external evidence for high-leverage governance, authority, routing, hook/spine, memory, or public/private policy decisions",
+				Confidence: 1,
+			},
+			{
+				Kind:       "trigger",
+				Ref:        "context://high-leverage-governance-change",
+				Detail:     "load when the control-plane task explicitly asks for Oracle/second opinion or changes doctrine, authority, ownership, hooks, memory governance, routing, approval boundaries, or public/private policy",
+				Confidence: 1,
+			},
+			{
+				Kind:       "action",
+				Ref:        "compound://runtime/oracle-second-opinion-evidence",
+				Detail:     "attach relevant files, ask one concise architecture question, save the answer privately, then decide locally against Compound evidence and tests",
+				Confidence: 1,
+			},
+			{
+				Kind:       "writeback",
+				Ref:        "compound://source-observe/second-opinion-evidence",
+				Detail:     "preserve useful answers as compound.source_observation.v0.1 and import through compound source observe as method_upgrade no-promote evidence",
+				Confidence: 1,
+			},
+			{
+				Kind:       "boundary",
+				Ref:        "compound://boundary/oracle-evidence-not-authority",
+				Detail:     "do not edit Oracle config, expose private bodies in public docs, treat Oracle output as canon, or block reversible local work if Oracle is unavailable",
+				Confidence: 1,
+			},
+			{
+				Kind:       "silence",
+				Ref:        "context://ordinary-deterministic-work",
+				Detail:     "stay silent for ordinary implementation, tests, docs, source bridges, product work, and deterministic grep/script tasks",
+				Confidence: 1,
+			},
+			{
+				Kind:       "proof_gate",
+				Ref:        "compound://proof/local-state-delta-after-oracle",
+				Detail:     "Oracle alone is not proof; proof is saved private answer plus local tests, doctor, and installed command output for the resulting state delta",
+				Confidence: 1,
+			},
+			{
+				Kind:       "retirement",
+				Ref:        "compound://adaptation/oracle-backend-narrowing",
+				Detail:     "retire or narrow this private rule when a generic governed second-opinion adapter with receipts and policy gates exists",
+				Confidence: 1,
+			},
+		},
+		Conflicts: []envelope.CapabilityOfferConstraint{
+			{
+				Kind:       "conflicts_with",
+				Ref:        "pattern://oracle-as-authority",
+				Detail:     "do not let Oracle become source of truth, replacement for tests, or a blocker for reversible local execution",
+				Confidence: 1,
+			},
+		},
+		Evidence: []envelope.CapabilityOfferConstraint{
+			{
+				Kind:       "source_revision",
+				Ref:        oracleSecondOpinionRuleRef,
+				Detail:     "private Oracle rule consumed by hash only; body and saved answers stay private evidence",
+				Confidence: 1,
+			},
+		},
+		CostRiskNote: "Use for high-leverage control-plane judgment only; stays silent for deterministic work and never makes Oracle output authoritative.",
+	}
+	return offer, envelope.SourceRev{Source: oracleSecondOpinionRuleRef, Rev: "sha256:" + hashBytes(rule)}, true, nil
+}
+
+func shouldOfferOSAdaptationSteering(in Input) bool {
+	if strings.TrimSpace(in.RepoKind) != "control-plane" {
+		return false
+	}
+	task := strings.ToLower(in.Task)
+	if !containsAny(task, []string{"umut-os", "operating-system", "old os", "old operating", "legacy os", "brain"}) {
+		return false
+	}
+	return containsAny(task, []string{
+		"adapt",
+		"absorb",
+		"migrate",
+		"port",
+		"translate",
+		"copy",
+		"instruction",
+		"skill",
+		"hook",
+		"registry",
+		"context-aware",
+		"contextpack",
+		"authority",
+	})
+}
+
+func shouldOfferOracleSecondOpinion(in Input) bool {
+	if strings.TrimSpace(in.RepoKind) != "control-plane" {
+		return false
+	}
+	task := strings.ToLower(in.Task)
+	if strings.Contains(task, "oracle") || strings.Contains(task, "second opinion") || strings.Contains(task, "external opinion") || strings.Contains(task, "cross-model") {
+		return true
+	}
+	if !containsAny(task, []string{"change", "redesign", "decide", "decision", "policy", "governance", "authority", "boundary", "architecture", "doctrine", "route", "routing", "approval"}) {
+		return false
+	}
+	return containsAny(task, []string{
+		"ownership",
+		"source truth",
+		"source-of-truth",
+		"spine",
+		"hook",
+		"memory governance",
+		"memory",
+		"model routing",
+		"tool routing",
+		"routing",
+		"public private",
+		"public/private",
+		"approval",
+		"doctrine",
+	})
+}
+
+func containsAny(text string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func capabilitySurfaceReason(hit capgraph.Surfaced) string {
@@ -787,25 +1104,36 @@ type contextMemoryRef struct {
 	Rank       float64
 }
 
-func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemoryRef, error) {
+func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	entities := memoryEntityKeys(in)
 	taskTokens := memoryTextTokens(in.Task)
 	if len(entities) == 0 && len(taskTokens) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	store, err := mem.Open(homePath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	claims, err := store.AllCurrent()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
+	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
+		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens)
+		if reason := memoryPolicyExclusionReason(claim, rule, relevanceRank); reason != "" {
+			excluded = append(excluded, contextMemoryRef{
+				Ref:    "claim://" + claim.ID,
+				Reason: reason,
+				Seq:    claim.Seq,
+				Rank:   relevanceRank,
+			})
+			continue
+		}
 		rank := ambientMemoryRank(claim, rule, entities, taskTokens)
 		if rank <= 0 {
 			continue
@@ -833,7 +1161,24 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 		out = out[:maxContextMemoryRefs]
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
-	return out, nil
+	sort.Slice(excluded, func(i, j int) bool {
+		if excluded[i].Rank != excluded[j].Rank {
+			return excluded[i].Rank > excluded[j].Rank
+		}
+		if excluded[i].Seq == excluded[j].Seq {
+			return excluded[i].Ref < excluded[j].Ref
+		}
+		return excluded[i].Seq > excluded[j].Seq
+	})
+	if len(excluded) > maxContextMemoryRefs {
+		excluded = excluded[:maxContextMemoryRefs]
+	}
+	excludedRefs := make([]envelope.ExcludedRef, 0, len(excluded))
+	for _, ref := range excluded {
+		excludedRefs = append(excludedRefs, envelope.ExcludedRef{Ref: ref.Ref, Reason: ref.Reason})
+	}
+	sort.Slice(excludedRefs, func(i, j int) bool { return excludedRefs[i].Ref < excludedRefs[j].Ref })
+	return out, excludedRefs, nil
 }
 
 func memoryLedgerRevision(homePath string) (string, error) {
@@ -844,7 +1189,7 @@ func memoryLedgerRevision(homePath string) (string, error) {
 	return store.LedgerDigest()
 }
 
-func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool) float64 {
+func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool) float64 {
 	if claim.ClaimType == "decision" {
 		return 0
 	}
@@ -859,13 +1204,28 @@ func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens ma
 		rank += 2
 	}
 	rank += memoryTaskOverlapScore(claim, taskTokens)
-	if contains(rule.Forbidden, "self-model") && selfModelClaim(claim) {
-		return 0
+	return rank
+}
+
+func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank float64) string {
+	if relevanceRank <= 0 {
+		return ""
 	}
-	if contains(rule.ExplicitOnly, "self-model") && selfModelClaim(claim) {
-		return 0
+	if contains(rule.Forbidden, "self-model") && selfModelClaim(claim) {
+		return "memory policy forbids self-model for this repo kind; relevant claim left out of active_memory"
 	}
 	if contains(rule.Forbidden, "personal-corpus") && personalMemoryClaim(claim) {
+		return "memory policy forbids personal-corpus for this repo kind; relevant claim left out of active_memory"
+	}
+	if contains(rule.ExplicitOnly, "self-model") && selfModelClaim(claim) {
+		return "memory policy requires explicit self-model handling; relevant claim left out of active_memory"
+	}
+	return ""
+}
+
+func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool) float64 {
+	rank := memoryRelevanceRank(claim, entities, taskTokens)
+	if memoryPolicyExclusionReason(claim, rule, rank) != "" {
 		return 0
 	}
 	if contains(rule.ExplicitOnly, "personal-corpus") && personalMemoryClaim(claim) && rank <= 0 {
@@ -1628,9 +1988,31 @@ func hookReadinessForInput(homePath string, in Input) ([]envelope.HookReadiness,
 			AdapterRequired: row.AdapterRequired,
 			AdapterCommand:  row.AdapterCommand,
 			Reason:          row.Reason,
+			Actions:         envelopeHookReadinessActions(row.Actions),
 		})
 	}
 	return out, nil
+}
+
+func envelopeHookReadinessActions(actions []HookGateAction) []envelope.HookReadinessAction {
+	if len(actions) == 0 {
+		return nil
+	}
+	out := make([]envelope.HookReadinessAction, 0, len(actions))
+	for _, action := range actions {
+		out = append(out, envelope.HookReadinessAction{
+			Kind:             action.Kind,
+			Label:            action.Label,
+			Command:          action.Command,
+			ExpectedExitCode: action.ExpectedExitCode,
+			ExpectedStatus:   action.ExpectedStatus,
+			Boundary:         action.Boundary,
+			Proof:            action.Proof,
+			Rollback:         action.Rollback,
+			RequiresOperator: action.RequiresOperator,
+		})
+	}
+	return out
 }
 
 func requiredChecksForHookReadiness(readiness []envelope.HookReadiness, in Input) []string {
@@ -1648,10 +2030,27 @@ func requiredChecksForHookReadiness(readiness []envelope.HookReadiness, in Input
 		}
 		harness := firstNonEmpty(strings.TrimSpace(row.Harness), strings.TrimSpace(in.Harness), "unknown")
 		hook := firstNonEmpty(strings.TrimSpace(row.Hook), "PreToolUse")
+		if proof := hookReadinessAction(row.Actions, "prove_fixture_gate"); proof != nil && strings.TrimSpace(proof.Command) != "" {
+			expected := ""
+			if proof.ExpectedExitCode != 0 {
+				expected = fmt.Sprintf(" expected_exit_code=%d", proof.ExpectedExitCode)
+			}
+			checks = append(checks, fmt.Sprintf("pre_write_gate %s/%s status=%s: run %s%s before mutation", harness, hook, status, strings.TrimSpace(proof.Command), expected))
+			continue
+		}
 		checks = append(checks, fmt.Sprintf("pre_write_gate %s/%s status=%s: run %s before mutation", harness, hook, status, strings.TrimSpace(row.AdapterCommand)))
 	}
 	sort.Strings(checks)
 	return checks
+}
+
+func hookReadinessAction(actions []envelope.HookReadinessAction, kind string) *envelope.HookReadinessAction {
+	for i := range actions {
+		if actions[i].Kind == kind {
+			return &actions[i]
+		}
+	}
+	return nil
 }
 
 func hookReadinessTask(in Input) bool {
@@ -1843,9 +2242,73 @@ func InstalledHookGateReadiness(manifest InstalledHooksManifest, nativePreToolUs
 			row.AdapterCommand = "compound hook pre-tool-use --enforce FIXTURE_JSON"
 			row.Reason = "no installed write-scoped PreToolUse hook and harness cannot block natively"
 		}
+		row.Actions = hookGateActions(row)
 		out = append(out, row)
 	}
 	return out
+}
+
+func hookGateActions(row HookGateReadiness) []HookGateAction {
+	if !row.AdapterRequired && row.Status != "not_installed" {
+		return nil
+	}
+	var actions []HookGateAction
+	if fixture := preToolUseFixtureForHarness(row.Harness); fixture != "" {
+		actions = append(actions, HookGateAction{
+			Kind:             "prove_fixture_gate",
+			Label:            "Prove the PreToolUse policy gate with a temporary Compound home",
+			Command:          fmt.Sprintf("COMPOUND_HOME=$(mktemp -d) compound hook pre-tool-use --enforce %s", fixture),
+			ExpectedExitCode: 3,
+			ExpectedStatus:   "fail_open_or_blocked",
+			Boundary:         "local fixture proof only; does not install or register a hook",
+			Proof:            "command exits through the same PolicyDecision gate path used by wrapper adapters",
+		})
+	}
+	if row.AdapterRequired {
+		if strings.TrimSpace(row.Harness) == "codex" {
+			actions = append(actions, HookGateAction{
+				Kind:           "prove_live_wrapper_gate",
+				Label:          "Prove Codex live PreToolUse wrapper input temporary Compound home",
+				Command:        codexPreToolUseLiveWrapperProofCommand(),
+				ExpectedStatus: "ok",
+				Boundary:       "local synthetic live proof only; does not install hooks, register wrappers, or mutate harness config",
+				Proof:          "command emits compound.codex_live_hook_response.v0.1 with status ok through the same live PreToolUse adapter a wrapper would call",
+			})
+		}
+		actions = append(actions, HookGateAction{
+			Kind:             "operator_wrapper_required",
+			Label:            "Install or wire a blocking wrapper only after fixture proof",
+			Boundary:         "operator-only hook registration or wrapper change; agents must not flip it",
+			Proof:            "rerun `compound contract hooks-authority` and require status to move out of missing_gate/wrapper_required",
+			Rollback:         "remove the wrapper or restore the previous hook registration, then rerun hooks-authority",
+			RequiresOperator: true,
+		})
+		return actions
+	}
+	actions = append(actions, HookGateAction{
+		Kind:             "operator_install_required",
+		Label:            "Install native blocking PreToolUse hook only after fixture proof",
+		Boundary:         "operator-only hook registration change; agents may prepare proof but not install",
+		Proof:            "rerun `compound contract hooks-authority` and require status native_blocking",
+		Rollback:         "remove the hook registration or restore previous installed-hooks authority",
+		RequiresOperator: true,
+	})
+	return actions
+}
+
+func codexPreToolUseLiveWrapperProofCommand() string {
+	return `tmp_home=$(mktemp -d); tmp_repo=$(mktemp -d); printf '{"hook_event_name":"PreToolUse","session_id":"sess_codex_wrapper_probe","cwd":"%s","tool_name":"Write","tool_input":{"file_path":"%s/README.md"}}' "$tmp_repo" "$tmp_repo" | COMPOUND_HOME="$tmp_home" compound hook pre-tool-use --live --harness codex`
+}
+
+func preToolUseFixtureForHarness(harnessName string) string {
+	switch strings.TrimSpace(harnessName) {
+	case "claude_code":
+		return "fixtures/hooks/pre-tool-use.claude.json"
+	case "codex":
+		return "fixtures/hooks/pre-tool-use.codex.json"
+	default:
+		return ""
+	}
 }
 
 func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports []HookRuntimeSupport) []InstalledHookRuntimeReadiness {
@@ -1894,6 +2357,7 @@ func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports
 			row.Status = "missing_live_adapter"
 			row.Reason = "installed hook lacks live adapter support for this harness"
 		}
+		row.Actions = hookRuntimeReadinessActions(row)
 		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -1902,6 +2366,65 @@ func InstalledHookRuntimeReadinessRows(manifest InstalledHooksManifest, supports
 		return a < b
 	})
 	return rows
+}
+
+func hookRuntimeReadinessActions(row InstalledHookRuntimeReadiness) []HookGateAction {
+	if row.Status == "ready" {
+		return nil
+	}
+	cliHook := hookCLIName(row.Hook)
+	if cliHook == "" {
+		return nil
+	}
+	var actions []HookGateAction
+	if row.FixturePresent && strings.TrimSpace(row.FixtureRef) != "" {
+		actions = append(actions, HookGateAction{
+			Kind:     "prove_fixture_hook",
+			Label:    "Prove installed hook fixture with a temporary Compound home",
+			Command:  fmt.Sprintf("COMPOUND_HOME=$(mktemp -d) compound hook %s %s", cliHook, row.FixtureRef),
+			Boundary: "local fixture proof only; does not install hooks, register adapters, or mutate harness config",
+			Proof:    "command persists normal hook artifacts in a temp COMPOUND_HOME and leaves installed-hook authority unchanged",
+		})
+	}
+	if !row.LiveAdapter {
+		actions = append(actions, HookGateAction{
+			Kind:             "operator_live_adapter_required",
+			Label:            "Wire live adapter or registration shim only after fixture proof",
+			Command:          fmt.Sprintf("compound hook %s --live --harness %s", cliHook, hookLiveHarness(row.Harness)),
+			Boundary:         "operator-only live adapter or hook registration change; agents may prepare proof and rollback notes but must not flip registration",
+			Proof:            "rerun `compound contract hooks-authority` and require this hook_readiness row to leave missing_live_adapter",
+			Rollback:         "remove the live adapter shim or restore the previous hook registration, then rerun `compound contract hooks-authority`",
+			RequiresOperator: true,
+		})
+	}
+	return actions
+}
+
+func hookCLIName(hookName string) string {
+	switch canonicalHookEvent(hookName) {
+	case "SessionStart":
+		return "session-start"
+	case "UserPromptSubmit":
+		return "user-prompt-submit"
+	case "PreToolUse":
+		return "pre-tool-use"
+	case "PostToolUse":
+		return "post-tool-use"
+	case "SessionEnd":
+		return "session-end"
+	case "Stop":
+		return "stop"
+	default:
+		return ""
+	}
+}
+
+func hookLiveHarness(harnessName string) string {
+	harnessName = strings.TrimSpace(harnessName)
+	if harnessName == "claude_code" {
+		return "claude-code"
+	}
+	return strings.ReplaceAll(harnessName, "_", "-")
 }
 
 func canonicalHookEvent(value string) string {

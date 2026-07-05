@@ -2,12 +2,15 @@ package work
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/envelope"
 )
 
@@ -24,15 +27,16 @@ type WorkbenchOptions struct {
 // WorkbenchReport is a read model over WorkEnvelope, Receipt, and Transition
 // state. It does not dispatch, claim, close, or repair work.
 type WorkbenchReport struct {
-	GeneratedAt       string                   `json:"generated_at"`
-	Counts            WorkbenchCounts          `json:"counts"`
-	Open              []WorkbenchItem          `json:"open"`
-	Recent            []WorkbenchItem          `json:"recent,omitempty"`
-	ActivePacketProof *ActivePacketProofReport `json:"active_packet_proof,omitempty"`
-	OfferedPackets    *OfferedPacketSurface    `json:"offered_packets,omitempty"`
-	DispatchNext      WorkbenchDispatchNext    `json:"dispatch_next"`
-	DispatchStepRuns  []DispatchStepRunSummary `json:"dispatch_step_runs,omitempty"`
-	Integrity         []string                 `json:"integrity,omitempty"`
+	GeneratedAt       string                      `json:"generated_at"`
+	Counts            WorkbenchCounts             `json:"counts"`
+	Open              []WorkbenchItem             `json:"open"`
+	Recent            []WorkbenchItem             `json:"recent,omitempty"`
+	ActivePacketProof *ActivePacketProofReport    `json:"active_packet_proof,omitempty"`
+	OfferedPackets    *OfferedPacketSurface       `json:"offered_packets,omitempty"`
+	AdmissionPreviews []WorkbenchAdmissionPreview `json:"admission_previews,omitempty"`
+	DispatchNext      WorkbenchDispatchNext       `json:"dispatch_next"`
+	DispatchStepRuns  []DispatchStepRunSummary    `json:"dispatch_step_runs,omitempty"`
+	Integrity         []string                    `json:"integrity,omitempty"`
 }
 
 type WorkbenchCounts struct {
@@ -43,7 +47,9 @@ type WorkbenchCounts struct {
 	NeedsReview       int            `json:"needs_review"`
 	InProgress        int            `json:"in_progress"`
 	RunObservations   int            `json:"run_observations"`
+	RunArtifacts      int            `json:"run_artifacts"`
 	DispatchStepRuns  int            `json:"dispatch_step_runs"`
+	AdmissionPreviews int            `json:"admission_previews"`
 	MissingReceipt    int            `json:"missing_receipt"`
 	MissingTransition int            `json:"missing_transition"`
 	ByState           map[string]int `json:"by_state"`
@@ -65,14 +71,73 @@ type DispatchStepRunSummary struct {
 }
 
 type WorkbenchDispatchNext struct {
-	Actor      string   `json:"actor"`
-	CanRun     bool     `json:"can_run"`
-	Command    []string `json:"command,omitempty"`
-	Action     string   `json:"action,omitempty"`
-	Reason     string   `json:"reason,omitempty"`
-	WorkID     string   `json:"work_id,omitempty"`
-	WaitReason string   `json:"wait_reason,omitempty"`
-	BlockedOn  []string `json:"blocked_on,omitempty"`
+	Actor            string                     `json:"actor"`
+	CanRun           bool                       `json:"can_run"`
+	Command          []string                   `json:"command,omitempty"`
+	Action           string                     `json:"action,omitempty"`
+	Reason           string                     `json:"reason,omitempty"`
+	WorkID           string                     `json:"work_id,omitempty"`
+	WaitReason       string                     `json:"wait_reason,omitempty"`
+	BlockedOn        []string                   `json:"blocked_on,omitempty"`
+	AdjacentProgress *WorkbenchAdjacentProgress `json:"adjacent_progress,omitempty"`
+}
+
+type WorkbenchAdjacentProgress struct {
+	Available                bool                      `json:"available"`
+	Reason                   string                    `json:"reason"`
+	NextAction               string                    `json:"next_action"`
+	PacketCandidateCount     int                       `json:"packet_candidate_count"`
+	PacketRefs               []string                  `json:"packet_refs,omitempty"`
+	Command                  []string                  `json:"command,omitempty"`
+	HeldWorkIDs              []string                  `json:"held_work_ids,omitempty"`
+	NonPacketActions         []WorkbenchAdjacentAction `json:"non_packet_actions,omitempty"`
+	ConsumedNonPacketActions []WorkbenchAdjacentAction `json:"consumed_non_packet_actions,omitempty"`
+}
+
+type WorkbenchAdjacentAction struct {
+	ID                   string               `json:"id"`
+	Kind                 string               `json:"kind"`
+	Title                string               `json:"title"`
+	Command              []string             `json:"command,omitempty"`
+	RequiredInputs       []string             `json:"required_inputs,omitempty"`
+	ExpectedValidation   []string             `json:"expected_validation,omitempty"`
+	StopConditions       []string             `json:"stop_conditions,omitempty"`
+	Boundary             string               `json:"boundary"`
+	Proof                string               `json:"proof"`
+	RequiresOperator     bool                 `json:"requires_operator,omitempty"`
+	Consumed             bool                 `json:"consumed,omitempty"`
+	ConsumedEvidenceRefs []string             `json:"consumed_evidence_refs,omitempty"`
+	ReviewCard           *WorkbenchReviewCard `json:"review_card,omitempty"`
+}
+
+type WorkbenchAdmissionPreview struct {
+	PlanID                 string             `json:"plan_id"`
+	GeneratedAt            string             `json:"generated_at,omitempty"`
+	AgeSeconds             int64              `json:"age_seconds,omitempty"`
+	Age                    string             `json:"age,omitempty"`
+	Status                 string             `json:"status"`
+	Mode                   string             `json:"mode,omitempty"`
+	Staleness              string             `json:"staleness,omitempty"`
+	StaleReason            string             `json:"stale_reason,omitempty"`
+	NextAction             string             `json:"next_action,omitempty"`
+	Actor                  string             `json:"actor,omitempty"`
+	WorkID                 string             `json:"work_id"`
+	WorkOwner              string             `json:"work_owner,omitempty"`
+	WorkState              string             `json:"work_state,omitempty"`
+	SuccessPredicate       string             `json:"success_predicate,omitempty"`
+	DesiredOutcome         string             `json:"desired_outcome,omitempty"`
+	ActionSummary          string             `json:"action_summary,omitempty"`
+	PlanPath               string             `json:"plan_path,omitempty"`
+	Command                []string           `json:"command,omitempty"`
+	AdmitCommand           []string           `json:"admit_command,omitempty"`
+	RetireCommand          []string           `json:"retire_command,omitempty"`
+	RetireDryRun           []string           `json:"retire_dry_run_command,omitempty"`
+	PolicyAllowed          bool               `json:"policy_allowed"`
+	PolicyOutcome          string             `json:"policy_outcome,omitempty"`
+	RequiresOperator       bool               `json:"requires_operator,omitempty"`
+	AdmissionBlockedReason string             `json:"admission_blocked_reason,omitempty"`
+	EvidenceRefs           []string           `json:"evidence_refs,omitempty"`
+	ActionContext          *WorkActionContext `json:"action_context,omitempty"`
 }
 
 type WorkbenchItem struct {
@@ -98,9 +163,48 @@ type WorkbenchItem struct {
 	ArtifactIDs        []string                `json:"artifact_ids,omitempty"`
 	VerificationIDs    []string                `json:"verification_ids,omitempty"`
 	MemoryCandidateIDs []string                `json:"memory_candidate_ids,omitempty"`
+	ActionContext      *WorkActionContext      `json:"action_context,omitempty"`
+	ReviewCards        []WorkbenchReviewCard   `json:"review_cards,omitempty"`
 	RunObservations    []RunObservationSummary `json:"run_observations,omitempty"`
+	RunArtifacts       []WorkbenchRunArtifact  `json:"run_artifacts,omitempty"`
 	RouteOutcomes      []RouteOutcomeSummary   `json:"route_outcomes,omitempty"`
 	recentAt           string
+}
+
+type WorkbenchReviewCard struct {
+	ID                  string   `json:"id"`
+	Kind                string   `json:"kind"`
+	Title               string   `json:"title"`
+	WorkID              string   `json:"work_id"`
+	GateID              string   `json:"gate_id,omitempty"`
+	SourceKind          string   `json:"source_kind,omitempty"`
+	CandidateID         string   `json:"candidate_id,omitempty"`
+	CandidateState      string   `json:"candidate_state,omitempty"`
+	CandidateEntity     string   `json:"candidate_entity,omitempty"`
+	PanelRunID          string   `json:"panel_run_id,omitempty"`
+	PanelRunRef         string   `json:"panel_run_ref,omitempty"`
+	PromotionSummaryRef string   `json:"promotion_summary_ref,omitempty"`
+	PromotionCount      *int     `json:"promotion_count,omitempty"`
+	Command             []string `json:"command,omitempty"`
+	RequiredInputs      []string `json:"required_inputs,omitempty"`
+	ExpectedValidation  []string `json:"expected_validation,omitempty"`
+	StopConditions      []string `json:"stop_conditions,omitempty"`
+	Boundary            string   `json:"boundary"`
+	Proof               string   `json:"proof"`
+	RequiresOperator    bool     `json:"requires_operator,omitempty"`
+}
+
+type WorkbenchRunArtifact struct {
+	Ref          string   `json:"ref"`
+	Kind         string   `json:"kind"`
+	Bytes        int64    `json:"bytes,omitempty"`
+	Schema       string   `json:"schema_version,omitempty"`
+	ID           string   `json:"id,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	TargetKind   string   `json:"target_kind,omitempty"`
+	TargetRefs   []string `json:"target_refs,omitempty"`
+	CandidateIDs []string `json:"candidate_ids,omitempty"`
+	Count        *int     `json:"count,omitempty"`
 }
 
 type RouteOutcomeSummary struct {
@@ -160,6 +264,12 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	for _, warning := range routeWarnings {
 		report.Integrity = append(report.Integrity, warning)
 	}
+	admissionPreviews, admissionWarnings := s.workbenchAdmissionPreviews(now, opts.RecentLimit)
+	report.AdmissionPreviews = admissionPreviews
+	report.Counts.AdmissionPreviews = len(admissionPreviews)
+	for _, warning := range admissionWarnings {
+		report.Integrity = append(report.Integrity, warning)
+	}
 	report.Counts.Total = len(works)
 	for _, w := range works {
 		events, err := s.eventsFor(w.ID)
@@ -212,6 +322,9 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		return report.Open[i].WorkID < report.Open[j].WorkID
 	})
 	report.DispatchNext = workbenchDispatchNext(report, opts.Actor)
+	if warnings := s.applyAdjacentActionProofConsumption(report.DispatchNext.AdjacentProgress); len(warnings) > 0 {
+		report.Integrity = append(report.Integrity, warnings...)
+	}
 	sort.SliceStable(report.Recent, func(i, j int) bool {
 		if report.Recent[i].recentAt != report.Recent[j].recentAt {
 			return workbenchTimestampAfter(report.Recent[i].recentAt, report.Recent[j].recentAt)
@@ -235,6 +348,226 @@ func (s *Store) workbenchActivePacketProof(now time.Time, surface, expectedPacke
 	return &proof, nil
 }
 
+func (s *Store) workbenchAdmissionPreviews(now time.Time, limit int) ([]WorkbenchAdmissionPreview, []string) {
+	dir := filepath.Join(s.home, "create-plans")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, []string{"create plans unreadable: " + err.Error()}
+	}
+
+	var previews []WorkbenchAdmissionPreview
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var plan CreatePlan
+		if err := s.readJSON(path, &plan); err != nil {
+			warnings = append(warnings, "create plan "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		if !workbenchCreatePlanIsAdmissionPreview(plan) {
+			continue
+		}
+		if _, err := s.Get(plan.WorkID); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			warnings = append(warnings, "create plan "+entry.Name()+" work lookup failed: "+err.Error())
+			continue
+		}
+
+		planPath := strings.TrimSpace(plan.PlanPath)
+		if planPath == "" {
+			planPath = path
+		}
+		workOwner := strings.TrimSpace(plan.WorkOwner)
+		if workOwner == "" {
+			workOwner = plan.Work.Owner
+		}
+		workState := strings.TrimSpace(plan.WorkState)
+		if workState == "" {
+			workState = plan.Work.State
+		}
+		ageSeconds, ageLabel, staleness, staleReason := workbenchAdmissionPreviewAge(now, plan.GeneratedAt)
+		nextAction := "review proposal-only admission preview; admit only if the planned work is still intended"
+		if staleness == "stale" {
+			nextAction = "stale proposal-only admission preview; revalidate intent before admitting, otherwise retire through operational archive or replace with a fresh plan"
+		}
+		planRel := filepath.ToSlash(strings.TrimPrefix(path, s.home+string(os.PathSeparator)))
+		var retireCommand []string
+		var retireDryRun []string
+		if planRel != "" && !strings.HasPrefix(planRel, "..") {
+			retireCommand = []string{"compound", "home", "archive-history", "--kind", "create-plan", "--path", planRel}
+			retireDryRun = append(append([]string{}, retireCommand...), "--dry-run")
+		}
+		actionContext := cloneWorkActionContext(plan.ActionContext)
+		actionSummary := ""
+		if actionContext != nil {
+			actionSummary = strings.TrimSpace(actionContext.ActionSummary)
+		}
+		requiresOperator := workActionContextRequiresOperator(actionContext)
+		if requiresOperator && actionContext != nil {
+			actionContext.RequiresOperator = true
+		}
+		admissionBlockedReason := ""
+		admitCommand := []string{"compound", "work", "admit-plan", "--plan", planPath}
+		if requiresOperator {
+			admissionBlockedReason = "operator required inputs must be supplied before admission"
+			nextAction = "operator-only admission preview; do not admit until required private/operator inputs are supplied, otherwise retire through operational archive"
+			admitCommand = nil
+		}
+		previews = append(previews, WorkbenchAdmissionPreview{
+			PlanID:                 plan.ID,
+			GeneratedAt:            plan.GeneratedAt,
+			AgeSeconds:             ageSeconds,
+			Age:                    ageLabel,
+			Status:                 plan.Status,
+			Mode:                   plan.Mode,
+			Staleness:              staleness,
+			StaleReason:            staleReason,
+			NextAction:             nextAction,
+			Actor:                  plan.Actor,
+			WorkID:                 plan.WorkID,
+			WorkOwner:              workOwner,
+			WorkState:              workState,
+			SuccessPredicate:       plan.Work.SuccessPredicate,
+			DesiredOutcome:         plan.Work.DesiredOutcome,
+			ActionSummary:          actionSummary,
+			PlanPath:               planPath,
+			Command:                append([]string{}, plan.CreateCommand...),
+			AdmitCommand:           admitCommand,
+			RetireCommand:          retireCommand,
+			RetireDryRun:           retireDryRun,
+			PolicyAllowed:          plan.Policy.Allowed,
+			PolicyOutcome:          plan.Policy.Outcome,
+			RequiresOperator:       requiresOperator,
+			AdmissionBlockedReason: admissionBlockedReason,
+			EvidenceRefs:           append([]string{}, plan.Work.EvidenceRefs...),
+			ActionContext:          actionContext,
+		})
+	}
+
+	sort.SliceStable(previews, func(i, j int) bool {
+		if previews[i].GeneratedAt != previews[j].GeneratedAt {
+			return workbenchTimestampAfter(previews[i].GeneratedAt, previews[j].GeneratedAt)
+		}
+		return previews[i].PlanID > previews[j].PlanID
+	})
+	if limit > 0 && len(previews) > limit {
+		previews = previews[:limit]
+	}
+	return previews, warnings
+}
+
+func workbenchCreatePlanIsAdmissionPreview(plan CreatePlan) bool {
+	return plan.SchemaVersion == CreatePlanSchemaVersion &&
+		plan.Status == "create_policy_allowed" &&
+		plan.Policy.Allowed &&
+		strings.TrimSpace(plan.ID) != "" &&
+		strings.TrimSpace(plan.WorkID) != ""
+}
+
+func workActionContextRequiresOperator(ctx *WorkActionContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.RequiresOperator {
+		return true
+	}
+	if strings.TrimSpace(ctx.Kind) != "workbench_review_card" {
+		return false
+	}
+	parts := []string{ctx.SourceID, ctx.SourceRef, ctx.Title, ctx.ActionSummary, ctx.Boundary, ctx.Proof}
+	parts = append(parts, ctx.RequiredInputs...)
+	parts = append(parts, ctx.StopConditions...)
+	joined := strings.ToLower(strings.Join(parts, " "))
+	return strings.Contains(joined, "operator-gate-") ||
+		strings.Contains(joined, "memory-review-") ||
+		strings.Contains(joined, "operator supplies") ||
+		strings.Contains(joined, "operator review") ||
+		strings.Contains(joined, "operator adjudication") ||
+		strings.Contains(joined, "private config") ||
+		strings.Contains(joined, "private/operator")
+}
+
+const workbenchAdmissionPreviewStaleAfter = 24 * time.Hour
+
+func workbenchAdmissionPreviewAge(now time.Time, generatedAt string) (int64, string, string, string) {
+	at, err := time.Parse(time.RFC3339, strings.TrimSpace(generatedAt))
+	if err != nil {
+		return 0, "", "unknown", "generated_at unreadable"
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	age := now.UTC().Sub(at.UTC())
+	if age < 0 {
+		age = 0
+	}
+	seconds := int64(age.Round(time.Second).Seconds())
+	label := workbenchDurationLabel(seconds)
+	if age >= workbenchAdmissionPreviewStaleAfter {
+		return seconds, label, "stale", "proposal-only create-plan older than 24h"
+	}
+	return seconds, label, "fresh", ""
+}
+
+func workbenchDurationLabel(seconds int64) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	switch {
+	case seconds >= 86400:
+		return strconv.FormatInt(seconds/86400, 10) + "d"
+	case seconds >= 3600:
+		return strconv.FormatInt(seconds/3600, 10) + "h"
+	case seconds >= 60:
+		return strconv.FormatInt(seconds/60, 10) + "m"
+	default:
+		return strconv.FormatInt(seconds, 10) + "s"
+	}
+}
+
+func (s *Store) actionContextForWork(w envelope.WorkEnvelope) (*WorkActionContext, []string) {
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return nil, []string{"action context lifecycle unreadable: " + err.Error()}
+	}
+	return s.actionContextFromCreatePlan(w, events)
+}
+
+func (s *Store) actionContextFromCreatePlan(w envelope.WorkEnvelope, events []Event) (*WorkActionContext, []string) {
+	planID := lastCreatePlanID(events)
+	if planID == "" {
+		return nil, nil
+	}
+	planPath := filepath.Join(s.home, "create-plans", planID+".json")
+	plan, err := LoadCreatePlan(planPath)
+	if err != nil {
+		return nil, []string{"create plan " + planID + " action context unreadable: " + err.Error()}
+	}
+	if plan.WorkID != w.ID {
+		return nil, []string{"create plan " + planID + " belongs to " + plan.WorkID + ", not " + w.ID}
+	}
+	return cloneWorkActionContext(plan.ActionContext), nil
+}
+
+func lastCreatePlanID(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		for j := len(events[i].Attached) - 1; j >= 0; j-- {
+			ref := strings.TrimSpace(events[i].Attached[j])
+			if strings.HasPrefix(ref, "create_plan:") {
+				return strings.TrimSpace(strings.TrimPrefix(ref, "create_plan:"))
+			}
+		}
+	}
+	return ""
+}
+
 func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport) WorkbenchItem {
 	item := WorkbenchItem{
 		WorkID:             w.ID,
@@ -256,6 +589,38 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	}
 	if observations, warnings := s.workbenchRunObservations(w.ID); len(observations) > 0 || len(warnings) > 0 {
 		item.RunObservations = observations
+		for _, warning := range warnings {
+			report.Integrity = append(report.Integrity, w.ID+": "+warning)
+		}
+	}
+	if artifacts, warnings := s.workbenchRunArtifacts(w.ID); len(artifacts) > 0 || len(warnings) > 0 {
+		item.RunArtifacts = artifacts
+		report.Counts.RunArtifacts += len(artifacts)
+		for _, artifact := range artifacts {
+			item.MemoryCandidateIDs = mergeUnique(item.MemoryCandidateIDs, artifact.CandidateIDs)
+			for _, ref := range artifact.TargetRefs {
+				if strings.HasPrefix(ref, "cand_") {
+					item.MemoryCandidateIDs = mergeUnique(item.MemoryCandidateIDs, []string{ref})
+				}
+			}
+		}
+		for _, warning := range warnings {
+			report.Integrity = append(report.Integrity, w.ID+": "+warning)
+		}
+	}
+	item.ReviewCards = s.workbenchReviewCards(w.ID, item.RunArtifacts)
+	item.ReviewCards = append(item.ReviewCards, workbenchOperatorGateCards(w, item)...)
+	if len(item.ReviewCards) > 0 && (w.State == "held" || w.State == "blocked") {
+		item.NextAction = item.ReviewCards[0].Title
+	}
+	if actionContext, warnings := s.actionContextFromCreatePlan(w, events); actionContext != nil || len(warnings) > 0 {
+		item.ActionContext = actionContext
+		if actionContext != nil {
+			item.EvidenceRefs = mergeUnique(item.EvidenceRefs, actionContext.EvidenceRefs)
+			if w.State == "proposed" || w.State == "admitted" {
+				item.NextAction = "prepare ready with reviewed action context; do not execute action until claimed/running"
+			}
+		}
 		for _, warning := range warnings {
 			report.Integrity = append(report.Integrity, w.ID+": "+warning)
 		}
@@ -466,6 +831,260 @@ func (s *Store) workbenchRunObservations(workID string) ([]RunObservationSummary
 	return out, warnings
 }
 
+func (s *Store) workbenchRunArtifacts(workID string) ([]WorkbenchRunArtifact, []string) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return nil, nil
+	}
+	dir := filepath.Join(s.home, "runs", workID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, []string{"run artifacts unreadable: " + err.Error()}
+	}
+	var out []WorkbenchRunArtifact
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			warnings = append(warnings, "run artifact "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		artifact := WorkbenchRunArtifact{
+			Ref:   filepath.ToSlash(filepath.Join("runs", workID, entry.Name())),
+			Kind:  workbenchRunArtifactKind(entry.Name()),
+			Bytes: info.Size(),
+		}
+		if strings.HasSuffix(entry.Name(), ".json") && info.Size() > 0 {
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				warnings = append(warnings, "run artifact "+entry.Name()+" unreadable: "+err.Error())
+				continue
+			}
+			artifact = enrichWorkbenchRunArtifact(artifact, data)
+		}
+		out = append(out, artifact)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Ref < out[j].Ref
+	})
+	return out, warnings
+}
+
+func workbenchRunArtifactKind(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case name == "knowledge-extract-summary.json":
+		return "knowledge_extract_summary"
+	case strings.HasPrefix(name, "knowledge-extract-"):
+		return "knowledge_extract"
+	case strings.HasPrefix(name, "knowledge-import-"):
+		return "knowledge_import"
+	case strings.Contains(name, "knowledge-export"):
+		return "knowledge_export"
+	case strings.Contains(name, "manifest"):
+		return "source_manifest"
+	case strings.HasPrefix(name, "panel-plan"):
+		return "panel_plan"
+	case strings.HasPrefix(name, "panel-run"):
+		return "panel_run"
+	case strings.Contains(name, "promoted") && strings.Contains(name, "claims"):
+		return "promotion_summary"
+	default:
+		return "artifact"
+	}
+}
+
+func enrichWorkbenchRunArtifact(artifact WorkbenchRunArtifact, data []byte) WorkbenchRunArtifact {
+	var payload struct {
+		SchemaVersion string `json:"schema_version"`
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		TargetKind    string `json:"target_kind"`
+		Targets       []struct {
+			Ref string `json:"ref"`
+		} `json:"targets"`
+		CandidateIDs []string `json:"candidate_ids"`
+		TotalCreated int      `json:"total_created"`
+		Count        *int     `json:"count"`
+		Refs         []string `json:"refs"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return artifact
+	}
+	artifact.Schema = strings.TrimSpace(payload.SchemaVersion)
+	artifact.ID = strings.TrimSpace(payload.ID)
+	artifact.Status = strings.TrimSpace(payload.Status)
+	artifact.TargetKind = strings.TrimSpace(payload.TargetKind)
+	for _, target := range payload.Targets {
+		ref := strings.TrimSpace(target.Ref)
+		if ref != "" {
+			artifact.TargetRefs = append(artifact.TargetRefs, ref)
+		}
+	}
+	artifact.CandidateIDs = mergeUnique(artifact.CandidateIDs, payload.CandidateIDs)
+	if artifact.Kind == "knowledge_extract_summary" && payload.TotalCreated > 0 {
+		count := payload.TotalCreated
+		artifact.Count = &count
+	}
+	if payload.Count != nil {
+		count := *payload.Count
+		artifact.Count = &count
+	}
+	if len(payload.Refs) > 0 {
+		artifact.TargetRefs = mergeUnique(artifact.TargetRefs, payload.Refs)
+	}
+	return artifact
+}
+
+func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArtifact) []WorkbenchReviewCard {
+	var panel WorkbenchRunArtifact
+	var promotion WorkbenchRunArtifact
+	for _, artifact := range artifacts {
+		switch artifact.Kind {
+		case "panel_run":
+			if panel.Ref == "" && artifact.Status == "applied" && artifact.TargetKind == "memory_candidate" && firstCandidateRef(artifact.TargetRefs) != "" {
+				panel = artifact
+			}
+		case "promotion_summary":
+			if promotion.Ref == "" && artifact.Count != nil {
+				promotion = artifact
+			}
+		}
+	}
+	if panel.Ref == "" || promotion.Ref == "" || promotion.Count == nil || *promotion.Count != 0 {
+		return nil
+	}
+	candidateID := firstCandidateRef(panel.TargetRefs)
+	if candidateID == "" {
+		return nil
+	}
+	state, entity := s.memoryCandidateReviewState(candidateID)
+	if state == "promoted" || state == "rejected" || state == "no_promote" {
+		return nil
+	}
+	command := []string{"compound", "workbench", "--json"}
+	if panel.ID != "" {
+		command = []string{"compound", "panel", "show", panel.ID, "--json"}
+	}
+	title := "operator adjudication needed for " + candidateID + "; inspect applied panel run and keep promotion explicit"
+	card := WorkbenchReviewCard{
+		ID:                  "memory-review-" + workID + "-" + candidateID,
+		Kind:                "memory_candidate_adjudication",
+		Title:               title,
+		WorkID:              workID,
+		CandidateID:         candidateID,
+		CandidateState:      state,
+		CandidateEntity:     entity,
+		PanelRunID:          panel.ID,
+		PanelRunRef:         panel.Ref,
+		PromotionSummaryRef: promotion.Ref,
+		PromotionCount:      promotion.Count,
+		Command:             command,
+		RequiredInputs: []string{
+			"operator verdict for exactly one conversation-derived memory candidate",
+			"candidate " + candidateID + " reviewed against panel run " + reviewartifactOrDash(panel.ID),
+		},
+		ExpectedValidation: []string{
+			"candidate " + candidateID + " remains parked/proposed until an operator adjudication act",
+			"promotion summary remains zero before explicit promotion",
+			"panel run " + reviewartifactOrDash(panel.ID) + " is inspected as evidence, not treated as promotion",
+		},
+		StopConditions: []string{
+			"candidate already promoted, rejected, or no_promote",
+			"operator verdict absent or selects more than one candidate",
+			"requested action would run import, extraction, panel run, mass import, or automatic promotion",
+		},
+		Boundary:         "operator review/adjudication card only; no automatic memory promotion, recall proof, import, extraction, or held-valve clearing",
+		Proof:            "Workbench shows candidate id, parked/proposed state, applied panel-run ref, promotion_summary count=0, and explicit stop conditions",
+		RequiresOperator: true,
+	}
+	return []WorkbenchReviewCard{card}
+}
+
+func workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []WorkbenchReviewCard {
+	if w.State != "held" && w.State != "blocked" {
+		return nil
+	}
+	context := strings.ToLower(strings.Join([]string{
+		w.SuccessPredicate,
+		w.DesiredOutcome,
+		w.CanonicalSurface,
+		strings.Join(item.ObservatoryTags, " "),
+	}, " "))
+	if !(strings.Contains(context, "asc") || strings.Contains(context, "app-store-connect") || strings.Contains(context, "app store connect")) {
+		return nil
+	}
+	card := WorkbenchReviewCard{
+		ID:         "operator-gate-" + w.ID + "-app-store-connect-private-config",
+		Kind:       "source_private_config_gate",
+		Title:      "operator private ASC config needed for " + w.ID + "; run read-only preflight before apply or scheduler",
+		WorkID:     w.ID,
+		GateID:     "asc-private-config",
+		SourceKind: "app_store_connect",
+		Command:    []string{"bun", "tools/asc_preflight.ts", "--config", "<private-asc-config.json>", "--json"},
+		RequiredInputs: []string{
+			"private ASC product mapping config",
+			"operator keeps credential smoke and scheduler checks read-only",
+		},
+		ExpectedValidation: []string{
+			"asc preflight returns status ok or warn",
+			"product authority checked for mapped products",
+			"no product signal apply and no scheduler load",
+		},
+		StopConditions: []string{
+			"private config missing or invalid",
+			"product authority missing mapping",
+			"credential smoke fails before scheduler load",
+			"requested action would fetch live ASC data, apply ProductSignal, load scheduler, or clear held work",
+		},
+		Boundary:         "operator supplies private config; read-only ASC preflight only; no live fetch, product signal apply, scheduler load, or held-valve clearing",
+		Proof:            "Workbench shows ASC private-config gate with exact preflight command, validation, stop conditions, and no apply/scheduler mutation",
+		RequiresOperator: true,
+	}
+	return []WorkbenchReviewCard{card}
+}
+
+func firstCandidateRef(refs []string) string {
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "cand_") {
+			return ref
+		}
+	}
+	return ""
+}
+
+func (s *Store) memoryCandidateReviewState(id string) (string, string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", ""
+	}
+	path := filepath.Join(s.home, candidates.InboxDir(candidates.Memory), id+".json")
+	var payload struct {
+		ID     string `json:"id"`
+		State  string `json:"state"`
+		Entity string `json:"entity"`
+	}
+	if err := s.readJSON(path, &payload); err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(payload.State), strings.TrimSpace(payload.Entity)
+}
+
+func reviewartifactOrDash(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 func (s *Store) workbenchDispatchStepRuns(limit int) ([]DispatchStepRunSummary, []string) {
 	dir := filepath.Join(s.home, "dispatch-step-runs")
 	entries, err := os.ReadDir(dir)
@@ -636,7 +1255,438 @@ func workbenchDispatchNext(report WorkbenchReport, actor string) WorkbenchDispat
 		}
 	}
 	out.WaitReason, out.BlockedOn = dispatchStepWait(DispatchStepResult{Actor: actor}, report)
+	out.AdjacentProgress = workbenchAdjacentProgress(report, out)
 	return out
+}
+
+func workbenchAdjacentProgress(report WorkbenchReport, next WorkbenchDispatchNext) *WorkbenchAdjacentProgress {
+	if next.CanRun || next.WaitReason != "needs_review" {
+		return nil
+	}
+	heldWorkIDs := heldValveWorkIDs(next.BlockedOn)
+	if len(heldWorkIDs) == 0 {
+		return nil
+	}
+	packetCount, packetRefs := adjacentPacketCandidates(report.OfferedPackets, next.Actor, 5)
+	nonPacketActions := adjacentNonPacketActions(report, heldWorkIDs)
+	progress := &WorkbenchAdjacentProgress{
+		Available:            packetCount > 0 || len(nonPacketActions) > 0,
+		Reason:               "direct dispatch is held on operator-only review valves; the broader Compound mission is not blocked",
+		NextAction:           "keep held valves visible; move into an adjacent proof-producing packet, preflight, projection, doctor, or source bridge without clearing the held valve",
+		PacketCandidateCount: packetCount,
+		PacketRefs:           packetRefs,
+		HeldWorkIDs:          heldWorkIDs,
+		NonPacketActions:     nonPacketActions,
+	}
+	if packetCount > 0 {
+		progress.Command = []string{"compound", "workbench", "--json"}
+		if report.OfferedPackets != nil && strings.TrimSpace(report.OfferedPackets.SourceDir) != "" {
+			progress.Command = append(progress.Command, "--packet-dir", report.OfferedPackets.SourceDir)
+		}
+	} else {
+		progress.NextAction = "keep held valves visible; no actor-actionable packet candidates are currently offered, so use a listed non-packet proof action such as preflight, projection, doctor, or source bridge"
+	}
+	return progress
+}
+
+func adjacentNonPacketActions(report WorkbenchReport, heldWorkIDs []string) []WorkbenchAdjacentAction {
+	held := map[string]bool{}
+	for _, id := range heldWorkIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			held[id] = true
+		}
+	}
+	context := strings.ToLower(heldWorkbenchContext(report.Open, held))
+	var actions []WorkbenchAdjacentAction
+	hasSourcePrivateConfigCard := false
+	hasMemoryCandidateReviewCard := false
+	add := func(action WorkbenchAdjacentAction) {
+		if strings.TrimSpace(action.ID) == "" {
+			return
+		}
+		for _, existing := range actions {
+			if existing.ID == action.ID {
+				return
+			}
+		}
+		actions = append(actions, action)
+	}
+	for _, item := range report.Open {
+		if !held[item.WorkID] {
+			continue
+		}
+		for _, card := range item.ReviewCards {
+			switch card.Kind {
+			case "source_private_config_gate":
+				hasSourcePrivateConfigCard = true
+			case "memory_candidate_adjudication":
+				hasMemoryCandidateReviewCard = true
+			}
+			add(WorkbenchAdjacentAction{
+				ID:                 card.ID,
+				Kind:               "review_card",
+				Title:              card.Title,
+				Command:            append([]string{}, card.Command...),
+				RequiredInputs:     append([]string{}, card.RequiredInputs...),
+				ExpectedValidation: append([]string{}, card.ExpectedValidation...),
+				StopConditions:     append([]string{}, card.StopConditions...),
+				Boundary:           card.Boundary,
+				Proof:              card.Proof,
+				RequiresOperator:   card.RequiresOperator,
+				ReviewCard:         &card,
+			})
+		}
+	}
+	if strings.Contains(context, "app-store-connect") || strings.Contains(context, "asc") {
+		if !hasSourcePrivateConfigCard {
+			add(WorkbenchAdjacentAction{
+				ID:               "asc-preflight-private-config",
+				Kind:             "preflight",
+				Title:            "Run read-only ASC private mapping preflight",
+				Command:          []string{"bun", "tools/asc_preflight.ts", "--config", "<private-asc-config.json>", "--json"},
+				RequiredInputs:   []string{"private ASC product mapping config"},
+				Boundary:         "operator supplies private config; read-only checks only; no ASC signal apply and no launchd load",
+				Proof:            "preflight returns status ok or warn with product authority, credential smoke, and scheduler checks",
+				RequiresOperator: true,
+			})
+		}
+		add(WorkbenchAdjacentAction{
+			ID:       "asc-sales-series-bridge-proof",
+			Kind:     "source_bridge",
+			Title:    "Run synthetic ASC sales-series bridge proof",
+			Command:  []string{"bun", "test", "tools/asc_sales_series_bridge.test.ts"},
+			Boundary: "synthetic fixtures and temp COMPOUND_HOME proof only; no ASC fetch, no private config, no live ProductSignal apply, no scheduler load",
+			Proof:    "bridge regression proves apply_results with signal_count and transition_count through the product-signal door",
+		})
+	}
+	if strings.Contains(context, "conversation") || strings.Contains(context, "chatgpt") {
+		add(WorkbenchAdjacentAction{
+			ID:               "conversation-preflight-private-export",
+			Kind:             "preflight",
+			Title:            "Run temp-home conversation import preflight",
+			Command:          []string{"bun", "tools/chatgpt_conversation_preflight.ts", "<conversation-export-file-or-dir>", "--json"},
+			RequiredInputs:   []string{"private conversation export file or directory"},
+			Boundary:         "operator supplies private export; temp COMPOUND_HOME proof only; no live import, extraction, or promotion",
+			Proof:            "preflight returns status ok, import idempotency and import_safety checks pass, and live actions remain operator-only",
+			RequiresOperator: true,
+		})
+		if !hasMemoryCandidateReviewCard {
+			add(WorkbenchAdjacentAction{
+				ID:    "conversation-memory-review-gate",
+				Kind:  "review_gate",
+				Title: "Plan one reviewed conversation-memory candidate before promotion",
+				Command: []string{
+					"compound", "panel", "plan",
+					"--target-kind", "memory_candidate",
+					"--target", "<conversation-memory-candidate-id>",
+					"--domain", "memory-adjudication",
+					"--task", "review one conversation-derived memory candidate for possible promotion; stop before adjudication",
+					"--privacy-sensitive",
+					"--limit", "1",
+					"--max-items", "1",
+					"--json",
+				},
+				RequiredInputs: []string{
+					"candidate id from operator-approved bounded live conversation import/extraction",
+					"operator selects at most one candidate for promotion review",
+				},
+				Boundary:         "review-plan only; no live import, extraction execution, panel run, adjudication, promotion, recall proof, or mass import",
+				Proof:            "panel plan records one privacy-sensitive memory_candidate review target; no compound memory adjudicate --verdict promote is run",
+				RequiresOperator: true,
+			})
+		}
+	}
+	add(WorkbenchAdjacentAction{
+		ID:               "second-opinion-evidence-recovery",
+		Kind:             "source_bridge",
+		Title:            "Preflight second-opinion recovery before no-promote import",
+		Command:          []string{"bun", "tools/second_opinion_preflight.ts", "--session", "<second-opinion-session-id>", "--answer", "<private-answer.md>", "--source-observation", "<private-source-observation.yaml>", "--json"},
+		RequiredInputs:   []string{"second-opinion session id", "private saved answer path", "private source-observation YAML path"},
+		Boundary:         "operator supplies session id and private paths; preflight only; second-opinion output remains evidence, not authority; no source observe import",
+		Proof:            "preflight reports session, answer, and source-observation readiness plus operator-only harvest/import actions; no-promote import is separate",
+		RequiresOperator: true,
+	})
+	add(WorkbenchAdjacentAction{
+		ID:      "codex-pretooluse-wrapper-proof",
+		Kind:    "hook_shim",
+		Title:   "Prove Codex PreToolUse wrapper path without registration flip",
+		Command: []string{"sh", "-c", `tmp_home=$(mktemp -d); tmp_repo=$(mktemp -d); printf '{"hook_event_name":"PreToolUse","session_id":"sess_codex_wrapper_probe","cwd":"%s","tool_name":"Write","tool_input":{"file_path":"%s/README.md"}}' "$tmp_repo" "$tmp_repo" | COMPOUND_HOME="$tmp_home" compound hook pre-tool-use --live --harness codex`},
+		ExpectedValidation: []string{
+			"compound.codex_live_hook_response.v0.1 emitted with status ok",
+			"policy decision is exercised through live PreToolUse adapter",
+			"no hook registration, wrapper install, or harness config mutation",
+		},
+		StopConditions: []string{
+			"synthetic live input fails",
+			"command requires existing live hook registration",
+			"requested action would install wrapper or change hook config",
+		},
+		Boundary: "synthetic live PreToolUse wrapper proof with temp COMPOUND_HOME only; no registration flip, hook install, harness config mutation, or held-valve clearing",
+		Proof:    "proof-check and Workbench artifact verify Codex live PreToolUse adapter emits status ok from synthetic write input",
+	})
+	cmd := []string{"compound", "workbench", "--json"}
+	if report.OfferedPackets != nil && strings.TrimSpace(report.OfferedPackets.SourceDir) != "" {
+		cmd = append(cmd, "--packet-dir", report.OfferedPackets.SourceDir)
+	}
+	add(WorkbenchAdjacentAction{
+		ID:       "workbench-projection-refresh",
+		Kind:     "projection",
+		Title:    "Refresh Workbench projection and held-valve evidence",
+		Command:  cmd,
+		Boundary: "read-only projection; does not claim, close, clear, or mutate held work",
+		Proof:    "dispatch_next still shows can_run=false for held valves while adjacent_progress lists safe next actions",
+	})
+	add(WorkbenchAdjacentAction{
+		ID:       "architecture-doctor-strict",
+		Kind:     "doctor",
+		Title:    "Run strict architecture doctor",
+		Command:  []string{"compound", "architecture", "doctor", "--strict"},
+		Boundary: "read-only architecture/projection gate; no runtime state mutation",
+		Proof:    "doctor exits zero and relevant projection/adaptation/hook rows stay green",
+	})
+	add(WorkbenchAdjacentAction{
+		ID:       "proof-check-installed-runtime",
+		Kind:     "proof",
+		Title:    "Run installed runtime proof check",
+		Command:  []string{"compound", "proof-check", "--json"},
+		Boundary: "verification only; does not clear operator-only valves",
+		Proof:    "proof-check returns status ok on the installed compound binary",
+	})
+	return withAdjacentActionGates(actions)
+}
+
+func (s *Store) applyAdjacentActionProofConsumption(progress *WorkbenchAdjacentProgress) []string {
+	if s == nil || progress == nil || len(progress.NonPacketActions) == 0 {
+		return nil
+	}
+	var active []WorkbenchAdjacentAction
+	var consumed []WorkbenchAdjacentAction
+	var warnings []string
+	for _, action := range progress.NonPacketActions {
+		refs, actionWarnings := s.adjacentActionProofRefs(action.ID)
+		warnings = append(warnings, actionWarnings...)
+		if len(refs) == 0 {
+			active = append(active, action)
+			continue
+		}
+		action.Consumed = true
+		action.ConsumedEvidenceRefs = refs
+		action.Command = nil
+		consumed = append(consumed, action)
+	}
+	progress.NonPacketActions = active
+	progress.ConsumedNonPacketActions = consumed
+	progress.Available = progress.PacketCandidateCount > 0 || len(progress.NonPacketActions) > 0
+	if len(consumed) > 0 && len(active) > 0 {
+		progress.NextAction = "keep held valves visible; consumed adjacent proofs are recorded, use remaining non-packet actions only when they still produce new proof"
+	} else if len(consumed) > 0 {
+		progress.NextAction = "keep held valves visible; adjacent proof actions are already consumed, use only new packet/proof surfaces"
+	}
+	return warnings
+}
+
+func (s *Store) adjacentActionProofRefs(actionID string) ([]string, []string) {
+	actionID = strings.ToLower(strings.TrimSpace(actionID))
+	if actionID == "" {
+		return nil, nil
+	}
+	dir := filepath.Join(s.home, "artifacts", "refs")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, []string{"adjacent proof artifacts unreadable: " + err.Error()}
+	}
+	var refs []string
+	var warnings []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.ToLower(entry.Name())
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			warnings = append(warnings, "adjacent proof artifact "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		body := strings.ToLower(string(data))
+		if !strings.Contains(name, actionID) && !strings.Contains(body, actionID) {
+			continue
+		}
+		if !strings.Contains(body, "adjacent workbench action") {
+			continue
+		}
+		if !strings.Contains(body, "verified") && !strings.Contains(body, "do not rerun") {
+			continue
+		}
+		refs = append(refs, "artifact:"+filepath.ToSlash(filepath.Join("artifacts", "refs", entry.Name())))
+	}
+	sort.Strings(refs)
+	return refs, warnings
+}
+
+func withAdjacentActionGates(actions []WorkbenchAdjacentAction) []WorkbenchAdjacentAction {
+	for i := range actions {
+		switch actions[i].ID {
+		case "asc-preflight-private-config":
+			actions[i].ExpectedValidation = []string{
+				"asc preflight returns status ok or warn",
+				"product authority checked for mapped products",
+				"no product signal apply and no scheduler load",
+			}
+			actions[i].StopConditions = []string{
+				"private config missing or invalid",
+				"product authority missing mapping",
+				"credential smoke fails before scheduler load",
+			}
+		case "asc-sales-series-bridge-proof":
+			actions[i].ExpectedValidation = []string{
+				"temp COMPOUND_HOME bridge apply proof passes",
+				"apply_results shows signal_count and transition_count",
+				"no private collector dependency and no live ASC fetch",
+			}
+			actions[i].StopConditions = []string{
+				"bridge test fails",
+				"private/live config required",
+				"bridge report lacks apply_results",
+			}
+		case "conversation-preflight-private-export":
+			actions[i].ExpectedValidation = []string{
+				"temp COMPOUND_HOME import idempotency passes",
+				"import_safety proves private bounded evidence/candidates and zero temp promoted claims",
+				"live actions remain operator-only",
+				"no live extraction or promotion",
+			}
+			actions[i].StopConditions = []string{
+				"private export missing or invalid",
+				"preflight status is not ok",
+				"bulk promotion requested",
+			}
+		case "conversation-memory-review-gate":
+			actions[i].ExpectedValidation = []string{
+				"panel plan records one privacy-sensitive memory_candidate review target",
+				"no panel run, memory adjudication, promotion, recall proof, or mass import",
+				"compound memory adjudicate --verdict promote is not run",
+			}
+			actions[i].StopConditions = []string{
+				"candidate id missing",
+				"operator selects more than one candidate",
+				"review plan would run adjudication or promotion",
+			}
+		case "second-opinion-evidence-recovery":
+			actions[i].ExpectedValidation = []string{
+				"session readiness checked",
+				"answer/source-observation readiness reported",
+				"no source observe import during preflight",
+			}
+			actions[i].StopConditions = []string{
+				"session missing",
+				"answer file missing",
+				"source observation missing",
+				"source observation would promote truth",
+			}
+		}
+	}
+	return actions
+}
+
+func heldWorkbenchContext(items []WorkbenchItem, held map[string]bool) string {
+	var parts []string
+	for _, item := range items {
+		if !held[item.WorkID] {
+			continue
+		}
+		parts = append(parts,
+			item.WorkID,
+			item.SuccessPredicate,
+			item.DesiredOutcome,
+			item.CanonicalSurface,
+			item.ReviewTrigger,
+		)
+		parts = append(parts, item.EvidenceRefs...)
+	}
+	return strings.Join(parts, " ")
+}
+
+func heldValveWorkIDs(blockedOn []string) []string {
+	var out []string
+	for _, blocked := range blockedOn {
+		blocked = strings.TrimSpace(blocked)
+		if strings.HasPrefix(blocked, "work.review:") {
+			out = append(out, strings.TrimPrefix(blocked, "work.review:"))
+		}
+	}
+	return out
+}
+
+func adjacentPacketCandidates(surface *OfferedPacketSurface, actor string, refLimit int) (int, []string) {
+	if surface == nil {
+		return 0, nil
+	}
+	count := 0
+	var refs []string
+	for _, item := range surface.Items {
+		if !packetEligibleForAdjacentProgress(item, actor) {
+			continue
+		}
+		count++
+		if refLimit <= 0 || len(refs) >= refLimit {
+			continue
+		}
+		ref := strings.TrimSpace(item.SourceRef)
+		if ref == "" {
+			ref = strings.TrimSpace(item.Path)
+		}
+		if ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+	return count, refs
+}
+
+func packetEligibleForAdjacentProgress(item OfferedPacketItem, actor string) bool {
+	status := strings.ToLower(strings.TrimSpace(item.Status))
+	if status == "" {
+		return true
+	}
+	actor = strings.ToLower(strings.TrimSpace(actor))
+	owner := strings.ToLower(strings.TrimSpace(item.Owner))
+	combined := status + " " + owner
+	for _, blocked := range []string{
+		"completed",
+		"cancelled",
+		"held",
+		"blocked",
+		"after work_",
+		"do not run concurrently",
+		"low priority",
+		"deferred",
+		"operator registration",
+		"operator-only",
+		"one-line registration flip",
+		"credential",
+		"scheduler",
+	} {
+		if strings.Contains(combined, blocked) {
+			return false
+		}
+	}
+	if strings.Contains(combined, "console lane") && !strings.Contains(actor, "console") {
+		return false
+	}
+	if strings.Contains(combined, "console rendering") && !strings.Contains(actor, "console") {
+		return false
+	}
+	if strings.Contains(combined, "console") && strings.Contains(combined, "remaining") && !strings.Contains(actor, "console") {
+		return false
+	}
+	if !strings.HasPrefix(status, "ready") && !strings.HasPrefix(status, "offered") {
+		return false
+	}
+	return true
 }
 
 func lastAttachedWithPrefix(events []Event, prefix string) string {

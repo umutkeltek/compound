@@ -20,10 +20,14 @@ func AnnotateReviewQueue(report *reviewartifact.QueueReport) {
 	}
 	for i := range report.Items {
 		item := &report.Items[i]
-		if item.Area != productReviewArea {
-			continue
+		switch item.Area {
+		case productReviewArea:
+			annotateProductReviewItem(item)
+		case ProductActionReviewArea:
+			annotateProductActionReviewItem(item)
+		case ObservationVerdictReviewArea:
+			annotateObservationVerdictItem(item)
 		}
-		annotateProductReviewItem(item)
 	}
 }
 
@@ -74,6 +78,100 @@ func annotateProductReviewItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record product review"
+}
+
+func annotateProductActionReviewItem(item *reviewartifact.QueueItem) {
+	if record, ok := productActionReviewRecordFromExtras(item.ExtraPaths); ok {
+		item.Status = record.Status
+		item.Readiness = "no_action"
+		item.BlockedReason = ""
+		item.NextAction = "product action review recorded"
+		item.Actions = nil
+		return
+	}
+	switch strings.TrimSpace(item.Status) {
+	case "ok", "applied", "resolved", "accepted", "recorded":
+		item.Readiness = "no_action"
+		item.NextAction = "product action review artifact terminal"
+		item.Actions = nil
+		return
+	default:
+		item.Readiness = "needs_review"
+		item.NextAction = "fill action review YAML, then record product action review"
+	}
+	reviewYAML := productActionReviewYAMLPath(*item)
+	if reviewYAML == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "action review YAML draft missing"
+		item.NextAction = "action review YAML draft missing; regenerate product action-plan"
+		return
+	}
+	argv := []string{"compound", "product", "action-review", reviewYAML}
+	item.Actions = []reviewartifact.Action{{
+		ID:             "record_product_action_review",
+		Label:          "Record product action review",
+		Command:        shellJoin(argv),
+		Argv:           argv,
+		RequiresReview: true,
+	}}
+	item.DecisionCard = &reviewartifact.DecisionCard{
+		Claim: "Product loop action card is ready for operator review before work admission",
+		Why: []reviewartifact.DecisionCardReason{
+			{Label: "Projected action", Detail: item.ID},
+			{Label: "Evidence refs", Detail: strings.Join(item.EvidenceRefs, ", ")},
+		},
+		Choices: []reviewartifact.DecisionCardChoice{
+			{ID: "propose_work", Label: "Propose work", Effect: "record reviewed action-card intent for a later WorkEnvelope/implementation step"},
+			{ID: "park", Label: "Park", Effect: "keep evidence visible without admitting work"},
+			{ID: "reject", Label: "Reject", Effect: "record that this projected action should not proceed"},
+		},
+		Boundary: []string{
+			"review records no product signal, hypothesis, review, or transition",
+			"review grants no public, financial, credential, destructive, or security-sensitive authority",
+		},
+		CanonicalActionHint: shellJoin(argv),
+	}
+	if _, err := os.ReadFile(reviewYAML); err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "action review YAML draft unreadable: " + productReviewQueueError(err)
+		item.NextAction = "regenerate product action-plan"
+		item.Actions = nil
+	}
+}
+
+func productActionReviewYAMLPath(item reviewartifact.QueueItem) string {
+	if item.JSONPath == "" {
+		return ""
+	}
+	path := strings.TrimSuffix(item.JSONPath, ".json") + ".review.yaml"
+	if _, err := os.Stat(path); err != nil {
+		return ""
+	}
+	return path
+}
+
+func productActionReviewRecordFromExtras(paths []string) (ActionReviewReport, bool) {
+	var found ActionReviewReport
+	for _, path := range paths {
+		if !strings.HasSuffix(path, ".reviewed.json") {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var record ActionReviewReport
+		if err := json.Unmarshal(data, &record); err != nil {
+			continue
+		}
+		if strings.TrimSpace(record.ID) == "" || strings.TrimSpace(record.Status) == "" {
+			continue
+		}
+		if found.ID == "" || record.CreatedAt > found.CreatedAt {
+			found = record
+		}
+	}
+	return found, found.ID != ""
 }
 
 func productReviewYAMLPath(item reviewartifact.QueueItem) string {

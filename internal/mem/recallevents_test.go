@@ -115,6 +115,18 @@ func TestAppendRejectsMissingTs(t *testing.T) {
 	}
 }
 
+func TestAppendRejectsNonRFC3339Ts(t *testing.T) {
+	home := t.TempDir()
+	ev := RecallEvent{Ts: "2024-01-01", QueryHash: "h1"}
+	err := AppendRecallEvent(home, ev)
+	if err == nil {
+		t.Fatal("expected error for non-RFC3339 ts")
+	}
+	if !strings.Contains(err.Error(), "RFC3339") {
+		t.Fatalf("error should mention RFC3339, got %v", err)
+	}
+}
+
 func TestAppendRejectsMissingQueryHash(t *testing.T) {
 	home := t.TempDir()
 	ev := RecallEvent{Ts: "2024-01-01T00:00:00Z"}

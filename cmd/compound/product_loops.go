@@ -93,7 +93,11 @@ func renderProductLoops(model product.LoopModel) {
 		fmt.Println()
 		renderLoopMetrics(loop.SignalsByMetric)
 		renderLoopHypotheses(loop.OpenHypotheses)
+		renderLoopMissingSignalSources(loop.OpenHypothesesByMissingSignalSource)
+		renderLoopSignalHypothesisGaps(loop.SignalsWithoutHypothesis)
 		renderLoopReviews(loop.Reviews)
+		renderLoopReviewNextActions(loop.ClosedReviewsByNextAction)
+		renderLoopActionCards(loop.ActionCards)
 		if len(loop.LoopGaps) > 0 {
 			fmt.Printf("- gaps: %s\n", strings.Join(loop.LoopGaps, ", "))
 		} else {
@@ -131,6 +135,19 @@ func renderLoopHypotheses(hypotheses []product.LoopHypothesis) {
 	fmt.Printf("- open_hypotheses:\n")
 	for _, hypothesis := range hypotheses {
 		fmt.Printf("  - %s: %s -> %s\n", hypothesis.ID, hypothesis.Statement, hypothesis.ExpectedEffect)
+		details := []string{}
+		if len(hypothesis.Metrics) > 0 {
+			details = append(details, "metrics="+strings.Join(hypothesis.Metrics, ","))
+		}
+		if hypothesis.ObservationWindow != "" {
+			details = append(details, "window="+hypothesis.ObservationWindow)
+		}
+		if hypothesis.NextAction != "" {
+			details = append(details, "next="+hypothesis.NextAction)
+		}
+		if len(details) > 0 {
+			fmt.Printf("    %s\n", strings.Join(details, " "))
+		}
 	}
 }
 
@@ -149,6 +166,87 @@ func renderLoopReviews(reviews []product.LoopReview) {
 			parts = append(parts, "reviewed="+review.ReviewedAt)
 		}
 		fmt.Printf("  - %s\n", strings.Join(parts, " "))
+	}
+}
+
+func renderLoopMissingSignalSources(groups []product.LoopMissingSignalSource) {
+	if len(groups) == 0 {
+		fmt.Printf("- open_hypotheses_by_missing_signal_source: none\n")
+		return
+	}
+	fmt.Printf("- open_hypotheses_by_missing_signal_source:\n")
+	for _, group := range groups {
+		parts := []string{group.Source, "hypotheses=" + strings.Join(group.HypothesisIDs, ",")}
+		if len(group.Metrics) > 0 {
+			parts = append(parts, "metrics="+strings.Join(group.Metrics, ","))
+		}
+		if len(group.NextActions) > 0 {
+			parts = append(parts, "next="+strings.Join(group.NextActions, " | "))
+		}
+		fmt.Printf(" - %s\n", strings.Join(parts, " "))
+	}
+}
+
+func renderLoopSignalHypothesisGaps(groups []product.LoopSignalHypothesisGap) {
+	if len(groups) == 0 {
+		fmt.Printf("- signals_without_hypothesis: none\n")
+		return
+	}
+	fmt.Printf("- signals_without_hypothesis:\n")
+	for _, group := range groups {
+		parts := []string{group.ChangeEvent, "signals=" + strings.Join(group.SignalIDs, ",")}
+		if len(group.Metrics) > 0 {
+			parts = append(parts, "metrics="+strings.Join(group.Metrics, ","))
+		}
+		if group.Consumed {
+			parts = append(parts, "consumed=true")
+			if len(group.ConsumedByWorkIDs) > 0 {
+				parts = append(parts, "work="+strings.Join(group.ConsumedByWorkIDs, ","))
+			}
+		}
+		fmt.Printf(" - %s\n", strings.Join(parts, " "))
+	}
+}
+
+func renderLoopReviewNextActions(groups []product.LoopReviewNextAction) {
+	if len(groups) == 0 {
+		fmt.Printf("- closed_reviews_by_next_action: none\n")
+		return
+	}
+	fmt.Printf("- closed_reviews_by_next_action:\n")
+	for _, group := range groups {
+		parts := []string{group.NextAction, "reviews=" + strings.Join(group.ReviewIDs, ",")}
+		if len(group.HypothesisIDs) > 0 {
+			parts = append(parts, "hypotheses="+strings.Join(group.HypothesisIDs, ","))
+		}
+		if len(group.SignalIDs) > 0 {
+			parts = append(parts, "signals="+strings.Join(group.SignalIDs, ","))
+		}
+		if group.Consumed {
+			parts = append(parts, "consumed=true")
+			if len(group.ConsumedByWorkIDs) > 0 {
+				parts = append(parts, "work="+strings.Join(group.ConsumedByWorkIDs, ","))
+			}
+		}
+		fmt.Printf(" - %s\n", strings.Join(parts, " "))
+	}
+}
+
+func renderLoopActionCards(cards []product.LoopActionCard) {
+	if len(cards) == 0 {
+		fmt.Printf("- action_cards: none\n")
+		return
+	}
+	fmt.Printf("- action_cards:\n")
+	for _, card := range cards {
+		parts := []string{card.Kind, card.ID}
+		if len(card.Command) > 0 {
+			parts = append(parts, "command="+strings.Join(card.Command, " "))
+		}
+		if card.Boundary != "" {
+			parts = append(parts, "boundary="+card.Boundary)
+		}
+		fmt.Printf(" - %s\n", strings.Join(parts, " "))
 	}
 }
 

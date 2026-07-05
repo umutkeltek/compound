@@ -109,8 +109,8 @@ func TestSkillSurfacingMissesAppliesFalseTriggers(t *testing.T) {
 		t.Fatalf("report = %+v", report)
 	}
 	edges := readCapEdges(t, home)
-	if !hasEdge(edges, EdFalseTriggeredBy, "context:instruction", nodeID) ||
-		!hasEdge(edges, EdFalseTriggeredBy, "context:design", nodeID) {
+	if !hasEdge(edges, EdFalseTriggeredBy, "context:design", nodeID) ||
+		!hasEdge(edges, EdFalseTriggeredBy, "context:memory", nodeID) {
 		t.Fatalf("edges = %+v, want false_triggered_by context feedback", edges)
 	}
 	if _, ok := surfaced(store, task)[nodeID]; ok {

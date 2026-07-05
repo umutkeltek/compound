@@ -573,6 +573,42 @@ func TestConsumeReceiptsFalseTriggeredLowersSurfacing(t *testing.T) {
 	}
 }
 
+func TestFalseTriggeredContextMatchesPluralTaskToken(t *testing.T) {
+	_, s := newStore(t)
+	const nodeID = "skill:design-noise"
+	if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Design Noise", Triggers: []string{"surface"}}); err != nil {
+		t.Fatal(err)
+	}
+	task := "adapt anti-pattern instructions from operating-system into consumed Compound surface"
+	if _, ok := surfaced(s, task)[nodeID]; !ok {
+		t.Fatal("precondition: broad surface trigger should surface before false-trigger feedback")
+	}
+	if err := s.AddEdge(Edge{Kind: EdFalseTriggeredBy, From: "context:instruction", To: nodeID, Confidence: 1}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := surfaced(s, task)[nodeID]; ok {
+		t.Fatal("false-trigger feedback for instruction should suppress plural instructions task context")
+	}
+}
+
+func TestFalseTriggeredContextUsesUnprunedLegacyAdaptationToken(t *testing.T) {
+	_, s := newStore(t)
+	const nodeID = "skill:context-noise"
+	if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Context Noise", Triggers: []string{"surface"}}); err != nil {
+		t.Fatal(err)
+	}
+	task := "adapt anti-pattern context from operating-system into consumed Compound surface"
+	if _, ok := surfaced(s, task)[nodeID]; !ok {
+		t.Fatal("precondition: broad surface trigger should surface before false-trigger feedback")
+	}
+	if err := s.AddEdge(Edge{Kind: EdFalseTriggeredBy, From: "context:context", To: nodeID, Confidence: 1}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := surfaced(s, task)[nodeID]; ok {
+		t.Fatal("false-trigger feedback should still suppress pruned adaptation meta-token context")
+	}
+}
+
 func TestConsumeReceiptsIfGraphExistsNoopsWithoutGraph(t *testing.T) {
 	home := t.TempDir()
 	writeReceipt(t, home, testReceipt("rec_no_graph", "completed", true,
@@ -1072,6 +1108,85 @@ func TestSurfaceIgnoresGenericAgentRoleToken(t *testing.T) {
 	}
 	if _, ok := hits["tool:episode-agent-logs"]; ok {
 		t.Fatalf("unrelated tool should not surface from generic agent token alone: %+v", hits)
+	}
+}
+
+func TestSurfaceIgnoresControlPlaneAdaptationMetaTokens(t *testing.T) {
+	_, s := newStore(t)
+	mustAdd := func(n Node) {
+		t.Helper()
+		if err := s.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustAdd(Node{
+		ID:       "procedure:adaptation-proof",
+		Kind:     "procedure",
+		Name:     "Adaptation proof",
+		Triggers: []string{"adapt"},
+		Weight:   1,
+	})
+	mustAdd(Node{ID: "tool:system-design", Kind: "tool", Name: "system design", Triggers: []string{"system"}})
+	mustAdd(Node{ID: "tool:instruction-loader", Kind: "tool", Name: "instruction loader", Triggers: []string{"instructions"}})
+	mustAdd(Node{ID: "tool:prompt-image", Kind: "tool", Name: "prompt image", Triggers: []string{"prompts"}})
+	mustAdd(Node{ID: "tool:everything-cache", Kind: "tool", Name: "everything cache", Triggers: []string{"everything"}})
+	mustAdd(Node{ID: "tool:operating-notes", Kind: "tool", Name: "operating notes", Triggers: []string{"operating"}})
+	mustAdd(Node{ID: "tool:anti-helper", Kind: "tool", Name: "anti helper", Triggers: []string{"anti"}})
+	mustAdd(Node{ID: "tool:pattern-helper", Kind: "tool", Name: "pattern helper", Triggers: []string{"pattern"}})
+
+	hits := surfaced(s, "adapt anti-pattern everything in operating-system into Compound without copying instructions skills or old prompts")
+	if _, ok := hits["procedure:adaptation-proof"]; !ok {
+		t.Fatalf("specific adaptation capability should still surface, got %+v", hits)
+	}
+	for _, id := range []string{
+		"tool:system-design",
+		"tool:instruction-loader",
+		"tool:prompt-image",
+		"tool:everything-cache",
+		"tool:operating-notes",
+		"tool:anti-helper",
+		"tool:pattern-helper",
+	} {
+		if _, ok := hits[id]; ok {
+			t.Fatalf("generic adaptation meta token %s should not surface capability: %+v", id, hits)
+		}
+	}
+}
+
+func TestSurfacePrunesLegacyAdaptationFrameTokens(t *testing.T) {
+	_, s := newStore(t)
+	mustAdd := func(n Node) {
+		t.Helper()
+		if err := s.Add(n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustAdd(Node{ID: "procedure:legacy-adaptation", Kind: "procedure", Name: "legacy adaptation", Triggers: []string{"adaptation"}})
+	mustAdd(Node{ID: "tool:context-cache", Kind: "tool", Name: "context cache", Triggers: []string{"context"}, Weight: 2})
+	mustAdd(Node{ID: "tool:runtime-doctor", Kind: "tool", Name: "runtime doctor", Triggers: []string{"runtime"}, Weight: 2})
+	mustAdd(Node{ID: "tool:proof-helper", Kind: "tool", Name: "proof helper", Triggers: []string{"proof"}, Weight: 2})
+	mustAdd(Node{ID: "skill:material-design", Kind: "skill", Name: "material design", Triggers: []string{"material"}, Weight: 2})
+
+	hits := surfaced(s, "continue goal prompt context-aware adaptation of operating-system material into consumed runtime proof")
+	if _, ok := hits["procedure:legacy-adaptation"]; !ok {
+		t.Fatalf("legacy adaptation task should keep specific adaptation token, got %+v", hits)
+	}
+	for _, id := range []string{
+		"tool:context-cache",
+		"tool:runtime-doctor",
+		"tool:proof-helper",
+		"skill:material-design",
+	} {
+		if _, ok := hits[id]; ok {
+			t.Fatalf("legacy adaptation frame token %s should not surface capability: %+v", id, hits)
+		}
+	}
+
+	ordinary := surfaced(s, "debug runtime proof for context cache")
+	for _, id := range []string{"tool:context-cache", "tool:runtime-doctor", "tool:proof-helper"} {
+		if _, ok := ordinary[id]; !ok {
+			t.Fatalf("ordinary non-legacy task should still surface %s, got %+v", id, ordinary)
+		}
 	}
 }
 

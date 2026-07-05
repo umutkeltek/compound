@@ -86,6 +86,22 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 	if result.Report.EchoFoldProposalCount != 1 || result.Report.ContradictionProposalCount != 1 {
 		t.Fatalf("report counts = echo %d contradiction %d, want 1/1", result.Report.EchoFoldProposalCount, result.Report.ContradictionProposalCount)
 	}
+	if result.Report.ReviewDebtCount != 2 || len(result.Report.ReopenedClaims) != 2 {
+		t.Fatalf("review debt = %d reopened=%+v, want two reopened claims", result.Report.ReviewDebtCount, result.Report.ReopenedClaims)
+	}
+	reopened := map[string]mem.SynthesisClaimReview{}
+	for _, item := range result.Report.ReopenedClaims {
+		reopened[item.ClaimID] = item
+	}
+	for _, claimID := range []string{"claim_go", "claim_rust"} {
+		item, ok := reopened[claimID]
+		if !ok {
+			t.Fatalf("claim %s not reopened: %+v", claimID, result.Report.ReopenedClaims)
+		}
+		if item.State != mem.ClaimStateNeedsReview || item.ReviewRef == "" || len(item.CandidateIDs) == 0 {
+			t.Fatalf("claim %s reopened marker incomplete: %+v", claimID, item)
+		}
+	}
 	if result.ReportPath == "" {
 		t.Fatal("expected report artifact path")
 	}

@@ -112,6 +112,33 @@ func TestExternalRepoIntakeReportForHome(t *testing.T) {
 	if report.HighValue[0].Owner != "deep-research" || report.HighValue[0].NextReviewStep != "run freshness eval" {
 		t.Fatalf("high value metadata = %+v", report.HighValue[0])
 	}
+
+	reviewDir := filepath.Join(home, "reviews", ExternalRepoIntakeReviewArea)
+	if err := os.MkdirAll(reviewDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reviewedPath := filepath.Join(reviewDir, "example-high-value.reviewed.json")
+	writeJSON(t, reviewedPath, ExternalRepoIntakeReviewReport{
+		SchemaVersion: ExternalRepoIntakeReviewReportSchemaVersion,
+		ID:            "errr_high_value",
+		CreatedAt:     "2026-07-02T03:04:07Z",
+		Status:        "recorded",
+		Repo:          "example/high-value",
+		Decision:      "keep_needs_review",
+		Owner:         "deep-research",
+		NextAction:    "run freshness eval",
+		ReviewPath:    reviewedPath,
+	})
+	afterReview, err := ExternalRepoIntakeReportForHome(home)
+	if err != nil {
+		t.Fatalf("after-review report: %v", err)
+	}
+	if afterReview.CountsByDecision["keep_needs_review"] != 1 || afterReview.OpenReviewCount != 0 {
+		t.Fatalf("default report should keep raw decision count but clear owner-review debt: counts=%+v open=%d", afterReview.CountsByDecision, afterReview.OpenReviewCount)
+	}
+	if len(afterReview.HighValue) != 1 || afterReview.HighValue[0].OwnerReviewStatus != "recorded" || afterReview.HighValue[0].CapabilityEvaluationStatus != "pending" || afterReview.HighValue[0].CapabilityGraphStatus != "blocked_on_capability_evaluation" {
+		t.Fatalf("default high-value row should expose review/evaluation/graph status: %+v", afterReview.HighValue)
+	}
 	filtered, err := ExternalRepoIntakeReportForHome(home, "https://github.com/example/high-value.git")
 	if err != nil {
 		t.Fatalf("filtered report should not fail: %v", err)
@@ -131,6 +158,77 @@ func TestExternalRepoIntakeReportForHome(t *testing.T) {
 	}
 	if len(report.Boundaries) != 2 || report.Boundaries[1] != "no install" {
 		t.Fatalf("boundaries = %+v", report.Boundaries)
+	}
+}
+
+func TestExternalRepoIntakeReportMatchesTaskContextEvidence(t *testing.T) {
+	home := t.TempDir()
+	batchDir := filepath.Join(home, "inbox", "external-repo-intake", "2026-07-04-context")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	writeJSON(t, mapPath, map[string]any{
+		"boundaries": []string{"review-only", "no install"},
+		"items": []map[string]any{
+			{
+				"repo":             "gitroomhq/postiz-app",
+				"owner":            "product outbound distribute pipe",
+				"next_review_step": "evaluate rented posting edge behind PolicyDecision; posting receipts feed product loops",
+				"not_to_do":        "do not auth social accounts or auto-post",
+			},
+			{
+				"repo":             "example/memory-importer",
+				"owner":            "memory ingestion",
+				"next_review_step": "evaluate transcript import edge",
+			},
+		},
+	})
+	writeJSON(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
+		"schema_version":          "compound.external_repo_intake_run.v0.1",
+		"id":                      "2026-07-04-context",
+		"created_at":              "2026-07-04T07:30:00Z",
+		"map_path":                mapPath,
+		"source_observation_path": filepath.Join(batchDir, "source-observation.json"),
+		"candidate_count":         2,
+		"counts_by_decision": map[string]any{
+			"keep_needs_review": 2,
+		},
+		"counts_by_lane": map[string]any{
+			"distribution_adapter_candidate": 1,
+			"memory_source_candidate":        1,
+		},
+		"decisions": []map[string]any{
+			{
+				"repo":              "gitroomhq/postiz-app",
+				"decision":          "keep_needs_review",
+				"lane":              "distribution_adapter_candidate",
+				"status":            "recorded",
+				"evidence_strength": 0.86,
+			},
+			{
+				"repo":              "example/memory-importer",
+				"decision":          "keep_needs_review",
+				"lane":              "memory_source_candidate",
+				"status":            "recorded",
+				"evidence_strength": 0.72,
+			},
+		},
+	})
+
+	report, err := ExternalRepoIntakeReportForHome(home, "evaluate social media distribution outbound posting adapter with Postiz for product feedback loops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Matches) != 1 {
+		t.Fatalf("context query should match one reviewed repo evidence row, got %+v", report.Matches)
+	}
+	match := report.Matches[0]
+	if match.Repo != "gitroomhq/postiz-app" ||
+		match.Owner != "product outbound distribute pipe" ||
+		match.Lane != "distribution_adapter_candidate" ||
+		match.NotToDo != "do not auth social accounts or auto-post" {
+		t.Fatalf("context match did not preserve external repo evidence metadata: %+v", match)
 	}
 }
 
@@ -301,6 +399,12 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 	if item.Status != "review_required" || item.Repo != "example/review" || item.Decision != "keep_needs_review" || item.NextAction != "review harness pattern" {
 		t.Fatalf("review plan item = %+v", item)
 	}
+	if len(item.EvaluationPlan) < 4 || item.EvaluationPlan[0].ID != "existing-owner-fit" || item.EvaluationPlan[0].Silence == "" || item.EvaluationPlan[0].Retirement == "" {
+		t.Fatalf("review plan should include context-aware evaluation steps: %+v", item.EvaluationPlan)
+	}
+	if !hasExternalRepoEvaluationStep(item.EvaluationPlan, "harness-fit") {
+		t.Fatalf("harness repo should add harness-fit evaluation lens: %+v", item.EvaluationPlan)
+	}
 	if item.JSONPath == "" || item.MarkdownPath == "" || item.ReviewYAMLPath == "" {
 		t.Fatalf("review plan paths missing: %+v", item)
 	}
@@ -310,6 +414,18 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(string(md), "do not clone automatically") {
 		t.Fatalf("markdown missing boundary:\n%s", md)
+	}
+	for _, want := range []string{
+		"## Context-Aware Evaluation Plan",
+		"existing-owner-fit (owner-fit)",
+		"harness-fit (harness-fit)",
+		"silence:",
+		"proof:",
+		"retirement:",
+	} {
+		if !strings.Contains(string(md), want) {
+			t.Fatalf("markdown missing evaluation plan %q:\n%s", want, md)
+		}
 	}
 	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: ExternalRepoIntakeReviewArea}, time.Date(2026, 7, 2, 3, 4, 6, 0, time.UTC))
 	if err != nil {
@@ -321,6 +437,15 @@ func TestExternalRepoIntakeReviewPlanWritesQueueArtifacts(t *testing.T) {
 	AnnotateExternalRepoIntakeQueue(&queue)
 	if queue.Items[0].Readiness != "needs_review" || len(queue.Items[0].Actions) != 1 || queue.Items[0].Actions[0].ID != "record_external_repo_intake_review" {
 		t.Fatalf("queue should expose external repo review action before valid review: %+v", queue.Items[0])
+	}
+	if queue.Items[0].DecisionCard == nil {
+		t.Fatalf("queue should expose context-aware external repo decision card: %+v", queue.Items[0])
+	}
+	if queue.Items[0].DecisionCard.Meta["evaluation_step_count"] != "4" {
+		t.Fatalf("decision card should expose evaluation step count: %+v", queue.Items[0].DecisionCard)
+	}
+	if !decisionCardHasReasonLabel(queue.Items[0].DecisionCard, "evaluation lens: harness-fit") {
+		t.Fatalf("decision card missing harness evaluation lens: %+v", queue.Items[0].DecisionCard)
 	}
 
 	reviewDraft, err := os.ReadFile(item.ReviewYAMLPath)
@@ -448,6 +573,10 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	if signalString(eval.Signals, "external_repo") != "example/review" || signalString(eval.Signals, "existing_owner") != "Agent Workbench / harness adapters" {
 		t.Fatalf("evaluation signals = %+v", eval.Signals)
 	}
+	lenses := signalStringSlice(eval.Signals, "context_evaluation_lenses")
+	if !contains(lenses, "owner-fit") || !contains(lenses, "harness-fit") {
+		t.Fatalf("evaluation should carry context-aware lenses, got signals=%+v lenses=%+v", eval.Signals, lenses)
+	}
 	if _, err := os.Stat(filepath.Join(home, "registries", "capability-nodes.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("evaluation plan must not mutate capability graph, stat err=%v", err)
 	}
@@ -460,6 +589,23 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	if queue.Counts.ReviewRequired != 1 || queue.Items[0].Status != "review_required" {
 		t.Fatalf("capability evaluation queue = counts=%+v item=%+v", queue.Counts, queue.Items[0])
 	}
+	if queue.Items[0].DecisionCard == nil || !decisionCardHasReasonLabel(queue.Items[0].DecisionCard, "evaluation lens: harness-fit") {
+		t.Fatalf("capability evaluation card should carry context lens details: %+v", queue.Items[0].DecisionCard)
+	}
+	pending, err := ExternalRepoIntakeReportForHomeWithSourceList(home, sourceListPath)
+	if err != nil {
+		t.Fatalf("refresh source-list report with pending evaluation review: %v", err)
+	}
+	if len(pending.SourceListEvalNext) != 0 {
+		t.Fatalf("pending capability evaluation review should leave evaluation-next: %+v", pending.SourceListEvalNext)
+	}
+	if pending.SourceListByCapabilityEvaluationStatus["review_required"] != 1 || pending.SourceListByCapabilityGraphStatus["blocked_on_evaluation_review"] != 1 {
+		t.Fatalf("pending evaluation review status missing: eval=%+v graph=%+v", pending.SourceListByCapabilityEvaluationStatus, pending.SourceListByCapabilityGraphStatus)
+	}
+	pendingMatch := pending.SourceListItems[0].Matches[0]
+	if pendingMatch.CapabilityEvaluationStatus != "review_required" || pendingMatch.CapabilityEvaluationPath != report.ReviewYAMLPath || pendingMatch.CapabilityEvaluationNodeStatus != "review_required" {
+		t.Fatalf("pending evaluation context missing: %+v", pendingMatch)
+	}
 	var plan CapabilityEvaluationPlan
 	planData, err := os.ReadFile(report.PlanPath)
 	if err != nil {
@@ -467,6 +613,9 @@ func TestExternalRepoCapabilityEvaluationPlanConsumesRecordedReview(t *testing.T
 	}
 	if err := json.Unmarshal(planData, &plan); err != nil {
 		t.Fatalf("parse evaluation plan: %v", err)
+	}
+	if !contains(plan.RequiredReview, "context lens harness-fit proof and silence condition reviewed") {
+		t.Fatalf("capability evaluation plan should require context-lens review before graph import: %+v", plan.RequiredReview)
 	}
 	reviewReport, err := RecordCapabilityEvaluationReview(home, CapabilityEvaluationReview{
 		SchemaVersion: CapabilityEvaluationReviewSchemaVersion,
@@ -671,6 +820,27 @@ func TestExternalRepoIntakeReportIncludesMatchingEvaluationReferences(t *testing
 	if marketplaceReport.Matches[0].Decision != "reference_only" || marketplaceReport.Matches[0].GraphHint != "downgrade_to_index" {
 		t.Fatalf("marketplace decision should stay index-only: %+v", marketplaceReport.Matches[0])
 	}
+}
+
+func hasExternalRepoEvaluationStep(steps []ExternalRepoContextEvaluationStep, id string) bool {
+	for _, step := range steps {
+		if step.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func decisionCardHasReasonLabel(card *reviewartifact.DecisionCard, label string) bool {
+	if card == nil {
+		return false
+	}
+	for _, reason := range card.Why {
+		if reason.Label == label {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(t *testing.T, path string, v any) {

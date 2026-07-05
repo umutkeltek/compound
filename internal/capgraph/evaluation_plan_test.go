@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"compound/internal/reviewartifact"
 )
 
 func TestCapabilityEvaluationPlanRecordsReviewArtifactsWithoutMutatingGraph(t *testing.T) {
@@ -36,6 +38,30 @@ func TestCapabilityEvaluationPlanRecordsReviewArtifactsWithoutMutatingGraph(t *t
 	paths, err := RecordCapabilityEvaluationPlan(home, plan)
 	if err != nil {
 		t.Fatal(err)
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: capabilityEvaluationReviewArea}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateCapabilityEvaluationQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 1 || len(queue.Items) != 1 {
+		t.Fatalf("capability evaluation review queue counts = %+v items=%d", queue.Counts, len(queue.Items))
+	}
+	card := queue.Items[0].DecisionCard
+	if card == nil || card.Meta["review_yaml"] != paths.ReviewYAMLPath || card.Meta["manifest_draft"] != paths.ManifestDraftPath {
+		t.Fatalf("decision card missing review paths: item=%+v card=%+v", queue.Items[0], card)
+	}
+	if queue.Items[0].Readiness != "needs_review" || !strings.Contains(queue.Items[0].NextAction, "edit YAML") || len(queue.Items[0].Actions) != 3 {
+		t.Fatalf("pending review should expose guarded actions: %+v", queue.Items[0])
+	}
+	if !strings.Contains(card.CanonicalActionHint, "evaluation-review") || len(card.Choices) != 3 || !card.Choices[0].RequiresReview {
+		t.Fatalf("decision card should point to gated evaluation-review choices: %+v", card)
+	}
+	for _, action := range queue.Items[0].Actions {
+		if !action.RequiresReview || !strings.Contains(action.Command, "compound capability evaluation-review") {
+			t.Fatalf("action should require reviewed evaluation command: %+v", action)
+		}
 	}
 	var stored CapabilityEvaluationPlan
 	data, err := os.ReadFile(paths.PlanPath)

@@ -82,6 +82,53 @@ func TestClosePlanSurfacesObservedRunEvidenceWithoutClosing(t *testing.T) {
 	}
 }
 
+func TestClosePlanConsumesRecordedActionExecutionPlanReceiptDraft(t *testing.T) {
+	s := newStore(t)
+	ctx, workID := runningActionContextWork(t, s)
+	actionPlan, err := s.ActionExecutionPlan(workID, fixedNow, ActionExecutionPlanOptions{Actor: "codex", Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shallow, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "codex", ActionPlanPath: actionPlan.PlanPath, Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shallow.Status != "not_closeable" || !strings.Contains(shallow.NoAction, "not recorded") || len(shallow.CloseCommand) != 0 {
+		t.Fatalf("close-plan should refuse action-plan before work act records it: %+v", shallow)
+	}
+
+	if _, err := s.RecordAction(workID, actionPlan.ActionIntent, actionPlan.Decision, fixedNow); err != nil {
+		t.Fatalf("record planned action failed: %v", err)
+	}
+	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "codex", ActionPlanPath: actionPlan.PlanPath, Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "close_policy_allowed" || !plan.Policy.Allowed {
+		t.Fatalf("close-plan did not allow recorded action plan: %+v", plan)
+	}
+	if plan.ActionExecutionPlanID != actionPlan.ID || plan.ActionExecutionPlanPath != actionPlan.PlanPath {
+		t.Fatalf("close-plan did not thread action execution plan identity: %+v", plan)
+	}
+	if plan.Outcome != actionPlan.ReceiptDraft.Outcome || plan.MoveType != actionPlan.ReceiptDraft.MoveType {
+		t.Fatalf("close-plan did not consume receipt draft outcome/move type: got=%s/%s want=%s/%s", plan.Outcome, plan.MoveType, actionPlan.ReceiptDraft.Outcome, actionPlan.ReceiptDraft.MoveType)
+	}
+	if !contains(plan.ProofRefs, ctx.SourceRef) || !contains(plan.ExpectedValidation, ctx.ExpectedValidation[0]) || !contains(plan.ReceiptDraft.ProofRefs, ctx.SourceRef) {
+		t.Fatalf("close-plan did not carry receipt proof/validation: %+v", plan)
+	}
+	if !commandHasFlagValue(plan.CloseCommand, "--proof", ctx.SourceRef) {
+		t.Fatalf("close command missing action receipt proof ref: %+v", plan.CloseCommand)
+	}
+	after, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" || after.IDs.TransitionID != "" {
+		t.Fatalf("close-plan must not close work: %+v", after)
+	}
+}
+
 func TestCloseRecordsPolicyAction(t *testing.T) {
 	s := newStore(t)
 	workID := readyRunningWork(t, s)

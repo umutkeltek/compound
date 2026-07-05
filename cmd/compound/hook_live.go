@@ -16,7 +16,7 @@ import (
 	"compound/internal/policy"
 )
 
-const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code> [--parity-log <dir>]"
+const hookUsage = "usage: compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> [--enforce] <fixture.json> OR compound hook <session-start|user-prompt-submit|pre-tool-use|post-tool-use|session-end|stop> --live --harness <claude-code|codex> [--parity-log <dir>]"
 
 type hookCommandArgs struct {
 	HookName     string
@@ -51,18 +51,35 @@ type claudeLiveHookResponse struct {
 	HookSpecificOutput claudeHookSpecificOutput `json:"hookSpecificOutput"`
 }
 
+type codexLiveHookResponse struct {
+	SchemaVersion      string `json:"schema_version"`
+	HookName           string `json:"hook_name"`
+	EventID            string `json:"event_id"`
+	Status             string `json:"status"`
+	AdditionalContext  string `json:"additional_context,omitempty"`
+	PermissionDecision string `json:"permission_decision,omitempty"`
+	PermissionReason   string `json:"permission_reason,omitempty"`
+}
+
 type liveHookParityRecord struct {
-	SchemaVersion string   `json:"schema_version"`
-	HookName      string   `json:"hook_name"`
-	Harness       string   `json:"harness"`
-	EventID       string   `json:"event_id"`
-	Status        string   `json:"status"`
-	InputHash     string   `json:"input_hash,omitempty"`
-	SummaryHash   string   `json:"summary_hash,omitempty"`
-	ProducedKinds []string `json:"produced_kinds"`
-	WorkID        string   `json:"work_id,omitempty"`
-	SessionID     string   `json:"session_id,omitempty"`
-	CreatedAt     string   `json:"created_at"`
+	SchemaVersion     string   `json:"schema_version"`
+	HookName          string   `json:"hook_name"`
+	Harness           string   `json:"harness"`
+	EventID           string   `json:"event_id"`
+	Status            string   `json:"status"`
+	InputHash         string   `json:"input_hash,omitempty"`
+	SummaryHash       string   `json:"summary_hash,omitempty"`
+	ProducedKinds     []string `json:"produced_kinds"`
+	WorkID            string   `json:"work_id,omitempty"`
+	SessionID         string   `json:"session_id,omitempty"`
+	ContextRequestID  string   `json:"context_request_id,omitempty"`
+	ContextRequestRef string   `json:"context_request_ref,omitempty"`
+	ContractID        string   `json:"contract_id,omitempty"`
+	ContractRef       string   `json:"contract_ref,omitempty"`
+	ContextPackID     string   `json:"context_pack_id,omitempty"`
+	ContextPackRef    string   `json:"context_pack_ref,omitempty"`
+	InjectionRef      string   `json:"injection_ref,omitempty"`
+	CreatedAt         string   `json:"created_at"`
 }
 
 func loadHookFixture(parsed hookCommandArgs, now time.Time) (hook.Fixture, error) {
@@ -194,7 +211,25 @@ func liveToolPath(input map[string]any) string {
 	return ""
 }
 
-func liveHookResponse(hookName string, res hook.Result) claudeLiveHookResponse {
+func liveHookResponse(harnessName, hookName string, res hook.Result) any {
+	if normalizeLiveHarness(harnessName) == "codex" {
+		out := codexLiveHookResponse{
+			SchemaVersion: "compound.codex_live_hook_response.v0.1",
+			HookName:      hookEnumName(hookName),
+			EventID:       res.Event.Header.ID,
+			Status:        res.Event.Status,
+		}
+		switch hookName {
+		case "session-start", "user-prompt-submit":
+			out.AdditionalContext = res.Summary
+		case "pre-tool-use":
+			if decision, reason := livePermissionDecision(res); decision != "" {
+				out.PermissionDecision = decision
+				out.PermissionReason = reason
+			}
+		}
+		return out
+	}
 	out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
 	switch hookName {
 	case "session-start", "user-prompt-submit":
@@ -224,6 +259,15 @@ func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {
 		WorkID:        res.Event.IDs.WorkID,
 		SessionID:     res.Event.IDs.SessionID,
 		CreatedAt:     now.UTC().Format(time.RFC3339),
+	}
+	if res.Injection != nil {
+		record.ContextRequestID = res.Injection.ContextRequestID
+		record.ContextRequestRef = res.Injection.ContextRequestRef
+		record.ContractID = res.Injection.ContractID
+		record.ContractRef = res.Injection.ContractRef
+		record.ContextPackID = res.Injection.ContextPackID
+		record.ContextPackRef = res.Injection.ContextPackRef
+		record.InjectionRef = res.Injection.Ref
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err

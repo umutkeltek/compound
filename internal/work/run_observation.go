@@ -34,6 +34,7 @@ type RunObservationResult struct {
 	PolicyDecisionID string                 `json:"policy_decision_id,omitempty"`
 	Work             envelope.WorkEnvelope  `json:"work"`
 	Trace            envelope.TraceEnvelope `json:"trace"`
+	ActionContext    *WorkActionContext     `json:"action_context,omitempty"`
 	NoAction         string                 `json:"no_action,omitempty"`
 	Warnings         []string               `json:"warnings,omitempty"`
 }
@@ -99,6 +100,10 @@ func (s *Store) ObserveRun(workID string, in ObserveRunInput, now time.Time) (Ru
 			"does not close work",
 			"does not emit receipt or transition proof",
 		},
+	}
+	if actionContext, warnings := s.actionContextForWork(advanced); actionContext != nil || len(warnings) > 0 {
+		result.ActionContext = actionContext
+		result.Warnings = append(result.Warnings, warnings...)
 	}
 	if len(advanced.RunIDs) > 0 {
 		result.ActionIntentID = advanced.RunIDs[len(advanced.RunIDs)-1]

@@ -13,9 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/authority"
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/mem"
+	"compound/internal/observation"
+	panelpkg "compound/internal/panel"
+	"compound/internal/product"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
@@ -24,24 +29,75 @@ const orientOperatorCursorSchemaVersion = "compound.orient_operator_cursor.v0.1"
 const orientOperatorReportSchemaVersion = "compound.orient_operator.v0.1"
 
 type orientOperatorReport struct {
-	SchemaVersion string            `json:"schema_version"`
-	GeneratedAt   string            `json:"generated_at"`
-	NeedsMe       orientNeedsMe     `json:"needs_me"`
-	Running       orientRunning     `json:"running"`
-	Changed       orientChanged     `json:"changed"`
-	DrillDown     []orientDrillDown `json:"drill_down"`
-	Warnings      []string          `json:"warnings,omitempty"`
+	SchemaVersion  string                `json:"schema_version"`
+	GeneratedAt    string                `json:"generated_at"`
+	NeedsMe        orientNeedsMe         `json:"needs_me"`
+	Running        orientRunning         `json:"running"`
+	SessionContext *orientSessionContext `json:"session_context,omitempty"`
+	ProductLoops   *orientProductLoops   `json:"product_loops,omitempty"`
+	Changed        orientChanged         `json:"changed"`
+	DrillDown      []orientDrillDown     `json:"drill_down"`
+	Warnings       []string              `json:"warnings,omitempty"`
+}
+
+type orientSessionContext struct {
+	Status   string   `json:"status"`
+	Source   string   `json:"source"`
+	Harness  string   `json:"harness"`
+	RepoKind string   `json:"repo_kind"`
+	Task     string   `json:"task"`
+	Command  []string `json:"command"`
+	Boundary string   `json:"boundary"`
+	Proof    string   `json:"proof"`
 }
 
 type orientNeedsMe struct {
-	CandidateTotal         int                    `json:"candidate_total"`
-	CandidateActionable    int                    `json:"candidate_actionable"`
-	CandidateInboxes       []orientCandidateInbox `json:"candidate_inboxes"`
-	ReviewRequired         int                    `json:"review_required"`
-	ReadyToApply           int                    `json:"ready_to_apply"`
-	PendingPanelNeedsHuman int                    `json:"pending_panel_needs_human"`
-	OldestItem             *orientAgedItem        `json:"oldest_item,omitempty"`
-	OldestActionableItem   *orientAgedItem        `json:"oldest_actionable_item,omitempty"`
+	CandidateTotal         int                       `json:"candidate_total"`
+	CandidateActionable    int                       `json:"candidate_actionable"`
+	CandidateInboxes       []orientCandidateInbox    `json:"candidate_inboxes"`
+	ReviewRequired         int                       `json:"review_required"`
+	ReadyToApply           int                       `json:"ready_to_apply"`
+	PendingPanelNeedsHuman int                       `json:"pending_panel_needs_human"`
+	ObservationReviews     *orientObservationReviews `json:"observation_reviews,omitempty"`
+	MemoryReviewCardCount  int                       `json:"memory_review_card_count,omitempty"`
+	MemoryReviewCards      []orientMemoryReviewCard  `json:"memory_review_cards,omitempty"`
+	OperatorGateCardCount  int                       `json:"operator_gate_card_count,omitempty"`
+	OperatorGateCards      []orientOperatorGateCard  `json:"operator_gate_cards,omitempty"`
+	AdaptationIntake       *orientAdaptationIntake   `json:"adaptation_intake,omitempty"`
+	CapabilityFeedback     *orientCapabilityFeedback `json:"capability_feedback,omitempty"`
+	SourceControl          *orientSourceControl      `json:"source_control,omitempty"`
+	SourceIntake           *orientSourceIntake       `json:"source_intake,omitempty"`
+	OldestItem             *orientAgedItem           `json:"oldest_item,omitempty"`
+	OldestActionableItem   *orientAgedItem           `json:"oldest_actionable_item,omitempty"`
+}
+
+type orientMemoryReviewCard struct {
+	ID                  string   `json:"id"`
+	WorkID              string   `json:"work_id"`
+	CandidateID         string   `json:"candidate_id"`
+	CandidateState      string   `json:"candidate_state,omitempty"`
+	PanelRunID          string   `json:"panel_run_id,omitempty"`
+	PanelRunRef         string   `json:"panel_run_ref,omitempty"`
+	PromotionSummaryRef string   `json:"promotion_summary_ref,omitempty"`
+	PromotionCount      *int     `json:"promotion_count,omitempty"`
+	Command             []string `json:"command,omitempty"`
+	Boundary            string   `json:"boundary"`
+	NextAction          string   `json:"next_action"`
+}
+
+type orientOperatorGateCard struct {
+	ID                 string   `json:"id"`
+	Kind               string   `json:"kind"`
+	WorkID             string   `json:"work_id"`
+	GateID             string   `json:"gate_id,omitempty"`
+	SourceKind         string   `json:"source_kind,omitempty"`
+	Command            []string `json:"command,omitempty"`
+	RequiredInputs     []string `json:"required_inputs,omitempty"`
+	ExpectedValidation []string `json:"expected_validation,omitempty"`
+	StopConditions     []string `json:"stop_conditions,omitempty"`
+	Boundary           string   `json:"boundary"`
+	Proof              string   `json:"proof"`
+	NextAction         string   `json:"next_action"`
 }
 
 type orientCandidateInbox struct {
@@ -50,6 +106,156 @@ type orientCandidateInbox struct {
 	Count           int            `json:"count"`
 	ActionableCount int            `json:"actionable_count"`
 	StateCounts     map[string]int `json:"state_counts,omitempty"`
+}
+
+type orientSourceIntake struct {
+	RecordCount         int                                  `json:"record_count"`
+	RowCount            int                                  `json:"row_count"`
+	AppliedCount        int                                  `json:"applied_count"`
+	ReviewRecordedCount int                                  `json:"review_recorded_count"`
+	SkippedCount        int                                  `json:"skipped_count"`
+	BlockedPrivateCount int                                  `json:"blocked_private_count"`
+	UnsupportedCount    int                                  `json:"unsupported_count"`
+	ActionCardCount     int                                  `json:"action_card_count"`
+	ActionCards         []observation.SourceIntakeActionCard `json:"action_cards,omitempty"`
+	LastSource          string                               `json:"last_source,omitempty"`
+	LastSubject         string                               `json:"last_subject,omitempty"`
+	LastRoute           string                               `json:"last_route,omitempty"`
+	LastOwner           string                               `json:"last_owner,omitempty"`
+	LastCapturedAt      string                               `json:"last_captured_at,omitempty"`
+	NextAction          string                               `json:"next_action"`
+	Commands            []orientDrillDown                    `json:"commands"`
+}
+
+type orientSourceControl struct {
+	LiveStatus             string            `json:"live_status,omitempty"`
+	GitRoot                string            `json:"git_root,omitempty"`
+	Branch                 string            `json:"branch,omitempty"`
+	Head                   string            `json:"head,omitempty"`
+	Ahead                  int               `json:"ahead,omitempty"`
+	Behind                 int               `json:"behind,omitempty"`
+	ChangedPaths           int               `json:"changed_paths"`
+	Staged                 int               `json:"staged"`
+	Unstaged               int               `json:"unstaged"`
+	Untracked              int               `json:"untracked"`
+	EvidenceRef            string            `json:"evidence_ref,omitempty"`
+	ReviewCount            int               `json:"review_count"`
+	ReviewOpenCount        int               `json:"review_open_count"`
+	ReviewRecordedCount    int               `json:"review_recorded_count"`
+	LatestReviewID         string            `json:"latest_review_id,omitempty"`
+	LatestReviewNextAction string            `json:"latest_review_next_action,omitempty"`
+	HeadReviewRecorded     bool              `json:"head_review_recorded"`
+	NextAction             string            `json:"next_action"`
+	Commands               []orientDrillDown `json:"commands"`
+}
+
+type orientProductLoops struct {
+	ActionCardCount         int                     `json:"action_card_count"`
+	ProductCount            int                     `json:"product_count"`
+	OpenHypothesisDebtCount int                     `json:"open_hypothesis_debt_count"`
+	ClosedReviewActionCount int                     `json:"closed_review_action_count"`
+	Products                []orientProductLoopItem `json:"products"`
+	DrillDownCommand        []string                `json:"drill_down_command"`
+}
+
+type orientProductLoopItem struct {
+	ActionCardCount                     int                             `json:"action_card_count"`
+	ActionCards                         []orientLoopActionCard          `json:"action_cards,omitempty"`
+	ProductID                           string                          `json:"product_id"`
+	Name                                string                          `json:"name,omitempty"`
+	OpenHypothesisDebtCount             int                             `json:"open_hypothesis_debt_count"`
+	ClosedReviewActionCount             int                             `json:"closed_review_action_count"`
+	OpenHypothesisCount                 int                             `json:"open_hypothesis_count"`
+	ReviewCount                         int                             `json:"review_count"`
+	LoopGaps                            []string                        `json:"loop_gaps,omitempty"`
+	OpenHypothesesByMissingSignalSource []orientLoopMissingSignalSource `json:"open_hypotheses_by_missing_signal_source,omitempty"`
+	SignalsWithoutHypothesis            []orientLoopSignalHypothesisGap `json:"signals_without_hypothesis,omitempty"`
+	ClosedReviewsByNextAction           []orientLoopReviewNextAction    `json:"closed_reviews_by_next_action,omitempty"`
+}
+
+type orientLoopMissingSignalSource struct {
+	Source        string   `json:"source"`
+	HypothesisIDs []string `json:"hypothesis_ids,omitempty"`
+	Metrics       []string `json:"metrics,omitempty"`
+	NextActions   []string `json:"next_actions,omitempty"`
+	Count         int      `json:"count"`
+}
+
+type orientLoopSignalHypothesisGap struct {
+	ChangeEvent          string   `json:"change_event"`
+	SignalIDs            []string `json:"signal_ids,omitempty"`
+	Metrics              []string `json:"metrics,omitempty"`
+	Providers            []string `json:"providers,omitempty"`
+	Consumed             bool     `json:"consumed,omitempty"`
+	ConsumedByWorkIDs    []string `json:"consumed_by_work_ids,omitempty"`
+	ConsumedEvidenceRefs []string `json:"consumed_evidence_refs,omitempty"`
+	Count                int      `json:"count"`
+}
+
+type orientLoopReviewNextAction struct {
+	NextAction           string   `json:"next_action"`
+	ReviewIDs            []string `json:"review_ids,omitempty"`
+	HypothesisIDs        []string `json:"hypothesis_ids,omitempty"`
+	SignalIDs            []string `json:"signal_ids,omitempty"`
+	Consumed             bool     `json:"consumed,omitempty"`
+	ConsumedByWorkIDs    []string `json:"consumed_by_work_ids,omitempty"`
+	ConsumedEvidenceRefs []string `json:"consumed_evidence_refs,omitempty"`
+	Count                int      `json:"count"`
+}
+
+type orientObservationReviews struct {
+	ObservationCandidateReviewCount int               `json:"observation_candidate_review_count"`
+	ObservationPanelVerdictCount    int               `json:"observation_panel_verdict_count"`
+	TotalReviewDebt                 int               `json:"total_review_debt"`
+	NextAction                      string            `json:"next_action"`
+	Commands                        []orientDrillDown `json:"commands"`
+}
+
+type orientCapabilityFeedback struct {
+	Status             string                                         `json:"status"`
+	PendingReviewCount int                                            `json:"pending_review_count"`
+	AppliedReviewCount int                                            `json:"applied_review_count"`
+	RejectedCount      int                                            `json:"rejected_count"`
+	KeptReviewCount    int                                            `json:"kept_review_count"`
+	AppliedEdges       int                                            `json:"applied_edges"`
+	EdgeKindCounts     map[string]int                                 `json:"edge_kind_counts,omitempty"`
+	Recent             []panelpkg.PanelCapabilityFeedbackImpactRecord `json:"recent,omitempty"`
+	NextAction         string                                         `json:"next_action"`
+	Commands           []orientDrillDown                              `json:"commands"`
+}
+
+type orientAdaptationIntake struct {
+	ExternalRepoCount                 int                          `json:"external_repo_count"`
+	ExternalRepoOpenCount             int                          `json:"external_repo_open_count"`
+	ExternalRepoReviewedCount         int                          `json:"external_repo_reviewed_count"`
+	CapabilityEvaluationCount         int                          `json:"capability_evaluation_count"`
+	CapabilityEvaluationOpenCount     int                          `json:"capability_evaluation_open_count"`
+	CapabilityEvaluationReviewedCount int                          `json:"capability_evaluation_reviewed_count"`
+	ActionableCount                   int                          `json:"actionable_count"`
+	Recent                            []orientAdaptationIntakeItem `json:"recent,omitempty"`
+	NextAction                        string                       `json:"next_action"`
+	Commands                          []orientDrillDown            `json:"commands"`
+}
+
+type orientAdaptationIntakeItem struct {
+	Area         string   `json:"area"`
+	ID           string   `json:"id"`
+	Status       string   `json:"status,omitempty"`
+	Readiness    string   `json:"readiness,omitempty"`
+	TargetPath   string   `json:"target_path,omitempty"`
+	Owner        string   `json:"owner,omitempty"`
+	DecisionHint string   `json:"decision_hint,omitempty"`
+	NextAction   string   `json:"next_action,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+type orientLoopActionCard struct {
+	ID       string   `json:"id"`
+	Kind     string   `json:"kind"`
+	Title    string   `json:"title"`
+	Command  []string `json:"command,omitempty"`
+	Boundary string   `json:"boundary,omitempty"`
+	Proof    string   `json:"proof,omitempty"`
 }
 
 type orientAgedItem struct {
@@ -62,11 +268,46 @@ type orientAgedItem struct {
 }
 
 type orientRunning struct {
-	OpenCount           int                  `json:"open_count"`
-	InProgress          int                  `json:"in_progress"`
-	NonStaleLeaseCount  int                  `json:"non_stale_lease_count"`
-	LastDispatchStepRun *orientAgedItem      `json:"last_dispatch_step_run,omitempty"`
-	OpenWork            []orientOpenWorkItem `json:"open_work"`
+	AdmissionPreviewCount int                      `json:"admission_preview_count,omitempty"`
+	AdmissionPreviews     []orientAdmissionPreview `json:"admission_previews,omitempty"`
+	OpenCount             int                      `json:"open_count"`
+	InProgress            int                      `json:"in_progress"`
+	NonStaleLeaseCount    int                      `json:"non_stale_lease_count"`
+	LastDispatchStepRun   *orientAgedItem          `json:"last_dispatch_step_run,omitempty"`
+	OpenWork              []orientOpenWorkItem     `json:"open_work"`
+	AdjacentProgress      *orientAdjacentProgress  `json:"adjacent_progress,omitempty"`
+}
+
+type orientAdmissionPreview struct {
+	PlanID                 string                  `json:"plan_id"`
+	WorkID                 string                  `json:"work_id"`
+	WorkOwner              string                  `json:"work_owner,omitempty"`
+	WorkState              string                  `json:"work_state,omitempty"`
+	Staleness              string                  `json:"staleness,omitempty"`
+	Age                    string                  `json:"age,omitempty"`
+	NextAction             string                  `json:"next_action,omitempty"`
+	ActionSummary          string                  `json:"action_summary,omitempty"`
+	PlanPath               string                  `json:"plan_path,omitempty"`
+	AdmitCommand           []string                `json:"admit_command,omitempty"`
+	RetireDryRun           []string                `json:"retire_dry_run_command,omitempty"`
+	PolicyAllowed          bool                    `json:"policy_allowed"`
+	PolicyOutcome          string                  `json:"policy_outcome,omitempty"`
+	RequiresOperator       bool                    `json:"requires_operator,omitempty"`
+	AdmissionBlockedReason string                  `json:"admission_blocked_reason,omitempty"`
+	ActionContext          *work.WorkActionContext `json:"action_context,omitempty"`
+	SourceReviewCardID     string                  `json:"source_review_card_id,omitempty"`
+}
+
+type orientAdjacentProgress struct {
+	Available                    bool     `json:"available"`
+	Reason                       string   `json:"reason,omitempty"`
+	NextAction                   string   `json:"next_action,omitempty"`
+	HeldWorkIDs                  []string `json:"held_work_ids,omitempty"`
+	PacketCandidateCount         int      `json:"packet_candidate_count,omitempty"`
+	NonPacketActionCount         int      `json:"non_packet_action_count,omitempty"`
+	NonPacketActionIDs           []string `json:"non_packet_action_ids,omitempty"`
+	ConsumedNonPacketActionCount int      `json:"consumed_non_packet_action_count,omitempty"`
+	ConsumedNonPacketActionIDs   []string `json:"consumed_non_packet_action_ids,omitempty"`
 }
 
 type orientOpenWorkItem struct {
@@ -174,16 +415,42 @@ func buildOrientOperatorReport(homePath string, recent int, now time.Time) (orie
 		return orientOperatorReport{}, err
 	}
 	report := orientOperatorReport{
-		SchemaVersion: orientOperatorReportSchemaVersion,
-		GeneratedAt:   now.UTC().Format(time.RFC3339),
-		NeedsMe:       buildOrientNeedsMe(homePath, reviews, now),
-		Running:       buildOrientRunning(homePath, workbench, now),
-		Changed:       buildOrientChanged(homePath, workbench, currentSeq, cursor.LastSeenSeq, firstRun, cursorPath),
+		SchemaVersion:  orientOperatorReportSchemaVersion,
+		GeneratedAt:    now.UTC().Format(time.RFC3339),
+		NeedsMe:        buildOrientNeedsMe(homePath, reviews, workbench, now),
+		Running:        buildOrientRunning(homePath, workbench, now),
+		SessionContext: buildOrientSessionContext(workbench),
+		Changed:        buildOrientChanged(homePath, workbench, currentSeq, cursor.LastSeenSeq, firstRun, cursorPath),
 		DrillDown: []orientDrillDown{
 			{Label: "workbench", Command: []string{"compound", "workbench"}},
 			{Label: "reviews", Command: []string{"compound", "reviews"}},
 			{Label: "memory doctor", Command: []string{"compound", "memory", "doctor"}},
 		},
+	}
+	if report.NeedsMe.ObservationReviews != nil {
+		report.DrillDown = append(report.DrillDown, report.NeedsMe.ObservationReviews.Commands...)
+	}
+	if report.NeedsMe.CapabilityFeedback != nil {
+		report.DrillDown = append(report.DrillDown, report.NeedsMe.CapabilityFeedback.Commands...)
+	}
+	if report.NeedsMe.AdaptationIntake != nil {
+		report.DrillDown = append(report.DrillDown, report.NeedsMe.AdaptationIntake.Commands...)
+	}
+	if report.NeedsMe.SourceControl != nil {
+		report.DrillDown = append(report.DrillDown, report.NeedsMe.SourceControl.Commands...)
+	}
+	if report.NeedsMe.SourceIntake != nil {
+		report.DrillDown = append(report.DrillDown, report.NeedsMe.SourceIntake.Commands...)
+	}
+	productLoops, err := buildOrientProductLoops(homePath, recent, now)
+	if err != nil {
+		report.Warnings = append(report.Warnings, "product_loops: "+err.Error())
+	} else if productLoops.ProductCount > 0 {
+		report.ProductLoops = &productLoops
+		report.DrillDown = append(report.DrillDown, orientDrillDown{
+			Label:   "product loops",
+			Command: productLoops.DrillDownCommand,
+		})
 	}
 	if err := writeOrientOperatorCursor(homePath, currentSeq, now); err != nil {
 		return orientOperatorReport{}, err
@@ -191,17 +458,171 @@ func buildOrientOperatorReport(homePath string, recent int, now time.Time) (orie
 	return report, nil
 }
 
-func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, now time.Time) orientNeedsMe {
-	out := orientNeedsMe{
-		CandidateInboxes: []orientCandidateInbox{},
-		ReviewRequired:   reviews.Counts.ReviewRequired,
-		ReadyToApply:     reviews.Counts.ReadyToApply,
+func buildOrientSessionContext(workbench work.WorkbenchReport) *orientSessionContext {
+	const (
+		harness  = "codex"
+		repoKind = "control-plane"
+	)
+	source := "workbench"
+	task := "inspect Compound operator state and choose next proof-producing move"
+	switch {
+	case workbench.DispatchNext.AdjacentProgress != nil && workbench.DispatchNext.AdjacentProgress.Available:
+		source = "workbench.adjacent_progress"
+		task = "continue held-valve-adjacent Compound work without clearing operator-only valves"
+	case workbench.DispatchNext.CanRun:
+		source = "workbench.dispatch_next"
+		task = "claim next ready Compound work through Workbench dispatch"
+	case workbench.Counts.AdmissionPreviews > 0:
+		source = "workbench.admission_previews"
+		task = "review Workbench admission previews before admitting work"
+	case workbench.Counts.Open > 0:
+		source = "workbench.open_work"
+		task = "inspect Compound open work and preserve active gates"
 	}
+	return &orientSessionContext{
+		Status:   "ready",
+		Source:   source,
+		Harness:  harness,
+		RepoKind: repoKind,
+		Task:     task,
+		Command:  []string{"compound", "orient", "--harness", harness, "--repo-kind", repoKind, "--task", task},
+		Boundary: "context-pack compilation only; records EffectiveContract and ContextPack without claiming, clearing held valves, promoting memory, calling external accounts, or mutating public surfaces",
+		Proof:    "compound orient writes an EffectiveContract plus ContextPack artifact and records included/excluded refs for the selected task",
+	}
+}
+
+func buildOrientProductLoops(homePath string, recent int, now time.Time) (orientProductLoops, error) {
+	if recent <= 0 {
+		recent = 5
+	}
+	model, err := product.BuildLoopModel(homePath, product.LoopOptions{
+		Recent: recent,
+		Now:    now,
+	})
+	if err != nil {
+		return orientProductLoops{}, err
+	}
+	out := orientProductLoops{
+		Products:         []orientProductLoopItem{},
+		DrillDownCommand: []string{"compound", "product", "loops"},
+	}
+	for _, loop := range model.Products {
+		if len(loop.OpenHypothesesByMissingSignalSource) == 0 && len(loop.SignalsWithoutHypothesis) == 0 && len(loop.ClosedReviewsByNextAction) == 0 {
+			continue
+		}
+		item := orientProductLoopItem{
+			ProductID:                           loop.ProductID,
+			Name:                                loop.Name,
+			OpenHypothesisCount:                 len(loop.OpenHypotheses),
+			ReviewCount:                         len(loop.Reviews),
+			ActionCardCount:                     len(loop.ActionCards),
+			ActionCards:                         orientLoopActionCards(loop.ActionCards),
+			LoopGaps:                            append([]string{}, loop.LoopGaps...),
+			OpenHypothesesByMissingSignalSource: orientMissingSignalSources(loop.OpenHypothesesByMissingSignalSource),
+			SignalsWithoutHypothesis:            orientSignalHypothesisGaps(loop.SignalsWithoutHypothesis),
+			ClosedReviewsByNextAction:           orientReviewNextActions(loop.ClosedReviewsByNextAction),
+		}
+		for _, group := range item.OpenHypothesesByMissingSignalSource {
+			item.OpenHypothesisDebtCount += group.Count
+			out.OpenHypothesisDebtCount += group.Count
+		}
+		for _, group := range item.ClosedReviewsByNextAction {
+			item.ClosedReviewActionCount += group.Count
+			out.ClosedReviewActionCount += group.Count
+		}
+		out.ActionCardCount += item.ActionCardCount
+		out.Products = append(out.Products, item)
+	}
+	out.ProductCount = len(out.Products)
+	return out, nil
+}
+
+func orientMissingSignalSources(groups []product.LoopMissingSignalSource) []orientLoopMissingSignalSource {
+	out := make([]orientLoopMissingSignalSource, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, orientLoopMissingSignalSource{
+			Source:        group.Source,
+			HypothesisIDs: append([]string{}, group.HypothesisIDs...),
+			Metrics:       append([]string{}, group.Metrics...),
+			NextActions:   append([]string{}, group.NextActions...),
+			Count:         len(group.HypothesisIDs),
+		})
+	}
+	return out
+}
+
+func orientSignalHypothesisGaps(groups []product.LoopSignalHypothesisGap) []orientLoopSignalHypothesisGap {
+	out := make([]orientLoopSignalHypothesisGap, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, orientLoopSignalHypothesisGap{
+			ChangeEvent:          group.ChangeEvent,
+			SignalIDs:            append([]string{}, group.SignalIDs...),
+			Metrics:              append([]string{}, group.Metrics...),
+			Providers:            append([]string{}, group.Providers...),
+			Consumed:             group.Consumed,
+			ConsumedByWorkIDs:    append([]string{}, group.ConsumedByWorkIDs...),
+			ConsumedEvidenceRefs: append([]string{}, group.ConsumedEvidenceRefs...),
+			Count:                len(group.SignalIDs),
+		})
+	}
+	return out
+}
+
+func orientReviewNextActions(groups []product.LoopReviewNextAction) []orientLoopReviewNextAction {
+	out := make([]orientLoopReviewNextAction, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, orientLoopReviewNextAction{
+			NextAction:           group.NextAction,
+			ReviewIDs:            append([]string{}, group.ReviewIDs...),
+			HypothesisIDs:        append([]string{}, group.HypothesisIDs...),
+			SignalIDs:            append([]string{}, group.SignalIDs...),
+			Consumed:             group.Consumed,
+			ConsumedByWorkIDs:    append([]string{}, group.ConsumedByWorkIDs...),
+			ConsumedEvidenceRefs: append([]string{}, group.ConsumedEvidenceRefs...),
+			Count:                len(group.ReviewIDs),
+		})
+	}
+	return out
+}
+
+func orientLoopActionCards(cards []product.LoopActionCard) []orientLoopActionCard {
+	out := make([]orientLoopActionCard, 0, len(cards))
+	for _, card := range cards {
+		out = append(out, orientLoopActionCard{
+			ID:       card.ID,
+			Kind:     card.Kind,
+			Title:    card.Title,
+			Command:  append([]string{}, card.Command...),
+			Boundary: card.Boundary,
+			Proof:    card.Proof,
+		})
+	}
+	return out
+}
+
+func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, workbench work.WorkbenchReport, now time.Time) orientNeedsMe {
+	out := orientNeedsMe{
+		CandidateInboxes:   []orientCandidateInbox{},
+		ReviewRequired:     reviews.Counts.ReviewRequired,
+		ReadyToApply:       reviews.Counts.ReadyToApply,
+		ObservationReviews: buildOrientObservationReviews(reviews),
+	}
+	out.CapabilityFeedback = buildOrientCapabilityFeedback(homePath, reviews, now)
+	out.AdaptationIntake = buildOrientAdaptationIntake(reviews)
+	out.SourceControl = buildOrientSourceControl(reviews)
+	out.SourceIntake = buildOrientSourceIntake(homePath, now)
+	out.MemoryReviewCards = orientMemoryReviewCards(workbench)
+	out.MemoryReviewCardCount = len(out.MemoryReviewCards)
+	out.OperatorGateCards = orientOperatorGateCards(workbench)
+	out.OperatorGateCardCount = len(out.OperatorGateCards)
 	var oldest *orientAgedItem
 	var oldestActionable *orientAgedItem
 	for _, kind := range candidates.AllKinds() {
 		dir := candidates.InboxDir(kind)
 		summary := candidateInboxSummary(homePath, dir, string(kind), now)
+		if kind == candidates.Memory {
+			summary = memoryCandidateInboxSummary(homePath, now)
+		}
 		out.CandidateTotal += summary.Count
 		out.CandidateActionable += summary.ActionableCount
 		out.CandidateInboxes = append(out.CandidateInboxes, orientCandidateInbox{
@@ -227,12 +648,441 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, now
 	return out
 }
 
+func orientMemoryReviewCards(workbench work.WorkbenchReport) []orientMemoryReviewCard {
+	var out []orientMemoryReviewCard
+	for _, item := range workbench.Open {
+		for _, card := range item.ReviewCards {
+			if strings.TrimSpace(card.CandidateID) == "" {
+				continue
+			}
+			out = append(out, orientMemoryReviewCard{
+				ID:                  card.ID,
+				WorkID:              card.WorkID,
+				CandidateID:         card.CandidateID,
+				CandidateState:      card.CandidateState,
+				PanelRunID:          card.PanelRunID,
+				PanelRunRef:         card.PanelRunRef,
+				PromotionSummaryRef: card.PromotionSummaryRef,
+				PromotionCount:      card.PromotionCount,
+				Command:             append([]string{}, card.Command...),
+				Boundary:            card.Boundary,
+				NextAction:          card.Title,
+			})
+		}
+	}
+	return out
+}
+
+func orientOperatorGateCards(workbench work.WorkbenchReport) []orientOperatorGateCard {
+	var out []orientOperatorGateCard
+	for _, item := range workbench.Open {
+		for _, card := range item.ReviewCards {
+			if strings.TrimSpace(card.CandidateID) != "" {
+				continue
+			}
+			out = append(out, orientOperatorGateCard{
+				ID:                 card.ID,
+				Kind:               card.Kind,
+				WorkID:             card.WorkID,
+				GateID:             card.GateID,
+				SourceKind:         card.SourceKind,
+				Command:            append([]string{}, card.Command...),
+				RequiredInputs:     append([]string{}, card.RequiredInputs...),
+				ExpectedValidation: append([]string{}, card.ExpectedValidation...),
+				StopConditions:     append([]string{}, card.StopConditions...),
+				Boundary:           card.Boundary,
+				Proof:              card.Proof,
+				NextAction:         card.Title,
+			})
+		}
+	}
+	return out
+}
+
+func buildOrientSourceControl(reviews reviewartifact.QueueReport) *orientSourceControl {
+	out := &orientSourceControl{
+		Commands: []orientDrillDown{
+			{Label: "source-control cleanup reviews", Command: []string{"compound", "reviews", "--area", authority.SourceControlCleanupReviewArea, "--json"}},
+			{Label: "source-control snapshot", Command: []string{"compound", "authority", "git", ".", "--json"}},
+		},
+	}
+	var latest *reviewartifact.QueueItem
+	for _, item := range reviews.Items {
+		if item.Area != authority.SourceControlCleanupReviewArea {
+			continue
+		}
+		out.ReviewCount++
+		if sourceControlReviewItemOpen(item) {
+			out.ReviewOpenCount++
+		} else if sourceControlReviewItemRecorded(item) {
+			out.ReviewRecordedCount++
+		}
+		if latest == nil || queueItemNewer(item, *latest) {
+			copyItem := item
+			latest = &copyItem
+		}
+	}
+	if latest != nil {
+		out.LatestReviewID = latest.ID
+		out.LatestReviewNextAction = latest.NextAction
+	}
+	wd, err := os.Getwd()
+	if err == nil {
+		if snap, snapErr := authority.ReadGitSnapshot(wd); snapErr == nil {
+			out.LiveStatus = snap.Status
+			out.GitRoot = snap.GitRoot
+			out.Branch = snap.Branch
+			out.Head = snap.Head
+			out.Ahead = snap.Ahead
+			out.Behind = snap.Behind
+			out.ChangedPaths = snap.ChangedPaths
+			out.Staged = snap.Staged
+			out.Unstaged = snap.Unstaged
+			out.Untracked = snap.Untracked
+			out.EvidenceRef = snap.EvidenceReference()
+			out.HeadReviewRecorded = sourceControlHeadReviewRecorded(reviews, out.EvidenceRef)
+		}
+	}
+	if out.LiveStatus == "" && out.ReviewCount == 0 {
+		return nil
+	}
+	out.NextAction = orientSourceControlNextAction(*out)
+	if out.LiveStatus == "dirty" && !out.HeadReviewRecorded {
+		out.Commands = append(out.Commands, orientDrillDown{Label: "source-control dirty plan", Command: []string{"compound", "authority", "dirty-plan", ".", "--json"}})
+	}
+	return out
+}
+
+func sourceControlReviewItemOpen(item reviewartifact.QueueItem) bool {
+	if reviewItemNeedsOwner(item) {
+		return true
+	}
+	switch strings.TrimSpace(item.Readiness) {
+	case "blocked", "ready_to_record":
+		return true
+	}
+	return false
+}
+
+func sourceControlReviewItemRecorded(item reviewartifact.QueueItem) bool {
+	switch strings.TrimSpace(item.Readiness) {
+	case "review_recorded", "no_action":
+		return true
+	}
+	switch strings.TrimSpace(item.Status) {
+	case "recorded", "applied", "resolved", "accepted":
+		return true
+	}
+	return false
+}
+
+func sourceControlHeadReviewRecorded(reviews reviewartifact.QueueReport, evidenceRef string) bool {
+	evidenceRef = strings.TrimSpace(evidenceRef)
+	if evidenceRef == "" {
+		return false
+	}
+	for _, item := range reviews.Items {
+		if item.Area != authority.SourceControlCleanupReviewArea || !sourceControlReviewItemRecorded(item) {
+			continue
+		}
+		for _, ref := range item.EvidenceRefs {
+			if strings.TrimSpace(ref) == evidenceRef {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func queueItemNewer(candidate, current reviewartifact.QueueItem) bool {
+	candidateTime, candidateOK := parseCompoundTime(candidate.CreatedAt)
+	currentTime, currentOK := parseCompoundTime(current.CreatedAt)
+	if candidateOK && currentOK {
+		return candidateTime.After(currentTime)
+	}
+	if candidateOK != currentOK {
+		return candidateOK
+	}
+	return candidate.ID > current.ID
+}
+
+func orientSourceControlNextAction(source orientSourceControl) string {
+	if source.LiveStatus == "dirty" {
+		if source.ReviewOpenCount > 0 {
+			return "source-control dirty and cleanup review is open; record owner decision before staging, cleaning, committing, or discarding"
+		}
+		if source.HeadReviewRecorded {
+			return "source-control dirty with review receipt for current head; inspect cleanup receipts before touching git, create fresh dirty-plan only if changed paths drifted"
+		}
+		return "source-control dirty without a cleanup receipt for current head; run non-repo-mutating dirty-plan before mutation work"
+	}
+	if source.LiveStatus == "clean" {
+		if source.ReviewRecordedCount > 0 {
+			return "source-control clean; recorded cleanup receipts are historical evidence, not current operator debt"
+		}
+		return "source-control clean"
+	}
+	if source.ReviewRecordedCount > 0 || source.ReviewOpenCount > 0 {
+		return "source-control live snapshot unavailable; inspect cleanup review receipts before git mutation"
+	}
+	return "source-control state unavailable"
+}
+
+func buildOrientSourceIntake(homePath string, now time.Time) *orientSourceIntake {
+	projection, err := observation.LoadSourceIntakeProjection(homePath, now, 12)
+	if err != nil || projection.RowCount == 0 {
+		return nil
+	}
+	out := &orientSourceIntake{
+		RecordCount:         projection.RecordCount,
+		RowCount:            projection.RowCount,
+		AppliedCount:        projection.Counts.Applied,
+		ReviewRecordedCount: projection.Counts.ReviewRecorded,
+		SkippedCount:        projection.Counts.Skipped,
+		BlockedPrivateCount: projection.Counts.BlockedPrivate,
+		UnsupportedCount:    projection.Counts.Unsupported,
+		ActionCardCount:     projection.ActionCardCount,
+		ActionCards:         append([]observation.SourceIntakeActionCard{}, projection.ActionCards...),
+		NextAction:          "inspect source-intake projection before chasing owner-specific ledgers",
+		Commands: []orientDrillDown{
+			{Label: "source intake", Command: []string{"compound", "source", "intake", "--json"}},
+		},
+	}
+	if len(projection.Rows) > 0 {
+		row := projection.Rows[0]
+		out.LastSource = reviewartifact.FirstNonEmpty(row.SourceKind+":"+row.SourceRef, row.SourceKind)
+		out.LastSubject = reviewartifact.FirstNonEmpty(row.SubjectKind+":"+row.SubjectID, row.SubjectKind)
+		out.LastRoute = row.Route
+		out.LastOwner = row.Owner
+		out.LastCapturedAt = row.SourceCapturedAt
+	}
+	return out
+}
+
+func buildOrientObservationReviews(reviews reviewartifact.QueueReport) *orientObservationReviews {
+	out := orientObservationReviews{
+		Commands: []orientDrillDown{
+			{Label: "observation candidates", Command: []string{"compound", "reviews", "--area", observation.ObservationReviewArea}},
+			{Label: "observation panel verdicts", Command: []string{"compound", "reviews", "--area", "panel-verdicts"}},
+		},
+	}
+	for _, item := range reviews.Items {
+		if !reviewItemNeedsOwner(item) {
+			continue
+		}
+		switch item.Area {
+		case observation.ObservationReviewArea:
+			out.ObservationCandidateReviewCount++
+		case "panel-verdicts":
+			if item.DecisionCard != nil && item.DecisionCard.Meta["target_kind"] == string(candidates.CapabilityObs) {
+				out.ObservationPanelVerdictCount++
+			}
+		}
+	}
+	out.TotalReviewDebt = out.ObservationCandidateReviewCount + out.ObservationPanelVerdictCount
+	if out.TotalReviewDebt == 0 {
+		return nil
+	}
+	if out.ObservationCandidateReviewCount > 0 {
+		out.NextAction = "plan observation lens review from observation-candidates, then run bounded panel verdict proof"
+	} else {
+		out.NextAction = "review observation panel verdicts; keep lens output evidence/candidate material"
+	}
+	return &out
+}
+
+func buildOrientCapabilityFeedback(homePath string, reviews reviewartifact.QueueReport, now time.Time) *orientCapabilityFeedback {
+	impact, err := panelpkg.BuildPanelCapabilityFeedbackImpact(homePath, reviews, 5, now)
+	if err != nil {
+		return nil
+	}
+	if impact.PendingReviewCount == 0 && impact.AppliedReviewCount == 0 && impact.RejectedCount == 0 && impact.KeptReviewCount == 0 {
+		return nil
+	}
+	out := &orientCapabilityFeedback{
+		Status:             impact.Status,
+		PendingReviewCount: impact.PendingReviewCount,
+		AppliedReviewCount: impact.AppliedReviewCount,
+		RejectedCount:      impact.RejectedCount,
+		KeptReviewCount:    impact.KeptReviewCount,
+		AppliedEdges:       impact.AppliedEdges,
+		EdgeKindCounts:     impact.EdgeKindCounts,
+		Recent:             impact.Recent,
+		Commands: []orientDrillDown{
+			{Label: "capability feedback", Command: []string{"compound", "reviews", "--area", panelpkg.PanelCapabilityFeedbackReviewArea}},
+			{Label: "capability authority", Command: []string{"compound", "capability", "authority"}},
+		},
+	}
+	if impact.PendingReviewCount > 0 {
+		out.NextAction = "review panel capability feedback; edited review is required before CapabilityGraph learning"
+	} else {
+		out.NextAction = "capability feedback already reviewed; inspect capability authority when lens surfacing looks surprising"
+	}
+	return out
+}
+
+func buildOrientAdaptationIntake(reviews reviewartifact.QueueReport) *orientAdaptationIntake {
+	out := &orientAdaptationIntake{
+		Commands: []orientDrillDown{
+			{Label: "external repo intake", Command: []string{"compound", "reviews", "--area", capgraph.ExternalRepoIntakeReviewArea}},
+			{Label: "capability evaluation intake", Command: []string{"compound", "reviews", "--area", "capability-evaluation-intake"}},
+			{Label: "capability authority", Command: []string{"compound", "capability", "authority"}},
+		},
+	}
+	for _, item := range reviews.Items {
+		switch item.Area {
+		case capgraph.ExternalRepoIntakeReviewArea:
+			out.ExternalRepoCount++
+			if adaptationReviewItemOpen(item) {
+				out.ExternalRepoOpenCount++
+			} else if adaptationReviewItemRecorded(item) {
+				out.ExternalRepoReviewedCount++
+			}
+			appendOrientAdaptationRecent(out, item)
+		case "capability-evaluation-intake":
+			out.CapabilityEvaluationCount++
+			if adaptationReviewItemOpen(item) {
+				out.CapabilityEvaluationOpenCount++
+			} else if adaptationReviewItemRecorded(item) {
+				out.CapabilityEvaluationReviewedCount++
+			}
+			appendOrientAdaptationRecent(out, item)
+		}
+	}
+	out.ActionableCount = out.ExternalRepoOpenCount + out.CapabilityEvaluationOpenCount
+	total := out.ExternalRepoCount + out.CapabilityEvaluationCount
+	if total == 0 {
+		return nil
+	}
+	if out.ActionableCount > 0 {
+		out.NextAction = "review adaptation intake before capability evaluation, manifest import, or owner adoption"
+	} else {
+		out.NextAction = "adaptation intake already reviewed/recorded; use these receipts before copying skills, repos, or creating new capability owners"
+	}
+	return out
+}
+
+func appendOrientAdaptationRecent(out *orientAdaptationIntake, item reviewartifact.QueueItem) {
+	if out == nil || len(out.Recent) >= 5 {
+		return
+	}
+	out.Recent = append(out.Recent, orientAdaptationIntakeItem{
+		Area:         item.Area,
+		ID:           item.ID,
+		Status:       item.Status,
+		Readiness:    item.Readiness,
+		TargetPath:   reviewartifact.FirstNonEmpty(item.TargetPath, item.CandidateID, item.SourcePath),
+		Owner:        item.Owner,
+		DecisionHint: item.GraphDecisionHint,
+		NextAction:   item.NextAction,
+		EvidenceRefs: orientLimitStrings(item.EvidenceRefs, 6),
+	})
+}
+
+func orientLimitStrings(values []string, max int) []string {
+	if max <= 0 || len(values) == 0 {
+		return nil
+	}
+	if len(values) > max {
+		values = values[:max]
+	}
+	return append([]string(nil), values...)
+}
+
+func adaptationReviewItemOpen(item reviewartifact.QueueItem) bool {
+	if reviewItemNeedsOwner(item) {
+		return true
+	}
+	switch strings.TrimSpace(item.Readiness) {
+	case "blocked", "ready_to_record":
+		return true
+	}
+	return false
+}
+
+func adaptationReviewItemRecorded(item reviewartifact.QueueItem) bool {
+	switch strings.TrimSpace(item.Readiness) {
+	case "review_recorded", "no_action":
+		return true
+	}
+	switch strings.TrimSpace(item.Status) {
+	case "recorded", "applied", "resolved", "accepted":
+		return true
+	}
+	return false
+}
+
+func reviewItemNeedsOwner(item reviewartifact.QueueItem) bool {
+	switch strings.TrimSpace(item.Readiness) {
+	case "needs_review", "ready_to_apply":
+		return true
+	}
+	switch strings.TrimSpace(item.Status) {
+	case "review_required", "ready_to_apply":
+		return true
+	}
+	return false
+}
+
+func orientAdmissionPreviews(previews []work.WorkbenchAdmissionPreview) []orientAdmissionPreview {
+	out := make([]orientAdmissionPreview, 0, len(previews))
+	for _, preview := range previews {
+		item := orientAdmissionPreview{
+			PlanID:                 preview.PlanID,
+			WorkID:                 preview.WorkID,
+			WorkOwner:              preview.WorkOwner,
+			WorkState:              preview.WorkState,
+			Staleness:              preview.Staleness,
+			Age:                    preview.Age,
+			NextAction:             preview.NextAction,
+			ActionSummary:          preview.ActionSummary,
+			PlanPath:               preview.PlanPath,
+			AdmitCommand:           append([]string{}, preview.AdmitCommand...),
+			RetireDryRun:           append([]string{}, preview.RetireDryRun...),
+			PolicyAllowed:          preview.PolicyAllowed,
+			PolicyOutcome:          preview.PolicyOutcome,
+			RequiresOperator:       preview.RequiresOperator,
+			AdmissionBlockedReason: preview.AdmissionBlockedReason,
+			ActionContext:          cloneOrientWorkActionContext(preview.ActionContext),
+		}
+		if item.ActionContext != nil && item.ActionContext.Kind == "workbench_review_card" {
+			item.SourceReviewCardID = item.ActionContext.SourceID
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func cloneOrientWorkActionContext(ctx *work.WorkActionContext) *work.WorkActionContext {
+	if ctx == nil {
+		return nil
+	}
+	out := *ctx
+	out.Command = append([]string{}, ctx.Command...)
+	out.RequiredInputs = append([]string{}, ctx.RequiredInputs...)
+	out.ExpectedValidation = append([]string{}, ctx.ExpectedValidation...)
+	out.StopConditions = append([]string{}, ctx.StopConditions...)
+	out.EvidenceRefs = append([]string{}, ctx.EvidenceRefs...)
+	return &out
+}
+
+func orientAdmissionPreviewContextKind(preview orientAdmissionPreview) string {
+	if preview.ActionContext == nil {
+		return "-"
+	}
+	return reviewartifact.FirstNonEmpty(preview.ActionContext.Kind, "-")
+}
+
 func buildOrientRunning(homePath string, report work.WorkbenchReport, now time.Time) orientRunning {
 	openIDs := map[string]bool{}
+	adjacent := buildOrientAdjacentProgress(report.DispatchNext.AdjacentProgress)
 	out := orientRunning{
-		OpenCount:  report.Counts.Open,
-		InProgress: report.Counts.InProgress,
-		OpenWork:   []orientOpenWorkItem{},
+		OpenCount:             report.Counts.Open,
+		InProgress:            report.Counts.InProgress,
+		AdmissionPreviewCount: len(report.AdmissionPreviews),
+		AdmissionPreviews:     orientAdmissionPreviews(report.AdmissionPreviews),
+		OpenWork:              []orientOpenWorkItem{},
+		AdjacentProgress:      adjacent,
 	}
 	for _, item := range report.Open {
 		openIDs[item.WorkID] = true
@@ -242,7 +1092,7 @@ func buildOrientRunning(homePath string, report work.WorkbenchReport, now time.T
 			State:           item.State,
 			Actor:           actor,
 			ClaimedAt:       item.ClaimedAt,
-			NextAction:      item.NextAction,
+			NextAction:      orientOpenWorkNextAction(item, adjacent),
 			ObservatoryTags: append([]string{}, item.ObservatoryTags...),
 			Surface:         item.CanonicalSurface,
 		}
@@ -268,6 +1118,90 @@ func buildOrientRunning(homePath string, report work.WorkbenchReport, now time.T
 			}
 		}
 		break
+	}
+	return out
+}
+
+func orientOpenWorkNextAction(item work.WorkbenchItem, adjacent *orientAdjacentProgress) string {
+	if adjacent == nil || !adjacent.Available || !slices.Contains(adjacent.HeldWorkIDs, item.WorkID) {
+		return item.NextAction
+	}
+	if len(item.ReviewCards) > 0 {
+		card := item.ReviewCards[0]
+		if strings.TrimSpace(card.ID) != "" {
+			surface := "needs_me.operator_gate_cards"
+			if strings.TrimSpace(card.CandidateID) != "" {
+				surface = "needs_me.memory_review_cards"
+			}
+			return item.NextAction + "; use " + surface + " action " + card.ID
+		}
+		return item.NextAction
+	}
+	actionIDs := orientAdjacentActionIDsForOpenWork(item, adjacent.NonPacketActionIDs)
+	if len(actionIDs) == 0 {
+		actionIDs = append([]string{}, adjacent.NonPacketActionIDs...)
+	}
+	if len(actionIDs) > 0 {
+		return "held on operator valve; use running.adjacent_progress actions: " + strings.Join(actionIDs, ", ")
+	}
+	if strings.TrimSpace(adjacent.NextAction) != "" {
+		return "held on operator valve; use running.adjacent_progress: " + adjacent.NextAction
+	}
+	return "held on operator valve; inspect running.adjacent_progress"
+}
+
+func orientAdjacentActionIDsForOpenWork(item work.WorkbenchItem, actionIDs []string) []string {
+	haystack := strings.ToLower(strings.Join([]string{
+		item.SuccessPredicate,
+		item.CanonicalSurface,
+		strings.Join(item.ObservatoryTags, " "),
+	}, " "))
+	var selected []string
+	addIfPresent := func(id string) {
+		if slices.Contains(actionIDs, id) {
+			selected = append(selected, id)
+		}
+	}
+	if strings.Contains(haystack, "asc") || strings.Contains(haystack, "app-store") || strings.Contains(haystack, "app store") {
+		addIfPresent("asc-preflight-private-config")
+		addIfPresent("asc-sales-series-bridge-proof")
+	}
+	if strings.Contains(haystack, "conversation") || strings.Contains(haystack, "chatgpt") {
+		addIfPresent("conversation-preflight-private-export")
+		addIfPresent("conversation-memory-review-gate")
+	}
+	if strings.Contains(haystack, "second-opinion") || strings.Contains(haystack, "oracle") {
+		addIfPresent("second-opinion-evidence-recovery")
+	}
+	return selected
+}
+
+func buildOrientAdjacentProgress(adjacent *work.WorkbenchAdjacentProgress) *orientAdjacentProgress {
+	if adjacent == nil {
+		return nil
+	}
+	out := &orientAdjacentProgress{
+		Available:                    adjacent.Available,
+		Reason:                       adjacent.Reason,
+		NextAction:                   adjacent.NextAction,
+		HeldWorkIDs:                  append([]string{}, adjacent.HeldWorkIDs...),
+		PacketCandidateCount:         adjacent.PacketCandidateCount,
+		NonPacketActionCount:         len(adjacent.NonPacketActions),
+		ConsumedNonPacketActionCount: len(adjacent.ConsumedNonPacketActions),
+		NonPacketActionIDs:           []string{},
+		ConsumedNonPacketActionIDs:   []string{},
+	}
+	for _, action := range adjacent.NonPacketActions {
+		if strings.TrimSpace(action.ID) == "" {
+			continue
+		}
+		out.NonPacketActionIDs = append(out.NonPacketActionIDs, action.ID)
+	}
+	for _, action := range adjacent.ConsumedNonPacketActions {
+		if strings.TrimSpace(action.ID) == "" {
+			continue
+		}
+		out.ConsumedNonPacketActionIDs = append(out.ConsumedNonPacketActionIDs, action.ID)
 	}
 	return out
 }
@@ -334,7 +1268,11 @@ type candidateReadinessPayload struct {
 	State          string            `json:"state"`
 	Status         string            `json:"status"`
 	Verdict        string            `json:"verdict"`
+	Kind           string            `json:"kind"`
+	Subject        string            `json:"subject"`
+	Detail         string            `json:"detail"`
 	PromoteAllowed *bool             `json:"promote_allowed"`
+	EvidenceRefs   []string          `json:"evidence_refs"`
 	Generated      string            `json:"generated"`
 	Remaining      *int              `json:"remaining"`
 	Proposals      []json.RawMessage `json:"proposals"`
@@ -360,7 +1298,7 @@ func candidateInboxSummary(homePath, dir, kind string, now time.Time) orientCand
 		}
 		path := filepath.Join(dir, entry.Name())
 		fullPath := filepath.Join(homePath, path)
-		state := candidateReadinessState(fullPath)
+		state := candidateReadinessState(homePath, fullPath)
 		out.StateCounts[state]++
 		actionable := candidateStateActionable(state)
 		if actionable {
@@ -383,7 +1321,62 @@ func candidateInboxSummary(homePath, dir, kind string, now time.Time) orientCand
 	return out
 }
 
-func candidateReadinessState(path string) string {
+func memoryCandidateInboxSummary(homePath string, now time.Time) orientCandidateInboxSummary {
+	out := orientCandidateInboxSummary{StateCounts: map[string]int{}}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return candidateInboxSummary(homePath, candidates.InboxDir(candidates.Memory), string(candidates.Memory), now)
+	}
+	report, err := store.ListCandidates(now, mem.CandidateListOptions{})
+	if err != nil {
+		return candidateInboxSummary(homePath, candidates.InboxDir(candidates.Memory), string(candidates.Memory), now)
+	}
+	out.Count = report.Counts.Total
+	for state, count := range report.Counts.ByState {
+		out.StateCounts[state] = count
+		if candidateStateActionable(state) {
+			out.ActionableCount += count
+		}
+	}
+	for _, item := range report.Items {
+		aged := memoryCandidateAgedItem(homePath, item, now)
+		out.Oldest = olderAgedItem(out.Oldest, aged)
+		if candidateStateActionable(item.State) {
+			out.OldestActionable = olderAgedItem(out.OldestActionable, aged)
+		}
+	}
+	return out
+}
+
+func memoryCandidateAgedItem(homePath string, item mem.CandidateListItem, now time.Time) *orientAgedItem {
+	path := filepath.Join(candidates.InboxDir(candidates.Memory), item.ID+".json")
+	var at time.Time
+	for _, raw := range []string{item.CreatedAt, item.ObservationDate} {
+		if parsed, ok := parseCompoundTime(raw); ok {
+			at = parsed
+			break
+		}
+	}
+	if at.IsZero() {
+		if info, err := os.Stat(filepath.Join(homePath, path)); err == nil {
+			at = info.ModTime()
+		}
+	}
+	if at.IsZero() {
+		at = now
+	}
+	age := ageSeconds(now, at)
+	return &orientAgedItem{
+		Kind:       "candidate:" + string(candidates.Memory),
+		ID:         item.ID,
+		Path:       filepath.ToSlash(path),
+		At:         at.UTC().Format(time.RFC3339),
+		AgeSeconds: age,
+		Age:        formatDuration(age),
+	}
+}
+
+func candidateReadinessState(homePath, path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "unreadable"
@@ -391,6 +1384,9 @@ func candidateReadinessState(path string) string {
 	var payload candidateReadinessPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return "unreadable"
+	}
+	if verdict, ok := terminalCandidateVerdict(payload.Verdict); ok {
+		return verdict
 	}
 	state := strings.TrimSpace(payload.State)
 	if state == "" {
@@ -408,7 +1404,58 @@ func candidateReadinessState(path string) string {
 	if state == "" {
 		return "unspecified"
 	}
+	if candidateStateActionable(state) && resolvedPanelLensSelectionGap(homePath, payload) {
+		return "resolved"
+	}
 	return state
+}
+
+func terminalCandidateVerdict(verdict string) (string, bool) {
+	verdict = strings.TrimSpace(verdict)
+	switch verdict {
+	case "promote", "promoted", "reject", "rejected", "park", "parked", "operationalize", "retire", "done", "recorded", "resolved", "accepted", "applied", "ok", "no_promote", "merge_existing":
+		return verdict, true
+	default:
+		return "", false
+	}
+}
+
+func resolvedPanelLensSelectionGap(homePath string, payload candidateReadinessPayload) bool {
+	if strings.TrimSpace(payload.Kind) != string(candidates.CapabilityObs) || strings.TrimSpace(payload.Subject) != "panel_lens_selection" {
+		return false
+	}
+	targetKind := candidateDetailValue(payload.Detail, "target_kind")
+	domain := candidateDetailValue(payload.Detail, "domain")
+	task := candidateDetailValue(payload.Detail, "task")
+	if task == "" {
+		for _, ref := range payload.EvidenceRefs {
+			if value, ok := strings.CutPrefix(ref, "task:"); ok {
+				task = strings.TrimSpace(value)
+				break
+			}
+		}
+	}
+	if targetKind == "" || domain == "" {
+		return false
+	}
+	selection, err := panelpkg.SelectLensesWithContext(homePath, targetKind, panelpkg.LensContext{Domain: domain, Task: task})
+	return err == nil && len(selection.MissingDomainLens) == 0
+}
+
+func candidateDetailValue(detail, key string) string {
+	needle := key + "="
+	if key == "task" {
+		if _, value, ok := strings.Cut(detail, " "+needle); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	for _, field := range strings.Fields(detail) {
+		value, ok := strings.CutPrefix(field, needle)
+		if ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func consumedSkillSurfacingFeedback(path string, data []byte, payload candidateReadinessPayload) bool {
@@ -675,6 +1722,129 @@ func printOrientOperatorReport(report orientOperatorReport) {
 		report.NeedsMe.ReadyToApply,
 		report.NeedsMe.PendingPanelNeedsHuman,
 	)
+	if report.NeedsMe.MemoryReviewCardCount > 0 {
+		fmt.Printf("- memory_review_cards: %d\n", report.NeedsMe.MemoryReviewCardCount)
+		for _, card := range report.NeedsMe.MemoryReviewCards {
+			count := "-"
+			if card.PromotionCount != nil {
+				count = strconv.Itoa(*card.PromotionCount)
+			}
+			fmt.Printf(" - memory_review_card: %s work=%s candidate=%s state=%s panel=%s promoted=%s next=%s\n",
+				card.ID,
+				card.WorkID,
+				card.CandidateID,
+				emptyDash(card.CandidateState),
+				emptyDash(card.PanelRunID),
+				count,
+				card.NextAction,
+			)
+		}
+	}
+	if report.NeedsMe.OperatorGateCardCount > 0 {
+		fmt.Printf("- operator_gate_cards: %d\n", report.NeedsMe.OperatorGateCardCount)
+		for _, card := range report.NeedsMe.OperatorGateCards {
+			fmt.Printf(" - operator_gate_card: %s kind=%s work=%s source=%s gate=%s next=%s\n",
+				card.ID,
+				card.Kind,
+				card.WorkID,
+				emptyDash(card.SourceKind),
+				emptyDash(card.GateID),
+				card.NextAction,
+			)
+		}
+	}
+	if obs := report.NeedsMe.ObservationReviews; obs != nil {
+		fmt.Printf("- observation_reviews: candidate_reviews=%d panel_verdicts=%d total=%d next=%s\n",
+			obs.ObservationCandidateReviewCount,
+			obs.ObservationPanelVerdictCount,
+			obs.TotalReviewDebt,
+			obs.NextAction,
+		)
+	}
+	if feedback := report.NeedsMe.CapabilityFeedback; feedback != nil {
+		fmt.Printf("- capability_feedback: pending=%d applied_reviews=%d applied_edges=%d edge_kinds=%s next=%s\n",
+			feedback.PendingReviewCount,
+			feedback.AppliedReviewCount,
+			feedback.AppliedEdges,
+			formatIntMap(feedback.EdgeKindCounts),
+			feedback.NextAction,
+		)
+		for _, item := range feedback.Recent {
+			fmt.Printf(" - capability_feedback_review: %s status=%s verdict=%s edges=%d kinds=%s\n",
+				item.ID,
+				item.Status,
+				emptyDash(item.VerdictID),
+				item.AppliedEdges,
+				formatIntMap(item.EdgeKindCounts),
+			)
+		}
+	}
+	if adaptation := report.NeedsMe.AdaptationIntake; adaptation != nil {
+		fmt.Printf("- adaptation_intake: external_repos=%d open=%d reviewed=%d capability_evaluations=%d open=%d reviewed=%d actionable=%d next=%s\n",
+			adaptation.ExternalRepoCount,
+			adaptation.ExternalRepoOpenCount,
+			adaptation.ExternalRepoReviewedCount,
+			adaptation.CapabilityEvaluationCount,
+			adaptation.CapabilityEvaluationOpenCount,
+			adaptation.CapabilityEvaluationReviewedCount,
+			adaptation.ActionableCount,
+			adaptation.NextAction,
+		)
+		for _, item := range adaptation.Recent {
+			fmt.Printf(" - adaptation_item: %s/%s status=%s readiness=%s target=%s owner=%s decision=%s next=%s\n",
+				item.Area,
+				item.ID,
+				emptyDash(item.Status),
+				emptyDash(item.Readiness),
+				emptyDash(item.TargetPath),
+				emptyDash(item.Owner),
+				emptyDash(item.DecisionHint),
+				emptyDash(item.NextAction),
+			)
+		}
+	}
+	if source := report.NeedsMe.SourceControl; source != nil {
+		fmt.Printf("- source_control: live=%s changed=%d staged=%d unstaged=%d untracked=%d reviews=%d open=%d recorded=%d head_review_recorded=%v next=%s\n",
+			emptyDash(source.LiveStatus),
+			source.ChangedPaths,
+			source.Staged,
+			source.Unstaged,
+			source.Untracked,
+			source.ReviewCount,
+			source.ReviewOpenCount,
+			source.ReviewRecordedCount,
+			source.HeadReviewRecorded,
+			source.NextAction,
+		)
+		if source.EvidenceRef != "" {
+			fmt.Printf(" - source_control_ref: %s head=%s branch=%s root=%s\n", source.EvidenceRef, emptyDash(source.Head), emptyDash(source.Branch), emptyDash(source.GitRoot))
+		}
+		if source.LatestReviewID != "" {
+			fmt.Printf(" - source_control_review: %s next=%s\n", source.LatestReviewID, emptyDash(source.LatestReviewNextAction))
+		}
+	}
+	if intake := report.NeedsMe.SourceIntake; intake != nil {
+		fmt.Printf("- source_intake: records=%d rows=%d applied=%d review_recorded=%d blocked_private=%d last=%s/%s owner=%s next=%s\n",
+			intake.RecordCount,
+			intake.RowCount,
+			intake.AppliedCount,
+			intake.ReviewRecordedCount,
+			intake.BlockedPrivateCount,
+			intake.LastSource,
+			intake.LastRoute,
+			intake.LastOwner,
+			intake.NextAction,
+		)
+	}
+	printOrientProductLoops(report.ProductLoops)
+	if ctx := report.SessionContext; ctx != nil {
+		fmt.Println()
+		fmt.Println("SESSION-CONTEXT")
+		fmt.Printf("- status=%s source=%s harness=%s repo_kind=%s task=%s\n", ctx.Status, ctx.Source, ctx.Harness, ctx.RepoKind, ctx.Task)
+		fmt.Printf("- command: %s\n", strings.Join(ctx.Command, " "))
+		fmt.Printf("- boundary: %s\n", ctx.Boundary)
+		fmt.Printf("- proof: %s\n", ctx.Proof)
+	}
 	fmt.Println()
 	fmt.Println("RUNNING")
 	fmt.Printf("- open=%d in_progress=%d non_stale_leases=%d last_dispatch_step_run=%s\n",
@@ -683,6 +1853,32 @@ func printOrientOperatorReport(report orientOperatorReport) {
 		report.Running.NonStaleLeaseCount,
 		agedLabel(report.Running.LastDispatchStepRun),
 	)
+	if adjacent := report.Running.AdjacentProgress; adjacent != nil {
+		fmt.Printf("- adjacent_progress: available=%t held=%d non_packet_actions=%d consumed_non_packet_actions=%d packet_candidates=%d next=%s\n",
+			adjacent.Available,
+			len(adjacent.HeldWorkIDs),
+			adjacent.NonPacketActionCount,
+			adjacent.ConsumedNonPacketActionCount,
+			adjacent.PacketCandidateCount,
+			adjacent.NextAction,
+		)
+	}
+	if report.Running.AdmissionPreviewCount > 0 {
+		fmt.Printf("- admission_previews: %d\n", report.Running.AdmissionPreviewCount)
+		for _, preview := range report.Running.AdmissionPreviews {
+			fmt.Printf(" - admission_preview: %s staleness=%s action_context=%s source_review_card=%s operator_required=%t admit=%s\n",
+				preview.WorkID,
+				emptyDash(preview.Staleness),
+				orientAdmissionPreviewContextKind(preview),
+				emptyDash(preview.SourceReviewCardID),
+				preview.RequiresOperator,
+				strings.Join(preview.AdmitCommand, " "),
+			)
+			if preview.AdmissionBlockedReason != "" {
+				fmt.Printf("   blocked_reason: %s\n", preview.AdmissionBlockedReason)
+			}
+		}
+	}
 	if len(report.Running.OpenWork) == 0 {
 		fmt.Println("- open_work: none")
 	} else {
@@ -724,6 +1920,62 @@ func printOrientOperatorReport(report orientOperatorReport) {
 	}
 }
 
+func printOrientProductLoops(loops *orientProductLoops) {
+	if loops == nil || loops.ProductCount == 0 {
+		return
+	}
+	fmt.Printf("- product_loops: products=%d open_hypothesis_debt=%d closed_review_actions=%d action_cards=%d drill_down=%s\n",
+		loops.ProductCount,
+		loops.OpenHypothesisDebtCount,
+		loops.ClosedReviewActionCount,
+		loops.ActionCardCount,
+		strings.Join(loops.DrillDownCommand, " "),
+	)
+	for _, product := range loops.Products {
+		for _, group := range product.OpenHypothesesByMissingSignalSource {
+			fmt.Printf("  - %s missing_signal_source=%s hypotheses=%s next=%s\n",
+				product.ProductID,
+				group.Source,
+				strings.Join(group.HypothesisIDs, ","),
+				emptyDash(strings.Join(group.NextActions, "; ")),
+			)
+		}
+		for _, group := range product.SignalsWithoutHypothesis {
+			consumed := ""
+			if group.Consumed {
+				consumed = " consumed=true work=" + strings.Join(group.ConsumedByWorkIDs, ",")
+			}
+			fmt.Printf(" - %s signals_without_hypothesis=%s signals=%s metrics=%s%s\n",
+				product.ProductID,
+				group.ChangeEvent,
+				strings.Join(group.SignalIDs, ","),
+				emptyDash(strings.Join(group.Metrics, ",")),
+				consumed,
+			)
+		}
+		for _, group := range product.ClosedReviewsByNextAction {
+			consumed := ""
+			if group.Consumed {
+				consumed = " consumed=true work=" + strings.Join(group.ConsumedByWorkIDs, ",")
+			}
+			fmt.Printf("  - %s closed_review_next=%s reviews=%s%s\n",
+				product.ProductID,
+				group.NextAction,
+				strings.Join(group.ReviewIDs, ","),
+				consumed,
+			)
+		}
+		for _, card := range product.ActionCards {
+			fmt.Printf("  - %s action_card=%s kind=%s command=%s\n",
+				product.ProductID,
+				card.ID,
+				card.Kind,
+				strings.Join(card.Command, " "),
+			)
+		}
+	}
+}
+
 func agedLabel(item *orientAgedItem) string {
 	if item == nil {
 		return "none"
@@ -736,4 +1988,15 @@ func agedLabel(item *orientAgedItem) string {
 		parts = append(parts, item.ID)
 	}
 	return strings.Join(parts, " ")
+}
+
+func formatIntMap(values map[string]int) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(values))
+	for _, key := range sortedMapKeys(values) {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, values[key]))
+	}
+	return strings.Join(parts, ",")
 }

@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { parseConfig } from "./asc_daily_signals.ts";
 import {
@@ -91,4 +95,74 @@ describe("asc_sales_series_bridge edge", () => {
       "unsupported sales metric not_a_metric",
     );
   });
+
+  test("apply invokes Compound sales-series adapter idempotently in temp home", () => {
+    const home = mkdtempSync(join(tmpdir(), "compound-asc-bridge-home-"));
+    const bin = join(mkdtempSync(join(tmpdir(), "compound-asc-bridge-bin-")), "compound");
+    const build = spawnSync("go", ["build", "-o", bin, "./cmd/compound"], {
+      encoding: "utf8",
+    });
+    if (build.status !== 0) {
+      throw new Error(build.stderr || build.stdout);
+    }
+
+    const env = { ...process.env, COMPOUND_HOME: home };
+    const args = [
+      "tools/asc_sales_series_bridge.ts",
+      "--config",
+      "fixtures/product/asc-products.json",
+      "--sales-series",
+      seriesPath,
+      "--change-event",
+      "Changed App Store screenshot order.",
+      "--before",
+      "2026-07-01/2026-07-03",
+      "--after",
+      "2026-07-08/2026-07-10",
+      "--metric",
+      "units",
+      "--compound-bin",
+      bin,
+      "--apply",
+      "--json",
+    ];
+    for (let i = 0; i < 2; i++) {
+      const run = spawnSync(process.execPath, args, { encoding: "utf8", env });
+      if (run.status !== 0) {
+        throw new Error(run.stderr || run.stdout);
+      }
+      const report = JSON.parse(run.stdout);
+      expect(report.status).toBe("ok");
+      expect(report.planned).toBe(1);
+      expect(report.applied).toBe(1);
+      expect(report.apply_results).toEqual([
+        {
+          product_id: "product:focus-notes",
+          asc_app_id: "123456789",
+          metric: "units",
+          signal_count: 1,
+          transition_count: 1,
+        },
+      ]);
+    }
+
+    const authority = spawnSync(bin, ["product", "authority", "--json"], {
+      encoding: "utf8",
+      env,
+    });
+    if (authority.status !== 0) {
+      throw new Error(authority.stderr || authority.stdout);
+    }
+    const authorityReport = JSON.parse(authority.stdout);
+    expect(authorityReport.signal_count).toBe(1);
+
+    const timeline = spawnSync(bin, ["product", "timeline", "product:focus-notes"], {
+      encoding: "utf8",
+      env,
+    });
+    if (timeline.status !== 0) {
+      throw new Error(timeline.stderr || timeline.stdout);
+    }
+    expect(timeline.stdout).toContain("app_store_connect_units 9 -> 18");
+  }, 15000);
 });

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 )
 
 // RecallEvent represents a single recall event record.
@@ -20,6 +21,9 @@ type RecallEvent struct {
 func AppendRecallEvent(home string, ev RecallEvent) error {
 	if ev.Ts == "" {
 		return fmt.Errorf("ts is required")
+	}
+	if _, err := time.Parse(time.RFC3339, ev.Ts); err != nil {
+		return fmt.Errorf("ts must be RFC3339: %w", err)
 	}
 	if ev.QueryHash == "" {
 		return fmt.Errorf("query_hash is required")

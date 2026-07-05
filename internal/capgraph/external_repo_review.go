@@ -226,6 +226,11 @@ func annotateExternalRepoIntakeQueueItem(item *reviewartifact.QueueItem) {
 		Argv:           argv,
 		RequiresReview: true,
 	}}
+	if plan, err := loadExternalRepoIntakeReviewPlanForReview(reviewYAML, item.ID); err == nil {
+		item.DecisionCard = externalRepoIntakeDecisionCard(*item, plan, reviewYAML)
+		item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, plan.EvidenceRefs...))
+		item.Boundaries = reviewartifact.Unique(append(item.Boundaries, plan.Boundaries...))
+	}
 	review, err := LoadExternalRepoIntakeReview(reviewYAML)
 	if err != nil {
 		item.Readiness = "blocked"
@@ -242,6 +247,85 @@ func annotateExternalRepoIntakeQueueItem(item *reviewartifact.QueueItem) {
 	item.Readiness = "ready_to_record"
 	item.BlockedReason = ""
 	item.NextAction = "record reviewed external repo disposition"
+}
+
+func externalRepoIntakeDecisionCard(item reviewartifact.QueueItem, plan ExternalRepoIntakeReviewPlanItem, reviewYAML string) *reviewartifact.DecisionCard {
+	claim := fmt.Sprintf("Review external repo %s before any capability evaluation, graph import, install, hook, MCP, plugin, or memory promotion.", reviewartifact.FirstNonEmpty(plan.Repo, item.TargetPath))
+	card := &reviewartifact.DecisionCard{
+		Claim:               claim,
+		PanelLean:           reviewartifact.FirstNonEmpty(plan.Decision, item.GraphDecisionHint, "keep_needs_review"),
+		OptionalRationale:   false,
+		CanonicalActionHint: externalRepoIntakeReviewCommand(reviewYAML),
+		Boundary:            reviewartifact.Unique(append([]string{"read-only projection", "review YAML must be edited before command", "no clone/install/serve/auth/graph mutation/memory promotion"}, plan.Boundaries...)),
+		Meta: map[string]string{
+			"repo":                  reviewartifact.FirstNonEmpty(plan.Repo, item.TargetPath),
+			"owner":                 plan.Owner,
+			"review_yaml":           reviewYAML,
+			"evaluation_step_count": fmt.Sprintf("%d", len(plan.EvaluationPlan)),
+		},
+	}
+	card.Why = []reviewartifact.DecisionCardReason{
+		{
+			Label:    "owner",
+			Question: "Who would consume this if useful?",
+			Detail:   reviewartifact.FirstNonEmpty(plan.Owner, "operator must choose existing owner or reject/reference only"),
+		},
+		{
+			Label:    "next proof",
+			Question: "What evidence is required before adoption?",
+			Detail:   reviewartifact.FirstNonEmpty(plan.NextAction, "record owner review, then run focused capability evaluation"),
+		},
+		{
+			Label:    "boundary",
+			Question: "What must not happen during intake?",
+			Severity: "warning",
+			Detail:   reviewartifact.FirstNonEmpty(plan.NotToDo, strings.Join(plan.Boundaries, "; "), "review-only; no execution or graph mutation"),
+		},
+	}
+	for _, step := range plan.EvaluationPlan {
+		detail := fmt.Sprintf("trigger=%s; evidence=%s; silence=%s; proof=%s; retirement=%s", step.Trigger, step.EvidenceNeeded, step.Silence, step.Proof, step.Retirement)
+		card.Why = append(card.Why, reviewartifact.DecisionCardReason{
+			Label:    "evaluation lens: " + step.Lens,
+			Question: step.Question,
+			Detail:   detail,
+		})
+	}
+	card.Choices = externalRepoIntakeDecisionChoices(reviewYAML)
+	return card
+}
+
+func externalRepoIntakeDecisionChoices(reviewYAML string) []reviewartifact.DecisionCardChoice {
+	choices := []struct {
+		id     string
+		label  string
+		effect string
+	}{
+		{"keep_needs_review", "Keep Review", "Record owner fit; repo may enter focused capability evaluation, still no graph import."},
+		{"reference_only", "Reference Only", "Keep as source evidence; no capability evaluation or graph adoption."},
+		{"merge_existing", "Merge Existing", "Fold useful deltas into an existing owner; no parallel capability."},
+		{"reject", "Reject", "Drop as adoption candidate while preserving the review receipt."},
+	}
+	cmd := externalRepoIntakeReviewCommand(reviewYAML)
+	out := make([]reviewartifact.DecisionCardChoice, 0, len(choices))
+	for _, choice := range choices {
+		out = append(out, reviewartifact.DecisionCardChoice{
+			ID:             choice.id,
+			Label:          choice.label,
+			Effect:         choice.effect,
+			Command:        cmd,
+			Argv:           []string{"/bin/sh", "-lc", cmd},
+			RequiresReview: true,
+		})
+	}
+	return out
+}
+
+func externalRepoIntakeReviewCommand(reviewYAML string) string {
+	if strings.TrimSpace(reviewYAML) == "" {
+		return "compound capability external-intake-review <review.yaml>"
+	}
+	quoted := shellQuote(reviewYAML)
+	return "$EDITOR " + quoted + " && compound capability external-intake-review " + quoted
 }
 
 func loadExternalRepoIntakeReviewPlanForReview(reviewPath, planID string) (ExternalRepoIntakeReviewPlanItem, error) {

@@ -12,6 +12,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/harness"
 	"compound/internal/projection"
+	"compound/internal/reviewartifact"
 	"compound/internal/tooltopology"
 )
 
@@ -68,6 +69,146 @@ func TestApplyGeneratedViewObservationWritesCandidateAndNoPromote(t *testing.T) 
 	}
 	if rows := readNoPromoteRows(t, home); len(rows) != 1 {
 		t.Fatalf("replay appended duplicate no-promote rows: %d", len(rows))
+	}
+}
+
+func TestSourceObservationVerdictPlanRecordsNoPromoteEvidence(t *testing.T) {
+	home := t.TempDir()
+	obs := validObservation()
+	report, err := Apply(home, obs, tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.CandidateIDs) != 1 {
+		t.Fatalf("report candidate ids = %+v", report.CandidateIDs)
+	}
+	var candidate CandidateRecord
+	if err := candidates.ReadCandidate(home, candidates.CapabilityObs, report.CandidateIDs[0], &candidate); err != nil {
+		t.Fatal(err)
+	}
+	verdictPath := writeSourceObservationVerdictFixture(t, home, "panel_verdict_source_fixture", candidate)
+	plan, err := BuildSourceObservationVerdictPlan(home, verdictPath, "", tSource.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.SchemaVersion != SourceObservationVerdictPlanSchemaVersion || plan.Status != "review_required" || plan.OwnerKind != "source_observation" || plan.OwnerRef != obs.ID || plan.OwnerStatus != "sourceobs" {
+		t.Fatalf("bad source observation verdict plan: %+v", plan)
+	}
+	if plan.TargetRef != candidate.ID || plan.PanelDecision != "park" {
+		t.Fatalf("plan target/decision = %s/%s", plan.TargetRef, plan.PanelDecision)
+	}
+	if !hasString(plan.EvidenceRefs, "panel_verdict:"+plan.VerdictID) || !hasString(plan.EvidenceRefs, "capability_observation:"+candidate.ID) {
+		t.Fatalf("plan missing verdict/candidate evidence refs: %+v", plan.EvidenceRefs)
+	}
+	if !hasString(plan.Boundaries, "does not promote memory or source truth") || !hasString(plan.Boundaries, "does not mutate ProductSignal ledger") {
+		t.Fatalf("plan should carry hard boundaries: %+v", plan.Boundaries)
+	}
+	paths, err := RecordSourceObservationVerdictPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.PlanPath, paths.ReviewPath, paths.ReviewYAMLPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected review artifact %s: %v", path, err)
+		}
+	}
+	queue, err := reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceObservationVerdictReviewArea}, tSource.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateObservationVerdictQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 {
+		t.Fatalf("source observation verdict queue should be actionable: counts=%+v items=%+v", queue.Counts, queue.Items)
+	}
+	if queue.Items[0].DecisionCard == nil || queue.Items[0].Actions[0].ID != "record_source_observation_verdict_review" {
+		t.Fatalf("source observation verdict item should expose record action: %+v", queue.Items[0])
+	}
+	review := SourceObservationVerdictReview{
+		SchemaVersion: SourceObservationVerdictReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID,
+		PlanID:        plan.ID,
+		VerdictID:     plan.VerdictID,
+		CandidateRef:  plan.TargetRef,
+		Decision:      "record_no_promote",
+		Rationale:     "reviewed generated source verdict remains evidence, not source truth",
+		Confidence:    0.82,
+		EvidenceRefs:  []string{"manual:source-observation-verdict-review"},
+	}
+	reviewReport, err := ApplySourceObservationVerdictReview(home, review, paths.ReviewYAMLPath, tSource.Add(3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reviewReport.Status != "recorded" || reviewReport.NoPromoteID == "" || reviewReport.OwnerKind != "source_observation" || reviewReport.OwnerRef != obs.ID {
+		t.Fatalf("bad source observation verdict review report: %+v", reviewReport)
+	}
+	rows := readNoPromoteRows(t, home)
+	var found bool
+	for _, row := range rows {
+		if row.ID == reviewReport.NoPromoteID && row.CandidateRef == plan.TargetRef && row.OwnerTarget.Kind == "source_observation" && row.OwnerTarget.Ref == obs.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("review no-promote row not found in %+v", rows)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source observation verdict review must not promote claims: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source observation verdict review must not mutate product signals: %v", err)
+	}
+	queue, err = reviewartifact.Queue(home, reviewartifact.QueueOptions{Area: SourceObservationVerdictReviewArea}, tSource.Add(4*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateObservationVerdictQueue(&queue)
+	reviewartifact.Recount(&queue)
+	if queue.Counts.ReviewRequired != 0 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "no_action" {
+		t.Fatalf("reviewed queue should be terminal: counts=%+v item=%+v", queue.Counts, queue.Items[0])
+	}
+}
+
+func TestSourceObservationVerdictPlanParksUnsupportedNoOwnerVerdict(t *testing.T) {
+	home := t.TempDir()
+	payload := sourceObservationVerdictCandidatePayload{
+		ID:           "ocand_unsupported_fixture",
+		Kind:         string(candidates.CapabilityObs),
+		Subject:      "observation:workflow-health",
+		Statement:    "Synthetic workflow health verdict has no source owner yet.",
+		Detail:       "subject_kind=workflow observation_kind=system",
+		Confidence:   0.61,
+		EvidenceRefs: []string{"fixture:unsupported-observation"},
+	}
+	verdictPath := writeSourceObservationVerdictPayloadFixture(t, home, "panel_verdict_unsupported_fixture", payload)
+	plan, err := BuildSourceObservationVerdictPlan(home, verdictPath, "", tSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.OwnerStatus != "unsupported_no_owner" || plan.OwnerKind != "observation_verdict" || plan.OwnerRef != payload.ID {
+		t.Fatalf("unsupported owner status = %+v", plan)
+	}
+	paths, err := RecordSourceObservationVerdictPlan(home, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := SourceObservationVerdictReview{
+		SchemaVersion: SourceObservationVerdictReviewSchemaVersion,
+		ID:            plan.ReviewDraft.ReviewID,
+		PlanID:        plan.ID,
+		VerdictID:     plan.VerdictID,
+		CandidateRef:  plan.TargetRef,
+		Decision:      "park",
+		Rationale:     "no source owner exists yet, keep reviewed verdict parked as no-promote evidence",
+		Confidence:    0.63,
+		EvidenceRefs:  []string{"manual:unsupported-source-verdict"},
+	}
+	report, err := ApplySourceObservationVerdictReview(home, review, paths.ReviewYAMLPath, tSource.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.NoPromoteID == "" || report.OwnerKind != "observation_verdict" || report.OwnerRef != payload.ID {
+		t.Fatalf("unsupported review report = %+v", report)
 	}
 }
 
@@ -613,4 +754,66 @@ func hasString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func writeSourceObservationVerdictFixture(t *testing.T, home, verdictID string, candidate CandidateRecord) string {
+	t.Helper()
+	payload := sourceObservationVerdictCandidatePayload{
+		ID:                  candidate.ID,
+		Kind:                candidate.Kind,
+		Subject:             candidate.Subject,
+		Statement:           candidate.Statement,
+		Detail:              candidate.Detail,
+		Confidence:          candidate.Confidence,
+		Verdict:             candidate.Verdict,
+		EvidenceRefs:        candidate.EvidenceRefs,
+		SourceObservationID: candidate.SourceObservationID,
+		SourceRef:           candidate.SourceRef,
+		PromoteAllowed:      candidate.PromoteAllowed,
+	}
+	return writeSourceObservationVerdictPayloadFixture(t, home, verdictID, payload)
+}
+
+func writeSourceObservationVerdictPayloadFixture(t *testing.T, home, verdictID string, payload sourceObservationVerdictCandidatePayload) string {
+	t.Helper()
+	dir := filepath.Join(home, "reviews", "panel-verdicts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             verdictID,
+		"created_at":     tSource.Format(time.RFC3339),
+		"run_id":         "run_source_observation_fixture",
+		"target": map[string]any{
+			"kind":       string(candidates.CapabilityObs),
+			"ref":        payload.ID,
+			"visibility": "internal",
+			"summary":    payload.Statement,
+			"payload":    json.RawMessage(raw),
+		},
+		"lens_findings": []any{},
+		"synthesis": map[string]any{
+			"schema_version":     "compound.panel_synthesis.v0.1",
+			"decision":           "park",
+			"confidence":         0.72,
+			"rationale":          "Fixture panel verdict says source observation should remain evidence until reviewed.",
+			"dissent":            []any{},
+			"guardrails_applied": []string{"evidence_not_truth"},
+		},
+		"evidence_refs": []string{"route_evidence:source-observation-verdict-fixture"},
+	}
+	data, err := json.MarshalIndent(body, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, verdictID+".json")
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

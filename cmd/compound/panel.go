@@ -18,7 +18,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -162,6 +162,43 @@ func cmdPanel(args []string) {
 		fmt.Printf("- reviewed_by: %s\n", report.ReviewedBy)
 		fmt.Printf("- review: %s\n", report.ReviewPath)
 		fmt.Printf("- next_action: %s\n", report.NextAction)
+	case "feedback-plan":
+		verdictPath, jsonOut := parsePanelFeedbackPlanArgs(args[1:])
+		homePath, err := home.Resolve("")
+		die(err)
+		plan, err := panel.BuildPanelCapabilityFeedbackPlan(homePath, verdictPath, time.Now())
+		die(err)
+		paths, err := panel.RecordPanelCapabilityFeedbackPlan(homePath, plan)
+		die(err)
+		plan.ReviewYAMLPath = paths.ReviewYAMLPath
+		if jsonOut {
+			printJSON(struct {
+				Plan  panel.PanelCapabilityFeedbackPlan  `json:"plan"`
+				Paths panel.PanelCapabilityFeedbackPaths `json:"paths"`
+			}{Plan: plan, Paths: paths})
+			return
+		}
+		fmt.Printf("# panel feedback-plan %s\n", plan.ID)
+		fmt.Printf("- verdict: %s\n", plan.VerdictID)
+		fmt.Printf("- status: %s\n", plan.Status)
+		fmt.Printf("- feedback_candidates: %d\n", len(plan.FeedbackCandidates))
+		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
+	case "feedback-review":
+		reviewPath, jsonOut := parsePanelFeedbackReviewArgs(args[1:])
+		homePath, err := home.Resolve("")
+		die(err)
+		review, err := panel.LoadPanelCapabilityFeedbackReview(reviewPath)
+		die(err)
+		report, err := panel.RecordPanelCapabilityFeedbackReview(homePath, review, reviewPath, time.Now())
+		die(err)
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# panel feedback-review %s\n", report.ID)
+		fmt.Printf("- status: %s\n", report.Status)
+		fmt.Printf("- verdict: %s\n", report.VerdictID)
+		fmt.Printf("- applied_edges: %d\n", report.AppliedEdges)
 	case "show":
 		if len(args) != 2 && !(len(args) == 3 && args[2] == "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound panel show <run_id> [--json]")
@@ -205,6 +242,51 @@ func parsePanelVerdictRecordArgs(args []string) (reviewPath string, input panel.
 		os.Exit(2)
 	}
 	return reviewPath, input, jsonOut
+}
+
+func parsePanelFeedbackPlanArgs(args []string) (string, bool) {
+	var verdictPath string
+	jsonOut := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--verdict":
+			verdictPath = requirePanelValue(args, &i, "panel feedback-plan")
+		case "--json":
+			jsonOut = true
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound panel feedback-plan --verdict <panel_verdict.json> [--json]")
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(verdictPath) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound panel feedback-plan --verdict <panel_verdict.json> [--json]")
+		os.Exit(2)
+	}
+	return verdictPath, jsonOut
+}
+
+func parsePanelFeedbackReviewArgs(args []string) (string, bool) {
+	var reviewPath string
+	jsonOut := false
+	for _, arg := range args {
+		switch {
+		case arg == "--json":
+			jsonOut = true
+		case strings.HasPrefix(arg, "-"):
+			fmt.Fprintln(os.Stderr, "usage: compound panel feedback-review <review.yaml> [--json]")
+			os.Exit(2)
+		case reviewPath == "":
+			reviewPath = arg
+		default:
+			fmt.Fprintln(os.Stderr, "usage: compound panel feedback-review <review.yaml> [--json]")
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(reviewPath) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound panel feedback-review <review.yaml> [--json]")
+		os.Exit(2)
+	}
+	return reviewPath, jsonOut
 }
 
 func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {

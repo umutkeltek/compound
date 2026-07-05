@@ -69,6 +69,7 @@ type DispatchPlanItem struct {
 	Reason           string                `json:"reason"`
 	NextAction       string                `json:"next_action,omitempty"`
 	EvidenceRefs     []string              `json:"evidence_refs,omitempty"`
+	ActionContext    *WorkActionContext    `json:"action_context,omitempty"`
 	ClaimPolicy      *ClaimPolicySummary   `json:"claim_policy,omitempty"`
 	AdvancePolicy    *AdvancePolicySummary `json:"advance_policy,omitempty"`
 	ClosePolicy      *ClosePolicySummary   `json:"close_policy,omitempty"`
@@ -1282,6 +1283,7 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		Reason:           item.OpenReason,
 		NextAction:       item.NextAction,
 		EvidenceRefs:     append([]string{}, item.EvidenceRefs...),
+		ActionContext:    cloneWorkActionContext(item.ActionContext),
 	}
 	switch item.State {
 	case "ready":
@@ -1289,6 +1291,10 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		out.Command = []string{"compound", "work", "claim", item.WorkID, "--by", actor}
 	case "proposed", "admitted":
 		out.Action = "prepare"
+		if item.ActionContext != nil {
+			out.Command = []string{"compound", "work", "advance-plan", item.WorkID, "--to", "ready", "--actor", actor}
+			out.Reason = "reviewed action context available; prepare ready transition without executing action"
+		}
 	case "held", "blocked":
 		out.Action = "review"
 	case "claimed", "running", "verifying":

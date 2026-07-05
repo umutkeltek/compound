@@ -10,9 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/authority"
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/observation"
+	panelpkg "compound/internal/panel"
+	"compound/internal/product"
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
@@ -88,6 +93,332 @@ func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	}
 	if second.Changed.FirstRun || second.Changed.ClaimsSeqDelta != 0 || second.Changed.LastSeenSeq != 1 {
 		t.Fatalf("second changed cursor = %+v, want no seq delta after cursor write", second.Changed)
+	}
+}
+
+func TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 4, 8, 45, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatalf("open memory: %v", err)
+	}
+	captured, err := memStore.Capture([]mem.Candidate{{
+		Entity:          "knowledge:chatgpt:fixture",
+		Predicate:       "reference_title",
+		Object:          "Source Metadata Fixture",
+		ObservationDate: now.Add(-30 * time.Minute).Format(time.RFC3339),
+		Confidence:      0.8,
+		Derivation:      "deterministic",
+		Visibility:      "private",
+		PromotionBasis:  candidates.BasisTrustedDeterministic,
+		Qualifiers: map[string]string{
+			"source":      "knowledge_import",
+			"source_kind": "chatgpt",
+		},
+	}}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("capture memory candidate: %v", err)
+	}
+	rawPath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), captured[0].ID+".json")
+	if got := candidateReadinessState(homePath, rawPath); got != "proposed" {
+		t.Fatalf("raw candidate state = %q, want proposed fixture proving raw file alone is misleading", got)
+	}
+
+	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now)
+	memoryInbox := findOrientCandidateInbox(t, orientOperatorReport{NeedsMe: report}, string(candidates.Memory))
+	if memoryInbox.Count != 1 || memoryInbox.ActionableCount != 0 {
+		t.Fatalf("memory inbox = %+v, want authority-parked non-actionable source metadata", memoryInbox)
+	}
+	if got := memoryInbox.StateCounts["parked"]; got != 1 {
+		t.Fatalf("memory state_counts[parked] = %d, want 1 from memory authority; counts=%+v", got, memoryInbox.StateCounts)
+	}
+	if report.CandidateActionable != 0 || report.OldestActionableItem != nil {
+		t.Fatalf("needs-me = %+v, want no actionable memory debt from authority-parked metadata", report)
+	}
+}
+
+func TestOrientOperatorResolvesPanelLensGapAfterReviewedLensImport(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 4, 9, 30, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if _, err := panelpkg.ImportLensManifest(homePath, filepath.Join("..", "..", "fixtures", "panel", "lens-manifest.yaml"), now.Add(-45*time.Minute)); err != nil {
+		t.Fatalf("import lenses: %v", err)
+	}
+	id := "cobs_missing_domain_lens_fixture"
+	if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, id, map[string]any{
+		"id":         id,
+		"kind":       string(candidates.CapabilityObs),
+		"subject":    "panel_lens_selection",
+		"statement":  "No reviewed panel lens matched requested domain context.",
+		"detail":     "target_kind=memory_candidate domain=memory-ingestion task=conversation memory recall proof",
+		"confidence": 1.0,
+		"state":      "needs_review",
+		"evidence_refs": []string{
+			"panel:lens_selection",
+			"target_kind:memory_candidate",
+			"domain:memory-ingestion",
+			"missing_domain_lens:ingestion,memory,memory-ingestion",
+			"task:conversation memory recall proof",
+		},
+	}); err != nil {
+		t.Fatalf("write capability observation: %v", err)
+	}
+
+	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now)
+	capabilityInbox := findOrientCandidateInbox(t, orientOperatorReport{NeedsMe: report}, string(candidates.CapabilityObs))
+	if capabilityInbox.Count != 1 || capabilityInbox.ActionableCount != 0 {
+		t.Fatalf("capability observation inbox = %+v, want resolved non-actionable lens gap", capabilityInbox)
+	}
+	if got := capabilityInbox.StateCounts["resolved"]; got != 1 {
+		t.Fatalf("capability state_counts[resolved] = %d, want 1; counts=%+v", got, capabilityInbox.StateCounts)
+	}
+	if report.CandidateActionable != 0 || report.OldestActionableItem != nil {
+		t.Fatalf("needs-me = %+v, want no actionable candidate after reviewed lens import", report)
+	}
+}
+
+func TestOrientOperatorTreatsTerminalCandidateVerdictAsNonActionable(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 9, 15, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	if err := candidates.WriteCandidate(homePath, candidates.CapabilityObs, "ocand_review_consumed", map[string]any{
+		"id":      "ocand_review_consumed",
+		"kind":    string(candidates.CapabilityObs),
+		"subject": "observation:capability:skill-intake-adaptation-gate",
+		"state":   "needs_review",
+		"verdict": "park",
+		"detail":  "source_kind=operating_system_recipe subject_kind=capability",
+		"evidence_refs": []string{
+			"panel_verdict:panel_verdict_reviewed",
+			"source_observation_verdict:review_recorded",
+		},
+	}); err != nil {
+		t.Fatalf("write consumed capability observation: %v", err)
+	}
+
+	report := buildOrientNeedsMe(homePath, reviewartifact.QueueReport{}, work.WorkbenchReport{}, now)
+	capabilityInbox := findOrientCandidateInbox(t, orientOperatorReport{NeedsMe: report}, string(candidates.CapabilityObs))
+	if capabilityInbox.Count != 1 || capabilityInbox.ActionableCount != 0 {
+		t.Fatalf("capability inbox = %+v, want parked verdict non-actionable despite needs_review state", capabilityInbox)
+	}
+	if got := capabilityInbox.StateCounts["park"]; got != 1 {
+		t.Fatalf("capability state_counts[park] = %d, want 1 from terminal verdict; counts=%+v", got, capabilityInbox.StateCounts)
+	}
+	if report.CandidateActionable != 0 || report.OldestActionableItem != nil {
+		t.Fatalf("needs-me = %+v, want no actionable candidate after terminal verdict", report)
+	}
+}
+
+func TestOrientOperatorCarriesObservationReviewDebtProjection(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 4, 16, 10, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdPanel([]string{"import-lenses", filepath.Join("..", "..", "fixtures", "panel", "lens-manifest.yaml")})
+	})
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/social-distribution-feedback.json", "--review-candidates", "--json"})
+	})
+	var observed observation.Report
+	if err := json.Unmarshal([]byte(out), &observed); err != nil {
+		t.Fatalf("parse observation report: %v\n%s", err, out)
+	}
+	if len(observed.CandidateReviewResults) != 1 {
+		t.Fatalf("candidate review results = %+v", observed.CandidateReviewResults)
+	}
+	result := observed.CandidateReviewResults[0]
+	if _, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_observation_orient", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_verdict_observation_orient",
+		"created_at":     now.Add(-20 * time.Minute).Format(time.RFC3339),
+		"run_id":         "prun_observation_orient",
+		"target": map[string]any{
+			"kind":    string(candidates.CapabilityObs),
+			"ref":     result.CandidateID,
+			"summary": "social-distribution feedback observation needs synthesis review",
+			"payload": map[string]any{"object": "Observation feedback should stay candidate material until a product/source owner consumes it."},
+		},
+		"lens_findings": []map[string]any{{
+			"lens_ref": "lens:social-distribution-mechanics",
+			"status":   "completed",
+			"findings": []map[string]any{{"claim": "bounded distribution feedback", "severity": "low"}},
+		}},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "park",
+			"confidence":     0.74,
+			"rationale":      "review material only",
+		},
+		"evidence_refs": []string{"observation:" + result.ObservationID},
+	}, " ", "# Panel Verdict\n"); err != nil {
+		t.Fatalf("write observation panel verdict: %v", err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	obs := report.NeedsMe.ObservationReviews
+	if obs == nil || obs.ObservationCandidateReviewCount != 1 || obs.ObservationPanelVerdictCount != 1 || obs.TotalReviewDebt != 2 {
+		t.Fatalf("observation review projection = %+v", obs)
+	}
+	if !strings.Contains(obs.NextAction, "plan observation lens review") || len(obs.Commands) != 2 {
+		t.Fatalf("observation review next action/commands = %+v", obs)
+	}
+	if !orientHasDrillDown(report, "observation candidates") || !orientHasDrillDown(report, "observation panel verdicts") {
+		t.Fatalf("observation drill-down commands missing: %+v", report.DrillDown)
+	}
+
+	text := captureStdout(t, func() {
+		cmdOrientOperator(homePath, []string{"--operator"})
+	})
+	for _, want := range []string{
+		"observation_reviews: candidate_reviews=1 panel_verdicts=1 total=2",
+		"observation candidates: compound reviews --area observation-candidates",
+		"observation panel verdicts: compound reviews --area panel-verdicts",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("orient output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestOrientOperatorCarriesReviewedCapabilityFeedbackImpact(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 1, 10, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	graph, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatalf("open capability graph: %v", err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID:       "lens:decision-falsifier-review",
+		Kind:     "lens",
+		Name:     "Decision Falsifier Review",
+		Triggers: []string{"decision_candidate"},
+		Weight:   1,
+	}); err != nil {
+		t.Fatalf("add graph node: %v", err)
+	}
+	verdictPaths, err := reviewartifact.Write(homePath, "panel-verdicts", "panel_verdict_capability_feedback_orient", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_verdict_capability_feedback_orient",
+		"created_at":     now.Add(-35 * time.Minute).Format(time.RFC3339),
+		"run_id":         "prun_capability_feedback_orient",
+		"target": map[string]any{
+			"kind":    "decision_candidate",
+			"ref":     "dc_capability_feedback_orient",
+			"summary": "decision candidate needs falsifier review",
+			"payload": map[string]any{"id": "dc_capability_feedback_orient", "kind": "decision"},
+		},
+		"lens_findings": []map[string]any{{
+			"lens_ref":           "lens:decision-falsifier-review",
+			"route_evidence_ref": "route:capability-feedback-orient",
+			"status":             "completed",
+			"confidence":         0.9,
+			"findings": []map[string]any{{
+				"claim":         "decision lacks falsifier",
+				"severity":      "high",
+				"evidence_refs": []string{"candidate:dc_capability_feedback_orient"},
+			}},
+		}},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "park",
+			"confidence":     0.84,
+			"rationale":      "park until falsifier is reviewed",
+		},
+		"evidence_refs": []string{"candidate:dc_capability_feedback_orient"},
+	}, " ", "# Panel verdict\n")
+	if err != nil {
+		t.Fatalf("write panel verdict: %v", err)
+	}
+	plan, err := panelpkg.BuildPanelCapabilityFeedbackPlan(homePath, verdictPaths.PlanPath, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("build capability feedback plan: %v", err)
+	}
+	feedbackPaths, err := panelpkg.RecordPanelCapabilityFeedbackPlan(homePath, plan)
+	if err != nil {
+		t.Fatalf("record capability feedback plan: %v", err)
+	}
+	pending, err := buildOrientOperatorReport(homePath, 5, now.Add(-20*time.Minute))
+	if err != nil {
+		t.Fatalf("pending orient report: %v", err)
+	}
+	if pending.NeedsMe.CapabilityFeedback == nil {
+		t.Fatalf("capability feedback projection missing pending review: %+v", pending.NeedsMe)
+	}
+	if pending.NeedsMe.CapabilityFeedback.PendingReviewCount != 1 || pending.NeedsMe.CapabilityFeedback.AppliedReviewCount != 0 {
+		t.Fatalf("pending capability feedback = %+v, want one pending and no applied review", pending.NeedsMe.CapabilityFeedback)
+	}
+	reviewBytes, err := os.ReadFile(feedbackPaths.ReviewYAMLPath)
+	if err != nil {
+		t.Fatalf("read review yaml: %v", err)
+	}
+	reviewDraft := string(reviewBytes)
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_apply_feedback_reject_keep_needs_review", "apply_feedback")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_apply_or_reject", "apply")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "rationale: \"\"", "rationale: \"reviewed feedback should change future lens surfacing\"")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "reviewed_by: \"\"", "reviewed_by: \"codex\"")
+	editedReview := feedbackPaths.ReviewYAMLPath + ".edited.yaml"
+	if err := os.WriteFile(editedReview, []byte(reviewDraft), 0o644); err != nil {
+		t.Fatalf("write edited review: %v", err)
+	}
+	review, err := panelpkg.LoadPanelCapabilityFeedbackReview(editedReview)
+	if err != nil {
+		t.Fatalf("load edited review: %v", err)
+	}
+	if _, err := panelpkg.RecordPanelCapabilityFeedbackReview(homePath, review, editedReview, now.Add(-10*time.Minute)); err != nil {
+		t.Fatalf("record edited feedback review: %v", err)
+	}
+	applied, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("applied orient report: %v", err)
+	}
+	feedback := applied.NeedsMe.CapabilityFeedback
+	if feedback == nil {
+		t.Fatalf("capability feedback projection missing after reviewed graph feedback: %+v", applied.NeedsMe)
+	}
+	if feedback.PendingReviewCount != 0 || feedback.AppliedReviewCount != 1 || feedback.AppliedEdges != 1 {
+		t.Fatalf("applied capability feedback = %+v, want reviewed graph impact", feedback)
+	}
+	if got := feedback.EdgeKindCounts[capgraph.EdValidatedBy]; got != 1 {
+		t.Fatalf("edge kind counts = %+v, want validated_by=1", feedback.EdgeKindCounts)
+	}
+	if len(feedback.Recent) != 1 || feedback.Recent[0].VerdictID != "panel_verdict_capability_feedback_orient" {
+		t.Fatalf("recent capability feedback = %+v, want reviewed verdict", feedback.Recent)
+	}
+	if !orientHasDrillDown(applied, "capability feedback") || !orientHasDrillDown(applied, "capability authority") {
+		t.Fatalf("capability feedback drill-down commands missing: %+v", applied.DrillDown)
+	}
+	text := captureStdout(t, func() { cmdOrientOperator(homePath, []string{"--operator"}) })
+	for _, want := range []string{
+		"capability_feedback: pending=0 applied_reviews=1 applied_edges=1 edge_kinds=validated_by=1",
+		"capability_feedback_review:",
+		"capability feedback: compound reviews --area capability-panel-feedback",
+		"capability authority: compound capability authority",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("orient output missing %q:\n%s", want, text)
+		}
 	}
 }
 
@@ -167,7 +498,7 @@ func TestOrientOperatorCLIPrintsTriptychAndJSON(t *testing.T) {
 	text := captureStdout(t, func() {
 		cmdOrient([]string{"--operator", "--recent", "3"})
 	})
-	for _, want := range []string{"NEEDS-ME", "RUNNING", "CHANGED", "pending_panel_needs_human=1", "DRILL-DOWN", "compound workbench"} {
+	for _, want := range []string{"NEEDS-ME", "SESSION-CONTEXT", "RUNNING", "CHANGED", "pending_panel_needs_human=1", "compound orient --harness codex --repo-kind control-plane --task", "DRILL-DOWN", "compound workbench"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("text orient output missing %q:\n%s", want, text)
 		}
@@ -183,8 +514,319 @@ func TestOrientOperatorCLIPrintsTriptychAndJSON(t *testing.T) {
 	if report.SchemaVersion != orientOperatorReportSchemaVersion || report.NeedsMe.PendingPanelNeedsHuman != 1 || report.Running.OpenCount != 1 {
 		t.Fatalf("json report = %+v", report)
 	}
+	if report.SessionContext == nil || report.SessionContext.Source != "workbench.open_work" || !stringSliceContains(report.SessionContext.Command, "--task") {
+		t.Fatalf("session context = %+v, want open-work context command", report.SessionContext)
+	}
 	if report.NeedsMe.CandidateActionable != 1 {
 		t.Fatalf("json actionable candidate count = %+v", report.NeedsMe)
+	}
+}
+
+func TestOrientOperatorCarriesAdaptationIntakeProjection(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 9, 30, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	externalID := "extrepo_orient_adaptation"
+	if _, err := reviewartifact.Write(homePath, capgraph.ExternalRepoIntakeReviewArea, externalID, map[string]any{
+		"schema_version":          capgraph.ExternalRepoIntakeReviewPlanSchemaVersion,
+		"id":                      externalID,
+		"status":                  "recorded",
+		"created_at":              now.Add(-40 * time.Minute).Format(time.RFC3339),
+		"source_kind":             "external-repo-source-list",
+		"target_path":             "github.com/Panniantong/Agent-Reach",
+		"owner":                   "Distribution / outbound edge",
+		"graph_decision_hint":     "reference_only",
+		"graph_evidence_strength": 0.81,
+		"evidence_refs":           []string{"compound://reviews/external-repo-intake#Agent-Reach"},
+		"boundaries":              []string{"no clone", "no install", "no graph mutation"},
+		"next_action":             "external repo review recorded; keep as rented-edge evidence",
+	}, "  ", "# External Repo\n"); err != nil {
+		t.Fatalf("write external repo intake artifact: %v", err)
+	}
+	if _, err := reviewartifact.WriteJSON(homePath, capgraph.ExternalRepoIntakeReviewArea, externalID+".reviewed.json", map[string]any{
+		"schema_version": capgraph.ExternalRepoIntakeReviewReportSchemaVersion,
+		"id":             "errr_orient_adaptation",
+		"created_at":     now.Add(-35 * time.Minute).Format(time.RFC3339),
+		"status":         "recorded",
+		"plan_id":        externalID,
+		"review_id":      "review_orient_adaptation",
+		"repo":           "Panniantong/Agent-Reach",
+		"decision":       "reference_only",
+		"owner":          "Distribution / outbound edge",
+		"next_action":    "keep as reviewed evidence; no graph mutation performed",
+		"evidence_refs":  []string{"compound://reviews/external-repo-intake#Agent-Reach"},
+	}, "  "); err != nil {
+		t.Fatalf("write external repo reviewed sidecar: %v", err)
+	}
+	if _, err := reviewartifact.Write(homePath, "capability-evaluation-intake", "cep_orient_adaptation", map[string]any{
+		"schema_version": "compound.capability.evaluation_review_report.v0.1",
+		"id":             "cep_orient_adaptation",
+		"status":         "recorded",
+		"created_at":     now.Add(-25 * time.Minute).Format(time.RFC3339),
+		"source_path":    "reviews/external-repo-intake/extrepo_orient_adaptation.reviewed.json",
+		"owner":          "Distribution / outbound edge",
+		"evidence_refs":  []string{"capability_evaluation:agent-reach-context-fit"},
+		"next_action":    "capability evaluation review recorded; graph mutation requires separate import",
+	}, "  ", "# Capability Evaluation\n"); err != nil {
+		t.Fatalf("write capability evaluation artifact: %v", err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	intake := report.NeedsMe.AdaptationIntake
+	if intake == nil {
+		t.Fatalf("adaptation intake projection missing: %+v", report.NeedsMe)
+	}
+	if intake.ExternalRepoCount != 1 || intake.ExternalRepoReviewedCount != 1 || intake.ExternalRepoOpenCount != 0 {
+		t.Fatalf("external repo adaptation counts = %+v, want reviewed without open debt", intake)
+	}
+	if intake.CapabilityEvaluationCount != 1 || intake.CapabilityEvaluationReviewedCount != 1 || intake.CapabilityEvaluationOpenCount != 0 {
+		t.Fatalf("capability evaluation adaptation counts = %+v, want reviewed without open debt", intake)
+	}
+	if intake.ActionableCount != 0 || !strings.Contains(intake.NextAction, "already reviewed/recorded") {
+		t.Fatalf("adaptation next action = %+v, want reviewed receipts not fresh action", intake)
+	}
+	if !orientHasDrillDown(report, "external repo intake") || !orientHasDrillDown(report, "capability evaluation intake") {
+		t.Fatalf("adaptation drill-down commands missing: %+v", report.DrillDown)
+	}
+	if len(intake.Recent) == 0 || intake.Recent[0].TargetPath == "" {
+		t.Fatalf("adaptation recent rows should carry target evidence: %+v", intake.Recent)
+	}
+	text := captureStdout(t, func() {
+		cmdOrientOperator(homePath, []string{"--operator"})
+	})
+	for _, want := range []string{
+		"adaptation_intake: external_repos=1 open=0 reviewed=1 capability_evaluations=1 open=0 reviewed=1 actionable=0",
+		"adaptation_item: external-repo-intake/extrepo_orient_adaptation",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("orient output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestOrientOperatorCarriesSourceControlReviewProjection(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 10, 5, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	repo := initCompoundCommandGitRepo(t)
+	t.Chdir(repo)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "scratch.txt"), []byte("scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := authority.ReadGitSnapshot(repo)
+	if err != nil {
+		t.Fatalf("read source-control snapshot: %v", err)
+	}
+	plan, err := authority.BuildSourceControlReviewPlan(snap, "work_source_control", now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("build source-control review plan: %v", err)
+	}
+	paths, err := authority.RecordSourceControlReviewPlan(homePath, plan)
+	if err != nil {
+		t.Fatalf("record source-control review plan: %v", err)
+	}
+	review := authority.SourceControlReview{
+		SchemaVersion: authority.SourceControlReviewSchemaVersion,
+		ID:            plan.ID,
+		PlanID:        plan.ID,
+		RepoID:        plan.RepoID,
+		Decision:      "parked",
+		Rationale:     "dirty source-control state reviewed; leave scratch parked before any git mutation",
+		Confidence:    0.88,
+		NextAction:    "keep scratch parked and continue scoped tracked work only",
+		EvidenceRefs:  append([]string{}, plan.EvidenceRefs...),
+	}
+	if _, err := authority.RecordSourceControlReview(homePath, review, paths.ReviewYAMLPath, now.Add(-20*time.Minute)); err != nil {
+		t.Fatalf("record source-control review: %v", err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	source := report.NeedsMe.SourceControl
+	if source == nil {
+		t.Fatalf("source-control projection missing: %+v", report.NeedsMe)
+	}
+	if source.LiveStatus != "dirty" || source.ChangedPaths != 2 || source.Unstaged != 1 || source.Untracked != 1 {
+		t.Fatalf("source-control live snapshot = %+v, want dirty 1 unstaged 1 untracked", source)
+	}
+	if source.ReviewCount != 1 || source.ReviewRecordedCount != 1 || source.ReviewOpenCount != 0 || !source.HeadReviewRecorded {
+		t.Fatalf("source-control review counts = %+v, want one recorded current-head review", source)
+	}
+	if !strings.Contains(source.NextAction, "inspect cleanup receipts") {
+		t.Fatalf("source-control next action = %q, want receipt-first guidance", source.NextAction)
+	}
+	if !orientHasDrillDown(report, "source-control cleanup reviews") || !orientHasDrillDown(report, "source-control snapshot") {
+		t.Fatalf("source-control drill-down commands missing: %+v", report.DrillDown)
+	}
+	text := captureStdout(t, func() {
+		cmdOrientOperator(homePath, []string{"--operator"})
+	})
+	for _, want := range []string{
+		"source_control: live=dirty changed=2 staged=0 unstaged=1 untracked=1 reviews=1 open=0 recorded=1 head_review_recorded=true",
+		"source_control_review: " + plan.ID,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("orient output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestOrientOperatorCarriesProductLoopEvidenceDebtProjection(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 4, 11, 30, 0, 0, time.UTC)
+	seedOrientProductLoopProjectionHome(t, homePath, now)
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	if report.ProductLoops == nil {
+		t.Fatalf("product loop projection missing from orient report: %+v", report)
+	}
+	open := findOrientProductLoop(t, report.ProductLoops.Products, "product:orient-open")
+	if open.OpenHypothesisDebtCount != 1 {
+		t.Fatalf("open product loop debt = %+v, want one open debt", open)
+	}
+	if group := findOrientMissingSignalSource(open.OpenHypothesesByMissingSignalSource, "posthog"); len(group.HypothesisIDs) != 1 || group.HypothesisIDs[0] != "hyp_orient_open_activation" {
+		t.Fatalf("missing signal group = %+v, want posthog hypothesis debt", group)
+	}
+	if card := findOrientLoopActionCard(open.ActionCards, "product_signal_import"); card.ID == "" || !containsString(card.Command, "signal") {
+		t.Fatalf("open product loop should carry product-signal import action card: %+v", open.ActionCards)
+	}
+	closed := findOrientProductLoop(t, report.ProductLoops.Products, "product:orient-closed")
+	if group := findOrientReviewNextAction(closed.ClosedReviewsByNextAction, "keep screenshot one more window"); len(group.ReviewIDs) != 1 || group.ReviewIDs[0] != "review_orient_conversion" {
+		t.Fatalf("closed review next action group = %+v, want review follow-up", group)
+	}
+	if card := findOrientLoopActionCard(closed.ActionCards, "product_next_bounded_move"); card.ID == "" || !containsString(card.Command, "action-plan") || !containsString(card.Command, "--card") || !containsString(card.Command, card.ID) {
+		t.Fatalf("closed product loop should carry bounded next-move action card: %+v", closed.ActionCards)
+	}
+	if gap := findOrientSignalHypothesisGap(closed.SignalsWithoutHypothesis, "Observed store search traffic."); len(gap.SignalIDs) != 1 || gap.SignalIDs[0] != "sig_orient_unmatched_store" || len(gap.Metrics) != 1 || gap.Metrics[0] != "app_store_search_impressions" {
+		t.Fatalf("orient should carry signal-without-hypothesis group: %+v", closed.SignalsWithoutHypothesis)
+	}
+	if card := findOrientLoopActionCard(closed.ActionCards, "product_signal_hypothesis_review"); card.ID == "" || !containsString(card.Command, "action-plan") || !containsString(card.Command, "--card") || !containsString(card.Command, card.ID) {
+		t.Fatalf("closed product loop should carry signal-hypothesis review card: %+v", closed.ActionCards)
+	}
+
+	text := captureStdout(t, func() {
+		printOrientOperatorReport(report)
+	})
+	for _, want := range []string{
+		"product_loops:",
+		"action_cards=",
+		"product:orient-open",
+		"missing_signal_source=posthog",
+		"product:orient-closed",
+		"signals_without_hypothesis=Observed store search traffic.",
+		"closed_review_next=keep screenshot one more window",
+		"compound product action-plan",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("text orient output missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestOrientOperatorSurfacesHeldValveAdjacentProgress(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 4, 9, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	asc, err := workStore.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "held ASC private config credential scheduler valve",
+		State:            "held",
+	}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("create asc held work: %v", err)
+	}
+	conversation, err := workStore.Create(work.CreateInput{
+		Owner:            "codex",
+		SuccessPredicate: "held ChatGPT conversation import promotion valve",
+		State:            "held",
+	}, now.Add(-25*time.Minute))
+	if err != nil {
+		t.Fatalf("create conversation held work: %v", err)
+	}
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	adjacent := report.Running.AdjacentProgress
+	if adjacent == nil || !adjacent.Available || adjacent.NonPacketActionCount == 0 {
+		t.Fatalf("orient operator missing adjacent progress for held valves: %+v", adjacent)
+	}
+	if !stringSliceContains(adjacent.HeldWorkIDs, asc.ID) || !stringSliceContains(adjacent.HeldWorkIDs, conversation.ID) {
+		t.Fatalf("held work ids not carried into orient adjacent progress: %+v", adjacent)
+	}
+	for _, id := range []string{"operator-gate-" + asc.ID + "-app-store-connect-private-config", "asc-sales-series-bridge-proof", "conversation-preflight-private-export", "conversation-memory-review-gate", "second-opinion-evidence-recovery", "codex-pretooluse-wrapper-proof"} {
+		if !stringSliceContains(adjacent.NonPacketActionIDs, id) {
+			t.Fatalf("adjacent action %s missing from orient operator: %+v", id, adjacent)
+		}
+	}
+	if report.SessionContext == nil || report.SessionContext.Source != "workbench.adjacent_progress" {
+		t.Fatalf("session context = %+v, want held-valve adjacent-progress source", report.SessionContext)
+	}
+	if !strings.Contains(report.SessionContext.Task, "held-valve-adjacent") || !strings.Contains(strings.Join(report.SessionContext.Command, " "), "--task continue held-valve-adjacent") {
+		t.Fatalf("session context command = %+v, want adjacent context task", report.SessionContext)
+	}
+	if !strings.Contains(report.SessionContext.Boundary, "without claiming") || !strings.Contains(report.SessionContext.Proof, "ContextPack") {
+		t.Fatalf("session context boundary/proof = %+v", report.SessionContext)
+	}
+	nextFor := func(workID string) string {
+		t.Helper()
+		for _, item := range report.Running.OpenWork {
+			if item.WorkID == workID {
+				return item.NextAction
+			}
+		}
+		t.Fatalf("open work %s missing from orient report: %+v", workID, report.Running.OpenWork)
+		return ""
+	}
+	ascNext := nextFor(asc.ID)
+	if !strings.Contains(ascNext, "needs_me.operator_gate_cards") || !strings.Contains(ascNext, "operator-gate-"+asc.ID+"-app-store-connect-private-config") || strings.Contains(ascNext, "resolve policy/source-control hold") {
+		t.Fatalf("ASC held next action should point at adjacent preflight, got %q", ascNext)
+	}
+	conversationNext := nextFor(conversation.ID)
+	if !strings.Contains(conversationNext, "running.adjacent_progress") ||
+		!strings.Contains(conversationNext, "conversation-preflight-private-export") ||
+		!strings.Contains(conversationNext, "conversation-memory-review-gate") ||
+		strings.Contains(conversationNext, "resolve policy/source-control hold") {
+		t.Fatalf("conversation held next action should point at adjacent preflight/review gate, got %q", conversationNext)
+	}
+	text := captureStdout(t, func() {
+		cmdOrient([]string{"--operator", "--recent", "3"})
+	})
+	if !strings.Contains(text, "SESSION-CONTEXT") || !strings.Contains(text, "source=workbench.adjacent_progress") || !strings.Contains(text, "compound orient --harness codex --repo-kind control-plane --task continue held-valve-adjacent") {
+		t.Fatalf("text orient output missing session context:\n%s", text)
+	}
+	if !strings.Contains(text, "adjacent_progress: available=true") ||
+		!strings.Contains(text, "non_packet_actions=") ||
+		!strings.Contains(text, "operator_gate_cards: 1") ||
+		!strings.Contains(text, "source=app_store_connect") ||
+		!strings.Contains(text, "needs_me.operator_gate_cards") {
+		t.Fatalf("text orient output missing adjacent progress:\n%s", text)
 	}
 }
 
@@ -375,6 +1017,384 @@ func seedOrientOperatorHome(t *testing.T, homePath string, now time.Time) {
 	if _, err := workStore.DispatchStepRun(now.Add(-30*time.Minute), work.DispatchStepRunOptions{MaxSteps: 1, DispatchStepOptions: work.DispatchStepOptions{Actor: "codex"}}); err != nil {
 		t.Fatalf("dispatch step run: %v", err)
 	}
+}
+
+func seedOrientProductLoopProjectionHome(t *testing.T, homePath string, now time.Time) {
+	t.Helper()
+	if err := home.Init(homePath, "test", now.Add(-2*time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatalf("open memory: %v", err)
+	}
+	openBundle := product.Bundle{
+		SchemaVersion: product.SchemaVersion,
+		Product: product.Product{
+			ID:             "product:orient-open",
+			Name:           "Orient Open",
+			OwnerEntity:    "project:orient-open",
+			Surfaces:       []product.Surface{{ID: "landing", Kind: "web", Ref: "https://example.invalid/orient-open"}},
+			Channels:       []string{"landing_page"},
+			Positioning:    "Operator orient open product-loop debt fixture.",
+			PrivacyPosture: "fixture",
+		},
+		Hypotheses: []product.Hypothesis{{
+			ID:                "hyp_orient_open_activation",
+			ProductID:         "product:orient-open",
+			ChangeEvent:       "Changed onboarding headline.",
+			ExpectedEffect:    "Activation improves.",
+			Metrics:           []string{"posthog_activation_rate"},
+			ObservationWindow: "7d after change",
+			Result:            "unknown",
+			NextAction:        "wait for posthog activation export",
+			EvidenceRefs:      []string{"fixture:orient-open-headline"},
+		}},
+		EvidenceRefs: []string{"fixture:orient-open-product"},
+	}
+	if _, err := product.Apply(homePath, store, openBundle, "fixture/orient-open-product.yaml", now.Add(-90*time.Minute)); err != nil {
+		t.Fatalf("apply open product bundle: %v", err)
+	}
+
+	closedBundle := product.Bundle{
+		SchemaVersion: product.SchemaVersion,
+		Product: product.Product{
+			ID:             "product:orient-closed",
+			Name:           "Orient Closed",
+			OwnerEntity:    "project:orient-closed",
+			Surfaces:       []product.Surface{{ID: "app-store-page", Kind: "app_store", Ref: "appstore:987654321"}},
+			Channels:       []string{"app_store"},
+			Positioning:    "Operator orient closed product-loop review fixture.",
+			PrivacyPosture: "fixture",
+		},
+		Signals: []product.Signal{{
+			ID:           "sig_orient_conversion",
+			ProductID:    "product:orient-closed",
+			Surface:      "app-store-page",
+			ChangeEvent:  "Changed first screenshot.",
+			MetricName:   "app_store_product_page_conversion",
+			Before:       0.041,
+			After:        0.052,
+			Window:       "7d after change",
+			Confidence:   0.62,
+			EvidenceRefs: []string{"fixture:orient-conversion-signal"},
+		}, {
+			ID:           "sig_orient_unmatched_store",
+			ProductID:    "product:orient-closed",
+			Surface:      "app-store-page",
+			ChangeEvent:  "Observed store search traffic.",
+			MetricName:   "app_store_search_impressions",
+			Before:       80,
+			After:        120,
+			Window:       "7d after search change",
+			Confidence:   0.58,
+			EvidenceRefs: []string{"fixture:orient-unmatched-store-signal"},
+		}},
+		Hypotheses: []product.Hypothesis{{
+			ID:                "hyp_orient_conversion",
+			ProductID:         "product:orient-closed",
+			ChangeEvent:       "Changed first screenshot.",
+			ExpectedEffect:    "Conversion improves.",
+			Metrics:           []string{"app_store_product_page_conversion"},
+			ObservationWindow: "7d after change",
+			Result:            "unknown",
+			NextAction:        "review conversion evidence",
+			EvidenceRefs:      []string{"fixture:orient-conversion-hypothesis"},
+		}},
+		EvidenceRefs: []string{"fixture:orient-closed-product"},
+	}
+	if _, err := product.Apply(homePath, store, closedBundle, "fixture/orient-closed-product.yaml", now.Add(-80*time.Minute)); err != nil {
+		t.Fatalf("apply closed product bundle: %v", err)
+	}
+	review := product.Review{
+		SchemaVersion: product.ReviewSchemaVersion,
+		ID:            "review_orient_conversion",
+		ProductID:     "product:orient-closed",
+		HypothesisID:  "hyp_orient_conversion",
+		Result:        "inconclusive",
+		Rationale:     "Conversion moved but sample is still too small.",
+		Confidence:    0.61,
+		NextAction:    "keep screenshot one more window",
+		ReviewedAt:    now.Add(-30 * time.Minute).Format(time.RFC3339),
+		EvidenceRefs:  []string{"product_signal:sig_orient_conversion", "fixture:orient-review"},
+	}
+	if _, err := product.ApplyReview(homePath, store, review, "fixture/orient-conversion-review.yaml", now.Add(-20*time.Minute)); err != nil {
+		t.Fatalf("apply product review: %v", err)
+	}
+}
+
+func TestOrientOperatorSurfacesMemoryReviewCardsFromHeldRunArtifacts(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 2, 10, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held chatgpt conversation memory has reviewed parked candidate",
+		State:            "held",
+	}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("create held work: %v", err)
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.Memory, "cand_orient_conversation_review", map[string]any{
+		"id":     "cand_orient_conversation_review",
+		"state":  "parked",
+		"entity": "knowledge:chatgpt:orient-fixture",
+	}); err != nil {
+		t.Fatalf("write memory candidate: %v", err)
+	}
+	runDir := filepath.Join(homePath, "runs", held.ID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeOrientJSONFixture(t, filepath.Join(runDir, "panel-run-single-prun_orient_fixture.json"), map[string]any{
+		"schema_version": "compound.panel_run.v0.1",
+		"id":             "prun_orient_fixture",
+		"status":         "applied",
+		"target_kind":    "memory_candidate",
+		"targets": []map[string]any{{
+			"ref": "cand_orient_conversation_review",
+		}},
+	})
+	writeOrientJSONFixture(t, filepath.Join(runDir, "promoted-chatgpt-claims.json"), map[string]any{
+		"count": 0,
+		"refs":  []string{},
+	})
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient report: %v", err)
+	}
+	if report.NeedsMe.MemoryReviewCardCount != 1 || len(report.NeedsMe.MemoryReviewCards) != 1 {
+		t.Fatalf("memory review cards = %+v", report.NeedsMe)
+	}
+	card := report.NeedsMe.MemoryReviewCards[0]
+	if card.WorkID != held.ID ||
+		card.CandidateID != "cand_orient_conversation_review" ||
+		card.CandidateState != "parked" ||
+		card.PanelRunID != "prun_orient_fixture" ||
+		card.PromotionCount == nil ||
+		*card.PromotionCount != 0 ||
+		!strings.Contains(card.NextAction, "cand_orient_conversation_review") {
+		t.Fatalf("orient memory review card should name exact parked candidate and zero promotion: %+v", card)
+	}
+	var openWork orientOpenWorkItem
+	for _, item := range report.Running.OpenWork {
+		if item.WorkID == held.ID {
+			openWork = item
+			break
+		}
+	}
+	if openWork.WorkID == "" ||
+		!strings.Contains(openWork.NextAction, card.ID) ||
+		!strings.Contains(openWork.NextAction, "needs_me.memory_review_cards") {
+		t.Fatalf("open work next action should point exact memory review card, got %+v", openWork)
+	}
+	text := captureStdout(t, func() {
+		printOrientOperatorReport(report)
+	})
+	if !strings.Contains(text, "memory_review_cards: 1") ||
+		!strings.Contains(text, "candidate=cand_orient_conversation_review") ||
+		!strings.Contains(text, "promoted=0") {
+		t.Fatalf("orient text missing memory review card:\n%s", text)
+	}
+}
+
+func TestOrientOperatorSurfacesASCGateCardsForHeldWork(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 2, 30, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private mapping config before scheduler",
+		State:            "held",
+	}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("create held work: %v", err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient report: %v", err)
+	}
+	if report.NeedsMe.OperatorGateCardCount != 1 || len(report.NeedsMe.OperatorGateCards) != 1 {
+		t.Fatalf("operator gate cards = %+v", report.NeedsMe)
+	}
+	card := report.NeedsMe.OperatorGateCards[0]
+	if card.WorkID != held.ID ||
+		card.Kind != "source_private_config_gate" ||
+		card.SourceKind != "app_store_connect" ||
+		card.GateID != "asc-private-config" ||
+		!strings.Contains(strings.Join(card.Command, " "), "tools/asc_preflight.ts") ||
+		!strings.Contains(strings.Join(card.StopConditions, "\n"), "requested action would fetch live ASC data, apply ProductSignal, load scheduler, or clear held work") {
+		t.Fatalf("orient ASC gate card should expose exact read-only private-config valve: %+v", card)
+	}
+	var openWork orientOpenWorkItem
+	for _, item := range report.Running.OpenWork {
+		if item.WorkID == held.ID {
+			openWork = item
+			break
+		}
+	}
+	if openWork.WorkID == "" ||
+		!strings.Contains(openWork.NextAction, card.ID) ||
+		!strings.Contains(openWork.NextAction, "needs_me.operator_gate_cards") {
+		t.Fatalf("open work next action should point exact ASC gate card, got %+v", openWork)
+	}
+	text := captureStdout(t, func() {
+		printOrientOperatorReport(report)
+	})
+	if !strings.Contains(text, "operator_gate_cards: 1") ||
+		!strings.Contains(text, "source=app_store_connect") ||
+		!strings.Contains(text, "gate=asc-private-config") {
+		t.Fatalf("orient text missing ASC operator gate card:\n%s", text)
+	}
+}
+
+func TestOrientOperatorSurfacesAdmissionPreviewReviewCardContext(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	now := time.Date(2026, 7, 5, 2, 45, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private mapping config scheduler",
+		State:            "held",
+	}, now.Add(-30*time.Minute))
+	if err != nil {
+		t.Fatalf("create held work: %v", err)
+	}
+	cardID := "operator-gate-" + held.ID + "-app-store-connect-private-config"
+	plan, err := store.BuildReviewCardWorkPlan(cardID, now.Add(-5*time.Minute), work.ReviewCardWorkPlanOptions{Actor: "codex"})
+	if err != nil {
+		t.Fatalf("review-card work plan: %v", err)
+	}
+
+	report, err := buildOrientOperatorReport(homePath, 5, now)
+	if err != nil {
+		t.Fatalf("orient operator report: %v", err)
+	}
+	if report.Running.AdmissionPreviewCount != 1 || len(report.Running.AdmissionPreviews) != 1 {
+		t.Fatalf("admission preview missing from orient running: %+v", report.Running)
+	}
+	preview := report.Running.AdmissionPreviews[0]
+	if preview.WorkID != plan.WorkPlan.WorkID ||
+		preview.SourceReviewCardID != cardID ||
+		preview.Staleness != "fresh" ||
+		preview.ActionContext == nil ||
+		preview.ActionContext.Kind != "workbench_review_card" ||
+		preview.ActionContext.SourceID != cardID ||
+		!preview.ActionContext.RequiresOperator ||
+		!stringSliceContains(preview.ActionContext.StopConditions, "requested action would fetch live ASC data, apply ProductSignal, load scheduler, or clear held work") ||
+		!preview.RequiresOperator ||
+		preview.AdmissionBlockedReason == "" ||
+		len(preview.AdmitCommand) != 0 {
+		t.Fatalf("orient admission preview did not preserve review-card context: %+v", preview)
+	}
+	source, err := store.Get(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.State != "held" {
+		t.Fatalf("review-card preview should not clear source held work: %s", source.State)
+	}
+	text := captureStdout(t, func() {
+		printOrientOperatorReport(report)
+	})
+	if !strings.Contains(text, "admission_previews: 1") ||
+		!strings.Contains(text, "action_context=workbench_review_card") ||
+		!strings.Contains(text, "source_review_card="+cardID) ||
+		!strings.Contains(text, "operator_required=true") ||
+		!strings.Contains(text, "blocked_reason: operator required inputs") ||
+		strings.Contains(text, "admit=compound work admit-plan --plan") {
+		t.Fatalf("orient text missing review-card admission preview:\n%s", text)
+	}
+}
+
+func writeOrientJSONFixture(t *testing.T, path string, v any) {
+	t.Helper()
+	data, err := json.MarshalIndent(v, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findOrientProductLoop(t *testing.T, products []orientProductLoopItem, id string) orientProductLoopItem {
+	t.Helper()
+	for _, product := range products {
+		if product.ProductID == id {
+			return product
+		}
+	}
+	t.Fatalf("product loop %s missing: %+v", id, products)
+	return orientProductLoopItem{}
+}
+
+func findOrientMissingSignalSource(groups []orientLoopMissingSignalSource, source string) orientLoopMissingSignalSource {
+	for _, group := range groups {
+		if group.Source == source {
+			return group
+		}
+	}
+	return orientLoopMissingSignalSource{}
+}
+
+func findOrientSignalHypothesisGap(groups []orientLoopSignalHypothesisGap, changeEvent string) orientLoopSignalHypothesisGap {
+	for _, group := range groups {
+		if group.ChangeEvent == changeEvent {
+			return group
+		}
+	}
+	return orientLoopSignalHypothesisGap{}
+}
+
+func findOrientReviewNextAction(groups []orientLoopReviewNextAction, nextAction string) orientLoopReviewNextAction {
+	for _, group := range groups {
+		if group.NextAction == nextAction {
+			return group
+		}
+	}
+	return orientLoopReviewNextAction{}
+}
+
+func findOrientLoopActionCard(cards []orientLoopActionCard, kind string) orientLoopActionCard {
+	for _, card := range cards {
+		if card.Kind == kind {
+			return card
+		}
+	}
+	return orientLoopActionCard{}
+}
+
+func orientHasDrillDown(report orientOperatorReport, label string) bool {
+	for _, drill := range report.DrillDown {
+		if drill.Label == label {
+			return true
+		}
+	}
+	return false
 }
 
 func countJSONFiles(t *testing.T, dir string) int {

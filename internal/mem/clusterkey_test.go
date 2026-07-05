@@ -28,6 +28,24 @@ func TestStoreClusterKeyResolvesEntityWhenUnambiguous(t *testing.T) {
 	}
 }
 
+func TestStoreClusterKeyDoesNotGuessAmbiguousEntity(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.RegisterEntity(Entity{Slug: "project:api", Kind: "project", Aliases: []string{"shared"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterEntity(Entity{Slug: "project:web", Kind: "project", Aliases: []string{"shared"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ClusterKey(" Shared ", "language", "decision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "shared\x1flanguage\x1fdecision"
+	if got != want {
+		t.Fatalf("ambiguous entity ClusterKey = %q, want raw fallback %q", got, want)
+	}
+}
+
 func TestCaptureEchoReinforcesCurrentClaimWithoutNewCandidate(t *testing.T) {
 	s := newStore(t)
 	initial := cand("project:api", "runtime", "go", "")

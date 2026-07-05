@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compound/internal/home"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ type proofCheckReport struct {
 	GeneratedAt   string           `json:"generated_at"`
 	Repo          string           `json:"repo"`
 	DryRun        bool             `json:"dry_run"`
+	ArtifactRef   string           `json:"artifact_ref,omitempty"`
+	Warnings      []string         `json:"warnings,omitempty"`
 	ProofRefs     []string         `json:"proof_refs"`
 	Steps         []proofCheckStep `json:"steps"`
 }
@@ -45,6 +48,18 @@ func cmdProofCheck(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
+	}
+	if !dryRun && report.Status == "ok" {
+		homePath, err := home.Resolve("")
+		if err != nil {
+			report.Warnings = append(report.Warnings, "proof artifact not recorded: "+err.Error())
+		} else {
+			var recordErr error
+			report, recordErr = recordProofCheckRuntimeArtifact(homePath, report)
+			if recordErr != nil {
+				report.Warnings = append(report.Warnings, "proof artifact not recorded: "+recordErr.Error())
+			}
+		}
 	}
 	if jsonOut {
 		printJSON(report)
@@ -91,6 +106,43 @@ func runProofCheck(repoPath string, dryRun bool, now time.Time) (proofCheckRepor
 	return report, nil
 }
 
+func recordProofCheckRuntimeArtifact(homePath string, report proofCheckReport) (proofCheckReport, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return report, fmt.Errorf("COMPOUND_HOME is empty")
+	}
+	generatedAt, err := time.Parse(time.RFC3339, report.GeneratedAt)
+	if err != nil {
+		generatedAt = time.Now().UTC()
+	}
+	date := generatedAt.UTC().Format("20060102")
+	refsDir := filepath.Join(homePath, "artifacts", "refs")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		return report, err
+	}
+	name := "proof-check-installed-runtime-" + date + ".md"
+	ref := "artifact:artifacts/refs/" + name
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Proof-check installed runtime proof %s\n\n", generatedAt.UTC().Format("2006-01-02"))
+	fmt.Fprintf(&b, "`proof-check-installed-runtime` adjacent Workbench action verified installed runtime proof.\n")
+	fmt.Fprintf(&b, "`architecture-doctor-strict` adjacent Workbench action verified through the proof-check architecture-doctor step.\n")
+	fmt.Fprintf(&b, "`workbench-projection-refresh` adjacent Workbench action verified through proof-check workbench projection step.\n")
+	fmt.Fprintf(&b, "`codex-pretooluse-wrapper-proof` adjacent Workbench action verified through proof-check synthetic live PreToolUse wrapper step.\n")
+	fmt.Fprintf(&b, "Do not rerun these adjacent Workbench actions as the next move unless proof-check, strict architecture doctor, Workbench projection, Codex PreToolUse wrapper proof, or source state regresses.\n\n")
+	fmt.Fprintf(&b, "- schema: %s\n", report.SchemaVersion)
+	fmt.Fprintf(&b, "- status: %s\n", report.Status)
+	fmt.Fprintf(&b, "- generated_at: %s\n", report.GeneratedAt)
+	fmt.Fprintf(&b, "- repo: %s\n", report.Repo)
+	fmt.Fprintf(&b, "- proof_refs: %s\n", strings.Join(report.ProofRefs, ","))
+	for _, step := range report.Steps {
+		fmt.Fprintf(&b, "- step: %s proof_ref=%s status=%s\n", step.Name, step.ProofRef, step.Status)
+	}
+	if err := os.WriteFile(filepath.Join(refsDir, name), []byte(b.String()), 0o644); err != nil {
+		return report, err
+	}
+	report.ArtifactRef = ref
+	return report, nil
+}
+
 func resolveProofCheckRepo(repoPath string) (string, error) {
 	if strings.TrimSpace(repoPath) == "" {
 		cwd, err := os.Getwd()
@@ -124,6 +176,8 @@ func proofCheckSteps() ([]proofCheckStep, error) {
 		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all"},
 		{Name: "diff-check", Command: []string{"git", "diff", "--check"}, ProofRef: "diff-check"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
+		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
+		{Name: "codex-pretooluse-wrapper", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-wrapper-proof"},
 		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor"}, ProofRef: "memory-doctor"},
 		{Name: "redact-public", Command: []string{"redact", "--repo-visibility", "public", "--from-file", "<changed files>"}, ProofRef: "redact-public-clean"},
 	}, nil
@@ -137,6 +191,8 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 	var err error
 	if step.Name == "redact-public" {
 		output, err = runProofCheckRedact(repo)
+	} else if step.Name == "codex-pretooluse-wrapper" {
+		output, err = runProofCheckCodexPreToolUseWrapper(repo, step)
 	} else {
 		cmd := exec.Command(step.Command[0], step.Command[1:]...)
 		cmd.Dir = repo
@@ -153,6 +209,25 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 		result.ExitCode = proofCheckExitCode(err)
 	}
 	return result
+}
+
+func runProofCheckCodexPreToolUseWrapper(repo string, step proofCheckStep) ([]byte, error) {
+	tmpHome, err := os.MkdirTemp("", "compound-proofcheck-home-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpHome)
+	tmpRepo, err := os.MkdirTemp("", "compound-proofcheck-repo-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpRepo)
+	input := fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":"sess_codex_wrapper_probe","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`, tmpRepo, filepath.Join(tmpRepo, "README.md"))
+	cmd := exec.Command(step.Command[0], step.Command[1:]...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+tmpHome)
+	cmd.Stdin = strings.NewReader(input)
+	return cmd.CombinedOutput()
 }
 
 func proofCheckUsesGo(step proofCheckStep) bool {
@@ -251,5 +326,11 @@ func printProofCheck(report proofCheckReport) {
 	}
 	if len(report.ProofRefs) > 0 {
 		fmt.Printf("- proof_refs: %s\n", strings.Join(report.ProofRefs, ","))
+	}
+	if report.ArtifactRef != "" {
+		fmt.Printf("- artifact_ref: %s\n", report.ArtifactRef)
+	}
+	for _, warning := range report.Warnings {
+		fmt.Printf("- warning: %s\n", warning)
 	}
 }

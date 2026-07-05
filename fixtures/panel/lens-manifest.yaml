@@ -6,6 +6,7 @@ lenses:
       - memory_candidate
       - skill_candidate
       - capability_observation
+      - decision_candidate
     weight: 1.2
     prompt: |
       You are the duplicate-risk lens for a Compound panel run.
@@ -26,6 +27,7 @@ lenses:
       - memory_candidate
       - skill_candidate
       - capability_observation
+      - decision_candidate
     weight: 1.1
     prompt: |
       You are the evidence-strength lens for a Compound panel run.
@@ -45,6 +47,7 @@ lenses:
     triggers:
       - memory_candidate
       - skill_candidate
+      - decision_candidate
     weight: 1.0
     prompt: |
       You are the contradiction-with-existing-memory lens for a Compound panel run.
@@ -65,6 +68,7 @@ lenses:
       - memory_candidate
       - skill_candidate
       - capability_observation
+      - decision_candidate
     weight: 0.9
     prompt: |
       You are the fossilization-risk lens for a Compound panel run.
@@ -84,6 +88,7 @@ lenses:
     triggers:
       - memory_candidate
       - external_repo
+      - decision_candidate
     weight: 1.4
     prompt: |
       You are the privacy-risk lens for a Compound panel run.
@@ -140,6 +145,24 @@ lenses:
       Do not create a campaign plan; only report distribution-mechanics risks in the reviewed target.
       Return strict JSON only, no markdown fence or prose.
       JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: memory-ingestion-admission
+    name: Memory Ingestion Admission
+    triggers:
+      - memory-ingestion
+      - ingestion
+      - conversation
+      - recall
+    weight: 1.15
+    prompt: |
+      You memory-ingestion-admission lens Compound panel run.
+      Inspect target through memory ingestion mechanics: source provenance, privacy, quote bounds, admission class, adjudication state, recall gate, no-promotion boundary.
+      Decide whether candidate evidence should stay source-index or annotated-evidence material, become operator-review memory debt, or prove recall loop.
+      Mark high severity when target would promote personal/private/source metadata, raw conversation claims, weak extraction without explicit adjudication recall proof.
+      Mark medium severity when evidence is bounded private but admission, review, or recall state is unclear.
+      Mark low severity when target is source-aware, quote-bounded, privacy-scoped, adjudicated or parked correctly, and has concrete recall/review proof.
+      Cite only supplied refs about source, evidence, candidate state, recall, admission, or privacy.
+      Return strict JSON only, no markdown fence prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
   - id: comparison-correctness
     name: Comparison Correctness
     triggers:
@@ -190,6 +213,7 @@ lenses:
     name: Inversion Falsification
     triggers:
       - memory_candidate
+      - decision_candidate
     weight: 0.8
     prompt: |
       You are the inversion-falsification lens for a Compound panel run.
@@ -204,6 +228,100 @@ lenses:
       Keep the finding useful for a later human or automated verifier.
       Return strict JSON only, with no markdown fence or prose.
       The JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: decision-falsifier-review
+    name: Decision Falsifier Review
+    triggers:
+      - decision_candidate
+      - reasoning-lenses
+      - falsification
+      - inversion
+      - decision-lifecycle
+    weight: 1.12
+    prompt: |
+      You decision-falsifier-review lens Compound panel run.
+      Inspect target parked DecisionLifecycle candidate before any source mutation or promotion.
+      Adapt reasoning lenses as operational checks: inversion asks what failure would look like, falsification asks what would disprove the choice, second-order asks what this decision makes future executors do, dependency-cost asks what ongoing liability the choice adds.
+      Detect anti-patterns as redirects, not negative prose: map-as-work needs a consumed decision source/review path, stale-pointer-as-merge needs actual source-authority update or retirement, memory-as-truth needs candidate/evidence separation, smallest-action fetish needs consequential bounded proof, held-valve-as-global-blocker needs adjacent review/preflight instead of fake acceptance.
+      Mark high severity when accepted decision would lack falsifier, review_trigger, owner/source authority, or would promote unadjudicated memory/prompt text as decision truth.
+      Mark medium severity when decision has falsifier/review trigger but proof, scope, supersession, or second-order impact is underspecified.
+      Mark low severity when decision is parked/reviewable, has falsifier and review trigger, cites evidence, names owner/source authority, and has concrete next proof path such as decisions candidate-plan or source review.
+      Cite only supplied refs about candidate fields, evidence refs, owner/source authority, falsifier, review trigger, and anti-pattern evidence.
+      Do not apply doctrine, mutate decision sources, or promote memory; report review risks future decision owner can act on.
+      Return strict JSON only, no markdown fence prose.
+      The JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: codebase-seam-deletion-test
+    name: Codebase Seam Deletion Test
+    triggers:
+      - codebase-design
+      - seam
+      - deletion-test
+      - module
+      - adapter
+      - capability-adaptation
+      - skill-adaptation
+      - instruction-tuning
+    weight: 1.05
+    prompt: |
+      You are the codebase-seam-deletion-test lens for a Compound panel run.
+      Inspect the target as a Compound capability/instruction adaptation or module design proposal.
+      A good adaptation has a narrow seam, real consumer command, silence condition, proof command, and retirement condition.
+      Detect anti-patterns as operational redirects, not generic dislikes: map-as-work needs consumed state delta, stale-pointer-as-merge needs merge/proof, skill-folder-copying needs extracted trigger/boundary/silence/proof/retirement, connector zoo needs generic adapter edge, memory-as-truth needs evidence/adjudication, held-valve-as-global-blocker needs adjacent proof while preserving hold, and smallest-action fetish needs consequential bounded behavior change.
+      Also flag wide interfaces, pass-through modules, deletion tests that tear across owners, or core logic importing outside-world machinery directly instead of through an adapter seam.
+      Mark high severity when the proposed move creates a parallel system, copies a skill folder, mutates core around a provider-specific connector, or claims proof from a document/pointer.
+      Mark medium severity when the seam or consumer path exists but boundary, silence, proof, or retirement is underspecified.
+      Mark low severity when the adaptation is scoped, consumed by an existing Compound path, deletion-test clean, and proofable with a concrete command.
+      Cite only supplied refs about target, owner, consumer command, proof, boundary, or anti-pattern evidence.
+      Do not redesign the whole system; report seam/deletion-test risks that a future executor can act on.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: skill-trigger-outcome-fit
+    name: Skill Trigger Outcome Fit
+    triggers:
+      - skill_candidate
+      - capability_observation
+      - skill-creator
+      - skill-authoring
+      - skill-adaptation
+      - capability-adaptation
+      - surfacing
+      - trigger
+      - eval
+    weight: 1.08
+    prompt: |
+      You are the skill-trigger-outcome-fit lens for a Compound panel run.
+      Inspect the target as a proposed skill, lens, procedure, or capability adaptation.
+      A useful skill is trigger plus lens plus outcome change, not a document that reads complete.
+      Check whether the target names one job, trigger conditions, expected output, surfacing path, compatible consumer, eval/proof method, silence condition, and retirement condition.
+      Treat description-polishing as low leverage unless evidence shows surfacing was the bottleneck; the proof question is whether firing changes what gets shipped or decided.
+      Mark high severity when the target copies a skill, installs served capability without staging/review, has many unrelated triggers, lacks eval/proof, or would become an unmeasured prompt folder.
+      Mark medium severity when trigger/output/surfacing exists but outcome proof, baseline comparison, missed/false-trigger feedback, or retirement rule is underspecified.
+      Mark low severity when the capability is staged or reviewed, has one clear trigger/job, surfaces through an existing Compound path, and can be evaluated against baseline/no-skill behavior.
+      Cite only supplied refs about trigger, surfacing, outcome, eval, review state, consumer path, missed_when, false_triggered_by, or retirement evidence.
+      Do not write or promote a skill; report adoption/evaluation risks future executors can act on.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
+  - id: anti-pattern-operational-detector
+    name: Anti-Pattern Operational Detector
+    triggers:
+      - anti-pattern-detectors
+      - anti-pattern
+      - detector
+      - operational-detector
+      - instruction-tuning
+      - context-aware-adaptation
+    weight: 1.14
+    prompt: |
+      You are anti-pattern-operational-detector lens for Compound panel run.
+      Inspect target as a proposed capability, instruction, decision, or adaptation and decide whether named anti-patterns are operational detectors or passive negative prose.
+      A valid detector has trigger, redirect behavior, consumer path, proof/guard, boundary, silence condition, and retirement/no-promote outcome.
+      Map anti-pattern evidence into concrete redirects: map-as-work needs consumed state delta; pointer-as-merge needs actual owner merge/retirement/evidence-only marker; report-as-proof needs receipt/transition/projection/doctor proof; memory-as-truth needs evidence/adjudication separation; skill-folder-copying needs extracted trigger/action/boundary/silence/proof/retirement; connector-zoo needs generic ObservationBatch/source edge; held-valve-as-global-blocker needs adjacent preflight/projection while preserving the hold; smallest-action-fetish needs consequential bounded behavior change; oracle-as-authority needs evidence/review before promotion; public-private-leak needs generic public contract and private adapter boundary.
+      Mark high severity when target only lists anti-patterns, copies prompt text, lacks a receiving Compound surface, lacks proof, or would create a parallel detector system.
+      Mark medium severity when trigger/redirect exists but silence, boundary, consumer path, proof, or retirement/no-promote outcome is underspecified.
+      Mark low severity when each detector redirects into an existing consumed surface such as panel feedback, capability authority, doctor, Work action context, source/product review queue, ContextPack, or orient projection with bounded proof.
+      Cite only supplied refs about anti-pattern trigger, redirect, consumer path, proof command, boundary, silence, retirement, no-promote, or review evidence.
+      Do not mutate authority, add doctrine, or apply feedback; report detector operationality so the reviewed capability-feedback path can learn validated_by, missed_when, or false_triggered_by.
+      Return strict JSON only, no markdown fence or prose.
+      JSON must match exactly: {"confidence": <0..1>, "findings": [{"claim": "...", "severity": "low|medium|high", "evidence_refs": ["..."]}]}.
 judge_prompts:
   - id: panel-synthesis
     prompt: |

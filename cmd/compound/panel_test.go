@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"compound/internal/candidates"
+	"compound/internal/capgraph"
 	"compound/internal/home"
 	"compound/internal/panel"
 	"compound/internal/reviewartifact"
@@ -29,8 +30,8 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &memorySelection); err != nil {
 		t.Fatalf("parse memory lens JSON: %v\n%s", err, out)
 	}
-	if len(memorySelection.Included) != 6 || len(memorySelection.Excluded) != 5 {
-		t.Fatalf("memory_candidate selection = %+v, want six included and five non-memory excluded", memorySelection)
+	if len(memorySelection.Included) != 6 || len(memorySelection.Excluded) != 10 {
+		t.Fatalf("memory_candidate selection = %+v, want six included and ten non-memory excluded", memorySelection)
 	}
 
 	out = captureStdout(t, func() {
@@ -42,6 +43,61 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	}
 	if !panelSelectionIncludes(paidSelection, "lens:paid-app-commercial-fit") || len(paidSelection.MissingDomainLens) != 0 {
 		t.Fatalf("paid-app selection = %+v, want paid commercial lens with no missing domain gap", paidSelection)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "memory_candidate", "--domain", "memory-ingestion", "--task", "conversation memory recall proof", "--json"})
+	})
+	var memoryIngestionSelection panel.LensSelection
+	if err := json.Unmarshal([]byte(out), &memoryIngestionSelection); err != nil {
+		t.Fatalf("parse memory-ingestion lens JSON: %v\n%s", err, out)
+	}
+	if !panelSelectionIncludes(memoryIngestionSelection, "lens:memory-ingestion-admission") || len(memoryIngestionSelection.MissingDomainLens) != 0 {
+		t.Fatalf("memory-ingestion selection = %+v, want admission lens with no missing domain gap", memoryIngestionSelection)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "capability_observation", "--domain", "codebase-design", "--task", "adapt operating-system skill without copying; seam deletion test", "--json"})
+	})
+	var codebaseSelection panel.LensSelection
+	if err := json.Unmarshal([]byte(out), &codebaseSelection); err != nil {
+		t.Fatalf("parse codebase-design lens JSON: %v\n%s", err, out)
+	}
+	if !panelSelectionIncludes(codebaseSelection, "lens:codebase-seam-deletion-test") || len(codebaseSelection.MissingDomainLens) != 0 {
+		t.Fatalf("codebase-design selection = %+v, want seam deletion lens and no missing domain gap", codebaseSelection)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "skill_candidate", "--domain", "skill-creator", "--task", "judge whether the skill fires and changes outcome", "--json"})
+	})
+	var skillCreatorSelection panel.LensSelection
+	if err := json.Unmarshal([]byte(out), &skillCreatorSelection); err != nil {
+		t.Fatalf("parse skill-creator lens JSON: %v\n%s", err, out)
+	}
+	if !panelSelectionIncludes(skillCreatorSelection, "lens:skill-trigger-outcome-fit") || len(skillCreatorSelection.MissingDomainLens) != 0 {
+		t.Fatalf("skill-creator selection = %+v, want trigger outcome lens and no missing domain gap", skillCreatorSelection)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "decision_candidate", "--domain", "reasoning-lenses", "--task", "review falsifier and second-order decision effects", "--json"})
+	})
+	var decisionSelection panel.LensSelection
+	if err := json.Unmarshal([]byte(out), &decisionSelection); err != nil {
+		t.Fatalf("parse decision lens JSON: %v\n%s", err, out)
+	}
+	if !panelSelectionIncludes(decisionSelection, "lens:decision-falsifier-review") || len(decisionSelection.MissingDomainLens) != 0 {
+		t.Fatalf("decision selection = %+v, want falsifier lens no missing domain gap", decisionSelection)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "capability_observation", "--domain", "anti-pattern-detectors", "--task", "detect prompt-only anti-pattern prose and redirect to consumed proof", "--json"})
+	})
+	var antiPatternSelection panel.LensSelection
+	if err := json.Unmarshal([]byte(out), &antiPatternSelection); err != nil {
+		t.Fatalf("parse anti-pattern lens JSON: %v\n%s", err, out)
+	}
+	if !panelSelectionIncludes(antiPatternSelection, "lens:anti-pattern-operational-detector") || len(antiPatternSelection.MissingDomainLens) != 0 {
+		t.Fatalf("anti-pattern selection = %+v, want operational detector lens no missing domain gap", antiPatternSelection)
 	}
 
 	out = captureStdout(t, func() { cmdPanel([]string{"lenses", "--target-kind", "external_repo", "--json"}) })
@@ -56,7 +112,7 @@ func TestPanelLensesCLIJSON(t *testing.T) {
 	for _, excluded := range externalSelection.Excluded {
 		reasons[excluded.Ref] = excluded.Reason
 	}
-	for _, id := range []string{"lens:duplicate-risk", "lens:evidence-strength", "lens:contradiction-with-existing-memory", "lens:fossilization-risk", "lens:paid-app-commercial-fit", "lens:social-distribution-mechanics", "lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency", "lens:inversion-falsification"} {
+	for _, id := range []string{"lens:duplicate-risk", "lens:evidence-strength", "lens:contradiction-with-existing-memory", "lens:fossilization-risk", "lens:paid-app-commercial-fit", "lens:social-distribution-mechanics", "lens:comparison-correctness", "lens:comparison-contract-fidelity", "lens:comparison-cost-latency", "lens:inversion-falsification", "lens:decision-falsifier-review", "lens:codebase-seam-deletion-test", "lens:skill-trigger-outcome-fit", "lens:anti-pattern-operational-detector"} {
 		if reasons[id] != "trigger_mismatch" {
 			t.Fatalf("%s exclusion reason = %q, want trigger_mismatch (all reasons: %+v)", id, reasons[id], reasons)
 		}
@@ -239,6 +295,9 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 			"kind":    "memory_candidate",
 			"ref":     "cand_panel_record_cli",
 			"summary": "candidate needs human adjudication",
+			"payload": map[string]any{
+				"object": "Operator should decide whether this memory becomes durable strategy.",
+			},
 		},
 		"lens_findings": []map[string]any{{
 			"lens_ref":           "lens:privacy",
@@ -255,6 +314,28 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	}, " ", "# Panel verdict\n")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	pendingOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "panel-verdicts", "--json"})
+	})
+	var pending reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(pendingOut), &pending); err != nil {
+		t.Fatalf("parse pending reviews report: %v\n%s", err, pendingOut)
+	}
+	if len(pending.Items) != 1 || pending.Items[0].DecisionCard == nil {
+		t.Fatalf("pending panel verdict should expose decision card: %+v", pending.Items)
+	}
+	card := pending.Items[0].DecisionCard
+	if !strings.Contains(card.Claim, "durable strategy") || strings.Contains(card.Claim, "cand_panel_record_cli") {
+		t.Fatalf("decision card claim = %q", card.Claim)
+	}
+	if len(card.Choices) != 4 || len(pending.Items[0].Actions) != 4 {
+		t.Fatalf("decision card choices/actions = %d/%d, want 4/4", len(card.Choices), len(pending.Items[0].Actions))
+	}
+	if !strings.Contains(card.Choices[0].Command, "compound panel verdict-record") ||
+		!strings.Contains(card.Choices[0].Command, "compound memory adjudicate 'cand_panel_record_cli' --verdict 'promote'") {
+		t.Fatalf("decision card command should use canonical CLI path: %q", card.Choices[0].Command)
 	}
 
 	out := captureStdout(t, func() {
@@ -290,6 +371,112 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	item := report.Items[0]
 	if len(item.Actions) != 0 || !strings.Contains(item.NextAction, "keep target parked") {
 		t.Fatalf("recorded panel verdict should expose no-action next step: %+v", item)
+	}
+}
+
+func TestPanelFeedbackPlanReviewCLIFeedsCapabilityGraph(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	graph, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := graph.Add(capgraph.Node{
+		ID:       "lens:decision-falsifier-review",
+		Kind:     "lens",
+		Name:     "Decision Falsifier Review",
+		Triggers: []string{"decision_candidate"},
+		Weight:   1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	verdictPath, err := reviewartifact.WriteJSON(homePath, "panel-verdicts", "panel_feedback_cli.json", map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             "panel_feedback_cli",
+		"created_at":     cliTestNow.Format("2006-01-02T15:04:05Z"),
+		"run_id":         "prun_panel_feedback_cli",
+		"target": map[string]any{
+			"kind":    "decision_candidate",
+			"ref":     "dc_panel_feedback_cli",
+			"summary": "decision candidate lacks falsifier",
+			"payload": map[string]any{"statement": "adopt unreviewed capability"},
+		},
+		"lens_findings": []map[string]any{{
+			"lens_ref":           "lens:decision-falsifier-review",
+			"route_evidence_ref": "route_panel_feedback_cli",
+			"confidence":         0.77,
+			"status":             "completed",
+			"findings": []map[string]any{{
+				"claim":         "missing falsifier",
+				"severity":      "high",
+				"evidence_refs": []string{"candidate:dc_panel_feedback_cli"},
+			}},
+		}},
+		"synthesis": map[string]any{
+			"schema_version": "compound.panel_synthesis.v0.1",
+			"decision":       "park",
+			"confidence":     0.81,
+			"rationale":      "review before capability authority changes",
+		},
+		"evidence_refs": []string{"candidate:dc_panel_feedback_cli"},
+	}, " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdPanel([]string{"feedback-plan", "--verdict", verdictPath, "--json"})
+	})
+	var planned struct {
+		Plan  panel.PanelCapabilityFeedbackPlan  `json:"plan"`
+		Paths panel.PanelCapabilityFeedbackPaths `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(out), &planned); err != nil {
+		t.Fatalf("parse feedback-plan JSON: %v\n%s", err, out)
+	}
+	if planned.Plan.Status != "review_required" || len(planned.Plan.FeedbackCandidates) != 1 || planned.Paths.ReviewYAMLPath == "" {
+		t.Fatalf("planned feedback = %+v", planned)
+	}
+
+	queueOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", panel.PanelCapabilityFeedbackReviewArea, "--json"})
+	})
+	var queue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(queueOut), &queue); err != nil {
+		t.Fatalf("parse feedback queue: %v\n%s", err, queueOut)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 {
+		t.Fatalf("feedback queue counts = %+v items=%+v", queue.Counts, queue.Items)
+	}
+
+	reviewDraft := string(readFile(t, planned.Paths.ReviewYAMLPath))
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_apply_feedback_reject_keep_needs_review", "apply_feedback")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "TODO_apply_or_reject", "apply")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "rationale: \"\"", "rationale: \"reviewed panel lens should validate capability feedback\"")
+	reviewDraft = strings.ReplaceAll(reviewDraft, "reviewed_by: \"\"", "reviewed_by: \"codex\"")
+	if err := os.WriteFile(planned.Paths.ReviewYAMLPath, []byte(reviewDraft), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out = captureStdout(t, func() {
+		cmdPanel([]string{"feedback-review", planned.Paths.ReviewYAMLPath, "--json"})
+	})
+	var report panel.PanelCapabilityFeedbackReviewReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse feedback-review JSON: %v\n%s", err, out)
+	}
+	if report.Status != "applied_feedback" || report.AppliedEdges != 1 {
+		t.Fatalf("feedback review report = %+v", report)
+	}
+	stats, err := graph.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.EdgeKindCounts[capgraph.EdValidatedBy] != 1 {
+		t.Fatalf("capability graph not updated by reviewed feedback: %+v", stats)
 	}
 }
 

@@ -36,26 +36,50 @@ type CandidateListCounts struct {
 }
 
 type CandidateListItem struct {
-	ID              string                `json:"id"`
-	State           string                `json:"state"`
-	ReviewState     string                `json:"review_state,omitempty"`
-	Entity          string                `json:"entity,omitempty"`
-	Predicate       string                `json:"predicate,omitempty"`
-	Object          string                `json:"object,omitempty"`
-	ObservationDate string                `json:"observation_date,omitempty"`
-	Confidence      float64               `json:"confidence,omitempty"`
-	Derivation      string                `json:"derivation,omitempty"`
-	ClaimType       string                `json:"claim_type,omitempty"`
-	Kind            string                `json:"kind,omitempty"`
-	Visibility      string                `json:"visibility,omitempty"`
-	PromotionBasis  string                `json:"promotion_basis,omitempty"`
-	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`
-	Reason          string                `json:"reason,omitempty"`
-	CreatedAt       string                `json:"created_at,omitempty"`
-	SourceTraceRef  string                `json:"source_trace_ref,omitempty"`
-	SnippetHash     string                `json:"snippet_hash,omitempty"`
-	EvidenceRefs    []string              `json:"evidence_refs,omitempty"`
-	Annotations     []CandidateAnnotation `json:"annotations,omitempty"`
+	ID              string                 `json:"id"`
+	State           string                 `json:"state"`
+	ReviewState     string                 `json:"review_state,omitempty"`
+	Entity          string                 `json:"entity,omitempty"`
+	Predicate       string                 `json:"predicate,omitempty"`
+	Object          string                 `json:"object,omitempty"`
+	ObservationDate string                 `json:"observation_date,omitempty"`
+	Confidence      float64                `json:"confidence,omitempty"`
+	Derivation      string                 `json:"derivation,omitempty"`
+	ClaimType       string                 `json:"claim_type,omitempty"`
+	Kind            string                 `json:"kind,omitempty"`
+	Visibility      string                 `json:"visibility,omitempty"`
+	PromotionBasis  string                 `json:"promotion_basis,omitempty"`
+	Qualifiers      map[string]string      `json:"qualifiers,omitempty"`
+	Reason          string                 `json:"reason,omitempty"`
+	CreatedAt       string                 `json:"created_at,omitempty"`
+	SourceTraceRef  string                 `json:"source_trace_ref,omitempty"`
+	SnippetHash     string                 `json:"snippet_hash,omitempty"`
+	EvidenceRefs    []string               `json:"evidence_refs,omitempty"`
+	Evidence        *CandidateListEvidence `json:"evidence,omitempty"`
+	BelievedBefore  *CandidateListBelief   `json:"believed_before,omitempty"`
+	Annotations     []CandidateAnnotation  `json:"annotations,omitempty"`
+}
+
+type CandidateListEvidence struct {
+	Ref        string `json:"ref,omitempty"`
+	SourceKind string `json:"source_kind,omitempty"`
+	SourceID   string `json:"source_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Quote      string `json:"quote,omitempty"`
+	EventTime  string `json:"event_time,omitempty"`
+	ObservedAt string `json:"observed_at,omitempty"`
+	Actor      string `json:"actor,omitempty"`
+	Visibility string `json:"visibility,omitempty"`
+}
+
+type CandidateListBelief struct {
+	ClaimID      string   `json:"claim_id,omitempty"`
+	Entity       string   `json:"entity,omitempty"`
+	Predicate    string   `json:"predicate,omitempty"`
+	Object       string   `json:"object,omitempty"`
+	ValidFrom    string   `json:"valid_from,omitempty"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 }
 
 func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (CandidateListReport, error) {
@@ -123,7 +147,11 @@ func (s *Store) ListCandidates(now time.Time, opts CandidateListOptions) (Candid
 		if kind != "" && rawKind != kind && c.ClaimType != kind {
 			continue
 		}
-		report.Items = append(report.Items, candidateListItem(c, reviewState, rawKind, opts.IncludeEvidence))
+		item, err := s.candidateListItem(c, reviewState, rawKind, opts.IncludeEvidence)
+		if err != nil {
+			return report, err
+		}
+		report.Items = append(report.Items, item)
 		if opts.Limit > 0 && len(report.Items) >= opts.Limit {
 			break
 		}
@@ -141,7 +169,7 @@ func validCandidateListState(state string) bool {
 	}
 }
 
-func candidateListItem(c Candidate, reviewState, rawKind string, includeEvidence bool) CandidateListItem {
+func (s *Store) candidateListItem(c Candidate, reviewState, rawKind string, includeEvidence bool) (CandidateListItem, error) {
 	item := CandidateListItem{
 		ID:              c.ID,
 		State:           c.State,
@@ -166,10 +194,40 @@ func candidateListItem(c Candidate, reviewState, rawKind string, includeEvidence
 		item.EvidenceRefs = []string{c.ID}
 		if c.SourceTraceRef != "" {
 			item.EvidenceRefs = append(item.EvidenceRefs, c.SourceTraceRef)
+			if ev, ok, err := s.GetEvidence(c.SourceTraceRef); err != nil {
+				return item, err
+			} else if ok {
+				item.Evidence = &CandidateListEvidence{
+					Ref:        ev.ID,
+					SourceKind: ev.SourceKind,
+					SourceID:   ev.SourceID,
+					SessionID:  ev.SessionID,
+					Quote:      ev.QuoteText,
+					EventTime:  ev.EventTime,
+					ObservedAt: ev.ObservedAt,
+					Actor:      ev.Actor,
+					Visibility: ev.Visibility,
+				}
+			}
 		}
 		item.Annotations = append([]CandidateAnnotation(nil), c.Annotations...)
+		if c.State != ClaimStatePromoted {
+			if prior, ok, err := s.currentClusterClaim(c, 0); err != nil {
+				return item, err
+			} else if ok {
+				item.BelievedBefore = &CandidateListBelief{
+					ClaimID:      prior.ID,
+					Entity:       prior.Entity,
+					Predicate:    prior.Predicate,
+					Object:       prior.Object,
+					ValidFrom:    prior.ValidFrom,
+					CreatedAt:    prior.CreatedAt,
+					EvidenceRefs: append([]string(nil), prior.EvidenceRefs...),
+				}
+			}
+		}
 	}
-	return item
+	return item, nil
 }
 
 func (s *Store) rawCandidateKinds() (map[string]string, []string) {

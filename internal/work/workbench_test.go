@@ -494,6 +494,464 @@ func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
 	}
 }
 
+func TestWorkbenchDispatchNextSurfacesAdjacentProgressForHeldValves(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "held operator valve remains visible", State: "held"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetDir := filepath.Join(t.TempDir(), "packets")
+	if err := os.MkdirAll(packetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	readyPacket := `# Adjacent proof packet
+Date: 2026-07-04
+Status: ready
+Owner: codex
+Success: proves an adjacent slice without clearing the held valve.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "adjacent-ready.md"), []byte(readyPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	heldPacket := `# Held packet
+Date: 2026-07-04
+Status: held (operator action)
+Owner: codex
+Success: this should not count as adjacent progress.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "held.md"), []byte(heldPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	consolePacket := `# Console packet
+Date: 2026-07-04
+Status: ready - CONSOLE LANE'S CLAIM
+Owner: claude-console-lane
+Success: should not be offered as Codex adjacent progress.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "console.md"), []byte(consolePacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	operatorPacket := `# Operator packet
+Date: 2026-07-04
+Status: ready (operator registration flip remaining)
+Owner: codex + operator
+Success: should not be offered as Codex adjacent progress.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "operator.md"), []byte(operatorPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	deferredPacket := `# Deferred packet
+Date: 2026-07-04
+Status: offered (LOW PRIORITY - deferred)
+Owner: codex
+Success: should not be offered as immediate adjacent progress.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "deferred.md"), []byte(deferredPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex", PacketDir: packetDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := report.DispatchNext
+	if next.CanRun || next.WaitReason != "needs_review" || !contains(next.BlockedOn, "work.review:"+held.ID) {
+		t.Fatalf("held valve dispatch next = %+v", next)
+	}
+	if next.AdjacentProgress == nil {
+		t.Fatalf("held valve should expose adjacent progress: %+v", next)
+	}
+	adjacent := next.AdjacentProgress
+	if !adjacent.Available || adjacent.PacketCandidateCount != 1 || !contains(adjacent.PacketRefs, "adjacent-ready.md") {
+		t.Fatalf("adjacent progress packets = %+v", adjacent)
+	}
+	for _, leaked := range []string{"console.md", "operator.md", "deferred.md", "held.md"} {
+		if contains(adjacent.PacketRefs, leaked) {
+			t.Fatalf("adjacent progress leaked non-actionable packet %s: %+v", leaked, adjacent)
+		}
+	}
+	if !contains(adjacent.HeldWorkIDs, held.ID) || !strings.Contains(adjacent.NextAction, "held valves visible") {
+		t.Fatalf("adjacent progress held valve context = %+v", adjacent)
+	}
+	if !contains(adjacent.Command, "--packet-dir") || !contains(adjacent.Command, packetDir) {
+		t.Fatalf("adjacent progress command = %+v", adjacent.Command)
+	}
+}
+
+func TestWorkbenchDispatchNextOffersNonPacketActionsWhenPacketsFilteredOut(t *testing.T) {
+	s := newStore(t)
+	asc, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "app-store-connect ASC private config and scheduler valve remains held",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "chatgpt conversation import and memory promotion valve remains held",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetDir := filepath.Join(t.TempDir(), "packets")
+	if err := os.MkdirAll(packetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	consolePacket := `# Console-only packet
+Date: 2026-07-04
+Status: ready - CONSOLE LANE'S CLAIM
+Owner: claude-console-lane
+Success: should not count as Codex adjacent work.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "console.md"), []byte(consolePacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	operatorPacket := `# Operator registration packet
+Date: 2026-07-04
+Status: ready (operator registration flip remaining)
+Owner: codex + operator
+Success: should not count as Codex adjacent work.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "operator.md"), []byte(operatorPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex", PacketDir: packetDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := report.DispatchNext
+	if next.CanRun || next.WaitReason != "needs_review" {
+		t.Fatalf("held dispatch changed semantics: %+v", next)
+	}
+	if !contains(next.BlockedOn, "work.review:"+asc.ID) || !contains(next.BlockedOn, "work.review:"+conversation.ID) {
+		t.Fatalf("held work missing from direct blockage: %+v", next.BlockedOn)
+	}
+	adjacent := next.AdjacentProgress
+	if adjacent == nil || !adjacent.Available || adjacent.PacketCandidateCount != 0 || len(adjacent.PacketRefs) != 0 {
+		t.Fatalf("adjacent progress should be non-packet available only: %+v", adjacent)
+	}
+	for _, id := range []string{
+		"operator-gate-" + asc.ID + "-app-store-connect-private-config",
+		"asc-sales-series-bridge-proof",
+		"conversation-preflight-private-export",
+		"conversation-memory-review-gate",
+		"second-opinion-evidence-recovery",
+		"codex-pretooluse-wrapper-proof",
+		"workbench-projection-refresh",
+		"architecture-doctor-strict",
+		"proof-check-installed-runtime",
+	} {
+		action, ok := adjacentActionByID(adjacent.NonPacketActions, id)
+		if !ok {
+			t.Fatalf("missing adjacent non-packet action %s: %+v", id, adjacent.NonPacketActions)
+		}
+		joined := strings.Join(action.Command, " ")
+		if strings.Contains(joined, "/Users/") || strings.Contains(joined, ".compound/private") {
+			t.Fatalf("adjacent action leaked private path in command %s: %+v", id, action.Command)
+		}
+	}
+	for _, id := range []string{"operator-gate-" + asc.ID + "-app-store-connect-private-config", "conversation-preflight-private-export", "conversation-memory-review-gate"} {
+		action, _ := adjacentActionByID(adjacent.NonPacketActions, id)
+		if !action.RequiresOperator || action.Boundary == "" || action.Proof == "" || len(action.RequiredInputs) == 0 || len(action.ExpectedValidation) == 0 || len(action.StopConditions) == 0 {
+			t.Fatalf("private preflight action missing operator boundary/proof/inputs/gates: %+v", action)
+		}
+	}
+	ascAction, _ := adjacentActionByID(adjacent.NonPacketActions, "operator-gate-"+asc.ID+"-app-store-connect-private-config")
+	if !contains(ascAction.RequiredInputs, "private ASC product mapping config") {
+		t.Fatalf("ASC preflight action should name private config input: %+v", ascAction)
+	}
+	if !contains(ascAction.StopConditions, "credential smoke fails before scheduler load") || !contains(ascAction.ExpectedValidation, "no product signal apply and no scheduler load") {
+		t.Fatalf("ASC preflight action should name stop/validation gates: %+v", ascAction)
+	}
+	if _, ok := adjacentActionByID(adjacent.NonPacketActions, "asc-preflight-private-config"); ok {
+		t.Fatalf("generic ASC preflight should be suppressed by exact review card: %+v", adjacent.NonPacketActions)
+	}
+	bridgeAction, _ := adjacentActionByID(adjacent.NonPacketActions, "asc-sales-series-bridge-proof")
+	if bridgeAction.RequiresOperator || !strings.Contains(strings.Join(bridgeAction.Command, " "), "bun test tools/asc_sales_series_bridge.test.ts") {
+		t.Fatalf("ASC bridge proof should be a non-operator synthetic test action: %+v", bridgeAction)
+	}
+	if !strings.Contains(bridgeAction.Boundary, "temp COMPOUND_HOME") || strings.Contains(bridgeAction.Boundary, "operator supplies") || len(bridgeAction.RequiredInputs) != 0 {
+		t.Fatalf("ASC bridge proof should use synthetic/temp boundary, not private config: %+v", bridgeAction)
+	}
+	if !contains(bridgeAction.ExpectedValidation, "apply_results shows signal_count and transition_count") ||
+		!contains(bridgeAction.StopConditions, "bridge report lacks apply_results") {
+		t.Fatalf("ASC bridge proof should name apply_results validation gates: %+v", bridgeAction)
+	}
+	conversationAction, _ := adjacentActionByID(adjacent.NonPacketActions, "conversation-preflight-private-export")
+	if !contains(conversationAction.RequiredInputs, "private conversation export file or directory") {
+		t.Fatalf("conversation preflight action should name private export input: %+v", conversationAction)
+	}
+	if !contains(conversationAction.StopConditions, "bulk promotion requested") ||
+		!contains(conversationAction.ExpectedValidation, "no live extraction or promotion") ||
+		!contains(conversationAction.ExpectedValidation, "import_safety proves private bounded evidence/candidates and zero temp promoted claims") {
+		t.Fatalf("conversation preflight action should name stop/validation gates: %+v", conversationAction)
+	}
+	reviewGate, _ := adjacentActionByID(adjacent.NonPacketActions, "conversation-memory-review-gate")
+	reviewGateCommand := strings.Join(reviewGate.Command, " ")
+	if !strings.Contains(reviewGateCommand, "compound panel plan") ||
+		!strings.Contains(reviewGateCommand, "--target-kind memory_candidate") ||
+		!strings.Contains(reviewGateCommand, "--privacy-sensitive") ||
+		!strings.Contains(reviewGateCommand, "--max-items 1") {
+		t.Fatalf("conversation review gate should plan one privacy-sensitive memory candidate review: %+v", reviewGate)
+	}
+	if strings.Contains(reviewGateCommand, "compound memory adjudicate") ||
+		!strings.Contains(reviewGate.Boundary, "no live import") ||
+		!strings.Contains(reviewGate.Boundary, "adjudication") ||
+		!strings.Contains(reviewGate.Boundary, "promotion") ||
+		!strings.Contains(reviewGate.Proof, "no compound memory adjudicate --verdict promote") ||
+		!contains(reviewGate.ExpectedValidation, "compound memory adjudicate --verdict promote is not run") ||
+		!contains(reviewGate.StopConditions, "review plan would run adjudication or promotion") {
+		t.Fatalf("conversation review gate should stop before adjudication/promotion: %+v", reviewGate)
+	}
+	oracleAction, _ := adjacentActionByID(adjacent.NonPacketActions, "second-opinion-evidence-recovery")
+	if !oracleAction.RequiresOperator || !strings.Contains(strings.Join(oracleAction.Command, " "), "tools/second_opinion_preflight.ts") || !strings.Contains(strings.Join(oracleAction.Command, " "), "--source-observation") || len(oracleAction.RequiredInputs) != 3 || len(oracleAction.ExpectedValidation) == 0 || len(oracleAction.StopConditions) == 0 {
+		t.Fatalf("second-opinion action should require operator and run preflight before source observe: %+v", oracleAction)
+	}
+	for _, input := range []string{"second-opinion session id", "private saved answer path", "private source-observation YAML path"} {
+		if !contains(oracleAction.RequiredInputs, input) {
+			t.Fatalf("second-opinion action missing required input %q: %+v", input, oracleAction)
+		}
+	}
+	if !strings.Contains(oracleAction.Boundary, "evidence, not authority") || !strings.Contains(oracleAction.Proof, "no-promote") {
+		t.Fatalf("second-opinion action should preserve evidence/no-promote boundary: %+v", oracleAction)
+	}
+	if !contains(oracleAction.StopConditions, "source observation would promote truth") || !contains(oracleAction.ExpectedValidation, "no source observe import during preflight") {
+		t.Fatalf("second-opinion action should name stop/validation gates: %+v", oracleAction)
+	}
+	hookAction, _ := adjacentActionByID(adjacent.NonPacketActions, "codex-pretooluse-wrapper-proof")
+	if hookAction.RequiresOperator ||
+		!strings.Contains(strings.Join(hookAction.Command, " "), "compound hook pre-tool-use --live --harness codex") ||
+		!strings.Contains(hookAction.Boundary, "temp COMPOUND_HOME") ||
+		!strings.Contains(hookAction.Boundary, "no registration flip") ||
+		!contains(hookAction.ExpectedValidation, "compound.codex_live_hook_response.v0.1 emitted with status ok") ||
+		!contains(hookAction.StopConditions, "requested action would install wrapper or change hook config") {
+		t.Fatalf("hook shim proof should be synthetic, live-wrapper only, and registration-safe: %+v", hookAction)
+	}
+	if !strings.Contains(adjacent.NextAction, "listed non-packet proof action") {
+		t.Fatalf("adjacent next action should point to action cards: %q", adjacent.NextAction)
+	}
+}
+
+func TestWorkbenchAdjacentProgressConsumesVerifiedProofActions(t *testing.T) {
+	s := newStore(t)
+	asc, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "app-store-connect ASC private config scheduler valve remains held",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "chatgpt conversation import memory promotion valve remains held",
+		State:            "held",
+	}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	refsDir := filepath.Join(s.home, "artifacts", "refs")
+	if err := os.MkdirAll(refsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proofs := map[string]string{
+		"asc-sales-series-bridge-proof-20260705.md":        "`asc-sales-series-bridge-proof` adjacent Workbench action verified synthetic source-flow proof. Do not rerun proof next move unless bridge contract regresses.",
+		"chatgpt-conversation-preflight-proof-20260705.md": "`conversation-preflight-private-export` adjacent Workbench action now verified on bounded private corpus preflight.",
+	}
+	for name, body := range proofs {
+		if err := os.WriteFile(filepath.Join(refsDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10, Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjacent := report.DispatchNext.AdjacentProgress
+	if adjacent == nil || !adjacent.Available {
+		t.Fatalf("adjacent progress missing: %+v", report.DispatchNext)
+	}
+	for _, id := range []string{"asc-sales-series-bridge-proof", "conversation-preflight-private-export"} {
+		if _, ok := adjacentActionByID(adjacent.NonPacketActions, id); ok {
+			t.Fatalf("consumed proof action %s should not stay active: %+v", id, adjacent.NonPacketActions)
+		}
+		action, ok := adjacentActionByID(adjacent.ConsumedNonPacketActions, id)
+		if !ok {
+			t.Fatalf("consumed proof action %s missing consumed evidence: %+v", id, adjacent.ConsumedNonPacketActions)
+		}
+		if !action.Consumed || len(action.Command) != 0 || len(action.ConsumedEvidenceRefs) == 0 {
+			t.Fatalf("consumed proof action should be non-runnable evidence: %+v", action)
+		}
+	}
+	for _, id := range []string{"operator-gate-" + asc.ID + "-app-store-connect-private-config", "conversation-memory-review-gate", "architecture-doctor-strict"} {
+		if _, ok := adjacentActionByID(adjacent.NonPacketActions, id); !ok {
+			t.Fatalf("unconsumed adjacent action %s should remain active: %+v", id, adjacent.NonPacketActions)
+		}
+	}
+	if !strings.Contains(adjacent.NextAction, "consumed adjacent proofs") {
+		t.Fatalf("next action should name consumed proof actions: %q", adjacent.NextAction)
+	}
+}
+
+func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held conversation memory review has existing run artifacts",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(s.home, "runs", held.ID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidateDir := filepath.Join(s.home, "inbox", "memory-candidates")
+	if err := os.MkdirAll(candidateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(candidateDir, "cand_reviewed_conversation.json"), map[string]any{
+		"id":     "cand_reviewed_conversation",
+		"state":  "parked",
+		"entity": "knowledge:chatgpt:fixture",
+	})
+	writeJSONFile(t, filepath.Join(runDir, "panel-run-single-prun_fixture.json"), map[string]any{
+		"schema_version": "compound.panel_run.v0.1",
+		"id":             "prun_fixture",
+		"status":         "applied",
+		"target_kind":    "memory_candidate",
+		"targets": []map[string]any{{
+			"ref":          "cand_reviewed_conversation",
+			"privacy":      "private",
+			"state_before": "proposed",
+		}},
+	})
+	writeJSONFile(t, filepath.Join(runDir, "knowledge-extract-summary.json"), map[string]any{
+		"total_created": 2,
+		"candidate_ids": []string{"cand_reviewed_conversation", "cand_other_conversation"},
+	})
+	writeJSONFile(t, filepath.Join(runDir, "promoted-chatgpt-claims.json"), map[string]any{
+		"count": 0,
+		"refs":  []string{},
+	})
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.RunArtifacts != 3 {
+		t.Fatalf("run artifact count = %d, want 3; report=%+v", report.Counts.RunArtifacts, report)
+	}
+	if len(report.Open) != 1 || report.Open[0].WorkID != held.ID {
+		t.Fatalf("open work = %+v", report.Open)
+	}
+	item := report.Open[0]
+	if len(item.RunArtifacts) != 3 {
+		t.Fatalf("run artifacts = %+v", item.RunArtifacts)
+	}
+	for _, artifact := range item.RunArtifacts {
+		if strings.Contains(artifact.Ref, s.home) || strings.Contains(artifact.Ref, "/Users/") || strings.HasPrefix(artifact.Ref, "/") {
+			t.Fatalf("run artifact leaked absolute/private path: %+v", artifact)
+		}
+	}
+	panelArtifact, ok := runArtifactByKind(item.RunArtifacts, "panel_run")
+	if !ok ||
+		panelArtifact.Ref != filepath.ToSlash(filepath.Join("runs", held.ID, "panel-run-single-prun_fixture.json")) ||
+		panelArtifact.Schema != "compound.panel_run.v0.1" ||
+		panelArtifact.ID != "prun_fixture" ||
+		panelArtifact.Status != "applied" ||
+		panelArtifact.TargetKind != "memory_candidate" ||
+		!contains(panelArtifact.TargetRefs, "cand_reviewed_conversation") {
+		t.Fatalf("panel run artifact not projected with target refs/status: %+v", panelArtifact)
+	}
+	extractArtifact, ok := runArtifactByKind(item.RunArtifacts, "knowledge_extract_summary")
+	if !ok || extractArtifact.Count == nil || *extractArtifact.Count != 2 || !contains(extractArtifact.CandidateIDs, "cand_other_conversation") {
+		t.Fatalf("knowledge extract summary not projected with candidates/count: %+v", extractArtifact)
+	}
+	promotionArtifact, ok := runArtifactByKind(item.RunArtifacts, "promotion_summary")
+	if !ok || promotionArtifact.Count == nil || *promotionArtifact.Count != 0 {
+		t.Fatalf("promotion summary should preserve zero promoted claims: %+v", promotionArtifact)
+	}
+	if !contains(item.MemoryCandidateIDs, "cand_reviewed_conversation") || !contains(item.MemoryCandidateIDs, "cand_other_conversation") {
+		t.Fatalf("run artifact candidate refs should feed workbench memory candidate refs: %+v", item.MemoryCandidateIDs)
+	}
+	if len(item.ReviewCards) != 1 {
+		t.Fatalf("review cards = %+v", item.ReviewCards)
+	}
+	card := item.ReviewCards[0]
+	if card.CandidateID != "cand_reviewed_conversation" ||
+		card.CandidateState != "parked" ||
+		card.CandidateEntity != "knowledge:chatgpt:fixture" ||
+		card.PanelRunID != "prun_fixture" ||
+		card.PanelRunRef != filepath.ToSlash(filepath.Join("runs", held.ID, "panel-run-single-prun_fixture.json")) ||
+		card.PromotionSummaryRef != filepath.ToSlash(filepath.Join("runs", held.ID, "promoted-chatgpt-claims.json")) ||
+		card.PromotionCount == nil || *card.PromotionCount != 0 ||
+		!contains(card.Command, "prun_fixture") ||
+		!contains(card.StopConditions, "requested action would run import, extraction, panel run, mass import, or automatic promotion") {
+		t.Fatalf("review card should expose exact parked candidate/panel/promotion boundary: %+v", card)
+	}
+	if !strings.Contains(item.NextAction, "cand_reviewed_conversation") {
+		t.Fatalf("held work next action should name exact candidate, got %q", item.NextAction)
+	}
+	adjacent := report.DispatchNext.AdjacentProgress
+	if adjacent == nil {
+		t.Fatal("adjacent progress missing")
+	}
+	action, ok := adjacentActionByID(adjacent.NonPacketActions, card.ID)
+	if !ok || action.Kind != "review_card" || !contains(action.Command, "prun_fixture") || !contains(action.ExpectedValidation, "promotion summary remains zero before explicit promotion") {
+		t.Fatalf("adjacent progress should expose exact review card action: %+v", adjacent.NonPacketActions)
+	}
+}
+
+func TestWorkbenchSurfacesASCOperatorGateCardForHeldWork(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private config before scheduler",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Open) != 1 || report.Open[0].WorkID != held.ID {
+		t.Fatalf("open work = %+v", report.Open)
+	}
+	item := report.Open[0]
+	if len(item.ReviewCards) != 1 {
+		t.Fatalf("review cards = %+v", item.ReviewCards)
+	}
+	card := item.ReviewCards[0]
+	if card.Kind != "source_private_config_gate" ||
+		card.GateID != "asc-private-config" ||
+		card.SourceKind != "app_store_connect" ||
+		!contains(card.Command, "tools/asc_preflight.ts") ||
+		!contains(card.RequiredInputs, "private ASC product mapping config") ||
+		!contains(card.ExpectedValidation, "no product signal apply and no scheduler load") ||
+		!contains(card.StopConditions, "requested action would fetch live ASC data, apply ProductSignal, load scheduler, or clear held work") ||
+		!strings.Contains(card.Boundary, "read-only ASC preflight") {
+		t.Fatalf("ASC operator gate card should expose exact read-only private-config valve: %+v", card)
+	}
+	if !strings.Contains(item.NextAction, "private ASC config") {
+		t.Fatalf("held ASC next action should name private config gate: %q", item.NextAction)
+	}
+	adjacent := report.DispatchNext.AdjacentProgress
+	if adjacent == nil {
+		t.Fatal("adjacent progress missing")
+	}
+	action, ok := adjacentActionByID(adjacent.NonPacketActions, card.ID)
+	if !ok || action.Kind != "review_card" || !contains(action.Command, "tools/asc_preflight.ts") || !contains(action.StopConditions, "requested action would fetch live ASC data, apply ProductSignal, load scheduler, or clear held work") {
+		t.Fatalf("adjacent progress should expose ASC operator gate as review card: %+v", adjacent.NonPacketActions)
+	}
+}
+
 func TestWorkbenchSurfacesTerminalActivePacketProof(t *testing.T) {
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
@@ -717,6 +1175,35 @@ func TestWorkbenchUsesEffectiveChangedForLegacyProofBearingReceipt(t *testing.T)
 	}
 }
 
+func adjacentActionByID(actions []WorkbenchAdjacentAction, id string) (WorkbenchAdjacentAction, bool) {
+	for _, action := range actions {
+		if action.ID == id {
+			return action, true
+		}
+	}
+	return WorkbenchAdjacentAction{}, false
+}
+
+func runArtifactByKind(artifacts []WorkbenchRunArtifact, kind string) (WorkbenchRunArtifact, bool) {
+	for _, artifact := range artifacts {
+		if artifact.Kind == kind {
+			return artifact, true
+		}
+	}
+	return WorkbenchRunArtifact{}, false
+}
+
+func writeJSONFile(t *testing.T, path string, v any) {
+	t.Helper()
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func closeWorkbenchTestWork(t *testing.T, s *Store, workID string, at time.Time, summary string) {
 	t.Helper()
 	if _, err := s.Claim(workID, "codex", at); err != nil {
@@ -736,6 +1223,145 @@ func closeWorkbenchTestWork(t *testing.T, s *Store, workID string, at time.Time,
 		ProofRefs: []string{"proof:" + workID},
 	}, at.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkbenchSurfacesAdmissionPreviewsWithoutAdmittingWork(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_product_action_preview",
+		Owner:            "product:demo",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "reviewed product action becomes explicit work later",
+		DesiredOutcome:   "operator can admit reviewed action without rerunning product review",
+		EvidenceRefs:     []string{"product_action_review:reviewed_demo"},
+	}, fixedNow, CreatePlanOptions{
+		Capability:    "product.action_review",
+		Action:        "plan_work_from_reviewed_product_action",
+		TargetKind:    "product_action_review",
+		TargetID:      "reviewed_demo",
+		Record:        true,
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		ActionContext: &WorkActionContext{
+			Kind:          "product_action_review",
+			Title:         "Follow reviewed product next action",
+			ActionSummary: "Run local product L1 review; hold public/external changes.",
+			Command:       []string{"compound", "product", "action-plan", "--product", "product:demo", "--card", "demo-card"},
+			Proof:         "future receipt or product-loop projection cites the reviewed action",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.PlanPath == "" {
+		t.Fatalf("recorded create-plan missing plan path: %+v", plan)
+	}
+	if _, err := s.Get(plan.WorkID); err == nil {
+		t.Fatalf("create-plan should not admit work %s", plan.WorkID)
+	}
+	events, err := s.eventsFor(plan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("create-plan should not write work lifecycle events: %+v", events)
+	}
+
+	report, err := s.Workbench(fixedNow.Add(time.Minute), WorkbenchOptions{RecentLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.AdmissionPreviews != 1 || len(report.AdmissionPreviews) != 1 {
+		t.Fatalf("admission previews not surfaced: counts=%+v previews=%+v", report.Counts, report.AdmissionPreviews)
+	}
+	preview := report.AdmissionPreviews[0]
+	if preview.ActionSummary != "Run local product L1 review; hold public/external changes." {
+		t.Fatalf("admission preview should project action_summary from action context: %+v", preview)
+	}
+	if preview.ActionContext == nil || preview.ActionContext.ActionSummary != preview.ActionSummary {
+		t.Fatalf("admission preview action context should preserve projected action_summary: %+v", preview)
+	}
+	if preview.PlanID != plan.ID ||
+		preview.WorkID != plan.WorkID ||
+		preview.WorkOwner != "product:demo" ||
+		preview.WorkState != "proposed" ||
+		preview.Staleness != "fresh" ||
+		preview.AgeSeconds != 60 ||
+		preview.Age != "1m" ||
+		preview.NextAction == "" ||
+		!sameStringSlice(preview.AdmitCommand, []string{"compound", "work", "admit-plan", "--plan", plan.PlanPath}) ||
+		preview.PolicyOutcome == "" ||
+		!preview.PolicyAllowed ||
+		preview.PlanPath == "" ||
+		len(preview.Command) == 0 ||
+		!contains(preview.EvidenceRefs, "product_action_review:reviewed_demo") {
+		t.Fatalf("preview did not preserve admission plan fields: %+v", preview)
+	}
+	if report.DispatchNext.CanRun {
+		t.Fatalf("admission preview must not become dispatchable work: %+v", report.DispatchNext)
+	}
+
+	if _, err := s.Create(CreateInput{
+		WorkID:           plan.WorkID,
+		Owner:            plan.Work.Owner,
+		Actor:            plan.Actor,
+		State:            plan.Work.State,
+		SuccessPredicate: plan.Work.SuccessPredicate,
+		DesiredOutcome:   plan.Work.DesiredOutcome,
+		EvidenceRefs:     plan.Work.EvidenceRefs,
+	}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Workbench(fixedNow.Add(3*time.Minute), WorkbenchOptions{RecentLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Counts.AdmissionPreviews != 0 || len(after.AdmissionPreviews) != 0 {
+		t.Fatalf("admitted work should retire admission preview: counts=%+v previews=%+v", after.Counts, after.AdmissionPreviews)
+	}
+}
+
+func TestWorkbenchMarksOldAdmissionPreviewsStale(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_stale_admission_preview",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "ready",
+		SuccessPredicate: "old proposal does not look fresh forever",
+		EvidenceRefs:     []string{"test://stale-admission-preview"},
+	}, fixedNow, CreatePlanOptions{
+		Record:        true,
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow.Add(25*time.Hour), WorkbenchOptions{RecentLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Counts.AdmissionPreviews != 1 || len(report.AdmissionPreviews) != 1 {
+		t.Fatalf("admission preview missing: counts=%+v previews=%+v", report.Counts, report.AdmissionPreviews)
+	}
+	preview := report.AdmissionPreviews[0]
+	planRel := filepath.ToSlash(filepath.Join("create-plans", filepath.Base(plan.PlanPath)))
+	if preview.Staleness != "stale" ||
+		preview.StaleReason == "" ||
+		preview.AgeSeconds != int64((25*time.Hour).Seconds()) ||
+		preview.Age != "1d" ||
+		!strings.Contains(preview.NextAction, "revalidate") ||
+		!strings.Contains(preview.NextAction, "retire") ||
+		!sameStringSlice(preview.RetireCommand, []string{"compound", "home", "archive-history", "--kind", "create-plan", "--path", planRel}) ||
+		!sameStringSlice(preview.RetireDryRun, []string{"compound", "home", "archive-history", "--kind", "create-plan", "--path", planRel, "--dry-run"}) ||
+		!sameStringSlice(preview.AdmitCommand, []string{"compound", "work", "admit-plan", "--plan", plan.PlanPath}) {
+		t.Fatalf("stale admission preview not classified with safe next action: %+v", preview)
 	}
 }
 

@@ -1,12 +1,12 @@
 # ASC Daily Signals
 
-Compound does not own App Store Connect fetching. ASC ingestion is a rented
-edge: any collector can produce ASC-shaped output, and Compound only normalizes
-that output into product signals through existing product-loop doors.
+Compound does not own App Store Connect fetching. ASC ingestion is a rented edge:
+any collector can produce ASC-shaped output, and Compound only normalizes that
+output into product signals through existing product-loop doors.
 
 Keep private app IDs, vendor IDs, credentials, and account-specific mappings out
-of tracked public files. Put them under `COMPOUND_HOME` or another private
-runtime location. JSON or minimal YAML `apps:` lists are accepted.
+of tracked public files. Store them under `COMPOUND_HOME` or another private
+runtime location.
 
 Minimal private config shape:
 
@@ -51,6 +51,26 @@ bun tools/asc_daily_signals.ts \
   --json
 ```
 
+## Preflight
+
+Before applying live signals or loading a scheduler, run preflight against the
+private mapping and read-only ASC command:
+
+```bash
+bun tools/asc_preflight.ts \
+  --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" \
+  --asc-command "${COMPOUND_ASC_DAILY_COMMAND}" \
+  --json
+```
+
+Preflight checks that the private config parses, every mapped app has a
+registered Compound product, the optional ASC command smoke returns JSON, and
+scheduler load/unload commands are available. The JSON report includes
+operator-only `actions[]` for private config, credential smoke, scheduler load,
+and first signal apply. Each action carries prerequisites, expected validation,
+rollback, and stop conditions. Preflight does not apply ProductSignals or load a
+scheduler.
+
 ## Sales-Series JSONL Bridge
 
 If an existing collector, cron job, export script, or data warehouse already
@@ -63,7 +83,7 @@ adapter.
 bun tools/asc_sales_series_bridge.ts \
   --config "${COMPOUND_HOME:-${HOME}/.compound}/private/asc-products.json" \
   --sales-series "${ASC_SALES_SERIES_JSONL}" \
-  --change-event "Describe product or App Store change being evaluated." \
+  --change-event "Describe the product or App Store change being evaluated." \
   --before 2026-07-01/2026-07-07 \
   --after 2026-07-08/2026-07-14 \
   --metric units,developer_proceeds_usd \
@@ -78,14 +98,29 @@ The bridge does not call ASC, install a scheduler, create a metrics store, or
 assume any specific upstream collector. It only plans or invokes the existing
 product-signal door.
 
+When run with `--apply --json`, the report includes bounded `apply_results[]`
+for each invoked product-signal command: `product_id`, `asc_app_id`, `metric`,
+`signal_count`, and `transition_count`. These counts prove the generic
+product-signal door accepted source rows without exposing private collector
+output bodies.
+
+Regression proof:
+
+```bash
+bun test tools/asc_sales_series_bridge.test.ts
+```
+
+The apply regression builds a temporary `compound`, uses a temporary
+`COMPOUND_HOME`, runs the bridge twice with `--apply`, and verifies
+ProductSignal ledger idempotency.
+
 ## Scheduling
 
 Scheduling is deployment-specific. Use cron, systemd timers, launchd, GitHub
 Actions, a hosted worker, or any other scheduler that can run the same command
-with the private config and ASC-producing command available.
-
-The bundled launchd plist is only a macOS example. Loading or unloading it is a
-manual deployment action, not part of public-core setup:
+with private config and an ASC-producing command available. The bundled launchd
+plist is only a macOS example. Loading or unloading a scheduler is a manual
+deployment action, not part of public-core setup:
 
 ```bash
 mkdir -p "${HOME}/Library/LaunchAgents"

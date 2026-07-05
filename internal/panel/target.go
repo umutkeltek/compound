@@ -140,6 +140,47 @@ func LoadCapabilityObservationTargets(homePath string, limit int) ([]TargetInput
 	return out, nil
 }
 
+func LoadDecisionCandidateTargets(homePath string, limit int) ([]TargetInput, error) {
+	dir := filepath.Join(homePath, candidates.InboxDir(candidates.Decision))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	out := []TargetInput{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		var target decisionCandidateTarget
+		if err := candidates.ReadCandidate(homePath, candidates.Decision, id, &target); err != nil {
+			return nil, err
+		}
+		if !decisionCandidateAwaitingPlan(target) {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, TargetInput{
+			Kind:       "decision_candidate",
+			Ref:        id,
+			Visibility: "internal",
+			Summary:    decisionCandidateSummary(target),
+			Payload:    json.RawMessage(append([]byte(nil), raw...)),
+		})
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func LoadTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
 	switch targetKind {
 	case "memory_candidate":
@@ -177,6 +218,16 @@ func LoadTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
 			return TargetInput{}, err
 		}
 		return TargetInput{Kind: "capability_observation", Ref: ref, Visibility: "internal", Summary: capabilityObservationSummary(obs), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
+	case "decision_candidate":
+		var target decisionCandidateTarget
+		if err := candidates.ReadCandidate(homePath, candidates.Decision, ref, &target); err != nil {
+			return TargetInput{}, err
+		}
+		raw, err := os.ReadFile(filepath.Join(homePath, candidates.InboxDir(candidates.Decision), ref+".json"))
+		if err != nil {
+			return TargetInput{}, err
+		}
+		return TargetInput{Kind: "decision_candidate", Ref: ref, Visibility: "internal", Summary: decisionCandidateSummary(target), Payload: json.RawMessage(append([]byte(nil), raw...))}, nil
 	case "comparison":
 		return loadComparisonTarget(homePath, ref)
 	default:
@@ -218,6 +269,21 @@ type capabilityObservationTarget struct {
 	EvidenceRefs []string `json:"evidence_refs,omitempty"`
 }
 
+type decisionCandidateTarget struct {
+	ID           string            `json:"id"`
+	Kind         string            `json:"kind"`
+	Entity       string            `json:"entity,omitempty"`
+	Predicate    string            `json:"predicate,omitempty"`
+	Object       string            `json:"object,omitempty"`
+	Subject      string            `json:"subject,omitempty"`
+	Statement    string            `json:"statement,omitempty"`
+	Detail       string            `json:"detail,omitempty"`
+	Confidence   float64           `json:"confidence,omitempty"`
+	Qualifiers   map[string]string `json:"qualifiers,omitempty"`
+	EvidenceRefs []string          `json:"evidence_refs,omitempty"`
+	Verdict      string            `json:"verdict,omitempty"`
+}
+
 func hasSkillCandidateDecisionSidecar(dir, reviewID string) bool {
 	matches, err := filepath.Glob(filepath.Join(dir, reviewID+".*.decision.json"))
 	return err == nil && len(matches) > 0
@@ -243,6 +309,13 @@ func capabilityObservationSummary(obs capabilityObservationTarget) string {
 	return fmt.Sprintf("%s %s %s (confidence=%.2f)", obs.Subject, obs.Detail, obs.Statement, obs.Confidence)
 }
 
+func decisionCandidateSummary(target decisionCandidateTarget) string {
+	subject := firstNonEmptyString(target.Subject, target.Entity, target.Qualifiers["decision_id"], target.ID)
+	choice := firstNonEmptyString(target.Statement, target.Object, target.Detail, "review decision candidate")
+	scope := firstNonEmptyString(target.Qualifiers["scope"], target.Predicate, "-")
+	return fmt.Sprintf("%s choice=%s scope=%s verdict=%s confidence=%.2f", subject, choice, scope, emptyDashString(target.Verdict), target.Confidence)
+}
+
 func capabilityObservationAwaitingVerdict(obs capabilityObservationTarget) bool {
 	if strings.TrimSpace(obs.Verdict) != "" {
 		return false
@@ -253,6 +326,10 @@ func capabilityObservationAwaitingVerdict(obs capabilityObservationTarget) bool 
 	default:
 		return false
 	}
+}
+
+func decisionCandidateAwaitingPlan(target decisionCandidateTarget) bool {
+	return strings.TrimSpace(target.Verdict) == candidates.Park
 }
 
 func memoryCandidatePanelPayload(homePath string, cand mem.Candidate, raw []byte) json.RawMessage {

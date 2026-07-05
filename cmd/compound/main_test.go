@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,6 +26,7 @@ import (
 	"compound/internal/hook"
 	"compound/internal/knowledge"
 	"compound/internal/mem"
+	"compound/internal/observation"
 	"compound/internal/panel"
 	"compound/internal/policy"
 	"compound/internal/product"
@@ -253,6 +256,8 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"go-build-all",
 		"diff-check",
 		"architecture-doctor-strict",
+		"workbench-projection-refresh",
+		"codex-pretooluse-wrapper-proof",
 		"memory-doctor",
 		"redact-public-clean",
 	}
@@ -266,6 +271,77 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if !stringSliceContains(report.ProofRefs, want) {
 			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
 		}
+	}
+}
+
+func TestProofCheckArtifactConsumesVerificationAdjacentActions(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	report := proofCheckReport{
+		SchemaVersion: proofCheckSchemaVersion,
+		Status:        "ok",
+		GeneratedAt:   cliTestNow.Format(time.RFC3339),
+		Repo:          "/tmp/compound-test",
+		ProofRefs:     []string{"architecture-doctor-strict", "workbench-projection-refresh", "codex-pretooluse-wrapper-proof", "go-test-count-1-all"},
+		Steps: []proofCheckStep{
+			{Name: "architecture-doctor", ProofRef: "architecture-doctor-strict", Status: "ok"},
+			{Name: "workbench-projection", ProofRef: "workbench-projection-refresh", Status: "ok"},
+			{Name: "codex-pretooluse-wrapper", ProofRef: "codex-pretooluse-wrapper-proof", Status: "ok"},
+			{Name: "go-test", ProofRef: "go-test-count-1-all", Status: "ok"},
+		},
+	}
+	report, err := recordProofCheckRuntimeArtifact(homePath, report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArtifactRef != "artifact:artifacts/refs/proof-check-installed-runtime-20260629.md" {
+		t.Fatalf("artifact ref = %q", report.ArtifactRef)
+	}
+	body := readFile(t, filepath.Join(homePath, "artifacts", "refs", "proof-check-installed-runtime-20260629.md"))
+	for _, phrase := range []string{
+		"proof-check-installed-runtime",
+		"architecture-doctor-strict",
+		"workbench-projection-refresh",
+		"codex-pretooluse-wrapper-proof",
+		"adjacent Workbench action",
+		"verified",
+		"Do not rerun",
+	} {
+		if !strings.Contains(body, phrase) {
+			t.Fatalf("proof artifact missing %q:\n%s", phrase, body)
+		}
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "app-store-connect ASC private config scheduler valve remains held", State: "held"}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	workbench, err := store.Workbench(cliTestNow, work.WorkbenchOptions{RecentLimit: 10, Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adjacent := workbench.DispatchNext.AdjacentProgress
+	if adjacent == nil {
+		t.Fatalf("missing adjacent progress: %+v", workbench.DispatchNext)
+	}
+	for _, id := range []string{"proof-check-installed-runtime", "architecture-doctor-strict", "workbench-projection-refresh", "codex-pretooluse-wrapper-proof"} {
+		action, ok := workbenchAdjacentActionByID(adjacent.ConsumedNonPacketActions, id)
+		if !ok {
+			t.Fatalf("%s not consumed by proof-check artifact: %+v", id, adjacent)
+		}
+		if len(action.Command) != 0 || !stringSliceContains(action.ConsumedEvidenceRefs, report.ArtifactRef) {
+			t.Fatalf("%s consumed action should strip command and keep proof ref: %+v", id, action)
+		}
+	}
+	if _, ok := workbenchAdjacentActionByID(adjacent.NonPacketActions, "proof-check-installed-runtime"); ok {
+		t.Fatalf("proof-check action still active after proof artifact: %+v", adjacent.NonPacketActions)
+	}
+	if _, ok := workbenchAdjacentActionByID(adjacent.NonPacketActions, "workbench-projection-refresh"); ok {
+		t.Fatalf("workbench projection action still active after proof artifact: %+v", adjacent.NonPacketActions)
 	}
 }
 
@@ -283,6 +359,1229 @@ func TestProofCheckGoStepsUseLocalToolchain(t *testing.T) {
 	})
 	if result.Status != "ok" || !strings.Contains(result.OutputTail, "GOTOOLCHAIN=local") {
 		t.Fatalf("proof-check go env = %+v", result)
+	}
+}
+
+func TestSourceObserveBatchCLIRoutesFixturesWithoutApplying(t *testing.T) {
+	tests := []struct {
+		name      string
+		fixture   string
+		wantRoute string
+	}{
+		{"gsc metric", "../../fixtures/observation/gsc-product-metric.json", observation.RouteProductSignal},
+		{"asc metric", "../../fixtures/observation/asc-product-metric.json", observation.RouteProductSignal},
+		{"content knowledge", "../../fixtures/observation/content-knowledge-export.json", observation.RouteKnowledgeExport},
+		{"event trace", "../../fixtures/observation/event-trace-envelope.json", observation.RouteTraceEnvelope},
+		{"route evidence", "../../fixtures/observation/route-evidence.json", observation.RouteRouteEvidence},
+		{"social feedback", "../../fixtures/observation/social-distribution-feedback.json", observation.RouteCandidateOnly},
+		{"support message", "../../fixtures/observation/support-comment.json", observation.RouteCandidateOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				cmdSource([]string{"observe-batch", tt.fixture, "--dry-run", "--json"})
+			})
+			var report observation.Report
+			if err := json.Unmarshal([]byte(out), &report); err != nil {
+				t.Fatalf("parse observe-batch report: %v\n%s", err, out)
+			}
+			if report.Status != "ok" || !report.DryRun || report.AppliedProductSignals {
+				t.Fatalf("report = %+v", report)
+			}
+			if len(report.Decisions) != 1 || report.Decisions[0].Route != tt.wantRoute {
+				t.Fatalf("decisions = %+v, want route %s", report.Decisions, tt.wantRoute)
+			}
+			if len(report.ProductApplyResults) != 0 {
+				t.Fatalf("dry-run applied product signals: %+v", report.ProductApplyResults)
+			}
+		})
+	}
+}
+
+func TestSourceObserveBatchCLIApplyProductSignalsChangesProductLoopProjection(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := product.Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixtures/product/market-loop.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	before, err := product.BuildLoopModel(homePath, product.LoopOptions{ProductID: "product:focus-notes", Now: cliTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/gsc-product-metric.json", "--apply-product-signals", "--json"})
+	})
+	var report observation.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse apply report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.DryRun || !report.AppliedProductSignals {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.ProductApplyResults) != 1 || len(report.ProductApplyResults[0].SignalIDs) != 1 || len(report.ProductApplyResults[0].TransitionIDs) != 1 {
+		t.Fatalf("apply results = %+v", report.ProductApplyResults)
+	}
+	after, err := product.BuildLoopModel(homePath, product.LoopOptions{ProductID: "product:focus-notes", Now: cliTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceObserveBatchSignalCount(after, "gsc_clicks") != sourceObserveBatchSignalCount(before, "gsc_clicks")+1 {
+		t.Fatalf("product loops did not gain gsc_clicks signal before=%+v after=%+v", before.Products, after.Products)
+	}
+}
+
+func TestSourceObserveBatchCLIAppliesGeneratedSourceObservation(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/generated-system-source.json", "--apply-source-observations", "--json"})
+	})
+	var report observation.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse source-observation apply report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.DryRun || !report.AppliedSourceObservations || report.AppliedProductSignals {
+		t.Fatalf("source observation apply report = %+v", report)
+	}
+	if len(report.SourceObservationApplyResults) != 1 {
+		t.Fatalf("source observation results = %+v", report.SourceObservationApplyResults)
+	}
+	result := report.SourceObservationApplyResults[0]
+	if result.ObservationID != "obs_fixture_generated_workbench" || result.SourceObservationID == "" || len(result.CandidateIDs) != 1 || len(result.NoPromoteIDs) != 1 {
+		t.Fatalf("source observation result = %+v", result)
+	}
+	candidatePath := filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade), result.CandidateIDs[0]+".json")
+	if _, err := os.Stat(candidatePath); err != nil {
+		t.Fatalf("expected sourceobs candidate %s: %v", candidatePath, err)
+	}
+	noPromoteRows := readNoPromoteDecisionRows(t, homePath)
+	if len(noPromoteRows) != 1 || noPromoteRows[0].CandidateRef != result.CandidateIDs[0] || noPromoteRows[0].OwnerTarget.Ref != result.SourceObservationID {
+		t.Fatalf("no-promote rows = %+v result=%+v", noPromoteRows, result)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source observation apply must not create product signals ledger: %v", err)
+	}
+}
+
+func TestSourceIntakeCLIAndOrientConsumeRecordedObservationBatches(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := product.Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixtures/product/market-loop.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		cmdPanel([]string{"import-lenses", "../../fixtures/panel/lens-manifest.yaml"})
+	})
+
+	for _, args := range [][]string{
+		{"observe-batch", "../../fixtures/observation/gsc-product-metric.json", "--apply-product-signals", "--json"},
+		{"observe-batch", "../../fixtures/observation/content-knowledge-export.json", "--apply-knowledge", "--json"},
+		{"observe-batch", "../../fixtures/observation/generated-system-source.json", "--apply-source-observations", "--json"},
+		{"observe-batch", "../../fixtures/observation/route-evidence.json", "--apply-route-evidence", "--json"},
+		{"observe-batch", "../../fixtures/observation/event-trace-envelope.json", "--apply-events", "--json"},
+		{"observe-batch", "../../fixtures/observation/social-distribution-feedback.json", "--review-candidates", "--json"},
+	} {
+		captureStdout(t, func() {
+			cmdSource(args)
+		})
+	}
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"intake", "--json"})
+	})
+	var projection observation.SourceIntakeProjection
+	if err := json.Unmarshal([]byte(out), &projection); err != nil {
+		t.Fatalf("parse source intake projection: %v\n%s", err, out)
+	}
+	if projection.Status != "ok" || projection.RecordCount != 6 || projection.RowCount < 6 {
+		t.Fatalf("projection = %+v", projection)
+	}
+	for _, route := range []string{observation.RouteProductSignal, observation.RouteKnowledgeExport, observation.RouteSourceObservation, observation.RouteRouteEvidence, observation.RouteTraceEnvelope, observation.RouteCandidateOnly} {
+		if projection.Counts.ByRoute[route] == 0 {
+			t.Fatalf("route %s missing from source intake projection: %+v", route, projection.Counts.ByRoute)
+		}
+	}
+	productRow := findCLISourceIntakeRow(projection.Rows, observation.RouteProductSignal)
+	if productRow == nil || productRow.Owner != "internal/product" || productRow.SubjectID != "product:focus-notes" || productRow.SourceCapturedAt == "" || len(productRow.AppliedIDs) == 0 {
+		t.Fatalf("product intake row = %+v", productRow)
+	}
+	if !stringSliceContains(productRow.NextCommand, "loops") {
+		t.Fatalf("product intake next command = %+v", productRow.NextCommand)
+	}
+	knowledgeRow := findCLISourceIntakeRow(projection.Rows, observation.RouteKnowledgeExport)
+	if knowledgeRow == nil || knowledgeRow.Owner != "internal/knowledge" || !stringSliceContainsPrefix(knowledgeRow.AppliedIDs, "extraction:") {
+		t.Fatalf("knowledge intake row = %+v", knowledgeRow)
+	}
+	extractionCard := findCLISourceIntakeActionCard(projection.ActionCards, "knowledge_extraction_pending")
+	if extractionCard == nil ||
+		extractionCard.RowID != knowledgeRow.ID ||
+		!stringSliceContains(extractionCard.Command, "knowledge") ||
+		!stringSliceContains(extractionCard.Command, "extract") ||
+		!stringSliceContains(extractionCard.Command, "--item") ||
+		stringSliceContains(extractionCard.Command, "--pending") ||
+		!strings.Contains(extractionCard.Boundary, "no automatic memory promotion") {
+		t.Fatalf("knowledge extraction source-intake card = %+v", extractionCard)
+	}
+	eventRow := findCLISourceIntakeRow(projection.Rows, observation.RouteTraceEnvelope)
+	if eventRow == nil || eventRow.Owner != "internal/eventsource" || len(eventRow.AppliedIDs) == 0 {
+		t.Fatalf("event intake row = %+v", eventRow)
+	}
+
+	orientOut := captureStdout(t, func() {
+		cmdOrient([]string{"--operator", "--json", "--recent", "3"})
+	})
+	var orient orientOperatorReport
+	if err := json.Unmarshal([]byte(orientOut), &orient); err != nil {
+		t.Fatalf("parse orient operator json: %v\n%s", err, orientOut)
+	}
+	if orient.NeedsMe.SourceIntake == nil || orient.NeedsMe.SourceIntake.RowCount < 6 || orient.NeedsMe.SourceIntake.AppliedCount == 0 || orient.NeedsMe.SourceIntake.ReviewRecordedCount == 0 {
+		t.Fatalf("orient source intake = %+v", orient.NeedsMe.SourceIntake)
+	}
+	if len(orient.NeedsMe.SourceIntake.Commands) == 0 || !stringSliceContains(orient.NeedsMe.SourceIntake.Commands[0].Command, "intake") {
+		t.Fatalf("orient source intake commands = %+v", orient.NeedsMe.SourceIntake.Commands)
+	}
+	orientExtractionCard := findCLISourceIntakeActionCard(orient.NeedsMe.SourceIntake.ActionCards, "knowledge_extraction_pending")
+	if orientExtractionCard == nil || orientExtractionCard.RowID != knowledgeRow.ID || !stringSliceContains(orientExtractionCard.Command, "--item") {
+		t.Fatalf("orient source intake missing knowledge extraction card: %+v", orient.NeedsMe.SourceIntake.ActionCards)
+	}
+}
+
+func TestSourceIntakeCLIAndOrientExposeActionCards(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := product.Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixtures/product/market-loop.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	value := 1.0
+	stale := observation.Batch{
+		SchemaVersion: observation.BatchSchemaVersion,
+		Source: observation.Source{
+			Kind:       "google_search_console",
+			Ref:        "site:https://example.invalid",
+			CapturedAt: cliTestNow.Add(-96 * time.Hour).Format(time.RFC3339),
+			Collector:  "fixture-gsc-edge",
+			Privacy:    "synthetic",
+		},
+		Subject: observation.Subject{Kind: "product", ID: "product:focus-notes", Surface: "search", Channel: "organic_search"},
+		Observations: []observation.Observation{{
+			ID:         "obs_cli_stale_clicks",
+			Kind:       "metric",
+			Metric:     "clicks",
+			Value:      &value,
+			ObservedAt: cliTestNow.Add(-96 * time.Hour).Format(time.RFC3339),
+			Confidence: 1,
+		}},
+	}
+	stalePath := filepath.Join(homePath, "stale-observation.json")
+	writeCLIJSONFixture(t, stalePath, stale)
+
+	unsupported := observation.Batch{
+		SchemaVersion: observation.BatchSchemaVersion,
+		Source: observation.Source{
+			Kind:       "fixture_payload",
+			Ref:        "fixture:unsupported",
+			CapturedAt: cliTestNow.Format(time.RFC3339),
+			Collector:  "fixture-edge",
+			Privacy:    "synthetic",
+		},
+		Subject: observation.Subject{Kind: "product", ID: "product:focus-notes"},
+		Observations: []observation.Observation{{
+			ID:         "obs_cli_unknown_payload",
+			Kind:       "mystery",
+			ObservedAt: cliTestNow.Format(time.RFC3339),
+			Confidence: 0.5,
+		}},
+	}
+	unsupportedPath := filepath.Join(homePath, "unsupported-observation.json")
+	writeCLIJSONFixture(t, unsupportedPath, unsupported)
+
+	captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", stalePath, "--apply-product-signals", "--json"})
+	})
+	captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", unsupportedPath, "--apply-product-signals", "--json"})
+	})
+	captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/social-distribution-feedback.json", "--apply-product-signals", "--json"})
+	})
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"intake", "--json"})
+	})
+	var projection observation.SourceIntakeProjection
+	if err := json.Unmarshal([]byte(out), &projection); err != nil {
+		t.Fatalf("parse source intake projection: %v\n%s", err, out)
+	}
+	if projection.ActionCardCount < 3 || projection.Counts.ActionRequired < 3 {
+		t.Fatalf("source intake action cards missing: counts=%+v cards=%+v", projection.Counts, projection.ActionCards)
+	}
+	for _, kind := range []string{"stale_source", "skipped_route", "unsupported_kind"} {
+		card := findCLISourceIntakeActionCard(projection.ActionCards, kind)
+		if card == nil || card.Title == "" || len(card.Command) == 0 || len(card.RequiredInputs) == 0 || len(card.ExpectedValidation) == 0 || len(card.StopConditions) == 0 || card.Boundary == "" || card.Proof == "" {
+			t.Fatalf("source intake action card %s incomplete: %+v", kind, card)
+		}
+	}
+
+	orientOut := captureStdout(t, func() {
+		cmdOrient([]string{"--operator", "--json", "--recent", "3"})
+	})
+	var orient orientOperatorReport
+	if err := json.Unmarshal([]byte(orientOut), &orient); err != nil {
+		t.Fatalf("parse orient operator json: %v\n%s", err, orientOut)
+	}
+	if orient.NeedsMe.SourceIntake == nil || orient.NeedsMe.SourceIntake.ActionCardCount < 3 || len(orient.NeedsMe.SourceIntake.ActionCards) == 0 {
+		t.Fatalf("orient source-intake action cards missing: %+v", orient.NeedsMe.SourceIntake)
+	}
+}
+
+func TestSourceIntakeWorkPlanCLIAdmitsActionCardThroughWorkbenchPreview(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := product.Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixtures/product/market-loop.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/social-distribution-feedback.json", "--apply-product-signals", "--json"})
+	})
+	intakeOut := captureStdout(t, func() {
+		cmdSource([]string{"intake", "--json"})
+	})
+	var projection observation.SourceIntakeProjection
+	if err := json.Unmarshal([]byte(intakeOut), &projection); err != nil {
+		t.Fatalf("parse source intake projection: %v\n%s", err, intakeOut)
+	}
+	card := findCLISourceIntakeActionCard(projection.ActionCards, "skipped_route")
+	if card == nil {
+		t.Fatalf("missing skipped source-intake card: %+v", projection.ActionCards)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"intake-work-plan", "--card", card.ID, "--json"})
+	})
+	var report observation.SourceIntakeWorkPlanReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse source intake work-plan: %v\n%s", err, out)
+	}
+	if report.Status != "recorded" || report.SourceIntake.CardID != card.ID || report.WorkPlan.WorkID == "" || report.WorkPlan.PlanPath == "" || report.WorkPlan.WorkState != "proposed" {
+		t.Fatalf("source intake work-plan report = %+v", report)
+	}
+	if report.WorkPlan.ActionContext == nil ||
+		report.WorkPlan.ActionContext.Kind != "source_intake_action_card" ||
+		report.WorkPlan.ActionContext.SourceID != card.ID ||
+		!sameStringSlice(report.WorkPlan.ActionContext.Command, card.Command) ||
+		report.WorkPlan.ActionContext.Proof != card.Proof ||
+		report.WorkPlan.ActionContext.Boundary != card.Boundary {
+		t.Fatalf("source intake work-plan action context mismatch: ctx=%+v card=%+v", report.WorkPlan.ActionContext, card)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Get(report.WorkPlan.WorkID); err == nil {
+		t.Fatalf("intake-work-plan should not admit work %s", report.WorkPlan.WorkID)
+	}
+	workbenchJSON := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json"})
+	})
+	var wb workbenchCLIOutput
+	if err := json.Unmarshal([]byte(workbenchJSON), &wb); err != nil {
+		t.Fatalf("parse workbench: %v\n%s", err, workbenchJSON)
+	}
+	if wb.Counts.AdmissionPreviews != 1 || len(wb.AdmissionPreviews) != 1 || wb.AdmissionPreviews[0].WorkID != report.WorkPlan.WorkID || wb.AdmissionPreviews[0].PlanPath == "" {
+		t.Fatalf("workbench should expose source-intake admission preview: counts=%+v previews=%+v", wb.Counts, wb.AdmissionPreviews)
+	}
+	workbenchText := captureStdout(t, func() {
+		cmdWorkbench(nil)
+	})
+	if !strings.Contains(workbenchText, "admission_preview: "+report.WorkPlan.WorkID) ||
+		!strings.Contains(workbenchText, "staleness=fresh") ||
+		!strings.Contains(workbenchText, "admit: compound work admit-plan --plan "+report.WorkPlan.PlanPath) ||
+		!strings.Contains(workbenchText, "action_context: "+strings.Join(card.Command, " ")) {
+		t.Fatalf("workbench text missing source-intake action context:\n%s", workbenchText)
+	}
+	admitOut := captureStdout(t, func() {
+		cmdWork([]string{"admit-plan", "--plan", report.WorkPlan.PlanPath, "--by", "operator-test", "--json"})
+	})
+	var admitReport work.AdmitCreatePlanReport
+	if err := json.Unmarshal([]byte(admitOut), &admitReport); err != nil {
+		t.Fatalf("parse admit-plan: %v\n%s", err, admitOut)
+	}
+	if admitReport.Status != "admitted" || admitReport.ActionContext == nil || admitReport.ActionContext.SourceID != card.ID {
+		t.Fatalf("admit-plan did not preserve source-intake action context: %+v", admitReport)
+	}
+}
+
+func TestWorkReviewCardPlanCLIAdmitsCardThroughWorkbenchPreview(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := workStore.Create(work.CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "held",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private config before scheduler",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cardID := "operator-gate-" + held.ID + "-app-store-connect-private-config"
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{"review-card-plan", "--card", cardID, "--actor", "codex", "--json"})
+	})
+	var report work.ReviewCardWorkPlanReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse review-card work-plan: %v\n%s", err, out)
+	}
+	if report.Status != "recorded" ||
+		report.ReviewCard.CardID != cardID ||
+		report.ReviewCard.CardKind != "source_private_config_gate" ||
+		report.WorkPlan.WorkID == "" ||
+		report.WorkPlan.PlanPath == "" ||
+		report.WorkPlan.ActionContext == nil ||
+		report.WorkPlan.ActionContext.Kind != "workbench_review_card" ||
+		report.WorkPlan.ActionContext.SourceID != cardID ||
+		!sameStringSlice(report.WorkPlan.ActionContext.Command, report.ReviewCard.ActionCommand) ||
+		!stringSliceContains(report.WorkPlan.ActionContext.StopConditions, "requested action would fetch live ASC data, apply ProductSignal, load scheduler, or clear held work") {
+		t.Fatalf("review-card work-plan did not preserve gate context: %+v", report)
+	}
+	if _, err := workStore.Get(report.WorkPlan.WorkID); err == nil {
+		t.Fatalf("review-card-plan should not admit work %s", report.WorkPlan.WorkID)
+	}
+	sourceWork, err := workStore.Get(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceWork.State != "held" {
+		t.Fatalf("review-card-plan should not clear source held work: %s", sourceWork.State)
+	}
+
+	workbenchJSON := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json"})
+	})
+	var wb workbenchCLIOutput
+	if err := json.Unmarshal([]byte(workbenchJSON), &wb); err != nil {
+		t.Fatalf("parse workbench: %v\n%s", err, workbenchJSON)
+	}
+	if wb.Counts.AdmissionPreviews != 1 ||
+		len(wb.AdmissionPreviews) != 1 ||
+		wb.AdmissionPreviews[0].WorkID != report.WorkPlan.WorkID ||
+		wb.AdmissionPreviews[0].ActionContext == nil ||
+		wb.AdmissionPreviews[0].ActionContext.Kind != "workbench_review_card" ||
+		!wb.AdmissionPreviews[0].ActionContext.RequiresOperator ||
+		wb.AdmissionPreviews[0].ActionSummary != report.ReviewCard.CardTitle ||
+		!wb.AdmissionPreviews[0].RequiresOperator ||
+		wb.AdmissionPreviews[0].AdmissionBlockedReason == "" ||
+		len(wb.AdmissionPreviews[0].AdmitCommand) != 0 {
+		t.Fatalf("workbench should expose review-card admission preview: counts=%+v previews=%+v", wb.Counts, wb.AdmissionPreviews)
+	}
+	workbenchText := captureStdout(t, func() {
+		cmdWorkbench(nil)
+	})
+	if !strings.Contains(workbenchText, "admission_preview: "+report.WorkPlan.WorkID) ||
+		!strings.Contains(workbenchText, "operator_required: true") ||
+		!strings.Contains(workbenchText, "blocked_reason: operator required inputs") ||
+		!strings.Contains(workbenchText, "action_context: "+strings.Join(report.ReviewCard.ActionCommand, " ")) ||
+		strings.Contains(workbenchText, "admit: compound work admit-plan --plan "+report.WorkPlan.PlanPath) {
+		t.Fatalf("workbench text missing review-card action context:\n%s", workbenchText)
+	}
+
+	admitOut := captureStdout(t, func() {
+		cmdWork([]string{"admit-plan", "--plan", report.WorkPlan.PlanPath, "--by", "operator-test", "--json"})
+	})
+	var admitReport work.AdmitCreatePlanReport
+	if err := json.Unmarshal([]byte(admitOut), &admitReport); err != nil {
+		t.Fatalf("parse admit-plan: %v\n%s", err, admitOut)
+	}
+	if admitReport.Status != "admitted" ||
+		admitReport.ActionContext == nil ||
+		admitReport.ActionContext.SourceID != cardID ||
+		!sameStringSlice(admitReport.ActionContext.Command, report.ReviewCard.ActionCommand) {
+		t.Fatalf("admit-plan did not preserve review-card action context: %+v", admitReport)
+	}
+	sourceAfterAdmit, err := workStore.Get(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceAfterAdmit.State != "held" {
+		t.Fatalf("admitting review-card proposal should not clear source held work: %s", sourceAfterAdmit.State)
+	}
+}
+
+func TestSourceIntakeWorkPlanCLICarriesActionCardThroughActionAndClosePlan(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := product.Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixtures/product/market-loop.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/social-distribution-feedback.json", "--apply-product-signals", "--json"})
+	})
+	intakeOut := captureStdout(t, func() {
+		cmdSource([]string{"intake", "--json"})
+	})
+	var projection observation.SourceIntakeProjection
+	if err := json.Unmarshal([]byte(intakeOut), &projection); err != nil {
+		t.Fatalf("parse source intake projection: %v\n%s", err, intakeOut)
+	}
+	card := findCLISourceIntakeActionCard(projection.ActionCards, "skipped_route")
+	if card == nil {
+		t.Fatalf("missing skipped source-intake card: %+v", projection.ActionCards)
+	}
+
+	workPlanOut := captureStdout(t, func() {
+		cmdSource([]string{"intake-work-plan", "--card", card.ID, "--json"})
+	})
+	var report observation.SourceIntakeWorkPlanReport
+	if err := json.Unmarshal([]byte(workPlanOut), &report); err != nil {
+		t.Fatalf("parse source intake work-plan: %v\n%s", err, workPlanOut)
+	}
+	if report.WorkPlan.ActionContext == nil ||
+		report.WorkPlan.ActionContext.Kind != "source_intake_action_card" ||
+		report.WorkPlan.ActionContext.SourceID != card.ID ||
+		!sameStringSlice(report.WorkPlan.ActionContext.Command, card.Command) ||
+		report.WorkPlan.ActionContext.Proof != card.Proof {
+		t.Fatalf("source-intake work plan did not preserve card action context: ctx=%+v card=%+v", report.WorkPlan.ActionContext, card)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitOut := captureStdout(t, func() {
+		cmdWork([]string{"admit-plan", "--plan", report.WorkPlan.PlanPath, "--by", "operator-test", "--json"})
+	})
+	var admitReport work.AdmitCreatePlanReport
+	if err := json.Unmarshal([]byte(admitOut), &admitReport); err != nil {
+		t.Fatalf("parse admit-plan: %v\n%s", err, admitOut)
+	}
+	if admitReport.Status != "admitted" || admitReport.ActionContext == nil || admitReport.ActionContext.SourceID != card.ID {
+		t.Fatalf("admit-plan did not preserve source-intake action context: %+v", admitReport)
+	}
+
+	advancePlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"advance-plan", report.WorkPlan.WorkID, "--to", "ready", "--actor", "codex", "--dry-run", "--json"})
+	})
+	var advancePlan work.AdvancePlan
+	if err := json.Unmarshal([]byte(advancePlanJSON), &advancePlan); err != nil {
+		t.Fatalf("parse advance-plan: %v\n%s", err, advancePlanJSON)
+	}
+	if advancePlan.ActionContext == nil ||
+		!sameStringSlice(advancePlan.ActionContext.Command, card.Command) ||
+		advancePlan.ActionContext.Boundary != card.Boundary ||
+		advancePlan.ActionContext.Proof != card.Proof {
+		t.Fatalf("advance-plan JSON missing source-intake action context: %+v", advancePlan.ActionContext)
+	}
+	captureStdout(t, func() {
+		cmdWork([]string{"advance", report.WorkPlan.WorkID, "--to", "ready", "--by", "codex"})
+	})
+	claimPlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"claim-plan", report.WorkPlan.WorkID, "--actor", "codex", "--dry-run", "--json"})
+	})
+	var claimPlan work.ClaimPlan
+	if err := json.Unmarshal([]byte(claimPlanJSON), &claimPlan); err != nil {
+		t.Fatalf("parse claim-plan: %v\n%s", err, claimPlanJSON)
+	}
+	if claimPlan.ActionContext == nil ||
+		!sameStringSlice(claimPlan.ActionContext.Command, card.Command) ||
+		claimPlan.ActionContext.Boundary != card.Boundary ||
+		claimPlan.ActionContext.Proof != card.Proof {
+		t.Fatalf("claim-plan JSON missing source-intake action context: %+v", claimPlan.ActionContext)
+	}
+	captureStdout(t, func() {
+		cmdWork([]string{"claim", report.WorkPlan.WorkID, "--by", "codex"})
+	})
+	captureStdout(t, func() {
+		cmdWork([]string{"advance", report.WorkPlan.WorkID, "--to", "running", "--by", "codex"})
+	})
+	actionPlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"action-plan", report.WorkPlan.WorkID, "--actor", "codex", "--json"})
+	})
+	var actionPlan work.ActionExecutionPlan
+	if err := json.Unmarshal([]byte(actionPlanJSON), &actionPlan); err != nil {
+		t.Fatalf("parse action-plan: %v\n%s", err, actionPlanJSON)
+	}
+	if actionPlan.Status != "action_execution_policy_allowed" ||
+		actionPlan.PlanPath == "" ||
+		actionPlan.ActionContext == nil ||
+		!sameStringSlice(actionPlan.ActionCommand, card.Command) ||
+		!sameStringSlice(actionPlan.RequiredInputs, card.RequiredInputs) ||
+		!sameStringSlice(actionPlan.ExpectedValidation, card.ExpectedValidation) ||
+		actionPlan.Proof != card.Proof ||
+		actionPlan.ReceiptDraft.ID == "" ||
+		actionPlan.ActionIntent.Target.ID != card.ID ||
+		actionPlan.ActionIntent.Target.Path != report.WorkPlan.ActionContext.SourceRef {
+		t.Fatalf("action-plan did not preserve receipt-ready source-intake context: %+v", actionPlan)
+	}
+	closePlanBeforeAct := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", report.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex"})
+	})
+	if !strings.Contains(closePlanBeforeAct, "no_action: action execution plan") ||
+		!strings.Contains(closePlanBeforeAct, "not recorded") {
+		t.Fatalf("close-plan should refuse action plan before act --plan records it:\n%s", closePlanBeforeAct)
+	}
+
+	if len(card.Command) < 3 || card.Command[0] != "compound" || card.Command[1] != "source" {
+		t.Fatalf("source-intake card command is not a compound source command: %+v", card.Command)
+	}
+	captureStdout(t, func() {
+		cmdSource(card.Command[2:])
+	})
+	afterCardCommandOut := captureStdout(t, func() {
+		cmdSource([]string{"intake", "--json"})
+	})
+	var afterCardCommand observation.SourceIntakeProjection
+	if err := json.Unmarshal([]byte(afterCardCommandOut), &afterCardCommand); err != nil {
+		t.Fatalf("parse source intake after card command: %v\n%s", err, afterCardCommandOut)
+	}
+	reviewedRow := findCLISourceIntakeRowByObservationStatus(afterCardCommand.Rows, card.ObservationID, "review_recorded")
+	if reviewedRow == nil || reviewedRow.Owner != "internal/observation" || !stringSliceContainsPrefix(reviewedRow.AppliedIDs, "review:") {
+		t.Fatalf("source-intake projection did not expose review-recorded result after card command: %+v", afterCardCommand.Rows)
+	}
+	oldRow := findCLISourceIntakeRowByID(afterCardCommand.Rows, card.RowID)
+	if oldRow == nil || oldRow.Status != "skipped" || !oldRow.ActionRequired {
+		t.Fatalf("source-intake projection should keep original skipped row explicit: %+v", oldRow)
+	}
+
+	actOut := captureStdout(t, func() {
+		cmdWork([]string{"act", report.WorkPlan.WorkID, "--plan", actionPlan.PlanPath})
+	})
+	if !strings.Contains(actOut, "action "+actionPlan.ActionIntent.ID+" recorded") {
+		t.Fatalf("act --plan did not record planned action:\n%s", actOut)
+	}
+	afterAct, err := workStore.Get(report.WorkPlan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterAct.State != "running" ||
+		!stringSliceContains(afterAct.RunIDs, actionPlan.ActionIntent.ID) ||
+		afterAct.PolicyDecisionID != actionPlan.Decision.ID {
+		t.Fatalf("act --plan did not thread source-intake action intent/decision: %+v", afterAct)
+	}
+	closePlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", report.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex", "--json"})
+	})
+	var closePlan work.ClosePlan
+	if err := json.Unmarshal([]byte(closePlanJSON), &closePlan); err != nil {
+		t.Fatalf("parse close-plan: %v\n%s", err, closePlanJSON)
+	}
+	if closePlan.Status != "close_policy_allowed" ||
+		closePlan.ActionExecutionPlanID != actionPlan.ID ||
+		closePlan.ReceiptDraft.ID != actionPlan.ReceiptDraft.ID ||
+		!stringSliceContains(closePlan.ProofRefs, report.WorkPlan.ActionContext.SourceRef) ||
+		!stringSliceContains(closePlan.ExpectedValidation, card.ExpectedValidation[0]) {
+		t.Fatalf("close-plan JSON missing source-intake receipt/proof context: %+v", closePlan)
+	}
+}
+
+func TestSourceObserveBatchCLIAppliesContentToKnowledge(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/content-knowledge-export.json", "--apply-knowledge", "--json"})
+	})
+	var report observation.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse knowledge apply report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.DryRun || !report.AppliedKnowledge || report.AppliedProductSignals || report.AppliedSourceObservations {
+		t.Fatalf("knowledge apply report = %+v", report)
+	}
+	if len(report.KnowledgeApplyResults) != 1 {
+		t.Fatalf("knowledge apply results = %+v", report.KnowledgeApplyResults)
+	}
+	result := report.KnowledgeApplyResults[0]
+	if result.ObservationID != "obs_fixture_content_knowledge" || len(result.EvidenceIDs) != 1 || len(result.CandidateIDs) == 0 || len(result.ExtractionIDs) != 1 || result.Owner != "internal/knowledge" {
+		t.Fatalf("knowledge result = %+v", result)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := store.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].SourceKind != "web_capture" || !strings.Contains(evidence[0].QuoteText, "citable evidence") {
+		t.Fatalf("knowledge evidence = %+v", evidence)
+	}
+	var extraction knowledge.ExtractionRequest
+	extractionPath := filepath.Join(homePath, "inbox", "knowledge-extractions", result.ExtractionIDs[0]+".json")
+	if err := json.Unmarshal([]byte(readFile(t, extractionPath)), &extraction); err != nil {
+		t.Fatalf("parse extraction %s: %v", extractionPath, err)
+	}
+	if extraction.State != knowledge.ExtractionStatePending || extraction.EvidenceRef != result.EvidenceIDs[0] || extraction.SourceKind != "web_capture" {
+		t.Fatalf("knowledge extraction = %+v", extraction)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("knowledge apply must not create product signals ledger: %v", err)
+	}
+}
+
+func TestSourceObserveBatchCLIAppliesRouteEvidence(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/route-evidence.json", "--apply-route-evidence", "--json"})
+	})
+	var report observation.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse observe-batch report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.DryRun || !report.AppliedRouteEvidence || report.AppliedProductSignals || report.AppliedKnowledge {
+		t.Fatalf("route evidence apply report = %+v", report)
+	}
+	if len(report.RouteEvidenceApplyResults) != 1 {
+		t.Fatalf("route evidence apply results = %+v", report.RouteEvidenceApplyResults)
+	}
+	result := report.RouteEvidenceApplyResults[0]
+	if result.ObservationID != "obs_fixture_route_evidence" || result.RouteEvidenceID == "" || result.TransitionID == "" || result.Owner != "internal/routeevidence" {
+		t.Fatalf("route evidence result = %+v", result)
+	}
+	ev, ok, err := routeevidence.LookupRequestID(homePath, "req_fixture_observation_route")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || ev.ID != result.RouteEvidenceID || ev.TransitionID != result.TransitionID {
+		t.Fatalf("route evidence lookup = %+v ok=%t result=%+v", ev, ok, result)
+	}
+	if ev.SelectedTarget.Provider != "fixture-provider" || ev.SelectedTarget.Model != "fixture-model" || ev.CostMicros != 2400 || ev.Usage.TotalTokens != 150 {
+		t.Fatalf("route evidence = %+v", ev)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", result.TransitionID+".json")); err != nil {
+		t.Fatalf("route transition missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("route evidence apply must not create product signals ledger: %v", err)
+	}
+}
+
+func TestSourceObserveBatchCLIAppliesEventsToTraceEnvelope(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/event-trace-envelope.json", "--apply-events", "--json"})
+	})
+	var report observation.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse observe-batch report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.DryRun || !report.AppliedEvents || report.AppliedRouteEvidence || report.AppliedProductSignals || report.AppliedKnowledge || report.AppliedSourceObservations {
+		t.Fatalf("event apply report = %+v", report)
+	}
+	if len(report.EventApplyResults) != 1 {
+		t.Fatalf("event apply results = %+v", report.EventApplyResults)
+	}
+	result := report.EventApplyResults[0]
+	if len(result.ObservationIDs) != 1 || result.ObservationIDs[0] != "obs_fixture_event_trace" || len(result.TraceIDs) != 1 || result.SourceAuthorityID == "" || result.Owner != "internal/eventsource" {
+		t.Fatalf("event result = %+v", result)
+	}
+	authority, err := eventsource.LoadAuthority(homePath, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authority.Status != "ok" || authority.TraceCount != 1 || len(authority.SourceAuthority) != 1 || authority.SourceAuthority[0].ID != result.SourceAuthorityID {
+		t.Fatalf("event authority = %+v result=%+v", authority, result)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", result.TraceIDs[0]+".json")); err != nil {
+		t.Fatalf("trace envelope missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("event apply must not create product signals ledger: %v", err)
+	}
+}
+
+func TestSourceObserveBatchCLIRecordsCandidateReviewMaterial(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	captureStdout(t, func() {
+		cmdRoute([]string{"import-model-capabilities", filepath.Join("..", "..", "fixtures", "panel", "model-capabilities.yaml")})
+	})
+	captureStdout(t, func() {
+		cmdPanel([]string{"import-lenses", filepath.Join("..", "..", "fixtures", "panel", "lens-manifest.yaml")})
+	})
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/social-distribution-feedback.json", "--review-candidates", "--json"})
+	})
+	var report observation.Report
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse review-candidates report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.DryRun || !report.ReviewCandidates || len(report.CandidateReviewResults) != 1 {
+		t.Fatalf("review-candidates report = %+v", report)
+	}
+	result := report.CandidateReviewResults[0]
+	if result.CandidateID == "" || result.ReviewPath == "" || result.ReviewYAMLPath == "" {
+		t.Fatalf("candidate review result missing paths: %+v", result)
+	}
+
+	var candidate struct {
+		ID           string   `json:"id"`
+		Kind         string   `json:"kind"`
+		Subject      string   `json:"subject"`
+		State        string   `json:"state"`
+		EvidenceRefs []string `json:"evidence_refs"`
+	}
+	if err := candidates.ReadCandidate(homePath, candidates.CapabilityObs, result.CandidateID, &candidate); err != nil {
+		t.Fatalf("read observation candidate: %v", err)
+	}
+	if candidate.Kind != string(candidates.CapabilityObs) || candidate.State != "needs_review" || !strings.Contains(candidate.Subject, "product:") {
+		t.Fatalf("candidate = %+v", candidate)
+	}
+	if !stringSliceContains(candidate.EvidenceRefs, "observation:"+result.ObservationID) {
+		t.Fatalf("candidate evidence refs = %+v, want observation ref", candidate.EvidenceRefs)
+	}
+
+	reviewsOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", observation.ObservationReviewArea, "--json"})
+	})
+	var queue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(reviewsOut), &queue); err != nil {
+		t.Fatalf("parse observation review queue: %v\n%s", err, reviewsOut)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 || len(queue.Items) != 1 {
+		t.Fatalf("observation review queue should expose actionable decision card: %+v", queue)
+	}
+	card := queue.Items[0].DecisionCard
+	if card == nil || card.Meta["target_kind"] != "capability_observation" || card.Meta["candidate_id"] != result.CandidateID {
+		t.Fatalf("decision card = %+v", card)
+	}
+	if len(queue.Items[0].Actions) != 1 || !strings.Contains(queue.Items[0].Actions[0].Command, "compound panel plan --target-kind capability_observation") {
+		t.Fatalf("queue actions = %+v", queue.Items[0].Actions)
+	}
+
+	lensesOut := captureStdout(t, func() {
+		cmdPanel([]string{"lenses", "--target-kind", "capability_observation", "--domain", "social-distribution", "--task", "distribution feedback", "--json"})
+	})
+	var selection panel.LensSelection
+	if err := json.Unmarshal([]byte(lensesOut), &selection); err != nil {
+		t.Fatalf("parse lens selection: %v\n%s", err, lensesOut)
+	}
+	if !panelSelectionIncludes(selection, "lens:social-distribution-mechanics") {
+		t.Fatalf("social observation did not select social distribution lens: %+v", selection)
+	}
+
+	planOut := captureStdout(t, func() {
+		cmdPanel([]string{"plan", "--target-kind", "capability_observation", "--target", result.CandidateID, "--domain", "social-distribution", "--task", "distribution feedback", "--not-privacy-sensitive", "synthetic observation fixture", "--max-items", "1", "--json"})
+	})
+	var planned panel.Run
+	if err := json.Unmarshal([]byte(planOut), &planned); err != nil {
+		t.Fatalf("parse observation panel plan: %v\n%s", err, planOut)
+	}
+	if planned.Status != "planned" || len(planned.Targets) != 1 || planned.Targets[0].Ref != result.CandidateID {
+		t.Fatalf("observation panel plan = %+v", planned)
+	}
+	if !panelRunIncludesLens(planned, "lens:social-distribution-mechanics") {
+		t.Fatalf("observation panel plan missing social-distribution lens: %+v", planned.LensSet)
+	}
+
+	fixtureDir := writeObservationPanelFixtureResponses(t, planned, result.CandidateID)
+	runOut := captureStdout(t, func() {
+		cmdPanel([]string{"run", "--plan", planned.ID, "--fixtures", fixtureDir, "--json"})
+	})
+	var completed panel.Run
+	if err := json.Unmarshal([]byte(runOut), &completed); err != nil {
+		t.Fatalf("parse observation panel run: %v\n%s", err, runOut)
+	}
+	if completed.Status != "verdicts_recorded" || len(completed.Findings) != 1 {
+		t.Fatalf("observation panel run = %+v", completed)
+	}
+	finding := completed.Findings[0]
+	if finding.TargetRef != result.CandidateID || finding.Synthesis.Decision != "park" || finding.VerdictArtifact == "" {
+		t.Fatalf("observation panel finding = %+v", finding)
+	}
+	verdictRaw, err := os.ReadFile(finding.VerdictArtifact)
+	if err != nil {
+		t.Fatalf("read observation panel verdict artifact: %v", err)
+	}
+	if !strings.Contains(string(verdictRaw), "compound.panel_verdict.v0.1") || !strings.Contains(string(verdictRaw), result.CandidateID) {
+		t.Fatalf("observation panel verdict artifact did not bind target/schema:\n%s", verdictRaw)
+	}
+	var verdictArtifact struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(verdictRaw, &verdictArtifact); err != nil {
+		t.Fatalf("parse observation panel verdict artifact: %v", err)
+	}
+
+	verdictQueueOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", "panel-verdicts", "--json"})
+	})
+	var verdictQueue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(verdictQueueOut), &verdictQueue); err != nil {
+		t.Fatalf("parse panel verdict queue: %v\n%s", err, verdictQueueOut)
+	}
+	if verdictQueue.Counts.ReviewRequired != 1 || verdictQueue.Counts.DecisionCardCount != 1 || len(verdictQueue.Items) != 1 {
+		t.Fatalf("panel verdict queue should expose reviewable observation verdict: %+v", verdictQueue)
+	}
+	if verdictQueue.Items[0].DecisionCard == nil || !strings.Contains(verdictQueue.Items[0].NextAction, "owner review required") {
+		t.Fatalf("panel verdict queue item should be reviewable: %+v", verdictQueue.Items[0])
+	}
+	productTargetPath := filepath.Join(t.TempDir(), "product-loop.md")
+	if err := os.WriteFile(productTargetPath, []byte("# Product loop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	productPlanOut := captureStdout(t, func() {
+		cmdProduct([]string{"observation-verdict-plan", "--verdict", finding.VerdictArtifact, "--target", productTargetPath})
+	})
+	if !strings.Contains(productPlanOut, "# product observation-verdict-plan") ||
+		!strings.Contains(productPlanOut, "- product: product:focus-notes") ||
+		!strings.Contains(productPlanOut, "- verdict: "+verdictArtifact.ID) ||
+		!strings.Contains(productPlanOut, "- review_yaml:") {
+		t.Fatalf("product observation-verdict-plan output missing proof lines:\n%s", productPlanOut)
+	}
+	productReviewYAML := outputValue(productPlanOut, "- review_yaml:")
+	if productReviewYAML == "" {
+		t.Fatalf("product observation-verdict-plan did not print review YAML:\n%s", productPlanOut)
+	}
+	productQueue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: product.ObservationVerdictReviewArea}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	product.AnnotateReviewQueue(&productQueue)
+	reviewartifact.Recount(&productQueue)
+	if productQueue.Counts.ReviewRequired != 1 || productQueue.Counts.DecisionCardCount != 1 || productQueue.Counts.ActionableCount != 1 {
+		t.Fatalf("product observation verdict queue should expose decision card: %+v", productQueue.Counts)
+	}
+	if productQueue.Items[0].DecisionCard == nil || productQueue.Items[0].Actions[0].ID != "record_product_observation_verdict_review" {
+		t.Fatalf("product observation verdict queue item should be actionable: %+v", productQueue.Items[0])
+	}
+	reviewYAML := readFile(t, productReviewYAML)
+	reviewYAML = strings.ReplaceAll(reviewYAML, "decision: TODO_decision_create_hypothesis_candidate_park_reject", "decision: create_hypothesis_candidate")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: TODO_rationale", "rationale: reviewed observation feedback is product evidence, not ProductSignal")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: TODO_confidence_0_to_1", "confidence: 0.74")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "expected_effect: TODO_expected_effect", "expected_effect: export-support feedback should improve distribution reply quality")
+	if err := os.WriteFile(productReviewYAML, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	productReviewOut := captureStdout(t, func() {
+		cmdProduct([]string{"observation-verdict-review", productReviewYAML})
+	})
+	if !strings.Contains(productReviewOut, "# product observation-verdict-review") ||
+		!strings.Contains(productReviewOut, "- decision: create_hypothesis_candidate") ||
+		!strings.Contains(productReviewOut, "- hypothesis:") ||
+		!strings.Contains(productReviewOut, "- transition:") {
+		t.Fatalf("product observation-verdict-review output missing proof lines:\n%s", productReviewOut)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("product observation verdict review must not mutate ProductSignal ledger: %v", err)
+	}
+}
+
+func TestSourceObservationVerdictCLIRecordsNoPromoteEvidence(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	obs := sourceobs.SourceObservation{
+		SchemaVersion: sourceobs.SchemaVersion,
+		ID:            "srcobs_cli_generated_view",
+		AdapterID:     "fixture.generated-view",
+		SourceSystem:  "fixture-system",
+		ObservedAt:    cliTestNow.Format(time.RFC3339),
+		SourceRef: sourceobs.SourceRef{
+			Path:        "fixtures/generated/system-view.json",
+			Kind:        "generated_view",
+			Owner:       "fixture-system",
+			SourceClass: "generated",
+			Revision:    "sha256:cli-source-view",
+		},
+		GeneratedView: sourceobs.GeneratedView{
+			ViewKind:  "system_view",
+			Consumer:  "compound source observation verdict test",
+			Generator: "fixture",
+			Marker:    "generated",
+			Freshness: "fresh",
+		},
+		MapsTo: []sourceobs.MapTarget{{
+			ObjectFamily:   "capability",
+			CandidateKind:  string(candidates.CapabilityObs),
+			EntityHint:     "system-view",
+			PromoteAllowed: false,
+		}},
+		EvidenceRefs: []string{"fixture:cli-source-observation"},
+	}
+	sourceReport, err := sourceobs.Apply(homePath, obs, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sourceReport.CandidateIDs) != 1 {
+		t.Fatalf("source observation candidate ids = %+v", sourceReport.CandidateIDs)
+	}
+	var candidate sourceobs.CandidateRecord
+	if err := candidates.ReadCandidate(homePath, candidates.CapabilityObs, sourceReport.CandidateIDs[0], &candidate); err != nil {
+		t.Fatal(err)
+	}
+	verdictPath := writeCLISourceObservationVerdictFixture(t, homePath, "panel_verdict_cli_source", candidate)
+	planOut := captureStdout(t, func() {
+		cmdSource([]string{"observation-verdict-plan", "--verdict", verdictPath})
+	})
+	if !strings.Contains(planOut, "# source observation-verdict-plan") || !strings.Contains(planOut, "- owner_status: sourceobs") || !strings.Contains(planOut, "- candidate: "+candidate.ID) {
+		t.Fatalf("source observation-verdict-plan output missing proof lines:\n%s", planOut)
+	}
+	reviewYAMLPath := outputValue(planOut, "- review_yaml:")
+	if reviewYAMLPath == "" {
+		t.Fatalf("source observation-verdict-plan did not print review YAML:\n%s", planOut)
+	}
+	queueOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", sourceobs.SourceObservationVerdictReviewArea, "--json"})
+	})
+	var queue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(queueOut), &queue); err != nil {
+		t.Fatalf("parse source observation verdict queue: %v\n%s", err, queueOut)
+	}
+	if sourceobs.SourceObservationVerdictReviewArea != "source-observation-verdicts" || queue.Area != sourceobs.SourceObservationVerdictReviewArea {
+		t.Fatalf("source observation verdict review area mismatch: area=%q queue=%q", sourceobs.SourceObservationVerdictReviewArea, queue.Area)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 {
+		t.Fatalf("source observation verdict queue should expose decision card: %+v", queue.Counts)
+	}
+	if queue.Items[0].DecisionCard == nil || queue.Items[0].Actions[0].ID != "record_source_observation_verdict_review" {
+		t.Fatalf("source observation verdict queue item should be actionable: %+v", queue.Items[0])
+	}
+	reviewYAML := readFile(t, reviewYAMLPath)
+	reviewYAML = strings.ReplaceAll(reviewYAML, "decision: TODO_decision_record_no_promote_park_reject", "decision: record_no_promote")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: TODO_rationale", "rationale: reviewed generated source verdict remains no-promote evidence")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: TODO_confidence_0_to_1", "confidence: 0.81")
+	if err := os.WriteFile(reviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdSource([]string{"observation-verdict-review", reviewYAMLPath})
+	})
+	if !strings.Contains(reviewOut, "# source observation-verdict-review") || !strings.Contains(reviewOut, "- decision: record_no_promote") || !strings.Contains(reviewOut, "- no_promote:") {
+		t.Fatalf("source observation-verdict-review output missing proof lines:\n%s", reviewOut)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source observation verdict review must not promote claims: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("source observation verdict review must not mutate product signals: %v", err)
+	}
+}
+
+func writeObservationPanelFixtureResponses(t *testing.T, run panel.Run, targetRef string) string {
+	t.Helper()
+	fixtureDir := t.TempDir()
+	digest := panelFixtureDigest(targetRef)
+	judgeDir := filepath.Join(fixtureDir, "judge-responses")
+	if err := os.MkdirAll(judgeDir, 0o755); err != nil {
+		t.Fatalf("create judge fixture dir: %v", err)
+	}
+	judge := `{"decision":"park","confidence":0.74,"rationale":"Observation feedback is useful review material but should stay parked evidence until a product or source owner consumes it.","dissent":[]}`
+	if err := os.WriteFile(filepath.Join(judgeDir, digest+".json"), []byte(judge), 0o644); err != nil {
+		t.Fatalf("write judge fixture: %v", err)
+	}
+	for _, lens := range run.LensSet.Included {
+		dir := filepath.Join(fixtureDir, "lens-responses", lens.Ref)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create lens fixture dir %s: %v", lens.Ref, err)
+		}
+		body := `{"confidence":0.81,"findings":[{"claim":"Candidate has bounded observation evidence and should feed review material without truth promotion.","severity":"low","evidence_refs":["observation_batch:fixture"]}]}`
+		if err := os.WriteFile(filepath.Join(dir, digest+".json"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write lens fixture %s: %v", lens.Ref, err)
+		}
+	}
+	return fixtureDir
+}
+
+func writeCLISourceObservationVerdictFixture(t *testing.T, homePath, verdictID string, candidate sourceobs.CandidateRecord) string {
+	t.Helper()
+	dir := filepath.Join(homePath, "reviews", "panel-verdicts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{
+		"schema_version": "compound.panel_verdict.v0.1",
+		"id":             verdictID,
+		"created_at":     cliTestNow.Format(time.RFC3339),
+		"run_id":         "run_cli_source_observation",
+		"target": map[string]any{
+			"kind":       string(candidates.CapabilityObs),
+			"ref":        candidate.ID,
+			"visibility": "internal",
+			"summary":    candidate.Statement,
+			"payload":    json.RawMessage(raw),
+		},
+		"lens_findings": []any{},
+		"synthesis": map[string]any{
+			"schema_version":     "compound.panel_synthesis.v0.1",
+			"decision":           "park",
+			"confidence":         0.73,
+			"rationale":          "Synthetic panel verdict keeps generated source observation as evidence.",
+			"dissent":            []any{},
+			"guardrails_applied": []string{"evidence_not_truth"},
+		},
+		"evidence_refs": []string{"route_evidence:cli-source-observation-verdict"},
+	}
+	data, err := json.MarshalIndent(body, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, verdictID+".json")
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func panelFixtureDigest(ref string) string {
+	sum := sha256.Sum256([]byte(ref))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func panelRunIncludesLens(run panel.Run, ref string) bool {
+	for _, included := range run.LensSet.Included {
+		if included.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceObserveBatchSignalCount(model product.LoopModel, metric string) int {
+	if len(model.Products) == 0 {
+		return 0
+	}
+	return len(model.Products[0].SignalsByMetric[metric])
+}
+
+func findCLISourceIntakeRow(rows []observation.SourceIntakeRow, route string) *observation.SourceIntakeRow {
+	for i := range rows {
+		if rows[i].Route == route {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func findCLISourceIntakeRowByID(rows []observation.SourceIntakeRow, id string) *observation.SourceIntakeRow {
+	for i := range rows {
+		if rows[i].ID == id {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func findCLISourceIntakeRowByObservationStatus(rows []observation.SourceIntakeRow, observationID, status string) *observation.SourceIntakeRow {
+	for i := range rows {
+		if rows[i].ObservationID == observationID && rows[i].Status == status {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func findCLISourceIntakeActionCard(cards []observation.SourceIntakeActionCard, kind string) *observation.SourceIntakeActionCard {
+	for i := range cards {
+		if cards[i].Kind == kind {
+			return &cards[i]
+		}
+	}
+	return nil
+}
+
+func stringSliceContainsPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func writeCLIJSONFixture(t *testing.T, path string, value any) {
+	t.Helper()
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -414,11 +1713,72 @@ func TestHomeOperationalHistoryArchiveCommandsHideAndRestoreHotHistory(t *testin
 		"operational_hygiene: DIRTY",
 		"hygiene:no-terminal-work-hot: DIRTY",
 		"hygiene:no-stale-leases: DIRTY",
+		"hygiene_action: archive-terminal-work",
+		"hygiene_action: archive-stale-leases",
+		"dry_run: compound home archive-history --kind work --dry-run",
+		"dry_run: compound home archive-history --kind lease --dry-run",
 		"verdict: ok",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("dirty home doctor missing %q:\n%s", want, out)
 		}
+	}
+
+	out = captureStdout(t, func() { cmdHome([]string{"archive-history", "--help"}) })
+	if !strings.Contains(out, "usage: compound home archive-history") || strings.Contains(out, "archived:") {
+		t.Fatalf("archive-history --help should print usage only:\n%s", out)
+	}
+	activeArchive, err := home.LoadOperationalArchiveIndex(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activeArchive) != 0 {
+		t.Fatalf("archive-history --help mutated archive index: %+v", activeArchive)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "work", "work", done.ID+".json")); err != nil {
+		t.Fatalf("archive-history --help moved terminal work: %v", err)
+	}
+
+	doctorJSON := captureStdout(t, func() { cmdHome([]string{"doctor", "--json"}) })
+	var doctor struct {
+		SchemaVersion      string `json:"schema_version"`
+		OperationalHygiene struct {
+			OK                   bool     `json:"ok"`
+			TerminalHotWorkCount int      `json:"terminal_hot_work_count"`
+			StaleLeaseCount      int      `json:"stale_lease_count"`
+			TerminalHotWork      []string `json:"terminal_hot_work"`
+			StaleLeases          []string `json:"stale_leases"`
+		} `json:"operational_hygiene"`
+		OperationalHygieneActions []struct {
+			ID                 string   `json:"id"`
+			Command            []string `json:"command"`
+			DryRunCommand      []string `json:"dry_run_command"`
+			ExpectedValidation []string `json:"expected_validation"`
+			StopConditions     []string `json:"stop_conditions"`
+			Boundary           string   `json:"boundary"`
+			Proof              string   `json:"proof"`
+		} `json:"operational_hygiene_actions"`
+	}
+	if err := json.Unmarshal([]byte(doctorJSON), &doctor); err != nil {
+		t.Fatalf("home doctor --json should parse: %v\n%s", err, doctorJSON)
+	}
+	if doctor.SchemaVersion != "compound.home_doctor_report.v0.1" ||
+		doctor.OperationalHygiene.OK ||
+		doctor.OperationalHygiene.TerminalHotWorkCount != 1 ||
+		doctor.OperationalHygiene.StaleLeaseCount != 1 ||
+		len(doctor.OperationalHygieneActions) != 2 {
+		t.Fatalf("home doctor --json missing hygiene debt/action cards: %+v", doctor)
+	}
+	actionByID := map[string][]string{}
+	for _, action := range doctor.OperationalHygieneActions {
+		actionByID[action.ID] = action.Command
+		if len(action.DryRunCommand) == 0 || len(action.ExpectedValidation) == 0 || len(action.StopConditions) == 0 || action.Boundary == "" || action.Proof == "" {
+			t.Fatalf("home doctor action missing gates: %+v", action)
+		}
+	}
+	if !sameStringSlice(actionByID["archive-terminal-work"], []string{"compound", "home", "archive-history", "--kind", "work"}) ||
+		!sameStringSlice(actionByID["archive-stale-leases"], []string{"compound", "home", "archive-history", "--kind", "lease"}) {
+		t.Fatalf("home doctor --json actions route wrong commands: %+v", actionByID)
 	}
 
 	out = captureStdout(t, func() {
@@ -702,6 +2062,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		RetiredSourceAuthorityCount int                                      `json:"retired_source_authority_count"`
 		RetiredSourceAuthorityRefs  []string                                 `json:"retired_source_authority_refs"`
 		SourceAuthority             []contract.InstalledHooksSourceAuthority `json:"source_authority"`
+		PreToolUseReadiness         []contract.HookGateReadiness             `json:"pre_tool_use_readiness"`
 		HookReadiness               []contract.InstalledHookRuntimeReadiness `json:"hook_readiness"`
 	}
 	if err := json.Unmarshal([]byte(authorityOut), &authorityReport); err != nil {
@@ -722,8 +2083,21 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		t.Fatalf("claude pre-tool-use readiness not ready: %+v", got)
 	}
 	if got := findHookReadiness(authorityReport.HookReadiness, "codex", "SessionStart"); got == nil ||
-		got.Status != "missing_live_adapter" || !got.FixturePresent || got.LiveAdapter {
-		t.Fatalf("codex live readiness should expose missing adapter: %+v", got)
+		got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter || len(got.Actions) != 0 {
+		t.Fatalf("codex session-start readiness not ready: %+v", got)
+	}
+	if got := findHookReadiness(authorityReport.HookReadiness, "codex", "UserPromptSubmit"); got == nil ||
+		got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter || len(got.Actions) != 0 {
+		t.Fatalf("codex user-prompt-submit readiness not ready: %+v", got)
+	}
+	if got := findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex"); got == nil ||
+		got.Status != "missing_gate" || len(got.Actions) != 3 ||
+		findHookAction(got.Actions, "prove_fixture_gate") == nil ||
+		findHookAction(got.Actions, "prove_fixture_gate").ExpectedExitCode != 3 ||
+		findHookAction(got.Actions, "prove_live_wrapper_gate") == nil ||
+		!strings.Contains(findHookAction(got.Actions, "prove_live_wrapper_gate").Command, "compound hook pre-tool-use --live --harness codex") ||
+		findHookAction(got.Actions, "operator_wrapper_required") == nil {
+		t.Fatalf("codex pre-tool-use gate should expose bounded action cards: %+v", got)
 	}
 	out := captureStdout(t, func() {
 		cmdContract([]string{"compile", "--harness", "claude_code", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
@@ -1054,6 +2428,376 @@ func TestWorkbenchCommandCanAttachCapabilitySurface(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("workbench capability surface must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestCapabilitySurfaceReportCarriesExternalRepoEvidenceWithoutOfferingIt(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(capgraph.Node{
+		ID:       "lens:social-distribution-mechanics",
+		Kind:     "lens",
+		Name:     "Social Distribution Mechanics",
+		Triggers: []string{"social", "distribution"},
+		Weight:   1.1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(capgraph.Node{
+		ID:       "procedure:external-repo-gitroomhq-postiz-app-workflow",
+		Kind:     "procedure",
+		Name:     "External Repo Gitroomhq Postiz App Workflow",
+		Triggers: []string{"external", "repo", "gitroomhq", "postiz", "app", "workflow", "evaluate", "further"},
+		Weight:   1,
+		Retired:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeExternalRepoIntakeContextFixture(t, homePath)
+
+	report, err := buildCapabilitySurfaceReport(store, homePath, "evaluate social media distribution outbound posting adapter with Postiz for product feedback loops", "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !surfaceReportHasOffer(report, "lens:social-distribution-mechanics") {
+		t.Fatalf("expected social distribution lens offer: %+v", report.Offers)
+	}
+	if surfaceReportHasOffer(report, "procedure:external-repo-gitroomhq-postiz-app-workflow") {
+		t.Fatalf("needs-review external repo evidence must not become an offer: %+v", report.Offers)
+	}
+	if len(report.MatchedEvidence) != 1 {
+		t.Fatalf("expected one matched external repo evidence row, got %+v", report.MatchedEvidence)
+	}
+	evidence := report.MatchedEvidence[0]
+	if evidence.Kind != "external_repo_review_evidence" ||
+		!strings.Contains(evidence.Ref, "gitroomhq/postiz-app") ||
+		!strings.Contains(evidence.Detail, "product outbound distribute pipe") ||
+		!strings.Contains(evidence.Detail, "not adoption") {
+		t.Fatalf("matched evidence should preserve owner and boundary: %+v", evidence)
+	}
+}
+
+func TestCapabilityOutboundDistributionPlanJSON(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	writeExternalRepoIntakeContextFixture(t, homePath)
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{"outbound-distribution-plan", "--task", "evaluate social media distribution outbound posting adapter with Postiz for product feedback loops", "--json"})
+	})
+	var report capgraph.OutboundDistributionPlan
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse report: %v\n%s", err, out)
+	}
+	if report.Status != "review_ready" || len(report.Candidates) != 1 {
+		t.Fatalf("outbound distribution plan should expose one candidate: %+v", report)
+	}
+	candidate := report.Candidates[0]
+	boundary := strings.ToLower(candidate.Boundary)
+	if candidate.Repo != "gitroomhq/postiz-app" ||
+		candidate.Role != "posting_adapter_candidate" ||
+		!strings.Contains(boundary, "auth social") ||
+		!strings.Contains(boundary, "auto-post") {
+		t.Fatalf("candidate should preserve Postiz adapter boundary: %+v", candidate)
+	}
+	if !outboundPlanHasGate(report.RequiredGates, "tier3_public_distribution_policy") ||
+		!outboundPlanHasGate(report.RequiredGates, "product_loop_target") ||
+		report.AdoptionLevel != "evidence_only" {
+		t.Fatalf("plan should stay evidence-only with Tier-3/product-loop gates: %+v", report)
+	}
+}
+
+func TestCapabilityOutboundDistributionVerdictPlanAndReviewCLI(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	writeExternalRepoIntakeContextFixture(t, homePath)
+	targetPath := filepath.Join(t.TempDir(), "product-loop.md")
+	original := "# Product Loop\n\nExisting notes.\n"
+	if err := os.WriteFile(targetPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdCapability([]string{
+			"outbound-distribution-verdict-plan",
+			"--task", "evaluate social media distribution outbound posting adapter with Postiz for product feedback loops",
+			"--product", "product:focus-notes",
+			"--change-event", "prepare outbound distribution dry-run for screenshot change",
+			"--hypothesis", "rented posting edge can produce reviewable drafts without public posting",
+			"--observation-window", "14d",
+			"--dry-run-receipt", "receipt:outbound-dry-run-cli",
+			"--target", targetPath,
+			"--json",
+		})
+	})
+	var created struct {
+		SchemaVersion  string                                   `json:"schema_version"`
+		Status         string                                   `json:"status"`
+		Plan           capgraph.OutboundDistributionVerdictPlan `json:"plan"`
+		PlanPath       string                                   `json:"plan_path"`
+		ReviewPath     string                                   `json:"review_path"`
+		ReviewYAMLPath string                                   `json:"review_yaml_path"`
+	}
+	if err := json.Unmarshal([]byte(out), &created); err != nil {
+		t.Fatalf("parse verdict plan report: %v\n%s", err, out)
+	}
+	if created.Status != "review_required" ||
+		created.Plan.ProductID != "product:focus-notes" ||
+		created.Plan.AdoptionLevel != "verdict_only" ||
+		len(created.Plan.Candidates) != 1 ||
+		created.PlanPath == "" ||
+		created.ReviewYAMLPath == "" {
+		t.Fatalf("bad verdict plan CLI report: %+v", created)
+	}
+	for _, path := range []string{created.PlanPath, created.ReviewPath, created.ReviewYAMLPath} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("missing CLI artifact %s: %v", path, err)
+		}
+	}
+	reviewsOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", capgraph.OutboundDistributionVerdictReviewArea, "--json"})
+	})
+	var reviews reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(reviewsOut), &reviews); err != nil {
+		t.Fatalf("parse reviews: %v\n%s", err, reviewsOut)
+	}
+	if reviews.Counts.ReviewRequired != 1 ||
+		reviews.Counts.DecisionCardCount != 1 ||
+		reviews.Counts.ActionableCount != 1 ||
+		reviews.Counts.ReviewRequiredMissingDecisionCard != 0 ||
+		reviews.Counts.ReviewRequiredMissingAction != 0 {
+		t.Fatalf("outbound verdict review should be actionable: %+v", reviews.Counts)
+	}
+
+	draft, err := os.ReadFile(created.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewYAML := strings.ReplaceAll(string(draft), "TODO_decision_adopt_for_dry_run_park_reject", "park")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_rationale", "park until product-specific distribution target is selected")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_confidence_0_to_1", "0.63")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_dry_run_receipt_ref", "receipt:outbound-dry-run-cli")
+	if err := os.WriteFile(created.ReviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdCapability([]string{"outbound-distribution-verdict-review", created.ReviewYAMLPath})
+	})
+	if !strings.Contains(reviewOut, "# capability outbound-distribution-verdict-review") ||
+		!strings.Contains(reviewOut, "- status: recorded") ||
+		!strings.Contains(reviewOut, "- decision: park") {
+		t.Fatalf("review command output missing proof:\n%s", reviewOut)
+	}
+	reviewsOut = captureStdout(t, func() {
+		cmdReviews([]string{"--area", capgraph.OutboundDistributionVerdictReviewArea, "--json"})
+	})
+	if err := json.Unmarshal([]byte(reviewsOut), &reviews); err != nil {
+		t.Fatalf("parse terminal reviews: %v\n%s", err, reviewsOut)
+	}
+	if reviews.Counts.ReviewRequired != 0 || reviews.Counts.OK != 1 || reviews.Items[0].Readiness != "no_action" {
+		t.Fatalf("recorded verdict should terminalize review item: counts=%+v item=%+v", reviews.Counts, reviews.Items[0])
+	}
+	if got, err := os.ReadFile(targetPath); err != nil || string(got) != original {
+		t.Fatalf("target mutated err=%v:\n%s", err, got)
+	}
+}
+
+func TestCapabilityOutboundDistributionDryRunReceiptCLI(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	writeExternalRepoIntakeContextFixture(t, homePath)
+	targetPath := filepath.Join(t.TempDir(), "product-loop.md")
+	if err := os.WriteFile(targetPath, []byte("# Product Loop\n\nExisting notes.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planOut := captureStdout(t, func() {
+		cmdCapability([]string{
+			"outbound-distribution-verdict-plan",
+			"--task", "evaluate social media distribution outbound posting adapter with Postiz product feedback loops",
+			"--product", "product:focus-notes",
+			"--change-event", "prepare outbound distribution dry-run screenshot change",
+			"--hypothesis", "rented posting edge can produce reviewable drafts without public posting",
+			"--observation-window", "14d",
+			"--dry-run-receipt", "receipt:outbound-dry-run-cli",
+			"--target", targetPath,
+			"--json",
+		})
+	})
+	var created struct {
+		ReviewYAMLPath string `json:"review_yaml_path"`
+	}
+	if err := json.Unmarshal([]byte(planOut), &created); err != nil {
+		t.Fatalf("parse verdict plan: %v\n%s", err, planOut)
+	}
+	draft, err := os.ReadFile(created.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewYAML := strings.ReplaceAll(string(draft), "TODO_decision_adopt_for_dry_run_park_reject", "adopt_for_dry_run")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_rationale", "allow synthetic dry-run receipt validation only")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_confidence_0_to_1", "0.71")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_dry_run_receipt_ref", "receipt:outbound-dry-run-cli")
+	if err := os.WriteFile(created.ReviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	verdictOut := captureStdout(t, func() {
+		cmdCapability([]string{"outbound-distribution-verdict-review", created.ReviewYAMLPath, "--json"})
+	})
+	var verdict capgraph.OutboundDistributionVerdictReviewReport
+	if err := json.Unmarshal([]byte(verdictOut), &verdict); err != nil {
+		t.Fatalf("parse verdict review: %v\n%s", err, verdictOut)
+	}
+	adapterOutputPath := filepath.Join(t.TempDir(), "adapter-output.json")
+	adapterOutput := map[string]any{
+		"schema_version":         capgraph.OutboundDistributionDryRunReceiptSchemaVersion,
+		"id":                     "oddr_cli_postiz_synthetic",
+		"plan_id":                verdict.PlanID,
+		"product_id":             verdict.ProductID,
+		"adapter_id":             "adapter:postiz-synthetic",
+		"mode":                   "dry_run",
+		"run_kind":               "synthetic",
+		"public_side_effects":    false,
+		"account_auth_used":      false,
+		"external_requests_made": false,
+		"posted":                 false,
+		"replied":                false,
+		"spent_money":            false,
+		"product_loop": map[string]any{
+			"change_event":       "prepare outbound distribution dry-run screenshot change",
+			"hypothesis":         "drafts can be reviewed before public posting",
+			"observation_window": "14d",
+			"next_bounded_move":  "review drafts and request Tier-3 policy only if publishing is warranted",
+		},
+		"artifacts": []map[string]any{{
+			"kind":         "draft_post",
+			"channel":      "synthetic-social",
+			"ref":          "fixture://postiz/draft-1",
+			"content_hash": "sha256:fixture-cli-draft",
+		}},
+		"evidence_refs": []string{"fixture:cli-dry-run"},
+	}
+	data, err := json.MarshalIndent(adapterOutput, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adapterOutputPath, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	receiptOut := captureStdout(t, func() {
+		cmdCapability([]string{
+			"outbound-distribution-dry-run-receipt",
+			"--verdict-review", verdict.ReviewedPath,
+			"--adapter-output", adapterOutputPath,
+			"--json",
+		})
+	})
+	var receipt struct {
+		SchemaVersion  string                                           `json:"schema_version"`
+		Status         string                                           `json:"status"`
+		Report         capgraph.OutboundDistributionDryRunReceiptReport `json:"report"`
+		ReportPath     string                                           `json:"report_path"`
+		ReviewPath     string                                           `json:"review_path"`
+		ReviewYAMLPath string                                           `json:"review_yaml_path"`
+	}
+	if err := json.Unmarshal([]byte(receiptOut), &receipt); err != nil {
+		t.Fatalf("parse dry-run receipt: %v\n%s", err, receiptOut)
+	}
+	if receipt.Status != "review_required" || receipt.Report.AdoptionLevel != "dry_run_only" || receipt.ReportPath == "" || receipt.ReviewYAMLPath == "" {
+		t.Fatalf("bad dry-run receipt CLI report: %+v", receipt)
+	}
+	reviewsOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", capgraph.OutboundDistributionDryRunReviewArea, "--json"})
+	})
+	var reviews reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(reviewsOut), &reviews); err != nil {
+		t.Fatalf("parse dry-run reviews: %v\n%s", err, reviewsOut)
+	}
+	if reviews.Counts.ReviewRequired != 1 || reviews.Counts.DecisionCardCount != 1 || reviews.Counts.ActionableCount != 1 {
+		t.Fatalf("dry-run receipt should be reviewable: counts=%+v items=%+v", reviews.Counts, reviews.Items)
+	}
+	dryRunReview, err := os.ReadFile(receipt.ReviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dryRunReviewYAML := strings.ReplaceAll(string(dryRunReview), "TODO_decision_accept_as_product_loop_evidence_park_reject", "accept_as_product_loop_evidence")
+	dryRunReviewYAML = strings.ReplaceAll(dryRunReviewYAML, "TODO_rationale", "synthetic receipt is bounded and reviewable")
+	dryRunReviewYAML = strings.ReplaceAll(dryRunReviewYAML, "TODO_confidence_0_to_1", "0.7")
+	if err := os.WriteFile(receipt.ReviewYAMLPath, []byte(dryRunReviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewOut := captureStdout(t, func() {
+		cmdCapability([]string{"outbound-distribution-dry-run-review", receipt.ReviewYAMLPath})
+	})
+	if !strings.Contains(reviewOut, "# capability outbound-distribution-dry-run-review") ||
+		!strings.Contains(reviewOut, "- status: recorded") ||
+		!strings.Contains(reviewOut, "- decision: accept_as_product_loop_evidence") {
+		t.Fatalf("dry-run review command output missing proof:\n%s", reviewOut)
+	}
+	reviewedPaths, err := filepath.Glob(filepath.Join(homePath, "reviews", capgraph.OutboundDistributionDryRunReviewArea, "*.reviewed.json"))
+	if err != nil || len(reviewedPaths) != 1 {
+		t.Fatalf("expected one reviewed capability dry-run receipt, paths=%v err=%v", reviewedPaths, err)
+	}
+	productPlanOut := captureStdout(t, func() {
+		cmdProduct([]string{"outbound-dry-run-plan", "--reviewed-receipt", reviewedPaths[0], "--target", targetPath})
+	})
+	if !strings.Contains(productPlanOut, "# product outbound-dry-run-plan") ||
+		!strings.Contains(productPlanOut, "- status: review_required") ||
+		!strings.Contains(productPlanOut, "- receipt: "+receipt.Report.ID) {
+		t.Fatalf("product outbound dry-run plan output missing proof:\n%s", productPlanOut)
+	}
+	productReviewsOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", product.OutboundDryRunEvidenceReviewArea, "--json"})
+	})
+	var productReviews reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(productReviewsOut), &productReviews); err != nil {
+		t.Fatalf("parse product dry-run reviews: %v\n%s", err, productReviewsOut)
+	}
+	if productReviews.Counts.ReviewRequired != 1 || productReviews.Counts.DecisionCardCount != 1 || productReviews.Counts.ActionableCount != 1 {
+		t.Fatalf("product dry-run bridge should be reviewable: counts=%+v items=%+v", productReviews.Counts, productReviews.Items)
+	}
+	productReviewPaths, err := filepath.Glob(filepath.Join(homePath, "reviews", product.OutboundDryRunEvidenceReviewArea, "*.review.yaml"))
+	if err != nil || len(productReviewPaths) != 1 {
+		t.Fatalf("expected one product dry-run review YAML, paths=%v err=%v", productReviewPaths, err)
+	}
+	productReviewDraft, err := os.ReadFile(productReviewPaths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	productReviewYAML := strings.ReplaceAll(string(productReviewDraft), "TODO_decision_create_hypothesis_candidate_park_reject", "create_hypothesis_candidate")
+	productReviewYAML = strings.ReplaceAll(productReviewYAML, "TODO_rationale", "reviewed dry-run evidence can become product-loop candidate")
+	productReviewYAML = strings.ReplaceAll(productReviewYAML, "TODO_confidence_0_to_1", "0.66")
+	productReviewYAML = strings.ReplaceAll(productReviewYAML, "TODO_expected_effect", "reviewed outbound drafts improve product-message clarity before public distribution")
+	productReviewYAML = strings.ReplaceAll(productReviewYAML, "TODO_primary_metric", "distribution_draft_quality")
+	if err := os.WriteFile(productReviewPaths[0], []byte(productReviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	productReviewOut := captureStdout(t, func() {
+		cmdProduct([]string{"outbound-dry-run-review", productReviewPaths[0]})
+	})
+	if !strings.Contains(productReviewOut, "# product outbound-dry-run-review") ||
+		!strings.Contains(productReviewOut, "- status: recorded") ||
+		!strings.Contains(productReviewOut, "- decision: create_hypothesis_candidate") ||
+		!strings.Contains(productReviewOut, "- hypothesis: hyp_") {
+		t.Fatalf("product outbound dry-run review output missing proof:\n%s", productReviewOut)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "product-signals.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("product outbound dry-run bridge must not create product signals: %v", err)
 	}
 }
 
@@ -2354,6 +4098,9 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	if report.SchemaVersion != reviewartifact.QueueSchemaVersion || report.Counts.Total != 3 || report.Counts.ReviewRequired != 2 || report.Counts.OK != 1 {
 		t.Fatalf("reviews report = %+v", report)
 	}
+	if report.Counts.ActionableCount != 2 || report.Counts.ReviewRequiredMissingDecisionCard != 2 || report.Counts.ReviewRequiredMissingAction != 0 {
+		t.Fatalf("reviews surface coverage = %+v", report.Counts)
+	}
 	if report.Items[0].ID != "dlrp_cli" || report.Items[0].RepairCount != 3 {
 		t.Fatalf("first review item = %+v", report.Items[0])
 	}
@@ -2371,7 +4118,7 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 		t.Fatalf("product review queue item should expose validation blocker: %+v", productItem)
 	}
 	textOut := captureStdout(t, func() { cmdReviews([]string{"--area", "decision-lifecycle-repairs"}) })
-	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {
+	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "review_surface decision_cards=0 actionable=1 missing_cards=1 missing_actions=0") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {
 		t.Fatalf("filtered reviews output =\n%s", textOut)
 	}
 }
@@ -2512,8 +4259,16 @@ func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 		t.Fatalf("panel verdict item should be annotated needs_review: %+v", report.Items)
 	}
 	item := report.Items[0]
-	if len(item.Actions) != 0 {
-		t.Fatalf("panel verdict queue must not expose mutating apply actions: %+v", item)
+	if item.DecisionCard == nil {
+		t.Fatalf("panel verdict queue should expose a read-only decision card: %+v", item)
+	}
+	if len(item.Actions) != 4 {
+		t.Fatalf("panel verdict queue should expose four review-required command hints: %+v", item)
+	}
+	for _, action := range item.Actions {
+		if !action.RequiresReview || !strings.Contains(action.Command, "compound panel verdict-record") || !strings.Contains(action.Command, "compound memory adjudicate") {
+			t.Fatalf("panel verdict action should stay canonical and review-required: %+v", action)
+		}
 	}
 	if !strings.Contains(item.NextAction, "panel requested human decision") || !strings.Contains(item.NextAction, "memory_candidate/cand_panel_cli") || !strings.Contains(item.NextAction, "failed_lenses=1") {
 		t.Fatalf("panel verdict item should expose owner-review context: %+v", item)
@@ -3021,7 +4776,10 @@ func TestHookSessionEndAutoConsumesCapabilityFeedback(t *testing.T) {
 func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
-	t.Setenv("HOME", "/home/tester")
+	fakeHome := filepath.Join(string(os.PathSeparator), "tmp", "compound-home-fixture")
+	t.Setenv("HOME", fakeHome)
+	activePath := filepath.Join(fakeHome, "Projects", "control-spine", "root")
+	retiredPath := filepath.Join(fakeHome, "Projects", "old-control-spine")
 	fixture := filepath.Join("..", "..", "fixtures", "authority", "os-path-authority.yaml")
 
 	out := captureStdout(t, func() {
@@ -3032,14 +4790,14 @@ func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.
 	}
 
 	active := captureStdout(t, func() {
-		cmdAuthority([]string{"resolve", "/home/tester/Projects/control-spine/root"})
+		cmdAuthority([]string{"resolve", activePath})
 	})
 	if !strings.Contains(active, "status: resolved") || !strings.Contains(active, "entity: source:control-spine") {
 		t.Fatalf("active path resolve output =\n%s", active)
 	}
 
 	retired := captureStdout(t, func() {
-		cmdAuthority([]string{"resolve", "/home/tester/Projects/old-control-spine"})
+		cmdAuthority([]string{"resolve", retiredPath})
 	})
 	if !strings.Contains(retired, "status: resolved") || !strings.Contains(retired, "entity: source:old-control-spine") {
 		t.Fatalf("retired path resolve output =\n%s", retired)
@@ -3051,7 +4809,7 @@ func TestAuthorityPathRegistryImportsOSRegistryAndResolvesMovedPaths(t *testing.
 	if strings.Contains(oldAuthority, "**current_path**") {
 		t.Fatalf("retired root must not be current authority:\n%s", oldAuthority)
 	}
-	if !strings.Contains(oldAuthority, "**known_path_retired**: /home/tester/Projects/old-control-spine") {
+	if !strings.Contains(oldAuthority, "**known_path_retired**: "+retiredPath) {
 		t.Fatalf("retired authority output missing known retired path:\n%s", oldAuthority)
 	}
 }
@@ -5628,6 +7386,7 @@ signal:
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_result_supported_refuted_or_inconclusive", "supported")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "rationale: \"\"", "rationale: \"signal moved in the expected direction after confounder review\"")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "confidence: -1", "confidence: 0.61")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "next_action: \"TODO: next action after reviewed evidence\"", "next_action: \"prepare next screenshot experiment\"")
 	if err := os.WriteFile(reviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -5658,6 +7417,48 @@ signal:
 	}
 	if len(queue.Items) != 1 || queue.Items[0].Status != "recorded" || queue.Items[0].Readiness != "no_action" || len(queue.Items[0].Actions) != 0 {
 		t.Fatalf("product review queue item should be terminal: %+v", queue.Items)
+	}
+	loopsOut := captureStdout(t, func() {
+		cmdProduct([]string{"loops", "--json", "--product", "product:focus_notes"})
+	})
+	var loops product.LoopModel
+	if err := json.Unmarshal([]byte(loopsOut), &loops); err != nil {
+		t.Fatalf("parse product loops: %v\n%s", err, loopsOut)
+	}
+	if err := loops.Validate(); err != nil {
+		t.Fatalf("validate product loops: %v\n%s", err, loopsOut)
+	}
+	if len(loops.Products) != 1 {
+		t.Fatalf("product loops should contain one product: %+v", loops.Products)
+	}
+	for _, hypothesis := range loops.Products[0].OpenHypotheses {
+		if hypothesis.ID == candidateID {
+			t.Fatalf("reviewed hypothesis should leave open_hypotheses: %+v", loops.Products[0].OpenHypotheses)
+		}
+	}
+	var sawReview bool
+	for _, loopReview := range loops.Products[0].Reviews {
+		if loopReview.ID == plan.ReviewDraft.ReviewID &&
+			loopReview.HypothesisID == candidateID &&
+			loopReview.SignalID == signalID &&
+			loopReview.Verdict == "supported" {
+			sawReview = true
+		}
+	}
+	if !sawReview {
+		t.Fatalf("product loops should retain review history with signal ref: %+v", loops.Products[0].Reviews)
+	}
+	var sawNextActionGroup bool
+	for _, group := range loops.Products[0].ClosedReviewsByNextAction {
+		if group.NextAction == "prepare next screenshot experiment" &&
+			stringSliceContains(group.ReviewIDs, plan.ReviewDraft.ReviewID) &&
+			stringSliceContains(group.HypothesisIDs, candidateID) &&
+			stringSliceContains(group.SignalIDs, signalID) {
+			sawNextActionGroup = true
+		}
+	}
+	if !sawNextActionGroup {
+		t.Fatalf("product loops should group closed review by next action: %+v", loops.Products[0].ClosedReviewsByNextAction)
 	}
 	afterDoctorOut := captureStdout(t, func() {
 		cmdProduct([]string{"doctor", "product:focus_notes"})
@@ -5726,6 +7527,51 @@ func TestSourceObserveWritesCandidateAndNoPromoteWithoutPromotion(t *testing.T) 
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("source observe should not promote claims, claims ledger stat err=%v", err)
+	}
+}
+
+func TestSourceObserveImportsSecondOpinionAsMethodUpgradeNoPromote(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdSource([]string{"observe", filepath.Join("..", "..", "fixtures", "sourceobs", "oracle-second-opinion.yaml")})
+	})
+	if !strings.Contains(out, "# source observation srcobs_fixture_oracle_second_opinion") ||
+		!strings.Contains(out, "- candidate:") ||
+		!strings.Contains(out, "- no_promote:") {
+		t.Fatalf("source observe output missing second-opinion proof lines:\n%s", out)
+	}
+	candidateDir := filepath.Join(homePath, candidates.InboxDir(candidates.MethodUpgrade))
+	entries, err := os.ReadDir(candidateDir)
+	if err != nil {
+		t.Fatalf("read candidate dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("candidate entries = %d, want 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(candidateDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read candidate: %v", err)
+	}
+	var candidate sourceobs.CandidateRecord
+	if err := json.Unmarshal(data, &candidate); err != nil {
+		t.Fatalf("parse candidate: %v", err)
+	}
+	if candidate.Kind != string(candidates.MethodUpgrade) ||
+		candidate.Subject != "oracle-second-opinion" ||
+		candidate.Verdict != candidates.NoPromote ||
+		candidate.PromoteAllowed {
+		t.Fatalf("second-opinion candidate should be method_upgrade/no_promote: %+v", candidate)
+	}
+	if !stringSliceContains(candidate.EvidenceRefs, "oracle_session:fixture") ||
+		!stringSliceContains(candidate.EvidenceRefs, "source:fixtures/oracle/second-opinion-answer.md#sha256:oraclefixture") {
+		t.Fatalf("second-opinion candidate evidence refs = %v", candidate.EvidenceRefs)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("second-opinion source observation must not promote claims, stat err=%v", err)
 	}
 }
 
@@ -8541,6 +10387,67 @@ func writeJSONFixture(t *testing.T, path string, v any) {
 	}
 }
 
+func writeExternalRepoIntakeContextFixture(t *testing.T, homePath string) {
+	t.Helper()
+	batchDir := filepath.Join(homePath, "inbox", "external-repo-intake", "2026-07-04-context")
+	if err := os.MkdirAll(batchDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := filepath.Join(batchDir, "external-repo-intake-map.json")
+	writeJSONFixture(t, mapPath, map[string]any{
+		"boundaries": []string{"review-only", "no install"},
+		"items": []map[string]any{
+			{
+				"repo":             "gitroomhq/postiz-app",
+				"owner":            "product outbound distribute pipe",
+				"next_review_step": "evaluate rented posting edge behind PolicyDecision; posting receipts feed product loops",
+				"not_to_do":        "do not auth social accounts or auto-post",
+			},
+		},
+	})
+	writeJSONFixture(t, filepath.Join(batchDir, "run-summary.json"), map[string]any{
+		"schema_version":          "compound.external_repo_intake_run.v0.1",
+		"id":                      "2026-07-04-context",
+		"created_at":              "2026-07-04T07:30:00Z",
+		"map_path":                mapPath,
+		"source_observation_path": filepath.Join(batchDir, "source-observation.json"),
+		"candidate_count":         1,
+		"counts_by_decision": map[string]any{
+			"keep_needs_review": 1,
+		},
+		"counts_by_lane": map[string]any{
+			"distribution_adapter_candidate": 1,
+		},
+		"decisions": []map[string]any{
+			{
+				"repo":              "gitroomhq/postiz-app",
+				"decision":          "keep_needs_review",
+				"lane":              "distribution_adapter_candidate",
+				"status":            "recorded",
+				"evidence_strength": 0.86,
+			},
+		},
+	})
+}
+
+func surfaceReportHasOffer(report capgraph.SurfaceReport, id string) bool {
+	for _, offer := range report.Offers {
+		if offer.Node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func outboundPlanHasGate(gates []capgraph.OutboundDistributionGate, kind string) bool {
+	for _, gate := range gates {
+		if gate.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func writeCLIJobRosterFixture(t *testing.T, path string) {
 	t.Helper()
 	data := `{
@@ -8789,6 +10696,18 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	if len(report.HighValue) != 1 || report.HighValue[0].Owner != "deep-research" || report.HighValue[0].NextReviewStep != "run freshness eval" {
 		t.Fatalf("high-value metadata missing: %+v", report.HighValue)
 	}
+	defaultHuman := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake"})
+	})
+	for _, want := range []string{
+		"- keep_needs_review_decision: 1",
+		"- open_owner_reviews: 1",
+		"- high_value: example/research decision=keep_needs_review lane=freshness_research_skill_candidate owner_review=pending capability_evaluation=blocked_on_owner_review graph=blocked_on_owner_review owner=deep-research",
+	} {
+		if !strings.Contains(defaultHuman, want) {
+			t.Fatalf("default external-intake text missing %q:\n%s", want, defaultHuman)
+		}
+	}
 	filteredJSON := captureStdout(t, func() {
 		cmdCapability([]string{"external-intake", "--repo", "github.com/example/research", "--json"})
 	})
@@ -8899,6 +10818,18 @@ func TestCapabilityExternalIntakeReportJSON(t *testing.T) {
 	}
 	if reviews.Counts.Total != 1 || reviews.Counts.ReviewRequired != 0 || reviews.Counts.OK != 1 || reviews.Items[0].Status != "recorded" || reviews.Items[0].Readiness != "review_recorded" {
 		t.Fatalf("external repo review should close queue item: counts=%+v item=%+v", reviews.Counts, reviews.Items[0])
+	}
+	humanDefaultAfterReview := captureStdout(t, func() {
+		cmdCapability([]string{"external-intake"})
+	})
+	for _, want := range []string{
+		"- keep_needs_review_decision: 1",
+		"- open_owner_reviews: 0",
+		"- high_value: example/research decision=keep_needs_review lane=freshness_research_skill_candidate owner_review=recorded capability_evaluation=pending graph=blocked_on_capability_evaluation owner=deep-research",
+	} {
+		if !strings.Contains(humanDefaultAfterReview, want) {
+			t.Fatalf("default external-intake text should distinguish raw decision count from open owner-review debt; missing %q:\n%s", want, humanDefaultAfterReview)
+		}
 	}
 	afterReviewJSON := captureStdout(t, func() {
 		cmdCapability([]string{"external-intake", "--source-list", sourceListPath, "--json"})
@@ -9021,6 +10952,28 @@ func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	ev, err := store.RecordEvidence(mem.EvidenceItem{SourceKind: "chatgpt", SourceID: "conversation:cli", QuoteText: "candidate came from a bounded conversation quote"}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := store.Capture([]mem.Candidate{{
+		Entity:         "entity:cli",
+		Predicate:      "status",
+		Object:         "current promoted belief",
+		Confidence:     0.91,
+		Derivation:     "deterministic",
+		PromotionBasis: candidates.BasisExplicitConfirmation,
+		SourceTraceRef: ev.ID,
+		SnippetHash:    ev.ContentHash,
+		Visibility:     "operational",
+	}}, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.Adjudicate(prior[0].ID, "promote", "", cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	captured, err := store.Capture([]mem.Candidate{{
 		Entity:         "entity:cli",
 		Predicate:      "status",
@@ -9028,8 +10981,8 @@ func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) 
 		Confidence:     0.9,
 		Derivation:     "deterministic",
 		PromotionBasis: candidates.BasisTrustedDeterministic,
-		SourceTraceRef: "trace_cli",
-		SnippetHash:    "hash_cli",
+		SourceTraceRef: ev.ID,
+		SnippetHash:    ev.ContentHash,
 		Visibility:     "operational",
 	}}, cliTestNow)
 	if err != nil {
@@ -9046,7 +10999,7 @@ func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) 
 	if report.SchemaVersion != mem.CandidateListSchemaVersion || report.Counts.Matched != 1 || report.Items[0].ID != captured[0].ID {
 		t.Fatalf("candidate list report = %+v", report)
 	}
-	if report.Items[0].SourceTraceRef != "" || len(report.Items[0].EvidenceRefs) != 0 {
+	if report.Items[0].SourceTraceRef != "" || len(report.Items[0].EvidenceRefs) != 0 || report.Items[0].Evidence != nil || report.Items[0].BelievedBefore != nil {
 		t.Fatalf("evidence leaked by default: %+v", report.Items[0])
 	}
 
@@ -9056,8 +11009,14 @@ func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) 
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("parse candidates include-evidence json: %v\n%s", err, out)
 	}
-	if report.Items[0].SourceTraceRef != "trace_cli" || !stringSliceContains(report.Items[0].EvidenceRefs, "trace_cli") {
+	if report.Items[0].SourceTraceRef != ev.ID || !stringSliceContains(report.Items[0].EvidenceRefs, ev.ID) {
 		t.Fatalf("include evidence report = %+v", report.Items[0])
+	}
+	if report.Items[0].Evidence == nil || report.Items[0].Evidence.Quote != "candidate came from a bounded conversation quote" || report.Items[0].Evidence.SourceID != "conversation:cli" {
+		t.Fatalf("include evidence card context = %+v", report.Items[0].Evidence)
+	}
+	if report.Items[0].BelievedBefore == nil || report.Items[0].BelievedBefore.ClaimID != promoted.Claim.ID || report.Items[0].BelievedBefore.Object != "current promoted belief" {
+		t.Fatalf("include believed_before context = %+v", report.Items[0].BelievedBefore)
 	}
 }
 
@@ -9087,6 +11046,254 @@ Success: packet is listed.
 	}
 	if report.OfferedPackets == nil || report.OfferedPackets.Counts.Listed != 1 || report.OfferedPackets.Items[0].Title != "CLI packet" {
 		t.Fatalf("offered packets missing from workbench: %+v", report.OfferedPackets)
+	}
+}
+
+func TestWorkbenchJSONSurfacesAdjacentProgressWhenHeldValvesBlockDispatch(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "held operator valve", State: "held"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create held work: %v", err)
+	}
+	packetDir := filepath.Join(t.TempDir(), "packets")
+	if err := os.MkdirAll(packetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packet := `# Adjacent CLI packet
+Date: 2026-07-04
+Status: ready
+Owner: codex
+Success: adjacent work remains available while held valve stays visible.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "adjacent-cli.md"), []byte(packet), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	consolePacket := `# Console CLI packet
+Date: 2026-07-04
+Status: ready - CONSOLE LANE'S CLAIM
+Owner: claude-console-lane
+Success: console lane work should not be a Codex adjacent packet.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "console-cli.md"), []byte(consolePacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	operatorPacket := `# Operator CLI packet
+Date: 2026-07-04
+Status: ready (operator registration flip remaining)
+Owner: codex + operator
+Success: operator-only work should not be a Codex adjacent packet.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "operator-cli.md"), []byte(operatorPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--packet-dir", packetDir})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse workbench json: %v\n%s", err, out)
+	}
+	next := report.DispatchNext
+	if next.CanRun || next.WaitReason != "needs_review" || !stringSliceContains(next.BlockedOn, "work.review:"+held.ID) {
+		t.Fatalf("dispatch next should keep held valve blocking direct dispatch: %+v", next)
+	}
+	if next.AdjacentProgress == nil || !next.AdjacentProgress.Available || next.AdjacentProgress.PacketCandidateCount != 1 {
+		t.Fatalf("dispatch next missing adjacent progress: %+v", next)
+	}
+	if !stringSliceContains(next.AdjacentProgress.HeldWorkIDs, held.ID) || !stringSliceContains(next.AdjacentProgress.PacketRefs, "adjacent-cli.md") {
+		t.Fatalf("adjacent progress context = %+v", next.AdjacentProgress)
+	}
+	for _, leaked := range []string{"console-cli.md", "operator-cli.md"} {
+		if stringSliceContains(next.AdjacentProgress.PacketRefs, leaked) {
+			t.Fatalf("adjacent progress leaked non-actionable packet %s: %+v", leaked, next.AdjacentProgress)
+		}
+	}
+
+	textOut := captureStdout(t, func() {
+		cmdWorkbench([]string{"--packet-dir", packetDir})
+	})
+	if !strings.Contains(textOut, "dispatch_wait: needs_review") || !strings.Contains(textOut, "adjacent_progress: available=true") || !strings.Contains(textOut, "adjacent_next:") {
+		t.Fatalf("workbench text output missing adjacent progress:\n%s", textOut)
+	}
+}
+
+func TestWorkbenchJSONSurfacesAdjacentNonPacketActionsWhenPacketsFilteredOut(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	asc, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC private config",
+		State:            "held",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create asc held work: %v", err)
+	}
+	conversation, err := store.Create(work.CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held chatgpt conversation import promotion",
+		State:            "held",
+	}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create conversation held work: %v", err)
+	}
+	runDir := filepath.Join(homePath, "runs", conversation.ID)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	candidateDir := filepath.Join(homePath, "inbox", "memory-candidates")
+	if err := os.MkdirAll(candidateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIJSONFixture(t, filepath.Join(candidateDir, "cand_cli_conversation_review.json"), map[string]any{
+		"id":     "cand_cli_conversation_review",
+		"state":  "parked",
+		"entity": "knowledge:chatgpt:cli-fixture",
+	})
+	writeCLIJSONFixture(t, filepath.Join(runDir, "panel-run-single-prun_cli_fixture.json"), map[string]any{
+		"schema_version": "compound.panel_run.v0.1",
+		"id":             "prun_cli_fixture",
+		"status":         "applied",
+		"target_kind":    "memory_candidate",
+		"targets": []map[string]any{{
+			"ref": "cand_cli_conversation_review",
+		}},
+	})
+	writeCLIJSONFixture(t, filepath.Join(runDir, "promoted-chatgpt-claims.json"), map[string]any{
+		"count": 0,
+		"refs":  []string{},
+	})
+	packetDir := filepath.Join(t.TempDir(), "packets")
+	if err := os.MkdirAll(packetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	consolePacket := `# Console CLI packet
+Date: 2026-07-04
+Status: ready - CONSOLE LANE'S CLAIM
+Owner: claude-console-lane
+Success: console lane work should not be Codex adjacent packet.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "console-cli.md"), []byte(consolePacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	operatorPacket := `# Operator CLI packet
+Date: 2026-07-04
+Status: ready (operator registration flip remaining)
+Owner: codex + operator
+Success: operator-only work should not be Codex adjacent packet.
+`
+	if err := os.WriteFile(filepath.Join(packetDir, "operator-cli.md"), []byte(operatorPacket), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--packet-dir", packetDir})
+	})
+	var report workbenchCLIOutput
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse workbench json: %v\n%s", err, out)
+	}
+	if report.Counts.RunArtifacts != 2 {
+		t.Fatalf("workbench JSON should count run artifacts: counts=%+v", report.Counts)
+	}
+	var conversationItem *work.WorkbenchItem
+	for i := range report.Open {
+		if report.Open[i].WorkID == conversation.ID {
+			conversationItem = &report.Open[i]
+			break
+		}
+	}
+	if conversationItem == nil ||
+		len(conversationItem.RunArtifacts) != 2 ||
+		conversationItem.RunArtifacts[0].Ref != filepath.ToSlash(filepath.Join("runs", conversation.ID, "panel-run-single-prun_cli_fixture.json")) ||
+		conversationItem.RunArtifacts[0].Kind != "panel_run" ||
+		conversationItem.RunArtifacts[0].Status != "applied" ||
+		!stringSliceContains(conversationItem.RunArtifacts[0].TargetRefs, "cand_cli_conversation_review") ||
+		!stringSliceContains(conversationItem.MemoryCandidateIDs, "cand_cli_conversation_review") {
+		t.Fatalf("workbench JSON should expose conversation run artifact without private path: %+v", conversationItem)
+	}
+	if len(conversationItem.ReviewCards) != 1 ||
+		conversationItem.ReviewCards[0].CandidateID != "cand_cli_conversation_review" ||
+		conversationItem.ReviewCards[0].CandidateState != "parked" ||
+		conversationItem.ReviewCards[0].PanelRunID != "prun_cli_fixture" ||
+		conversationItem.ReviewCards[0].PromotionCount == nil ||
+		*conversationItem.ReviewCards[0].PromotionCount != 0 {
+		t.Fatalf("workbench JSON should expose exact conversation review card: %+v", conversationItem.ReviewCards)
+	}
+	adjacent := report.DispatchNext.AdjacentProgress
+	if adjacent == nil || !adjacent.Available || adjacent.PacketCandidateCount != 0 {
+		t.Fatalf("workbench should expose non-packet adjacent actions: %+v", report.DispatchNext)
+	}
+	for _, id := range []string{conversationItem.ReviewCards[0].ID, "operator-gate-" + asc.ID + "-app-store-connect-private-config", "asc-sales-series-bridge-proof", "conversation-preflight-private-export", "second-opinion-evidence-recovery", "codex-pretooluse-wrapper-proof", "architecture-doctor-strict"} {
+		if _, ok := workbenchAdjacentActionByID(adjacent.NonPacketActions, id); !ok {
+			t.Fatalf("missing adjacent non-packet action %s: %+v", id, adjacent.NonPacketActions)
+		}
+	}
+	ascBridge, _ := workbenchAdjacentActionByID(adjacent.NonPacketActions, "asc-sales-series-bridge-proof")
+	ascBridgeCommandText := "action_command: " + strings.Join(ascBridge.Command, " ")
+	if ascBridgeCommandText != "action_command: bun test tools/asc_sales_series_bridge.test.ts" ||
+		!stringSliceContains(ascBridge.ExpectedValidation, "apply_results shows signal_count and transition_count") {
+		t.Fatalf("ASC bridge proof action should remain available as JSON action even when text preview is capped: %+v", ascBridge)
+	}
+	reviewCardAction, _ := workbenchAdjacentActionByID(adjacent.NonPacketActions, conversationItem.ReviewCards[0].ID)
+	if !reviewCardAction.RequiresOperator ||
+		reviewCardAction.ReviewCard == nil ||
+		reviewCardAction.ReviewCard.CandidateID != "cand_cli_conversation_review" ||
+		!stringSliceContains(reviewCardAction.StopConditions, "requested action would run import, extraction, panel run, mass import, or automatic promotion") {
+		t.Fatalf("adjacent review-card action should carry exact candidate boundary: %+v", reviewCardAction)
+	}
+	if _, ok := workbenchAdjacentActionByID(adjacent.NonPacketActions, "conversation-memory-review-gate"); ok {
+		t.Fatalf("generic conversation review gate should be suppressed by exact review card: %+v", adjacent.NonPacketActions)
+	}
+	if _, ok := workbenchAdjacentActionByID(adjacent.NonPacketActions, "asc-preflight-private-config"); ok {
+		t.Fatalf("generic ASC preflight should be suppressed by exact review card: %+v", adjacent.NonPacketActions)
+	}
+	oracleAction, _ := workbenchAdjacentActionByID(adjacent.NonPacketActions, "second-opinion-evidence-recovery")
+	if !oracleAction.RequiresOperator ||
+		!strings.Contains(strings.Join(oracleAction.Command, " "), "tools/second_opinion_preflight.ts") ||
+		!strings.Contains(strings.Join(oracleAction.Command, " "), "--source-observation") ||
+		!stringSliceContains(oracleAction.RequiredInputs, "private source-observation YAML path") ||
+		!stringSliceContains(oracleAction.StopConditions, "source observation would promote truth") ||
+		!stringSliceContains(oracleAction.ExpectedValidation, "no source observe import during preflight") {
+		t.Fatalf("second-opinion action should expose preflight before source-observe path: %+v", oracleAction)
+	}
+	for _, ref := range adjacent.PacketRefs {
+		if strings.Contains(ref, "console-cli.md") || strings.Contains(ref, "operator-cli.md") {
+			t.Fatalf("filtered packet leaked into adjacent refs: %+v", adjacent.PacketRefs)
+		}
+	}
+	textOut := captureStdout(t, func() {
+		cmdWorkbench([]string{"--packet-dir", packetDir})
+	})
+	if !strings.Contains(textOut, "adjacent_progress: available=true packet_candidates=0") ||
+		!strings.Contains(textOut, "run_artifacts=2") ||
+		!strings.Contains(textOut, "run_artifact: "+filepath.ToSlash(filepath.Join("runs", conversation.ID, "panel-run-single-prun_cli_fixture.json"))+" kind=panel_run status=applied target=cand_cli_conversation_review") ||
+		!strings.Contains(textOut, "adjacent_non_packet_action: "+conversationItem.ReviewCards[0].ID+" kind=review_card") ||
+		!strings.Contains(textOut, "action_command: compound panel show prun_cli_fixture --json") ||
+		!strings.Contains(textOut, "promotion summary remains zero before explicit promotion") ||
+		!strings.Contains(textOut, "adjacent_non_packet_action: operator-gate-") ||
+		!strings.Contains(textOut, "kind=review_card") ||
+		!strings.Contains(textOut, "operator private ASC config needed") ||
+		!strings.Contains(textOut, "action_command: bun tools/asc_preflight.ts --config <private-asc-config.json> --json") ||
+		!strings.Contains(textOut, "action_required_inputs: private ASC product mapping config") ||
+		!strings.Contains(textOut, "action_expected_validation: asc preflight returns status ok or warn") ||
+		!strings.Contains(textOut, "action_stop_conditions: private config missing or invalid") {
+		t.Fatalf("workbench text output missing adjacent non-packet actions:\n%s", textOut)
 	}
 }
 
@@ -9265,9 +11472,36 @@ func stringSliceContains(values []string, want string) bool {
 	return false
 }
 
+func workbenchAdjacentActionByID(actions []work.WorkbenchAdjacentAction, id string) (work.WorkbenchAdjacentAction, bool) {
+	for _, action := range actions {
+		if action.ID == id {
+			return action, true
+		}
+	}
+	return work.WorkbenchAdjacentAction{}, false
+}
+
 func findHookReadiness(rows []contract.InstalledHookRuntimeReadiness, harnessName, hookName string) *contract.InstalledHookRuntimeReadiness {
 	for i := range rows {
 		if rows[i].Harness == harnessName && rows[i].Hook == hookName {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func findHookAction(actions []contract.HookGateAction, kind string) *contract.HookGateAction {
+	for i := range actions {
+		if actions[i].Kind == kind {
+			return &actions[i]
+		}
+	}
+	return nil
+}
+
+func findHookGateReadiness(rows []contract.HookGateReadiness, harnessName string) *contract.HookGateReadiness {
+	for i := range rows {
+		if rows[i].Harness == harnessName && rows[i].Hook == "PreToolUse" {
 			return &rows[i]
 		}
 	}
@@ -9351,4 +11585,445 @@ func compoundCommandGitStatus(t *testing.T, dir string) string {
 		t.Fatalf("git status failed: %v\n%s", err, string(out))
 	}
 	return string(out)
+}
+
+func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedCLIProductActionLoop(t, homePath, store)
+
+	model, err := product.BuildLoopModel(homePath, product.LoopOptions{ProductID: "product:action-cli", Now: cliTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card := findCLIActionCard(model.Products, "product_next_bounded_move")
+	if card.ID == "" {
+		t.Fatalf("missing action card: %+v", model.Products)
+	}
+	planOut := captureStdout(t, func() {
+		cmdProduct([]string{"action-plan", "--product", "product:action-cli", "--card", card.ID})
+	})
+	if !strings.Contains(planOut, "# product action-plan") || !strings.Contains(planOut, "- card_kind: product_next_bounded_move") || !strings.Contains(planOut, "- review_yaml:") {
+		t.Fatalf("action-plan output missing proof:\n%s", planOut)
+	}
+
+	reviewsOut := captureStdout(t, func() {
+		cmdReviews([]string{"--area", product.ProductActionReviewArea, "--json"})
+	})
+	var queue reviewartifact.QueueReport
+	if err := json.Unmarshal([]byte(reviewsOut), &queue); err != nil {
+		t.Fatalf("parse action review queue: %v\n%s", err, reviewsOut)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 || len(queue.Items) != 1 {
+		t.Fatalf("action review queue should expose one actionable decision card: %+v", queue)
+	}
+	reviewYAMLPath := filepath.Join(homePath, "reviews", product.ProductActionReviewArea, queue.Items[0].ID+".review.yaml")
+	draft, err := os.ReadFile(reviewYAMLPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewYAML := strings.ReplaceAll(string(draft), "TODO_decision_propose_work_park_reject", "propose_work")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_rationale", "CLI reviewed action card before work admission")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_confidence_0_to_1", "0.74")
+	if err := os.WriteFile(reviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewOut := captureStdout(t, func() {
+		cmdProduct([]string{"action-review", reviewYAMLPath})
+	})
+	if !strings.Contains(reviewOut, "# product action-review") || !strings.Contains(reviewOut, "- status: recorded") || !strings.Contains(reviewOut, "- decision: propose_work") {
+		t.Fatalf("action-review output missing proof:\n%s", reviewOut)
+	}
+	reviewsOut = captureStdout(t, func() {
+		cmdReviews([]string{"--area", product.ProductActionReviewArea, "--json"})
+	})
+	if err := json.Unmarshal([]byte(reviewsOut), &queue); err != nil {
+		t.Fatalf("parse recorded action review queue: %v\n%s", err, reviewsOut)
+	}
+	if queue.Counts.ReviewRequired != 0 || queue.Counts.OK != 1 || queue.Items[0].Readiness != "no_action" {
+		t.Fatalf("recorded action review should be terminal: %+v", queue)
+	}
+	reviewedPath := outputValue(reviewOut, "- reviewed:")
+	if reviewedPath == "" {
+		t.Fatalf("action-review output missing reviewed path:\n%s", reviewOut)
+	}
+	beforeTimeline, err := product.LoadTimeline(homePath, "product:action-cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workPlanOut := captureStdout(t, func() {
+		cmdProduct([]string{"action-work-plan", "--reviewed", reviewedPath, "--json"})
+	})
+	var workPlanReport struct {
+		Status        string                  `json:"status"`
+		ProductAction product.ActionWorkDraft `json:"product_action"`
+		WorkPlan      work.CreatePlan         `json:"work_plan"`
+	}
+	if err := json.Unmarshal([]byte(workPlanOut), &workPlanReport); err != nil {
+		t.Fatalf("parse action-work-plan: %v\n%s", err, workPlanOut)
+	}
+	if workPlanReport.Status != "recorded" ||
+		workPlanReport.WorkPlan.Status != "create_policy_allowed" ||
+		workPlanReport.WorkPlan.WorkState != "proposed" ||
+		workPlanReport.WorkPlan.WorkID == "" ||
+		workPlanReport.WorkPlan.PlanPath == "" ||
+		workPlanReport.ProductAction.WorkID != workPlanReport.WorkPlan.WorkID ||
+		workPlanReport.ProductAction.ActionSummary == "" ||
+		len(workPlanReport.ProductAction.ActionCommand) == 0 {
+		t.Fatalf("action-work-plan did not preserve reviewed action as proposed work plan: %+v", workPlanReport)
+	}
+	if workPlanReport.WorkPlan.ActionContext == nil ||
+		workPlanReport.WorkPlan.ActionContext.ActionSummary != workPlanReport.ProductAction.ActionSummary ||
+		!sameStringSlice(workPlanReport.WorkPlan.ActionContext.Command, workPlanReport.ProductAction.ActionCommand) ||
+		workPlanReport.WorkPlan.ActionContext.Boundary != workPlanReport.ProductAction.Boundary ||
+		workPlanReport.WorkPlan.ActionContext.Proof != workPlanReport.ProductAction.Proof {
+		t.Fatalf("action-work-plan did not preserve runnable action context: %+v", workPlanReport.WorkPlan.ActionContext)
+	}
+	if _, err := os.Stat(workPlanReport.WorkPlan.PlanPath); err != nil {
+		t.Fatalf("recorded create-plan missing: %v", err)
+	}
+	workStore, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workStore.Get(workPlanReport.WorkPlan.WorkID); err == nil {
+		t.Fatalf("action-work-plan should not admit work %s", workPlanReport.WorkPlan.WorkID)
+	}
+	afterTimeline, err := product.LoadTimeline(homePath, "product:action-cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterTimeline.Signals) != len(beforeTimeline.Signals) ||
+		len(afterTimeline.Hypotheses) != len(beforeTimeline.Hypotheses) ||
+		len(afterTimeline.Transitions) != len(beforeTimeline.Transitions) {
+		t.Fatalf("action-work-plan should not mutate product timeline: before=%+v after=%+v", beforeTimeline, afterTimeline)
+	}
+	workbenchJSON := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json"})
+	})
+	var wb workbenchCLIOutput
+	if err := json.Unmarshal([]byte(workbenchJSON), &wb); err != nil {
+		t.Fatalf("parse workbench: %v\n%s", err, workbenchJSON)
+	}
+	if wb.Counts.AdmissionPreviews != 1 ||
+		len(wb.AdmissionPreviews) != 1 ||
+		wb.AdmissionPreviews[0].WorkID != workPlanReport.WorkPlan.WorkID ||
+		wb.AdmissionPreviews[0].PlanPath == "" {
+		t.Fatalf("workbench should expose admission preview: counts=%+v previews=%+v", wb.Counts, wb.AdmissionPreviews)
+	}
+	workbenchText := captureStdout(t, func() {
+		cmdWorkbench(nil)
+	})
+	if !strings.Contains(workbenchText, "admission_previews=1") ||
+		!strings.Contains(workbenchText, "admission_preview: "+workPlanReport.WorkPlan.WorkID) ||
+		!strings.Contains(workbenchText, "staleness=fresh") ||
+		!strings.Contains(workbenchText, "admit: compound work admit-plan --plan "+workPlanReport.WorkPlan.PlanPath) ||
+		!strings.Contains(workbenchText, "action_context: "+strings.Join(workPlanReport.ProductAction.ActionCommand, " ")) {
+		t.Fatalf("workbench text missing admission preview:\n%s", workbenchText)
+	}
+	admitOut := captureStdout(t, func() {
+		cmdWork([]string{"admit-plan", "--plan", workPlanReport.WorkPlan.PlanPath, "--by", "operator-test", "--json"})
+	})
+	var admitReport work.AdmitCreatePlanReport
+	if err := json.Unmarshal([]byte(admitOut), &admitReport); err != nil {
+		t.Fatalf("parse admit-plan: %v\n%s", err, admitOut)
+	}
+	if admitReport.Status != "admitted" ||
+		admitReport.PlanID != workPlanReport.WorkPlan.ID ||
+		admitReport.WorkID != workPlanReport.WorkPlan.WorkID ||
+		admitReport.WorkState != "proposed" ||
+		admitReport.ActionIntentID != workPlanReport.WorkPlan.ActionIntent.ID ||
+		admitReport.PolicyDecisionID != workPlanReport.WorkPlan.Decision.ID ||
+		!admitReport.PolicyAllowed {
+		t.Fatalf("admit-plan did not preserve create-plan proof chain: %+v", admitReport)
+	}
+	admitted, events, err := workStore.Show(workPlanReport.WorkPlan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admitted.State != "proposed" ||
+		admitted.PolicyDecisionID != workPlanReport.WorkPlan.Decision.ID ||
+		len(admitted.RunIDs) != 1 ||
+		admitted.RunIDs[0] != workPlanReport.WorkPlan.ActionIntent.ID ||
+		len(events) != 1 ||
+		events[0].Note != "admitted_from_create_plan" {
+		t.Fatalf("admitted work not threaded through create-plan: work=%+v events=%+v", admitted, events)
+	}
+	workbenchAfterAdmit := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json"})
+	})
+	var wbAfter workbenchCLIOutput
+	if err := json.Unmarshal([]byte(workbenchAfterAdmit), &wbAfter); err != nil {
+		t.Fatalf("parse workbench after admit: %v\n%s", err, workbenchAfterAdmit)
+	}
+	if wbAfter.Counts.AdmissionPreviews != 0 || len(wbAfter.AdmissionPreviews) != 0 {
+		t.Fatalf("admitted work should retire admission preview: counts=%+v previews=%+v", wbAfter.Counts, wbAfter.AdmissionPreviews)
+	}
+	var admittedItem *work.WorkbenchItem
+	for i := range wbAfter.Open {
+		if wbAfter.Open[i].WorkID == workPlanReport.WorkPlan.WorkID {
+			admittedItem = &wbAfter.Open[i]
+			break
+		}
+	}
+	if admittedItem == nil ||
+		admittedItem.ActionContext == nil ||
+		admittedItem.ActionContext.ActionSummary != workPlanReport.ProductAction.ActionSummary ||
+		!sameStringSlice(admittedItem.ActionContext.Command, workPlanReport.ProductAction.ActionCommand) ||
+		admittedItem.ActionContext.Boundary != workPlanReport.ProductAction.Boundary ||
+		admittedItem.ActionContext.Proof != workPlanReport.ProductAction.Proof ||
+		!strings.Contains(admittedItem.NextAction, "prepare ready with reviewed action context") {
+		t.Fatalf("workbench admitted item missing runnable action context: item=%+v", admittedItem)
+	}
+
+	advancePlanText := captureStdout(t, func() {
+		cmdWork([]string{"advance-plan", workPlanReport.WorkPlan.WorkID, "--to", "ready", "--actor", "codex", "--dry-run"})
+	})
+	if !strings.Contains(advancePlanText, "action_context: "+strings.Join(workPlanReport.ProductAction.ActionCommand, " ")) ||
+		!strings.Contains(advancePlanText, "proof="+workPlanReport.ProductAction.Proof) {
+		t.Fatalf("advance-plan text missing action context:\n%s", advancePlanText)
+	}
+	advancePlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"advance-plan", workPlanReport.WorkPlan.WorkID, "--to", "ready", "--actor", "codex", "--dry-run", "--json"})
+	})
+	var advancePlan work.AdvancePlan
+	if err := json.Unmarshal([]byte(advancePlanJSON), &advancePlan); err != nil {
+		t.Fatalf("parse advance-plan: %v\n%s", err, advancePlanJSON)
+	}
+	if advancePlan.ActionContext == nil ||
+		!sameStringSlice(advancePlan.ActionContext.Command, workPlanReport.ProductAction.ActionCommand) ||
+		advancePlan.ActionContext.Proof != workPlanReport.ProductAction.Proof {
+		t.Fatalf("advance-plan JSON missing action context: %+v", advancePlan.ActionContext)
+	}
+
+	captureStdout(t, func() {
+		cmdWork([]string{"advance", workPlanReport.WorkPlan.WorkID, "--to", "ready", "--by", "codex"})
+	})
+	claimPlanText := captureStdout(t, func() {
+		cmdWork([]string{"claim-plan", workPlanReport.WorkPlan.WorkID, "--actor", "codex", "--dry-run"})
+	})
+	if !strings.Contains(claimPlanText, "action_context: "+strings.Join(workPlanReport.ProductAction.ActionCommand, " ")) ||
+		!strings.Contains(claimPlanText, "proof="+workPlanReport.ProductAction.Proof) {
+		t.Fatalf("claim-plan text missing action context:\n%s", claimPlanText)
+	}
+	claimPlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"claim-plan", workPlanReport.WorkPlan.WorkID, "--actor", "codex", "--dry-run", "--json"})
+	})
+	var claimPlan work.ClaimPlan
+	if err := json.Unmarshal([]byte(claimPlanJSON), &claimPlan); err != nil {
+		t.Fatalf("parse claim-plan: %v\n%s", err, claimPlanJSON)
+	}
+	if claimPlan.ActionContext == nil ||
+		claimPlan.ActionContext.ActionSummary != workPlanReport.ProductAction.ActionSummary ||
+		!sameStringSlice(claimPlan.ActionContext.Command, workPlanReport.ProductAction.ActionCommand) ||
+		claimPlan.ActionContext.Proof != workPlanReport.ProductAction.Proof {
+		t.Fatalf("claim-plan JSON missing action context: %+v", claimPlan.ActionContext)
+	}
+
+	captureStdout(t, func() {
+		cmdWork([]string{"claim", workPlanReport.WorkPlan.WorkID, "--by", "codex"})
+	})
+	captureStdout(t, func() {
+		cmdWork([]string{"advance", workPlanReport.WorkPlan.WorkID, "--to", "running", "--by", "codex"})
+	})
+	actionPlanText := captureStdout(t, func() {
+		cmdWork([]string{"action-plan", workPlanReport.WorkPlan.WorkID, "--actor", "codex"})
+	})
+	if !strings.Contains(actionPlanText, "action_command: "+strings.Join(workPlanReport.ProductAction.ActionCommand, " ")) ||
+		!strings.Contains(actionPlanText, "action_summary: "+workPlanReport.ProductAction.ActionSummary) ||
+		!strings.Contains(actionPlanText, "required_inputs: "+strings.Join(workPlanReport.ProductAction.RequiredInputs, ", ")) ||
+		!strings.Contains(actionPlanText, "expected_validation: "+strings.Join(workPlanReport.ProductAction.ExpectedValidation, ", ")) ||
+		!strings.Contains(actionPlanText, "stop_conditions: "+strings.Join(workPlanReport.ProductAction.StopConditions, ", ")) ||
+		!strings.Contains(actionPlanText, "record_after_execution: compound work act "+workPlanReport.WorkPlan.WorkID+" --plan ") ||
+		!strings.Contains(actionPlanText, "close_after_validation: compound work close-plan "+workPlanReport.WorkPlan.WorkID+" --action-plan ") {
+		t.Fatalf("action-plan text missing receipt-ready boundary:\n%s", actionPlanText)
+	}
+	actionPlanPath := outputValue(actionPlanText, "plan:")
+	if actionPlanPath == "" {
+		t.Fatalf("action-plan text missing plan path:\n%s", actionPlanText)
+	}
+	actionPlan, err := work.LoadActionExecutionPlan(actionPlanPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionPlan.ActionContext == nil ||
+		actionPlan.ActionSummary != workPlanReport.ProductAction.ActionSummary ||
+		!sameStringSlice(actionPlan.ActionContext.Command, workPlanReport.ProductAction.ActionCommand) ||
+		actionPlan.ReceiptDraft.MoveType != "outward_delta" ||
+		actionPlan.ReceiptDraft.Outcome != "completed" ||
+		!stringSliceContains(actionPlan.ReceiptDraft.ProofRefs, workPlanReport.WorkPlan.ActionContext.SourceRef) {
+		t.Fatalf("action-plan artifact missing action context receipt shape: %+v", actionPlan)
+	}
+	closePlanBeforeActText := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", workPlanReport.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex"})
+	})
+	if !strings.Contains(closePlanBeforeActText, "no_action: action execution plan") ||
+		!strings.Contains(closePlanBeforeActText, "not recorded") {
+		t.Fatalf("close-plan should refuse action plan before act --plan records it:\n%s", closePlanBeforeActText)
+	}
+	actionPlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"action-plan", workPlanReport.WorkPlan.WorkID, "--actor", "codex", "--dry-run", "--json"})
+	})
+	var dryRunActionPlan work.ActionExecutionPlan
+	if err := json.Unmarshal([]byte(actionPlanJSON), &dryRunActionPlan); err != nil {
+		t.Fatalf("parse action-plan: %v\n%s", err, actionPlanJSON)
+	}
+	if dryRunActionPlan.PlanPath != "" ||
+		dryRunActionPlan.ActionIntent.Target.ID != workPlanReport.WorkPlan.ActionContext.SourceID ||
+		dryRunActionPlan.ActionIntent.Target.Path != workPlanReport.WorkPlan.ActionContext.SourceRef {
+		t.Fatalf("dry-run action-plan should derive target without recording: %+v", dryRunActionPlan)
+	}
+	actOut := captureStdout(t, func() {
+		cmdWork([]string{"act", workPlanReport.WorkPlan.WorkID, "--plan", actionPlan.PlanPath})
+	})
+	if !strings.Contains(actOut, "action "+actionPlan.ActionIntent.ID+" recorded") {
+		t.Fatalf("act --plan did not record planned action:\n%s", actOut)
+	}
+	afterAct, err := workStore.Get(workPlanReport.WorkPlan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterAct.State != "running" ||
+		!stringSliceContains(afterAct.RunIDs, actionPlan.ActionIntent.ID) ||
+		afterAct.PolicyDecisionID != actionPlan.Decision.ID {
+		t.Fatalf("act --plan did not thread action intent/decision: %+v", afterAct)
+	}
+	closePlanText := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", workPlanReport.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex"})
+	})
+	if !strings.Contains(closePlanText, "action_execution_plan: "+actionPlan.ID) ||
+		!strings.Contains(closePlanText, "expected_validation: "+strings.Join(workPlanReport.ProductAction.ExpectedValidation, ", ")) ||
+		!strings.Contains(closePlanText, "--proof "+workPlanReport.WorkPlan.ActionContext.SourceRef) {
+		t.Fatalf("close-plan text did not consume action execution receipt draft:\n%s", closePlanText)
+	}
+	closePlanJSON := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", workPlanReport.WorkPlan.WorkID, "--action-plan", actionPlan.PlanPath, "--actor", "codex", "--json"})
+	})
+	var closePlan work.ClosePlan
+	if err := json.Unmarshal([]byte(closePlanJSON), &closePlan); err != nil {
+		t.Fatalf("parse close-plan: %v\n%s", err, closePlanJSON)
+	}
+	if closePlan.ActionExecutionPlanID != actionPlan.ID ||
+		!stringSliceContains(closePlan.ProofRefs, workPlanReport.WorkPlan.ActionContext.SourceRef) ||
+		!stringSliceContains(closePlan.ExpectedValidation, workPlanReport.ProductAction.ExpectedValidation[0]) ||
+		closePlan.ReceiptDraft.ID != actionPlan.ReceiptDraft.ID {
+		t.Fatalf("close-plan JSON missing action execution receipt draft: %+v", closePlan)
+	}
+	trace := writeCLITrace(t, homePath, "trace_product_action_context_cli", workPlanReport.WorkPlan.WorkID)
+	observeRunText := captureStdout(t, func() {
+		cmdWork([]string{"observe-run", workPlanReport.WorkPlan.WorkID, "--trace", trace.ID, "--actor", "codex"})
+	})
+	if !strings.Contains(observeRunText, "action_context: "+strings.Join(workPlanReport.ProductAction.ActionCommand, " ")) ||
+		!strings.Contains(observeRunText, "proof="+workPlanReport.ProductAction.Proof) {
+		t.Fatalf("observe-run text missing action context:\n%s", observeRunText)
+	}
+	observeRunJSON := captureStdout(t, func() {
+		cmdWork([]string{"observe-run", workPlanReport.WorkPlan.WorkID, "--trace", trace.ID, "--actor", "codex", "--json"})
+	})
+	var observeRun work.RunObservationResult
+	if err := json.Unmarshal([]byte(observeRunJSON), &observeRun); err != nil {
+		t.Fatalf("parse observe-run: %v\n%s", err, observeRunJSON)
+	}
+	if observeRun.ActionContext == nil ||
+		observeRun.ActionContext.ActionSummary != workPlanReport.ProductAction.ActionSummary ||
+		!sameStringSlice(observeRun.ActionContext.Command, workPlanReport.ProductAction.ActionCommand) ||
+		observeRun.ActionContext.Proof != workPlanReport.ProductAction.Proof {
+		t.Fatalf("observe-run JSON missing action context: %+v", observeRun.ActionContext)
+	}
+
+	afterAdmitTimeline, err := product.LoadTimeline(homePath, "product:action-cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterAdmitTimeline.Signals) != len(beforeTimeline.Signals) ||
+		len(afterAdmitTimeline.Hypotheses) != len(beforeTimeline.Hypotheses) ||
+		len(afterAdmitTimeline.Transitions) != len(beforeTimeline.Transitions) {
+		t.Fatalf("admit-plan should not mutate product timeline: before=%+v after=%+v", beforeTimeline, afterAdmitTimeline)
+	}
+}
+
+func seedCLIProductActionLoop(t *testing.T, homePath string, store *mem.Store) {
+	t.Helper()
+	bundle := product.Bundle{
+		SchemaVersion: product.SchemaVersion,
+		Product: product.Product{
+			ID:             "product:action-cli",
+			Name:           "Action CLI",
+			OwnerEntity:    "operator:test",
+			Surfaces:       []product.Surface{{ID: "surface:action-cli", Kind: "web", Ref: "fixture://action-cli"}},
+			Channels:       []string{"web"},
+			Positioning:    "Synthetic action-card review CLI fixture.",
+			PrivacyPosture: "test_fixture",
+		},
+		Hypotheses: []product.Hypothesis{{
+			ID:                "hyp_action_cli",
+			ProductID:         "product:action-cli",
+			ChangeEvent:       "Changed onboarding CTA copy.",
+			ExpectedEffect:    "Activation rate increases.",
+			Metrics:           []string{"activation_rate"},
+			ObservationWindow: "7d after change",
+			Result:            "unknown",
+			NextAction:        "review activation after window",
+			EvidenceRefs:      []string{"fixture:action-cli-hypothesis"},
+		}},
+		EvidenceRefs: []string{"fixture:action-cli-product"},
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixture/action-cli-product.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	signalDoc := product.SignalDocument{
+		SchemaVersion: product.SignalSchemaVersion,
+		Source:        product.SignalSource{Kind: "posthog", Ref: "fixture:action-cli-activation"},
+		Signal: product.Signal{
+			ID:           "sig_action_cli_activation",
+			ProductID:    "product:action-cli",
+			Surface:      "onboarding",
+			ChangeEvent:  "Changed onboarding CTA copy.",
+			MetricName:   "activation_rate",
+			Before:       0.22,
+			After:        0.29,
+			Window:       "2026-06-29/2026-07-06",
+			Confidence:   0.71,
+			Confounders:  []string{"synthetic fixture"},
+			EvidenceRefs: []string{"fixture:action-cli-activation"},
+			ObservedAt:   cliTestNow.Add(7 * 24 * time.Hour).Format(time.RFC3339),
+		},
+		EvidenceRefs: []string{"fixture:action-cli-export"},
+	}
+	if _, err := product.ApplySignal(homePath, store, signalDoc, "fixture/action-cli-signal.yaml", cliTestNow.Add(7*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	review := product.Review{
+		SchemaVersion: product.ReviewSchemaVersion,
+		ID:            "review_action_cli_activation",
+		ProductID:     "product:action-cli",
+		HypothesisID:  "hyp_action_cli",
+		Result:        "supported",
+		Rationale:     "Synthetic activation movement supports a bounded next action.",
+		Confidence:    0.76,
+		NextAction:    "prepare one bounded onboarding experiment proposal",
+		EvidenceRefs:  []string{"product_signal:sig_action_cli_activation", "fixture:action-cli-review"},
+	}
+	if _, err := product.ApplyReview(homePath, store, review, "fixture/action-cli-review.yaml", cliTestNow.Add(8*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findCLIActionCard(products []product.ProductLoop, kind string) product.LoopActionCard {
+	for _, loop := range products {
+		for _, card := range loop.ActionCards {
+			if card.Kind == kind {
+				return card
+			}
+		}
+	}
+	return product.LoopActionCard{}
 }
