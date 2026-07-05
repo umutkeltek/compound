@@ -149,7 +149,7 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   }
 
   const item = await resolveItem(spec, itemId);
-  if (!item && spec.source !== "orient") {
+  if (!item && (spec.source !== "orient" || spec.requiresResolvedItem)) {
     return Response.json({ ok: false, stderr: `item ${itemId} not found in ${area}` }, { status: 404 });
   }
 

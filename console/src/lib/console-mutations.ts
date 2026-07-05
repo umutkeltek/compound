@@ -25,6 +25,37 @@ function sameLocalOrigin(request: Request): boolean {
   }
 }
 
+function localOperatorRequest(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (origin) return sameLocalOrigin(request);
+
+  const host = request.headers.get("host");
+  if (!host) return false;
+
+  try {
+    const parsed = new URL(request.url);
+    return parsed.host === host && isLocalHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function allowedFetchSite(request: Request): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  return !site || site === "same-origin" || site === "none";
+}
+
+function sessionTokenBlockedResponse(request: Request, label: string): Response | null {
+  const expectedToken = process.env[CONSOLE_SESSION_TOKEN_ENV];
+  if (expectedToken && request.headers.get(CONSOLE_SESSION_TOKEN_HEADER) !== expectedToken) {
+    return Response.json(
+      { ok: false, stderr: `${label} session token missing or invalid` },
+      { status: 403 },
+    );
+  }
+  return null;
+}
+
 export function consoleMutationBlockedResponse(request: Request): Response | null {
   if (process.env[CONSOLE_MUTATIONS_ENV] !== "1") {
     return Response.json(
@@ -44,13 +75,19 @@ export function consoleMutationBlockedResponse(request: Request): Response | nul
     );
   }
 
-  const expectedToken = process.env[CONSOLE_SESSION_TOKEN_ENV];
-  if (expectedToken && request.headers.get(CONSOLE_SESSION_TOKEN_HEADER) !== expectedToken) {
+  const tokenBlocked = sessionTokenBlockedResponse(request, "console mutation");
+  if (tokenBlocked) return tokenBlocked;
+
+  return null;
+}
+
+export function consolePrivateReadBlockedResponse(request: Request): Response | null {
+  if (!localOperatorRequest(request) || !allowedFetchSite(request)) {
     return Response.json(
-      { ok: false, stderr: "console mutation session token missing or invalid" },
+      { ok: false, stderr: "console private reads require local operator console requests" },
       { status: 403 },
     );
   }
 
-  return null;
+  return sessionTokenBlockedResponse(request, "console private read");
 }

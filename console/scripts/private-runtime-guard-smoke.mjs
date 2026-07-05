@@ -35,6 +35,15 @@ for (const file of await sourceFiles(sourceRoot)) {
     violations.push(`${rel}: private runtime read must be gated by privateFallbacksEnabled()`);
   }
 
+  if (rel === "app/api/document/route.ts") {
+    if (!source.includes("consolePrivateReadBlockedResponse")) {
+      violations.push(`${rel}: private document reads must require local operator request guard`);
+    }
+    if (!source.includes('scope: "private_local"')) {
+      violations.push(`${rel}: private document responses must label private_local scope`);
+    }
+  }
+
   if (forbiddenWriters.test(source)) {
     violations.push(`${rel}: console source must not write runtime/private files directly`);
   }

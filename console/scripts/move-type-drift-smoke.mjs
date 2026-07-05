@@ -4,9 +4,9 @@ import path from "node:path";
 
 const consoleRoot = process.cwd();
 const repoRoot = path.resolve(consoleRoot, "..");
-
 const envelopeSource = await readFile(path.join(repoRoot, "internal/envelope/envelope.go"), "utf8");
 const registrySource = await readFile(path.join(consoleRoot, "src/lib/decision-registry.ts"), "utf8");
+const decisionExecuteSource = await readFile(path.join(consoleRoot, "src/lib/decision-execute.ts"), "utf8");
 
 function parseGoMoveTypes(source) {
   const match = source.match(/MoveTypes\s*=\s*\[\]string\{([^}]+)\}/m);
@@ -23,10 +23,23 @@ function parseConsoleMoveTypes(source) {
 const spine = parseGoMoveTypes(envelopeSource);
 const consoleTypes = parseConsoleMoveTypes(registrySource);
 
+const memoryBlock = registrySource.match(/"memory-adjudicate":\s*\{([\s\S]*?)\n\s*\},/m)?.[1] ?? "";
+assert.match(memoryBlock, /source:\s*"orient"/, "memory-adjudicate should stay orient-backed");
+assert.match(
+  memoryBlock,
+  /requiresResolvedItem:\s*true/,
+  "memory-adjudicate must require candidate projection resolution before execution",
+);
+assert.match(
+  decisionExecuteSource,
+  /spec\.requiresResolvedItem/,
+  "decision executor must enforce requiresResolvedItem specs",
+);
+
 assert.deepEqual(
   consoleTypes,
   spine,
-  `console MOVE_TYPES drifted from internal/envelope MoveTypes\nconsole=${consoleTypes.join(",")}\nspine=${spine.join(",")}`,
+  `console MOVE_TYPES drifted internal/envelope MoveTypes\nconsole=${consoleTypes.join(",")}\nspine=${spine.join(",")}`,
 );
 
 console.log(`move-type drift smoke ok: ${consoleTypes.join(", ")}`);

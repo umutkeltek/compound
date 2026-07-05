@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { COMPOUND_HOME, privateFallbacksEnabled } from "@/lib/compound";
+import { consolePrivateReadBlockedResponse } from "@/lib/console-mutations";
 
 const MAX_BYTES = 1024 * 1024;
 const EVIDENCE_REF_RE = /^ev_[a-z0-9]+$/;
@@ -12,11 +13,13 @@ function inside(child: string, root: string): boolean {
 }
 
 function allowedRoots(): string[] {
-  return [
-    path.resolve(COMPOUND_HOME),
-    path.resolve(process.cwd()),
-    path.resolve(process.cwd(), ".."),
-  ];
+  const roots = new Set<string>([path.resolve(COMPOUND_HOME), path.resolve(process.cwd())]);
+  if (path.basename(process.cwd()) === "console") {
+    roots.add(path.resolve(process.cwd(), ".."));
+  }
+  const configuredRoot = process.env.COMPOUND_CONSOLE_DOCUMENT_ROOT?.trim();
+  if (configuredRoot) roots.add(path.resolve(configuredRoot));
+  return Array.from(roots);
 }
 
 function resolveAllowedPath(raw: string): string | null {
@@ -67,6 +70,9 @@ export async function GET(request: Request) {
       );
     }
 
+    const blocked = consolePrivateReadBlockedResponse(request);
+    if (blocked) return blocked;
+
     if (evidenceRef) {
       if (!EVIDENCE_REF_RE.test(evidenceRef)) {
         return Response.json({ ok: false, stderr: "invalid evidence ref" }, { status: 400 });
@@ -75,7 +81,7 @@ export async function GET(request: Request) {
       if (!evidence) {
         return Response.json({ ok: false, stderr: "evidence ref not found" }, { status: 404 });
       }
-      return Response.json({ ok: true, kind: "evidence", ...evidence });
+      return Response.json({ ok: true, kind: "evidence", scope: "private_local", ...evidence });
     }
 
     if (!rawPath) {
@@ -91,6 +97,7 @@ export async function GET(request: Request) {
     return Response.json({
       ok: true,
       kind: "file",
+      scope: "private_local",
       title: filePath,
       content,
       truncated,

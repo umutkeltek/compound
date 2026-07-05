@@ -105,6 +105,8 @@ export type DecisionAreaSpec = {
 
   /** Resolve a fresh argv preview for the caption (client-side, display only). */
   previewArgv?: (item: Json) => string[] | null;
+  /** Some orient-backed actions still require a fresh server projection hit. */
+  requiresResolvedItem?: boolean;
 };
 
 /* ---------- shared helpers ---------- */
@@ -304,6 +306,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     glyph: "M",
     accent: "violet",
     source: "orient",
+    requiresResolvedItem: true,
     argvAllowlist: [["memory", "adjudicate"]],
     idPattern: /^cand_[A-Za-z0-9_-]+$/,
     options: [],
