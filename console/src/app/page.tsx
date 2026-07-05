@@ -1,5 +1,6 @@
 import { DecisionCard } from "@/components/DecisionCard";
 import { ChangedProofStream } from "@/components/ChangedProofStream";
+import { ContinuePanel } from "@/components/ContinuePanel";
 import { NeedsMeStream } from "@/components/NeedsMeStream";
 import { WorkNeedCard } from "@/components/WorkNeedCard";
 import { WorkCard } from "@/components/WorkCard";
@@ -86,11 +87,13 @@ export default async function Dashboard() {
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Dashboard</h1>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Read it, understand it, decide it — in one place. Needs-me first, then execution, then change.
+            Continue what can move, handle what needs you, and see what changed.
           </p>
         </div>
         <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />
       </div>
+
+      <ContinuePanel workbench={workbench} open={open} />
 
       <div className="grid gap-4 md:grid-cols-3">
         <Stat label="Needs me" value={needsMeTotal} accent="orange" glyph="!" sub="reviews + work + memory" />

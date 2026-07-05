@@ -1,12 +1,11 @@
 import type { ReactNode } from "react";
 
-import { ContinueButton, type ContinueRequest } from "@/components/ContinueButton";
+import { ContinuePanel } from "@/components/ContinuePanel";
 import { WorkNeedCard } from "@/components/WorkNeedCard";
 import { WorkCard } from "@/components/WorkCard";
-import { Card, Chip, EmptyState, FreshnessChip, SectionLabel } from "@/components/ui";
-import { arr, getWorkbench, str, type Json } from "@/lib/compound";
-import { formatBlockedRef } from "@/lib/work-labels";
-import { enrichWorkItems, WorkCardData } from "@/lib/work-data";
+import { Chip, EmptyState, FreshnessChip, SectionLabel } from "@/components/ui";
+import { arr, getWorkbench, str } from "@/lib/compound";
+import { enrichWorkItems, type WorkCardData } from "@/lib/work-data";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +20,7 @@ const LANES: {
   {
     key: "intake",
     title: "Inbox",
-    description: "Suggested tasks that can be prepared.",
+    description: "Suggested tasks can be prepared.",
     states: ["proposed", "admitted"],
     tint: "#f59e0b",
     empty: "No suggested tasks.",
@@ -97,128 +96,7 @@ function Column({
 function renderOperatorWork(work: WorkCardData): ReactNode {
   const cards = arr(work.review_cards);
   if (!cards.length) return <WorkCard work={work} />;
-  return cards.map((card) => (
-    <WorkNeedCard key={`${work.displayId}:${str(card.id)}`} work={work} card={card} />
-  ));
-}
-
-function DispatchStatus({ workbench, open }: { workbench: Json | null; open: WorkCardData[] }) {
-  const next = (workbench?.dispatch_next ?? {}) as Json;
-  const canRun = Boolean(next.can_run);
-  const action = str(next.action);
-  const actor = str(next.actor) || "codex";
-  const workId = str(next.work_id);
-  const waitReason = str(next.wait_reason);
-  const blockedOn = arr(next.blocked_on).map(String);
-  const admissionPreviews = arr(workbench?.admission_previews);
-  const continuableAdmissionPreviews = admissionPreviews.filter(
-    (preview) =>
-      Boolean(str(preview?.work_id)) &&
-      Boolean(preview?.policy_allowed) &&
-      !Boolean(preview?.requires_operator) &&
-      !str(preview?.admission_blocked_reason) &&
-      str(preview?.staleness) === "fresh",
-  );
-  const blockedAdmissionPreviewCount = admissionPreviews.length - continuableAdmissionPreviews.length;
-  const admissionPreview = continuableAdmissionPreviews[0] ?? null;
-  const admissionPreviewWorkId = str(admissionPreview?.work_id);
-  const inboxItems = open.filter((work) => ["proposed", "admitted"].includes(str(work.state)));
-  const inboxItem = inboxItems[0] ?? null;
-  const intakeCount = inboxItems.length + continuableAdmissionPreviews.length;
-  const readyCount = open.filter((work) => str(work.state) === "ready").length;
-  const operatorGateCount =
-    open.filter((work) => ["blocked", "held"].includes(str(work.state))).length + blockedAdmissionPreviewCount;
-  let continueRequest: ContinueRequest | null = null;
-
-  let title = "Nothing to continue";
-  let body = "Compound is not seeing a safe next move right now.";
-  let tone: "blue" | "green" | "orange" | "violet" | "gray" = "gray";
-
-  if (canRun) {
-    const nextAction = {
-      claim: "start",
-      advance: "continue",
-      close: "finish",
-    }[action] ?? action.replace(/_/g, " ");
-    title = "Continue";
-    body = nextAction ? `Next safe move: ${nextAction}.` : "A safe next move is ready.";
-    tone = "green";
-    continueRequest = workId
-      ? {
-          area: "work-continue",
-          itemId: workId,
-          option: "continue",
-          fields: { actor },
-          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", workId, "--until-wait", "--json"],
-          note: "Moves safe lifecycle steps until the next real wait. Does not run task commands.",
-        }
-      : null;
-  } else if (readyCount > 0) {
-    title = "Ready to start";
-    body = `${readyCount} item${readyCount === 1 ? "" : "s"} can be started by an executor.`;
-    tone = "green";
-  } else if (intakeCount > 0) {
-    title = "Prepare suggested work";
-    body = `${intakeCount} suggested task${intakeCount === 1 ? "" : "s"} can be prepared before an executor starts.`;
-    tone = "orange";
-    continueRequest = inboxItem
-      ? {
-          area: "work-continue",
-          itemId: inboxItem.displayId,
-          option: "continue",
-          fields: { actor },
-          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", inboxItem.displayId, "--until-wait", "--json"],
-          note: "Prepares and starts one suggested task until the next real wait. Does not run task commands.",
-        }
-      : admissionPreviewWorkId
-        ? {
-            area: "work-continue",
-            itemId: admissionPreviewWorkId,
-            option: "continue",
-            fields: { actor },
-            command: [
-              "compound",
-              "work",
-              "continue",
-              "--actor",
-              actor,
-              "--expect-work",
-              admissionPreviewWorkId,
-              "--until-wait",
-              "--json",
-            ],
-            note: "Adds and starts one suggested task until the next real wait. Does not run task commands.",
-          }
-      : null;
-  } else if (operatorGateCount > 0) {
-    title = "Needs your decision";
-    body = `${operatorGateCount} item${operatorGateCount === 1 ? "" : "s"} need judgment, private input, or an unblock step.`;
-    tone = "violet";
-  } else if (waitReason) {
-    title = "Waiting";
-    body = waitReason.replace(/_/g, " ");
-  }
-
-  return (
-    <Card title={title} accent={tone} glyph=">" className="p-4">
-      <div className="flex flex-col gap-3">
-        <p className="text-[12.5px] leading-relaxed text-ink-2">{body}</p>
-        <div className="flex flex-wrap gap-2">
-          <Chip tone={readyCount ? "green" : "gray"}>{readyCount} ready</Chip>
-          <Chip tone={intakeCount ? "orange" : "gray"}>{intakeCount} inbox</Chip>
-          <Chip tone={operatorGateCount ? "violet" : "gray"}>{operatorGateCount} needs me</Chip>
-          {waitReason ? <Chip tone="gray">{waitReason.replace(/_/g, " ")}</Chip> : null}
-        </div>
-        <ContinueButton request={continueRequest} />
-        {!canRun && blockedOn.length > 0 ? (
-          <p className="text-[11.5px] leading-relaxed text-ink-3">
-            Waiting on {blockedOn.slice(0, 4).map(formatBlockedRef).join(" / ")}
-            {blockedOn.length > 4 ? " / ..." : ""}
-          </p>
-        ) : null}
-      </div>
-    </Card>
-  );
+  return cards.map((card) => <WorkNeedCard key={`${work.displayId}:${str(card.id)}`} work={work} card={card} />);
 }
 
 export default async function WorkBoard() {
@@ -233,13 +111,13 @@ export default async function WorkBoard() {
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Work</h1>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Continue what can move, and separate real decisions from lifecycle plumbing.
+            Continue what can move, and keep real decisions separate.
           </p>
         </div>
         <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />
       </div>
 
-      <DispatchStatus workbench={workbench} open={open} />
+      <ContinuePanel workbench={workbench} open={open} />
 
       <section>
         <SectionLabel>Work Board</SectionLabel>
