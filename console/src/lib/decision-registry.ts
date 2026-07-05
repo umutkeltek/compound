@@ -314,7 +314,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         label: "Continue",
         tone: "green",
         description: "Move safe lifecycle steps until the next real wait.",
-        argv: ["work", "continue", "--actor", "codex", "--until-wait"],
+        argv: ["work", "continue", "--actor", "codex", "--until-wait", "--json"],
       },
     ],
     plainLanguage: (item) => {
@@ -333,6 +333,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       "--expect-work",
       ctx.itemId,
       "--until-wait",
+      "--json",
     ],
   },
   "work-dispatch": {

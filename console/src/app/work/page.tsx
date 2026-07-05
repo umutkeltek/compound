@@ -2,6 +2,7 @@ import { ContinueButton, type ContinueRequest } from "@/components/ContinueButto
 import { WorkCard } from "@/components/WorkCard";
 import { Card, Chip, EmptyState, FreshnessChip, SectionLabel } from "@/components/ui";
 import { arr, getWorkbench, str, type Json } from "@/lib/compound";
+import { formatBlockedRef } from "@/lib/work-labels";
 import { enrichWorkItems, WorkCardData } from "@/lib/work-data";
 
 export const dynamic = "force-dynamic";
@@ -137,7 +138,7 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
           itemId: workId,
           option: "continue",
           fields: { actor },
-          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", workId, "--until-wait"],
+          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", workId, "--until-wait", "--json"],
           note: "Moves safe lifecycle steps until the next real wait. Does not run task commands.",
         }
       : null;
@@ -155,7 +156,7 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
           itemId: inboxItem.displayId,
           option: "continue",
           fields: { actor },
-          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", inboxItem.displayId, "--until-wait"],
+          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", inboxItem.displayId, "--until-wait", "--json"],
           note: "Prepares and starts one suggested task until the next real wait. Does not run task commands.",
         }
       : admissionPreviewWorkId
@@ -164,7 +165,17 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
             itemId: admissionPreviewWorkId,
             option: "continue",
             fields: { actor },
-            command: ["compound", "work", "continue", "--actor", actor, "--expect-work", admissionPreviewWorkId, "--until-wait"],
+            command: [
+              "compound",
+              "work",
+              "continue",
+              "--actor",
+              actor,
+              "--expect-work",
+              admissionPreviewWorkId,
+              "--until-wait",
+              "--json",
+            ],
             note: "Adds and starts one suggested task until the next real wait. Does not run task commands.",
           }
       : null;
@@ -187,10 +198,10 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
           <Chip tone={operatorGateCount ? "violet" : "gray"}>{operatorGateCount} needs me</Chip>
           {waitReason ? <Chip tone="gray">{waitReason.replace(/_/g, " ")}</Chip> : null}
         </div>
-        {continueRequest ? <ContinueButton request={continueRequest} /> : null}
+        <ContinueButton request={continueRequest} />
         {!canRun && blockedOn.length > 0 ? (
           <p className="text-[11.5px] leading-relaxed text-ink-3">
-            Waiting refs are parked as evidence, not the main queue: {blockedOn.slice(0, 4).join(" / ")}
+            Waiting on {blockedOn.slice(0, 4).map(formatBlockedRef).join(" / ")}
             {blockedOn.length > 4 ? " / ..." : ""}
           </p>
         ) : null}
