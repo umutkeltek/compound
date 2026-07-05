@@ -34,7 +34,8 @@ make install
 compound workbench
 compound proof-check --json
 compound orient --harness codex --cwd . --task "inspect compound"
-cd console && bun install && bun run dev # optional
+cd console && bun install
+compound console --operator # optional local console on port 3777
 ```
 
 For contract consumers:
