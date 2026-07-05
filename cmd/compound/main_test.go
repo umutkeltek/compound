@@ -275,6 +275,9 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
+		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
+			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
+		}
 		if !stringSliceContains(report.ProofRefs, want) {
 			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
 		}
@@ -11378,6 +11381,18 @@ func sameStringSlice(got, want []string) bool {
 	}
 	for i := range got {
 		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameStringSlicePrefix(got, wantPrefix []string) bool {
+	if len(got) < len(wantPrefix) {
+		return false
+	}
+	for i := range wantPrefix {
+		if got[i] != wantPrefix[i] {
 			return false
 		}
 	}
