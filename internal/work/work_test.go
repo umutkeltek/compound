@@ -158,6 +158,27 @@ func TestClaimConflict(t *testing.T) {
 	}
 }
 
+func TestListLeasesProjectsClaimedWork(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "operator", SuccessPredicate: "project lease"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := s.ListLeases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %+v, want one", leases)
+	}
+	if leases[0].WorkID != w.ID || leases[0].By != "codex" || leases[0].ClaimAt == "" {
+		t.Fatalf("lease projection = %+v", leases[0])
+	}
+}
+
 func TestClaimBlockedByPolicyDoesNotMutate(t *testing.T) {
 	s := newStore(t)
 	w, err := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)

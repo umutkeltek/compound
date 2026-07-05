@@ -789,6 +789,8 @@ func (s *Store) addEdgeOnce(edge Edge, existing map[string]bool, now time.Time) 
 
 func (s *Store) List() ([]Node, error) { return s.loadNodes() }
 
+func (s *Store) Edges() ([]Edge, error) { return s.loadEdges() }
+
 func (s *Store) Stats() (Stats, error) {
 	nodes, err := s.loadNodes()
 	if err != nil {

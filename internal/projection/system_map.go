@@ -12,6 +12,7 @@ import (
 )
 
 const SystemMapSchemaVersion = "compound.system_map_projection.v0.1"
+const SystemStatsSchemaVersion = "compound.system_stats_projection.v0.1"
 
 type SystemMapProjection struct {
 	SchemaVersion string                    `json:"schema_version"`
@@ -46,6 +47,21 @@ type SystemMapEdge struct {
 type SystemMapStats struct {
 	Live    int `json:"live"`
 	NotLive int `json:"notLive"`
+}
+
+type SystemStatsProjection struct {
+	SchemaVersion        string   `json:"schema_version"`
+	GeneratedAt          string   `json:"generated_at"`
+	Entities             int      `json:"entities"`
+	Claims               int      `json:"claims"`
+	Edges                int      `json:"edges"`
+	Evidence             int      `json:"evidence"`
+	RouteEvidence        int      `json:"route_evidence"`
+	NoPromote            int      `json:"no_promote"`
+	KnowledgeImports     int      `json:"knowledge_imports"`
+	KnowledgeSources     int      `json:"knowledge_sources"`
+	KnowledgeSourceKinds []string `json:"knowledge_source_kinds,omitempty"`
+	IntakeRepos          int      `json:"intake_repos"`
 }
 
 type systemMapFile struct {
@@ -91,6 +107,28 @@ func BuildSystemMap(homePath, repoPath string, now time.Time) (SystemMapProjecti
 		Edges:         file.Edges,
 		Stats:         stats,
 	}, nil
+}
+
+func BuildSystemStats(homePath string, now time.Time) SystemStatsProjection {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	ledger := filepath.Join(homePath, "ledger")
+	knowledgeSources := filepath.Join(homePath, "registries", "knowledge-sources.jsonl")
+	return SystemStatsProjection{
+		SchemaVersion:        SystemStatsSchemaVersion,
+		GeneratedAt:          now.UTC().Format(time.RFC3339),
+		Entities:             countJSONLLines(filepath.Join(ledger, "entities.jsonl")),
+		Claims:               countJSONLLines(filepath.Join(ledger, "claims.jsonl")),
+		Edges:                countJSONLLines(filepath.Join(ledger, "edges.jsonl")),
+		Evidence:             countJSONLLines(filepath.Join(ledger, "evidence.jsonl")),
+		RouteEvidence:        countJSONLLines(filepath.Join(ledger, "execution-route-evidence.jsonl")),
+		NoPromote:            countJSONLLines(filepath.Join(ledger, "no-promote-decisions.jsonl")),
+		KnowledgeImports:     countJSONLLines(filepath.Join(ledger, "knowledge-imports.jsonl")),
+		KnowledgeSources:     countJSONLLines(knowledgeSources),
+		KnowledgeSourceKinds: knowledgeSourceKinds(knowledgeSources),
+		IntakeRepos:          countDirs(filepath.Join(homePath, "inbox", "external-repo-intake")),
+	}
 }
 
 func loadSystemMapFile(homePath, repoPath string) (systemMapFile, []string, error) {

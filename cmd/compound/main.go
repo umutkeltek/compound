@@ -161,8 +161,10 @@ func workUsage(sub string) string {
 		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready|running] [--context-pack ctx] [--risk tier1] [--privacy private]"
 	case "import-packet":
 		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
+	case "leases":
+		return "usage: compound work leases [--json]"
 	default:
-		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
+		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
 	}
 }
 
@@ -239,7 +241,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-compound work <create-plan|admit-plan|create|import-packet|show|list|active-packet-proof|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
+compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
   compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
@@ -281,7 +283,7 @@ compound memory <candidate|candidates|import-page|adjudicate|recall|timeline|que
   compound distiller import-session-lenses <multi-lens.json>
                                                                  existing session distill lenses -> SourceObservation/no-promote; no row import or memory promotion
   compound distiller run [--llm-response response.json [--request request.json]|trace.json] | doctor [--writeback] | prior-state Trace -> candidate fan-out, adjudication, prior state
-compound capability <add|surface|observe|consume|list|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
+compound capability <add|surface|observe|consume|consume-receipts|list|graph|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound local-models advise [--lm-studio-url U] [--required MODEL]... [--min-context MODEL=TOKENS]... [--host-context-limit N] [--idle-ttl DURATION] [--json] local model context/load/unload advice with lifecycle intents; reads configured local provider, no mutation
   compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
@@ -340,7 +342,7 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|graph|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -1370,6 +1372,44 @@ func cmdCapability(args []string) {
 			}
 			fmt.Printf("%-28s %-12s %s%s  triggers=%s\n", n.ID, n.Kind, n.Name, tag, strings.Join(n.Triggers, ","))
 		}
+	case "graph":
+		if len(rest) > 1 || (len(rest) == 1 && rest[0] != "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound capability graph [--json]")
+			os.Exit(2)
+		}
+		nodes, err := store.List()
+		die(err)
+		edges, err := store.Edges()
+		die(err)
+		decisionRecords, err := decisions.LoadSourceAuthority(homePath)
+		die(err)
+		out := struct {
+			SchemaVersion string                            `json:"schema_version"`
+			AuthorityRef  string                            `json:"authority_ref"`
+			NodeCount     int                               `json:"node_count"`
+			EdgeCount     int                               `json:"edge_count"`
+			DecisionCount int                               `json:"decision_count"`
+			Nodes         []capgraph.Node                   `json:"nodes"`
+			Edges         []capgraph.Edge                   `json:"edges"`
+			Decisions     []decisions.SourceAuthorityRecord `json:"decisions"`
+		}{
+			SchemaVersion: "compound.capability_graph_projection.v0.1",
+			AuthorityRef:  "compound://registries/capability-graph",
+			NodeCount:     len(nodes),
+			EdgeCount:     len(edges),
+			DecisionCount: len(decisionRecords),
+			Nodes:         nodes,
+			Edges:         edges,
+			Decisions:     decisionRecords,
+		}
+		if len(rest) == 1 && rest[0] == "--json" {
+			printJSON(out)
+			return
+		}
+		fmt.Printf("# capability graph\n\n")
+		fmt.Printf("- nodes: %d\n", out.NodeCount)
+		fmt.Printf("- edges: %d\n", out.EdgeCount)
+		fmt.Printf("- decisions: %d\n", out.DecisionCount)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -6021,6 +6061,32 @@ func cmdWork(args []string) {
 		for _, w := range ws {
 			fmt.Printf("%s  %-10s %s\n", w.ID, w.State, w.SuccessPredicate)
 		}
+	case "leases":
+		usage := "usage: compound work leases [--json]"
+		for _, arg := range rest {
+			if arg != "--json" {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+		}
+		leases, err := store.ListLeases()
+		die(err)
+		if has("--json") {
+			printJSON(struct {
+				SchemaVersion string       `json:"schema_version"`
+				AuthorityRef  string       `json:"authority_ref"`
+				Leases        []work.Lease `json:"leases"`
+			}{
+				SchemaVersion: "compound.work_leases_projection.v0.1",
+				AuthorityRef:  "compound://work/leases",
+				Leases:        leases,
+			})
+			return
+		}
+		fmt.Printf("# work leases\n\n")
+		for _, lease := range leases {
+			fmt.Printf("- lease: %s by=%s claimed_at=%s\n", lease.WorkID, lease.By, lease.ClaimAt)
+		}
 	case "active-packet-proof":
 		usage := "usage: compound work active-packet-proof [--surface canonical_surface] [--source-packet packet.md] [--json]"
 		for i := 0; i < len(rest); i++ {
@@ -6750,7 +6816,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|create|import-packet|show|list|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|close-plan|close|act> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ...")
 		os.Exit(2)
 	}
 }

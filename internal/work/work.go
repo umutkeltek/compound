@@ -797,6 +797,41 @@ func (s *Store) readLease(workID string) (Lease, error) {
 	return l, err
 }
 
+// ListLeases returns the read-only lease projection for claimed work. The work
+// package owns the lease files; operator surfaces should consume this projection
+// instead of reading COMPOUND_HOME/work/leases directly.
+func (s *Store) ListLeases() ([]Lease, error) {
+	dir := filepath.Join(s.home, "work", "leases")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	leases := make([]Lease, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var lease Lease
+		if err := s.readJSON(filepath.Join(dir, entry.Name()), &lease); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(lease.WorkID) == "" {
+			lease.WorkID = strings.TrimSuffix(entry.Name(), ".json")
+		}
+		leases = append(leases, lease)
+	}
+	sort.Slice(leases, func(i, j int) bool {
+		if leases[i].ClaimAt == leases[j].ClaimAt {
+			return leases[i].WorkID < leases[j].WorkID
+		}
+		return leases[i].ClaimAt < leases[j].ClaimAt
+	})
+	return leases, nil
+}
+
 func (s *Store) appendEvent(e Event) error {
 	f, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
