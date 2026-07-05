@@ -2,6 +2,7 @@ package observation
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,119 @@ func TestBlockedPrivateInputDoesNotApply(t *testing.T) {
 	}
 	if len(report.Decisions) != 1 || report.Decisions[0].Route != RouteBlockedPrivate {
 		t.Fatalf("decisions = %+v", report.Decisions)
+	}
+}
+
+func TestValidateBatchRejectsUnsafeExternalFields(t *testing.T) {
+	value := 1.0
+	base := validBatch()
+	base.Observations = []Observation{{
+		ID:         "obs_safe",
+		Kind:       "metric",
+		Metric:     "clicks",
+		Value:      &value,
+		ObservedAt: tObservation.Format(time.RFC3339),
+		Confidence: 1,
+		RawRef:     "gsc-row:fixture-clicks",
+	}}
+
+	cases := []struct {
+		name string
+		edit func(*Batch)
+		want string
+	}{
+		{
+			name: "duplicate observation id",
+			edit: func(batch *Batch) {
+				batch.Observations = append(batch.Observations, batch.Observations[0])
+			},
+			want: "duplicate observation id",
+		},
+		{
+			name: "dimension count",
+			edit: func(batch *Batch) {
+				dims := map[string]string{}
+				for i := 0; i < maxObservationDimensions+1; i++ {
+					dims[fmt.Sprintf("k_%02d", i)] = "v"
+				}
+				batch.Observations[0].Dimensions = dims
+			},
+			want: "too many dimensions",
+		},
+		{
+			name: "secret dimension key",
+			edit: func(batch *Batch) {
+				batch.Observations[0].Dimensions = map[string]string{"api_key": "redacted"}
+			},
+			want: "secret-like dimension key",
+		},
+		{
+			name: "secret url query",
+			edit: func(batch *Batch) {
+				batch.Observations[0].URL = "https://example.invalid/callback?access_token=redacted"
+			},
+			want: "secret-like",
+		},
+		{
+			name: "absolute raw ref without private source",
+			edit: func(batch *Batch) {
+				batch.Observations[0].RawRef = "/tmp/compound/private-source.json"
+			},
+			want: "absolute local path",
+		},
+		{
+			name: "unsupported raw ref scheme",
+			edit: func(batch *Batch) {
+				batch.Observations[0].RawRef = "file:///tmp/compound/private-source.json"
+			},
+			want: "unsupported ref scheme",
+		},
+		{
+			name: "oversized content",
+			edit: func(batch *Batch) {
+				batch.Observations[0].Content = strings.Repeat("x", maxObservationContentLen+1)
+			},
+			want: "content exceeds",
+		},
+		{
+			name: "too many evidence refs",
+			edit: func(batch *Batch) {
+				for i := 0; i < maxEvidenceRefs+1; i++ {
+					batch.Observations[0].EvidenceRefs = append(batch.Observations[0].EvidenceRefs, fmt.Sprintf("fixture:evidence:%02d", i))
+				}
+			},
+			want: "too many evidence_refs",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			batch := base
+			batch.Observations = append([]Observation(nil), base.Observations...)
+			tc.edit(&batch)
+			err := ValidateBatch(batch)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateBatch error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateBatchAllowsPrivateAbsoluteRefsWhenExplicit(t *testing.T) {
+	value := 1.0
+	batch := validBatch()
+	batch.Source.Privacy = "private"
+	batch.Observations = []Observation{{
+		ID:         "obs_private_ref",
+		Kind:       "metric",
+		Metric:     "clicks",
+		Value:      &value,
+		ObservedAt: tObservation.Format(time.RFC3339),
+		Confidence: 1,
+		RawRef:     "/tmp/compound/private-source.json",
+	}}
+	if err := ValidateBatch(batch); err != nil {
+		t.Fatalf("ValidateBatch private absolute ref: %v", err)
 	}
 }
 

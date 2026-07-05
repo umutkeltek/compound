@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -36,6 +37,19 @@ const (
 	RouteCandidateOnly     = "candidate_only"
 	RouteUnsupportedKind   = "unsupported_kind"
 	RouteBlockedPrivate    = "blocked_private_input"
+
+	maxObservationDimensions = 32
+	maxDimensionKeyLen       = 80
+	maxDimensionValueLen     = 512
+	maxObservationIDLen      = 160
+	maxObservationKindLen    = 80
+	maxObservationMetricLen  = 160
+	maxObservationTitleLen   = 512
+	maxObservationContentLen = 64 * 1024
+	maxObservationURLLen     = 2048
+	maxObservationRefLen     = 2048
+	maxEvidenceRefs          = 32
+	maxEvidenceRefLen        = 256
 )
 
 // Batch is the parent grammar for external payloads that Compound may route
@@ -526,6 +540,7 @@ func ValidateBatch(batch Batch) error {
 	if len(batch.Observations) == 0 {
 		missing = append(missing, "observations")
 	}
+	seenIDs := map[string]bool{}
 	for i, obs := range batch.Observations {
 		prefix := fmt.Sprintf("observations[%d]", i)
 		if strings.TrimSpace(obs.Kind) == "" {
@@ -537,9 +552,25 @@ func ValidateBatch(batch Batch) error {
 		if obs.Confidence < 0 || obs.Confidence > 1 {
 			return fmt.Errorf("%s.confidence must be between 0 and 1", prefix)
 		}
+		obsID := observationID(batch, obs)
+		if seenIDs[obsID] {
+			return fmt.Errorf("%s duplicate observation id %q", prefix, obsID)
+		}
+		seenIDs[obsID] = true
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing %s", strings.Join(missing, ", "))
+	}
+	if err := validateSourceFields(batch); err != nil {
+		return err
+	}
+	if err := validateSubjectFields(batch); err != nil {
+		return err
+	}
+	for i, obs := range batch.Observations {
+		if err := validateObservationFields(batch, obs, fmt.Sprintf("observations[%d]", i)); err != nil {
+			return err
+		}
 	}
 	if _, err := time.Parse(time.RFC3339, batch.Source.CapturedAt); err != nil {
 		return fmt.Errorf("source.captured_at must be RFC3339: %w", err)
@@ -550,6 +581,277 @@ func ValidateBatch(batch Batch) error {
 		}
 	}
 	return nil
+}
+
+func validateSourceFields(batch Batch) error {
+	checks := []struct {
+		field string
+		value string
+		max   int
+		scan  bool
+	}{
+		{"source.kind", batch.Source.Kind, maxObservationKindLen, true},
+		{"source.collector", batch.Source.Collector, maxObservationRefLen, true},
+		{"source.privacy", batch.Source.Privacy, maxDimensionValueLen, false},
+	}
+	for _, check := range checks {
+		if err := validateStringValue(check.field, check.value, check.max, check.scan); err != nil {
+			return err
+		}
+	}
+	return validateRefValue("source.ref", batch.Source.Ref, batch)
+}
+
+func validateSubjectFields(batch Batch) error {
+	checks := []struct {
+		field string
+		value string
+		max   int
+	}{
+		{"subject.kind", batch.Subject.Kind, maxObservationKindLen},
+		{"subject.id", batch.Subject.ID, maxObservationRefLen},
+		{"subject.surface", batch.Subject.Surface, maxObservationRefLen},
+		{"subject.channel", batch.Subject.Channel, maxObservationRefLen},
+	}
+	for _, check := range checks {
+		if err := validateStringValue(check.field, check.value, check.max, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateObservationFields(batch Batch, obs Observation, prefix string) error {
+	if err := validateStringValue(prefix+".id", obs.ID, maxObservationIDLen, false); err != nil {
+		return err
+	}
+	if err := validateStringValue(prefix+".kind", obs.Kind, maxObservationKindLen, true); err != nil {
+		return err
+	}
+	if err := validateStringValue(prefix+".metric", obs.Metric, maxObservationMetricLen, true); err != nil {
+		return err
+	}
+	if err := validateStringValue(prefix+".title", obs.Title, maxObservationTitleLen, true); err != nil {
+		return err
+	}
+	if err := validateStringValue(prefix+".content", obs.Content, maxObservationContentLen, true); err != nil {
+		return err
+	}
+	if err := validateURLValue(prefix+".url", obs.URL); err != nil {
+		return err
+	}
+	if err := validateRefValue(prefix+".raw_ref", obs.RawRef, batch); err != nil {
+		return err
+	}
+	if err := validateDimensions(prefix+".dimensions", obs.Dimensions); err != nil {
+		return err
+	}
+	return validateEvidenceRefs(prefix+".evidence_refs", obs.EvidenceRefs, batch)
+}
+
+func validateStringValue(field, value string, max int, scanSecret bool) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) > max {
+		return fmt.Errorf("%s exceeds %d bytes", field, max)
+	}
+	if scanSecret && secretLikeValue(value) {
+		return fmt.Errorf("%s contains secret-like material", field)
+	}
+	return nil
+}
+
+func validateURLValue(field, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if err := validateStringValue(field, value, maxObservationURLLen, true); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute http(s) URL", field)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("%s unsupported URL scheme %q", field, parsed.Scheme)
+	}
+	for key, values := range parsed.Query() {
+		if secretLikeKey(key) {
+			return fmt.Errorf("%s contains secret-like query key %q", field, key)
+		}
+		for _, v := range values {
+			if secretLikeValue(v) {
+				return fmt.Errorf("%s contains secret-like query value for %q", field, key)
+			}
+		}
+	}
+	return nil
+}
+
+func validateRefValue(field, value string, batch Batch) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if err := validateStringValue(field, value, maxObservationRefLen, true); err != nil {
+		return err
+	}
+	if localPathLike(value) && !privateRefsAllowed(batch) {
+		return fmt.Errorf("%s absolute local path requires explicit private source privacy", field)
+	}
+	scheme := refScheme(value)
+	if scheme == "" {
+		return nil
+	}
+	if !allowedObservationRefScheme(scheme) {
+		return fmt.Errorf("%s unsupported ref scheme %q", field, scheme)
+	}
+	if scheme == "http" || scheme == "https" {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Host == "" {
+			return fmt.Errorf("%s must be an absolute http(s) ref", field)
+		}
+	}
+	return nil
+}
+
+func validateDimensions(field string, dimensions map[string]string) error {
+	if len(dimensions) > maxObservationDimensions {
+		return fmt.Errorf("%s has too many dimensions: %d > %d", field, len(dimensions), maxObservationDimensions)
+	}
+	for key, value := range dimensions {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%s contains empty key", field)
+		}
+		if len(key) > maxDimensionKeyLen {
+			return fmt.Errorf("%s key %q exceeds %d bytes", field, key, maxDimensionKeyLen)
+		}
+		if secretLikeKey(key) {
+			return fmt.Errorf("%s contains secret-like dimension key %q", field, key)
+		}
+		if err := validateStringValue(field+"."+key, value, maxDimensionValueLen, true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateEvidenceRefs(field string, refs []string, batch Batch) error {
+	if len(refs) > maxEvidenceRefs {
+		return fmt.Errorf("%s has too many evidence_refs: %d > %d", field, len(refs), maxEvidenceRefs)
+	}
+	for i, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			return fmt.Errorf("%s[%d] is empty", field, i)
+		}
+		if len(ref) > maxEvidenceRefLen {
+			return fmt.Errorf("%s[%d] exceeds %d bytes", field, i, maxEvidenceRefLen)
+		}
+		if secretLikeValue(ref) {
+			return fmt.Errorf("%s[%d] contains secret-like material", field, i)
+		}
+		if localPathLike(ref) && !privateRefsAllowed(batch) {
+			return fmt.Errorf("%s[%d] absolute local path requires explicit private source privacy", field, i)
+		}
+	}
+	return nil
+}
+
+func privateRefsAllowed(batch Batch) bool {
+	switch normalize(batch.Source.Privacy) {
+	case "private", "operator_private", "internal", "credential", "credentials", "secret", "secrets":
+		return true
+	default:
+		return false
+	}
+}
+
+func localPathLike(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	if filepath.IsAbs(value) || strings.HasPrefix(value, "~/") {
+		return true
+	}
+	if len(value) >= 3 && value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		return true
+	}
+	return false
+}
+
+func refScheme(value string) string {
+	i := strings.Index(value, ":")
+	if i <= 0 || i > 40 {
+		return ""
+	}
+	candidate := value[:i]
+	for _, r := range candidate {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '+' || r == '-' || r == '.' {
+			continue
+		}
+		return ""
+	}
+	return strings.ToLower(candidate)
+}
+
+func allowedObservationRefScheme(scheme string) bool {
+	switch scheme {
+	case "http", "https", "compound", "site", "app-store", "channel", "inbox", "brain",
+		"gsc-row", "asc-row", "web-row", "event-row", "provider-ledger-row",
+		"social-reply", "support-message", "fixture", "artifact_sha256", "route_evidence",
+		"trace", "receipt", "transition", "product_signal", "source_observation":
+		return true
+	default:
+		return false
+	}
+}
+
+func secretLikeKey(value string) bool {
+	switch normalize(value) {
+	case "api_key", "apikey", "access_token", "auth_token", "refresh_token", "id_token",
+		"client_secret", "secret", "password", "passwd", "credential", "credentials",
+		"authorization", "private_key":
+		return true
+	default:
+		return false
+	}
+}
+
+func secretLikeValue(value string) bool {
+	n := strings.ToLower(strings.TrimSpace(value))
+	if n == "" {
+		return false
+	}
+	markers := []string{
+		"-----begin private key-----",
+		"password=",
+		"password:",
+		"passwd=",
+		"api_key=",
+		"api-key=",
+		"access_token=",
+		"auth_token=",
+		"client_secret=",
+		"secret=",
+		"credential=",
+		"authorization: bearer ",
+		"bearer sk-",
+		"sk-",
+		"ghp_",
+		"github_pat_",
+		"xoxb-",
+	}
+	for _, marker := range markers {
+		if strings.Contains(n, marker) {
+			return true
+		}
+	}
+	return strings.Contains(value, "AKIA")
 }
 
 func ProductSignalDocument(batch Batch, obs Observation, sourcePath string) (product.SignalDocument, error) {
