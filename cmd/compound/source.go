@@ -33,6 +33,14 @@ func cmdSource(args []string) {
 		cmdSourceIntake(args[1:])
 	case "intake-work-plan":
 		cmdSourceIntakeWorkPlan(args[1:])
+	case "manifest-create":
+		cmdSourceManifestCreate(args[1:])
+	case "manifest-show":
+		cmdSourceManifestShow(args[1:])
+	case "manifest-doctor":
+		cmdSourceManifestDoctor(args[1:])
+	case "manifest-drilldown":
+		cmdSourceManifestDrilldown(args[1:])
 	case "observation-verdict-plan":
 		cmdSourceObservationVerdictPlan(args[1:])
 	case "observation-verdict-review":
@@ -44,7 +52,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> <source>... [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -315,6 +323,195 @@ func cmdSourceIntakeWorkPlan(args []string) {
 		fmt.Printf("- action_command: %s\n", strings.Join(report.SourceIntake.ActionCommand, " "))
 	}
 	fmt.Printf("- proof: %s\n", report.SourceIntake.Proof)
+}
+
+func cmdSourceManifestCreate(args []string) {
+	family := ""
+	jsonOut := false
+	var paths []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--family":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound source manifest-create --family <id> <source>... [--json]")
+				os.Exit(2)
+			}
+			family = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				fmt.Fprintln(os.Stderr, "usage: compound source manifest-create --family <id> <source>... [--json]")
+				os.Exit(2)
+			}
+			paths = append(paths, args[i])
+		}
+	}
+	if strings.TrimSpace(family) == "" || len(paths) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound source manifest-create --family <id> <source>... [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	manifest, err := sourceobs.BuildSourceManifest(family, paths, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-create:", err)
+		os.Exit(1)
+	}
+	report, err := sourceobs.RecordSourceManifest(homePath, manifest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-create:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("# source manifest %s\n\n", report.ManifestID)
+	fmt.Printf("- authority: %s\n", report.AuthorityRef)
+	fmt.Printf("- items: %d\n", report.ItemCount)
+	fmt.Printf("- path: %s\n", report.ManifestPath)
+}
+
+func cmdSourceManifestShow(args []string) {
+	jsonOut := false
+	var family string
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOut = true
+		default:
+			if strings.HasPrefix(arg, "-") || family != "" {
+				fmt.Fprintln(os.Stderr, "usage: compound source manifest-show <family> [--json]")
+				os.Exit(2)
+			}
+			family = arg
+		}
+	}
+	if strings.TrimSpace(family) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound source manifest-show <family> [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	manifest, err := sourceobs.LoadSourceManifest(homePath, family)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-show:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(manifest)
+		return
+	}
+	fmt.Printf("source manifest: %s\n", manifest.AuthorityRef)
+	fmt.Printf("items: %d\n", len(manifest.Items))
+	for _, item := range manifest.Items {
+		fmt.Printf("- %s %s %s\n", item.ID, item.SourceKind, item.FileHash)
+	}
+}
+
+func cmdSourceManifestDoctor(args []string) {
+	jsonOut := false
+	var family string
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOut = true
+		default:
+			if strings.HasPrefix(arg, "-") || family != "" {
+				fmt.Fprintln(os.Stderr, "usage: compound source manifest-doctor <family> [--json]")
+				os.Exit(2)
+			}
+			family = arg
+		}
+	}
+	if strings.TrimSpace(family) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound source manifest-doctor <family> [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := sourceobs.DoctorSourceManifest(homePath, family)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-doctor:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		if report.Status != "ok" {
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("source manifest doctor: %s\n", report.Status)
+	fmt.Printf("items: %d missing=%d hash_mismatch=%d\n", report.ItemCount, report.MissingFieldCount, report.HashMismatchCount)
+	for _, check := range report.Checks {
+		fmt.Printf("- %s: %s", check.Name, check.Status)
+		if check.Detail != "" {
+			fmt.Printf(" (%s)", check.Detail)
+		}
+		fmt.Println()
+	}
+	if report.Status != "ok" {
+		os.Exit(1)
+	}
+}
+
+func cmdSourceManifestDrilldown(args []string) {
+	jsonOut := false
+	itemID := ""
+	var family string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--item":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: compound source manifest-drilldown <family> --item <id> [--json]")
+				os.Exit(2)
+			}
+			itemID = args[i+1]
+			i++
+		default:
+			if strings.HasPrefix(args[i], "-") || family != "" {
+				fmt.Fprintln(os.Stderr, "usage: compound source manifest-drilldown <family> --item <id> [--json]")
+				os.Exit(2)
+			}
+			family = args[i]
+		}
+	}
+	if strings.TrimSpace(family) == "" || strings.TrimSpace(itemID) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound source manifest-drilldown <family> --item <id> [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	drilldown, err := sourceobs.DrilldownSourceManifest(homePath, family, itemID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source manifest-drilldown:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(drilldown)
+		return
+	}
+	fmt.Printf("compact: %s\n", drilldown.CompactRowRef)
+	fmt.Printf("manifest: %s\n", drilldown.ManifestRef)
+	fmt.Printf("source: %s\n", drilldown.SourceRef)
+	fmt.Printf("hash: %s matches=%t\n", drilldown.FileHash, drilldown.HashMatches)
 }
 
 func cmdSourceObservationVerdictPlan(args []string) {
