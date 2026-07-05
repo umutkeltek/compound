@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"compound/internal/arch"
 	"compound/internal/authority"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
@@ -227,37 +226,6 @@ func eligibleDecisionSourceFiles(root, sourceKind string) ([]string, error) {
 		return decisions.EligibleNoteDecisionFiles(root)
 	default:
 		return nil, fmt.Errorf("unsupported decision source kind %q (supported: note)", sourceKind)
-	}
-}
-
-// cmdArchitecture runs the architecture doctor: candidate-map integrity, total package
-// classification (a new unclassified package fails), public-doc leak gate, and the visible
-// memory-stack convergence debt. Exits non-zero if any check FAILs.
-func cmdArchitecture(args []string) {
-	if len(args) == 0 || args[0] != "doctor" {
-		fmt.Fprintln(os.Stderr, "usage: compound architecture doctor [--repo <path>] [--strict]")
-		os.Exit(2)
-	}
-	repo, strict := ".", false
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "--strict":
-			strict = true
-		case "--repo":
-			if i+1 < len(args) {
-				repo = args[i+1]
-			}
-		}
-	}
-	r := arch.Doctor(repo, strict)
-	for _, f := range r.Findings {
-		fmt.Printf("  [%-4s] %-14s %s\n", f.Severity, f.Check, f.Message)
-	}
-	if r.OK {
-		fmt.Println("verdict: ok")
-	} else {
-		fmt.Println("verdict: FAIL")
-		os.Exit(1)
 	}
 }
 
