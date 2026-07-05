@@ -1,3 +1,4 @@
+import { DispatchStepButton } from "@/components/DispatchStepButton";
 import { WorkCard } from "@/components/WorkCard";
 import { Card, Chip, EmptyState, FreshnessChip, SectionLabel } from "@/components/ui";
 import { arr, getWorkbench, str, type Json } from "@/lib/compound";
@@ -12,6 +13,7 @@ const LANES: {
   states: string[];
   tint: string;
   empty: string;
+  showDecisionForm?: boolean;
 }[] = [
   {
     key: "intake",
@@ -44,6 +46,7 @@ const LANES: {
     states: ["blocked", "held"],
     tint: "#8b5cf6",
     empty: "No operator gates.",
+    showDecisionForm: false,
   },
 ];
 
@@ -53,12 +56,14 @@ function Column({
   tint,
   items,
   empty,
+  showDecisionForm = true,
 }: {
   title: string;
   description: string;
   tint: string;
   items: WorkCardData[];
   empty: string;
+  showDecisionForm?: boolean;
 }) {
   return (
     <div className="flex w-[328px] shrink-0 flex-col gap-3">
@@ -74,7 +79,9 @@ function Column({
       </div>
       <div className="flex flex-col gap-3">
         {items.length ? (
-          items.map((work) => <WorkCard key={work.displayId} work={work} />)
+          items.map((work) => (
+            <WorkCard key={work.displayId} work={work} showDecisionForm={showDecisionForm} />
+          ))
         ) : (
           <EmptyState>{empty}</EmptyState>
         )}
@@ -87,6 +94,8 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
   const next = (workbench?.dispatch_next ?? {}) as Json;
   const canRun = Boolean(next.can_run);
   const action = str(next.action);
+  const actor = str(next.actor) || "codex";
+  const workId = str(next.work_id);
   const waitReason = str(next.wait_reason);
   const blockedOn = arr(next.blocked_on).map(String);
   const intakeCount = open.filter((work) => ["proposed", "admitted"].includes(str(work.state))).length;
@@ -129,6 +138,9 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
           <Chip tone={operatorGateCount ? "violet" : "gray"}>{operatorGateCount} operator gates</Chip>
           {waitReason ? <Chip tone="gray">{waitReason.replace(/_/g, " ")}</Chip> : null}
         </div>
+        {canRun && workId ? (
+          <DispatchStepButton workId={workId} actor={actor} command={arr(next.command).map(String)} />
+        ) : null}
         {!canRun && blockedOn.length > 0 ? (
           <p className="text-[11.5px] leading-relaxed text-ink-3">
             Blocked refs are parked as evidence, not the main queue: {blockedOn.slice(0, 4).join(" / ")}
@@ -171,6 +183,7 @@ export default async function WorkBoard() {
                 description={column.description}
                 tint={column.tint}
                 empty={column.empty}
+                showDecisionForm={column.showDecisionForm}
                 items={open.filter((work) => column.states.includes(str(work.state)))}
               />
             ))}

@@ -300,6 +300,40 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       ),
   },
 
+  "work-dispatch": {
+    area: "work-dispatch",
+    title: "Dispatch next work step",
+    glyph: ">",
+    accent: "green",
+    source: "workbench",
+    argvAllowlist: [["work", "dispatch-step"]],
+    idPattern: /^work_[a-z0-9]{6,}$/,
+    options: [
+      {
+        value: "dispatch_step",
+        label: "Run next safe step",
+        tone: "green",
+        description: "Claim, advance, or close one policy-allowed lifecycle step.",
+        argv: ["work", "dispatch-step", "--actor", "codex", "--until-wait"],
+      },
+    ],
+    plainLanguage: (item) => {
+      const id = str(item.work_id) || str(item.id);
+      return {
+        headline: `Dispatch ${id}`,
+        body: "Run one governed lifecycle step for the active harness. This does not execute task commands.",
+      };
+    },
+    fields: [],
+    buildArgv: (ctx) => [
+      "work",
+      "dispatch-step",
+      "--actor",
+      str(ctx.fields.actor) || "codex",
+      "--until-wait",
+    ],
+  },
+
   "memory-adjudicate": {
     area: "memory-adjudicate",
     title: "Memory adjudication",

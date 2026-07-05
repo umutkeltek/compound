@@ -19,7 +19,15 @@ const EDGE: Record<string, string> = {
   cancelled: "#9aa4b2",
 };
 
-export function WorkCard({ work, compact = false }: { work: WorkCardData; compact?: boolean }) {
+export function WorkCard({
+  work,
+  compact = false,
+  showDecisionForm = true,
+}: {
+  work: WorkCardData;
+  compact?: boolean;
+  showDecisionForm?: boolean;
+}) {
   const state = str(work.state);
   const id = work.displayId;
   const title = work.packet?.title || str(work.canonical_surface) || str(work.success_predicate) || id;
@@ -68,7 +76,7 @@ export function WorkCard({ work, compact = false }: { work: WorkCardData; compac
           {str(work.next_action)}
         </p>
       ) : null}
-      {formSpec && options.length > 0 ? (
+      {showDecisionForm && formSpec && options.length > 0 ? (
         <DecisionForm formSpec={formSpec} itemId={id} argvPreview={options[0]?.argv ?? null} />
       ) : null}
     </div>
