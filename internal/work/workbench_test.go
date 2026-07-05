@@ -858,6 +858,21 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 		"confidence":       0.72,
 		"visibility":       "private",
 		"source_trace_ref": "knowledge_extraction:kx_fixture",
+		"qualifiers": map[string]any{
+			"extraction_id": "kx_fixture",
+			"extracted_by":  "openai-compatible/test-model",
+			"item_ref":      "chatgpt:fixture-conversation",
+			"source":        "knowledge_extraction",
+		},
+	})
+	writeJSONFile(t, filepath.Join(runDir, "chatgpt-knowledge-export.json"), map[string]any{
+		"schema_version": "compound.knowledge_export.v0.1",
+		"source":         "conversation-export:fixture",
+		"items": []map[string]any{{
+			"ref":     "chatgpt:fixture-conversation",
+			"title":   "Fixture Conversation Strategy",
+			"content": "[assistant]\nThe useful source passage says Compound should show the actual memory candidate before asking for judgment.\n",
+		}},
 	})
 	writeJSONFile(t, filepath.Join(runDir, "panel-run-single-prun_fixture.json"), map[string]any{
 		"schema_version": "compound.panel_run.v0.1",
@@ -909,14 +924,14 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Counts.RunArtifacts != 3 {
-		t.Fatalf("run artifact count = %d, want 3; report=%+v", report.Counts.RunArtifacts, report)
+	if report.Counts.RunArtifacts != 4 {
+		t.Fatalf("run artifact count = %d, want 4; report=%+v", report.Counts.RunArtifacts, report)
 	}
 	if len(report.Open) != 1 || report.Open[0].WorkID != held.ID {
 		t.Fatalf("open work = %+v", report.Open)
 	}
 	item := report.Open[0]
-	if len(item.RunArtifacts) != 3 {
+	if len(item.RunArtifacts) != 4 {
 		t.Fatalf("run artifacts = %+v", item.RunArtifacts)
 	}
 	for _, artifact := range item.RunArtifacts {
@@ -958,6 +973,12 @@ func TestWorkbenchSurfacesRunArtifactsForHeldWork(t *testing.T) {
 		*card.CandidateConfidence != 0.72 ||
 		card.CandidateVisibility != "private" ||
 		card.CandidateSourceRef != "knowledge_extraction:kx_fixture" ||
+		card.CandidateItemRef != "chatgpt:fixture-conversation" ||
+		card.CandidateExtraction != "kx_fixture" ||
+		card.CandidateExtractedBy != "openai-compatible/test-model" ||
+		card.CandidateSourceKind != "knowledge_extraction" ||
+		card.CandidateSourceTitle != "Fixture Conversation Strategy" ||
+		!strings.Contains(card.CandidateSourceExcerpt, "actual memory candidate before asking for judgment") ||
 		card.PanelDecision != "needs_human" ||
 		card.PanelConfidence == nil ||
 		*card.PanelConfidence != 0.75 ||

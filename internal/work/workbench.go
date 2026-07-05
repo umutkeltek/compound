@@ -189,37 +189,43 @@ type WorkbenchItem struct {
 }
 
 type WorkbenchReviewCard struct {
-	ID                  string   `json:"id"`
-	Kind                string   `json:"kind"`
-	Title               string   `json:"title"`
-	WorkID              string   `json:"work_id"`
-	GateID              string   `json:"gate_id,omitempty"`
-	SourceKind          string   `json:"source_kind,omitempty"`
-	CandidateID         string   `json:"candidate_id,omitempty"`
-	CandidateState      string   `json:"candidate_state,omitempty"`
-	CandidateEntity     string   `json:"candidate_entity,omitempty"`
-	CandidatePredicate  string   `json:"candidate_predicate,omitempty"`
-	CandidateObject     string   `json:"candidate_object,omitempty"`
-	CandidateConfidence *float64 `json:"candidate_confidence,omitempty"`
-	CandidateVisibility string   `json:"candidate_visibility,omitempty"`
-	CandidateSourceRef  string   `json:"candidate_source_ref,omitempty"`
-	PanelRunID          string   `json:"panel_run_id,omitempty"`
-	PanelRunRef         string   `json:"panel_run_ref,omitempty"`
-	PanelDecision       string   `json:"panel_decision,omitempty"`
-	PanelConfidence     *float64 `json:"panel_confidence,omitempty"`
-	PanelRationale      string   `json:"panel_rationale,omitempty"`
-	PanelFindingCount   int      `json:"panel_finding_count,omitempty"`
-	PanelRiskCount      int      `json:"panel_risk_count,omitempty"`
-	PanelFailedCount    int      `json:"panel_failed_count,omitempty"`
-	PromotionSummaryRef string   `json:"promotion_summary_ref,omitempty"`
-	PromotionCount      *int     `json:"promotion_count,omitempty"`
-	Command             []string `json:"command,omitempty"`
-	RequiredInputs      []string `json:"required_inputs,omitempty"`
-	ExpectedValidation  []string `json:"expected_validation,omitempty"`
-	StopConditions      []string `json:"stop_conditions,omitempty"`
-	Boundary            string   `json:"boundary"`
-	Proof               string   `json:"proof"`
-	RequiresOperator    bool     `json:"requires_operator,omitempty"`
+	ID                     string   `json:"id"`
+	Kind                   string   `json:"kind"`
+	Title                  string   `json:"title"`
+	WorkID                 string   `json:"work_id"`
+	GateID                 string   `json:"gate_id,omitempty"`
+	SourceKind             string   `json:"source_kind,omitempty"`
+	CandidateID            string   `json:"candidate_id,omitempty"`
+	CandidateState         string   `json:"candidate_state,omitempty"`
+	CandidateEntity        string   `json:"candidate_entity,omitempty"`
+	CandidatePredicate     string   `json:"candidate_predicate,omitempty"`
+	CandidateObject        string   `json:"candidate_object,omitempty"`
+	CandidateConfidence    *float64 `json:"candidate_confidence,omitempty"`
+	CandidateVisibility    string   `json:"candidate_visibility,omitempty"`
+	CandidateSourceRef     string   `json:"candidate_source_ref,omitempty"`
+	CandidateItemRef       string   `json:"candidate_item_ref,omitempty"`
+	CandidateExtraction    string   `json:"candidate_extraction_id,omitempty"`
+	CandidateExtractedBy   string   `json:"candidate_extracted_by,omitempty"`
+	CandidateSourceKind    string   `json:"candidate_source_kind,omitempty"`
+	CandidateSourceTitle   string   `json:"candidate_source_title,omitempty"`
+	CandidateSourceExcerpt string   `json:"candidate_source_excerpt,omitempty"`
+	PanelRunID             string   `json:"panel_run_id,omitempty"`
+	PanelRunRef            string   `json:"panel_run_ref,omitempty"`
+	PanelDecision          string   `json:"panel_decision,omitempty"`
+	PanelConfidence        *float64 `json:"panel_confidence,omitempty"`
+	PanelRationale         string   `json:"panel_rationale,omitempty"`
+	PanelFindingCount      int      `json:"panel_finding_count,omitempty"`
+	PanelRiskCount         int      `json:"panel_risk_count,omitempty"`
+	PanelFailedCount       int      `json:"panel_failed_count,omitempty"`
+	PromotionSummaryRef    string   `json:"promotion_summary_ref,omitempty"`
+	PromotionCount         *int     `json:"promotion_count,omitempty"`
+	Command                []string `json:"command,omitempty"`
+	RequiredInputs         []string `json:"required_inputs,omitempty"`
+	ExpectedValidation     []string `json:"expected_validation,omitempty"`
+	StopConditions         []string `json:"stop_conditions,omitempty"`
+	Boundary               string   `json:"boundary"`
+	Proof                  string   `json:"proof"`
+	RequiresOperator       bool     `json:"requires_operator,omitempty"`
 }
 
 type WorkbenchRunArtifact struct {
@@ -1003,35 +1009,42 @@ func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArti
 		return nil
 	}
 	panelSummary := s.panelRunReviewSummary(panel.Ref)
+	sourceSummary := s.memoryCandidateSourceSummary(workID, candidate.ItemRef, candidate.Object)
 	command := []string{"compound", "workbench", "--json"}
 	if panel.ID != "" {
 		command = []string{"compound", "panel", "show", panel.ID, "--json"}
 	}
 	title := "operator adjudication needed for " + candidateID + "; inspect applied panel run and keep promotion explicit"
 	card := WorkbenchReviewCard{
-		ID:                  "memory-review-" + workID + "-" + candidateID,
-		Kind:                "memory_candidate_adjudication",
-		Title:               title,
-		WorkID:              workID,
-		CandidateID:         candidateID,
-		CandidateState:      candidate.State,
-		CandidateEntity:     candidate.Entity,
-		CandidatePredicate:  candidate.Predicate,
-		CandidateObject:     candidate.Object,
-		CandidateConfidence: candidate.Confidence,
-		CandidateVisibility: candidate.Visibility,
-		CandidateSourceRef:  candidate.SourceRef,
-		PanelRunID:          panel.ID,
-		PanelRunRef:         panel.Ref,
-		PanelDecision:       panelSummary.Decision,
-		PanelConfidence:     panelSummary.Confidence,
-		PanelRationale:      panelSummary.Rationale,
-		PanelFindingCount:   panelSummary.FindingCount,
-		PanelRiskCount:      panelSummary.RiskCount,
-		PanelFailedCount:    panelSummary.FailedCount,
-		PromotionSummaryRef: promotion.Ref,
-		PromotionCount:      promotion.Count,
-		Command:             command,
+		ID:                     "memory-review-" + workID + "-" + candidateID,
+		Kind:                   "memory_candidate_adjudication",
+		Title:                  title,
+		WorkID:                 workID,
+		CandidateID:            candidateID,
+		CandidateState:         candidate.State,
+		CandidateEntity:        candidate.Entity,
+		CandidatePredicate:     candidate.Predicate,
+		CandidateObject:        candidate.Object,
+		CandidateConfidence:    candidate.Confidence,
+		CandidateVisibility:    candidate.Visibility,
+		CandidateSourceRef:     candidate.SourceRef,
+		CandidateItemRef:       candidate.ItemRef,
+		CandidateExtraction:    candidate.ExtractionID,
+		CandidateExtractedBy:   candidate.ExtractedBy,
+		CandidateSourceKind:    candidate.SourceKind,
+		CandidateSourceTitle:   sourceSummary.Title,
+		CandidateSourceExcerpt: sourceSummary.Excerpt,
+		PanelRunID:             panel.ID,
+		PanelRunRef:            panel.Ref,
+		PanelDecision:          panelSummary.Decision,
+		PanelConfidence:        panelSummary.Confidence,
+		PanelRationale:         panelSummary.Rationale,
+		PanelFindingCount:      panelSummary.FindingCount,
+		PanelRiskCount:         panelSummary.RiskCount,
+		PanelFailedCount:       panelSummary.FailedCount,
+		PromotionSummaryRef:    promotion.Ref,
+		PromotionCount:         promotion.Count,
+		Command:                command,
 		RequiredInputs: []string{
 			"operator verdict for exactly one conversation-derived memory candidate",
 			"candidate " + candidateID + " reviewed against panel run " + reviewartifactOrDash(panel.ID),
@@ -1107,13 +1120,17 @@ func firstCandidateRef(refs []string) string {
 }
 
 type memoryCandidateReviewSummary struct {
-	State      string
-	Entity     string
-	Predicate  string
-	Object     string
-	Confidence *float64
-	Visibility string
-	SourceRef  string
+	State        string
+	Entity       string
+	Predicate    string
+	Object       string
+	Confidence   *float64
+	Visibility   string
+	SourceRef    string
+	ItemRef      string
+	ExtractionID string
+	ExtractedBy  string
+	SourceKind   string
 }
 
 type panelRunReviewSummary struct {
@@ -1140,19 +1157,139 @@ func (s *Store) memoryCandidateReviewSummary(id string) memoryCandidateReviewSum
 		Confidence     *float64 `json:"confidence"`
 		Visibility     string   `json:"visibility"`
 		SourceTraceRef string   `json:"source_trace_ref"`
+		Qualifiers     struct {
+			ExtractionID string `json:"extraction_id"`
+			ExtractedBy  string `json:"extracted_by"`
+			ItemRef      string `json:"item_ref"`
+			Source       string `json:"source"`
+		} `json:"qualifiers"`
 	}
 	if err := s.readJSON(path, &payload); err != nil {
 		return memoryCandidateReviewSummary{}
 	}
 	return memoryCandidateReviewSummary{
-		State:      strings.TrimSpace(payload.State),
-		Entity:     strings.TrimSpace(payload.Entity),
-		Predicate:  strings.TrimSpace(payload.Predicate),
-		Object:     strings.TrimSpace(payload.Object),
-		Confidence: payload.Confidence,
-		Visibility: strings.TrimSpace(payload.Visibility),
-		SourceRef:  strings.TrimSpace(payload.SourceTraceRef),
+		State:        strings.TrimSpace(payload.State),
+		Entity:       strings.TrimSpace(payload.Entity),
+		Predicate:    strings.TrimSpace(payload.Predicate),
+		Object:       strings.TrimSpace(payload.Object),
+		Confidence:   payload.Confidence,
+		Visibility:   strings.TrimSpace(payload.Visibility),
+		SourceRef:    strings.TrimSpace(payload.SourceTraceRef),
+		ItemRef:      strings.TrimSpace(payload.Qualifiers.ItemRef),
+		ExtractionID: strings.TrimSpace(payload.Qualifiers.ExtractionID),
+		ExtractedBy:  strings.TrimSpace(payload.Qualifiers.ExtractedBy),
+		SourceKind:   strings.TrimSpace(payload.Qualifiers.Source),
 	}
+}
+
+type memoryCandidateSourceSummary struct {
+	Title   string
+	Excerpt string
+}
+
+func (s *Store) memoryCandidateSourceSummary(workID, itemRef, claim string) memoryCandidateSourceSummary {
+	workID = strings.TrimSpace(workID)
+	itemRef = strings.TrimSpace(itemRef)
+	if workID == "" || itemRef == "" {
+		return memoryCandidateSourceSummary{}
+	}
+	dir := filepath.Join(s.home, "runs", workID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return memoryCandidateSourceSummary{}
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || workbenchRunArtifactKind(name) != "knowledge_export" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var payload struct {
+			Items []struct {
+				Ref     string `json:"ref"`
+				Title   string `json:"title"`
+				Content string `json:"content"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			continue
+		}
+		for _, item := range payload.Items {
+			if strings.TrimSpace(item.Ref) != itemRef {
+				continue
+			}
+			return memoryCandidateSourceSummary{
+				Title:   strings.TrimSpace(item.Title),
+				Excerpt: sourceExcerpt(strings.TrimSpace(item.Content), claim),
+			}
+		}
+	}
+	return memoryCandidateSourceSummary{}
+}
+
+func sourceExcerpt(content, claim string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lower := strings.ToLower(content)
+	var idx = -1
+	for _, probe := range sourceExcerptProbes(claim) {
+		if probe == "" {
+			continue
+		}
+		if found := strings.Index(lower, strings.ToLower(probe)); found >= 0 {
+			idx = found
+			break
+		}
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	start := idx
+	for start > 0 && content[start-1] != '\n' {
+		start--
+	}
+	if start > 0 {
+		prev := strings.LastIndex(content[:start-1], "\n")
+		if prev >= 0 {
+			start = prev + 1
+		}
+	}
+	end := idx + 420
+	if end > len(content) {
+		end = len(content)
+	}
+	for end < len(content) && content[end-1] != '\n' {
+		end++
+	}
+	excerpt := strings.TrimSpace(content[start:end])
+	excerpt = strings.Join(strings.Fields(excerpt), " ")
+	if len(excerpt) > 520 {
+		excerpt = strings.TrimSpace(excerpt[:520]) + "..."
+	}
+	return excerpt
+}
+
+func sourceExcerptProbes(claim string) []string {
+	claim = strings.ToLower(claim)
+	var probes []string
+	if strings.Contains(claim, "personal cognition runtime") {
+		probes = append(probes, "personal cognition runtime")
+	}
+	if strings.Contains(claim, "better memory system") {
+		probes = append(probes, "better memory system")
+	}
+	if strings.Contains(claim, "self-model") {
+		probes = append(probes, "self-model")
+	}
+	if strings.Contains(claim, "evidence loop") {
+		probes = append(probes, "evidence loop")
+	}
+	return append(probes, "")
 }
 
 func (s *Store) panelRunReviewSummary(ref string) panelRunReviewSummary {

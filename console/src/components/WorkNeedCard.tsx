@@ -81,6 +81,12 @@ function MemoryCandidatePreview({ card }: { card: Json }) {
   const state = str(card.candidate_state);
   const visibility = str(card.candidate_visibility);
   const sourceRef = str(card.candidate_source_ref);
+  const itemRef = str(card.candidate_item_ref);
+  const extractionId = str(card.candidate_extraction_id);
+  const extractedBy = str(card.candidate_extracted_by);
+  const sourceKind = str(card.candidate_source_kind);
+  const sourceTitle = str(card.candidate_source_title);
+  const sourceExcerpt = str(card.candidate_source_excerpt);
   const candidateConfidence = numberText(card.candidate_confidence);
   const panelConfidence = numberText(card.panel_confidence);
   const panelDecision = str(card.panel_decision);
@@ -107,6 +113,22 @@ function MemoryCandidatePreview({ card }: { card: Json }) {
           Candidate text is not present in the workbench projection.
         </p>
       )}
+
+      {(sourceTitle || sourceExcerpt || itemRef || extractedBy || extractionId) ? (
+        <div className="mt-3 rounded-lg border border-violet-100 bg-white/70 px-3 py-2.5">
+          <div className="section-label mb-1">Where this came from</div>
+          {sourceTitle ? <p className="text-[12.5px] font-medium leading-relaxed text-ink">{sourceTitle}</p> : null}
+          {sourceExcerpt ? (
+            <p className="mt-1.5 text-[12px] leading-relaxed text-ink-3">{shortText(sourceExcerpt, 420)}</p>
+          ) : null}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {sourceKind ? <Chip tone="gray">{sourceKind}</Chip> : null}
+            {extractionId ? <Chip tone="violet">{extractionId}</Chip> : null}
+          </div>
+          {itemRef ? <code className="mono mt-2 block break-all text-[10.5px] text-ink-3">{itemRef}</code> : null}
+          {extractedBy ? <code className="mono mt-2 block break-all text-[10.5px] text-ink-3">{extractedBy}</code> : null}
+        </div>
+      ) : null}
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {predicate ? (
