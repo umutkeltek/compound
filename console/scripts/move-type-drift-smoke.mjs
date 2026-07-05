@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const consoleRoot = process.cwd();
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const consoleRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(consoleRoot, "..");
 const envelopeSource = await readFile(path.join(repoRoot, "internal/envelope/envelope.go"), "utf8");
 const registrySource = await readFile(path.join(consoleRoot, "src/lib/decision-registry.ts"), "utf8");

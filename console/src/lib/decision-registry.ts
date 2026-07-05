@@ -300,6 +300,41 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       ),
   },
 
+  "work-continue": {
+    area: "work-continue",
+    title: "Continue work",
+    glyph: ">",
+    accent: "green",
+    source: "workbench",
+    argvAllowlist: [["work", "continue"]],
+    idPattern: /^work_[a-z0-9]{6,}$/,
+    options: [
+      {
+        value: "continue",
+        label: "Continue",
+        tone: "green",
+        description: "Move safe lifecycle steps until the next real wait.",
+        argv: ["work", "continue", "--actor", "codex", "--until-wait"],
+      },
+    ],
+    plainLanguage: (item) => {
+      const id = str(item.work_id) || str(item.id);
+      return {
+        headline: `Continue ${id}`,
+        body: "Move safe lifecycle steps until the next real wait. This does not execute task commands.",
+      };
+    },
+    fields: [],
+    buildArgv: (ctx) => [
+      "work",
+      "continue",
+      "--actor",
+      str(ctx.fields.actor) || "codex",
+      "--expect-work",
+      ctx.itemId,
+      "--until-wait",
+    ],
+  },
   "work-dispatch": {
     area: "work-dispatch",
     title: "Continue work",

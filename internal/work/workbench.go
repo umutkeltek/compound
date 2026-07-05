@@ -1235,7 +1235,7 @@ func workbenchDispatchNext(report WorkbenchReport, actor string) WorkbenchDispat
 		}
 	}
 	if out.CanRun {
-		out.Command = []string{"compound", "work", "dispatch-step", "--actor", actor, "--until-wait"}
+		out.Command = []string{"compound", "work", "continue", "--actor", actor, "--expect-work", out.WorkID, "--until-wait"}
 		return out
 	}
 	if report.Counts.Open == 0 && report.ActivePacketProof != nil {

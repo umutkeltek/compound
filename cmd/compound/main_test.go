@@ -3735,6 +3735,63 @@ func TestWorkDispatchStepCommandRunsUntilWait(t *testing.T) {
 	}
 }
 
+func TestWorkContinueCommandRunsSuggestedWorkUntilWait(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	now := time.Now().UTC()
+	plan, err := store.CreatePlan(work.CreateInput{
+		WorkID:           "work_cli_continue_preview",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "CLI continue starts suggested work",
+	}, now, work.CreatePlanOptions{
+		Record:        true,
+		Capability:    "product.action_review",
+		Action:        "plan_work_from_reviewed_product_action",
+		TargetKind:    "product_action_review",
+		TargetID:      "cli_continue_demo",
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+	})
+	if err != nil {
+		t.Fatalf("create plan: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{"continue", "--actor", "codex", "--expect-work", plan.WorkID, "--until-wait", "--max-steps", "6", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("continue run output missing JSON:\n%s", out)
+	}
+	var result work.ContinueRunResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse continue run result: %v\n%s", err, out)
+	}
+	if result.Status != "waiting" || result.StepCount != 4 || result.WaitReason != "run_evidence" {
+		t.Fatalf("continue run result = %+v", result)
+	}
+	if len(result.Steps) != 4 || result.Steps[0].Action != "admit" || result.Steps[1].Action != "prepare" || result.Steps[2].Action != "claim" || result.Steps[3].Action != "advance" {
+		t.Fatalf("continue run steps = %+v", result.Steps)
+	}
+	after, err := store.Get(plan.WorkID)
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	if after.State != "running" {
+		t.Fatalf("continue should stop at running: %+v", after)
+	}
+}
+
 func TestWorkClaimPlanCommandRecordsPolicyWithoutClaiming(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

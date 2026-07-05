@@ -483,7 +483,7 @@ func TestWorkbenchDispatchNextSuggestsSafeCommand(t *testing.T) {
 	if !next.CanRun || next.Action != "claim" || next.Reason != "ready_work" || next.WorkID != ready.ID {
 		t.Fatalf("ready dispatch suggestion = %+v", next)
 	}
-	want := []string{"compound", "work", "dispatch-step", "--actor", "codex", "--until-wait"}
+	want := []string{"compound", "work", "continue", "--actor", "codex", "--expect-work", ready.ID, "--until-wait"}
 	if len(next.Command) != len(want) {
 		t.Fatalf("dispatch command = %v", next.Command)
 	}

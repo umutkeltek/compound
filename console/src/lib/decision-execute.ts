@@ -117,7 +117,12 @@ async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json
   if (spec.source === "workbench") {
     const data = await runJson(["workbench", "--json"]);
     const open = arr(data?.open);
-    return (open.find((it) => str(it.work_id) === itemId || str(it.id) === itemId) ?? null) as Json | null;
+    const admissionPreviews = arr(data?.admission_previews);
+    return (
+      open.find((it) => str(it.work_id) === itemId || str(it.id) === itemId) ??
+      admissionPreviews.find((it) => str(it.work_id) === itemId || str(it.id) === itemId) ??
+      null
+    ) as Json | null;
   }
   if (spec.area === "memory-adjudicate") {
     const data = await runJson(["memory", "candidates", "--json", "--include-evidence"]);

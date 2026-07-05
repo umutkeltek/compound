@@ -164,7 +164,7 @@ func workUsage(sub string) string {
 	case "leases":
 		return "usage: compound work leases [--json]"
 	default:
-		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
+		return "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ..."
 	}
 }
 
@@ -241,7 +241,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
   compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
-compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
+compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
   compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
@@ -5811,6 +5811,73 @@ func cmdWork(args []string) {
 		if report.Status != "ok" {
 			os.Exit(1)
 		}
+	case "continue":
+		usage := "usage: compound work continue [--actor A] [--expect-work work_id] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--until-wait] [--max-steps N] [--json]"
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--json", "--until-wait":
+			case "--actor", "--expect-work", "--outcome", "--move-type", "--summary", "--max-steps":
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+		}
+		continueOpts := work.ContinueOptions{
+			Actor:        flag("--actor"),
+			ExpectWorkID: flag("--expect-work"),
+			Outcome:      flag("--outcome"),
+			MoveType:     flag("--move-type"),
+			Summary:      flag("--summary"),
+		}
+		maxSteps := 0
+		if raw := strings.TrimSpace(flag("--max-steps")); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			maxSteps = n
+		}
+		if maxSteps > 0 && !has("--until-wait") {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if has("--until-wait") {
+			result, err := store.ContinueRun(time.Now(), work.ContinueRunOptions{ContinueOptions: continueOpts, MaxSteps: maxSteps})
+			die(err)
+			if has("--json") {
+				printJSON(result)
+				return
+			}
+			fmt.Printf("continue-run %s status=%s steps=%d", result.ID, result.Status, result.StepCount)
+			if result.WaitReason != "" {
+				fmt.Printf(" wait=%s", result.WaitReason)
+			}
+			fmt.Println()
+			if result.ResultPath != "" {
+				fmt.Printf("result: %s\n", result.ResultPath)
+			}
+			return
+		}
+		result, err := store.Continue(time.Now(), continueOpts)
+		die(err)
+		if has("--json") {
+			printJSON(result)
+			return
+		}
+		if result.WorkID != "" {
+			fmt.Printf("continue %s status=%s action=%s work=%s\n", result.ID, result.Status, result.Action, result.WorkID)
+		} else {
+			fmt.Printf("continue %s status=%s no_action=%s\n", result.ID, result.Status, result.NoAction)
+		}
+		if result.ResultPath != "" {
+			fmt.Printf("result: %s\n", result.ResultPath)
+		}
 	case "dispatch-plan":
 		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md preview-only] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
@@ -6448,7 +6515,7 @@ func cmdWork(args []string) {
 		printJSON(res)
 		autoConsumeCapabilityFeedback(homePath)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> ...")
 		os.Exit(2)
 	}
 }

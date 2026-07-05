@@ -98,9 +98,12 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
   const workId = str(next.work_id);
   const waitReason = str(next.wait_reason);
   const blockedOn = arr(next.blocked_on).map(String);
+  const admissionPreviews = arr(workbench?.admission_previews);
+  const admissionPreview = admissionPreviews[0] ?? null;
+  const admissionPreviewWorkId = str(admissionPreview?.work_id);
   const inboxItems = open.filter((work) => ["proposed", "admitted"].includes(str(work.state)));
   const inboxItem = inboxItems[0] ?? null;
-  const intakeCount = inboxItems.length;
+  const intakeCount = inboxItems.length + admissionPreviews.length;
   const readyCount = open.filter((work) => str(work.state) === "ready").length;
   const operatorGateCount = open.filter((work) => ["blocked", "held"].includes(str(work.state))).length;
   let continueRequest: ContinueRequest | null = null;
@@ -120,12 +123,12 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
     tone = "green";
     continueRequest = workId
       ? {
-          area: "work-dispatch",
+          area: "work-continue",
           itemId: workId,
-          option: "dispatch_step",
+          option: "continue",
           fields: { actor },
-          command: arr(next.command).map(String),
-          note: "Moves the next safe lifecycle step. Does not run task commands.",
+          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", workId, "--until-wait"],
+          note: "Moves safe lifecycle steps until the next real wait. Does not run task commands.",
         }
       : null;
   } else if (readyCount > 0) {
@@ -138,13 +141,22 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
     tone = "orange";
     continueRequest = inboxItem
       ? {
-          area: "work-advance",
+          area: "work-continue",
           itemId: inboxItem.displayId,
-          option: "ready",
-          fields: {},
-          command: ["compound", "work", "advance", inboxItem.displayId, "--to", "ready", "--by", "operator-console"],
-          note: "Prepares one suggested task for an executor. Does not run task commands.",
+          option: "continue",
+          fields: { actor },
+          command: ["compound", "work", "continue", "--actor", actor, "--expect-work", inboxItem.displayId, "--until-wait"],
+          note: "Prepares and starts one suggested task until the next real wait. Does not run task commands.",
         }
+      : admissionPreviewWorkId
+        ? {
+            area: "work-continue",
+            itemId: admissionPreviewWorkId,
+            option: "continue",
+            fields: { actor },
+            command: ["compound", "work", "continue", "--actor", actor, "--expect-work", admissionPreviewWorkId, "--until-wait"],
+            note: "Adds and starts one suggested task until the next real wait. Does not run task commands.",
+          }
       : null;
   } else if (operatorGateCount > 0) {
     title = "Needs your decision";
