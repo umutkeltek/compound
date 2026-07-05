@@ -1,6 +1,8 @@
 package work
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,25 +26,37 @@ type ProofChainDoctorReport struct {
 }
 
 type ProofChainDoctorCounts struct {
-	WorksChecked        int `json:"works_checked"`
-	TerminalChecked     int `json:"terminal_checked"`
-	Complete            int `json:"complete"`
-	MissingReceipt      int `json:"missing_receipt"`
-	MissingTransition   int `json:"missing_transition"`
-	InvalidReceipt      int `json:"invalid_receipt"`
-	InvalidTransition   int `json:"invalid_transition"`
-	MismatchedWorkID    int `json:"mismatched_work_id"`
-	MismatchedLink      int `json:"mismatched_link"`
-	MissingReceiptAfter int `json:"missing_receipt_after_ref"`
+	WorksChecked               int `json:"works_checked"`
+	TerminalChecked            int `json:"terminal_checked"`
+	Complete                   int `json:"complete"`
+	MissingReceipt             int `json:"missing_receipt"`
+	MissingTransition          int `json:"missing_transition"`
+	MissingActionIntent        int `json:"missing_action_intent"`
+	MissingPolicyDecision      int `json:"missing_policy_decision"`
+	InvalidReceipt             int `json:"invalid_receipt"`
+	InvalidTransition          int `json:"invalid_transition"`
+	InvalidActionIntent        int `json:"invalid_action_intent"`
+	InvalidPolicyDecision      int `json:"invalid_policy_decision"`
+	MismatchedWorkID           int `json:"mismatched_work_id"`
+	MismatchedLink             int `json:"mismatched_link"`
+	MismatchedActionPolicy     int `json:"mismatched_action_policy"`
+	MissingReceiptAfter        int `json:"missing_receipt_after_ref"`
+	MissingTransitionActionRef int `json:"missing_transition_action_ref"`
+	OrphanReceipt              int `json:"orphan_receipt"`
+	OrphanTransition           int `json:"orphan_transition"`
+	OrphanActionIntent         int `json:"orphan_action_intent"`
+	OrphanPolicyDecision       int `json:"orphan_policy_decision"`
 }
 
 type ProofChainDoctorItem struct {
-	WorkID        string   `json:"work_id"`
-	State         string   `json:"state"`
-	ReceiptID     string   `json:"receipt_id,omitempty"`
-	TransitionID  string   `json:"transition_id,omitempty"`
-	ProofComplete bool     `json:"proof_complete"`
-	Problems      []string `json:"problems,omitempty"`
+	WorkID           string   `json:"work_id"`
+	State            string   `json:"state"`
+	ActionIntentIDs  []string `json:"action_intent_ids,omitempty"`
+	PolicyDecisionID string   `json:"policy_decision_id,omitempty"`
+	ReceiptID        string   `json:"receipt_id,omitempty"`
+	TransitionID     string   `json:"transition_id,omitempty"`
+	ProofComplete    bool     `json:"proof_complete"`
+	Problems         []string `json:"problems,omitempty"`
 }
 
 type ProofChainDoctorFinding struct {
@@ -66,7 +80,15 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 		SchemaVersion: ProofChainDoctorSchemaVersion,
 		Status:        "ok",
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
-		ProofRefs:     []string{"work-proof-chain-terminal-receipt", "work-proof-chain-terminal-transition", "work-proof-chain-work-id-match"},
+		ProofRefs: []string{
+			"work-proof-chain-terminal-receipt",
+			"work-proof-chain-terminal-transition",
+			"work-proof-chain-work-id-match",
+			"work-proof-chain-action-intent",
+			"work-proof-chain-policy-decision",
+			"work-proof-chain-transition-action-refs",
+			"work-proof-chain-orphan-envelope-scan",
+		},
 	}
 	report.Counts.WorksChecked = len(works)
 	for _, w := range works {
@@ -81,6 +103,7 @@ func (s *Store) ProofChainDoctor(now time.Time, opts ProofChainDoctorOptions) (P
 		}
 		report.Items = append(report.Items, item)
 	}
+	s.addOrphanEnvelopeFindings(works, &report)
 	if len(report.Findings) > 0 {
 		report.Status = "fail"
 	}
@@ -96,6 +119,16 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 	}
 	item.ReceiptID = lastAttachedWithPrefix(events, "rec_")
 	item.TransitionID = firstNonEmpty(w.IDs.TransitionID, lastAttachedWithPrefix(events, "tr_"))
+	item.ActionIntentIDs = compactPrefix(w.RunIDs, "act_")
+	item.PolicyDecisionID = strings.TrimSpace(w.PolicyDecisionID)
+	if len(item.ActionIntentIDs) == 0 {
+		report.Counts.MissingActionIntent++
+		addProofChainProblem(report, &item, "missing_action_intent", "terminal work has no action intent run ref")
+	}
+	if item.PolicyDecisionID == "" {
+		report.Counts.MissingPolicyDecision++
+		addProofChainProblem(report, &item, "missing_policy_decision", "terminal work has no policy decision ref")
+	}
 	if item.ReceiptID == "" {
 		report.Counts.MissingReceipt++
 		addProofChainProblem(report, &item, "missing_receipt", "terminal work has no closing receipt ref")
@@ -123,6 +156,42 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 		}
 	}
 
+	actionIDs := map[string]bool{}
+	for _, actionID := range item.ActionIntentIDs {
+		actionIDs[actionID] = true
+		var ai envelope.ActionIntent
+		if err := s.readJSON(s.envPath(actionID), &ai); err != nil {
+			report.Counts.InvalidActionIntent++
+			addProofChainProblem(report, &item, "action_intent_unreadable", "action intent "+actionID+" unreadable: "+err.Error())
+		} else if err := ai.Validate(); err != nil {
+			report.Counts.InvalidActionIntent++
+			addProofChainProblem(report, &item, "action_intent_invalid", "action intent "+actionID+" invalid: "+err.Error())
+		} else if ai.IDs.WorkID != w.ID {
+			report.Counts.MismatchedWorkID++
+			addProofChainProblem(report, &item, "action_intent_work_mismatch", "action intent "+actionID+" belongs to work "+ai.IDs.WorkID)
+		}
+	}
+
+	if item.PolicyDecisionID != "" {
+		var pd envelope.PolicyDecision
+		if err := s.readJSON(s.envPath(item.PolicyDecisionID), &pd); err != nil {
+			report.Counts.InvalidPolicyDecision++
+			addProofChainProblem(report, &item, "policy_decision_unreadable", "policy decision "+item.PolicyDecisionID+" unreadable: "+err.Error())
+		} else if err := pd.Validate(); err != nil {
+			report.Counts.InvalidPolicyDecision++
+			addProofChainProblem(report, &item, "policy_decision_invalid", "policy decision "+item.PolicyDecisionID+" invalid: "+err.Error())
+		} else {
+			if pd.IDs.WorkID != w.ID {
+				report.Counts.MismatchedWorkID++
+				addProofChainProblem(report, &item, "policy_decision_work_mismatch", "policy decision "+item.PolicyDecisionID+" belongs to work "+pd.IDs.WorkID)
+			}
+			if !actionIDs[pd.ActionIntentID] {
+				report.Counts.MismatchedActionPolicy++
+				addProofChainProblem(report, &item, "policy_action_mismatch", "policy decision "+item.PolicyDecisionID+" references action "+pd.ActionIntentID+" not present in work run_ids")
+			}
+		}
+	}
+
 	if item.TransitionID != "" {
 		var tr envelope.Transition
 		if err := s.readJSON(s.envPath(item.TransitionID), &tr); err != nil {
@@ -144,9 +213,113 @@ func (s *Store) proofChainItem(w envelope.WorkEnvelope, report *ProofChainDoctor
 				report.Counts.MissingReceiptAfter++
 				addProofChainProblem(report, &item, "transition_missing_receipt_ref", "transition "+item.TransitionID+" after_refs does not include receipt "+rec.ID)
 			}
+			for _, actionID := range item.ActionIntentIDs {
+				if !proofChainContains(tr.ActionRefs, actionID) {
+					report.Counts.MissingTransitionActionRef++
+					addProofChainProblem(report, &item, "transition_missing_action_ref", "transition "+item.TransitionID+" action_refs does not include action "+actionID)
+				}
+			}
 		}
 	}
 	return item
+}
+
+func (s *Store) addOrphanEnvelopeFindings(works []envelope.WorkEnvelope, report *ProofChainDoctorReport) {
+	referenced := map[string]bool{}
+	for _, w := range works {
+		for _, ref := range w.RunIDs {
+			addProofChainRef(referenced, ref)
+		}
+		addProofChainRef(referenced, w.PolicyDecisionID)
+		addProofChainRef(referenced, w.IDs.TransitionID)
+		events, err := s.eventsFor(w.ID)
+		if err != nil {
+			continue
+		}
+		for _, event := range events {
+			for _, ref := range event.Attached {
+				addProofChainRef(referenced, ref)
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join(s.home, "events"))
+	if err != nil {
+		report.Findings = append(report.Findings, ProofChainDoctorFinding{Code: "envelopes_unreadable", Message: "could not scan envelope root: " + err.Error()})
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		if referenced[id] {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(id, "act_"):
+			report.Counts.OrphanActionIntent++
+			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_action_intent", Message: "action intent " + id + " is not referenced by any work run_ids or lifecycle event"})
+		case strings.HasPrefix(id, "pol_"):
+			report.Counts.OrphanPolicyDecision++
+			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_policy_decision", Message: "policy decision " + id + " is not referenced by any work policy_decision_id or lifecycle event"})
+		case strings.HasPrefix(id, "rec_"):
+			report.Counts.OrphanReceipt++
+			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_receipt", Message: "receipt " + id + " is not referenced by any terminal lifecycle event"})
+		case strings.HasPrefix(id, "tr_"):
+			report.Counts.OrphanTransition++
+			report.Findings = append(report.Findings, ProofChainDoctorFinding{WorkID: s.envelopeWorkID(id), Code: "orphan_transition", Message: "transition " + id + " is not referenced by any work transition_id or lifecycle event"})
+		default:
+			continue
+		}
+	}
+}
+
+func addProofChainRef(refs map[string]bool, ref string) {
+	ref = strings.TrimSpace(ref)
+	if ref != "" {
+		refs[ref] = true
+	}
+}
+
+func (s *Store) envelopeWorkID(id string) string {
+	switch {
+	case strings.HasPrefix(id, "act_"):
+		var ai envelope.ActionIntent
+		if err := s.readJSON(s.envPath(id), &ai); err == nil {
+			return ai.IDs.WorkID
+		}
+	case strings.HasPrefix(id, "pol_"):
+		var pd envelope.PolicyDecision
+		if err := s.readJSON(s.envPath(id), &pd); err == nil {
+			return pd.IDs.WorkID
+		}
+	case strings.HasPrefix(id, "rec_"):
+		var rec envelope.Receipt
+		if err := s.readJSON(s.envPath(id), &rec); err == nil {
+			return rec.IDs.WorkID
+		}
+	case strings.HasPrefix(id, "tr_"):
+		var tr envelope.Transition
+		if err := s.readJSON(s.envPath(id), &tr); err == nil {
+			return tr.IDs.WorkID
+		}
+	}
+	return ""
+}
+
+func compactPrefix(values []string, prefix string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || !strings.HasPrefix(value, prefix) || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func addProofChainProblem(report *ProofChainDoctorReport, item *ProofChainDoctorItem, code, message string) {
