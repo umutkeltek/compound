@@ -1,4 +1,7 @@
+import type { ReactNode } from "react";
+
 import { ContinueButton, type ContinueRequest } from "@/components/ContinueButton";
+import { WorkNeedCard } from "@/components/WorkNeedCard";
 import { WorkCard } from "@/components/WorkCard";
 import { Card, Chip, EmptyState, FreshnessChip, SectionLabel } from "@/components/ui";
 import { arr, getWorkbench, str, type Json } from "@/lib/compound";
@@ -55,12 +58,14 @@ function Column({
   tint,
   items,
   empty,
+  renderItem = (work) => <WorkCard work={work} />,
 }: {
   title: string;
   description: string;
   tint: string;
   items: WorkCardData[];
   empty: string;
+  renderItem?: (work: WorkCardData) => ReactNode;
 }) {
   return (
     <div className="flex w-[328px] shrink-0 flex-col gap-3">
@@ -76,13 +81,25 @@ function Column({
       </div>
       <div className="flex flex-col gap-3">
         {items.length ? (
-          items.map((work) => <WorkCard key={work.displayId} work={work} />)
+          items.map((work) => (
+            <div key={work.displayId} className="contents">
+              {renderItem(work)}
+            </div>
+          ))
         ) : (
           <EmptyState>{empty}</EmptyState>
         )}
       </div>
     </div>
   );
+}
+
+function renderOperatorWork(work: WorkCardData): ReactNode {
+  const cards = arr(work.review_cards);
+  if (!cards.length) return <WorkCard work={work} />;
+  return cards.map((card) => (
+    <WorkNeedCard key={`${work.displayId}:${str(card.id)}`} work={work} card={card} />
+  ));
 }
 
 function DispatchStatus({ workbench, open }: { workbench: Json | null; open: WorkCardData[] }) {
@@ -236,6 +253,7 @@ export default async function WorkBoard() {
                 tint={column.tint}
                 empty={column.empty}
                 items={open.filter((work) => column.states.includes(str(work.state)))}
+                renderItem={column.key === "operator" ? renderOperatorWork : undefined}
               />
             ))}
           </div>

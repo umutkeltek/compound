@@ -1,6 +1,7 @@
 import { DecisionCard } from "@/components/DecisionCard";
 import { ChangedProofStream } from "@/components/ChangedProofStream";
 import { NeedsMeStream } from "@/components/NeedsMeStream";
+import { WorkNeedCard } from "@/components/WorkNeedCard";
 import { WorkCard } from "@/components/WorkCard";
 import {
   Card,
@@ -35,14 +36,23 @@ export default async function Dashboard() {
   const recent = arr(workbench?.recent);
   const continueRuns = arr(workbench?.continue_runs);
   const dispatchStepRuns = arr(workbench?.dispatch_step_runs);
+  const heldWorkNeeds = open.flatMap((work) =>
+    arr(work.review_cards).map((card) => ({ work, card })),
+  );
+  const memoryWorkNeeds = heldWorkNeeds.filter(
+    ({ card }) => str(card.kind) === "memory_candidate_adjudication",
+  );
+  const operatorWorkNeeds = heldWorkNeeds.filter(
+    ({ card }) => str(card.kind) !== "memory_candidate_adjudication",
+  );
 
   const reviewRows = externalReviewRows(reviews);
 
-  // Unified needs-me stream: reviews + proposed work + proposed memory.
+  // Unified needs-me stream: external reviews + held work decisions + proposed work + memory.
   const counts = {
     reviews: reviewRows.length,
-    work: proposedWork.length,
-    memory: memoryActionable.length,
+    work: operatorWorkNeeds.length + proposedWork.length,
+    memory: memoryWorkNeeds.length + memoryActionable.length,
   };
   const needsMeTotal = counts.reviews + counts.work + counts.memory;
 
@@ -102,12 +112,30 @@ export default async function Dashboard() {
             reviews: reviewRows.map((row) => (
               <DecisionCard key={str(row.id)} area="external-repo-intake" item={row} />
             )),
-            work: proposedWork.map((work) => <WorkCard key={work.displayId} work={work} compact />),
-            memory: memoryActionable
-              .slice(0, 12)
-              .map((candidate) => (
-                <DecisionCard key={candidate.id} area="memory-adjudicate" item={candidate} />
+            work: [
+              ...operatorWorkNeeds.map(({ work, card }) => (
+                <WorkNeedCard
+                  key={`${str(work.work_id) || str(work.id)}:${str(card.id)}`}
+                  work={work}
+                  card={card}
+                />
               )),
+              ...proposedWork.map((work) => <WorkCard key={work.displayId} work={work} compact />),
+            ],
+            memory: [
+              ...memoryWorkNeeds.map(({ work, card }) => (
+                <WorkNeedCard
+                  key={`${str(work.work_id) || str(work.id)}:${str(card.id)}`}
+                  work={work}
+                  card={card}
+                />
+              )),
+              ...memoryActionable
+                .slice(0, 12)
+                .map((candidate) => (
+                  <DecisionCard key={candidate.id} area="memory-adjudicate" item={candidate} />
+                )),
+            ],
           }}
         />
       </section>
