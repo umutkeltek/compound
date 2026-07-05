@@ -37,7 +37,7 @@ func TestOSAbsorptionMatrixImportAndDoctor(t *testing.T) {
 			row("tool_topology", capRows[1], "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
 			row("skills_selection_board", capRows[2], "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
 			row("brain", "/synthetic/brain/projects/compound.md", "pending", "compound://ledger/memory", "compound memory recall", ""),
-			row("gbrain", "gbrain://example-db.internal", "pending", "compound://adapters/memory-engine/gbrain", "compound memory engine-doctor", ""),
+			row("gbrain", "gbrain://synthetic-store", "pending", "compound://adapters/memory-engine/gbrain", "compound memory engine-doctor", ""),
 			row("infra_os", "/synthetic/infra-os/project-registry.yaml", "pending", "compound://registries/projects", "compound runtime doctor", ""),
 			row("os_status", "cli:os status", "pending", "compound://projections/system-status", "os status wrapper", ""),
 		},

@@ -44,7 +44,7 @@ func TestAuthorityOSAbsorptionCLICommands(t *testing.T) {
 			osAbsorptionCLIRow("tool_topology", capSources[1], "sha256:"+testDigest(capSources[1]), "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
 			osAbsorptionCLIRow("skills_selection_board", capSources[2], "sha256:"+testDigest(capSources[2]), "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
 			osAbsorptionCLIRow("brain", "/synthetic/brain/projects/compound.md", "", "pending", "compound://ledger/memory", "compound memory recall", "manual"),
-			osAbsorptionCLIRow("gbrain", "gbrain://example-db.internal", "", "pending", "compound://adapters/memory-engine/gbrain", "compound memory recall", "manual"),
+			osAbsorptionCLIRow("gbrain", "gbrain://synthetic-store", "", "pending", "compound://adapters/memory-engine/gbrain", "compound memory recall", "manual"),
 			osAbsorptionCLIRow("infra_os", "/synthetic/infra-os/project-registry.yaml", "", "pending", "compound://registries/projects", "compound system map", "manual"),
 			osAbsorptionCLIRow("packets", "/synthetic/umut-os/packets", "", "pending", "compound://work/packets", "compound workbench", "manual"),
 		},
