@@ -258,6 +258,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-tsc-noemit",
 		"console-smoke",
 		"console-mutation-gate-smoke",
+		"console-private-fallback-smoke",
 		"console-move-type-drift-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",

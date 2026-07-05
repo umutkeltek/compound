@@ -170,15 +170,6 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
 
   const ctx = { itemId, item: item ?? {}, option, fields };
 
-  if (spec.preExec) {
-    try {
-      await spec.preExec(ctx);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "pre-execution step failed";
-      return Response.json({ ok: false, stderr: message }, { status: 400 });
-    }
-  }
-
   const argv = spec.buildArgv ? spec.buildArgv(ctx) : argvFromActions(item ?? {});
   if (!argv || argv.length === 0) {
     return Response.json({ ok: false, stderr: "could not resolve the command to run" }, { status: 400 });

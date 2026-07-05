@@ -1,9 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-
 import { arr, type Json, str } from "@/lib/compound";
 import { shortText, targetLabel, uniqueBoundaries } from "@/lib/plain-language";
-import { externalReviewYamlPath } from "@/lib/review-data";
-import { replaceReviewDecisionFields, type ReviewDecision } from "@/lib/review-yaml";
 
 /*
  * The Decision Registry — the heart of the console-as-control-surface.
@@ -12,8 +8,8 @@ import { replaceReviewDecisionFields, type ReviewDecision } from "@/lib/review-y
  * one-click approval maps to a `compound` CLI invocation. The keystone: most
  * review items already carry `actions[0].argv` in their projection, so the CLI
  * command is read from the (server-resolved) projection rather than hardcoded —
- * the registry only adds the human layer (headline/options/fields) plus any
- * pre-execution step (e.g. rewriting an intake YAML).
+ * the registry only adds the human layer (headline/options/fields) and bounded
+ * argv construction for areas that do not carry a projected command.
  *
  * Adding a new area = adding one entry here; the generic DecisionCard,
  * DecisionForm, and /api/decision/execute route pick it up automatically.
@@ -51,7 +47,7 @@ export type DecisionOption = {
 
 /**
  * Serializable subset of a spec — the only part that may cross the
- * server→client boundary into the interactive form (functions/preExec/fs stay
+ * server→client boundary into the interactive form (functions/fs stay
  * server-side). Extracted via `toFormSpec`.
  */
 export type DecisionFormSpec = {
@@ -106,9 +102,6 @@ export type DecisionAreaSpec = {
 
   /** Build argv (without leading "compound"). Defaults to item.actions[0].argv. */
   buildArgv?: (ctx: ExecContext) => string[] | null;
-
-  /** Optional pre-execution mutation (e.g. rewrite an intake review YAML). */
-  preExec?: (ctx: ExecContext) => Promise<void>;
 
   /** Resolve a fresh argv preview for the caption (client-side, display only). */
   previewArgv?: (item: Json) => string[] | null;
@@ -253,16 +246,6 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     ],
     buildArgv: (ctx) => argvFromActions(ctx.item),
     previewArgv: (item) => argvFromActions(item),
-    preExec: async (ctx) => {
-      // Repairs the known confidence:2.00 draft bug by clamping server-side.
-      const yamlPath = externalReviewYamlPath(ctx.itemId);
-      const decision = ctx.option as ReviewDecision;
-      const rationale = str(ctx.fields.rationale).trim();
-      const confidence = clamp01(ctx.fields.confidence);
-      const source = await readFile(yamlPath, "utf8");
-      const updated = replaceReviewDecisionFields(source, { decision, rationale, confidence });
-      await writeFile(yamlPath, updated, "utf8");
-    },
   },
 
   "work-advance": {

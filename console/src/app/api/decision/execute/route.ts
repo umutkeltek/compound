@@ -3,15 +3,11 @@ import { executeDecision } from "@/lib/decision-execute";
 
 /*
  * The single generic mutation endpoint. Replaces /api/reviews/record and
- * /api/work/act. Flow: look up the registry entry → validate id → RE-RESOLVE
- * the item from the projection server-side (never trust a client-sent argv) →
- * compute the allowed options for THIS item (dynamic for work state machines)
- * → validate the chosen option + only the fields relevant to it → preExec
- * (e.g. YAML rewrite, repairs the confidence:2.00 draft bug) → buildArgv →
- * verb-prefix allowlist (defense in depth) → clamp confidence → runCompound.
- * DEC-0021: every action is a human click.
+ * /api/work/act. Flow: look up the registry entry, validate id, re-resolve
+ * item projection server-side, compute allowed options for this item, validate
+ * the chosen option and fields, build argv, enforce the verb-prefix allowlist,
+ * clamp confidence, then run compound. DEC-0021: every action is a human click.
  */
-
 export async function POST(request: Request) {
   const blocked = consoleMutationBlockedResponse(request);
   if (blocked) return blocked;

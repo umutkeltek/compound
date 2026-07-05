@@ -186,6 +186,7 @@ export function reviewSentence(item: Json): string {
   const action = str(item.action) || str(item.next) || str(item.reason) || str(item.next_action);
   if (action) return action;
   if (area === "external-repo-intake") {
+    if (!privateFallbacksEnabled()) return "External repo awaits a projected review action.";
     return "External repo awaits decision: fill review YAML, then record it.";
   }
   return "Awaiting review.";
@@ -196,6 +197,9 @@ export function reviewCommand(item: Json): string {
   const area = str(item.area) || str(item.review_area);
   const id = str(item.id) || str(item.review_id);
   const path = str(item.path) || str(item.review_path);
+  if (area === "external-repo-intake" && !privateFallbacksEnabled()) {
+    return "compound reviews --area external-repo-intake";
+  }
   if (area === "external-repo-intake" && (path || id)) {
     const yaml = path || `${COMPOUND_HOME}/reviews/external-repo-intake/${id}.review.yaml`;
     return `compound capability external-intake-review ${yaml.replace(/\.json$/, ".review.yaml")}`;

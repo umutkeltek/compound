@@ -180,6 +180,7 @@ func proofCheckSteps() ([]proofCheckStep, error) {
 		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
 		{Name: "console-smoke", Command: []string{"node", "scripts/smoke.mjs"}, Dir: "console", ProofRef: "console-smoke"},
 		{Name: "console-mutation-gate-smoke", Command: []string{"node", "scripts/mutation-guard-smoke.mjs"}, Dir: "console", ProofRef: "console-mutation-gate-smoke"},
+		{Name: "console-private-fallback-smoke", Command: []string{"node", "scripts/private-fallback-smoke.mjs"}, Dir: "console", ProofRef: "console-private-fallback-smoke"},
 		{Name: "console-move-type-drift-smoke", Command: []string{"node", "scripts/move-type-drift-smoke.mjs"}, Dir: "console", ProofRef: "console-move-type-drift-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},

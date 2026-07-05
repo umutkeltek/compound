@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { COMPOUND_HOME, num, runJson } from "@/lib/compound";
+import { COMPOUND_HOME, num, privateFallbacksEnabled, runJson } from "@/lib/compound";
 import {
   getCapabilityAuthority,
   getKnowledgeSourceCount,
@@ -31,7 +31,8 @@ const FIXTURE = path.resolve(process.cwd(), "fixtures", "map", "topology.json");
 type TopologyFile = { nodes: TopologyEntry[]; edges: TopologyEdge[] };
 
 async function loadTopologyFile(): Promise<TopologyFile> {
-  for (const file of [OVERLAY, FIXTURE]) {
+  const files = privateFallbacksEnabled() ? [OVERLAY, FIXTURE] : [FIXTURE];
+  for (const file of files) {
     try {
       const data = JSON.parse(await readFile(file, "utf8")) as TopologyFile;
       if (Array.isArray(data.nodes) && Array.isArray(data.edges)) return data;

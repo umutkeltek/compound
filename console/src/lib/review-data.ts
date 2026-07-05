@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { arr, COMPOUND_HOME, Json, reviewCommand, str } from "@/lib/compound";
+import { arr, COMPOUND_HOME, Json, privateFallbacksEnabled, reviewCommand, str } from "@/lib/compound";
 import { parseReviewDraftYaml, ReviewDraftFields } from "@/lib/review-yaml";
 
 export type ExternalReviewRow = Json & {
@@ -57,6 +57,9 @@ export function externalReviewRows(reviews: Json | null, workbench: Json | null 
 
 export async function loadExternalReviewRow(item: Json): Promise<ExternalReviewRow> {
   const id = str(item.id) || str(item.review_id);
+  if (!privateFallbacksEnabled()) {
+    return { ...item, yamlPath: "", draft: null };
+  }
   const yamlPath = externalReviewYamlPath(id);
   try {
     const source = await readFile(yamlPath, "utf8");
