@@ -1,4 +1,4 @@
-import { DispatchStepButton } from "@/components/DispatchStepButton";
+import { ContinueButton, type ContinueRequest } from "@/components/ContinueButton";
 import { WorkCard } from "@/components/WorkCard";
 import { Card, Chip, EmptyState, FreshnessChip, SectionLabel } from "@/components/ui";
 import { arr, getWorkbench, str, type Json } from "@/lib/compound";
@@ -98,9 +98,12 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
   const workId = str(next.work_id);
   const waitReason = str(next.wait_reason);
   const blockedOn = arr(next.blocked_on).map(String);
-  const intakeCount = open.filter((work) => ["proposed", "admitted"].includes(str(work.state))).length;
+  const inboxItems = open.filter((work) => ["proposed", "admitted"].includes(str(work.state)));
+  const inboxItem = inboxItems[0] ?? null;
+  const intakeCount = inboxItems.length;
   const readyCount = open.filter((work) => str(work.state) === "ready").length;
   const operatorGateCount = open.filter((work) => ["blocked", "held"].includes(str(work.state))).length;
+  let continueRequest: ContinueRequest | null = null;
 
   let title = "Nothing to continue";
   let body = "Compound is not seeing a safe next move right now.";
@@ -115,6 +118,16 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
     title = "Continue";
     body = nextAction ? `Next safe move: ${nextAction}.` : "A safe next move is ready.";
     tone = "green";
+    continueRequest = workId
+      ? {
+          area: "work-dispatch",
+          itemId: workId,
+          option: "dispatch_step",
+          fields: { actor },
+          command: arr(next.command).map(String),
+          note: "Moves the next safe lifecycle step. Does not run task commands.",
+        }
+      : null;
   } else if (readyCount > 0) {
     title = "Ready to start";
     body = `${readyCount} item${readyCount === 1 ? "" : "s"} can be started by an executor.`;
@@ -123,6 +136,16 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
     title = "Prepare suggested work";
     body = `${intakeCount} suggested task${intakeCount === 1 ? "" : "s"} can be prepared before an executor starts.`;
     tone = "orange";
+    continueRequest = inboxItem
+      ? {
+          area: "work-advance",
+          itemId: inboxItem.displayId,
+          option: "ready",
+          fields: {},
+          command: ["compound", "work", "advance", inboxItem.displayId, "--to", "ready", "--by", "operator-console"],
+          note: "Prepares one suggested task for an executor. Does not run task commands.",
+        }
+      : null;
   } else if (operatorGateCount > 0) {
     title = "Needs your decision";
     body = `${operatorGateCount} item${operatorGateCount === 1 ? "" : "s"} need judgment, private input, or an unblock step.`;
@@ -142,9 +165,7 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
           <Chip tone={operatorGateCount ? "violet" : "gray"}>{operatorGateCount} needs me</Chip>
           {waitReason ? <Chip tone="gray">{waitReason.replace(/_/g, " ")}</Chip> : null}
         </div>
-        {canRun && workId ? (
-          <DispatchStepButton workId={workId} actor={actor} command={arr(next.command).map(String)} />
-        ) : null}
+        {continueRequest ? <ContinueButton request={continueRequest} /> : null}
         {!canRun && blockedOn.length > 0 ? (
           <p className="text-[11.5px] leading-relaxed text-ink-3">
             Waiting refs are parked as evidence, not the main queue: {blockedOn.slice(0, 4).join(" / ")}

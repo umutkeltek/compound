@@ -7,15 +7,16 @@ import { CliCaption } from "@/components/CopyCmd";
 
 type Result = { ok: boolean; stdout?: string; stderr?: string };
 
-export function DispatchStepButton({
-  workId,
-  actor,
-  command,
-}: {
-  workId: string;
-  actor: string;
+export type ContinueRequest = {
+  area: string;
+  itemId: string;
+  option: string;
+  fields?: Record<string, string>;
   command: string[];
-}) {
+  note: string;
+};
+
+export function ContinueButton({ request }: { request: ContinueRequest }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
@@ -27,10 +28,10 @@ export function DispatchStepButton({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        area: "work-dispatch",
-        itemId: workId,
-        option: "dispatch_step",
-        fields: { actor },
+        area: request.area,
+        itemId: request.itemId,
+        option: request.option,
+        fields: request.fields ?? {},
       }),
     });
     const body = (await response.json()) as Result;
@@ -50,11 +51,9 @@ export function DispatchStepButton({
         >
           {pending ? "Continuing..." : "Continue"}
         </button>
-        <CliCaption argv={command.length ? command.slice(1) : null} />
+        <CliCaption argv={request.command[0] === "compound" ? request.command.slice(1) : request.command} />
       </div>
-      <p className="text-[11.5px] leading-relaxed text-emerald-800">
-        Moves the next safe lifecycle step. Does not run task commands.
-      </p>
+      <p className="text-[11.5px] leading-relaxed text-emerald-800">{request.note}</p>
       {result ? (
         <div
           className={`rounded-lg border px-3 py-2 text-[12px] leading-relaxed ${
