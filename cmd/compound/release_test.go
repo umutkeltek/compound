@@ -42,6 +42,48 @@ func TestReleaseExportPublicCLIJSON(t *testing.T) {
 	}
 }
 
+func TestReleaseExportPrivateAuditCLIJSON(t *testing.T) {
+	releaseRequireGit(t)
+	repo := releaseInitGitRepo(t)
+	releaseWriteFile(t, filepath.Join(repo, "README.md"), "# public\n")
+	releaseGit(t, repo, "add", "README.md")
+	releaseGit(t, repo, "commit", "-m", "initial")
+	releaseWriteFile(t, filepath.Join(repo, "docs_private", "example.md"), "private\n")
+	releaseWriteFile(t, filepath.Join(repo, "console", "node_modules", "pkg", "index.js"), "heavy\n")
+
+	target := filepath.Join(t.TempDir(), "compound-private-audit.tar.gz")
+	out := captureStdout(t, func() {
+		cmdRelease([]string{"export-private-audit", "--repo", repo, "--target", target, "--prefix", "audit", "--json"})
+	})
+	var report struct {
+		Status          string   `json:"status"`
+		Repo            string   `json:"repo"`
+		TargetPath      string   `json:"target_path"`
+		Files           int      `json:"files"`
+		PrivateSurfaces []string `json:"private_surfaces"`
+		ExcludedPaths   []string `json:"excluded_paths"`
+		ProofRefs       []string `json:"proof_refs"`
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || report.Repo != "${REPO}" || report.TargetPath != target || report.Files < 2 {
+		t.Fatalf("report = %+v, want ok redacted repo target and files", report)
+	}
+	if !releaseContains(report.PrivateSurfaces, "docs_private") {
+		t.Fatalf("private surfaces missing docs_private: %+v", report.PrivateSurfaces)
+	}
+	if !releaseContains(report.ExcludedPaths, "console/node_modules") {
+		t.Fatalf("excluded paths missing node_modules: %+v", report.ExcludedPaths)
+	}
+	if !releaseContains(report.ProofRefs, "private-audit-explicit-command") || !releaseContains(report.ProofRefs, "private-audit-heavy-path-exclusions") {
+		t.Fatalf("proof refs missing: %+v", report.ProofRefs)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("target archive missing: %v", err)
+	}
+}
+
 func releaseRequireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
