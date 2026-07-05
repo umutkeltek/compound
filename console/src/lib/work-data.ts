@@ -20,29 +20,6 @@ export function workId(item: Json): string {
   return str(item.work_id) || str(item.id);
 }
 
-export function workActionArgv(id: string, action: "admit" | "cancel"): string[] {
-  if (action === "admit") {
-    return ["work", "advance", id, "--to", "admitted", "--by", "operator-console"];
-  }
-  return [
-    "work",
-    "close",
-    id,
-    "--outcome",
-    "cancelled",
-    "--move-type",
-    "audit_only",
-    "--by",
-    "operator-console",
-    "--summary",
-    "operator cancelled proposed work",
-  ];
-}
-
-export function workActionCommand(id: string, action: "admit" | "cancel"): string {
-  return ["compound", ...workActionArgv(id, action)].join(" ");
-}
-
 export function shortText(value: string, max = 300): string {
   const compact = value.replace(/\s+/g, " ").trim();
   if (compact.length <= max) return compact;

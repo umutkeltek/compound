@@ -75,15 +75,15 @@ export function FreshnessChip({ generatedAt, source }: { generatedAt?: string; s
 }
 
 const STATE_TONE: Record<string, { tone: Accent; label: string }> = {
-  proposed: { tone: "orange", label: "awaiting admission" },
-  admitted: { tone: "orange", label: "admitted" },
+  proposed: { tone: "orange", label: "draft" },
+  admitted: { tone: "orange", label: "queued" },
   ready: { tone: "green", label: "ready" },
-  claimed: { tone: "violet", label: "claimed" },
+  claimed: { tone: "violet", label: "assigned" },
   in_progress: { tone: "blue", label: "in progress" },
   running: { tone: "blue", label: "running" },
   verifying: { tone: "blue", label: "verifying" },
   needs_review: { tone: "violet", label: "needs review" },
-  held: { tone: "violet", label: "operator gate" },
+  held: { tone: "violet", label: "needs me" },
   blocked: { tone: "orange", label: "blocked" },
   completed: { tone: "green", label: "completed" },
   failed: { tone: "red", label: "failed" },

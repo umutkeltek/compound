@@ -126,6 +126,13 @@ async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json
   return null;
 }
 
+async function currentDispatchTarget(): Promise<Json | null> {
+  const data = await runJson(["workbench", "--json"]);
+  const next = (data?.dispatch_next ?? {}) as Json;
+  if (!next.can_run) return null;
+  return next;
+}
+
 export async function executeDecision(body: Record<string, unknown>): Promise<Response> {
   const area = typeof body.area === "string" ? body.area : "";
   const itemId = typeof body.itemId === "string" ? body.itemId.trim() : "";
@@ -151,6 +158,30 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   const item = await resolveItem(spec, itemId);
   if (!item && (spec.source !== "orient" || spec.requiresResolvedItem)) {
     return Response.json({ ok: false, stderr: `item ${itemId} not found in ${area}` }, { status: 404 });
+  }
+
+  if (area === "work-dispatch") {
+    const next = await currentDispatchTarget();
+    const nextWorkID = str(next?.work_id);
+    if (!next || nextWorkID !== itemId) {
+      return Response.json(
+        {
+          ok: false,
+          stderr: nextWorkID
+            ? `continue target changed; refresh the board before continuing ${nextWorkID}`
+            : "nothing is currently safe to continue; refresh the board",
+        },
+        { status: 409 },
+      );
+    }
+    const requestedActor = str(fields.actor) || "codex";
+    const nextActor = str(next.actor) || "codex";
+    if (requestedActor !== nextActor) {
+      return Response.json(
+        { ok: false, stderr: `continue target actor changed; refresh the board before continuing as ${nextActor}` },
+        { status: 409 },
+      );
+    }
   }
 
   const allowedOptions = spec.optionsFor ? spec.optionsFor(item ?? {}) : spec.options;

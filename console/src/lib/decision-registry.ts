@@ -151,13 +151,13 @@ export const WORK_TRANSITIONS: Record<string, string[]> = {
 const WORK_TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
 const WORK_OPTION_META: Record<string, { label: string; tone: Accent; description: string }> = {
-  admitted: { label: "Admit", tone: "green", description: "Accept into the active queue." },
-  ready: { label: "Mark ready", tone: "blue", description: "Context + policy available; ready to claim." },
-  claimed: { label: "Claim", tone: "violet", description: "Operator takes the work." },
-  running: { label: "Start running", tone: "blue", description: "Begin execution." },
-  verifying: { label: "Move to verifying", tone: "blue", description: "Hand off to proof-check." },
+  admitted: { label: "Add to work", tone: "green", description: "Accept this suggested task." },
+  ready: { label: "Prepare", tone: "blue", description: "Make it ready for an executor." },
+  claimed: { label: "Start", tone: "violet", description: "Assign this work." },
+  running: { label: "Continue", tone: "blue", description: "Move active work forward." },
+  verifying: { label: "Check", tone: "blue", description: "Move into proof checking." },
   blocked: { label: "Mark blocked", tone: "orange", description: "Waiting on a dependency." },
-  held: { label: "Hold", tone: "orange", description: "Park for now; resumable." },
+  held: { label: "Needs me", tone: "orange", description: "Park for human judgment." },
   completed: { label: "Complete", tone: "green", description: "Done with proof; closes the work." },
   failed: { label: "Mark failed", tone: "red", description: "Did not succeed; closes the work." },
   cancelled: { label: "Cancel", tone: "gray", description: "Drop the work; audit-only close." },
@@ -302,7 +302,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
 
   "work-dispatch": {
     area: "work-dispatch",
-    title: "Dispatch next work step",
+    title: "Continue work",
     glyph: ">",
     accent: "green",
     source: "workbench",
@@ -311,17 +311,17 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     options: [
       {
         value: "dispatch_step",
-        label: "Run next safe step",
+        label: "Continue",
         tone: "green",
-        description: "Claim, advance, or close one policy-allowed lifecycle step.",
+        description: "Move one safe lifecycle step.",
         argv: ["work", "dispatch-step", "--actor", "codex", "--until-wait"],
       },
     ],
     plainLanguage: (item) => {
       const id = str(item.work_id) || str(item.id);
       return {
-        headline: `Dispatch ${id}`,
-        body: "Run one governed lifecycle step for the active harness. This does not execute task commands.",
+        headline: `Continue ${id}`,
+        body: "Move one safe lifecycle step. This does not execute task commands.",
       };
     },
     fields: [],

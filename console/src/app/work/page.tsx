@@ -17,35 +17,35 @@ const LANES: {
 }[] = [
   {
     key: "intake",
-    title: "Make Runnable",
-    description: "Admission and ready-state moves. No execution yet.",
+    title: "Inbox",
+    description: "Suggested tasks that can be prepared.",
     states: ["proposed", "admitted"],
     tint: "#f59e0b",
-    empty: "No work needs intake.",
+    empty: "No suggested tasks.",
   },
   {
     key: "ready",
-    title: "Ready for Harness",
-    description: "Claimable by Codex, Claude, or another executor.",
+    title: "Ready",
+    description: "Waiting for Codex, Claude, or another executor.",
     states: ["ready"],
     tint: "#10b981",
-    empty: "No claimable work.",
+    empty: "Nothing is ready to start.",
   },
   {
     key: "active",
-    title: "In Flight",
-    description: "Already claimed, running, or verifying.",
+    title: "Running",
+    description: "Assigned, in progress, or being checked.",
     states: ["claimed", "in_progress", "running", "verifying"],
     tint: "#3b82f6",
-    empty: "No active executor work.",
+    empty: "Nothing is running.",
   },
   {
     key: "operator",
-    title: "Needs Operator",
-    description: "Human gates parked outside the runnable path.",
+    title: "Needs me",
+    description: "Real decisions, missing inputs, or blocked work.",
     states: ["blocked", "held"],
     tint: "#8b5cf6",
-    empty: "No operator gates.",
+    empty: "Nothing needs your decision.",
     showDecisionForm: false,
   },
 ];
@@ -101,30 +101,34 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
   const intakeCount = open.filter((work) => ["proposed", "admitted"].includes(str(work.state))).length;
   const readyCount = open.filter((work) => str(work.state) === "ready").length;
   const operatorGateCount = open.filter((work) => ["blocked", "held"].includes(str(work.state))).length;
-  const command = arr(next.command).map(String).join(" ");
 
-  let title = "No runnable work";
-  let body = "The board has no claimable lifecycle step right now.";
+  let title = "Nothing to continue";
+  let body = "Compound is not seeing a safe next move right now.";
   let tone: "blue" | "green" | "orange" | "violet" | "gray" = "gray";
 
   if (canRun) {
-    title = action ? `Next step: ${action}` : "Next step is ready";
-    body = command || "A safe dispatch step is available.";
+    const nextAction = {
+      claim: "start",
+      advance: "continue",
+      close: "finish",
+    }[action] ?? action.replace(/_/g, " ");
+    title = "Continue";
+    body = nextAction ? `Next safe move: ${nextAction}.` : "A safe next move is ready.";
     tone = "green";
   } else if (readyCount > 0) {
-    title = "Claimable work is waiting";
-    body = `${readyCount} ready item${readyCount === 1 ? "" : "s"} can be claimed by a harness.`;
+    title = "Ready to start";
+    body = `${readyCount} item${readyCount === 1 ? "" : "s"} can be started by an executor.`;
     tone = "green";
   } else if (intakeCount > 0) {
-    title = "Make work runnable";
-    body = `${intakeCount} item${intakeCount === 1 ? "" : "s"} need admit/ready state moves before a harness can claim them.`;
+    title = "Prepare suggested work";
+    body = `${intakeCount} suggested task${intakeCount === 1 ? "" : "s"} can be prepared before an executor starts.`;
     tone = "orange";
   } else if (operatorGateCount > 0) {
-    title = "Only operator gates remain";
-    body = `${operatorGateCount} held/blocked gate${operatorGateCount === 1 ? "" : "s"} are parked for explicit review.`;
+    title = "Needs your decision";
+    body = `${operatorGateCount} item${operatorGateCount === 1 ? "" : "s"} need judgment, private input, or an unblock step.`;
     tone = "violet";
   } else if (waitReason) {
-    title = "Dispatch is waiting";
+    title = "Waiting";
     body = waitReason.replace(/_/g, " ");
   }
 
@@ -134,8 +138,8 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
         <p className="text-[12.5px] leading-relaxed text-ink-2">{body}</p>
         <div className="flex flex-wrap gap-2">
           <Chip tone={readyCount ? "green" : "gray"}>{readyCount} ready</Chip>
-          <Chip tone={intakeCount ? "orange" : "gray"}>{intakeCount} intake</Chip>
-          <Chip tone={operatorGateCount ? "violet" : "gray"}>{operatorGateCount} operator gates</Chip>
+          <Chip tone={intakeCount ? "orange" : "gray"}>{intakeCount} inbox</Chip>
+          <Chip tone={operatorGateCount ? "violet" : "gray"}>{operatorGateCount} needs me</Chip>
           {waitReason ? <Chip tone="gray">{waitReason.replace(/_/g, " ")}</Chip> : null}
         </div>
         {canRun && workId ? (
@@ -143,7 +147,7 @@ function DispatchStatus({ workbench, open }: { workbench: Json | null; open: Wor
         ) : null}
         {!canRun && blockedOn.length > 0 ? (
           <p className="text-[11.5px] leading-relaxed text-ink-3">
-            Blocked refs are parked as evidence, not the main queue: {blockedOn.slice(0, 4).join(" / ")}
+            Waiting refs are parked as evidence, not the main queue: {blockedOn.slice(0, 4).join(" / ")}
             {blockedOn.length > 4 ? " / ..." : ""}
           </p>
         ) : null}
@@ -164,7 +168,7 @@ export default async function WorkBoard() {
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Work</h1>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Move work toward claimable execution without letting review gates become the whole job.
+            Continue what can move, and separate real decisions from lifecycle plumbing.
           </p>
         </div>
         <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />
@@ -173,7 +177,7 @@ export default async function WorkBoard() {
       <DispatchStatus workbench={workbench} open={open} />
 
       <section>
-        <SectionLabel>Execution Board</SectionLabel>
+        <SectionLabel>Work Board</SectionLabel>
         <div className="overflow-x-auto pb-2">
           <div className="flex min-w-max gap-4">
             {LANES.map((column) => (

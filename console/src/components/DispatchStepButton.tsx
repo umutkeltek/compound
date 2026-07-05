@@ -48,10 +48,13 @@ export function DispatchStepButton({
           onClick={run}
           className="rounded-lg bg-emerald-600 px-3 py-2 text-[12px] font-semibold text-white disabled:cursor-wait disabled:opacity-55"
         >
-          {pending ? "Running..." : "Run next safe step"}
+          {pending ? "Continuing..." : "Continue"}
         </button>
         <CliCaption argv={command.length ? command.slice(1) : null} />
       </div>
+      <p className="text-[11.5px] leading-relaxed text-emerald-800">
+        Moves the next safe lifecycle step. Does not run task commands.
+      </p>
       {result ? (
         <div
           className={`rounded-lg border px-3 py-2 text-[12px] leading-relaxed ${
@@ -60,7 +63,7 @@ export function DispatchStepButton({
               : "border-red-200 bg-red-50 text-red-600"
           }`}
         >
-          {result.ok ? "Recorded lifecycle step." : result.stderr || result.stdout || "Command failed."}
+          {result.ok ? "Continued." : result.stderr || result.stdout || "Command failed."}
         </div>
       ) : null}
     </div>
