@@ -22,8 +22,17 @@ type SnapshotApp = {
   app_id?: string;
   date?: string;
   captured_at?: string;
-  metrics?: Record<string, unknown>;
+  metrics?: Record<string, unknown> | ASCMetricPoint[];
   [key: string]: unknown;
+};
+
+type ASCMetricPoint = {
+  name?: string;
+  value?: unknown;
+  thisDay?: unknown;
+  previousDay?: unknown;
+  delta?: unknown;
+  status?: string;
 };
 
 type Snapshot = {
@@ -204,12 +213,37 @@ function rowAppID(row: SnapshotApp): string {
 function metricValue(row: SnapshotApp, metric: string): number | undefined {
   const normalized = normalizeMetric(metric);
   const metrics = row.metrics ?? {};
+  if (Array.isArray(metrics)) {
+    return metricArrayValue(metrics, normalized, metric);
+  }
   const value =
     (metrics as Record<string, unknown>)[normalized] ??
     (metrics as Record<string, unknown>)[metric] ??
     row[normalized] ??
     row[metric];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function metricArrayValue(metrics: ASCMetricPoint[], normalized: string, raw: string): number | undefined {
+  for (const candidate of metricLookupNames(normalized, raw)) {
+    const found = metrics.find((metric) => metric.name === candidate);
+    if (!found || (found.status && found.status !== "ok")) continue;
+    const value = found.thisDay ?? found.value;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function metricLookupNames(normalized: string, raw: string): string[] {
+  const aliases: Record<string, string[]> = {
+    units: ["units", "monetized_units", "subscription_units", "renewal_units"],
+    developer_proceeds_usd: [
+      "developer_proceeds_usd",
+      "subscription_developer_proceeds",
+      "renewal_developer_proceeds",
+    ],
+  };
+  return [...new Set([normalized, raw, ...(aliases[normalized] ?? [])])];
 }
 
 function normalizeMetric(metric: string): string {

@@ -40,6 +40,43 @@ describe("asc_daily_signals edge", () => {
     expect(proceeds.metric.name).toBe("developer_proceeds_usd");
   });
 
+  test("maps asc insights daily metrics arrays", () => {
+    const exports = exportsForSnapshot(
+      {
+        apps: [
+          {
+            product_id: "product:exampleapp",
+            asc_app_id: "123456789",
+            metrics: ["units", "developer_proceeds_usd", "product_page_views"],
+          },
+        ],
+      },
+      {
+        date: "2026-07-04",
+        captured_at: "2026-07-04T12:00:00Z",
+        apps: [
+          {
+            asc_app_id: "123456789",
+            metrics: [
+              { name: "monetized_units", unit: "count", thisDay: 2, previousDay: 1, status: "ok" },
+              {
+                name: "subscription_developer_proceeds",
+                unit: "currency",
+                thisDay: 4.25,
+                previousDay: 0,
+                status: "ok",
+              },
+            ],
+          },
+        ],
+      },
+    );
+
+    expect(exports).toHaveLength(2);
+    expect(exports.map((doc) => doc.metric.name)).toEqual(["units", "developer_proceeds_usd"]);
+    expect(exports.map((doc) => doc.metric.after.value)).toEqual([2, 4.25]);
+  });
+
   test("accepts operator-owned YAML app config", () => {
     const dir = mkdtempSync(join(tmpdir(), "compound-asc-config-"));
     const path = join(dir, "asc-products.yaml");
