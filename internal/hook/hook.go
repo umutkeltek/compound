@@ -441,12 +441,20 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		summary := fmt.Sprintf("recorded %s receipt event for session %s", name, fx.SessionID)
 		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 	}
+	outcome := strings.TrimSpace(fx.Outcome)
+	moveType := strings.TrimSpace(fx.MoveType)
+	if outcome == "" || moveType == "" {
+		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.WorkID, fx.Cwd, fx.Summary, outcome, moveType}, "\x00"))
+		ev := newEvent(name, fx, status(deps, fx.Harness, name), inputHash, nil, now)
+		summary := fmt.Sprintf("recorded %s receipt event for work %s; explicit outcome and move_type required to close work", name, fx.WorkID)
+		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
+	}
 	if deps.Store == nil {
 		return Result{}, fmt.Errorf("session-end needs a work store (run `compound home init`)")
 	}
 	res, err := deps.Store.Close(fx.WorkID, work.CloseInput{
-		Outcome:                    orDef(fx.Outcome, "completed"),
-		MoveType:                   orDef(fx.MoveType, "audit_only"),
+		Outcome:                    outcome,
+		MoveType:                   moveType,
 		Summary:                    fx.Summary,
 		Changed:                    strings.TrimSpace(fx.Summary) != "",
 		MissedCapabilities:         fx.Missed,

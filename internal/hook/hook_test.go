@@ -945,6 +945,7 @@ func TestSessionEndClosesWork(t *testing.T) {
 		Harness:        "claude_code",
 		WorkID:         w.ID,
 		MoveType:       "outward_delta",
+		Outcome:        "completed",
 		Summary:        "shipped",
 		Missed:         []string{"capability://skill:pricing"},
 		FalseTriggered: []string{"capability://skill:generic-copy"},
@@ -970,6 +971,41 @@ func TestSessionEndClosesWork(t *testing.T) {
 	closed, _ := store.Get(w.ID)
 	if closed.State != "completed" {
 		t.Errorf("work should be completed after session-end, got %q", closed.State)
+	}
+}
+
+func TestSessionEndWithWorkIDDoesNotCloseWithoutExplicitOutcomeAndMoveType(t *testing.T) {
+	store, err := work.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _ := store.Create(work.CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
+	store.Claim(w.ID, "claude_code", fixedNow)
+	store.Advance(w.ID, work.AdvanceInput{To: "running"}, fixedNow)
+
+	deps := baseDeps()
+	deps.Store = store
+	res, err := Run(Fixture{
+		Hook:    "session-end",
+		Harness: "claude_code",
+		WorkID:  w.ID,
+		Summary: "session stopped",
+	}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if got := kinds(res.Produced); len(got) != 0 {
+		t.Fatalf("produced = %v, want no receipt/transition without explicit close intent", got)
+	}
+	if !strings.Contains(res.Summary, "explicit outcome and move_type required") {
+		t.Fatalf("summary = %q, want explicit close-intent guidance", res.Summary)
+	}
+	open, err := store.Get(w.ID)
+	if err != nil {
+		t.Fatalf("get work: %v", err)
+	}
+	if open.State != "running" {
+		t.Fatalf("work state = %q, want running", open.State)
 	}
 }
 
