@@ -1,6 +1,8 @@
 package mem
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +16,9 @@ const TopicImportSchemaVersion = "compound.memory_topics.v0.1"
 type TopicImportReport struct {
 	SchemaVersion string   `json:"schema_version"`
 	ImportedAt    string   `json:"imported_at"`
+	SourceRef     string   `json:"source_ref,omitempty"`
+	SourceHash    string   `json:"source_hash,omitempty"`
+	EvidenceRef   string   `json:"evidence_ref,omitempty"`
 	TopicCount    int      `json:"topic_count"`
 	EntityCreated int      `json:"entity_created"`
 	EntityUpdated int      `json:"entity_updated"`
@@ -44,17 +49,26 @@ func (s *Store) ImportTopicsFile(path string, now time.Time) (TopicImportReport,
 	if err != nil {
 		return TopicImportReport{}, err
 	}
-	return s.ImportTopics(data, now)
+	return s.importTopics(data, now, path)
 }
 
 func (s *Store) ImportTopics(data []byte, now time.Time) (TopicImportReport, error) {
+	return s.importTopics(data, now, "inline:memory-topics")
+}
+
+func (s *Store) importTopics(data []byte, now time.Time, sourceRef string) (TopicImportReport, error) {
 	doc, err := decodeTopicImport(data)
 	if err != nil {
 		return TopicImportReport{}, err
 	}
+	sourceHash := topicImportHash(data)
+	evidenceRef := "topic_import:" + sourceHash
 	report := TopicImportReport{
 		SchemaVersion: TopicImportSchemaVersion,
 		ImportedAt:    rfc3339(now),
+		SourceRef:     strings.TrimSpace(sourceRef),
+		SourceHash:    sourceHash,
+		EvidenceRef:   evidenceRef,
 		TopicCount:    len(doc.Topics),
 	}
 	for _, topic := range doc.Topics {
@@ -76,7 +90,7 @@ func (s *Store) ImportTopics(data []byte, now time.Time) (TopicImportReport, err
 			report.EntityReused++
 		}
 		for _, parent := range normalizeStringRefs(append(topic.PartOf, topic.Parent)) {
-			created, err := s.ensureRelation(topic.Slug, "part_of", parent, 1, now)
+			created, err := s.ensureRelation(topic.Slug, "part_of", parent, 1, []string{evidenceRef}, now)
 			if err != nil {
 				return report, err
 			}
@@ -87,7 +101,7 @@ func (s *Store) ImportTopics(data []byte, now time.Time) (TopicImportReport, err
 			}
 		}
 		for _, child := range normalizeStringRefs(append(topic.NarrowsTo, topic.Children...)) {
-			created, err := s.ensureRelation(topic.Slug, "narrows_to", child, 1, now)
+			created, err := s.ensureRelation(topic.Slug, "narrows_to", child, 1, []string{evidenceRef}, now)
 			if err != nil {
 				return report, err
 			}
@@ -100,6 +114,11 @@ func (s *Store) ImportTopics(data []byte, now time.Time) (TopicImportReport, err
 	}
 	sort.Strings(report.Topics)
 	return report, nil
+}
+
+func topicImportHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 func decodeTopicImport(data []byte) (topicImportDocument, error) {
@@ -155,7 +174,7 @@ func sameEntityPayload(a, b Entity) bool {
 		stringSliceEqual(normalizeStringRefs(a.Identifiers), normalizeStringRefs(b.Identifiers))
 }
 
-func (s *Store) ensureRelation(from, kind, to string, conf float64, now time.Time) (bool, error) {
+func (s *Store) ensureRelation(from, kind, to string, conf float64, evidenceRefs []string, now time.Time) (bool, error) {
 	edges, err := s.loadEdges()
 	if err != nil {
 		return false, err
@@ -165,7 +184,7 @@ func (s *Store) ensureRelation(from, kind, to string, conf float64, now time.Tim
 			return false, nil
 		}
 	}
-	if _, err := s.Relate(from, kind, to, conf, now); err != nil {
+	if _, err := s.relate(from, kind, to, conf, evidenceRefs, now); err != nil {
 		return false, err
 	}
 	return true, nil

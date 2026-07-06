@@ -54,6 +54,10 @@ func (StructuredExtractor) Extract(trace []byte) (Extraction, error) {
 // Relate records an entity-level relation edge. Relations are structural, not
 // claims, so they are not candidate-adjudicated; recall confidence-gates them.
 func (s *Store) Relate(from, kind, to string, conf float64, now time.Time) (Edge, error) {
+	return s.relate(from, kind, to, conf, nil, now)
+}
+
+func (s *Store) relate(from, kind, to string, conf float64, evidenceRefs []string, now time.Time) (Edge, error) {
 	if !oneOf(kind, RelationKinds) {
 		return Edge{}, fmt.Errorf("relation kind must be one of %v, got %q", RelationKinds, kind)
 	}
@@ -66,7 +70,7 @@ func (s *Store) Relate(from, kind, to string, conf float64, now time.Time) (Edge
 		if err != nil {
 			return err
 		}
-		e = Edge{Seq: seq, Kind: kind, From: from, To: to, Confidence: conf, CreatedAt: rfc3339(now)}
+		e = Edge{Seq: seq, Kind: kind, From: from, To: to, Confidence: conf, EvidenceRefs: normalizeStringRefs(evidenceRefs), CreatedAt: rfc3339(now)}
 		return appendJSONL(s.edgesLog(), &e)
 	})
 	return e, err

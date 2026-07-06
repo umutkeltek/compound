@@ -34,6 +34,9 @@ func TestImportTopicsIdempotentAndResolvesSubtree(t *testing.T) {
 	if first.EntityCreated != 3 || first.EdgesCreated != 4 {
 		t.Fatalf("first import created entities=%d edges=%d, want 3/4", first.EntityCreated, first.EdgesCreated)
 	}
+	if first.SourceRef != "inline:memory-topics" || first.SourceHash == "" || first.EvidenceRef == "" {
+		t.Fatalf("topic import should record source provenance: %+v", first)
+	}
 	second, err := s.ImportTopics(conceptTopicsJSON(), t0.Add(1))
 	if err != nil {
 		t.Fatal(err)
@@ -57,6 +60,11 @@ func TestImportTopicsIdempotentAndResolvesSubtree(t *testing.T) {
 	}
 	if len(edges) != 4 {
 		t.Fatalf("idempotent import should leave 4 hierarchy edge rows, got %d", len(edges))
+	}
+	for _, edge := range edges {
+		if !stringSliceContains(edge.EvidenceRefs, first.EvidenceRef) {
+			t.Fatalf("topic relation edge should carry import evidence ref %q: %+v", first.EvidenceRef, edge)
+		}
 	}
 	subtree, err := s.TopicSubtree(topicMid)
 	if err != nil {
@@ -131,6 +139,9 @@ func TestPositionFoldTopicScopeAsOfContestedAndClaimLedgerInvariant(t *testing.T
 		t.Fatalf("leaf position should be contested with review refs; got %+v", leafPosition)
 	}
 
+	if _, err := s.FoldPositions(PositionFoldOptions{}, foldTime); err != nil {
+		t.Fatal(err)
+	}
 	firstBytes, err := os.ReadFile(s.positionsLog())
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +155,7 @@ func TestPositionFoldTopicScopeAsOfContestedAndClaimLedgerInvariant(t *testing.T
 		t.Fatal(err)
 	}
 	if !bytes.Equal(firstBytes, secondBytes) || !reflect.DeepEqual(fold.Positions, refold.Positions) {
-		t.Fatal("re-fold with the same inputs must be idempotent")
+		t.Fatal("scoped re-fold must be idempotent and must not overwrite the global positions projection")
 	}
 
 	scoped, err := s.Position(entity, PositionFoldOptions{Topic: topicMid})
@@ -170,6 +181,35 @@ func TestPositionFoldTopicScopeAsOfContestedAndClaimLedgerInvariant(t *testing.T
 	}
 	if len(recall.Claims) != 2 {
 		t.Fatalf("topic-scoped recall should return current mid+leaf claims with needs_review included, got %d: %+v", len(recall.Claims), recall.Claims)
+	}
+
+	near := cand(entity, "source_note", "near-topic", "2026-05-01T00:00:00Z")
+	near.TopicRefs = []string{topicLeaf}
+	far := cand(entity, "source_note", "far-topic", "2026-05-01T00:00:00Z")
+	far.TopicRefs = []string{topicRoot}
+	captured, err := s.Capture([]Candidate{near, far}, t0.Add(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range captured {
+		if _, err := s.AnnotateCandidate(candidate.ID, CandidateAnnotation{
+			Kind:             "panel_verdict",
+			Decision:         "annotate",
+			OriginalDecision: "needs_human",
+			RunID:            "prun_topic_scope",
+			Rationale:        "kept as evidence candidate only",
+			Confidence:       0.7,
+			EvidenceRefs:     []string{"panel_run:prun_topic_scope"},
+		}, t0.Add(8)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withEvidence, err := s.Recall(entity, RecallOpts{Topic: topicMid, IncludeNeedsReview: true, IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(withEvidence.EvidenceCandidates) != 1 || withEvidence.EvidenceCandidates[0].Object != "near-topic" {
+		t.Fatalf("topic-scoped recall evidence candidates should respect subtree filter, got %+v", withEvidence.EvidenceCandidates)
 	}
 }
 

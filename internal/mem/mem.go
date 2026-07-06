@@ -667,9 +667,16 @@ func (s *Store) annotatedEvidenceCandidates(entity string, opts RecallOpts) ([]C
 	if err != nil {
 		return nil, err
 	}
+	topicSet, _, err := s.topicScopeSet(opts.Topic)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Candidate, 0)
 	for _, c := range candidates {
 		if c.Entity != entity || len(c.Annotations) == 0 {
+			continue
+		}
+		if len(topicSet) > 0 && !candidateHasTopicRef(c, topicSet) {
 			continue
 		}
 		if !opts.IncludeRetired && c.Visibility == "retired" {
@@ -690,6 +697,15 @@ func (s *Store) annotatedEvidenceCandidates(entity string, opts RecallOpts) ([]C
 		return out[i].CreatedAt < out[j].CreatedAt
 	})
 	return out, nil
+}
+
+func candidateHasTopicRef(candidate Candidate, topicSet map[string]bool) bool {
+	for _, ref := range candidate.TopicRefs {
+		if topicSet[ref] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) Timeline(entity string) ([]Claim, error) {

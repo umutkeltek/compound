@@ -23,6 +23,9 @@ func cmdMemoryImportTopics(store *mem.Store, args []string) {
 		return
 	}
 	fmt.Printf("# memory import-topics %d\n", report.TopicCount)
+	fmt.Printf("- source_ref: %s\n", report.SourceRef)
+	fmt.Printf("- source_hash: %s\n", report.SourceHash)
+	fmt.Printf("- evidence_ref: %s\n", report.EvidenceRef)
 	fmt.Printf("- entity_created: %d\n", report.EntityCreated)
 	fmt.Printf("- entity_updated: %d\n", report.EntityUpdated)
 	fmt.Printf("- entity_reused: %d\n", report.EntityReused)

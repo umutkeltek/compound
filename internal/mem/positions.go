@@ -52,8 +52,10 @@ func (s *Store) FoldPositions(opts PositionFoldOptions, now time.Time) (Position
 	if err != nil {
 		return PositionFoldReport{}, err
 	}
-	if err := writePositionsLog(s.positionsLog(), positions); err != nil {
-		return PositionFoldReport{}, err
+	if shouldWriteGlobalPositionsProjection(opts) {
+		if err := writePositionsLog(s.positionsLog(), positions); err != nil {
+			return PositionFoldReport{}, err
+		}
 	}
 	return PositionFoldReport{
 		SchemaVersion: PositionFoldSchemaVersion,
@@ -65,6 +67,10 @@ func (s *Store) FoldPositions(opts PositionFoldOptions, now time.Time) (Position
 		Count:         len(positions),
 		Positions:     positions,
 	}, nil
+}
+
+func shouldWriteGlobalPositionsProjection(opts PositionFoldOptions) bool {
+	return strings.TrimSpace(opts.Entity) == "" && strings.TrimSpace(opts.Topic) == "" && opts.AsOfSeq == 0
 }
 
 func (s *Store) LoadFoldedPositions() ([]Position, error) {
