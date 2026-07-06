@@ -20,6 +20,7 @@ import (
 const (
 	ModelCapabilitiesAuthorityRef          = "compound://registries/model-router"
 	ModelCapabilitiesSourceAuthoritySchema = "compound.model_capabilities_source_authority.v0.1"
+	ModelCapabilitiesProjectionSchema      = "compound.model_capabilities_projection.v0.1"
 	CapabilityRoutePlanSchemaVersion       = "compound.capability_route_plan.v0.1"
 
 	modelCapabilitiesFile              = "model-capabilities.yaml"
@@ -51,6 +52,41 @@ type ModelCapabilitiesManifest struct {
 	CapabilityClasses []string                        `json:"capability_classes" yaml:"capability_classes"`
 	Models            map[string]ModelCapabilityEntry `json:"models" yaml:"models"`
 	RoutingDefaults   map[string][]string             `json:"routing_defaults" yaml:"routing_defaults"`
+}
+
+type ModelCapabilitiesProjection struct {
+	SchemaVersion       string                          `json:"schema_version"`
+	GeneratedAt         string                          `json:"generated_at"`
+	AuthorityRef        string                          `json:"authority_ref"`
+	AuthorityPath       string                          `json:"authority_path"`
+	SourceAuthorityID   string                          `json:"source_authority_id,omitempty"`
+	SourceRevision      string                          `json:"source_revision,omitempty"`
+	ModelCount          int                             `json:"model_count"`
+	CapabilityClasses   []string                        `json:"capability_classes"`
+	RoutingDefaultCount int                             `json:"routing_default_count"`
+	Lanes               []ModelCapabilityProjectionLane `json:"lanes"`
+}
+
+type ModelCapabilityProjectionLane struct {
+	ModelID         string                           `json:"model_id"`
+	Label           string                           `json:"label"`
+	Lane            string                           `json:"lane"`
+	Harness         string                           `json:"harness,omitempty"`
+	ProviderRoute   string                           `json:"provider_route,omitempty"`
+	EffortDefault   string                           `json:"effort_default,omitempty"`
+	CostClass       string                           `json:"cost_class,omitempty"`
+	Tier            string                           `json:"tier"`
+	PacketCeiling   string                           `json:"packet_ceiling,omitempty"`
+	Capabilities    []ModelCapabilityProjectionClaim `json:"capabilities,omitempty"`
+	RoutingDefaults []string                         `json:"routing_defaults,omitempty"`
+	Notes           string                           `json:"notes,omitempty"`
+}
+
+type ModelCapabilityProjectionClaim struct {
+	CapabilityClass string `json:"capability_class"`
+	Level           string `json:"level"`
+	Evidence        string `json:"evidence,omitempty"`
+	GateRole        string `json:"gate_role"`
 }
 
 type ModelCapabilitiesImportReport struct {
@@ -244,6 +280,63 @@ func LoadModelCapabilitiesSourceAuthority(homePath string) ([]ModelCapabilitiesS
 		records = append(records, rec)
 	}
 	return records, nil
+}
+
+func ProjectModelCapabilities(homePath string, now time.Time) (ModelCapabilitiesProjection, error) {
+	manifest, authorityPath, err := LoadModelCapabilitiesFromHome(homePath)
+	if err != nil {
+		return ModelCapabilitiesProjection{}, fmt.Errorf("load model capabilities authority: %w", err)
+	}
+	sourceAuthorityID, sourceRevision, err := latestModelCapabilitiesSource(homePath)
+	if err != nil {
+		return ModelCapabilitiesProjection{}, err
+	}
+
+	projection := ModelCapabilitiesProjection{
+		SchemaVersion:       ModelCapabilitiesProjectionSchema,
+		GeneratedAt:         rfc3339(now),
+		AuthorityRef:        ModelCapabilitiesAuthorityRef,
+		AuthorityPath:       authorityPath,
+		SourceAuthorityID:   sourceAuthorityID,
+		SourceRevision:      sourceRevision,
+		ModelCount:          len(manifest.Models),
+		CapabilityClasses:   sortedStrings(manifest.CapabilityClasses),
+		RoutingDefaultCount: len(manifest.RoutingDefaults),
+		Lanes:               []ModelCapabilityProjectionLane{},
+	}
+
+	for _, modelID := range modelCapabilityIDs(manifest) {
+		model := manifest.Models[modelID]
+		label := strings.TrimSpace(model.Lane)
+		if label == "" {
+			label = modelID
+		}
+		lane := ModelCapabilityProjectionLane{
+			ModelID:         modelID,
+			Label:           label,
+			Lane:            strings.TrimSpace(model.Lane),
+			Harness:         strings.TrimSpace(model.Harness),
+			ProviderRoute:   strings.TrimSpace(model.ProviderRoute),
+			EffortDefault:   strings.TrimSpace(model.EffortDefault),
+			CostClass:       strings.TrimSpace(model.CostClass),
+			Tier:            strings.TrimSpace(model.Tier),
+			PacketCeiling:   strings.TrimSpace(model.PacketCeiling),
+			RoutingDefaults: routingDefaultsForModel(manifest.RoutingDefaults, modelID),
+			Notes:           strings.TrimSpace(model.Notes),
+		}
+		for _, class := range sortedCapabilityClaimClasses(model.Capabilities) {
+			claim := model.Capabilities[class]
+			lane.Capabilities = append(lane.Capabilities, ModelCapabilityProjectionClaim{
+				CapabilityClass: class,
+				Level:           strings.TrimSpace(claim.Level),
+				Evidence:        strings.TrimSpace(claim.Evidence),
+				GateRole:        gateRole(class, model.Tier, strings.TrimSpace(claim.Level)),
+			})
+		}
+		projection.Lanes = append(projection.Lanes, lane)
+	}
+
+	return projection, nil
 }
 
 func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRoutePlanOptions, now time.Time) (CapabilityRoutePlan, error) {
@@ -534,6 +627,30 @@ func modelCapabilityIDs(manifest ModelCapabilitiesManifest) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+func sortedCapabilityClaimClasses(claims map[string]CapabilityClaim) []string {
+	out := make([]string, 0, len(claims))
+	for class := range claims {
+		if strings.TrimSpace(class) != "" {
+			out = append(out, class)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func routingDefaultsForModel(defaults map[string][]string, modelID string) []string {
+	var out []string
+	for class, chain := range defaults {
+		for position, candidate := range chain {
+			if candidate == modelID {
+				out = append(out, fmt.Sprintf("%s[%d]", class, position))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func sortedStrings(in []string) []string {

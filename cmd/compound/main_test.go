@@ -10704,6 +10704,22 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 		t.Fatalf("bad import output:\n%s", importOut)
 	}
 
+	modelsJSONOut := captureStdout(t, func() {
+		cmdRoute([]string{"model-capabilities", "--json"})
+	})
+	var modelProjection routeevidence.ModelCapabilitiesProjection
+	if err := json.Unmarshal([]byte(modelsJSONOut), &modelProjection); err != nil {
+		t.Fatalf("parse model capabilities JSON: %v\n%s", err, modelsJSONOut)
+	}
+	if modelProjection.SchemaVersion != routeevidence.ModelCapabilitiesProjectionSchema ||
+		modelProjection.AuthorityRef != routeevidence.ModelCapabilitiesAuthorityRef ||
+		modelProjection.ModelCount != 4 ||
+		len(modelProjection.Lanes) != 4 ||
+		modelProjection.Lanes[0].ModelID != "auto/extract" ||
+		len(modelProjection.Lanes[0].Capabilities) == 0 {
+		t.Fatalf("bad model capabilities projection: %+v", modelProjection)
+	}
+
 	planOut := captureStdout(t, func() {
 		cmdRoute([]string{"plan", "--capability-class", "judge-critique"})
 	})

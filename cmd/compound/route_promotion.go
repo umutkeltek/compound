@@ -13,6 +13,9 @@ func tryRoutePromotionCommand(args []string, homePath string) bool {
 	if len(args) == 0 {
 		return false
 	}
+	if tryRouteModelCapabilitiesCommand(args, homePath) {
+		return true
+	}
 	switch args[0] {
 	case "import-promotion-criteria":
 		if len(args) != 2 {
