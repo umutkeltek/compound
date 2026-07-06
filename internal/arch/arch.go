@@ -417,6 +417,12 @@ func checkPrivateAdaptationSteering(repoRoot string) []Finding {
 
 	var failures []string
 	canonicalPath := filepath.Join(planDir, "codex-goal-prompt.md")
+	rulePath := filepath.Join(planDir, "OPERATING-SYSTEM-ADAPTATION-RULE.md")
+	_, canonicalStatErr := os.Stat(canonicalPath)
+	_, ruleStatErr := os.Stat(rulePath)
+	if os.IsNotExist(canonicalStatErr) && os.IsNotExist(ruleStatErr) {
+		return []Finding{{"adaptation-steering", Info, "private adaptation steering files absent; public/packet clone uses roadmap fallback for context-aware OS adaptation"}}
+	}
 	canonical, err := os.ReadFile(canonicalPath)
 	if err != nil {
 		failures = append(failures, "missing canonical codex-goal-prompt.md: "+err.Error())
@@ -453,7 +459,6 @@ func checkPrivateAdaptationSteering(repoRoot string) []Finding {
 		}
 	}
 
-	rulePath := filepath.Join(planDir, "OPERATING-SYSTEM-ADAPTATION-RULE.md")
 	rule, err := os.ReadFile(rulePath)
 	if err != nil {
 		failures = append(failures, "missing OPERATING-SYSTEM-ADAPTATION-RULE.md: "+err.Error())
