@@ -102,10 +102,8 @@ func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool
 	if err != nil {
 		return consoleLaunchPlan{}, fmt.Errorf("resolve COMPOUND_HOME: %w", err)
 	}
-	compoundBin, err := os.Executable()
-	if err != nil || strings.TrimSpace(compoundBin) == "" {
-		compoundBin = "compound"
-	}
+	compoundExe, _ := os.Executable()
+	compoundBin := resolveConsoleCompoundBin(compoundExe, exec.LookPath)
 	env := map[string]string{
 		"COMPOUND_BIN":               compoundBin,
 		"COMPOUND_CONSOLE_MUTATIONS": "1",
@@ -125,6 +123,38 @@ func buildConsoleLaunchPlan(consoleDirFlag string, privateFallbacks, dryRun bool
 		PrivateFallbacks: privateFallbacks,
 		DryRun:           dryRun,
 	}, nil
+}
+
+func resolveConsoleCompoundBin(currentExe string, lookPath func(string) (string, error)) string {
+	currentExe = strings.TrimSpace(currentExe)
+	if currentExe == "" || consoleExecutableIsTemporary(currentExe) {
+		if stable, err := lookPath("compound"); err == nil && strings.TrimSpace(stable) != "" {
+			return stable
+		}
+	}
+	if currentExe != "" {
+		return currentExe
+	}
+	if stable, err := lookPath("compound"); err == nil && strings.TrimSpace(stable) != "" {
+		return stable
+	}
+	return "compound"
+}
+
+func consoleExecutableIsTemporary(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "." || cleaned == "" {
+		return false
+	}
+	tempRoots := []string{filepath.Clean(os.TempDir()), string(filepath.Separator) + "tmp"}
+	for _, root := range tempRoots {
+		if cleaned == root || strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	base := filepath.Base(cleaned)
+	return strings.Contains(cleaned, string(filepath.Separator)+"go-build") ||
+		strings.HasPrefix(base, "compound-dashboard")
 }
 
 func resolveConsoleDir(explicit string) (string, error) {

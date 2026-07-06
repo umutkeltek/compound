@@ -658,7 +658,7 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		}
 	}
 	item.ReviewCards = s.workbenchReviewCards(w.ID, item.RunArtifacts)
-	item.ReviewCards = append(item.ReviewCards, workbenchOperatorGateCards(w, item)...)
+	item.ReviewCards = append(item.ReviewCards, s.workbenchOperatorGateCards(w, item)...)
 	item.ReviewCards = markStaleHoldReviewCards(w, item, item.ReviewCards, holdEvidence)
 	if len(item.ReviewCards) > 0 && (w.State == "held" || w.State == "blocked") {
 		item.NextAction = firstNonEmpty(item.ReviewCards[0].NextAction, item.ReviewCards[0].Title)
@@ -1076,7 +1076,7 @@ func (s *Store) workbenchReviewCards(workID string, artifacts []WorkbenchRunArti
 	return []WorkbenchReviewCard{card}
 }
 
-func workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []WorkbenchReviewCard {
+func (s *Store) workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []WorkbenchReviewCard {
 	if w.State != "held" && w.State != "blocked" {
 		return nil
 	}
@@ -1088,6 +1088,41 @@ func workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []W
 	}, " "))
 	if !(strings.Contains(context, "asc") || strings.Contains(context, "app-store-connect") || strings.Contains(context, "app store connect")) {
 		return nil
+	}
+	ascSignals := s.ascProductSignalState()
+	if ascSignals.Count > 0 {
+		card := WorkbenchReviewCard{
+			ID:              "operator-gate-" + w.ID + "-app-store-connect-refresh-decision",
+			Kind:            "source_refresh_gate",
+			Title:           "ASC product signals observed: " + w.ID + "; choose automatic refresh / manual refresh / close held work",
+			NextAction:      "ASC signals observed; choose scheduler load / manual refresh / close held work with proof.",
+			ConditionStatus: "observed",
+			WorkID:          w.ID,
+			GateID:          "asc-daily-refresh",
+			SourceKind:      "app_store_connect",
+			Command:         []string{"compound", "source", "connections", "--json"},
+			RequiredInputs: []string{
+				"operator decision: scheduler load / manual refresh / close held work with proof",
+				"proof that current ASC product signals are sufficient for this held work's next step",
+			},
+			ExpectedValidation: []string{
+				"source connections shows asc_daily_signals observed from product-signal evidence",
+				"product authority shows App Store Connect product signals; no product surface changed",
+				"held work remains held until an explicit governed close or operator-approved advance",
+			},
+			StopConditions: []string{
+				"requested action would mutate App Store Connect, publish, spend, or alter product surfaces",
+				"operator has not decided scheduler load / manual refresh / close",
+				"product signal evidence is missing, stale, or belongs to the wrong product",
+			},
+			Boundary:         "read-model decision card only; product signals are evidence; scheduler load and held-work close remain explicit operator decisions",
+			Proof:            "Workbench sees ASC product signal evidence in ledger/product-signals.jsonl and changes the held card from private-config setup to refresh/close decision without clearing the held work",
+			RequiresOperator: true,
+		}
+		if ascSignals.LastSeen != "" {
+			card.TriggeringEvidenceRef = "product-signals:app_store_connect:last_seen:" + ascSignals.LastSeen
+		}
+		return []WorkbenchReviewCard{card}
 	}
 	card := WorkbenchReviewCard{
 		ID:         "operator-gate-" + w.ID + "-app-store-connect-private-config",
@@ -1118,6 +1153,51 @@ func workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []W
 		RequiresOperator: true,
 	}
 	return []WorkbenchReviewCard{card}
+}
+
+type ascProductSignalState struct {
+	Count    int
+	LastSeen string
+}
+
+type workbenchProductSignalRow struct {
+	ID           string   `json:"id"`
+	MetricName   string   `json:"metric_name"`
+	ObservedAt   string   `json:"observed_at"`
+	EvidenceRefs []string `json:"evidence_refs"`
+}
+
+func (s *Store) ascProductSignalState() ascProductSignalState {
+	path := filepath.Join(s.home, "ledger", "product-signals.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ascProductSignalState{}
+	}
+	var state ascProductSignalState
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var row workbenchProductSignalRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil || row.ID == "" || !workbenchProductSignalIsASC(row) {
+			continue
+		}
+		state.Count++
+		state.LastSeen = workbenchLatestTimestamp(state.LastSeen, row.ObservedAt)
+	}
+	return state
+}
+
+func workbenchProductSignalIsASC(row workbenchProductSignalRow) bool {
+	if strings.HasPrefix(strings.TrimSpace(row.MetricName), "app_store_connect_") {
+		return true
+	}
+	for _, ref := range row.EvidenceRefs {
+		if strings.HasPrefix(strings.TrimSpace(ref), "asc:") {
+			return true
+		}
+	}
+	return false
 }
 
 func firstCandidateRef(refs []string) string {

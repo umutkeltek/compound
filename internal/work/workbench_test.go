@@ -1088,6 +1088,53 @@ func TestWorkbenchMarksHeldCardConditionStaleWhenReceiptNamesGate(t *testing.T) 
 	}
 }
 
+func TestWorkbenchASCOperatorGateUsesObservedSignalDecision(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private config before scheduler",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeWorkbenchProductSignals(t, s.home, []workbenchProductSignalRow{
+		{
+			ID:           "sig_asc_units",
+			MetricName:   "app_store_connect_units",
+			ObservedAt:   fixedNow.Add(time.Minute).Format(time.RFC3339),
+			EvidenceRefs: []string{"asc:daily:sample-app:2026-07-04:units"},
+		},
+	})
+
+	report, err := s.Workbench(fixedNow.Add(2*time.Minute), WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findWorkbenchItem(t, report.Open, held.ID)
+	if len(item.ReviewCards) != 1 {
+		t.Fatalf("review cards = %+v", item.ReviewCards)
+	}
+	card := item.ReviewCards[0]
+	if card.Kind != "source_refresh_gate" ||
+		card.GateID != "asc-daily-refresh" ||
+		card.ConditionStatus != "observed" ||
+		!contains(card.Command, "connections") ||
+		!strings.Contains(strings.Join(card.RequiredInputs, "\n"), "operator decision") ||
+		!strings.Contains(strings.Join(card.ExpectedValidation, "\n"), "asc_daily_signals observed") ||
+		!strings.Contains(card.NextAction, "ASC signals observed") ||
+		strings.Contains(card.Title, "private ASC config needed") {
+		t.Fatalf("ASC observed signal card should ask refresh/close decision: %+v", card)
+	}
+	if item.State != "held" || item.NextAction != card.NextAction {
+		t.Fatalf("observed ASC signal must not auto-release held work: %+v", item)
+	}
+	action, ok := adjacentActionByID(report.DispatchNext.AdjacentProgress.NonPacketActions, card.ID)
+	if !ok || action.Kind != "review_card" || action.ReviewCard == nil || action.ReviewCard.Kind != "source_refresh_gate" {
+		t.Fatalf("adjacent action missing observed source card: %+v", action)
+	}
+}
+
 func TestHeldConditionStaleEvidenceDoesNotAutoReleaseWork(t *testing.T) {
 	s := newStore(t)
 	held, err := s.Create(CreateInput{
@@ -1597,6 +1644,25 @@ func writeWorkbenchRouteOutcomeReview(t *testing.T, homePath string, review map[
 	}
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeWorkbenchProductSignals(t *testing.T, homePath string, rows []workbenchProductSignalRow) {
+	t.Helper()
+	dir := filepath.Join(homePath, "ledger")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(dir, "product-signals.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	for _, row := range rows {
+		if err := enc.Encode(row); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

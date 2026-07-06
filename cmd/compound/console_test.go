@@ -8,6 +8,30 @@ import (
 	"testing"
 )
 
+func TestConsoleCompoundBinPrefersStablePathForTemporaryExecutable(t *testing.T) {
+	stable := filepath.Join(t.TempDir(), "bin", "compound")
+	got := resolveConsoleCompoundBin(filepath.Join(string(filepath.Separator), "tmp", "compound-dashboard"), func(name string) (string, error) {
+		if name != "compound" {
+			t.Fatalf("lookup name = %q", name)
+		}
+		return stable, nil
+	})
+	if got != stable {
+		t.Fatalf("compound bin = %q, want %q", got, stable)
+	}
+}
+
+func TestConsoleCompoundBinKeepsStableExecutable(t *testing.T) {
+	current := filepath.Join(string(filepath.Separator), "usr", "local", "bin", "compound")
+	got := resolveConsoleCompoundBin(current, func(name string) (string, error) {
+		t.Fatalf("stable executable should not need PATH lookup")
+		return "", os.ErrNotExist
+	})
+	if got != current {
+		t.Fatalf("compound bin = %q, want %q", got, current)
+	}
+}
+
 func TestConsoleOperatorDryRunWiresLocalMutationEnv(t *testing.T) {
 	root := t.TempDir()
 	consoleDir := filepath.Join(root, "console")
