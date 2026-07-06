@@ -20,7 +20,7 @@ func workUsage(sub string) string {
 	case "review-card-plan":
 		return "usage: compound work review-card-plan --card <workbench_review_card_id> [--actor A] [--json]"
 	case "create":
-		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready|running] [--context-pack ctx] [--risk tier1] [--privacy private]"
+		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready|running] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private]"
 	case "import-packet":
 		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
 	case "leases":
@@ -87,11 +87,13 @@ func cmdWork(args []string) {
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
 			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
+			CanonicalSurface: flag("--canonical-surface"),
 			SuccessPredicate: flag("--predicate"),
 			DesiredOutcome:   flag("--outcome"),
 			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
 			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
+			RouteDecisionID:  flag("--route-decision-id"),
 			State:            flag("--state"),
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
@@ -179,11 +181,13 @@ func cmdWork(args []string) {
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
 			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
+			CanonicalSurface: flag("--canonical-surface"),
 			SuccessPredicate: flag("--predicate"),
 			DesiredOutcome:   flag("--outcome"),
 			NonGoals:         flagCSVValues(rest, "--non-goal", "--non-goals"),
 			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
+			RouteDecisionID:  flag("--route-decision-id"),
 			State:            flag("--state"),
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),

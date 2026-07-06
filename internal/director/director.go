@@ -1,0 +1,773 @@
+package director
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"compound/internal/authority"
+	"compound/internal/observation"
+	"compound/internal/product"
+	"compound/internal/reviewartifact"
+	"compound/internal/routeevidence"
+	"compound/internal/work"
+)
+
+const (
+	ReportSchemaVersion = "compound.director_propose_report.v0.1"
+	DirectorActor       = "director"
+	maxProposalsPerRun  = 5
+)
+
+type Options struct {
+	Apply bool
+	Now   time.Time
+}
+
+type Report struct {
+	SchemaVersion            string                `json:"schema_version"`
+	ID                       string                `json:"id"`
+	GeneratedAt              string                `json:"generated_at"`
+	Status                   string                `json:"status"`
+	Mode                     string                `json:"mode"`
+	ProposedBy               string                `json:"proposed_by"`
+	ProposalCount            int                   `json:"proposal_count"`
+	SuppressedDuplicateCount int                   `json:"suppressed_duplicate_count"`
+	SkippedCount             int                   `json:"skipped_count"`
+	ResultPath               string                `json:"result_path,omitempty"`
+	Proposals                []Proposal            `json:"proposals,omitempty"`
+	SuppressedDuplicates     []SuppressedDuplicate `json:"suppressed_duplicates,omitempty"`
+	Skipped                  []SkippedCandidate    `json:"skipped,omitempty"`
+	Warnings                 []string              `json:"warnings,omitempty"`
+}
+
+type Proposal struct {
+	ID              string                            `json:"id"`
+	TriggerRef      string                            `json:"trigger_ref"`
+	Kind            string                            `json:"kind"`
+	Title           string                            `json:"title"`
+	Consequence     string                            `json:"consequence"`
+	CapabilityClass string                            `json:"capability_class"`
+	EvidenceRefs    []string                          `json:"evidence_refs"`
+	WorkID          string                            `json:"work_id"`
+	WorkState       string                            `json:"work_state"`
+	PlanPath        string                            `json:"plan_path,omitempty"`
+	RoutePlan       routeevidence.CapabilityRoutePlan `json:"route_plan"`
+	WorkPlan        work.CreatePlan                   `json:"work_plan,omitempty"`
+}
+
+type SuppressedDuplicate struct {
+	TriggerRef      string   `json:"trigger_ref"`
+	Kind            string   `json:"kind"`
+	Title           string   `json:"title"`
+	Reason          string   `json:"reason"`
+	EvidenceRefs    []string `json:"evidence_refs"`
+	ExistingWorkIDs []string `json:"existing_work_ids,omitempty"`
+	ExistingPlanIDs []string `json:"existing_plan_ids,omitempty"`
+}
+
+type SkippedCandidate struct {
+	Kind         string   `json:"kind"`
+	Title        string   `json:"title,omitempty"`
+	Reason       string   `json:"reason"`
+	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+}
+
+type candidate struct {
+	Kind               string
+	SourceID           string
+	Title              string
+	Consequence        string
+	CapabilityClass    string
+	Owner              string
+	CanonicalSurface   string
+	SuccessPredicate   string
+	DesiredOutcome     string
+	Command            []string
+	RequiredInputs     []string
+	ExpectedValidation []string
+	StopConditions     []string
+	Boundary           string
+	Proof              string
+	EvidenceRefs       []string
+}
+
+type duplicateIndex struct {
+	openWorkByTrigger map[string][]string
+	plansByTrigger    map[string][]string
+}
+
+func Propose(homePath string, opts Options) (Report, error) {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return Report{}, fmt.Errorf("COMPOUND_HOME required")
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	mode := "dry_run"
+	if opts.Apply {
+		mode = "apply"
+	}
+	report := Report{
+		SchemaVersion: ReportSchemaVersion,
+		ID:            idFor("dirrun_", mode, timestamp(now)),
+		GeneratedAt:   now.UTC().Format(time.RFC3339),
+		Status:        "ok",
+		Mode:          mode,
+		ProposedBy:    DirectorActor,
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		return report, err
+	}
+	dupes, warnings := loadDuplicateIndex(homePath, store)
+	report.Warnings = append(report.Warnings, warnings...)
+	candidates, warnings := scanCandidates(homePath, now)
+	report.Warnings = append(report.Warnings, warnings...)
+	for _, cand := range candidates {
+		if len(report.Proposals) >= maxProposalsPerRun {
+			report.Skipped = append(report.Skipped, SkippedCandidate{
+				Kind:         cand.Kind,
+				Title:        cand.Title,
+				Reason:       "cap_reached",
+				EvidenceRefs: compactRefs(cand.EvidenceRefs),
+			})
+			continue
+		}
+		proposal, skipped := buildProposal(homePath, store, cand, now)
+		if skipped != nil {
+			report.Skipped = append(report.Skipped, *skipped)
+			continue
+		}
+		if dup := dupes.find(proposal.TriggerRef); dup != nil {
+			dup.Kind = proposal.Kind
+			dup.Title = proposal.Title
+			dup.EvidenceRefs = append([]string{}, proposal.EvidenceRefs...)
+			report.SuppressedDuplicates = append(report.SuppressedDuplicates, *dup)
+			continue
+		}
+		if opts.Apply {
+			plan, err := store.CreatePlan(work.CreateInput{
+				WorkID:           proposal.WorkID,
+				Owner:            proposalOwner(cand),
+				Actor:            DirectorActor,
+				CanonicalSurface: cand.CanonicalSurface,
+				SuccessPredicate: cand.SuccessPredicate,
+				DesiredOutcome:   cand.DesiredOutcome,
+				NonGoals:         nonGoalsFor(cand),
+				EvidenceRefs:     proposal.EvidenceRefs,
+				RouteDecisionID:  proposal.RoutePlan.ID,
+				State:            "proposed",
+				Risk:             "tier1",
+				Privacy:          "private",
+			}, now, work.CreatePlanOptions{
+				Actor:         DirectorActor,
+				Capability:    "director.propose",
+				Action:        "propose_work",
+				TargetKind:    "director_proposal",
+				TargetID:      proposal.TriggerRef,
+				MutationClass: "local_reversible",
+				Reversibility: "easy",
+				BlastRadius:   "local",
+				ActionContext: actionContextFor(cand, proposal),
+				Record:        true,
+			})
+			if err != nil {
+				return report, err
+			}
+			proposal.PlanPath = plan.PlanPath
+			proposal.WorkPlan = plan
+		}
+		report.Proposals = append(report.Proposals, proposal)
+		dupes.addPlan(proposal.TriggerRef, proposal.ID)
+	}
+	report.ProposalCount = len(report.Proposals)
+	report.SuppressedDuplicateCount = len(report.SuppressedDuplicates)
+	report.SkippedCount = len(report.Skipped)
+	if opts.Apply {
+		path, err := recordReport(homePath, report)
+		if err != nil {
+			return report, err
+		}
+		report.ResultPath = path
+		if err := rewriteReport(path, report); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
+
+func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
+	var out []candidate
+	var warnings []string
+	if items, err := productLoopCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "product loop scan skipped: "+err.Error())
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := synthesisContradictionCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "synthesis contradiction scan skipped: "+err.Error())
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := reviewDebtCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "review debt scan skipped: "+err.Error())
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := sourceConnectionCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "source connection scan skipped: "+err.Error())
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := jobHealthCandidates(homePath, now); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			warnings = append(warnings, "job health scan skipped: "+err.Error())
+		}
+	} else {
+		out = append(out, items...)
+	}
+	return out, warnings
+}
+
+func buildProposal(homePath string, store *work.Store, cand candidate, now time.Time) (Proposal, *SkippedCandidate) {
+	refs := compactRefs(cand.EvidenceRefs)
+	if len(refs) == 0 {
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "missing_evidence_refs"}
+	}
+	if strings.TrimSpace(cand.CapabilityClass) == "" {
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "missing_capability_class", EvidenceRefs: refs}
+	}
+	routePlan, err := routeevidence.PlanCapabilityRoute(homePath, cand.CapabilityClass, routeevidence.CapabilityRoutePlanOptions{}, now)
+	if err != nil {
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "route_plan_unavailable: " + err.Error(), EvidenceRefs: refs}
+	}
+	if len(routePlan.Chain) == 0 {
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "route_plan_blocked", EvidenceRefs: refs}
+	}
+	triggerRef := triggerRefFor(cand)
+	refs = reviewartifact.UniqueSorted(append(refs, "proposed_by:director", triggerRef, "route_plan:"+routePlan.ID))
+	workID := idFor("work_", triggerRef)
+	workEnvelope := work.BuildWork(work.CreateInput{
+		WorkID:           workID,
+		Owner:            proposalOwner(cand),
+		Actor:            DirectorActor,
+		CanonicalSurface: cand.CanonicalSurface,
+		SuccessPredicate: cand.SuccessPredicate,
+		DesiredOutcome:   cand.DesiredOutcome,
+		NonGoals:         nonGoalsFor(cand),
+		EvidenceRefs:     refs,
+		RouteDecisionID:  routePlan.ID,
+		State:            "proposed",
+		Risk:             "tier1",
+		Privacy:          "private",
+	}, now)
+	if err := workEnvelope.Validate(); err != nil {
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "work_invalid: " + err.Error(), EvidenceRefs: refs}
+	}
+	if store == nil {
+		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "work_store_unavailable", EvidenceRefs: refs}
+	}
+	return Proposal{
+		ID:              idFor("dirprop_", triggerRef),
+		TriggerRef:      triggerRef,
+		Kind:            cand.Kind,
+		Title:           cand.Title,
+		Consequence:     cand.Consequence,
+		CapabilityClass: cand.CapabilityClass,
+		EvidenceRefs:    refs,
+		WorkID:          workID,
+		WorkState:       "proposed",
+		RoutePlan:       routePlan,
+	}, nil
+}
+
+func productLoopCandidates(homePath string, now time.Time) ([]candidate, error) {
+	model, err := product.BuildLoopModel(homePath, product.LoopOptions{Now: now})
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, loop := range model.Products {
+		seen := map[string]bool{}
+		for _, group := range loop.SignalsWithoutHypothesis {
+			if group.Consumed {
+				continue
+			}
+			for _, card := range group.ActionCards {
+				seen[card.ID] = true
+				out = append(out, productCardCandidate(loop, card, "product_signal_without_hypothesis", productSignalGapEvidence(loop, card, group)))
+			}
+		}
+		for _, card := range loop.ActionCards {
+			if seen[card.ID] {
+				continue
+			}
+			out = append(out, productCardCandidate(loop, card, "product_action_card", productActionCardEvidence(loop, card)))
+		}
+	}
+	return out, nil
+}
+
+func productCardCandidate(loop product.ProductLoop, card product.LoopActionCard, kind string, refs []string) candidate {
+	summary := firstNonEmpty(card.ActionSummary, card.Title)
+	consequence := "Admitting this creates bounded product-loop work for " + summary
+	return candidate{
+		Kind:               kind,
+		SourceID:           card.ID,
+		Title:              card.Title,
+		Consequence:        consequence,
+		CapabilityClass:    productCardCapabilityClass(card),
+		Owner:              loop.ProductID,
+		CanonicalSurface:   "director:product-loop:" + loop.ProductID + ":" + card.ID,
+		SuccessPredicate:   fmt.Sprintf("Resolve product loop action card %s for %s; proof: %s", card.ID, loop.ProductID, card.Proof),
+		DesiredOutcome:     consequence,
+		Command:            append([]string{}, card.Command...),
+		RequiredInputs:     append([]string{}, card.RequiredInputs...),
+		ExpectedValidation: append([]string{}, card.ExpectedValidation...),
+		StopConditions:     append([]string{}, card.StopConditions...),
+		Boundary:           card.Boundary,
+		Proof:              card.Proof,
+		EvidenceRefs:       refs,
+	}
+}
+
+func productCardCapabilityClass(card product.LoopActionCard) string {
+	kind := strings.ToLower(card.Kind)
+	if strings.Contains(kind, "review") || strings.Contains(kind, "hypothesis") {
+		return "judge-critique"
+	}
+	return "classify-extract"
+}
+
+func productActionCardEvidence(loop product.ProductLoop, card product.LoopActionCard) []string {
+	refs := []string{"product_loop:" + loop.ProductID, "product_action_card:" + card.ID}
+	for _, group := range loop.OpenHypothesesByMissingSignalSource {
+		if !cardGroupHasID(group.ActionCards, card.ID) {
+			continue
+		}
+		for _, id := range group.HypothesisIDs {
+			refs = append(refs, "product_hypothesis:"+id)
+		}
+		if group.Source != "" {
+			refs = append(refs, "product_signal_source:"+group.Source)
+		}
+	}
+	for _, group := range loop.ClosedReviewsByNextAction {
+		if !cardGroupHasID(group.ActionCards, card.ID) {
+			continue
+		}
+		for _, id := range group.ReviewIDs {
+			refs = append(refs, "product_review:"+id)
+		}
+		for _, id := range group.HypothesisIDs {
+			refs = append(refs, "product_hypothesis:"+id)
+		}
+		for _, id := range group.SignalIDs {
+			refs = append(refs, "product_signal:"+id)
+		}
+	}
+	for _, group := range loop.SignalsWithoutHypothesis {
+		refs = append(refs, productSignalGapEvidence(loop, card, group)...)
+	}
+	return reviewartifact.UniqueSorted(refs)
+}
+
+func productSignalGapEvidence(loop product.ProductLoop, card product.LoopActionCard, group product.LoopSignalHypothesisGap) []string {
+	if !cardGroupHasID(group.ActionCards, card.ID) {
+		return nil
+	}
+	refs := []string{"product_loop:" + loop.ProductID, "product_action_card:" + card.ID}
+	for _, id := range group.SignalIDs {
+		refs = append(refs, "product_signal:"+id)
+	}
+	if group.ChangeEvent != "" {
+		refs = append(refs, "product_signal_change_event:"+slug(group.ChangeEvent))
+	}
+	return reviewartifact.UniqueSorted(refs)
+}
+
+func cardGroupHasID(cards []product.LoopActionCard, id string) bool {
+	for _, card := range cards {
+		if card.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func synthesisContradictionCandidates(homePath string, now time.Time) ([]candidate, error) {
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: "synthesis-contradictions"}, now)
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, item := range queue.Items {
+		out = append(out, candidate{
+			Kind:             "synthesis_contradiction",
+			SourceID:         reviewSourceID(item),
+			Title:            "Review synthesis contradiction " + item.ID,
+			Consequence:      "Admitting this creates focused synthesis contradiction review work for " + item.ID,
+			CapabilityClass:  "judge-critique",
+			Owner:            "memory-synthesis",
+			CanonicalSurface: "director:synthesis-contradiction:" + item.ID,
+			SuccessPredicate: "Review synthesis contradiction " + item.ID + " without bulk applying or superseding memory",
+			DesiredOutcome:   "Admitting this creates focused synthesis contradiction review work for " + item.ID,
+			Command:          []string{"compound", "reviews", "--area", "synthesis-contradictions", "--json"},
+			RequiredInputs:   []string{"current synthesis contradiction artifact", "claim/candidate evidence named in evidence_refs"},
+			ExpectedValidation: []string{
+				"review outcome cites the contradiction evidence refs",
+				"no memory claim is promoted, rejected, or superseded without a later reviewed work receipt",
+			},
+			StopConditions: []string{"contradiction artifact is stale, superseded, or lacks claim/candidate evidence"},
+			Boundary:       "review-only synthesis handling; no bulk apply, auto-adjudication, memory promotion, rejection, or supersession",
+			Proof:          "review artifact or follow-up WorkEnvelope cites the contradiction evidence refs",
+			EvidenceRefs:   reviewEvidenceRefs(item),
+		})
+	}
+	return out, nil
+}
+
+func reviewDebtCandidates(homePath string, now time.Time) ([]candidate, error) {
+	queue, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{}, now)
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, item := range queue.Items {
+		if item.Area == "synthesis-contradictions" || item.Area == "job-health" || reviewStatusTerminal(item.Status) {
+			continue
+		}
+		area := firstNonEmpty(item.Area, "reviews")
+		title := "Resolve review debt " + area + "/" + item.ID
+		out = append(out, candidate{
+			Kind:             "review_debt",
+			SourceID:         reviewSourceID(item),
+			Title:            title,
+			Consequence:      "Admitting this creates review-debt resolution work for " + area + "/" + item.ID,
+			CapabilityClass:  "judge-critique",
+			Owner:            "compound-reviews",
+			CanonicalSurface: "director:review-debt:" + area + ":" + item.ID,
+			SuccessPredicate: "Resolve review artifact " + area + "/" + item.ID + " through its owner command or an explicit parked decision",
+			DesiredOutcome:   "Admitting this creates review-debt resolution work for " + area + "/" + item.ID,
+			Command:          []string{"compound", "reviews", "--area", area, "--json"},
+			RequiredInputs:   []string{"current review artifact " + area + "/" + item.ID, "reviewer decision or owner command named by the review surface"},
+			ExpectedValidation: []string{
+				"`compound reviews --area " + area + " --json` shows the item recorded, resolved, parked, or still explicitly blocked",
+			},
+			StopConditions: []string{"review artifact lacks enough evidence for a bounded decision", "owner command would mutate public, financial, credential, destructive, or security-sensitive state without policy"},
+			Boundary:       "review-debt work only; no owner mutation except through the review artifact's explicit command and policy path",
+			Proof:          "review queue no longer reports the same item as unresolved, or a follow-up receipt explains why it remains blocked",
+			EvidenceRefs:   reviewEvidenceRefs(item),
+		})
+	}
+	return out, nil
+}
+
+func sourceConnectionCandidates(homePath string, now time.Time) ([]candidate, error) {
+	projection, err := observation.LoadSourceConnectionsProjection(homePath, now)
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, conn := range projection.Connections {
+		for _, card := range conn.LatestCards {
+			refs := []string{
+				"source_connection:" + conn.ID,
+				"source_intake_card:" + card.ID,
+				"source_intake_row:" + card.RowID,
+				"source_observation:" + card.ObservationID,
+			}
+			if conn.SourceRef != "" {
+				refs = append(refs, conn.SourceRef)
+			}
+			out = append(out, candidate{
+				Kind:               "source_connection_readiness",
+				SourceID:           card.ID,
+				Title:              card.Title,
+				Consequence:        "Admitting this creates source-connection readiness work for " + conn.Label + ": " + card.Title,
+				CapabilityClass:    "classify-extract",
+				Owner:              "compound-sources",
+				CanonicalSurface:   "director:source-connection:" + conn.ID + ":" + card.ID,
+				SuccessPredicate:   "Resolve source connection " + conn.ID + " card " + card.ID + "; proof: " + card.Proof,
+				DesiredOutcome:     "Admitting this creates source-connection readiness work for " + conn.Label + ": " + card.Title,
+				Command:            append([]string{}, card.Command...),
+				RequiredInputs:     append([]string{}, card.RequiredInputs...),
+				ExpectedValidation: append([]string{}, card.ExpectedValidation...),
+				StopConditions:     append([]string{}, card.StopConditions...),
+				Boundary:           card.Boundary,
+				Proof:              card.Proof,
+				EvidenceRefs:       refs,
+			})
+		}
+	}
+	return out, nil
+}
+
+func jobHealthCandidates(homePath string, now time.Time) ([]candidate, error) {
+	roster, err := authority.LoadJobRosterAuthority(homePath)
+	if err != nil {
+		return nil, err
+	}
+	plans, err := authority.BuildJobHealthPlans(homePath, roster, now)
+	if err != nil {
+		return nil, err
+	}
+	var out []candidate
+	for _, plan := range plans {
+		if reviewStatusTerminal(plan.Status) {
+			continue
+		}
+		refs := append([]string{}, plan.EvidenceRefs...)
+		refs = append(refs, "job_health_plan:"+plan.ID)
+		if plan.JobID != "" {
+			refs = append(refs, "job:"+plan.JobID)
+		}
+		out = append(out, candidate{
+			Kind:             "job_health",
+			SourceID:         plan.ID,
+			Title:            "Review job health for " + plan.JobName,
+			Consequence:      "Admitting this creates job-health review work for " + plan.JobName,
+			CapabilityClass:  "judge-critique",
+			Owner:            "compound-authority",
+			CanonicalSurface: "director:job-health:" + plan.ID,
+			SuccessPredicate: "Review failing scheduled job " + plan.JobName + " without executing or mutating scheduler state",
+			DesiredOutcome:   "Admitting this creates job-health review work for " + plan.JobName,
+			Command:          []string{"compound", "authority", "job-health-plan"},
+			RequiredInputs:   plan.ReviewDraft.RequiredEvidence,
+			ExpectedValidation: []string{
+				"`compound authority job-health-plan` records or updates the governed review item",
+				"follow-up job roster import proves resolved, parked, disabled, no-action, or continuing debt",
+			},
+			StopConditions: []string{"repair requires scheduler mutation without a separate reviewed owner action"},
+			Boundary:       plan.ReviewDraft.MutationGuardrail,
+			Proof:          plan.ReviewDraft.Verification,
+			EvidenceRefs:   refs,
+		})
+	}
+	return out, nil
+}
+
+func actionContextFor(cand candidate, proposal Proposal) *work.WorkActionContext {
+	expected := append([]string{}, cand.ExpectedValidation...)
+	if len(proposal.RoutePlan.LaneJustification) > 0 {
+		expected = append(expected, "suggested lane: "+strings.Join(proposal.RoutePlan.LaneJustification, " | "))
+	}
+	return &work.WorkActionContext{
+		Kind:               "director_proposal",
+		SourceRef:          proposal.TriggerRef,
+		SourceID:           proposal.TriggerRef,
+		Title:              cand.Title,
+		ActionSummary:      cand.Consequence,
+		Command:            append([]string{}, cand.Command...),
+		RequiredInputs:     append([]string{}, cand.RequiredInputs...),
+		ExpectedValidation: expected,
+		StopConditions:     append([]string{}, cand.StopConditions...),
+		Boundary:           cand.Boundary,
+		Proof:              cand.Proof,
+		EvidenceRefs:       append([]string{}, proposal.EvidenceRefs...),
+	}
+}
+
+func nonGoalsFor(cand candidate) []string {
+	out := []string{
+		"do not execute this proposal while generating director output",
+		"do not admit, claim, dispatch, advance, close, or mutate owner state without an operator act",
+		"do not exceed director evidence boundary: " + firstNonEmpty(cand.Boundary, "use cited evidence refs only"),
+	}
+	for _, stop := range cand.StopConditions {
+		if strings.TrimSpace(stop) != "" {
+			out = append(out, "stop if: "+strings.TrimSpace(stop))
+		}
+	}
+	return reviewartifact.Unique(out)
+}
+
+func proposalOwner(cand candidate) string {
+	return firstNonEmpty(cand.Owner, "compound-director")
+}
+
+func loadDuplicateIndex(homePath string, store *work.Store) (duplicateIndex, []string) {
+	idx := duplicateIndex{openWorkByTrigger: map[string][]string{}, plansByTrigger: map[string][]string{}}
+	var warnings []string
+	if store != nil {
+		works, err := store.List()
+		if err != nil {
+			warnings = append(warnings, "open work duplicate scan skipped: "+err.Error())
+		} else {
+			for _, item := range works {
+				if workStateTerminal(item.State) {
+					continue
+				}
+				for _, ref := range item.EvidenceRefs {
+					if strings.HasPrefix(ref, "director_trigger:") {
+						idx.openWorkByTrigger[ref] = append(idx.openWorkByTrigger[ref], item.ID)
+					}
+				}
+			}
+		}
+	}
+	dir := filepath.Join(homePath, "create-plans")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			warnings = append(warnings, "prior director proposal scan skipped: "+err.Error())
+		}
+		return idx, warnings
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		plan, err := work.LoadCreatePlan(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			warnings = append(warnings, "prior director proposal "+entry.Name()+" unreadable: "+err.Error())
+			continue
+		}
+		if plan.Actor != DirectorActor && !containsRef(plan.Work.EvidenceRefs, "proposed_by:director") {
+			continue
+		}
+		for _, ref := range plan.Work.EvidenceRefs {
+			if strings.HasPrefix(ref, "director_trigger:") {
+				idx.plansByTrigger[ref] = append(idx.plansByTrigger[ref], plan.ID)
+			}
+		}
+	}
+	return idx, warnings
+}
+
+func (idx duplicateIndex) find(triggerRef string) *SuppressedDuplicate {
+	if workIDs := idx.openWorkByTrigger[triggerRef]; len(workIDs) > 0 {
+		return &SuppressedDuplicate{TriggerRef: triggerRef, Reason: "open_work", ExistingWorkIDs: reviewartifact.UniqueSorted(workIDs)}
+	}
+	if planIDs := idx.plansByTrigger[triggerRef]; len(planIDs) > 0 {
+		return &SuppressedDuplicate{TriggerRef: triggerRef, Reason: "prior_director_proposal", ExistingPlanIDs: reviewartifact.UniqueSorted(planIDs)}
+	}
+	return nil
+}
+
+func (idx duplicateIndex) addPlan(triggerRef, planID string) {
+	idx.plansByTrigger[triggerRef] = append(idx.plansByTrigger[triggerRef], planID)
+}
+
+func recordReport(homePath string, report Report) (string, error) {
+	dir := filepath.Join(homePath, "projections", "director", "runs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, report.ID+".json")
+	return path, rewriteReport(path, report)
+}
+
+func rewriteReport(path string, report Report) error {
+	body, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(body, '\n'), 0o644)
+}
+
+func reviewEvidenceRefs(item reviewartifact.QueueItem) []string {
+	ref := "review:" + reviewSourceID(item)
+	return reviewartifact.UniqueSorted(append(append([]string{}, item.EvidenceRefs...), ref))
+}
+
+func reviewSourceID(item reviewartifact.QueueItem) string {
+	if item.Area == "" {
+		return item.ID
+	}
+	return item.Area + "/" + item.ID
+}
+
+func reviewStatusTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
+		return true
+	default:
+		return false
+	}
+}
+
+func workStateTerminal(state string) bool {
+	switch state {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func triggerRefFor(cand candidate) string {
+	key := strings.Join([]string{cand.Kind, cand.SourceID, strings.Join(compactRefs(cand.EvidenceRefs), "|")}, "|")
+	return "director_trigger:" + cand.Kind + ":" + digest12(key)
+}
+
+func compactRefs(refs []string) []string {
+	var out []string
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref != "" {
+			out = append(out, ref)
+		}
+	}
+	return reviewartifact.UniqueSorted(out)
+}
+
+func containsRef(refs []string, want string) bool {
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func idFor(prefix string, parts ...string) string {
+	return prefix + digest12(strings.Join(parts, "|"))
+}
+
+func digest12(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+func timestamp(now time.Time) string {
+	return fmt.Sprintf("%d", now.UTC().UnixNano())
+}
+
+func slug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "unknown"
+	}
+	return out
+}

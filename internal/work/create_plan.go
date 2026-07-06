@@ -251,6 +251,8 @@ func sameCreatePlanWork(existing, planned envelope.WorkEnvelope) bool {
 		existing.IDs.ContextPackID == planned.IDs.ContextPackID &&
 		existing.Risk == planned.Risk &&
 		existing.Privacy == planned.Privacy &&
+		existing.CanonicalSurface == planned.CanonicalSurface &&
+		existing.RouteDecisionID == planned.RouteDecisionID &&
 		sameStringSlice(existing.NonGoals, planned.NonGoals) &&
 		sameStringSlice(existing.EvidenceRefs, planned.EvidenceRefs)
 }
@@ -358,6 +360,9 @@ func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAtta
 
 func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 	cmd := []string{"compound", "work", "create", "--work-id", w.ID, "--owner", w.Owner, "--predicate", w.SuccessPredicate, "--by", actor}
+	if strings.TrimSpace(w.CanonicalSurface) != "" {
+		cmd = append(cmd, "--canonical-surface", w.CanonicalSurface)
+	}
 	if strings.TrimSpace(w.DesiredOutcome) != "" {
 		cmd = append(cmd, "--outcome", w.DesiredOutcome)
 	}
@@ -373,6 +378,9 @@ func createCommandForWork(w envelope.WorkEnvelope, actor string) []string {
 	}
 	if strings.TrimSpace(w.IDs.ContextPackID) != "" {
 		cmd = append(cmd, "--context-pack", w.IDs.ContextPackID)
+	}
+	if strings.TrimSpace(w.RouteDecisionID) != "" {
+		cmd = append(cmd, "--route-decision-id", w.RouteDecisionID)
 	}
 	if strings.TrimSpace(w.State) != "" {
 		cmd = append(cmd, "--state", w.State)

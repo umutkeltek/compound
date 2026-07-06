@@ -33,6 +33,7 @@ var Classification = map[string]Class{
 	"arch":           Spine,
 	"capgraph":       Spine,
 	"contract":       Spine,
+	"director":       Spine,
 	"distiller":      Spine,
 	"envelope":       Spine,
 	"harness":        Spine,

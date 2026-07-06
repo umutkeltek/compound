@@ -272,6 +272,26 @@ func heldReleaseOperatorError(from, to, actor string) error {
 	return fmt.Errorf("held work release %s -> %s requires operator provenance", from, to)
 }
 
+func directorProposedReleaseOperatorError(w envelope.WorkEnvelope, to, actor string) error {
+	if w.State != "proposed" || to == "proposed" || !directorProposedWork(w) {
+		return nil
+	}
+	if hasOperatorProvenance(actor) {
+		return nil
+	}
+	return fmt.Errorf("director-proposed work release proposed -> %s requires operator provenance", to)
+}
+
+func directorProposedWork(w envelope.WorkEnvelope) bool {
+	for _, ref := range w.EvidenceRefs {
+		ref = strings.TrimSpace(ref)
+		if ref == "proposed_by:director" || strings.HasPrefix(ref, "director_trigger:") {
+			return true
+		}
+	}
+	return false
+}
+
 func hasOperatorProvenance(actor string) bool {
 	actor = strings.ToLower(strings.TrimSpace(actor))
 	return actor == "operator" ||

@@ -63,6 +63,8 @@ func main() {
 		cmdAuthority(os.Args[2:])
 	case "decisions":
 		cmdDecisions(os.Args[2:])
+	case "director":
+		cmdDirector(os.Args[2:])
 	case "runtime":
 		cmdRuntime(os.Args[2:])
 	case "projection":
@@ -233,6 +235,7 @@ compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
+  compound director propose [--dry-run|--apply] --json          propose-only director: evidence-backed WorkEnvelope admission previews; no admit/dispatch
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]

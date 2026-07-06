@@ -111,9 +111,12 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 		},
 	}
 	heldReleaseErr := heldReleaseOperatorError(w.State, to, actor)
+	directorReleaseErr := directorProposedReleaseOperatorError(w, to, actor)
 	switch {
 	case heldReleaseErr != nil:
 		plan.NoAction = heldReleaseErr.Error()
+	case directorReleaseErr != nil:
+		plan.NoAction = directorReleaseErr.Error()
 	case terminalStates[w.State]:
 		plan.NoAction = fmt.Sprintf("work is terminal in state %q", w.State)
 	case to == w.State || canTransition(w.State, to):

@@ -92,11 +92,13 @@ type CreateInput struct {
 	WorkID           string
 	Owner            string
 	Actor            string
+	CanonicalSurface string
 	SuccessPredicate string
 	DesiredOutcome   string
 	NonGoals         []string
 	EvidenceRefs     []string
 	ContextPackID    string
+	RouteDecisionID  string
 	State            string // default "ready"
 	Risk             string // default "tier1"
 	Privacy          string // default "private"
@@ -112,10 +114,12 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 	w := envelope.WorkEnvelope{
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
+		CanonicalSurface:   strings.TrimSpace(in.CanonicalSurface),
 		State:              orDefault(in.State, "ready"),
 		DesiredOutcome:     in.DesiredOutcome,
 		SuccessPredicate:   in.SuccessPredicate,
 		NonGoals:           orEmpty(in.NonGoals),
+		RouteDecisionID:    strings.TrimSpace(in.RouteDecisionID),
 		RunIDs:             []string{},
 		ArtifactIDs:        []string{},
 		VerificationIDs:    []string{},
@@ -371,6 +375,9 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 		actor = "codex"
 	}
 	if err := heldReleaseOperatorError(w.State, in.To, actor); err != nil {
+		return w, err
+	}
+	if err := directorProposedReleaseOperatorError(w, in.To, actor); err != nil {
 		return w, err
 	}
 	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
