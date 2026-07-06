@@ -17,7 +17,7 @@ const GROUPS: Group[] = [
       { label: "Loops", href: "/loops" },
     ],
   },
-  { label: "System", links: [{ label: "Map", href: "/map" }] },
+  { label: "System", links: [{ label: "Sources", href: "/sources" }, { label: "Map", href: "/map" }] },
 ];
 
 function Dot({ active }: { active: boolean }) {
