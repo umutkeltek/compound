@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/knowledge"
+	"compound/internal/product"
 )
 
 const (
@@ -66,6 +67,13 @@ type sourceConnectionDef struct {
 }
 
 type knowledgeConnectionSummary struct {
+	SourceKind string
+	SourceRef  string
+	LastSeen   string
+	Count      int
+}
+
+type productSignalConnectionSummary struct {
 	SourceKind string
 	SourceRef  string
 	LastSeen   string
@@ -167,6 +175,37 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 		}
 	}
 
+	productSignalSummaries, err := loadProductSignalConnectionSummaries(homePath)
+	if err != nil {
+		return SourceConnectionsProjection{}, err
+	}
+	for sourceKind, summary := range productSignalSummaries {
+		id := kindToID[strings.TrimSpace(sourceKind)]
+		if id == "" {
+			id = "source_" + slugPart(sourceKind)
+			if _, ok := byID[id]; !ok {
+				byID[id] = &SourceConnection{
+					ID:             id,
+					Label:          titleFromSlug(sourceKind),
+					Status:         "observed",
+					SourceKinds:    []string{sourceKind},
+					Produces:       []string{"product signal", "product loop evidence"},
+					NextSafeAction: "Review latest product signals and continue through product loop cards.",
+				}
+			}
+		}
+		conn := byID[id]
+		conn.RowCount += summary.Count
+		conn.SourceKind = firstNonEmpty(conn.SourceKind, summary.SourceKind)
+		conn.SourceRef = firstNonEmpty(conn.SourceRef, summary.SourceRef)
+		conn.LastSeen = newestTimestamp(conn.LastSeen, summary.LastSeen)
+		conn.Produces = compact(append(conn.Produces, "product signal", "product loop evidence"))
+		conn.Status = strongerSourceConnectionStatus(conn.Status, "observed")
+		if conn.LatestCardCount == 0 && sourceConnectionStatusRank(conn.Status) <= sourceConnectionStatusRank("observed") {
+			conn.NextSafeAction = productSignalConnectionNextAction(conn.ID)
+		}
+	}
+
 	out := SourceConnectionsProjection{
 		SchemaVersion: SourceConnectionsProjectionSchemaVersion,
 		AuthorityRef:  SourceConnectionsAuthorityRef,
@@ -230,6 +269,78 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 	return out, nil
 }
 
+func loadProductSignalConnectionSummaries(homePath string) (map[string]productSignalConnectionSummary, error) {
+	out := map[string]productSignalConnectionSummary{}
+	if strings.TrimSpace(homePath) == "" {
+		return out, nil
+	}
+	path := filepath.Join(homePath, "ledger", "product-signals.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var signal product.Signal
+		if err := json.Unmarshal([]byte(line), &signal); err != nil || signal.ID == "" {
+			continue
+		}
+		sourceKind := productSignalSourceKind(signal)
+		if sourceKind == "" {
+			continue
+		}
+		summary := out[sourceKind]
+		summary.SourceKind = sourceKind
+		summary.SourceRef = firstNonEmpty(summary.SourceRef, "product-signals:"+sourceKind)
+		summary.LastSeen = newestTimestamp(summary.LastSeen, signal.ObservedAt)
+		summary.Count++
+		out[sourceKind] = summary
+	}
+	return out, nil
+}
+
+func productSignalSourceKind(signal product.Signal) string {
+	for _, ref := range signal.EvidenceRefs {
+		ref = strings.TrimSpace(ref)
+		switch {
+		case strings.HasPrefix(ref, "asc:"):
+			return "app_store_connect"
+		case strings.HasPrefix(ref, "gsc:"), strings.HasPrefix(ref, "google_search_console:"):
+			return "google_search_console"
+		case strings.HasPrefix(ref, "ga4:"), strings.HasPrefix(ref, "google_analytics:"):
+			return "google_analytics"
+		case strings.HasPrefix(ref, "adsense:"), strings.HasPrefix(ref, "google_adsense:"):
+			return "google_adsense"
+		case strings.HasPrefix(ref, "revenuecat:"):
+			return "revenuecat"
+		case strings.HasPrefix(ref, "posthog:"):
+			return "posthog"
+		}
+	}
+	metric := strings.TrimSpace(signal.MetricName)
+	switch {
+	case strings.HasPrefix(metric, "app_store_connect_"):
+		return "app_store_connect"
+	case strings.HasPrefix(metric, "gsc_"):
+		return "google_search_console"
+	case strings.HasPrefix(metric, "ga4_"):
+		return "google_analytics"
+	case strings.HasPrefix(metric, "adsense_"):
+		return "google_adsense"
+	case strings.HasPrefix(metric, "revenuecat_"):
+		return "revenuecat"
+	case strings.HasPrefix(metric, "posthog_"):
+		return "posthog"
+	default:
+		return ""
+	}
+}
+
 func loadKnowledgeConnectionImports(homePath string) (map[string]knowledgeConnectionSummary, error) {
 	out := map[string]knowledgeConnectionSummary{}
 	if strings.TrimSpace(homePath) == "" {
@@ -277,6 +388,15 @@ func knowledgeConnectionNextAction(connectionID string, count int) string {
 	}
 }
 
+func productSignalConnectionNextAction(connectionID string) string {
+	switch connectionID {
+	case "asc_daily_signals":
+		return "Review latest ASC product signals; run credential smoke or scheduler setup only for automatic refresh."
+	default:
+		return "Review latest product signals and continue through product loop cards."
+	}
+}
+
 func sourceConnectionDefs() []sourceConnectionDef {
 	return []sourceConnectionDef{
 		{
@@ -318,7 +438,7 @@ func sourceConnectionDefs() []sourceConnectionDef {
 			Label:          "X bookmarks",
 			SourceKinds:    []string{"x_bookmarks", "twitter_bookmarks"},
 			DefaultStatus:  "not_connected",
-			Produces:       []string{"reference", "design taste example", "product idea", "technique", "market take"},
+			Produces:       []string{"reference", "explicit candidate classes"},
 			NextSafeAction: "Import a bounded bookmarks export as source material, not memory.",
 		},
 		{

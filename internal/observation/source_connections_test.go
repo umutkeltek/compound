@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"compound/internal/knowledge"
+	"compound/internal/product"
 )
 
 func TestSourceConnectionsTreatKnowledgeImportRowsAsImported(t *testing.T) {
@@ -56,6 +57,43 @@ func TestSourceConnectionsTreatKnowledgeImportRowsAsImported(t *testing.T) {
 	}
 }
 
+func TestSourceConnectionsTreatProductSignalsAsObservedSources(t *testing.T) {
+	home := t.TempDir()
+	writeSourceConnectionProductSignals(t, home, []product.Signal{
+		{
+			ID:           "sig_asc_units",
+			ProductID:    "product:sample-health-app",
+			MetricName:   "app_store_connect_units",
+			Before:       1,
+			After:        1,
+			Window:       "daily snapshot 2026-07-04",
+			EvidenceRefs: []string{"asc:daily:sample-app:2026-07-04:units", "ev_sample"},
+			ObservedAt:   tObservation.Format(time.RFC3339),
+		},
+	})
+
+	projection, err := LoadSourceConnectionsProjection(home, tObservation.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	asc := findSourceConnection(projection.Connections, "asc_daily_signals")
+	if asc == nil || asc.Status != "observed" || asc.RowCount != 1 {
+		t.Fatalf("asc connection should reflect observed product signal evidence: %+v", asc)
+	}
+	if !asc.PrivateSetupNeeded {
+		t.Fatalf("asc connection should still flag private setup for automatic refresh: %+v", asc)
+	}
+	if asc.SourceKind != "app_store_connect" || asc.SourceRef != "product-signals:app_store_connect" {
+		t.Fatalf("asc source refs = %+v", asc)
+	}
+	if !strings.Contains(asc.NextSafeAction, "product signals") {
+		t.Fatalf("asc next action = %q", asc.NextSafeAction)
+	}
+	if projection.Counts.Observed != 1 || projection.Counts.NeedsInput != 1 {
+		t.Fatalf("source counts should show observed ASC plus chatgpt preflight input: %+v", projection.Counts)
+	}
+}
+
 func writeSourceConnectionKnowledgeImports(t *testing.T, home string, rows []knowledge.ImportIndexRow) {
 	t.Helper()
 	dir := filepath.Join(home, "ledger")
@@ -63,6 +101,25 @@ func writeSourceConnectionKnowledgeImports(t *testing.T, home string, rows []kno
 		t.Fatal(err)
 	}
 	f, err := os.Create(filepath.Join(dir, "knowledge-imports.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	for _, row := range rows {
+		if err := enc.Encode(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writeSourceConnectionProductSignals(t *testing.T, home string, rows []product.Signal) {
+	t.Helper()
+	dir := filepath.Join(home, "ledger")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(filepath.Join(dir, "product-signals.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
