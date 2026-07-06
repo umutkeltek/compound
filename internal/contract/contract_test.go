@@ -216,6 +216,36 @@ func TestProductVsControlPlaneDifferentPacks(t *testing.T) {
 	}
 }
 
+func TestPackIncludesUniversalPrinciplesTier0Constitution(t *testing.T) {
+	repo := t.TempDir()
+	docPath := filepath.Join(repo, "docs", "architecture", "universal-principles.md")
+	if err := os.MkdirAll(filepath.Dir(docPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# Universal Principles\n\n" +
+		"## The Laws · *irreducible core*\n" +
+		"1. Discover reality before acting.\n" +
+		"2. Own the spine; rent the executors.\n" +
+		"16. Govern in proportion to risk.\n\n" +
+		"## Open Frontier\n- unresolved\n"
+	if err := os.WriteFile(docPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in := Input{Harness: "codex", Cwd: repo, Task: "ship a small change", RepoKind: "product", RepoKindVia: "fixture", Mode: "execute"}
+	pack := Pack(in, DefaultPolicy(), fixedNow)
+	if !hasIncluded(pack, universalPrinciplesRef) {
+		t.Fatalf("context pack missing Tier-0 constitution ref: %+v", pack.Included)
+	}
+	if !contains(pack.ActiveInstructions, universalPrinciplesRef) {
+		t.Fatalf("active instructions missing Tier-0 constitution ref: %+v", pack.ActiveInstructions)
+	}
+	if !strings.Contains(pack.SummaryMD, "Tier-0 constitution: Laws 1. Discover reality before acting.") || !strings.Contains(pack.SummaryMD, "16. Govern in proportion to risk.") {
+		t.Fatalf("summary should surface compact Laws, got %q", pack.SummaryMD)
+	}
+	if rev := sourceRev(pack.SourceRevisions, universalPrinciplesRef); !strings.HasPrefix(rev, "sha256:") {
+		t.Fatalf("constitution source revision = %q, want sha256", rev)
+	}
+}
 func TestPackWithCapabilitiesIncludesProjectionContextByRepoKind(t *testing.T) {
 	home := t.TempDir()
 	report, err := projection.DoctorFile(filepath.Join("..", "..", "fixtures", "projections", "stale-freshness.yaml"), time.Date(2026, 6, 29, 3, 0, 0, 0, time.UTC))

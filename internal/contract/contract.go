@@ -29,6 +29,8 @@ import (
 
 const (
 	defaultRepoKind                  = "product"
+	universalPrinciplesRef           = "constitution://universal-principles"
+	universalPrinciplesPath          = "docs/architecture/universal-principles.md"
 	memoryRelevanceSourceRef         = "memory://relevance-gated"
 	positionMemoryReasonPrefix       = "Compound memory folded position; source stores and indexes are evidence, not authority: "
 	osAdaptationRuleRef              = "private-plan://operating-system-adaptation-rule"
@@ -89,6 +91,7 @@ func DefaultPolicy() OrientationPolicy {
 		RepoKinds: all,
 		Sources: []ContextSource{
 			{Class: "operating-contract", SourceClass: "source", AmbientFor: all, Ref: "AGENTS.md"},
+			{Class: "tier0-constitution", SourceClass: "source", AmbientFor: all, Ref: universalPrinciplesRef},
 			{Class: "governance-map", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://orientation-map"},
 			{Class: "governance-workflow-contract", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://workflow-contract"},
 			{Class: "governance-sop-packets", SourceClass: "source", AmbientFor: []string{"control-plane"}, Ref: "control-plane://sop-packets"},
@@ -541,6 +544,11 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 		in.RepoKind, in.Harness, len(incl), len(excl))
 	if len(excl) > 0 {
 		summary += " Out-of-scope context recorded — see `excluded`."
+	}
+	if includedRefPresent(incl, universalPrinciplesRef) {
+		if laws := universalPrinciplesLawLine(in.Cwd); laws != "" {
+			summary += " Tier-0 constitution: " + laws
+		}
 	}
 	hdr := header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task, modeIDPart(in.Mode)), now, in)
 	hdr.IDs.ContractID = contractIDForInput(in)
@@ -2729,6 +2737,10 @@ func revisionForSource(source, cwd string) string {
 		if p := findUp(cwd, source); p != "" {
 			return revisionForPath(p)
 		}
+	case source == universalPrinciplesRef:
+		if p := findUp(cwd, universalPrinciplesPath); p != "" {
+			return revisionForPath(p)
+		}
 	case strings.HasPrefix(source, "control-plane://"):
 		return revisionForControlPlaneSource(source, cwd)
 	case source == "repo://docs":
@@ -2880,6 +2892,57 @@ func projectionContextConfidence(status string) float64 {
 
 // partition splits the policy's sources into included (ambient for this repo kind) and
 // excluded (ambient elsewhere), each excluded ref carrying a why.
+func includedRefPresent(refs []envelope.IncludedRef, ref string) bool {
+	for _, r := range refs {
+		if r.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func universalPrinciplesLawLine(cwd string) string {
+	path := findUp(cwd, universalPrinciplesPath)
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var laws []string
+	inLaws := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "## The Laws · *irreducible core*" || trimmed == "## The Laws":
+			inLaws = true
+			continue
+		case inLaws && strings.HasPrefix(trimmed, "## "):
+			inLaws = false
+		case inLaws && isNumberedLawLine(trimmed):
+			laws = append(laws, trimmed)
+		}
+	}
+	if len(laws) == 0 {
+		return ""
+	}
+	return "Laws " + strings.Join(laws, " · ")
+}
+
+func isNumberedLawLine(line string) bool {
+	dot := strings.Index(line, ".")
+	if dot <= 0 || dot > 2 {
+		return false
+	}
+	for _, r := range line[:dot] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return strings.TrimSpace(line[dot+1:]) != ""
+}
+
 func partition(pol OrientationPolicy, repoKind string) ([]envelope.IncludedRef, []envelope.ExcludedRef) {
 	incl := []envelope.IncludedRef{}
 	excl := []envelope.ExcludedRef{}
