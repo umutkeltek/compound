@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/sourceobs"
 )
 
 var testNow = time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
@@ -283,6 +285,95 @@ func TestImportChatGPTConversationUsesGenericKnowledgeDoor(t *testing.T) {
 	readJSONLRows(t, filepath.Join(homePath, "ledger", "knowledge-distribution.jsonl"), &events)
 	if len(events) != 1 || events[0].EchoSourceKind != "claude-code" || events[0].FirstEvidenceRef != report.EvidenceIDs[0] {
 		t.Fatalf("distribution events = %+v", events)
+	}
+}
+
+func TestImportXBookmarksExportRecordsSourceObservationsWithoutPromotion(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixturePath("x-bookmarks-export.json")
+	export, _, err := LoadExport(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if export.Privacy != "private" {
+		t.Fatalf("x_bookmarks privacy default = %q, want private", export.Privacy)
+	}
+	if len(export.Items) != 2 || export.Items[0].BookmarkedAt == "" || len(export.Items[0].MediaRefs) != 1 || export.Items[0].AuthorHandle == "" {
+		t.Fatalf("bookmark fixture shape = %+v", export.Items)
+	}
+
+	report, err := ImportFile(homePath, store, fixture, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Items != 2 || report.Imported != 2 || report.Echoes != 0 || report.Reused != 0 {
+		t.Fatalf("bookmark import report counts = %+v", report)
+	}
+	if len(report.EvidenceIDs) != 2 || len(report.ExtractionIDs) != 2 || len(report.CandidateIDs) == 0 {
+		t.Fatalf("bookmark evidence/candidates/extractions = %+v", report)
+	}
+	if len(report.SourceObservationIDs) != 2 || len(report.SourceCandidateIDs) != 10 || len(report.NoPromoteIDs) != 10 {
+		t.Fatalf("bookmark source observations = %+v", report)
+	}
+
+	evidence, err := store.Evidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 2 || evidence[0].SourceKind != "x_bookmarks" || evidence[0].Visibility != "private" {
+		t.Fatalf("bookmark evidence = %+v", evidence)
+	}
+	if evidence[0].EventTime != export.Items[0].BookmarkedAt {
+		t.Fatalf("bookmark event time = %q, want %q", evidence[0].EventTime, export.Items[0].BookmarkedAt)
+	}
+	memCandidates, err := store.AllCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(memCandidates) == 0 {
+		t.Fatal("bookmark import should create parked metadata memory candidates")
+	}
+	for _, candidate := range memCandidates {
+		if candidate.Visibility != "private" {
+			t.Fatalf("metadata candidate visibility = %+v, want private", candidate)
+		}
+		if candidate.State != "parked" {
+			t.Fatalf("metadata candidate state = %+v, want parked", candidate)
+		}
+	}
+
+	sourceList, err := sourceobs.ListSourceObservations(homePath, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourceList.Counts.SourceObservations != 10 || sourceList.Counts.NoPromoteDecisions != 10 || sourceList.Counts.PromoteDisallowed != 10 {
+		t.Fatalf("source observation list = %+v", sourceList.Counts)
+	}
+	gotKinds := map[string]int{}
+	for _, item := range sourceList.Items {
+		gotKinds[item.Kind]++
+		if item.PromoteAllowed || item.NoPromoteID == "" {
+			t.Fatalf("source observation item should be no-promote: %+v", item)
+		}
+	}
+	wantKinds := map[string]int{
+		string(candidates.CapabilityObs):     2,
+		string(candidates.Taste):             2,
+		string(candidates.ProductHypothesis): 4,
+		string(candidates.MethodUpgrade):     2,
+	}
+	for kind, want := range wantKinds {
+		if gotKinds[kind] != want {
+			t.Fatalf("source candidate kind %s = %d, want %d; all=%+v", kind, gotKinds[kind], want, gotKinds)
+		}
+	}
+
+	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("bookmark import must not promote claims, stat err=%v", err)
 	}
 }
 

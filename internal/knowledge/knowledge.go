@@ -16,8 +16,10 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/distiller"
 	"compound/internal/mem"
+	"compound/internal/sourceobs"
 )
 
 const (
@@ -50,25 +52,35 @@ type Producer struct {
 }
 
 type Item struct {
-	Ref         string   `json:"ref"`
-	URL         string   `json:"url,omitempty"`
-	Title       string   `json:"title,omitempty"`
-	Authors     []string `json:"authors,omitempty"`
-	PublishedAt string   `json:"published_at,omitempty"`
-	Topics      []string `json:"topics,omitempty"`
-	Content     string   `json:"content,omitempty"`
-	ContentRef  string   `json:"content_ref,omitempty"`
-	Lang        string   `json:"lang,omitempty"`
+	Ref              string   `json:"ref"`
+	URL              string   `json:"url,omitempty"`
+	Title            string   `json:"title,omitempty"`
+	Authors          []string `json:"authors,omitempty"`
+	AuthorHandle     string   `json:"author_handle,omitempty"`
+	PublishedAt      string   `json:"published_at,omitempty"`
+	OccurredAt       string   `json:"occurred_at,omitempty"`
+	BookmarkedAt     string   `json:"bookmarked_at,omitempty"`
+	CapturedAt       string   `json:"captured_at,omitempty"`
+	Topics           []string `json:"topics,omitempty"`
+	MediaRefs        []string `json:"media_refs,omitempty"`
+	OperatorNote     string   `json:"operator_note,omitempty"`
+	CandidateClasses []string `json:"candidate_classes,omitempty"`
+	Content          string   `json:"content,omitempty"`
+	ContentRef       string   `json:"content_ref,omitempty"`
+	Lang             string   `json:"lang,omitempty"`
 }
 
 type ImportReport struct {
-	Items         int      `json:"items"`
-	Imported      int      `json:"imported"`
-	Echoes        int      `json:"echoes"`
-	Reused        int      `json:"reused"`
-	EvidenceIDs   []string `json:"evidence_ids"`
-	CandidateIDs  []string `json:"candidate_ids"`
-	ExtractionIDs []string `json:"extraction_ids"`
+	Items                int      `json:"items"`
+	Imported             int      `json:"imported"`
+	Echoes               int      `json:"echoes"`
+	Reused               int      `json:"reused"`
+	EvidenceIDs          []string `json:"evidence_ids"`
+	CandidateIDs         []string `json:"candidate_ids"`
+	ExtractionIDs        []string `json:"extraction_ids"`
+	SourceObservationIDs []string `json:"source_observation_ids,omitempty"`
+	SourceCandidateIDs   []string `json:"source_candidate_ids,omitempty"`
+	NoPromoteIDs         []string `json:"no_promote_ids,omitempty"`
 }
 
 type ExtractionRequest struct {
@@ -268,7 +280,7 @@ func (e *Export) Validate() error {
 	}
 	e.Privacy = strings.TrimSpace(e.Privacy)
 	if e.Privacy == "" {
-		e.Privacy = "public"
+		e.Privacy = defaultPrivacy(e.Source.Kind)
 	}
 	if e.Privacy != "public" && e.Privacy != "private" {
 		return fmt.Errorf("privacy must be public or private, got %q", e.Privacy)
@@ -288,10 +300,15 @@ func (i *Item) validate(index int) error {
 	i.Ref = strings.TrimSpace(i.Ref)
 	i.URL = strings.TrimSpace(i.URL)
 	i.Title = strings.TrimSpace(i.Title)
+	i.AuthorHandle = strings.TrimSpace(i.AuthorHandle)
 	i.PublishedAt = strings.TrimSpace(i.PublishedAt)
+	i.OccurredAt = strings.TrimSpace(i.OccurredAt)
+	i.BookmarkedAt = strings.TrimSpace(i.BookmarkedAt)
+	i.CapturedAt = strings.TrimSpace(i.CapturedAt)
 	i.Content = strings.TrimSpace(i.Content)
 	i.ContentRef = strings.TrimSpace(i.ContentRef)
 	i.Lang = strings.TrimSpace(i.Lang)
+	i.OperatorNote = strings.TrimSpace(i.OperatorNote)
 	if i.Ref == "" {
 		return fmt.Errorf("items[%d].ref required", index)
 	}
@@ -300,6 +317,23 @@ func (i *Item) validate(index int) error {
 	}
 	i.Authors = cleanStrings(i.Authors)
 	i.Topics = cleanStrings(i.Topics)
+	i.MediaRefs = cleanStrings(i.MediaRefs)
+	i.CandidateClasses = normalizeCandidateClasses(i.CandidateClasses)
+	for _, check := range []struct {
+		field string
+		value string
+	}{
+		{"occurred_at", i.OccurredAt},
+		{"bookmarked_at", i.BookmarkedAt},
+		{"captured_at", i.CapturedAt},
+	} {
+		if check.value == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, check.value); err != nil {
+			return fmt.Errorf("items[%d].%s must be RFC3339: %w", index, check.field, err)
+		}
+	}
 	return nil
 }
 
@@ -338,6 +372,11 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 		if prior, ok := findExactImport(imports, canonical, exportDigest); ok {
 			report.Reused++
 			report.EvidenceIDs = append(report.EvidenceIDs, prior.EvidenceRef)
+			applied, err := applySourceObservation(homePath, export, item, prior.EvidenceRef, now)
+			if err != nil {
+				return report, err
+			}
+			addSourceObservationResult(&report, applied)
 			continue
 		}
 
@@ -346,7 +385,7 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 			SourceKind: export.Source.Kind,
 			SourceID:   item.Ref,
 			QuoteText:  boundedQuote(item.Content),
-			EventTime:  item.PublishedAt,
+			EventTime:  itemEventTime(item),
 			Actor:      "tool",
 			Visibility: evidenceVisibility(export.Privacy),
 		}, now)
@@ -380,6 +419,12 @@ func Import(homePath string, store *mem.Store, export Export, exportDigest strin
 			report.Echoes++
 			continue
 		}
+
+		applied, err := applySourceObservation(homePath, export, item, evidence.ID, now)
+		if err != nil {
+			return report, err
+		}
+		addSourceObservationResult(&report, applied)
 
 		candidates := candidatesForItem(export, item, evidence.ID, now)
 		for _, candidate := range candidates {
@@ -860,7 +905,7 @@ func candidatesForItem(export Export, item Item, evidenceID string, now time.Tim
 			Entity:          entity,
 			Predicate:       field.predicate,
 			Object:          field.object,
-			ObservationDate: firstNonEmpty(item.PublishedAt, rfc3339(now)),
+			ObservationDate: firstNonEmpty(itemEventTime(item), item.CapturedAt, rfc3339(now)),
 			Confidence:      0.8,
 			Derivation:      "deterministic",
 			// Metadata claims are deterministic source output. LLM-extracted meaning
@@ -892,16 +937,175 @@ func metadataFields(item Item) []metadataCandidateField {
 	if authors := joinTrimmed(item.Authors, "; "); authors != "" {
 		fields = append(fields, metadataCandidateField{qualifier: "authors", predicate: "reference_authors", object: authors})
 	}
+	if authorHandle := strings.TrimSpace(item.AuthorHandle); authorHandle != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "author_handle", predicate: "reference_author_handle", object: authorHandle})
+	}
 	if publishedAt := strings.TrimSpace(item.PublishedAt); publishedAt != "" {
 		fields = append(fields, metadataCandidateField{qualifier: "published_at", predicate: "reference_published_at", object: publishedAt})
 	}
+	if occurredAt := itemSourceOccurredAt(item); occurredAt != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "occurred_at", predicate: "reference_occurred_at", object: occurredAt})
+	}
+	if capturedAt := strings.TrimSpace(item.CapturedAt); capturedAt != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "captured_at", predicate: "reference_captured_at", object: capturedAt})
+	}
 	if topics := joinTrimmed(item.Topics, "; "); topics != "" {
 		fields = append(fields, metadataCandidateField{qualifier: "topics", predicate: "reference_topics", object: topics})
+	}
+	if mediaRefs := joinTrimmed(item.MediaRefs, "; "); mediaRefs != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "media_refs", predicate: "reference_media_refs", object: mediaRefs})
+	}
+	if operatorNote := strings.TrimSpace(item.OperatorNote); operatorNote != "" {
+		fields = append(fields, metadataCandidateField{qualifier: "operator_note", predicate: "reference_operator_note", object: operatorNote})
 	}
 	if url := strings.TrimSpace(item.URL); url != "" {
 		fields = append(fields, metadataCandidateField{qualifier: "url", predicate: "reference_url", object: url})
 	}
 	return fields
+}
+
+type sourceObservationResult struct {
+	ObservationID string
+	CandidateIDs  []string
+	NoPromoteIDs  []string
+}
+
+func applySourceObservation(homePath string, export Export, item Item, evidenceID string, now time.Time) (sourceObservationResult, error) {
+	obs, ok := sourceObservationForItem(export, item, evidenceID, now)
+	if !ok {
+		return sourceObservationResult{}, nil
+	}
+	report, err := sourceobs.Apply(homePath, obs, now)
+	if err != nil {
+		return sourceObservationResult{}, err
+	}
+	return sourceObservationResult{
+		ObservationID: report.ObservationID,
+		CandidateIDs:  report.CandidateIDs,
+		NoPromoteIDs:  report.NoPromoteIDs,
+	}, nil
+}
+
+func addSourceObservationResult(report *ImportReport, applied sourceObservationResult) {
+	if applied.ObservationID == "" {
+		return
+	}
+	report.SourceObservationIDs = append(report.SourceObservationIDs, applied.ObservationID)
+	report.SourceCandidateIDs = append(report.SourceCandidateIDs, applied.CandidateIDs...)
+	report.NoPromoteIDs = append(report.NoPromoteIDs, applied.NoPromoteIDs...)
+}
+
+func sourceObservationForItem(export Export, item Item, evidenceID string, now time.Time) (sourceobs.SourceObservation, bool) {
+	targets := sourceObservationMapTargets(export, item)
+	if len(targets) == 0 {
+		return sourceobs.SourceObservation{}, false
+	}
+	revision := "sha256:" + shortDigest(evidenceID, canonicalRef(item), contentDigest(item), strings.Join(sourceCandidateClasses(export, item), ","))
+	observedAt := firstNonEmpty(item.CapturedAt, export.Source.CapturedAt, rfc3339(now))
+	return sourceobs.SourceObservation{
+		SchemaVersion: sourceobs.SchemaVersion,
+		ID:            "srcobs_" + shortDigest("knowledge_import", export.Source.Kind, export.Source.Ref, item.Ref, evidenceID, revision),
+		AdapterID:     "compound.knowledge-import",
+		SourceSystem:  export.Source.Kind,
+		ObservedAt:    observedAt,
+		SourceRef: sourceobs.SourceRef{
+			Path:        canonicalRef(item),
+			Kind:        "knowledge_item",
+			Owner:       export.Source.Kind,
+			SourceClass: "knowledge_import",
+			Revision:    revision,
+		},
+		GeneratedView: sourceobs.GeneratedView{
+			ViewKind:    "knowledge_import",
+			Consumer:    "compound knowledge import",
+			Generator:   firstNonEmpty(export.Producer.Name, export.Producer.Kind, "knowledge_export"),
+			Marker:      ExportSchemaVersion,
+			Freshness:   "observed",
+			DriftReason: sourceObservationDetail(export, item),
+		},
+		MapsTo:       targets,
+		EvidenceRefs: []string{evidenceID},
+	}, true
+}
+
+func sourceObservationMapTargets(export Export, item Item) []sourceobs.MapTarget {
+	classes := sourceCandidateClasses(export, item)
+	if len(classes) == 0 {
+		return nil
+	}
+	entity := knowledgeEntity(export.Source.Kind, item.Ref)
+	slug := slugFor(firstNonEmpty(item.Title, item.AuthorHandle, item.Ref, canonicalRef(item)))
+	if slug == "" {
+		slug = shortDigest(entity)
+	}
+	targets := make([]sourceobs.MapTarget, 0, len(classes))
+	for _, class := range classes {
+		switch class {
+		case "reference":
+			targets = append(targets, sourceobs.MapTarget{
+				ObjectFamily:   "reference",
+				CandidateKind:  string(candidates.CapabilityObs),
+				EntityHint:     entity,
+				PromoteAllowed: false,
+			})
+		case "design_taste_example":
+			targets = append(targets, sourceobs.MapTarget{
+				ObjectFamily:   "design_taste_example",
+				CandidateKind:  string(candidates.Taste),
+				EntityHint:     "taste:" + slug,
+				PromoteAllowed: false,
+			})
+		case "product_idea":
+			targets = append(targets, sourceobs.MapTarget{
+				ObjectFamily:   "product_idea",
+				CandidateKind:  string(candidates.ProductHypothesis),
+				EntityHint:     "product:unscoped:idea:" + slug,
+				PromoteAllowed: false,
+			})
+		case "technique":
+			targets = append(targets, sourceobs.MapTarget{
+				ObjectFamily:   "technique",
+				CandidateKind:  string(candidates.MethodUpgrade),
+				EntityHint:     "method:" + slug,
+				PromoteAllowed: false,
+			})
+		case "market_take":
+			targets = append(targets, sourceobs.MapTarget{
+				ObjectFamily:   "market_take",
+				CandidateKind:  string(candidates.ProductHypothesis),
+				EntityHint:     "product:unscoped:market:" + slug,
+				PromoteAllowed: false,
+			})
+		}
+	}
+	return targets
+}
+
+func sourceCandidateClasses(export Export, item Item) []string {
+	if len(item.CandidateClasses) > 0 {
+		return item.CandidateClasses
+	}
+	switch normalizeCandidateClass(export.Source.Kind) {
+	case "x_bookmarks", "twitter_bookmarks":
+		return []string{"reference", "design_taste_example", "product_idea", "technique", "market_take"}
+	default:
+		return nil
+	}
+}
+
+func sourceObservationDetail(export Export, item Item) string {
+	parts := compactStrings(
+		"source_kind="+export.Source.Kind,
+		"classes="+strings.Join(sourceCandidateClasses(export, item), ","),
+		"occurred_at="+itemEventTime(item),
+	)
+	if len(item.MediaRefs) > 0 {
+		parts = append(parts, fmt.Sprintf("media_refs=%d", len(item.MediaRefs)))
+	}
+	if strings.TrimSpace(item.OperatorNote) != "" {
+		parts = append(parts, "operator_note=true")
+	}
+	return strings.Join(parts, " ")
 }
 
 func joinTrimmed(values []string, sep string) string {
@@ -1211,6 +1415,23 @@ func candidateVisibility(privacy string) string {
 	return "contextual"
 }
 
+func defaultPrivacy(sourceKind string) string {
+	switch normalizeCandidateClass(sourceKind) {
+	case "x_bookmarks", "twitter_bookmarks":
+		return "private"
+	default:
+		return "public"
+	}
+}
+
+func itemEventTime(item Item) string {
+	return firstNonEmpty(item.OccurredAt, item.BookmarkedAt, item.PublishedAt)
+}
+
+func itemSourceOccurredAt(item Item) string {
+	return firstNonEmpty(item.OccurredAt, item.BookmarkedAt)
+}
+
 func writeJSON(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -1278,6 +1499,42 @@ func cleanStrings(in []string) []string {
 	return out
 }
 
+func normalizeCandidateClasses(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		value = normalizeCandidateClass(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		switch value {
+		case "reference", "design_taste_example", "product_idea", "technique", "market_take", "x_bookmarks", "twitter_bookmarks":
+			out = append(out, value)
+			seen[value] = true
+		}
+	}
+	return out
+}
+
+func normalizeCandidateClass(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.NewReplacer("-", "_", " ", "_", "/", "_").Replace(value)
+	for strings.Contains(value, "__") {
+		value = strings.ReplaceAll(value, "__", "_")
+	}
+	value = strings.Trim(value, "_")
+	switch value {
+	case "design_taste", "design_reference", "design_example", "taste", "taste_example":
+		return "design_taste_example"
+	case "product", "product_take", "product_hypothesis", "idea":
+		return "product_idea"
+	case "market", "market_signal", "market_opinion":
+		return "market_take"
+	default:
+		return value
+	}
+}
+
 func compactStrings(in ...string) []string {
 	out := make([]string, 0, len(in))
 	for _, value := range in {
@@ -1323,6 +1580,27 @@ func digestStruct(v any) string {
 
 func shortDigest(parts ...string) string {
 	return digestString(strings.Join(parts, "\x00"))[:16]
+}
+
+func slugFor(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		default:
+			if b.Len() > 0 {
+				last := b.String()[b.Len()-1]
+				if last != '-' {
+					b.WriteByte('-')
+				}
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func rfc3339(t time.Time) string {

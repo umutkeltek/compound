@@ -61,53 +61,55 @@ func ListSourceObservations(homePath string, now time.Time) (SourceObservationLi
 		return report, err
 	}
 	report.Counts.NoPromoteDecisions = len(noPromote)
-	dir := filepath.Join(homePath, candidates.InboxDir(candidates.CapabilityObs))
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return report, nil
-		}
-		return report, err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		var rec CandidateRecord
-		data, err := os.ReadFile(path)
+	for _, kind := range candidates.AllKinds() {
+		dir := filepath.Join(homePath, candidates.InboxDir(kind))
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("%s unreadable: %v", entry.Name(), err))
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return report, err
 		}
-		if err := json.Unmarshal(data, &rec); err != nil {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("%s malformed: %v", entry.Name(), err))
-			continue
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			var rec CandidateRecord
+			data, err := os.ReadFile(path)
+			if err != nil {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("%s unreadable: %v", entry.Name(), err))
+				continue
+			}
+			if err := json.Unmarshal(data, &rec); err != nil {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("%s malformed: %v", entry.Name(), err))
+				continue
+			}
+			if strings.TrimSpace(rec.SourceObservationID) == "" {
+				continue
+			}
+			report.Counts.TotalCandidates++
+			item := SourceObservationListItem{
+				CandidateID:         firstNonEmpty(rec.ID, strings.TrimSuffix(entry.Name(), ".json")),
+				Kind:                firstNonEmpty(rec.Kind, string(kind)),
+				Subject:             rec.Subject,
+				Statement:           rec.Statement,
+				SourceObservationID: rec.SourceObservationID,
+				SourceRef:           rec.SourceRef,
+				Verdict:             rec.Verdict,
+				PromoteAllowed:      rec.PromoteAllowed,
+				CreatedAt:           rec.CreatedAt,
+				EvidenceRefs:        append([]string(nil), rec.EvidenceRefs...),
+				NoPromoteID:         noPromote[firstNonEmpty(rec.ID, strings.TrimSuffix(entry.Name(), ".json"))],
+			}
+			if item.PromoteAllowed {
+				report.Counts.PromoteAllowed++
+			} else {
+				report.Counts.PromoteDisallowed++
+			}
+			report.Items = append(report.Items, item)
 		}
-		report.Counts.TotalCandidates++
-		if strings.TrimSpace(rec.SourceObservationID) == "" {
-			continue
-		}
-		item := SourceObservationListItem{
-			CandidateID:         firstNonEmpty(rec.ID, strings.TrimSuffix(entry.Name(), ".json")),
-			Kind:                rec.Kind,
-			Subject:             rec.Subject,
-			Statement:           rec.Statement,
-			SourceObservationID: rec.SourceObservationID,
-			SourceRef:           rec.SourceRef,
-			Verdict:             rec.Verdict,
-			PromoteAllowed:      rec.PromoteAllowed,
-			CreatedAt:           rec.CreatedAt,
-			EvidenceRefs:        append([]string(nil), rec.EvidenceRefs...),
-			NoPromoteID:         noPromote[firstNonEmpty(rec.ID, strings.TrimSuffix(entry.Name(), ".json"))],
-		}
-		if item.PromoteAllowed {
-			report.Counts.PromoteAllowed++
-		} else {
-			report.Counts.PromoteDisallowed++
-		}
-		report.Items = append(report.Items, item)
 	}
 	report.Counts.SourceObservations = len(report.Items)
 	sort.SliceStable(report.Items, func(i, j int) bool {

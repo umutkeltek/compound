@@ -1,9 +1,14 @@
 package observation
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/knowledge"
 )
 
 const (
@@ -57,6 +62,13 @@ type sourceConnectionDef struct {
 	Produces           []string
 	NextSafeAction     string
 	PrivateSetupNeeded bool
+}
+
+type knowledgeConnectionSummary struct {
+	SourceKind string
+	SourceRef  string
+	LastSeen   string
+	Count      int
 }
 
 func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConnectionsProjection, error) {
@@ -123,6 +135,37 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 		}
 	}
 
+	knowledgeImports, err := loadKnowledgeConnectionImports(homePath)
+	if err != nil {
+		return SourceConnectionsProjection{}, err
+	}
+	for sourceKind, summary := range knowledgeImports {
+		id := kindToID[strings.TrimSpace(sourceKind)]
+		if id == "" {
+			id = "source_" + slugPart(sourceKind)
+			if _, ok := byID[id]; !ok {
+				byID[id] = &SourceConnection{
+					ID:             id,
+					Label:          titleFromSlug(sourceKind),
+					Status:         "connected",
+					SourceKinds:    []string{sourceKind},
+					Produces:       []string{"knowledge evidence", "memory candidate"},
+					NextSafeAction: "Review imported knowledge rows and resolve existing source cards.",
+				}
+			}
+		}
+		conn := byID[id]
+		conn.RowCount += summary.Count
+		conn.SourceKind = firstNonEmpty(conn.SourceKind, summary.SourceKind)
+		conn.SourceRef = firstNonEmpty(conn.SourceRef, summary.SourceRef)
+		conn.LastSeen = newestTimestamp(conn.LastSeen, summary.LastSeen)
+		conn.Produces = compact(append(conn.Produces, "knowledge evidence", "memory candidate"))
+		conn.Status = strongerSourceConnectionStatus(conn.Status, "connected")
+		if conn.NextSafeAction == "" || sourceConnectionStatusRank(conn.Status) <= sourceConnectionStatusRank("connected") {
+			conn.NextSafeAction = knowledgeConnectionNextAction(conn.ID, summary.Count)
+		}
+	}
+
 	out := SourceConnectionsProjection{
 		SchemaVersion: SourceConnectionsProjectionSchemaVersion,
 		AuthorityRef:  SourceConnectionsAuthorityRef,
@@ -184,6 +227,53 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 	return out, nil
 }
 
+func loadKnowledgeConnectionImports(homePath string) (map[string]knowledgeConnectionSummary, error) {
+	out := map[string]knowledgeConnectionSummary{}
+	if strings.TrimSpace(homePath) == "" {
+		return out, nil
+	}
+	path := filepath.Join(homePath, "ledger", "knowledge-imports.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var row knowledge.ImportIndexRow
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return nil, err
+		}
+		sourceKind := strings.TrimSpace(row.SourceKind)
+		if sourceKind == "" {
+			continue
+		}
+		summary := out[sourceKind]
+		summary.SourceKind = sourceKind
+		summary.SourceRef = firstNonEmpty(summary.SourceRef, row.SourceRef)
+		summary.LastSeen = newestTimestamp(summary.LastSeen, row.ImportedAt)
+		summary.Count++
+		out[sourceKind] = summary
+	}
+	return out, nil
+}
+
+func knowledgeConnectionNextAction(connectionID string, count int) string {
+	switch connectionID {
+	case "x_bookmarks":
+		return "Review imported bookmark observations and resolve no-promote candidates before any promotion."
+	default:
+		if count > 0 {
+			return "Review imported knowledge rows and resolve pending extraction or review cards."
+		}
+		return "Connect a bounded read-only export before automation."
+	}
+}
+
 func sourceConnectionDefs() []sourceConnectionDef {
 	return []sourceConnectionDef{
 		{
@@ -225,7 +315,7 @@ func sourceConnectionDefs() []sourceConnectionDef {
 			Label:          "X bookmarks",
 			SourceKinds:    []string{"x_bookmarks", "twitter_bookmarks"},
 			DefaultStatus:  "not_connected",
-			Produces:       []string{"reference", "design taste example", "product idea"},
+			Produces:       []string{"reference", "design taste example", "product idea", "technique", "market take"},
 			NextSafeAction: "Import a bounded bookmarks export as source material, not memory.",
 		},
 		{

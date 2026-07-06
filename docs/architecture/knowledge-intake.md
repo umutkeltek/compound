@@ -1,99 +1,90 @@
-# Knowledge intake — connect any medium to the meaning ledger
+# Knowledge Intake
 
-One generic door turns captured content from ANY medium (papers, bookmarks, articles,
-transcripts, feeds, notes) into adjudicable meaning. The contract is deliberately split
-in two so instances never leak into the substrate:
+One generic door turns captured content from any medium into adjudicable meaning.
+Edges capture; Compound owns the import contract, evidence ledger, candidates,
+source registry, idempotency, and promotion boundary.
 
-- **The core owns the contract**: envelope validation, evidence recording, candidate
-  proposal, echo folding, source registry, idempotency. It is medium-agnostic; no medium
-  name appears in core logic. Guarantee, enforced by test: **a new medium = one capture
-  edge + zero core changes.**
-- **Edges own capture**: a capture edge is any script/tool/service — any language,
-  anywhere — that emits the export envelope below. Edges are rented and replaceable;
-  they make no meaning decisions.
+## Envelope
 
-## The envelope: `compound.knowledge_export.v0.1`
+`compound.knowledge_export.v0.1` is strict-decoded. Unknown fields fail import.
 
 ```json
 {
   "schema_version": "compound.knowledge_export.v0.1",
-  "source": {"kind": "arxiv", "ref": "arxiv:cs.AI+cs.CL", "captured_at": "2026-07-02T12:00:00Z"},
+  "source": {
+    "kind": "arxiv",
+    "ref": "arxiv:cs.AI+cs.CL",
+    "captured_at": "2026-07-02T12:00:00Z"
+  },
   "privacy": "public",
-  "producer": {"kind": "edge-script", "name": "arxiv-capture", "version": "0.1"},
-  "items": [{
-    "ref": "arxiv:2506.12345v1",
-    "url": "https://arxiv.org/abs/2506.12345",
-    "title": "…",
-    "authors": ["…"],
-    "published_at": "2026-06-30",
-    "topics": ["cs.AI"],
-    "content": "abstract or body text …",
-    "lang": "en"
-  }]
+  "producer": {
+    "kind": "edge-script",
+    "name": "arxiv-capture",
+    "version": "0.1"
+  },
+  "items": [
+    {
+      "ref": "arxiv:2506.12345v1",
+      "url": "https://arxiv.org/abs/2506.12345",
+      "title": "Synthetic Agents Learn Evidence Discipline",
+      "authors": ["A. Researcher"],
+      "published_at": "2026-06-30",
+      "topics": ["cs.AI"],
+      "content": "Captured artifacts become evidence before memory claims.",
+      "lang": "en"
+    }
+  ]
 }
 ```
 
-Rules: strict decode (unknown fields rejected); `source.kind` is a lowercase slug;
-`source.captured_at` is RFC3339; every item needs `ref` and `content` (or `content_ref`);
-`privacy` ∈ {public, private}, default public.
+Rules: `source.kind` is a source slug, `source.captured_at` is RFC3339, every item
+needs `ref` and either `content` or `content_ref`, and `privacy` is `public` or
+`private`. Privacy defaults to `public` except source kinds whose material is
+operator-private by default. Item-level source occurrence metadata can use
+`occurred_at` or an edge alias such as `bookmarked_at`; import records that as
+the evidence event time. Item-level `captured_at`, `author_handle`, `media_refs`,
+`operator_note`, and `candidate_classes` are optional generic edge metadata.
 
-Conversation exports are capture edges, not core types: `chatgpt`, `claude-code`,
-`codex`, and other harness/session exports use the same envelope with different
-`source.kind` values. Long private conversations stay bounded evidence quotes;
-per-message/windowed refs such as `<conversation-uuid>#w2` are a later capture-edge
-refinement, not a new internal package.
+## Import
 
-## What `compound knowledge import <export.json>` does per item
+`compound knowledge import <export.json>` does this per item:
 
-Current implementation note: deterministic reference metadata is field-level source-index evidence.
-An imported item can emit separate parked candidates for title, authors,
-published date, topics, and URL; all share the same evidence ref and normalized
-`knowledge:<kind>:<ref-without-leading-kind-prefix>` entity id. This keeps
-field changes independently citable while keeping source catalog rows out of
-the operator approval queue.
+1. **Evidence**: records a bounded `EvidenceItem` with source kind/id, quote,
+   event time, actor, and propagated visibility. Evidence is citable raw material,
+   not truth.
+2. **Parked source-index metadata candidates**: records deterministic reference
+   metadata candidates for fields such as title, authors, author handle,
+   published/occurred/captured time, topics, media refs, operator note, and URL.
+   These share the evidence ref and normalized `knowledge:<kind>:<ref>` entity.
+3. **SourceObservation/no-promote candidates when source classes are declared**:
+   classes such as `reference`, `design_taste_example`, `product_idea`,
+   `technique`, and `market_take` map to existing candidate inboxes plus
+   `NoPromoteDecision` rows. This makes curation reviewable without creating
+   source truth, product changes, or promoted memory.
+4. **Extraction request**: writes `inbox/knowledge-extractions/kx_*.json`
+   with state `pending`. Extraction is a later gated step; it produces candidates
+   only.
+5. **Echo folding**: the same canonical identity, URL first then ref, seen again
+   within seven days records distribution evidence without duplicate candidates
+   or extraction requests.
+6. **Source registry and idempotency**: records first-seen source rows and writes
+   import rows to `ledger/knowledge-imports.jsonl` plus the rebuildable index.
 
-1. **Evidence** — a content-addressed `EvidenceItem` (source kind/id + bounded quote).
-   Evidence is citable raw material, never truth.
-2. **Parked source-index metadata candidates** — reference/metadata claims about the item
-   (`knowledge:<kind>:<ref>`), state `parked`, reason `source metadata...`.
-   **No import path writes promoted claims, and source metadata does not create
-   operator approval debt.** Current behavior fans deterministic metadata out to
-   field-level evidence candidates, not one opaque metadata row.
-3. **An extraction request** — `inbox/knowledge-extractions/kx_*.json` (state `pending`),
-   consumed later by the gated extraction bridge (rented model proposes meaning
-   candidates from the content; code decides; candidate-only).
-4. **Echo folding** — same canonical identity (url, else ref) seen again within 7 days,
-   from ANY source: no new candidate/extraction; a row in
-   `ledger/knowledge-distribution.jsonl` records the distribution event pointing at the
-   first evidence. Ten shares of one thing = one signal + nine distribution events.
-   (v0.1 matches identity exactly; URL normalization is a known refinement.)
-5. **Source registry** — `registries/knowledge-sources.jsonl` gains
-   `source:<kind>:<ref>` with a neutral `trust_posterior` (0.5). Trust
-   calibration lands at P2; today the registry row is written once and frozen at
-   the neutral prior.
-6. **Idempotency** — re-importing the same export is a no-op (`reused`). Durable
-   truth lives in `ledger/knowledge-imports.jsonl` (`canonical_ref`,
-   `evidence_ref`, `imported_at`, `export_digest`, `source_kind`, `source_ref`);
-   `indexes/knowledge-imports.jsonl` is a rebuildable lookup cache of that
-   ledger, so backup restore and `home compact --rebuildable` can delete indexes
-   without losing import state.
+No import path writes promoted claims. Promotion remains an explicit governed
+operator/review action.
 
-## Writing a capture edge (any language)
+## Edges
 
-Fetch → shape items → emit the envelope → hand the file to `compound knowledge import`.
-Keep edges dumb: no dedup (the core folds echoes), no summarization (the extraction
-bridge owns meaning proposals), no direct writes into `COMPOUND_HOME`. A reference
-synthetic export lives at `fixtures/knowledge/arxiv-export.json`; the future-proof test
-(`internal/knowledge`) imports a never-seen medium kind to prove the zero-core-change
-guarantee.
+Capture edges stay dumb: fetch or export bounded source material, shape the
+envelope, and hand the file to `compound knowledge import`. They do not dedupe,
+summarize, write into `COMPOUND_HOME`, adjudicate, or promote.
 
-The proof fixture set includes `fixtures/knowledge/arxiv-export.json` and
-`fixtures/knowledge/chatgpt-conversation-export.json`; `internal/knowledge`
-tests import new medium kinds to prove the zero-core-change guarantee.
+The public fixture set includes synthetic exports under `fixtures/knowledge/`.
+Real source captures belong outside the public repo and must enter only through
+the same envelope.
 
-## Downstream (owned by other contracts)
+## Downstream
 
-Extraction bridge → parked annotated-evidence candidates; `memory adjudicate` /
-panel → promote/park/reject only through the governed memory path; background
-synthesis relates Compound claims across mediums; `compound orient --task` serves
-promoted results. See `docs/memory-architecture.md` and `docs/architecture/runtime.md`.
+Extraction bridge -> parked annotated-evidence candidates. Memory adjudication,
+panel review, and product/distiller plans consume candidates through their own
+gates. `compound orient --task` serves only promoted results.
