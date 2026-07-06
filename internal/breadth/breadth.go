@@ -105,7 +105,7 @@ func (e *Engine) Query(text, gate string, allowlist []string, k int) []mem.Hit {
 }
 
 func (e *Engine) bm25(text string, docs []doc) []mem.Hit {
-	queryTerms := unique(Tokenize(text))
+	queryTerms := unique(salientTerms(text))
 	if len(queryTerms) == 0 {
 		return nil
 	}
@@ -166,7 +166,7 @@ func reciprocalRankFusion(lanes []rankedLane) map[string]float64 {
 }
 
 func referenceContains(text string, docs []doc) []mem.Hit {
-	terms := strings.Fields(strings.ToLower(text))
+	terms := unique(salientTerms(text))
 	if len(terms) == 0 {
 		return nil
 	}
@@ -219,6 +219,44 @@ func Tokenize(text string) []string {
 	var out []string
 	for _, chunk := range alnumChunks(text) {
 		out = append(out, splitIdentifier(chunk)...)
+	}
+	return out
+}
+
+// queryStopwords are English function/question words stripped from QUERY text
+// before scoring. Claims are never filtered — only the query — so that
+// natural-language phrasing ("what is the database for the sm project?") ranks
+// the same salient terms ("sm database") and terse entity/predicate claims stop
+// being diluted out of the top-k by filler words that match many claims.
+var queryStopwords = map[string]bool{
+	"a": true, "about": true, "again": true, "an": true, "and": true, "any": true,
+	"are": true, "as": true, "at": true, "be": true, "been": true, "being": true,
+	"but": true, "by": true, "can": true, "did": true, "do": true, "does": true,
+	"for": true, "from": true, "had": true, "has": true, "have": true, "how": true,
+	"i": true, "if": true, "in": true, "into": true, "is": true, "it": true,
+	"its": true, "me": true, "my": true, "not": true, "of": true, "on": true,
+	"or": true, "our": true, "so": true, "that": true, "the": true, "their": true,
+	"then": true, "there": true, "these": true, "they": true, "this": true,
+	"to": true, "was": true, "we": true, "were": true, "what": true, "when": true,
+	"where": true, "which": true, "who": true, "why": true, "will": true,
+	"with": true, "would": true, "you": true, "your": true,
+}
+
+// salientTerms tokenizes query text and drops function/question words so the
+// scoring lanes weight only content-bearing terms. Falls back to the unfiltered
+// tokens when filtering would leave nothing (e.g. an all-stopword query), so it
+// never returns an empty term set.
+func salientTerms(text string) []string {
+	toks := Tokenize(text)
+	out := make([]string, 0, len(toks))
+	for _, t := range toks {
+		if queryStopwords[t] {
+			continue
+		}
+		out = append(out, t)
+	}
+	if len(out) == 0 {
+		return toks
 	}
 	return out
 }

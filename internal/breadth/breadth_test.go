@@ -17,6 +17,40 @@ func TestTokenizeSplitsIdentifiers(t *testing.T) {
 	}
 }
 
+func TestQueryStripsStopwordsSoTerseEntityClaimsRank(t *testing.T) {
+	// Falsifier for entity/predicate recall dilution (measured 2026-07-07): a
+	// natural-language question must retrieve the terse entity-keyed claim, not be
+	// crowded out of the top-k by stopword-heavy meta-claims. Pre-stopword-filter,
+	// the filler terms (what/is/the/for/project) matched the noise claims and
+	// pushed the target below k. Live proof this fixes: golden-set recall bakeoff.
+	var eng Engine
+	eng.Index([]mem.ClaimText{
+		{ClaimID: "svc_alpha_database", Text: "alpha database managed postgres instance in a cloud region"},
+		{ClaimID: "noise_dec", Text: "decision what is the goal for the project we decided is the binding file"},
+		{ClaimID: "noise_pack", Text: "the context pack is what carries the source revisions for the runtime"},
+		{ClaimID: "noise_policy", Text: "the policy decision is what governs the action for the work at the gate"},
+		{ClaimID: "noise_paper", Text: "document parsing is what the vision language model does for the two stage"},
+	}, 1)
+	got := eng.Query("What is the database for the alpha project?", mem.GateAll, nil, 3)
+	if len(got) == 0 {
+		t.Fatalf("query returned no hits")
+	}
+	if got[0].ClaimID != "svc_alpha_database" {
+		t.Fatalf("terse entity claim must rank #1 after stopword filtering; top-3 = %+v", got)
+	}
+}
+
+func TestSalientTermsFallsBackWhenAllStopwords(t *testing.T) {
+	// An all-stopword query must not filter to nothing (that would return zero
+	// hits); salientTerms falls back to the unfiltered tokens.
+	if got := salientTerms("what is the"); len(got) == 0 {
+		t.Fatalf("all-stopword query must fall back to unfiltered tokens, got empty")
+	}
+	if got := salientTerms("alpha database"); !reflect.DeepEqual(got, []string{"alpha", "database"}) {
+		t.Fatalf("salient terms = %v, want [alpha database]", got)
+	}
+}
+
 func TestQueryEnforcesAllowlistFailClosed(t *testing.T) {
 	var eng Engine
 	eng.Index([]mem.ClaimText{
