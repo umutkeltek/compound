@@ -175,8 +175,10 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory position <entity> [--as-of N] [--topic topic-slug] [--json]"
 	case "engine-config":
 		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain] [--clear] [--json]"
+	case "bakeoff":
+		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|doctor>"
 	}
 }
 
@@ -260,8 +262,8 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
-compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
-                spine memory: candidates, claims, positions, patterns, evidence
+	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
+	              spine memory: candidates, claims, positions, patterns, evidence
   compound synthesis sweep [--stage cluster,contradict] [--json]
                 memory synthesis reports; contradictions append needs_review markers only
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
@@ -2744,6 +2746,8 @@ func cmdMemory(args []string) {
 		}
 	case "recall":
 		cmdMemoryRecall(store, rest)
+	case "bakeoff":
+		cmdMemoryBakeoff(store, rest, memBreadthEngine)
 	case "timeline":
 		claims, err := store.Timeline(pos())
 		die(err)
@@ -3012,7 +3016,7 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor> ...")
 		os.Exit(2)
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -113,6 +114,98 @@ func cmdMemoryRecall(store *mem.Store, args []string) {
 		for _, ann := range c.Annotations {
 			fmt.Printf(" annotation %s decision=%s original=%s confidence=%.2f run=%s verdict=%s\n", ann.ID, ann.Decision, ann.OriginalDecision, ann.Confidence, ann.RunID, ann.VerdictArtifact)
 		}
+	}
+}
+
+func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem.Engine, func())) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|run --queries file>")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "init":
+		path := valueFlag(args[1:], "--queries")
+		if path == "" {
+			path = filepath.Join("fixtures", "bakeoff", "queries.yaml")
+		}
+		report, err := mem.WriteDefaultBakeoffQueries(path, hasFlag(args[1:], "--force"))
+		die(err)
+		if hasFlag(args[1:], "--json") {
+			printJSON(report)
+			return
+		}
+		fmt.Println("# memory bakeoff init")
+		fmt.Printf("- path: %s\n", report.Path)
+		fmt.Printf("- created: %t\n", report.Created)
+		fmt.Printf("- queries: %d\n", report.QueryCount)
+		fmt.Printf("- lanes: %s\n", strings.Join(report.Lanes, ","))
+	case "run":
+		rest := args[1:]
+		queriesPath := valueFlag(rest, "--queries")
+		if queriesPath == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff run --queries <file> [--engine <bin>] [--k N] [--json]")
+			os.Exit(2)
+		}
+		k := 10
+		if raw := valueFlag(rest, "--k"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n <= 0 {
+				fmt.Fprintln(os.Stderr, "error: --k must be a positive integer")
+				os.Exit(2)
+			}
+			k = n
+		}
+		var restore func()
+		if bin := valueFlag(rest, "--engine"); bin != "" {
+			restore = captureEnv("COMPOUND_MEM_ENGINE_BIN", "COMPOUND_MEM_ENGINE_EMBEDDER")
+			if err := os.Setenv("COMPOUND_MEM_ENGINE_BIN", bin); err != nil {
+				die(err)
+			}
+			if embedder := valueFlag(rest, "--embedder"); embedder != "" {
+				if err := os.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", embedder); err != nil {
+					restore()
+					die(err)
+				}
+			}
+		} else {
+			restore = func() {}
+		}
+		eng, closeEng := engineFactory()
+		report, err := store.RunBakeoff(mem.BakeoffRunOptions{
+			QueriesPath:    queriesPath,
+			K:              k,
+			Candidate:      eng,
+			AllowExpansion: true,
+			Now:            time.Now(),
+		})
+		closeEng()
+		restore()
+		if hasFlag(rest, "--json") {
+			printJSON(report)
+			if err != nil {
+				os.Exit(1)
+			}
+			return
+		}
+		fmt.Println("# memory bakeoff run")
+		fmt.Printf("- report: %s\n", report.ReportPath)
+		fmt.Printf("- queries: %d\n", report.QueryCount)
+		fmt.Printf("- candidate_engine: %s\n", report.CandidateEngine)
+		fmt.Printf("- recall_at_5: %.3f\n", report.Metrics.RecallAt5)
+		fmt.Printf("- recall_at_10: %.3f\n", report.Metrics.RecallAt10)
+		fmt.Printf("- mrr: %.3f\n", report.Metrics.MRR)
+		fmt.Printf("- reference_covered: %.3f\n", report.Metrics.ReferenceCovered)
+		fmt.Printf("- latency_p50_ms: %.3f\n", report.Metrics.LatencyP50MS)
+		fmt.Printf("- latency_p95_ms: %.3f\n", report.Metrics.LatencyP95MS)
+		fmt.Printf("- ledger_digest_unchanged: %t\n", report.LedgerDigestUnchanged)
+		fmt.Printf("- determinism: %t\n", report.Determinism.Passed)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "memory bakeoff:", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|run --queries file>")
+		os.Exit(2)
 	}
 }
 
