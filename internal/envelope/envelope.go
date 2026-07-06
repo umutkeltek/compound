@@ -294,6 +294,21 @@ type CapabilityOffer struct {
 	Evidence              []CapabilityOfferConstraint `json:"evidence,omitempty"`
 	CostRiskNote          string                      `json:"cost_risk_note,omitempty"`
 }
+
+// ActivePosition is the folded current stance digest rendered into ContextPack
+// active memory. Line is the canonical compact shape hooks display:
+// entity::topic → stance (since-seq N, chain-length L) [contested].
+type ActivePosition struct {
+	Ref         string `json:"ref"`
+	Entity      string `json:"entity"`
+	Topic       string `json:"topic"`
+	Stance      string `json:"stance"`
+	SinceSeq    int64  `json:"since_seq"`
+	ChainLength int    `json:"chain_length"`
+	Contested   bool   `json:"contested,omitempty"`
+	Line        string `json:"line"`
+}
+
 type ContextPack struct {
 	Header
 	SummaryMD          string            `json:"summary_md"`
@@ -306,6 +321,7 @@ type ContextPack struct {
 	HookReadiness      []HookReadiness   `json:"hook_readiness,omitempty"`
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
+	ActivePositions    []ActivePosition  `json:"active_positions,omitempty"`
 	SourceRevisions    []SourceRev       `json:"source_revisions,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`

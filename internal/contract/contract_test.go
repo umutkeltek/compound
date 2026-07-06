@@ -1694,6 +1694,136 @@ func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:          "project:compound",
+			Predicate:       "runtime_stance",
+			Object:          "claim refs only",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			Qualifiers:      map[string]string{"domain": "memory_default_organ"},
+			PromotionBasis:  candidates.BasisCuratedPage,
+			SourceTraceRef:  "ev_position_old",
+			SnippetHash:     "sha256:position-old",
+			Visibility:      "contextual",
+			ObservationDate: "2026-06-30T00:00:00Z",
+		},
+		{
+			Entity:          "project:compound",
+			Predicate:       "runtime_stance",
+			Object:          "ContextPack uses folded positions digest",
+			Confidence:      0.94,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			Qualifiers:      map[string]string{"domain": "memory_default_organ"},
+			PromotionBasis:  candidates.BasisCuratedPage,
+			SourceTraceRef:  "ev_position_new",
+			SnippetHash:     "sha256:position-new",
+			Visibility:      "contextual",
+			ObservationDate: "2026-07-01T00:00:00Z",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := store.Adjudicate(got[1].ID, "promote", "test", fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FoldPositions(mem.PositionFoldOptions{}, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	in := Input{Harness: "codex", Cwd: "/repo/compound", Task: "wire memory default organ positions ContextPack", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	positionRef := "position://project:compound::memory_default_organ"
+	if !contains(pack.ActiveMemory, positionRef) {
+		t.Fatalf("context pack active_memory = %v, want positions-derived ref %s", pack.ActiveMemory, positionRef)
+	}
+	if !hasIncluded(pack, positionRef) {
+		t.Fatalf("context pack should include positions-derived ref %s; included=%v", positionRef, pack.Included)
+	}
+	if len(pack.ActivePositions) != 1 {
+		t.Fatalf("context pack active_positions = %+v, want one folded position", pack.ActivePositions)
+	}
+	pos := pack.ActivePositions[0]
+	wantLine := fmt.Sprintf("project:compound::memory_default_organ → ContextPack uses folded positions digest (since-seq %d, chain-length 2)", latest.Claim.Seq)
+	if pos.Ref != positionRef || pos.Entity != "project:compound" || pos.Topic != "memory_default_organ" ||
+		pos.Stance != "ContextPack uses folded positions digest" || pos.SinceSeq != latest.Claim.Seq ||
+		pos.ChainLength != 2 || pos.Line != wantLine {
+		t.Fatalf("active position = %+v, want line %q", pos, wantLine)
+	}
+	if !strings.Contains(pack.SummaryMD, wantLine) {
+		t.Fatalf("summary should carry folded positions line %q, got %q", wantLine, pack.SummaryMD)
+	}
+}
+
+func TestPackWithCapabilitiesEmptyPositionsCheckpointKeepsClaimRefPath(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{{
+		Entity:          "project:compound",
+		Predicate:       "capability_authority_surface",
+		Object:          "Compound owns the capability graph runtime surface",
+		Confidence:      0.91,
+		Derivation:      "deterministic",
+		ClaimType:       "architecture",
+		Qualifiers:      map[string]string{"domain": "capability_authority"},
+		PromotionBasis:  candidates.BasisCuratedPage,
+		SourceTraceRef:  "ev_compound",
+		SnippetHash:     "sha256:compound",
+		Visibility:      "contextual",
+		ObservationDate: "2026-06-30T00:00:00Z",
+	}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := Input{Harness: "codex", Cwd: "/repo/compound", Task: "resume compound absorption", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	before, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "ledger", "positions.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	after, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimRef := "claim://" + promoted.Claim.ID
+	if !contains(after.ActiveMemory, claimRef) {
+		t.Fatalf("empty positions checkpoint removed old claim-ref path: active_memory=%v want %s", after.ActiveMemory, claimRef)
+	}
+	if len(after.ActivePositions) != 0 {
+		t.Fatalf("empty positions checkpoint produced active positions: %+v", after.ActivePositions)
+	}
+	if !sameStrings(before.ActiveMemory, after.ActiveMemory) || !sameIncludedRefs(before.Included, after.Included) || before.SummaryMD != after.SummaryMD {
+		t.Fatalf("empty positions checkpoint changed claim-ref behavior\nbefore active=%v included=%v summary=%q\nafter active=%v included=%v summary=%q",
+			before.ActiveMemory, before.Included, before.SummaryMD, after.ActiveMemory, after.Included, after.SummaryMD)
+	}
+}
+
 func TestPackWithCapabilitiesIncludesTaskRelevantMemoryBeyondEntityKey(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -2599,4 +2729,28 @@ func sourceRev(revs []envelope.SourceRev, source string) string {
 		}
 	}
 	return ""
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameIncludedRefs(a, b []envelope.IncludedRef) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -695,7 +695,7 @@ func renderInjection(hookID string, pack envelope.ContextPack) string {
 	writeHookRosterList(&b, pack.HookRoster)
 	writeCappedStringList(&b, "Active Decisions", pack.ActiveDecisions, maxInjectionActiveDecisionRefs, "active decision ref(s)")
 	if len(pack.ActiveMemory) > 0 {
-		shown := pack.ActiveMemory
+		shown := prioritizedActiveMemoryRefs(pack.ActiveMemory, pack.ActivePositions)
 		omitted := 0
 		if len(shown) > maxInjectionActiveMemoryRefs {
 			omitted = len(shown) - maxInjectionActiveMemoryRefs
@@ -798,13 +798,40 @@ func writeActiveMemoryList(b *strings.Builder, pack envelope.ContextPack, refs [
 	}
 }
 
+func prioritizedActiveMemoryRefs(refs []string, positions []envelope.ActivePosition) []string {
+	if len(refs) == 0 || len(positions) == 0 {
+		return refs
+	}
+	positionRefs := map[string]bool{}
+	for _, position := range positions {
+		if strings.TrimSpace(position.Ref) != "" {
+			positionRefs[position.Ref] = true
+		}
+	}
+	if len(positionRefs) == 0 {
+		return refs
+	}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if positionRefs[ref] {
+			out = append(out, ref)
+		}
+	}
+	for _, ref := range refs {
+		if !positionRefs[ref] {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
 func activeMemoryLine(pack envelope.ContextPack, ref string) string {
 	for _, included := range pack.Included {
 		if included.Ref != ref {
 			continue
 		}
 		reason := strings.TrimSpace(included.Reason)
-		if strings.HasPrefix(reason, "Compound memory ledger claim;") {
+		if strings.HasPrefix(reason, "Compound memory ledger claim;") || strings.HasPrefix(reason, "Compound memory folded position;") {
 			if _, line, ok := strings.Cut(reason, ":"); ok {
 				return strings.TrimSpace(line)
 			}

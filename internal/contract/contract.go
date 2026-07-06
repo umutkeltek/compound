@@ -30,6 +30,7 @@ import (
 const (
 	defaultRepoKind                  = "product"
 	memoryRelevanceSourceRef         = "memory://relevance-gated"
+	positionMemoryReasonPrefix       = "Compound memory folded position; source stores and indexes are evidence, not authority: "
 	osAdaptationRuleRef              = "private-plan://operating-system-adaptation-rule"
 	osAdaptationCapabilityRef        = "capability://doctrine:context-aware-os-adaptation"
 	oracleSecondOpinionRuleRef       = "private-plan://oracle-second-opinion-rule"
@@ -441,7 +442,15 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	for _, ref := range memoryRefs {
 		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
 	}
-	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 {
+	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind])
+	if err != nil {
+		return ec, err
+	}
+	ec.Excluded = append(ec.Excluded, excludedPositionRefs...)
+	for _, ref := range positionRefs {
+		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
+	}
+	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 || len(positionRefs) > 0 || len(excludedPositionRefs) > 0 {
 		rev, err := memoryLedgerRevision(homePath)
 		if err != nil {
 			return ec, err
@@ -620,17 +629,42 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			Status:      "current",
 		})
 	}
-	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 {
+	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind])
+	if err != nil {
+		return pack, err
+	}
+	pack.Excluded = append(pack.Excluded, excludedPositionRefs...)
+	for _, ref := range positionRefs {
+		pack.ActiveMemory = append(pack.ActiveMemory, ref.Ref)
+		pack.ActivePositions = append(pack.ActivePositions, ref.Position)
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref:         ref.Ref,
+			SourceClass: "runtime",
+			Reason:      ref.Reason,
+			Confidence:  ref.Confidence,
+			Status:      "current",
+		})
+	}
+	if len(memoryRefs) > 0 || len(excludedMemoryRefs) > 0 || len(positionRefs) > 0 || len(excludedPositionRefs) > 0 {
 		rev, err := memoryLedgerRevision(homePath)
 		if err != nil {
 			return pack, err
 		}
 		pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: memoryRelevanceSourceRef, Rev: rev}})
+	}
+	if len(memoryRefs) > 0 {
 		lines := make([]string, 0, len(memoryRefs))
 		for _, ref := range memoryRefs {
 			lines = append(lines, ref.Line)
 		}
 		pack.SummaryMD += " Compound memory (owned ledger): " + strings.Join(lines, "; ")
+	}
+	if len(positionRefs) > 0 {
+		lines := make([]string, 0, len(positionRefs))
+		for _, ref := range positionRefs {
+			lines = append(lines, ref.Line)
+		}
+		pack.SummaryMD += " Compound positions (folded checkpoint): " + strings.Join(lines, "; ")
 	}
 	pack, err = appendOSAdaptationSteeringOffer(pack, in)
 	if err != nil {
@@ -1104,6 +1138,16 @@ type contextMemoryRef struct {
 	Rank       float64
 }
 
+type contextPositionRef struct {
+	Ref        string
+	Reason     string
+	Line       string
+	Position   envelope.ActivePosition
+	Confidence float64
+	Seq        int64
+	Rank       float64
+}
+
 func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
@@ -1179,6 +1223,135 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 	}
 	sort.Slice(excludedRefs, func(i, j int) bool { return excludedRefs[i].Ref < excludedRefs[j].Ref })
 	return out, excludedRefs, nil
+}
+
+func loadPositionRefs(homePath string, in Input, rule MemoryRule) ([]contextPositionRef, []envelope.ExcludedRef, error) {
+	if len(rule.Ambient) == 0 {
+		return nil, nil, nil
+	}
+	entities := memoryEntityKeys(in)
+	taskTokens := memoryTextTokens(in.Task)
+	if len(entities) == 0 && len(taskTokens) == 0 {
+		return nil, nil, nil
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	positions, err := store.LoadFoldedPositions()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(positions) == 0 {
+		return nil, nil, nil
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return nil, nil, err
+	}
+	claimByID := map[string]mem.Claim{}
+	for _, claim := range claims {
+		claimByID[claim.ID] = claim
+	}
+	out := make([]contextPositionRef, 0, maxContextMemoryRefs)
+	excluded := make([]contextPositionRef, 0, maxContextMemoryRefs)
+	for _, position := range positions {
+		activeClaim, ok := claimByID[position.ActiveClaimID]
+		if !ok {
+			continue
+		}
+		activePosition := activePositionFromFold(position, activeClaim)
+		if activePosition.Ref == "" {
+			continue
+		}
+		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens)
+		if reason := memoryPolicyExclusionReason(activeClaim, rule, relevanceRank); reason != "" {
+			excluded = append(excluded, contextPositionRef{
+				Ref:    activePosition.Ref,
+				Reason: reason,
+				Seq:    activeClaim.Seq,
+				Rank:   relevanceRank,
+			})
+			continue
+		}
+		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens)
+		if rank <= 0 {
+			continue
+		}
+		out = append(out, contextPositionRef{
+			Ref:        activePosition.Ref,
+			Reason:     positionMemoryReasonPrefix + activePosition.Line,
+			Line:       activePosition.Line,
+			Position:   activePosition,
+			Confidence: activeClaim.Confidence,
+			Seq:        activeClaim.Seq,
+			Rank:       rank,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rank != out[j].Rank {
+			return out[i].Rank > out[j].Rank
+		}
+		if out[i].Seq == out[j].Seq {
+			return out[i].Ref < out[j].Ref
+		}
+		return out[i].Seq > out[j].Seq
+	})
+	if len(out) > maxContextMemoryRefs {
+		out = out[:maxContextMemoryRefs]
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
+	sort.Slice(excluded, func(i, j int) bool {
+		if excluded[i].Rank != excluded[j].Rank {
+			return excluded[i].Rank > excluded[j].Rank
+		}
+		if excluded[i].Seq == excluded[j].Seq {
+			return excluded[i].Ref < excluded[j].Ref
+		}
+		return excluded[i].Seq > excluded[j].Seq
+	})
+	if len(excluded) > maxContextMemoryRefs {
+		excluded = excluded[:maxContextMemoryRefs]
+	}
+	excludedRefs := make([]envelope.ExcludedRef, 0, len(excluded))
+	for _, ref := range excluded {
+		excludedRefs = append(excludedRefs, envelope.ExcludedRef{Ref: ref.Ref, Reason: ref.Reason})
+	}
+	sort.Slice(excludedRefs, func(i, j int) bool { return excludedRefs[i].Ref < excludedRefs[j].Ref })
+	return out, excludedRefs, nil
+}
+
+func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelope.ActivePosition {
+	entity := firstNonEmpty(position.Entity, activeClaim.Entity)
+	topic := firstNonEmpty(position.Topic, activeClaim.Topic())
+	stance := firstNonEmpty(position.ActiveObject, activeClaim.Object)
+	if entity == "" || topic == "" || stance == "" {
+		return envelope.ActivePosition{}
+	}
+	chainLength := len(position.ClaimChain)
+	if chainLength == 0 && position.ActiveClaimID != "" {
+		chainLength = 1
+	}
+	contested := strings.EqualFold(strings.TrimSpace(position.Status), "contested")
+	line := activePositionLine(entity, topic, stance, activeClaim.Seq, chainLength, contested)
+	return envelope.ActivePosition{
+		Ref:         "position://" + entity + "::" + topic,
+		Entity:      entity,
+		Topic:       topic,
+		Stance:      stance,
+		SinceSeq:    activeClaim.Seq,
+		ChainLength: chainLength,
+		Contested:   contested,
+		Line:        line,
+	}
+}
+
+func activePositionLine(entity, topic, stance string, sinceSeq int64, chainLength int, contested bool) string {
+	line := fmt.Sprintf("%s::%s → %s (since-seq %d, chain-length %d)", entity, topic, stance, sinceSeq, chainLength)
+	if contested {
+		line += " [contested]"
+	}
+	return line
 }
 
 func memoryLedgerRevision(homePath string) (string, error) {

@@ -373,6 +373,30 @@ func TestRenderInjectionEmitsActiveMemorySection(t *testing.T) {
 	}
 }
 
+func TestRenderInjectionEmitsActivePositionLine(t *testing.T) {
+	line := "project:compound::memory_default_organ → ContextPack uses folded positions digest (since-seq 2, chain-length 2) [contested]"
+	refs := make([]string, 0, maxInjectionActiveMemoryRefs+1)
+	for i := 0; i < maxInjectionActiveMemoryRefs; i++ {
+		refs = append(refs, fmt.Sprintf("claim://claim_%02d", i))
+	}
+	refs = append(refs, "position://project:compound::memory_default_organ")
+	pack := envelope.ContextPack{
+		SummaryMD:       "summary",
+		ActiveMemory:    refs,
+		ActivePositions: []envelope.ActivePosition{{Ref: "position://project:compound::memory_default_organ", Entity: "project:compound", Topic: "memory_default_organ", Stance: "ContextPack uses folded positions digest", SinceSeq: 2, ChainLength: 2, Contested: true, Line: line}},
+		Included: []envelope.IncludedRef{{
+			Ref:    "position://project:compound::memory_default_organ",
+			Reason: "Compound memory folded position; source stores and indexes are evidence, not authority: " + line,
+		}},
+	}
+	pack.Header.ID = "ctx_test"
+	text := renderInjection("hookev_test", pack)
+	want := "`position://project:compound::memory_default_organ` - " + line
+	if !strings.Contains(text, want) {
+		t.Fatalf("injection missing active position line %q:\n%s", want, text)
+	}
+}
+
 func TestRenderInjectionCapsActiveMemorySection(t *testing.T) {
 	refs := make([]string, 0, maxInjectionActiveMemoryRefs+2)
 	for i := 0; i < maxInjectionActiveMemoryRefs+2; i++ {
