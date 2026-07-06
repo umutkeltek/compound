@@ -29,6 +29,7 @@ type SourceConnectionsProjection struct {
 type SourceConnectionsCounts struct {
 	Total          int `json:"total"`
 	Connected      int `json:"connected"`
+	Imported       int `json:"imported"`
 	Observed       int `json:"observed"`
 	NeedsInput     int `json:"needs_input"`
 	NeedsReview    int `json:"needs_review"`
@@ -147,7 +148,7 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 				byID[id] = &SourceConnection{
 					ID:             id,
 					Label:          titleFromSlug(sourceKind),
-					Status:         "connected",
+					Status:         "imported",
 					SourceKinds:    []string{sourceKind},
 					Produces:       []string{"knowledge evidence", "memory candidate"},
 					NextSafeAction: "Review imported knowledge rows and resolve existing source cards.",
@@ -160,8 +161,8 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 		conn.SourceRef = firstNonEmpty(conn.SourceRef, summary.SourceRef)
 		conn.LastSeen = newestTimestamp(conn.LastSeen, summary.LastSeen)
 		conn.Produces = compact(append(conn.Produces, "knowledge evidence", "memory candidate"))
-		conn.Status = strongerSourceConnectionStatus(conn.Status, "connected")
-		if conn.NextSafeAction == "" || sourceConnectionStatusRank(conn.Status) <= sourceConnectionStatusRank("connected") {
+		conn.Status = strongerSourceConnectionStatus(conn.Status, "imported")
+		if conn.NextSafeAction == "" || sourceConnectionStatusRank(conn.Status) <= sourceConnectionStatusRank("imported") {
 			conn.NextSafeAction = knowledgeConnectionNextAction(conn.ID, summary.Count)
 		}
 	}
@@ -206,6 +207,8 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 		switch conn.Status {
 		case "connected":
 			out.Counts.Connected++
+		case "imported":
+			out.Counts.Imported++
 		case "observed":
 			out.Counts.Observed++
 		case "blocked_private_config", "needs_private_input", "ready_preflight":
@@ -392,6 +395,8 @@ func sourceConnectionStatusRank(status string) int {
 		return 60
 	case "connected":
 		return 40
+	case "imported":
+		return 35
 	case "observed":
 		return 30
 	case "not_connected":
@@ -448,7 +453,7 @@ func sourceConnectionNextAction(status string) string {
 		return "Map the source to an existing owner before import."
 	case "stale":
 		return "Refresh the source or keep the stale state visible with reason."
-	case "connected", "observed":
+	case "connected", "imported", "observed":
 		return "Review the latest source rows and continue through existing cards."
 	default:
 		return "Connect a bounded read-only export before automation."

@@ -11,7 +11,7 @@ import (
 	"compound/internal/knowledge"
 )
 
-func TestSourceConnectionsTreatKnowledgeImportRowsAsConnected(t *testing.T) {
+func TestSourceConnectionsTreatKnowledgeImportRowsAsImported(t *testing.T) {
 	home := t.TempDir()
 	rows := []knowledge.ImportIndexRow{
 		{
@@ -38,7 +38,7 @@ func TestSourceConnectionsTreatKnowledgeImportRowsAsConnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	xBookmarks := findSourceConnection(projection.Connections, "x_bookmarks")
-	if xBookmarks == nil || xBookmarks.Status != "connected" || xBookmarks.RowCount != 2 {
+	if xBookmarks == nil || xBookmarks.Status != "imported" || xBookmarks.RowCount != 2 {
 		t.Fatalf("x_bookmarks connection = %+v", xBookmarks)
 	}
 	if xBookmarks.SourceKind != "x_bookmarks" || xBookmarks.SourceRef != "fixture-batch:synthetic-bookmarks" {
@@ -46,6 +46,9 @@ func TestSourceConnectionsTreatKnowledgeImportRowsAsConnected(t *testing.T) {
 	}
 	if !strings.Contains(xBookmarks.NextSafeAction, "bookmark") || !containsString(xBookmarks.Produces, "knowledge evidence") {
 		t.Fatalf("x_bookmarks next/produces = %+v", xBookmarks)
+	}
+	if projection.Counts.Imported != 1 || projection.Counts.Connected != 0 {
+		t.Fatalf("source counts should distinguish imported evidence from live connection: %+v", projection.Counts)
 	}
 	githubStars := findSourceConnection(projection.Connections, "github_stars")
 	if githubStars == nil || githubStars.Status != "not_connected" || githubStars.RowCount != 0 {

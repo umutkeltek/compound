@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic";
 function statusTone(status: string): Accent {
   switch (status) {
     case "connected":
+    case "imported":
     case "observed":
       return "green";
     case "blocked_private_config":
@@ -35,6 +36,8 @@ function statusLabel(status: string): string {
       return "needs review";
     case "needs_mapping":
       return "needs mapping";
+    case "imported":
+      return "imported";
     case "not_connected":
       return "not connected";
     default:
@@ -172,7 +175,7 @@ export default async function SourcesPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Sources" value={Number(counts.total) || connections.length} glyph="S" accent="blue" />
-        <Stat label="Observed" value={Number(counts.observed) || 0} glyph=">" accent="green" />
+        <Stat label="Seen" value={(Number(counts.observed) || 0) + (Number(counts.imported) || 0)} glyph=">" accent="green" />
         <Stat label="Needs input" value={Number(counts.needs_input) || 0} glyph="!" accent="orange" />
         <Stat label="Cards" value={Number(counts.action_required) || 0} glyph="C" accent="violet" />
       </div>
