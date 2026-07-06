@@ -611,8 +611,11 @@ func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
 	if projection.Status != "ok" || projection.Counts.Total < 8 {
 		t.Fatalf("projection = %+v", projection)
 	}
+	if projection.Counts.Observed == 0 || projection.Counts.Connected != 0 {
+		t.Fatalf("source connection counts = %+v, want historical rows observed and no live connected proof", projection.Counts)
+	}
 	gsc := findCLISourceConnection(projection.Connections, "google_search_console")
-	if gsc == nil || gsc.Status != "connected" || gsc.RowCount == 0 || !stringSliceContains(gsc.Produces, "product signal") {
+	if gsc == nil || gsc.Status != "observed" || gsc.RowCount == 0 || !stringSliceContains(gsc.Produces, "product signal") {
 		t.Fatalf("gsc connection = %+v", gsc)
 	}
 	asc := findCLISourceConnection(projection.Connections, "asc_daily_signals")

@@ -164,7 +164,7 @@ export default async function SourcesPage() {
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Sources</h1>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
-            What arrived, what is connected, and what needs input before import.
+            What arrived, what has evidence, and what needs input before import.
           </p>
         </div>
         <FreshnessChip generatedAt={str(projection?.generated_at)} source="compound source connections --json" />
@@ -172,7 +172,7 @@ export default async function SourcesPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Sources" value={Number(counts.total) || connections.length} glyph="S" accent="blue" />
-        <Stat label="Connected" value={Number(counts.connected) || 0} glyph=">" accent="green" />
+        <Stat label="Observed" value={Number(counts.observed) || 0} glyph=">" accent="green" />
         <Stat label="Needs input" value={Number(counts.needs_input) || 0} glyph="!" accent="orange" />
         <Stat label="Cards" value={Number(counts.action_required) || 0} glyph="C" accent="violet" />
       </div>

@@ -86,9 +86,9 @@ export function Nav() {
       </nav>
 
       <div className="px-1 text-[10.5px] leading-relaxed text-ink-3">
-        Reads only compound projections.
+        Projection-first.
         <br />
-        Decisions copy exact CLI commands.
+        Continue uses governed local commands in operator mode.
       </div>
     </aside>
   );

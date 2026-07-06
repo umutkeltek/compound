@@ -288,6 +288,7 @@ func cmdSourceConnections(args []string) {
 	fmt.Printf("- status: %s\n", projection.Status)
 	fmt.Printf("- connections: %d\n", projection.Counts.Total)
 	fmt.Printf("- connected: %d\n", projection.Counts.Connected)
+	fmt.Printf("- observed: %d\n", projection.Counts.Observed)
 	fmt.Printf("- needs_input: %d\n", projection.Counts.NeedsInput)
 	fmt.Printf("- needs_review: %d\n", projection.Counts.NeedsReview)
 	fmt.Printf("- not_connected: %d\n", projection.Counts.NotConnected)

@@ -24,6 +24,7 @@ type SourceConnectionsProjection struct {
 type SourceConnectionsCounts struct {
 	Total          int `json:"total"`
 	Connected      int `json:"connected"`
+	Observed       int `json:"observed"`
 	NeedsInput     int `json:"needs_input"`
 	NeedsReview    int `json:"needs_review"`
 	Stale          int `json:"stale"`
@@ -160,8 +161,10 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 	out.Counts.Total = len(out.Connections)
 	for _, conn := range out.Connections {
 		switch conn.Status {
-		case "connected", "observed":
+		case "connected":
 			out.Counts.Connected++
+		case "observed":
+			out.Counts.Observed++
 		case "blocked_private_config", "needs_private_input", "ready_preflight":
 			out.Counts.NeedsInput++
 		case "needs_review", "needs_mapping":
@@ -270,7 +273,7 @@ func sourceConnectionRowStatus(connectionID string, row SourceIntakeRow, now tim
 	}
 	switch row.Status {
 	case "applied", "review_recorded":
-		return "connected"
+		return "observed"
 	case "skipped":
 		return "needs_review"
 	case "planned":

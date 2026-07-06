@@ -285,8 +285,8 @@ export default async function Dashboard() {
                 </li>
               ))}
             </ul>
-          ) : sourceRows.length ? (
-            <EmptyState>All connected sources are quiet.</EmptyState>
+        ) : sourceRows.length ? (
+          <EmptyState>All observed sources are quiet.</EmptyState>
           ) : (
             <EmptyState>No source projection available.</EmptyState>
           )}

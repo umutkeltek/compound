@@ -212,7 +212,7 @@ export default async function ExecutorsPage() {
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Executors</h1>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Who can take work, what they are holding, and what proof is expected.
+            Profile guide plus current work from Workbench and leases; executor health still belongs in a Compound projection.
           </p>
         </div>
         <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />
