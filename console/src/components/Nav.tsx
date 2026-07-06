@@ -8,13 +8,14 @@ type Group = { label: string; links: NavLink[] };
 
 const GROUPS: Group[] = [
   { label: "Overview", links: [{ label: "Dashboard", href: "/" }] },
-  { label: "Work", links: [{ label: "Board", href: "/work" }] },
+  { label: "Work", links: [{ label: "Board", href: "/work" }, { label: "Executors", href: "/executors" }] },
   {
     label: "Meaning",
     links: [
       { label: "Reviews", href: "/reviews" },
       { label: "Memory", href: "/memory" },
       { label: "Loops", href: "/loops" },
+      { label: "Sources", href: "/sources" },
     ],
   },
   {

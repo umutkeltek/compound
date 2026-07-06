@@ -579,6 +579,77 @@ func TestSourceIntakeCLIAndOrientConsumeRecordedObservationBatches(t *testing.T)
 	}
 }
 
+func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := product.Load("../../fixtures/product/market-loop.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := product.Apply(homePath, store, bundle, "fixtures/product/market-loop.yaml", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+
+	captureStdout(t, func() {
+		cmdSource([]string{"observe-batch", "../../fixtures/observation/gsc-product-metric.json", "--apply-product-signals", "--json"})
+	})
+
+	out := captureStdout(t, func() {
+		cmdSource([]string{"connections", "--json"})
+	})
+	var projection observation.SourceConnectionsProjection
+	if err := json.Unmarshal([]byte(out), &projection); err != nil {
+		t.Fatalf("parse source connections projection: %v\n%s", err, out)
+	}
+	if projection.Status != "ok" || projection.Counts.Total < 8 {
+		t.Fatalf("projection = %+v", projection)
+	}
+	gsc := findCLISourceConnection(projection.Connections, "google_search_console")
+	if gsc == nil || gsc.Status != "connected" || gsc.RowCount == 0 || !stringSliceContains(gsc.Produces, "product signal") {
+		t.Fatalf("gsc connection = %+v", gsc)
+	}
+	asc := findCLISourceConnection(projection.Connections, "asc_daily_signals")
+	if asc == nil || asc.Status != "blocked_private_config" || !asc.PrivateSetupNeeded || asc.NextSafeAction == "" {
+		t.Fatalf("asc connection = %+v", asc)
+	}
+	githubStars := findCLISourceConnection(projection.Connections, "github_stars")
+	if githubStars == nil || githubStars.Status != "not_connected" {
+		t.Fatalf("github stars connection = %+v", githubStars)
+	}
+}
+
+func TestSessionsMineDryRunCLIReportsProofRequirements(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSessions([]string{"mine", "--since", "24h", "--dry-run", "--json"})
+	})
+	var report sessionMiningReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse sessions mine report: %v\n%s", err, out)
+	}
+	if report.Status != "ok" || !report.DryRun || report.Since != "24h" {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.ProofRequired) == 0 || !stringSliceContains(report.ProofRequired, "dry-run only; no session import, no memory promotion, no skill promotion") {
+		t.Fatalf("proof requirements = %+v", report.ProofRequired)
+	}
+	if len(report.NextCommand) == 0 || !stringSliceContains(report.NextCommand, "sessions") {
+		t.Fatalf("next command = %+v", report.NextCommand)
+	}
+}
+
 func TestSourceIntakeCLIAndOrientExposeActionCards(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -1570,6 +1641,15 @@ func findCLISourceIntakeActionCard(cards []observation.SourceIntakeActionCard, k
 	for i := range cards {
 		if cards[i].Kind == kind {
 			return &cards[i]
+		}
+	}
+	return nil
+}
+
+func findCLISourceConnection(connections []observation.SourceConnection, id string) *observation.SourceConnection {
+	for i := range connections {
+		if connections[i].ID == id {
+			return &connections[i]
 		}
 	}
 	return nil

@@ -13,18 +13,38 @@ import {
   Stat,
   StateBadge,
 } from "@/components/ui";
-import { ago, arr, getReviews, getWorkbench, str, type Json } from "@/lib/compound";
+import { ago, arr, getReviews, getSourceConnections, getWorkbench, str, type Json } from "@/lib/compound";
 import { externalReviewRows } from "@/lib/review-data";
 import { loadActionableMemoryCandidates } from "@/lib/memory-data";
 import { enrichWorkItems } from "@/lib/work-data";
 
 export const dynamic = "force-dynamic";
 
+function sourceStatusLabel(status: string): string {
+  switch (status) {
+    case "blocked_private_config":
+      return "needs private config";
+    case "needs_private_input":
+      return "needs private input";
+    case "ready_preflight":
+      return "ready for preflight";
+    case "needs_review":
+      return "needs review";
+    case "needs_mapping":
+      return "needs mapping";
+    case "not_connected":
+      return "not connected";
+    default:
+      return status.replace(/_/g, " ") || "unknown";
+  }
+}
+
 export default async function Dashboard() {
-  const [workbench, reviews, memoryActionable] = await Promise.all([
+  const [workbench, reviews, memoryActionable, sourceConnections] = await Promise.all([
     getWorkbench(),
     getReviews(),
     loadActionableMemoryCandidates(),
+    getSourceConnections(),
   ]);
 
   const open = arr(workbench?.open);
@@ -48,6 +68,11 @@ export default async function Dashboard() {
   );
 
   const reviewRows = externalReviewRows(reviews);
+  const sourceRows = arr(sourceConnections?.connections);
+  const sourceCounts = (sourceConnections?.counts ?? {}) as Json;
+  const sourceAttentionRows = sourceRows
+    .filter((source) => !["connected", "observed"].includes(str(source.status)))
+    .slice(0, 5);
 
   // Unified needs-me stream: external reviews + held work decisions + proposed work + memory.
   const counts = {
@@ -57,12 +82,16 @@ export default async function Dashboard() {
   };
   const needsMeTotal = counts.reviews + counts.work + counts.memory;
 
-  const executors = new Map<string, { running: number; proposed: number }>();
+  const executors = new Map<string, { running: number; ready: number; offered: number; needsMe: number; assigned: number }>();
   for (const work of open) {
     const who = str(work.claimed_by) || str(work.owner) || "unassigned";
-    const entry = executors.get(who) ?? { running: 0, proposed: 0 };
-    if (str(work.state) === "proposed") entry.proposed++;
-    else entry.running++;
+    const entry = executors.get(who) ?? { running: 0, ready: 0, offered: 0, needsMe: 0, assigned: 0 };
+    const state = str(work.state);
+    entry.assigned++;
+    if (["claimed", "in_progress", "running", "verifying"].includes(state)) entry.running++;
+    else if (state === "ready") entry.ready++;
+    else if (["proposed", "admitted"].includes(state)) entry.offered++;
+    else if (["held", "blocked"].includes(state)) entry.needsMe++;
     executors.set(who, entry);
   }
 
@@ -95,7 +124,7 @@ export default async function Dashboard() {
 
       <ContinuePanel workbench={workbench} open={open} />
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <Stat label="Needs me" value={needsMeTotal} accent="orange" glyph="!" sub="reviews + work + memory" />
         <Stat label="Running" value={running.length} accent="blue" glyph="▶" sub="claimed / in flight" />
         <Stat
@@ -104,6 +133,13 @@ export default async function Dashboard() {
           accent="green"
           glyph="Δ"
           sub="proof + movement"
+        />
+        <Stat
+          label="Sources"
+          value={(Number(sourceCounts.needs_input) || 0) + (Number(sourceCounts.action_required) || 0)}
+          accent="violet"
+          glyph="S"
+          sub="input + cards"
         />
       </div>
 
@@ -176,16 +212,21 @@ export default async function Dashboard() {
           <Card title="Executors" accent="violet" glyph="E">
             {executors.size ? (
               <ul className="flex flex-col gap-2.5">
-                {[...executors.entries()].map(([who, entry]) => (
-                  <li key={who} className="flex items-center justify-between gap-2">
-                    <span className="text-[13px] font-medium">{who}</span>
-                    <span className="text-[11.5px] text-ink-3">
-                      {entry.running ? `${entry.running} running` : ""}
-                      {entry.running && entry.proposed ? " / " : ""}
-                      {entry.proposed ? `${entry.proposed} offered` : ""}
-                    </span>
-                  </li>
-                ))}
+	                {[...executors.entries()].map(([who, entry]) => (
+	                  <li key={who} className="flex items-center justify-between gap-2">
+	                    <span className="text-[13px] font-medium">{who}</span>
+	                    <span className="text-[11.5px] text-ink-3">
+	                      {[
+	                        entry.running ? `${entry.running} running` : "",
+	                        entry.ready ? `${entry.ready} ready` : "",
+	                        entry.needsMe ? `${entry.needsMe} needs me` : "",
+	                        entry.offered ? `${entry.offered} offered` : "",
+	                      ]
+	                        .filter(Boolean)
+	                        .join(" / ") || `${entry.assigned} assigned`}
+	                    </span>
+	                  </li>
+	                ))}
               </ul>
             ) : (
               <EmptyState>No active executors.</EmptyState>
@@ -221,6 +262,34 @@ export default async function Dashboard() {
           }
         >
           <ChangedProofStream recent={recent} continueRuns={continueRuns} dispatchStepRuns={dispatchStepRuns} />
+        </Card>
+      </section>
+
+      <section>
+        <SectionLabel>Sources</SectionLabel>
+        <Card title="Source readiness" accent="violet" glyph="S">
+          {sourceAttentionRows.length ? (
+            <ul className="flex flex-col gap-2.5">
+              {sourceAttentionRows.map((source) => (
+                <li
+                  key={str(source.id)}
+                  className="flex items-start justify-between gap-3 rounded-xl border border-line px-3 py-2.5"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[12.5px] font-medium text-ink">{str(source.label) || str(source.id)}</div>
+                    <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-3">
+                      {str(source.next_safe_action) || "No next action surfaced."}
+                    </div>
+                  </div>
+                  <Chip tone="gray">{sourceStatusLabel(str(source.status))}</Chip>
+                </li>
+              ))}
+            </ul>
+          ) : sourceRows.length ? (
+            <EmptyState>All connected sources are quiet.</EmptyState>
+          ) : (
+            <EmptyState>No source projection available.</EmptyState>
+          )}
         </Card>
       </section>
     </div>

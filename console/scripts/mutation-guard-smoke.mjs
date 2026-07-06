@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   CONSOLE_MUTATIONS_ENV,
+  CONSOLE_SESSION_TOKEN_COOKIE,
   CONSOLE_SESSION_TOKEN_ENV,
   CONSOLE_SESSION_TOKEN_HEADER,
   consoleMutationBlockedResponse,
@@ -15,6 +16,9 @@ function request(origin, host, token, options = {}) {
   if (origin) headers.set("origin", origin);
   if (host) headers.set("host", host);
   if (token) headers.set(CONSOLE_SESSION_TOKEN_HEADER, token);
+  if (options.cookie) {
+    headers.set("cookie", `${CONSOLE_SESSION_TOKEN_COOKIE}=${encodeURIComponent(options.cookie)}`);
+  }
   if (options.fetchSite) headers.set("sec-fetch-site", options.fetchSite);
   return new Request(options.url ?? new URL("/api/decision/execute", LOCAL_ORIGIN), {
     method: options.method ?? "POST",
@@ -27,6 +31,7 @@ function readRequest(origin, host, token, options = {}) {
     url: options.url ?? new URL("/api/document?path=/tmp/source.md", LOCAL_ORIGIN),
     method: "GET",
     fetchSite: options.fetchSite,
+    cookie: options.cookie,
   });
 }
 
@@ -54,6 +59,11 @@ try {
   blocked = consoleMutationBlockedResponse(request("http://localhost:3000", "localhost:3000", "secret"));
   assert.equal(blocked, null);
 
+  blocked = consoleMutationBlockedResponse(
+    request("http://localhost:3000", "localhost:3000", null, { cookie: "secret" }),
+  );
+  assert.equal(blocked, null);
+
   delete process.env[CONSOLE_MUTATIONS_ENV];
   delete process.env[CONSOLE_SESSION_TOKEN_ENV];
 
@@ -71,6 +81,8 @@ try {
   assert.equal(blocked?.status, 403);
 
   blocked = consolePrivateReadBlockedResponse(readRequest(null, "localhost:3000", "secret"));
+  assert.equal(blocked, null);
+  blocked = consolePrivateReadBlockedResponse(readRequest(null, "localhost:3000", null, { cookie: "secret" }));
   assert.equal(blocked, null);
 } finally {
   if (oldEnabled === undefined) delete process.env[CONSOLE_MUTATIONS_ENV];

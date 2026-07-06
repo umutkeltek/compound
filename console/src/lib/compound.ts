@@ -161,8 +161,16 @@ export async function getReviews(): Promise<Json | null> {
   return runJson(["reviews", "--json"]);
 }
 
+export async function getSourceConnections(): Promise<Json | null> {
+  return runJson(["source", "connections", "--json"]);
+}
+
 export async function getWorkList(): Promise<Json | null> {
   return runJson(["work", "list", "--json"]);
+}
+
+export async function getWorkLeases(): Promise<Json | null> {
+  return runJson(["work", "leases", "--json"]);
 }
 
 export async function getWork(id: string): Promise<Json | null> {

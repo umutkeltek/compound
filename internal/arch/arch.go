@@ -579,7 +579,7 @@ func checkWorkbenchActionCardContract(repoRoot string) []Finding {
 			"review card should expose exact parked candidate/panel/promotion boundary",
 			"ASC operator gate card should expose exact read-only private-config valve",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound/workbench_cli.go": {
 			"action_required_inputs:",
 			"action_expected_validation:",
 			"action_stop_conditions:",
@@ -591,6 +591,8 @@ func checkWorkbenchActionCardContract(repoRoot string) []Finding {
 			"retire: %s",
 			"operator_required: true",
 			"blocked_reason:",
+		},
+		"cmd/compound/work_cli.go": {
 			"review-card-plan",
 			"BuildReviewCardWorkPlan",
 		},
@@ -1436,7 +1438,7 @@ func checkWorkProofChainContract(repoRoot string) []Finding {
 			"rec.Validate()",
 			"tr.Validate()",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound/work_cli.go": {
 			"proof-chain-doctor",
 			"ProofChainDoctorOptions",
 			"--include-archived",
@@ -2223,6 +2225,11 @@ func checkProductLoopOpenHypothesisContract(repoRoot string) []Finding {
 		},
 		"cmd/compound/main.go": {
 			"action-work-plan",
+			"product.BuildActionWorkDraft",
+			"workStore.CreatePlan",
+			"plan_work_from_reviewed_product_action",
+		},
+		"cmd/compound/work_cli.go": {
 			"action-plan",
 			"ActionContext",
 			"action_context:",
@@ -2237,9 +2244,8 @@ func checkProductLoopOpenHypothesisContract(repoRoot string) []Finding {
 			"result.ActionContext",
 			"admit-plan",
 			"store.AdmitCreatePlanPath",
-			"product.BuildActionWorkDraft",
-			"workStore.CreatePlan",
-			"plan_work_from_reviewed_product_action",
+		},
+		"cmd/compound/workbench_cli.go": {
 			"admission_previews=",
 			"admission_preview:",
 		},
@@ -2806,7 +2812,7 @@ func checkPanelCapabilityFeedbackContract(repoRoot string) []Finding {
 			"BuildPanelCapabilityFeedbackPlan",
 			"RecordPanelCapabilityFeedbackReview",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound/workbench_cli.go": {
 			"panel.AnnotateCapabilityFeedbackQueue",
 		},
 		"cmd/compound/panel_test.go": {
@@ -3066,10 +3072,12 @@ func checkExternalRepoContextEvaluationContract(repoRoot string) []Finding {
 			"outbound-dry-run-review",
 			"BuildOutboundDistributionPlan",
 			"BuildOutboundDistributionVerdictPlan",
+			"report.RequiredGates",
+		},
+		"cmd/compound/workbench_cli.go": {
 			"AnnotateOutboundDistributionVerdictQueue",
 			"AnnotateOutboundDistributionDryRunQueue",
 			"AnnotateOutboundDryRunEvidenceQueue",
-			"report.RequiredGates",
 		},
 		"cmd/compound/main_test.go": {
 			"TestCapabilitySurfaceReportCarriesExternalRepoEvidenceWithoutOfferingIt",

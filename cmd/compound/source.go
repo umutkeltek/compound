@@ -31,6 +31,8 @@ func cmdSource(args []string) {
 		cmdSourceObservations(args[1:])
 	case "intake":
 		cmdSourceIntake(args[1:])
+	case "connections":
+		cmdSourceConnections(args[1:])
 	case "intake-work-plan":
 		cmdSourceIntakeWorkPlan(args[1:])
 	case "manifest-create":
@@ -52,7 +54,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> <source>... [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> <source>... [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -257,6 +259,40 @@ func cmdSourceIntake(args []string) {
 	}
 	for _, row := range projection.Rows {
 		fmt.Printf("- %s %s owner=%s status=%s source=%s subject=%s next=%s\n", row.ObservationID, row.Route, row.Owner, row.Status, row.SourceKind, row.SubjectID, strings.Join(row.NextCommand, " "))
+	}
+}
+
+func cmdSourceConnections(args []string) {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "--json") {
+		fmt.Fprintln(os.Stderr, "usage: compound source connections [--json]")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	projection, err := observation.LoadSourceConnectionsProjection(homePath, time.Now())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "source connections:", err)
+		os.Exit(1)
+	}
+	if len(args) == 1 && args[0] == "--json" {
+		if err := json.NewEncoder(os.Stdout).Encode(projection); err != nil {
+			fmt.Fprintln(os.Stderr, "source connections:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	fmt.Printf("# source connections\n\n")
+	fmt.Printf("- status: %s\n", projection.Status)
+	fmt.Printf("- connections: %d\n", projection.Counts.Total)
+	fmt.Printf("- connected: %d\n", projection.Counts.Connected)
+	fmt.Printf("- needs_input: %d\n", projection.Counts.NeedsInput)
+	fmt.Printf("- needs_review: %d\n", projection.Counts.NeedsReview)
+	fmt.Printf("- not_connected: %d\n", projection.Counts.NotConnected)
+	for _, conn := range projection.Connections {
+		fmt.Printf("- %s status=%s rows=%d latest_cards=%d next=%s\n", conn.ID, conn.Status, conn.RowCount, conn.LatestCardCount, conn.NextSafeAction)
 	}
 }
 

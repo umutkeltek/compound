@@ -22,7 +22,15 @@ function numberText(value: unknown): string {
   return n.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
 }
 
-function cardCopy(card: Json, work: Json): { label: string; question: string; body: string; chip: string } {
+type CardCopy = {
+  label: string;
+  question: string;
+  why: string;
+  after: string;
+  chip: string;
+};
+
+function cardCopy(card: Json, work: Json): CardCopy {
   const kind = str(card.kind);
   const workId = str(card.work_id) || str(work.work_id) || str(work.id);
 
@@ -30,8 +38,10 @@ function cardCopy(card: Json, work: Json): { label: string; question: string; bo
     return {
       label: "Private setup check",
       question: "Can Compound run the read-only ASC preflight?",
-      body:
-        "This is the App Store Connect daily signals task. It is parked because the next useful step needs your private product mapping config, and Compound must not fetch live ASC data or load the scheduler without you.",
+      why:
+        "This App Store Connect daily signals task is parked because the next useful step needs your private product mapping config.",
+      after:
+        "Compound records private preflight proof. It still does not fetch live ASC data, apply ProductSignal, load a scheduler, or clear held work from this card.",
       chip: "read-only",
     };
   }
@@ -39,27 +49,31 @@ function cardCopy(card: Json, work: Json): { label: string; question: string; bo
   if (kind === "memory_candidate_adjudication") {
     return {
       label: "Memory review",
-      question: "Should this become memory?",
-      body: `This is the small-batch conversation memory task${workId ? ` for ${workId}` : ""}. Compound found one candidate and panel evidence, but promotion stays parked until you decide.`,
+      question: "Should this exact claim be saved as memory?",
+      why: `This is the small-batch conversation memory task${workId ? ` for ${workId}` : ""}. Compound found one candidate and panel evidence. It stays evidence until you decide.`,
+      after:
+        "Promote makes it durable memory. Keep parked, do not promote, or reject keeps it out of ambient recall.",
       chip: "no auto-promotion",
     };
   }
 
+  const boundary = str(card.boundary);
+  const nextAction = str(work.next_action);
+
   return {
-    label: "Decision needed",
-    question: str(card.title) || str(work.next_action) || "Compound needs your judgment.",
-    body: shortText(str(card.boundary) || str(work.next_action), 260),
+    label: "Needs me",
+    question: str(card.title) || nextAction || "What should Compound do next?",
+    why: shortText(boundary || nextAction || "This item is waiting for judgment or input before Compound can continue.", 320),
+    after: "Compound can continue only after the requested input or decision is handled.",
     chip: "operator-only",
   };
 }
 
-function TinyList({ title, items }: { title: string; items: string[] }) {
+function FactList({ title, items }: { title: string; items: string[] }) {
   if (!items.length) return null;
   return (
-    <details className="group">
-      <summary className="cursor-pointer text-[11px] font-medium text-ink-3 hover:text-ink-2">
-        {title} · {items.length}
-      </summary>
+    <div>
+      <div className="section-label mb-1">{title}</div>
       <ul className="mt-1.5 flex flex-col gap-1">
         {items.slice(0, 5).map((item, index) => (
           <li key={index} className="text-[11.5px] leading-relaxed text-ink-3">
@@ -67,7 +81,17 @@ function TinyList({ title, items }: { title: string; items: string[] }) {
           </li>
         ))}
       </ul>
-    </details>
+    </div>
+  );
+}
+
+function FactText({ title, children }: { title: string; children: string }) {
+  if (!children) return null;
+  return (
+    <div>
+      <div className="section-label mb-1">{title}</div>
+      <p className="text-[12px] leading-relaxed text-ink-3">{children}</p>
+    </div>
   );
 }
 
@@ -255,21 +279,25 @@ export function WorkNeedCard({ work, card }: { work: Json; card: Json }) {
         ) : null}
       </div>
 
-      <p className="mt-2 text-[12.5px] leading-relaxed text-ink-2">{copy.body}</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <FactText title="Why stopped">{copy.why}</FactText>
+        <FactText title="What happens after">{copy.after}</FactText>
+      </div>
+
       <MemoryCandidatePreview card={card} />
       <MemoryDecisionForm card={card} />
 
       {command ? (
         <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2">
-          <div className="section-label mb-1">Safest next step</div>
+          <div className="section-label mb-1">Safe command</div>
           <CopyCmd cmd={command} compact={false} />
         </div>
       ) : null}
 
-      <div className="mt-3 grid gap-2">
-        <TinyList title="Needs from you" items={inputs} />
-        <TinyList title="Good result looks like" items={validations} />
-        <TinyList title="Stop if" items={stopConditions} />
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <FactList title="What I need from you" items={inputs} />
+        <FactList title="Good result looks like" items={validations} />
+        <FactList title="Stop if" items={stopConditions} />
       </div>
 
       {proof ? (
