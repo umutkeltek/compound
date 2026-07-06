@@ -165,6 +165,10 @@ export async function getSourceConnections(): Promise<Json | null> {
   return runJson(["source", "connections", "--json"]);
 }
 
+export async function getExecutors(): Promise<Json | null> {
+  return runJson(["executors", "--json"]);
+}
+
 export async function getWorkList(): Promise<Json | null> {
   return runJson(["work", "list", "--json"]);
 }

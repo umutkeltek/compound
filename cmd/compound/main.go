@@ -95,6 +95,8 @@ func main() {
 		cmdPackets(os.Args[2:])
 	case "workbench":
 		cmdWorkbench(os.Args[2:])
+	case "executors":
+		cmdExecutors(os.Args[2:])
 	case "proof-check":
 		cmdProofCheck(os.Args[2:])
 	case "release":
@@ -229,7 +231,8 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound console --operator [--private-fallbacks]             start local operator console with mutation env wired
 compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
-  compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
+compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
+compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/diff/doctors/redact
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
