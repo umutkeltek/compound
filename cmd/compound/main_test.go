@@ -9629,6 +9629,48 @@ func TestMemoryEngineConfigPersistsDefaultProfile(t *testing.T) {
 	}
 }
 
+func TestMemoryEngineConfigBreadthProfileResolvesOwnedSidecar(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	binDir := t.TempDir()
+	sidecarPath := filepath.Join(binDir, "compound-breadth-engine")
+	if err := os.WriteFile(sidecarPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake breadth engine: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := captureStdout(t, func() {
+		cmdMemory([]string{"engine-config", "--profile", "breadth"})
+	})
+	if !strings.Contains(out, "- configured: true") || !strings.Contains(out, "- profile: breadth") {
+		t.Fatalf("engine-config breadth output =\n%s", out)
+	}
+	data, err := os.ReadFile(filepath.Join(homePath, "config", "memory-engine.yaml"))
+	if err != nil {
+		t.Fatalf("read memory engine config: %v", err)
+	}
+	if !strings.Contains(string(data), "profile: breadth") {
+		t.Fatalf("memory engine config did not persist breadth profile:\n%s", data)
+	}
+
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEMORY_CLI_PROFILE", "gbrain")
+	restore, err := configureMemoryEngineFromHome(homePath, "")
+	if err != nil {
+		t.Fatalf("configure persisted breadth profile: %v", err)
+	}
+	defer restore()
+	if got := os.Getenv("COMPOUND_MEM_ENGINE_BIN"); got != sidecarPath {
+		t.Fatalf("breadth profile sidecar = %q, want %q", got, sidecarPath)
+	}
+	if got, ok := os.LookupEnv("COMPOUND_MEMORY_CLI_PROFILE"); ok {
+		t.Fatalf("breadth profile should not keep memory CLI profile, got %q", got)
+	}
+}
+
 func TestMemoryEngineProfileFlagOverridesPersistedConfig(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {

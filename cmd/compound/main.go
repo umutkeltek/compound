@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -174,7 +175,7 @@ func memoryUsage(sub string) string {
 	case "position":
 		return "usage: compound memory position <entity> [--as-of N] [--topic topic-slug] [--json]"
 	case "engine-config":
-		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain] [--clear] [--json]"
+		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain|breadth] [--clear] [--json]"
 	case "bakeoff":
 		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
 	default:
@@ -3054,7 +3055,7 @@ type memoryEngineConfigReport struct {
 func normalizeMemoryEngineProfile(profile string) (string, error) {
 	profile = strings.ToLower(strings.TrimSpace(profile))
 	switch profile {
-	case "", "generic", "memory-cli", "gbrain":
+	case "", "generic", "memory-cli", "gbrain", "breadth":
 		return profile, nil
 	default:
 		return "", fmt.Errorf("unknown memory engine profile %q", profile)
@@ -3156,6 +3157,17 @@ func configureMemoryEngineProfile(profile string) (func(), error) {
 		return func() {}, nil
 	}
 	restore := captureEnv("COMPOUND_MEM_ENGINE_BIN", "COMPOUND_MEMORY_CLI_PROFILE")
+	if profile == "breadth" {
+		bin, err := defaultBreadthSidecarCommand()
+		if err != nil {
+			return restore, err
+		}
+		if err := os.Setenv("COMPOUND_MEM_ENGINE_BIN", bin); err != nil {
+			return restore, err
+		}
+		_ = os.Unsetenv("COMPOUND_MEMORY_CLI_PROFILE")
+		return restore, nil
+	}
 	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
 		if err := os.Setenv("COMPOUND_MEM_ENGINE_BIN", defaultMemoryCLISidecarCommand()); err != nil {
 			return restore, err
@@ -3175,6 +3187,14 @@ func defaultMemoryCLISidecarCommand() string {
 		}
 	}
 	return "compound-memory-cli-engine"
+}
+
+func defaultBreadthSidecarCommand() (string, error) {
+	path, err := exec.LookPath("compound-breadth-engine")
+	if err != nil {
+		return "", fmt.Errorf("resolve compound-breadth-engine: %w", err)
+	}
+	return path, nil
 }
 
 func captureEnv(names ...string) func() {

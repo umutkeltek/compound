@@ -26,6 +26,7 @@ fi
 
 mkdir -p "$install_dir"
 go build -o "$install_dir/compound" ./cmd/compound
+go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
 
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home doctor --home "$compound_home"
@@ -35,6 +36,7 @@ cat <<EOF
 
 compound installed
 - binary: $install_dir/compound
+- breadth_engine: $install_dir/compound-breadth-engine
 - home: $compound_home
 
 next:
