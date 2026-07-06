@@ -1059,6 +1059,53 @@ func TestPackWithCapabilitiesFiltersByHarnessCompatibility(t *testing.T) {
 	}
 }
 
+func TestPackWithCapabilitiesSurfacesMatchedInstructionRulesOnly(t *testing.T) {
+	home := t.TempDir()
+	manifest, err := capgraph.LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "instruction-rules.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capgraph.ApplySkillManifest(home, manifest, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+
+	matched := Input{Harness: "codex", Cwd: t.TempDir(), Task: "fix memory recall adjudication", RepoKind: "control-plane", RepoKindVia: "fixture", Mode: "execute"}
+	matchedPack, err := PackWithCapabilities(matched, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := matchedPack.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	offer := findCapabilityOffer(matchedPack, "capability://instruction_rule:memory-recall-adjudication")
+	if offer == nil {
+		t.Fatalf("matched ContextPack missing InstructionRule offer; offers=%+v", matchedPack.CapabilityOffers)
+	}
+	if offer.Kind != "instruction_rule" || !hasIncluded(matchedPack, "capability://instruction_rule:memory-recall-adjudication") {
+		t.Fatalf("instruction rule should surface like capability offer, offer=%+v included=%+v", offer, matchedPack.Included)
+	}
+	if !hasOfferConstraint(offer.Required, "read", "docs/architecture/contracts/README.md") {
+		t.Fatalf("instruction rule missing read ref constraint: %+v", offer.Required)
+	}
+	if !hasOfferConstraint(offer.Required, "route", "learning") {
+		t.Fatalf("instruction rule missing route constraint: %+v", offer.Required)
+	}
+	if !offerConstraintsContainDetail(offer.Conflicts, "no promoted claim mutation without adjudication") {
+		t.Fatalf("instruction rule missing boundary constraint: %+v", offer.Conflicts)
+	}
+	if !containsText(offer.CostRiskNote, "never auto-executes") {
+		t.Fatalf("instruction rule must carry offer-only boundary note: %+v", offer)
+	}
+
+	unmatched := Input{Harness: "codex", Cwd: t.TempDir(), Task: "update pricing copy", RepoKind: "product", RepoKindVia: "fixture", Mode: "execute"}
+	unmatchedPack, err := PackWithCapabilities(unmatched, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findCapabilityOffer(unmatchedPack, "capability://instruction_rule:memory-recall-adjudication") != nil || hasIncluded(unmatchedPack, "capability://instruction_rule:memory-recall-adjudication") {
+		t.Fatalf("unmatched ContextPack must not get memory InstructionRule; offers=%+v included=%+v", unmatchedPack.CapabilityOffers, unmatchedPack.Included)
+	}
+}
 func TestRuntimeContractIncludesAcceptedDecisionAndRealSourceRevisions(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -2733,6 +2780,15 @@ func findHookGateAction(actions []HookGateAction, kind string) *HookGateAction {
 func hasOfferConstraint(values []envelope.CapabilityOfferConstraint, kind, ref string) bool {
 	for _, value := range values {
 		if value.Kind == kind && value.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func offerConstraintsContainDetail(values []envelope.CapabilityOfferConstraint, needle string) bool {
+	for _, value := range values {
+		if strings.Contains(value.Detail, needle) {
 			return true
 		}
 	}

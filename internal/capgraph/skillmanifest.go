@@ -32,21 +32,26 @@ type SkillSourceRef struct {
 }
 
 type SkillManifestEntry struct {
-	ID                  string   `json:"id" yaml:"id"`
-	Kind                string   `json:"kind,omitempty" yaml:"kind,omitempty"`
-	Name                string   `json:"name" yaml:"name"`
-	Status              string   `json:"status" yaml:"status"`
-	Triggers            []string `json:"triggers" yaml:"triggers"`
-	Capabilities        []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	CompatibleHarnesses []string `json:"compatible_harnesses,omitempty" yaml:"compatible_harnesses,omitempty"`
-	Requires            []string `json:"requires,omitempty" yaml:"requires,omitempty"`
-	Specializes         []string `json:"specializes,omitempty" yaml:"specializes,omitempty"`
-	ConflictsWith       []string `json:"conflicts_with,omitempty" yaml:"conflicts_with,omitempty"`
-	ValidatedBy         []string `json:"validated_by,omitempty" yaml:"validated_by,omitempty"`
-	ReplacementFor      []string `json:"replacement_for,omitempty" yaml:"replacement_for,omitempty"`
-	Weight              float64  `json:"weight,omitempty" yaml:"weight,omitempty"`
-	Retired             bool     `json:"retired,omitempty" yaml:"retired,omitempty"`
-	EvidenceRefs        []string `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
+	ID                  string                `json:"id" yaml:"id"`
+	Kind                string                `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Name                string                `json:"name" yaml:"name"`
+	Status              string                `json:"status" yaml:"status"`
+	Triggers            []string              `json:"triggers" yaml:"triggers"`
+	Capabilities        []string              `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	CompatibleHarnesses []string              `json:"compatible_harnesses,omitempty" yaml:"compatible_harnesses,omitempty"`
+	Requires            []string              `json:"requires,omitempty" yaml:"requires,omitempty"`
+	Specializes         []string              `json:"specializes,omitempty" yaml:"specializes,omitempty"`
+	ConflictsWith       []string              `json:"conflicts_with,omitempty" yaml:"conflicts_with,omitempty"`
+	ValidatedBy         []string              `json:"validated_by,omitempty" yaml:"validated_by,omitempty"`
+	ReplacementFor      []string              `json:"replacement_for,omitempty" yaml:"replacement_for,omitempty"`
+	Weight              float64               `json:"weight,omitempty" yaml:"weight,omitempty"`
+	Retired             bool                  `json:"retired,omitempty" yaml:"retired,omitempty"`
+	EvidenceRefs        []string              `json:"evidence_refs,omitempty" yaml:"evidence_refs,omitempty"`
+	When                []InstructionRuleWhen `json:"when,omitempty" yaml:"when,omitempty"`
+	Read                []string              `json:"read,omitempty" yaml:"read,omitempty"`
+	Route               []InstructionRoute    `json:"route,omitempty" yaml:"route,omitempty"`
+	Boundary            []string              `json:"boundary,omitempty" yaml:"boundary,omitempty"`
+	Tier                int                   `json:"tier,omitempty" yaml:"tier,omitempty"`
 }
 
 type SkillManifestCheck struct {
@@ -100,6 +105,9 @@ func ValidateSkillManifest(manifest SkillManifest) SkillManifestReport {
 		add("skill:"+skill.ID, skillOK(skill, manifest.EvidenceRefs), kind)
 		add("skill_kind:"+skill.ID, contains(NodeKinds, kind), kind)
 		add("skill_status:"+skill.ID, skillStatusOK(skill.Status), skill.Status)
+		if kind == "instruction_rule" {
+			add("instruction_rule:"+skill.ID, instructionRuleEntryOK(skill), "when/read/route/boundary/tier")
+		}
 		if seen[skill.ID] {
 			add("duplicate:"+skill.ID, false, "duplicate skill id")
 		}
@@ -125,6 +133,11 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 			Triggers: skillTriggers(skill),
 			Weight:   skill.Weight,
 			Retired:  skillRetired(skill),
+			When:     cleanInstructionWhen(skill.When),
+			Read:     cleanStrings(skill.Read),
+			Route:    cleanInstructionRoutes(skill.Route),
+			Boundary: cleanStrings(skill.Boundary),
+			Tier:     skill.Tier,
 		}
 		if err := store.Add(node); err != nil {
 			return report, err
@@ -154,6 +167,27 @@ func skillObservedAtOK(v string) bool {
 	}
 	_, err := time.Parse(time.RFC3339, v)
 	return err == nil
+}
+
+func instructionRuleEntryOK(skill SkillManifestEntry) bool {
+	if skill.Tier <= 0 || len(cleanInstructionWhen(skill.When)) == 0 || len(cleanStrings(skill.Read)) == 0 || len(cleanInstructionRoutes(skill.Route)) == 0 || len(cleanStrings(skill.Boundary)) == 0 {
+		return false
+	}
+	for _, when := range cleanInstructionWhen(skill.When) {
+		if !instructionRuleWhenKindOK(when.Kind) {
+			return false
+		}
+	}
+	return true
+}
+
+func instructionRuleWhenKindOK(kind string) bool {
+	switch strings.TrimSpace(strings.ToLower(kind)) {
+	case "task-class", "repo-kind", "harness", "file-path", "phase":
+		return true
+	default:
+		return false
+	}
 }
 
 func skillOK(skill SkillManifestEntry, manifestEvidence []string) bool {
@@ -206,6 +240,56 @@ func skillTriggers(skill SkillManifestEntry) []string {
 	}
 	for _, v := range skill.Capabilities {
 		add(v)
+	}
+	for _, when := range skill.When {
+		add(when.Kind)
+		for _, v := range when.Values {
+			add(v)
+		}
+	}
+	return out
+}
+
+func cleanInstructionWhen(values []InstructionRuleWhen) []InstructionRuleWhen {
+	out := make([]InstructionRuleWhen, 0, len(values))
+	for _, value := range values {
+		kind := strings.TrimSpace(strings.ToLower(value.Kind))
+		var cleaned []string
+		for _, raw := range value.Values {
+			raw = strings.TrimSpace(raw)
+			if raw != "" {
+				cleaned = append(cleaned, raw)
+			}
+		}
+		if kind != "" && len(cleaned) > 0 {
+			out = append(out, InstructionRuleWhen{Kind: kind, Values: cleaned})
+		}
+	}
+	return out
+}
+
+func cleanInstructionRoutes(values []InstructionRoute) []InstructionRoute {
+	out := make([]InstructionRoute, 0, len(values))
+	for _, value := range values {
+		output := strings.TrimSpace(value.Output)
+		destination := strings.TrimSpace(value.Destination)
+		if output != "" && destination != "" {
+			out = append(out, InstructionRoute{Output: output, Destination: destination})
+		}
+	}
+	return out
+}
+
+func cleanStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
 	}
 	return out
 }

@@ -68,6 +68,47 @@ func readNonEmptyLines(t *testing.T, path string) []string {
 	return out
 }
 
+func TestInstructionRuleManifestSurfacesByContext(t *testing.T) {
+	home, store := newStore(t)
+	manifest, err := LoadSkillManifest(filepath.Join("..", "..", "fixtures", "skills", "instruction-rules.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApplySkillManifest(home, manifest, t0); err != nil {
+		t.Fatal(err)
+	}
+	matched, err := store.SurfaceForContext(SurfaceContext{Task: "repair memory recall", RepoKind: "control-plane", Harness: "codex", Phase: "execute"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := surfacedByID(matched, "instruction_rule:memory-recall-adjudication")
+	if rule == nil {
+		t.Fatalf("matched context did not surface instruction rule: %+v", matched)
+	}
+	if rule.Node.Tier != 1 || len(rule.Node.Read) == 0 || len(rule.Node.Route) == 0 || len(rule.Node.Boundary) == 0 {
+		t.Fatalf("instruction rule metadata not preserved on node: %+v", rule.Node)
+	}
+	if !contains(rule.MatchedTokens, "memory") && !contains(rule.MatchedTokens, "recall") {
+		t.Fatalf("instruction rule should expose matched trigger tokens: %+v", rule.MatchedTokens)
+	}
+
+	unmatched, err := store.SurfaceForContext(SurfaceContext{Task: "update pricing copy", RepoKind: "product", Harness: "codex", Phase: "execute"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if surfacedByID(unmatched, "instruction_rule:memory-recall-adjudication") != nil {
+		t.Fatalf("unmatched context must not surface memory rule: %+v", unmatched)
+	}
+}
+
+func surfacedByID(values []Surfaced, id string) *Surfaced {
+	for i := range values {
+		if values[i].Node.ID == id {
+			return &values[i]
+		}
+	}
+	return nil
+}
 func TestRecordSourceAuthorityDedupesSameRevisionAcrossSnapshotPaths(t *testing.T) {
 	home, _ := newStore(t)
 	first, err := RecordSourceAuthority(home, SourceAuthorityInput{

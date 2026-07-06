@@ -23,7 +23,7 @@ import (
 )
 
 // NodeKinds — skills are one kind, not the whole graph.
-var NodeKinds = []string{"lens", "procedure", "script", "tool", "mcp", "model_profile", "harness", "eval", "workflow", "adapter", "doctrine", "taste_standard", "skill"}
+var NodeKinds = []string{"lens", "procedure", "script", "tool", "mcp", "model_profile", "harness", "eval", "workflow", "adapter", "doctrine", "taste_standard", "skill", "instruction_rule"}
 
 // Edge kinds: routing + the evolution feedback edges.
 const (
@@ -44,16 +44,33 @@ var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpeciali
 // FeedbackEdges are the ones a CapabilityObservation can write (context:<token> → node).
 var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true}
 
+// InstructionRuleWhen describes one trigger dimension for a Tier-1 instruction rule.
+type InstructionRuleWhen struct {
+	Kind   string   `json:"kind" yaml:"kind"`
+	Values []string `json:"values" yaml:"values"`
+}
+
+type InstructionRoute struct {
+	Output      string `json:"output" yaml:"output"`
+	Destination string `json:"destination" yaml:"destination"`
+}
+
 // Node is a capability. Triggers are the task tokens that surface it; Weight is its base surfacing
-// strength (learned feedback adds/subtracts on top).
+// strength (learned feedback adds/subtracts on top). InstructionRule nodes add Tier-1 rule
+// metadata but remain offers: they read/route/boundary context, never execute.
 type Node struct {
-	ID           string   `json:"id"`
-	Kind         string   `json:"kind"`
-	Name         string   `json:"name"`
-	Triggers     []string `json:"triggers"`
-	Weight       float64  `json:"weight"`
-	Retired      bool     `json:"retired,omitempty"`
-	EvidenceOnly bool     `json:"evidence_only,omitempty"`
+	ID           string                `json:"id"`
+	Kind         string                `json:"kind"`
+	Name         string                `json:"name"`
+	Triggers     []string              `json:"triggers"`
+	Weight       float64               `json:"weight"`
+	Retired      bool                  `json:"retired,omitempty"`
+	EvidenceOnly bool                  `json:"evidence_only,omitempty"`
+	When         []InstructionRuleWhen `json:"when,omitempty"`
+	Read         []string              `json:"read,omitempty"`
+	Route        []InstructionRoute    `json:"route,omitempty"`
+	Boundary     []string              `json:"boundary,omitempty"`
+	Tier         int                   `json:"tier,omitempty"`
 }
 
 // Edge is a typed relation. For feedback edges From is "context:<token>" and To is a node id.
@@ -330,17 +347,31 @@ type SurfacingConstraints struct {
 // is trigger overlap × weight; a missed_when edge for a present context token ADDS to the score
 // (learned surfacing); a false_triggered_by edge SUBTRACTS. Retired nodes never surface.
 func (s *Store) Surface(task string) ([]Surfaced, error) {
-	return s.surface(task, "")
+	return s.SurfaceForContext(SurfaceContext{Task: task})
 }
 
 // SurfaceForHarness returns task-relevant offers allowed for a harness. Nodes
 // without harness edges are generic; nodes with surfaces_with -> harness:* edges
 // surface only for listed harnesses.
 func (s *Store) SurfaceForHarness(task, harness string) ([]Surfaced, error) {
-	return s.surface(task, harnessID(harness))
+	return s.SurfaceForContext(SurfaceContext{Task: task, Harness: harness})
 }
 
-func (s *Store) surface(task, harness string) ([]Surfaced, error) {
+// SurfaceContext is the scoped trigger input for capability and instruction-rule surfacing.
+type SurfaceContext struct {
+	Task     string
+	RepoKind string
+	Harness  string
+	FilePath string
+	Phase    string
+}
+
+// SurfaceForContext returns task-relevant offers for the full orientation context.
+func (s *Store) SurfaceForContext(ctx SurfaceContext) ([]Surfaced, error) {
+	return s.surface(ctx.Task, harnessID(ctx.Harness), ctx)
+}
+
+func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, error) {
 	nodes, err := s.loadNodes()
 	if err != nil {
 		return nil, err
@@ -351,6 +382,7 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 	}
 	feedbackTokens := rawContextTokenSet(task)
 	tokens := tokenSet(task)
+	instructionTokens := instructionRuleTokenSet(ctx)
 	pruneLegacyAdaptationMetaTokens(tokens, task)
 
 	// learned context → node adjustments
@@ -392,7 +424,17 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
-		base, matchedTokens := surfaceTriggerScore(tokens, n)
+		matchTokens := tokens
+		if n.Kind == "instruction_rule" {
+			if !instructionRuleMatches(n, ctx, tokens, instructionTokens) {
+				continue
+			}
+			matchTokens = instructionTokens
+		}
+		base, matchedTokens := surfaceTriggerScore(matchTokens, n)
+		if n.Kind == "instruction_rule" && base == 0 {
+			base = 1
+		}
 		if evidenceBonus[n.ID] > 0 {
 			matchedTokens = appendMatchedTokens(matchedTokens, "evidence")
 		}
@@ -411,6 +453,9 @@ func (s *Store) surface(task, harness string) ([]Surfaced, error) {
 			why += fmt.Sprintf(" -false_triggered=%.1f", sub[n.ID])
 		}
 		constraints := capabilityConstraints(n.ID, edges)
+		if n.Kind == "instruction_rule" {
+			addInstructionRuleConstraints(&constraints, n)
+		}
 		for _, ref := range evidenceRefs[n.ID] {
 			constraints.Evidence = append(constraints.Evidence, SurfacingConstraint{
 				Kind:       "matched_evidence",
@@ -482,6 +527,42 @@ func evidenceMatchedOwnerBonuses(nodes []Node, edges []Edge, taskTokens map[stri
 		ownerRefs[owner] = refs
 	}
 	return ownerBonus, ownerRefs
+}
+
+func addInstructionRuleConstraints(c *SurfacingConstraints, n Node) {
+	for _, ref := range n.Read {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		c.Required = append(c.Required, SurfacingConstraint{Kind: "read", Ref: ref, Detail: "context ref requested by matched InstructionRule", Confidence: 1})
+	}
+	for _, route := range n.Route {
+		output := strings.TrimSpace(route.Output)
+		destination := strings.TrimSpace(route.Destination)
+		if output == "" || destination == "" {
+			continue
+		}
+		c.Required = append(c.Required, SurfacingConstraint{Kind: "route", Ref: output, Detail: destination, Confidence: 1})
+	}
+	for _, boundary := range n.Boundary {
+		boundary = strings.TrimSpace(boundary)
+		if boundary == "" {
+			continue
+		}
+		c.Conflicts = append(c.Conflicts, SurfacingConstraint{Kind: "boundary", Ref: instructionBoundaryRef(boundary), Detail: boundary, Confidence: 1})
+	}
+	if n.Tier > 0 {
+		c.Evidence = append(c.Evidence, SurfacingConstraint{Kind: "tier", Ref: fmt.Sprintf("instruction-tier:%d", n.Tier), Detail: "InstructionRule tier", Confidence: 1})
+	}
+	c.CostRiskNote = "instruction offer only; constrains read refs, output routing, and boundaries; never auto-executes"
+	sortConstraints(c.Required)
+	sortConstraints(c.Conflicts)
+	sortConstraints(c.Evidence)
+}
+
+func instructionBoundaryRef(boundary string) string {
+	return "boundary://" + strings.Join(tokenList(boundary), "-")
 }
 
 func capabilityConstraints(nodeID string, edges []Edge) SurfacingConstraints {
@@ -858,6 +939,74 @@ func (s *Store) loadEdges() ([]Edge, error) {
 }
 
 // --- helpers ---
+
+func instructionRuleTokenSet(ctx SurfaceContext) map[string]bool {
+	return tokenSet(strings.Join([]string{ctx.Task, ctx.RepoKind, ctx.Harness, ctx.FilePath, ctx.Phase}, " "))
+}
+
+func instructionRuleMatches(n Node, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {
+	if n.Kind != "instruction_rule" {
+		return true
+	}
+	if len(n.When) == 0 {
+		return true
+	}
+	for _, when := range n.When {
+		if !instructionRuleWhenMatches(when, ctx, taskTokens, contextTokens) {
+			return false
+		}
+	}
+	return true
+}
+
+func instructionRuleWhenMatches(when InstructionRuleWhen, ctx SurfaceContext, taskTokens, contextTokens map[string]bool) bool {
+	kind := strings.TrimSpace(strings.ToLower(when.Kind))
+	if kind == "" {
+		kind = "task-class"
+	}
+	for _, value := range when.Values {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			continue
+		}
+		switch kind {
+		case "task-class":
+			if contextValueMatches(taskTokens, value) {
+				return true
+			}
+		case "repo-kind":
+			if normalizeTriggerValue(ctx.RepoKind) == normalizeTriggerValue(value) {
+				return true
+			}
+		case "harness":
+			if normalizeTriggerValue(ctx.Harness) == normalizeTriggerValue(value) {
+				return true
+			}
+		case "file-path":
+			if strings.Contains(strings.ToLower(ctx.FilePath), value) || contextValueMatches(contextTokens, value) {
+				return true
+			}
+		case "phase":
+			if normalizeTriggerValue(ctx.Phase) == normalizeTriggerValue(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func contextValueMatches(tokens map[string]bool, value string) bool {
+	for _, token := range tokenList(value) {
+		if contextTokenMatches(tokens, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeTriggerValue(value string) string {
+	return strings.ReplaceAll(strings.TrimSpace(strings.ToLower(value)), "_", "-")
+}
 
 func tokenSet(s string) map[string]bool {
 	out := map[string]bool{}

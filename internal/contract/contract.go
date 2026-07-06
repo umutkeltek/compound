@@ -760,7 +760,13 @@ func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int,
 	if err != nil {
 		return nil, 0, err
 	}
-	surfaced, err := store.SurfaceForHarness(in.Task, in.Harness)
+	surfaced, err := store.SurfaceForContext(capgraph.SurfaceContext{
+		Task:     in.Task,
+		RepoKind: in.RepoKind,
+		Harness:  in.Harness,
+		FilePath: in.Cwd,
+		Phase:    in.Mode,
+	})
 	if err != nil {
 		return nil, 0, err
 	}
