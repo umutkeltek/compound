@@ -216,18 +216,21 @@ export function DecisionDetailsDialog({
   item,
   pl,
   formSpec,
+  buttonLabel = "Details",
 }: {
   area: string;
   itemId: string;
   item: Json;
   pl: PlainLanguage;
   formSpec: DecisionFormSpec;
+  buttonLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<DetailTab>("claim");
   const [activeTarget, setActiveTarget] = useState<DocumentTarget | null>(null);
   const [loadedDocument, setLoadedDocument] = useState<LoadedDocument | null>(null);
   const [loadingDocument, setLoadingDocument] = useState(false);
+  const [idCopied, setIdCopied] = useState(false);
   const targets = useMemo(() => collectDocumentTargets(item, pl), [item, pl]);
 
   useEffect(() => {
@@ -267,6 +270,16 @@ export function DecisionDetailsDialog({
     }
   }
 
+  async function copyItemId() {
+    try {
+      await navigator.clipboard.writeText(itemId);
+      setIdCopied(true);
+      window.setTimeout(() => setIdCopied(false), 1200);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
+
   const tabs: { key: DetailTab; label: string }[] = [
     { key: "claim", label: "Claim" },
     { key: "logic", label: "Logic" },
@@ -281,18 +294,25 @@ export function DecisionDetailsDialog({
         onClick={() => setOpen(true)}
         className="rounded-lg border border-line bg-white px-2.5 py-1.5 text-[11.5px] font-semibold text-ink-2 transition hover:border-slate-300 hover:bg-slate-50 active:translate-y-px"
       >
-        Details
+        {buttonLabel}
       </button>
 
       {open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 px-4 py-6 backdrop-blur-sm">
           <div className="flex max-h-[92dvh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-2xl">
             <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <Chip tone="violet">{area}</Chip>
-                  <code className="mono break-all text-[11px] text-ink-3">{itemId}</code>
-                </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Chip tone="violet">{area}</Chip>
+                <button
+                  type="button"
+                  onClick={copyItemId}
+                  title={itemId}
+                  className="rounded-md border border-line px-1.5 py-0.5 text-[10.5px] font-semibold text-ink-3 hover:bg-slate-50"
+                >
+                  {idCopied ? "copied" : "copy id"}
+                </button>
+              </div>
                 <h2 className="mt-2 max-w-3xl text-[18px] font-semibold leading-tight text-ink">
                   {pl.headline || itemId}
                 </h2>

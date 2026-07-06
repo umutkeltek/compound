@@ -17,6 +17,14 @@ type ChangedEntry = {
   sortKey: number;
 };
 
+export type MoveTypeGroup = "outward" | "meaning" | "rules" | "upkeep";
+
+export type MoveTypeMix = {
+  groups: Record<MoveTypeGroup, number>;
+  total: number;
+  lowOutward: boolean;
+};
+
 function timestamp(value: unknown): number {
   const raw = str(value);
   if (!raw) return 0;
@@ -60,6 +68,42 @@ function moveLabel(move: string): string {
     default:
       return move ? move.replace(/_/g, " ") : "Change";
   }
+}
+
+export function moveTypeGroup(move: string): MoveTypeGroup {
+  switch (move) {
+    case "outward_delta":
+      return "outward";
+    case "memory_delta":
+      return "meaning";
+    case "rule_delta":
+      return "rules";
+    default:
+      return "upkeep";
+  }
+}
+
+export function summarizeMoveTypeMix(recent: Json[], now = Date.now()): MoveTypeMix {
+  const groups: Record<MoveTypeGroup, number> = {
+    outward: 0,
+    meaning: 0,
+    rules: 0,
+    upkeep: 0,
+  };
+  const weekMs = 7 * 24 * 3600 * 1000;
+
+  for (const item of recent) {
+    const when = timestamp(item.claimed_at ?? item.created_at ?? item.generated_at);
+    if (when > 0 && now - when > weekMs) continue;
+    groups[moveTypeGroup(str(item.move_type) || str(item.move))]++;
+  }
+
+  const total = groups.outward + groups.meaning + groups.rules + groups.upkeep;
+  return {
+    groups,
+    total,
+    lowOutward: total > 0 && groups.outward <= Math.max(1, Math.floor(total * 0.15)),
+  };
 }
 
 function terminalHeadline(item: Json): string {

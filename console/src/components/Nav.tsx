@@ -7,7 +7,7 @@ type NavLink = { label: string; href?: string; soon?: boolean };
 type Group = { label: string; links: NavLink[] };
 
 const GROUPS: Group[] = [
-  { label: "Overview", links: [{ label: "Dashboard", href: "/" }] },
+  { label: "Overview", links: [{ label: "Briefing", href: "/" }] },
   { label: "Work", links: [{ label: "Board", href: "/work" }, { label: "Executors", href: "/executors" }] },
   {
     label: "Meaning",
@@ -15,17 +15,9 @@ const GROUPS: Group[] = [
       { label: "Reviews", href: "/reviews" },
       { label: "Memory", href: "/memory" },
       { label: "Loops", href: "/loops" },
-      { label: "Sources", href: "/sources" },
     ],
   },
-  {
-    label: "System",
-    links: [
-      { label: "Map", href: "/map" },
-      { label: "Capability", href: "/map?lens=registry" },
-      { label: "Cost", soon: true },
-    ],
-  },
+  { label: "System", links: [{ label: "Map", href: "/map" }] },
 ];
 
 function Dot({ active }: { active: boolean }) {

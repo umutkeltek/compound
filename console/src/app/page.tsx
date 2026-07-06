@@ -1,297 +1,538 @@
-import { DecisionCard } from "@/components/DecisionCard";
-import { ChangedProofStream } from "@/components/ChangedProofStream";
-import { ContinuePanel } from "@/components/ContinuePanel";
-import { NeedsMeStream } from "@/components/NeedsMeStream";
-import { WorkNeedCard } from "@/components/WorkNeedCard";
-import { WorkCard } from "@/components/WorkCard";
-import {
-  Card,
-  Chip,
-  EmptyState,
-  FreshnessChip,
-  SectionLabel,
-  Stat,
-  StateBadge,
-} from "@/components/ui";
-import { ago, arr, getReviews, getSourceConnections, getWorkbench, str, type Json } from "@/lib/compound";
+import Link from "next/link";
+import type { ReactNode } from "react";
+
+import { DecisionDetailsDialog } from "@/components/DecisionDetailsDialog";
+import { summarizeMoveTypeMix, type MoveTypeGroup } from "@/components/ChangedProofStream";
+import { EmptyState, FreshnessChip } from "@/components/ui";
+import { humanAge, isOld, selectHighestLeverageGate, type BriefingGateCandidate } from "@/lib/briefing";
+import { arr, getReviews, getWorkbench, getWorkLeases, str, toDate, type Json } from "@/lib/compound";
+import { specFor } from "@/lib/decision-registry";
 import { externalReviewRows } from "@/lib/review-data";
-import { loadActionableMemoryCandidates } from "@/lib/memory-data";
-import { enrichWorkItems } from "@/lib/work-data";
+import { loadActionableMemoryCandidates, loadMemoryCandidates } from "@/lib/memory-data";
+import { enrichWorkItems, shortText, type WorkCardData } from "@/lib/work-data";
 
 export const dynamic = "force-dynamic";
 
-function sourceStatusLabel(status: string): string {
-  switch (status) {
-    case "blocked_private_config":
-      return "needs private config";
-    case "needs_private_input":
-      return "needs private input";
-    case "ready_preflight":
-      return "ready for preflight";
-    case "needs_review":
-      return "needs review";
-    case "needs_mapping":
-      return "needs mapping";
-    case "not_connected":
-      return "not connected";
-    default:
-      return status.replace(/_/g, " ") || "unknown";
+type DecisionRow = {
+  id: string;
+  headline: string;
+  unlock: string;
+  createdAt: unknown;
+  downstreamWorkCount: number;
+  action: ReactNode;
+  source: string;
+};
+
+type AgentLine = {
+  actor: string;
+  tone: "good" | "warn" | "idle";
+  doing: string;
+};
+
+const runningStates = new Set(["claimed", "in_progress", "running", "verifying"]);
+
+function sourceLine(source: string) {
+  return <div className="mt-1 text-[10.5px] font-medium text-ink-3">source: {source}</div>;
+}
+
+function looksLikeRawID(value: string): boolean {
+  return /^(work|cand|extrepo|route|ctx|rcpt|tr|wbrc|prun|kx|ev)_[A-Za-z0-9_-]+$/.test(value) ||
+    /^[a-f0-9]{12,}$/i.test(value);
+}
+
+function cleanTitle(value: unknown, fallback = "Untitled decision"): string {
+  const title = str(value).replace(/\s+/g, " ").trim();
+  if (!title || looksLikeRawID(title)) return fallback;
+  return title;
+}
+
+function packetSurfaceTitle(surface: string): string {
+  if (!surface.startsWith("packet:")) return "";
+  return cleanTitle(surface.slice("packet:".length).replace(/-/g, " "), "Untitled packet");
+}
+
+function workTitle(work: Json | WorkCardData): string {
+  const packet = (work as WorkCardData).packet;
+  return cleanTitle(
+    packet?.title ||
+      str(work.action_context?.title) ||
+      str(work.action_context?.action_summary) ||
+      packetSurfaceTitle(str(work.canonical_surface)) ||
+      str(work.success_predicate) ||
+      str(work.desired_outcome),
+    "Untitled work",
+  );
+}
+
+function memoryTitle(candidate: Json): string {
+  return cleanTitle(str(candidate.object) || str(candidate.entity) || str(candidate.predicate), "Memory decision");
+}
+
+function firstDate(...values: unknown[]): unknown {
+  for (const value of values) {
+    if (toDate(value)) return value;
   }
+  return "";
+}
+
+function oldestDate(values: unknown[]): unknown {
+  let oldest: Date | null = null;
+  let raw: unknown = "";
+  for (const value of values) {
+    const date = toDate(value);
+    if (!date) continue;
+    if (!oldest || date.getTime() < oldest.getTime()) {
+      oldest = date;
+      raw = value;
+    }
+  }
+  return raw;
+}
+
+function dateWithinDays(value: unknown, days: number): boolean {
+  const date = toDate(value);
+  if (!date) return false;
+  return Date.now() - date.getTime() <= days * 24 * 3600 * 1000;
+}
+
+function plural(value: number, one: string, many = `${one}s`): string {
+  return `${value} ${value === 1 ? one : many}`;
+}
+
+function decisionDetailsAction(area: string, item: Json, label: string) {
+  const spec = specFor(area);
+  if (!spec) return null;
+  const id = str(item.id) || str(item.review_id) || str(item.work_id);
+  if (!id) return null;
+  const pl = spec.plainLanguage(item);
+  const options = spec.optionsFor ? spec.optionsFor(item) : spec.options;
+  const formSpec = {
+    area: spec.area,
+    options,
+    fields: spec.fields,
+    defaultOption: spec.defaultOption ?? options[0]?.value,
+  };
+  const argvPreview = spec.previewArgv ? spec.previewArgv(item) : options[0]?.argv ?? null;
+  return (
+    <DecisionDetailsDialog
+      area={area}
+      itemId={id}
+      item={item}
+      pl={pl}
+      formSpec={formSpec}
+      buttonLabel={label}
+    />
+  );
+}
+
+function linkButton(href: string, label: string, rawId?: string) {
+  return (
+    <Link
+      href={href}
+      title={rawId}
+      className="inline-flex whitespace-nowrap rounded-[9px] border border-line bg-white px-3.5 py-1.5 text-[12.5px] font-semibold text-ink transition hover:border-slate-300 hover:bg-slate-50 active:translate-y-px"
+    >
+      {label}
+    </Link>
+  );
+}
+
+function gateUnlock(card: Json, work: Json): string {
+  const kind = str(card.kind);
+  if (kind === "source_private_config_gate") return "read-only source checks can start";
+  if (kind === "memory_candidate_adjudication") return "memory keeps one clear version";
+  const validation = cleanTitle(arr(card.expected_validation)[0], "");
+  if (validation) return shortText(validation, 88);
+  const next = cleanTitle(str(work.next_action), "");
+  if (next) return shortText(next, 88);
+  return "the blocked work can continue";
+}
+
+function downstreamCount(workId: string, card: Json, runs: Json[]): number {
+  const refs = [workId, str(card.id), str(card.gate_id), str(card.candidate_id)].filter(Boolean);
+  const blockedRunIds = new Set<string>();
+  for (const run of runs) {
+    const blocked = arr(run.blocked_on).map(String);
+    if (blocked.some((ref) => refs.some((candidate) => ref.includes(candidate)))) {
+      blockedRunIds.add(str(run.id) || `${str(run.generated_at)}:${blocked.join(",")}`);
+    }
+  }
+  return 1 + blockedRunIds.size;
+}
+
+function buildDecisionRows({
+  open,
+  proposedWork,
+  reviewRows,
+  memoryActionable,
+  continueRuns,
+  dispatchStepRuns,
+}: {
+  open: Json[];
+  proposedWork: WorkCardData[];
+  reviewRows: Json[];
+  memoryActionable: Json[];
+  continueRuns: Json[];
+  dispatchStepRuns: Json[];
+}): DecisionRow[] {
+  const rows: DecisionRow[] = [];
+  const runs = [...continueRuns, ...dispatchStepRuns];
+
+  for (const work of open) {
+    const workId = str(work.work_id) || str(work.id);
+    for (const card of arr(work.review_cards)) {
+      const headline = cleanTitle(str(card.title) || str(card.candidate_object) || workTitle(work), "Work decision");
+      rows.push({
+        id: str(card.id) || `${workId}:card`,
+        headline,
+        unlock: gateUnlock(card, work),
+        createdAt: firstDate(card.created_at, work.claimed_at, work.updated_at, work.created_at),
+        downstreamWorkCount: downstreamCount(workId, card, runs),
+        action: linkButton(`/work/${workId}`, "Inspect", workId),
+        source: "compound workbench --json",
+      });
+    }
+  }
+
+  for (const work of proposedWork) {
+    const workId = work.displayId;
+    rows.push({
+      id: workId,
+      headline: workTitle(work),
+      unlock: "suggested work can become runnable",
+      createdAt: firstDate(work.created_at, work.claimed_at),
+      downstreamWorkCount: 1,
+      action: linkButton(`/work/${workId}`, "Open", workId),
+      source: "compound workbench --json",
+    });
+  }
+
+  for (const row of reviewRows) {
+    const action = decisionDetailsAction("external-repo-intake", row, "Review");
+    const spec = specFor("external-repo-intake");
+    const pl = spec?.plainLanguage(row);
+    rows.push({
+      id: str(row.id) || str(row.review_id) || "review",
+      headline: cleanTitle(pl?.headline || str(row.next_action), "Review decision"),
+      unlock: "the review can become evidence or leave the queue",
+      createdAt: firstDate(row.created_at, row.updated_at, row.generated_at),
+      downstreamWorkCount: 1,
+      action,
+      source: "compound reviews --json",
+    });
+  }
+
+  for (const candidate of memoryActionable) {
+    rows.push({
+      id: str(candidate.id),
+      headline: memoryTitle(candidate),
+      unlock: "memory keeps one clear version",
+      createdAt: firstDate(candidate.created_at, candidate.observation_date),
+      downstreamWorkCount: 1,
+      action: decisionDetailsAction("memory-adjudicate", candidate, "Rule"),
+      source: "compound memory candidates --json",
+    });
+  }
+
+  return rows
+    .filter((row) => row.action)
+    .sort((a, b) => {
+      if (b.downstreamWorkCount !== a.downstreamWorkCount) {
+        return b.downstreamWorkCount - a.downstreamWorkCount;
+      }
+      const ad = toDate(a.createdAt)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      const bd = toDate(b.createdAt)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+      return ad - bd;
+    });
+}
+
+function insightCandidates(rows: DecisionRow[]): BriefingGateCandidate[] {
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.headline,
+    consequence: row.unlock,
+    downstreamWorkCount: row.downstreamWorkCount,
+    createdAt: row.createdAt as string,
+    source: row.source,
+  }));
+}
+
+function actorOf(work: Json): string {
+  return str(work.claimed_by) || str(work.owner) || "unassigned";
+}
+
+function actorLines(workbench: Json | null, open: Json[], leases: Json[]): AgentLine[] {
+  const runs = [...arr(workbench?.continue_runs), ...arr(workbench?.dispatch_step_runs)]
+    .sort((a, b) => (toDate(b.generated_at)?.getTime() ?? 0) - (toDate(a.generated_at)?.getTime() ?? 0));
+  const actors = new Set<string>();
+  for (const work of open) actors.add(actorOf(work));
+  for (const run of runs) if (str(run.actor)) actors.add(str(run.actor));
+  for (const lease of leases) if (str(lease.by)) actors.add(str(lease.by));
+  if (str(workbench?.dispatch_next?.actor)) actors.add(str(workbench?.dispatch_next?.actor));
+  if (!actors.size) actors.add("codex");
+
+  return [...actors].sort().slice(0, 5).map((actor) => {
+    const assigned = open.filter((work) => actorOf(work) === actor);
+    const running = assigned.filter((work) => runningStates.has(str(work.state))).length;
+    const gates = assigned.filter((work) => arr(work.review_cards).length || ["held", "blocked", "needs_review"].includes(str(work.state))).length;
+    const ready = assigned.filter((work) => str(work.state) === "ready").length;
+    const offered = assigned.filter((work) => ["proposed", "admitted"].includes(str(work.state))).length;
+    const lastRun = runs.find((run) => str(run.actor) === actor);
+    const actorLeases = leases.filter((lease) => str(lease.by) === actor).length;
+
+    if (running) {
+      return { actor, tone: "good", doing: `is moving ${plural(running, "item")}` };
+    }
+    if (gates) {
+      return { actor, tone: "warn", doing: `idle - waiting on ${plural(gates, "gate")} from you` };
+    }
+    if (ready) {
+      return { actor, tone: "good", doing: `can start ${plural(ready, "ready item")}` };
+    }
+    if (lastRun?.wait_reason) {
+      return { actor, tone: "idle", doing: `waits for ${str(lastRun.wait_reason).replace(/_/g, " ")}` };
+    }
+    if (offered) {
+      return { actor, tone: "warn", doing: `has ${plural(offered, "suggested item")} to prepare` };
+    }
+    if (actorLeases) {
+      return { actor, tone: "idle", doing: `holds ${plural(actorLeases, "lease")}` };
+    }
+    return { actor, tone: "idle", doing: "idle - waiting for runnable work" };
+  });
+}
+
+function DecisionRows({ rows }: { rows: DecisionRow[] }) {
+  if (!rows.length) return <EmptyState>No decisions are waiting on the briefing.</EmptyState>;
+  return (
+    <div className="overflow-hidden rounded-[14px] border border-line bg-white">
+      {rows.map((row, index) => {
+        const old = isOld(row.createdAt);
+        const age = humanAge(row.createdAt) || "new";
+        return (
+          <div
+            key={`${row.id}:${index}`}
+            title={row.id}
+            className={`grid grid-cols-1 gap-3 px-5 py-4 sm:grid-cols-[1fr_auto] sm:items-center sm:gap-5 ${
+              index > 0 ? "border-t border-line/70" : ""
+            }`}
+          >
+            <div className="min-w-0">
+              <h3 className="truncate text-[15px] font-semibold tracking-tight text-ink">{row.headline}</h3>
+              <div className="mt-0.5 text-[12.5px] font-medium text-emerald-700">-&gt; {row.unlock}</div>
+            </div>
+            <div className="flex items-center justify-between gap-4 sm:justify-end">
+              <span className={`shrink-0 text-[11.5px] tabular-nums ${old ? "text-amber-700" : "text-ink-3"}`}>
+                {age}
+              </span>
+              {row.action}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function Agents({ lines }: { lines: AgentLine[] }) {
+  const dot = {
+    good: "bg-emerald-600",
+    warn: "bg-amber-600",
+    idle: "bg-slate-400",
+  };
+  return (
+    <div className="overflow-hidden rounded-[14px] border border-line bg-white">
+      {lines.map((line) => (
+        <div key={line.actor} className="flex items-baseline gap-3 px-5 py-3.5">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${dot[line.tone]}`} />
+          <span className="min-w-[52px] text-[13.5px] font-semibold text-ink">{line.actor}</span>
+          <span className="text-[12.5px] leading-relaxed text-ink-2">{line.doing}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WorldBars({ recent, topDecision }: { recent: Json[]; topDecision?: string }) {
+  const mix = summarizeMoveTypeMix(recent);
+  const labels: { key: MoveTypeGroup; label: string; className: string }[] = [
+    { key: "outward", label: "Outward", className: "bg-emerald-600" },
+    { key: "meaning", label: "Meaning", className: "bg-teal-700" },
+    { key: "rules", label: "Rules", className: "bg-teal-700/55" },
+    { key: "upkeep", label: "Upkeep", className: "bg-slate-400/70" },
+  ];
+  const max = Math.max(1, ...labels.map((item) => mix.groups[item.key]));
+  return (
+    <div className="rounded-[14px] border border-line bg-white px-5 py-4">
+      {mix.total ? (
+        <div className="grid gap-2.5">
+          {labels.map((item) => {
+            const count = mix.groups[item.key];
+            return (
+              <div key={item.key} className="grid grid-cols-[64px_1fr_24px] items-center gap-3 text-[12.5px]">
+                <span className="text-ink-2">{item.label}</span>
+                <span className="h-2 overflow-hidden rounded-full bg-slate-100">
+                  <span
+                    className={`block h-full rounded-full ${item.className}`}
+                    style={{ width: `${Math.max(4, Math.round((count / max) * 100))}%` }}
+                  />
+                </span>
+                <span className="text-right tabular-nums text-ink-2">{count}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyState>No recent moves in the workbench projection.</EmptyState>
+      )}
+      {mix.lowOutward ? (
+        <div className="mt-3 text-[12px] leading-relaxed text-amber-700">
+          Outward moves are quiet this week; {topDecision ? `clearing ${topDecision} can change that.` : "the top decision can change that."}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function KnowsStrip({ candidates }: { candidates: Json[] }) {
+  const byState = candidates.reduce<Record<string, number>>((acc, item) => {
+    const state = str(item.state) || "unknown";
+    acc[state] = (acc[state] ?? 0) + 1;
+    return acc;
+  }, {});
+  const addedThisWeek = candidates.filter((candidate) => dateWithinDays(candidate.created_at, 7)).length;
+  const reopened = candidates.filter(
+    (candidate) => str(candidate.state) === "needs_review" || str(candidate.review_state) === "needs_review",
+  ).length;
+  const parked = byState.parked ?? 0;
+
+  return (
+    <section className="mt-12">
+      <div className="mb-4">
+        <div className="section-label">Knows</div>
+        {sourceLine("compound memory candidates --json")}
+      </div>
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <div className="text-[30px] font-semibold leading-none tracking-tight tabular-nums">{byState.promoted ?? 0}</div>
+          <div className="mt-1 text-[12.5px] text-ink-2">promoted claims it can act on</div>
+        </div>
+        <div>
+          <div className="text-[30px] font-semibold leading-none tracking-tight tabular-nums">
+            {addedThisWeek}
+          </div>
+          <div className="mt-1 text-[12.5px] text-ink-2">added this week</div>
+        </div>
+        <div>
+          <div className="text-[30px] font-semibold leading-none tracking-tight tabular-nums">{reopened}</div>
+          <div className="mt-1 text-[12.5px] text-ink-2">reopened by new evidence</div>
+        </div>
+        <div>
+          <div className="text-[30px] font-semibold leading-none tracking-tight tabular-nums">{parked}</div>
+          <div className="mt-1 text-[12.5px] text-ink-2">candidates parked</div>
+          <Link href="/memory" className="mt-2 inline-flex text-[13px] font-semibold text-teal-700 hover:underline">
+            Open memory
+          </Link>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 export default async function Dashboard() {
-  const [workbench, reviews, memoryActionable, sourceConnections] = await Promise.all([
+  const [workbench, reviews, memoryActionable, memoryCandidates, leasesProjection] = await Promise.all([
     getWorkbench(),
     getReviews(),
     loadActionableMemoryCandidates(),
-    getSourceConnections(),
+    loadMemoryCandidates(),
+    getWorkLeases(),
   ]);
 
   const open = arr(workbench?.open);
-  const proposedWork = await enrichWorkItems(
-    open.filter((work) => str(work.state) === "proposed"),
-  );
-  const running = open.filter((work) =>
-    ["in_progress", "running", "verifying", "claimed"].includes(str(work.state)),
-  );
+  const proposedWork = await enrichWorkItems(open.filter((work) => str(work.state) === "proposed"));
   const recent = arr(workbench?.recent);
   const continueRuns = arr(workbench?.continue_runs);
   const dispatchStepRuns = arr(workbench?.dispatch_step_runs);
-  const heldWorkNeeds = open.flatMap((work) =>
-    arr(work.review_cards).map((card) => ({ work, card })),
-  );
-  const memoryWorkNeeds = heldWorkNeeds.filter(
-    ({ card }) => str(card.kind) === "memory_candidate_adjudication",
-  );
-  const operatorWorkNeeds = heldWorkNeeds.filter(
-    ({ card }) => str(card.kind) !== "memory_candidate_adjudication",
-  );
+  const reviewRows = externalReviewRows(reviews, workbench);
+  const decisionRows = buildDecisionRows({
+    open,
+    proposedWork,
+    reviewRows,
+    memoryActionable,
+    continueRuns,
+    dispatchStepRuns,
+  });
+  const topInsight = selectHighestLeverageGate(insightCandidates(decisionRows));
+  const attentionOldest = oldestDate(decisionRows.map((row) => row.createdAt));
+  const agents = actorLines(workbench, open, arr(leasesProjection?.leases));
 
-  const reviewRows = externalReviewRows(reviews);
-  const sourceRows = arr(sourceConnections?.connections);
-  const sourceCounts = (sourceConnections?.counts ?? {}) as Json;
-  const sourceAttentionRows = sourceRows
-    .filter((source) => !["connected", "observed"].includes(str(source.status)))
-    .slice(0, 5);
-
-  // Unified needs-me stream: external reviews + held work decisions + proposed work + memory.
-  const counts = {
-    reviews: reviewRows.length,
-    work: operatorWorkNeeds.length + proposedWork.length,
-    memory: memoryWorkNeeds.length + memoryActionable.length,
-  };
-  const needsMeTotal = counts.reviews + counts.work + counts.memory;
-
-  const executors = new Map<string, { running: number; ready: number; offered: number; needsMe: number; assigned: number }>();
-  for (const work of open) {
-    const who = str(work.claimed_by) || str(work.owner) || "unassigned";
-    const entry = executors.get(who) ?? { running: 0, ready: 0, offered: 0, needsMe: 0, assigned: 0 };
-    const state = str(work.state);
-    entry.assigned++;
-    if (["claimed", "in_progress", "running", "verifying"].includes(state)) entry.running++;
-    else if (state === "ready") entry.ready++;
-    else if (["proposed", "admitted"].includes(state)) entry.offered++;
-    else if (["held", "blocked"].includes(state)) entry.needsMe++;
-    executors.set(who, entry);
-  }
-
-  // Trajectory signal: recent landings split by §8 yield (productive vs low-yield).
-  const surfaceTitle = (item: Json) => {
-    const s = str(item.canonical_surface);
-    if (s.startsWith("packet:")) return s.slice("packet:".length).replace(/-/g, " ");
-    return str(item.success_predicate) || str(item.work_id) || str(item.id);
-  };
-  const recentTypes = recent.map((r) => str(r.move_type) || str(r.move));
-  const productiveRecent = recentTypes.filter((t) =>
-    ["outward_delta", "memory_delta", "rule_delta"].includes(t),
-  ).length;
-  const lowYieldRecent = recentTypes.filter((t) =>
-    ["control_plane_repair", "audit_only"].includes(t),
-  ).length;
-  const grinding = recent.length > 0 && lowYieldRecent > productiveRecent;
+  const dateLabel = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  }).format(new Date());
 
   return (
-    <div className="flex flex-col gap-8">
-      <div className="flex items-end justify-between gap-4">
+    <div className="mx-auto max-w-[1060px] py-8">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Dashboard</h1>
-          <p className="mt-0.5 text-[12.5px] text-ink-3">
-            Continue what can move, handle what needs you, and see what changed.
-          </p>
+          <h1 className="text-[30px] font-semibold tracking-[-0.015em] text-ink">Good morning</h1>
+          <div className="mt-1 text-[13px] text-ink-3">{dateLabel}</div>
+          {sourceLine("compound workbench --json + compound reviews --json + compound memory candidates --json")}
         </div>
-        <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench --json" />
-      </div>
-
-      <ContinuePanel workbench={workbench} open={open} />
-
-      <div className="grid gap-4 md:grid-cols-4">
-        <Stat label="Needs me" value={needsMeTotal} accent="orange" glyph="!" sub="reviews + work + memory" />
-        <Stat label="Running" value={running.length} accent="blue" glyph="▶" sub="claimed / in flight" />
-        <Stat
-          label="Changed"
-          value={recent.length + continueRuns.length + dispatchStepRuns.length}
-          accent="green"
-          glyph="Δ"
-          sub="proof + movement"
-        />
-        <Stat
-          label="Sources"
-          value={(Number(sourceCounts.needs_input) || 0) + (Number(sourceCounts.action_required) || 0)}
-          accent="violet"
-          glyph="S"
-          sub="input + cards"
-        />
-      </div>
-
-      <section>
-        <SectionLabel>Needs Me</SectionLabel>
-        <NeedsMeStream
-          counts={counts}
-          slots={{
-            reviews: reviewRows.map((row) => (
-              <DecisionCard key={str(row.id)} area="external-repo-intake" item={row} />
-            )),
-            work: [
-              ...operatorWorkNeeds.map(({ work, card }) => (
-                <WorkNeedCard
-                  key={`${str(work.work_id) || str(work.id)}:${str(card.id)}`}
-                  work={work}
-                  card={card}
-                />
-              )),
-              ...proposedWork.map((work) => <WorkCard key={work.displayId} work={work} compact />),
-            ],
-            memory: [
-              ...memoryWorkNeeds.map(({ work, card }) => (
-                <WorkNeedCard
-                  key={`${str(work.work_id) || str(work.id)}:${str(card.id)}`}
-                  work={work}
-                  card={card}
-                />
-              )),
-              ...memoryActionable
-                .slice(0, 12)
-                .map((candidate) => (
-                  <DecisionCard key={candidate.id} area="memory-adjudicate" item={candidate} />
-                )),
-            ],
-          }}
-        />
-      </section>
-
-      <section>
-        <SectionLabel>Running</SectionLabel>
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Card title="In flight" accent="blue" glyph="▶" className="lg:col-span-2">
-            {running.length ? (
-              <ul className="flex flex-col gap-2.5">
-                {running.map((work) => (
-                  <li
-                    key={str(work.work_id)}
-                    className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2.5"
-                  >
-                    <div className="flex min-w-0 flex-col gap-0.5">
-                      <div className="flex items-center gap-2">
-                        <span className="mono truncate text-[11px] text-ink-3">{str(work.work_id) || str(work.id)}</span>
-                        <StateBadge state={str(work.state)} />
-                      </div>
-                      <span className="truncate text-[12px] text-ink-2">{surfaceTitle(work)}</span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2 text-[11.5px] text-ink-3">
-                      <Chip tone="violet">{str(work.claimed_by) || str(work.owner) || "unknown"}</Chip>
-                      {str(work.claimed_at) ? <span>{ago(work.claimed_at)}</span> : null}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <EmptyState>No executor is running work right now.</EmptyState>
-            )}
-          </Card>
-
-          <Card title="Executors" accent="violet" glyph="E">
-            {executors.size ? (
-              <ul className="flex flex-col gap-2.5">
-	                {[...executors.entries()].map(([who, entry]) => (
-	                  <li key={who} className="flex items-center justify-between gap-2">
-	                    <span className="text-[13px] font-medium">{who}</span>
-	                    <span className="text-[11.5px] text-ink-3">
-	                      {[
-	                        entry.running ? `${entry.running} running` : "",
-	                        entry.ready ? `${entry.ready} ready` : "",
-	                        entry.needsMe ? `${entry.needsMe} needs me` : "",
-	                        entry.offered ? `${entry.offered} offered` : "",
-	                      ]
-	                        .filter(Boolean)
-	                        .join(" / ") || `${entry.assigned} assigned`}
-	                    </span>
-	                  </li>
-	                ))}
-              </ul>
-            ) : (
-              <EmptyState>No active executors.</EmptyState>
-            )}
-          </Card>
+        <div className="inline-flex w-fit items-center gap-2 rounded-full bg-amber-50 px-3.5 py-1.5 text-[12.5px] font-semibold text-amber-700">
+          <span className="h-1.5 w-1.5 rounded-full bg-amber-600" />
+          {decisionRows.length} waiting
+          {attentionOldest ? <span>oldest {humanAge(attentionOldest)}</span> : null}
         </div>
-      </section>
+      </header>
 
-      <section>
-        <SectionLabel>Changed</SectionLabel>
-        <Card
-          title="Proof stream"
-          accent="green"
-          glyph="Δ"
-          right={
-            <span className="text-[11px]">
-              <span className="font-semibold text-emerald-600">{productiveRecent} productive</span>
-              <span className="text-ink-3"> · </span>
-              <span className="text-ink-3">{continueRuns.length + dispatchStepRuns.length} moved</span>
-              <span className="text-ink-3"> · </span>
-              <span className={grinding ? "font-semibold text-red-500" : "text-ink-3"}>
-                {lowYieldRecent} low-yield
-              </span>
-              {grinding ? (
-                <>
-                  <span className="text-ink-3"> · </span>
-                  <span className="rounded-full bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-600">
-                    grinding
-                  </span>
-                </>
-              ) : null}
-            </span>
-          }
-        >
-          <ChangedProofStream recent={recent} continueRuns={continueRuns} dispatchStepRuns={dispatchStepRuns} />
-        </Card>
-      </section>
-
-      <section>
-        <SectionLabel>Sources</SectionLabel>
-        <Card title="Source readiness" accent="violet" glyph="S">
-          {sourceAttentionRows.length ? (
-            <ul className="flex flex-col gap-2.5">
-              {sourceAttentionRows.map((source) => (
-                <li
-                  key={str(source.id)}
-                  className="flex items-start justify-between gap-3 rounded-xl border border-line px-3 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[12.5px] font-medium text-ink">{str(source.label) || str(source.id)}</div>
-                    <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-3">
-                      {str(source.next_safe_action) || "No next action surfaced."}
-                    </div>
-                  </div>
-                  <Chip tone="gray">{sourceStatusLabel(str(source.status))}</Chip>
-                </li>
-              ))}
-            </ul>
-        ) : sourceRows.length ? (
-          <EmptyState>All observed sources are quiet.</EmptyState>
+      <section className="my-12 max-w-[44ch]">
+        <p className="text-[24px] font-medium leading-[1.45] tracking-[-0.01em] text-ink">
+          {topInsight ? (
+            <>
+              Clearing <strong className="font-semibold text-teal-700">{topInsight.title}</strong>{" "}
+              {topInsight.consequence}.
+            </>
           ) : (
-            <EmptyState>No source projection available.</EmptyState>
+            "No blocked decision is holding downstream work right now."
           )}
-        </Card>
+        </p>
       </section>
+
+      <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(300px,2fr)] lg:items-start">
+        <section>
+          <div className="mb-4">
+            <div className="section-label">Decide</div>
+            {sourceLine("compound workbench --json + compound reviews --json + compound memory candidates --json")}
+          </div>
+          <DecisionRows rows={decisionRows} />
+        </section>
+
+        <div className="flex flex-col gap-9">
+          <section>
+            <div className="mb-4">
+              <div className="section-label">Agents</div>
+              {sourceLine("compound workbench --json + compound work leases --json")}
+            </div>
+            <Agents lines={agents} />
+          </section>
+
+          <section>
+            <div className="mb-4">
+              <div className="section-label">World Δ · 7 days</div>
+              {sourceLine("compound workbench --json")}
+            </div>
+            <WorldBars recent={recent} topDecision={topInsight?.title} />
+          </section>
+        </div>
+      </div>
+
+      <KnowsStrip candidates={memoryCandidates} />
+
+      <footer className="mt-14 border-t border-line pt-4 text-[11.5px] text-ink-3">
+        Every section reads live CLI projections and names its source.
+      </footer>
     </div>
   );
 }
