@@ -374,12 +374,28 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	if actor == "" {
 		actor = "codex"
 	}
+	// Kill-switch (W9-J4), defense-in-depth: an autonomous (non-operator) admission of a
+	// director-proposed work out of `proposed` is denied while the policy-owned autonomy
+	// halt is engaged, even through this generic seam. Manual operator admit, normal
+	// claim, and normal advance never enter this branch; when the halt is unset it is a
+	// no-op, so behavior is unchanged.
+	if err := s.autonomyHaltGuard(w, in.To, actor, now); err != nil {
+		return w, err
+	}
 	if err := heldReleaseOperatorError(w.State, in.To, actor); err != nil {
 		return w, err
 	}
 	if err := directorProposedReleaseOperatorError(w, in.To, actor); err != nil {
 		return w, err
 	}
+	return s.applyAdvance(w, in, now)
+}
+
+// applyAdvance performs the state write for a legal, gate-cleared advance. It is shared
+// by Advance (after its provenance/halt guards) and AdmitAuto (after its kill-switch and
+// eligibility gates) so both mutate through one audited path.
+func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
+	workID := w.ID
 	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
 	if err != nil {
 		return w, err

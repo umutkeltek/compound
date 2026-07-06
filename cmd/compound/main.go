@@ -3812,7 +3812,7 @@ func loadActionIntent(path string) envelope.ActionIntent {
 // (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -4267,8 +4267,68 @@ func cmdPolicy(args []string) {
 			report.SourceAuthority = records
 		}
 		printJSON(report)
+	case "autonomy-halt":
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound policy autonomy-halt [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		type autonomyHaltClass struct {
+			Class  string `json:"class"`
+			Reason string `json:"reason,omitempty"`
+		}
+		type autonomyHaltReport struct {
+			AuthorityRef       string              `json:"authority_ref"`
+			AuthorityPath      string              `json:"authority_path"`
+			Source             string              `json:"source"`
+			Installed          bool                `json:"installed"`
+			GlobalHalt         bool                `json:"global_halt"`
+			Reason             string              `json:"reason,omitempty"`
+			DisabledClasses    []autonomyHaltClass `json:"disabled_classes,omitempty"`
+			DisabledClassCount int                 `json:"disabled_class_count"`
+		}
+		halt, source, err := policy.LoadAutonomyHalt(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report := autonomyHaltReport{
+			AuthorityRef:  policy.AutonomyHaltAuthorityRef,
+			AuthorityPath: policy.AutonomyHaltPath(homePath),
+			Source:        source,
+			Installed:     source != "unset",
+			GlobalHalt:    halt.Global,
+			Reason:        halt.Reason,
+		}
+		for class, reason := range halt.DisabledClasses {
+			report.DisabledClasses = append(report.DisabledClasses, autonomyHaltClass{Class: class, Reason: reason})
+		}
+		sort.Slice(report.DisabledClasses, func(i, j int) bool { return report.DisabledClasses[i].Class < report.DisabledClasses[j].Class })
+		report.DisabledClassCount = len(report.DisabledClasses)
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("autonomy halt authority: %s\n", report.AuthorityRef)
+		fmt.Printf("source: %s\n", report.Source)
+		fmt.Printf("global_halt: %t\n", report.GlobalHalt)
+		if report.Reason != "" {
+			fmt.Printf("reason: %s\n", report.Reason)
+		}
+		fmt.Printf("disabled_classes: %d\n", report.DisabledClassCount)
+		for _, dc := range report.DisabledClasses {
+			if dc.Reason != "" {
+				fmt.Printf("  - %s: %s\n", dc.Class, dc.Reason)
+			} else {
+				fmt.Printf("  - %s\n", dc.Class)
+			}
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ...")
 		os.Exit(2)
 	}
 }
