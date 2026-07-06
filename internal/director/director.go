@@ -319,7 +319,7 @@ func productLoopCandidates(homePath string, now time.Time) ([]candidate, error) 
 
 func productCardCandidate(loop product.ProductLoop, card product.LoopActionCard, kind string, refs []string) candidate {
 	summary := firstNonEmpty(card.ActionSummary, card.Title)
-	consequence := "Admitting this creates bounded product-loop work for " + summary
+	consequence := "Adding this creates bounded product-loop work for " + summary
 	return candidate{
 		Kind:               kind,
 		SourceID:           card.ID,
@@ -415,12 +415,12 @@ func synthesisContradictionCandidates(homePath string, now time.Time) ([]candida
 			Kind:             "synthesis_contradiction",
 			SourceID:         reviewSourceID(item),
 			Title:            "Review synthesis contradiction " + item.ID,
-			Consequence:      "Admitting this creates focused synthesis contradiction review work for " + item.ID,
+			Consequence:      "Adding this creates focused synthesis contradiction review work for " + item.ID,
 			CapabilityClass:  "judge-critique",
 			Owner:            "memory-synthesis",
 			CanonicalSurface: "director:synthesis-contradiction:" + item.ID,
 			SuccessPredicate: "Review synthesis contradiction " + item.ID + " without bulk applying or superseding memory",
-			DesiredOutcome:   "Admitting this creates focused synthesis contradiction review work for " + item.ID,
+			DesiredOutcome:   "Adding this creates focused synthesis contradiction review work for " + item.ID,
 			Command:          []string{"compound", "reviews", "--area", "synthesis-contradictions", "--json"},
 			RequiredInputs:   []string{"current synthesis contradiction artifact", "claim/candidate evidence named in evidence_refs"},
 			ExpectedValidation: []string{
@@ -452,12 +452,12 @@ func reviewDebtCandidates(homePath string, now time.Time) ([]candidate, error) {
 			Kind:             "review_debt",
 			SourceID:         reviewSourceID(item),
 			Title:            title,
-			Consequence:      "Admitting this creates review-debt resolution work for " + area + "/" + item.ID,
+			Consequence:      "Adding this creates review-debt resolution work for " + area + "/" + item.ID,
 			CapabilityClass:  "judge-critique",
 			Owner:            "compound-reviews",
 			CanonicalSurface: "director:review-debt:" + area + ":" + item.ID,
 			SuccessPredicate: "Resolve review artifact " + area + "/" + item.ID + " through its owner command or an explicit parked decision",
-			DesiredOutcome:   "Admitting this creates review-debt resolution work for " + area + "/" + item.ID,
+			DesiredOutcome:   "Adding this creates review-debt resolution work for " + area + "/" + item.ID,
 			Command:          []string{"compound", "reviews", "--area", area, "--json"},
 			RequiredInputs:   []string{"current review artifact " + area + "/" + item.ID, "reviewer decision or owner command named by the review surface"},
 			ExpectedValidation: []string{
@@ -493,12 +493,12 @@ func sourceConnectionCandidates(homePath string, now time.Time) ([]candidate, er
 				Kind:               "source_connection_readiness",
 				SourceID:           card.ID,
 				Title:              card.Title,
-				Consequence:        "Admitting this creates source-connection readiness work for " + conn.Label + ": " + card.Title,
+				Consequence:        "Adding this creates source-connection readiness work for " + conn.Label + ": " + card.Title,
 				CapabilityClass:    "classify-extract",
 				Owner:              "compound-sources",
 				CanonicalSurface:   "director:source-connection:" + conn.ID + ":" + card.ID,
 				SuccessPredicate:   "Resolve source connection " + conn.ID + " card " + card.ID + "; proof: " + card.Proof,
-				DesiredOutcome:     "Admitting this creates source-connection readiness work for " + conn.Label + ": " + card.Title,
+				DesiredOutcome:     "Adding this creates source-connection readiness work for " + conn.Label + ": " + card.Title,
 				Command:            append([]string{}, card.Command...),
 				RequiredInputs:     append([]string{}, card.RequiredInputs...),
 				ExpectedValidation: append([]string{}, card.ExpectedValidation...),
@@ -535,12 +535,12 @@ func jobHealthCandidates(homePath string, now time.Time) ([]candidate, error) {
 			Kind:             "job_health",
 			SourceID:         plan.ID,
 			Title:            "Review job health for " + plan.JobName,
-			Consequence:      "Admitting this creates job-health review work for " + plan.JobName,
+			Consequence:      "Adding this creates job-health review work for " + plan.JobName,
 			CapabilityClass:  "judge-critique",
 			Owner:            "compound-authority",
 			CanonicalSurface: "director:job-health:" + plan.ID,
 			SuccessPredicate: "Review failing scheduled job " + plan.JobName + " without executing or mutating scheduler state",
-			DesiredOutcome:   "Admitting this creates job-health review work for " + plan.JobName,
+			DesiredOutcome:   "Adding this creates job-health review work for " + plan.JobName,
 			Command:          []string{"compound", "authority", "job-health-plan"},
 			RequiredInputs:   plan.ReviewDraft.RequiredEvidence,
 			ExpectedValidation: []string{

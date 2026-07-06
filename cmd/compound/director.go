@@ -58,7 +58,7 @@ func cmdDirector(args []string) {
 		printJSON(report)
 		return
 	}
-	fmt.Printf("director propose mode=%s proposals=%d suppressed=%d skipped=%d\n", report.Mode, report.ProposalCount, report.SuppressedDuplicateCount, report.SkippedCount)
+	fmt.Printf("suggested work mode=%s proposals=%d suppressed=%d skipped=%d\n", report.Mode, report.ProposalCount, report.SuppressedDuplicateCount, report.SkippedCount)
 	if report.ResultPath != "" {
 		fmt.Printf("result: %s\n", report.ResultPath)
 	}

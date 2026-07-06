@@ -24,7 +24,7 @@ func TestBuildProposalRequiresEvidenceRefs(t *testing.T) {
 		Kind:             "review_debt",
 		SourceID:         "synthetic-review",
 		Title:            "Resolve synthetic review debt",
-		Consequence:      "Admitting this creates bounded synthetic review work",
+		Consequence:      "Adding this creates bounded synthetic review work",
 		CapabilityClass:  "judge-critique",
 		Owner:            "compound-tests",
 		SuccessPredicate: "resolve synthetic review debt",
@@ -52,8 +52,8 @@ func TestProposeDedupesPriorDirectorProposal(t *testing.T) {
 	assertHasPrefix(t, first.Proposals[0].EvidenceRefs, "director_trigger:")
 	assertHasPrefix(t, first.Proposals[0].EvidenceRefs, "route_plan:")
 	assertHasRef(t, first.Proposals[0].EvidenceRefs, "review:synthetic-review-debt/review-debt-01")
-	if !strings.HasPrefix(first.Proposals[0].Consequence, "Admitting this creates ") {
-		t.Fatalf("proposal consequence should name admission effect: %q", first.Proposals[0].Consequence)
+	if !strings.HasPrefix(first.Proposals[0].Consequence, "Adding this creates ") {
+		t.Fatalf("proposal consequence should name add effect: %q", first.Proposals[0].Consequence)
 	}
 	if len(first.Proposals[0].RoutePlan.Chain) == 0 {
 		t.Fatalf("proposal missing suggested route chain: %+v", first.Proposals[0].RoutePlan)
