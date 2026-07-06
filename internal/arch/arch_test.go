@@ -26,9 +26,9 @@ func TestDoctorGreenAgainstRealRepo(t *testing.T) {
 
 // The candidate-map check is pure (no fs) — every kind has one home dir, created by home, with a
 // consumer. This locks the B1 invariant.
-func TestDocLeakUsesSourceLeakTokensForFixtures(t *testing.T) {
+func TestDocLeakUsesSourceLeakTokensForPublicSourceSurfaces(t *testing.T) {
 	repo := t.TempDir()
-	for _, dir := range []string{"docs", "docs_private", "fixtures"} {
+	for _, dir := range []string{"docs", "docs_private", "fixtures", "tools", filepath.Join("console", "src")} {
 		if err := os.MkdirAll(filepath.Join(repo, dir), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -42,12 +42,31 @@ func TestDocLeakUsesSourceLeakTokensForFixtures(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "fixtures", "example.yaml"), []byte("name: private-product\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	findings := checkDocLeak(repo, false)
-	if len(findings) != 1 || findings[0].Severity != Fail {
-		t.Fatalf("findings = %+v, want one source leak failure", findings)
+	if err := os.WriteFile(filepath.Join(repo, "tools", "edge.test.ts"), []byte(`const product = "private-product";`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(findings[0].Message, "fixtures/example.yaml") || !strings.Contains(findings[0].Message, "private-product") {
-		t.Fatalf("failure should name source fixture token: %+v", findings)
+	if err := os.WriteFile(filepath.Join(repo, "console", "src", "page.tsx"), []byte(`export const label = "private-product";`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkDocLeak(repo, false)
+	if len(findings) != 3 {
+		t.Fatalf("findings = %+v, want fixture, tools, and console source leak failures", findings)
+	}
+	for _, want := range []string{
+		"fixtures/example.yaml",
+		"tools/edge.test.ts",
+		filepath.Join("console", "src", "page.tsx"),
+	} {
+		var found bool
+		for _, finding := range findings {
+			if finding.Severity == Fail && strings.Contains(finding.Message, want) && strings.Contains(finding.Message, "private-product") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("findings should name %s token leak: %+v", want, findings)
+		}
 	}
 }
 

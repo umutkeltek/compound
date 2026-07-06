@@ -344,13 +344,15 @@ func sourceLeakScanRoots(repoRoot string) []string {
 		filepath.Join(repoRoot, "fixtures"),
 		filepath.Join(repoRoot, "internal"),
 		filepath.Join(repoRoot, "cmd"),
+		filepath.Join(repoRoot, "tools"),
+		filepath.Join(repoRoot, "console"),
 	}
 }
 
 func leakScanFile(path string) bool {
 	ext := filepath.Ext(path)
 	switch ext {
-	case ".go", ".md", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".txt":
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".md", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".txt":
 		return true
 	default:
 		return false

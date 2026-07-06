@@ -45,7 +45,7 @@ describe("asc_daily_signals edge", () => {
       {
         apps: [
           {
-            product_id: "product:exampleapp",
+            product_id: "product:sample-health-app",
             asc_app_id: "123456789",
             metrics: ["units", "developer_proceeds_usd", "product_page_views"],
           },
