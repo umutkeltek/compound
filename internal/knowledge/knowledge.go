@@ -1087,7 +1087,7 @@ func sourceCandidateClasses(export Export, item Item) []string {
 	}
 	switch normalizeCandidateClass(export.Source.Kind) {
 	case "x_bookmarks", "twitter_bookmarks":
-		return []string{"reference", "design_taste_example", "product_idea", "technique", "market_take"}
+		return []string{"reference"}
 	default:
 		return nil
 	}

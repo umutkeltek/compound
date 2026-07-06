@@ -316,7 +316,7 @@ func TestImportXBookmarksExportRecordsSourceObservationsWithoutPromotion(t *test
 	if len(report.EvidenceIDs) != 2 || len(report.ExtractionIDs) != 2 || len(report.CandidateIDs) == 0 {
 		t.Fatalf("bookmark evidence/candidates/extractions = %+v", report)
 	}
-	if len(report.SourceObservationIDs) != 2 || len(report.SourceCandidateIDs) != 10 || len(report.NoPromoteIDs) != 10 {
+	if len(report.SourceObservationIDs) != 2 || len(report.SourceCandidateIDs) != 2 || len(report.NoPromoteIDs) != 2 {
 		t.Fatalf("bookmark source observations = %+v", report)
 	}
 
@@ -350,7 +350,7 @@ func TestImportXBookmarksExportRecordsSourceObservationsWithoutPromotion(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sourceList.Counts.SourceObservations != 10 || sourceList.Counts.NoPromoteDecisions != 10 || sourceList.Counts.PromoteDisallowed != 10 {
+	if sourceList.Counts.SourceObservations != 2 || sourceList.Counts.NoPromoteDecisions != 2 || sourceList.Counts.PromoteDisallowed != 2 {
 		t.Fatalf("source observation list = %+v", sourceList.Counts)
 	}
 	gotKinds := map[string]int{}
@@ -361,19 +361,71 @@ func TestImportXBookmarksExportRecordsSourceObservationsWithoutPromotion(t *test
 		}
 	}
 	wantKinds := map[string]int{
-		string(candidates.CapabilityObs):     2,
-		string(candidates.Taste):             2,
-		string(candidates.ProductHypothesis): 4,
-		string(candidates.MethodUpgrade):     2,
+		string(candidates.CapabilityObs): 2,
 	}
 	for kind, want := range wantKinds {
 		if gotKinds[kind] != want {
 			t.Fatalf("source candidate kind %s = %d, want %d; all=%+v", kind, gotKinds[kind], want, gotKinds)
 		}
 	}
+	if len(gotKinds) != len(wantKinds) {
+		t.Fatalf("source candidate kinds = %+v, want only %+v", gotKinds, wantKinds)
+	}
 
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("bookmark import must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestImportXBookmarksExplicitCandidateClassesControlsFanout(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	export := Export{
+		SchemaVersion: ExportSchemaVersion,
+		Source: Source{
+			Kind:       "x_bookmarks",
+			Ref:        "fixture-batch:explicit-classes",
+			CapturedAt: rfc3339(testNow),
+		},
+		Items: []Item{{
+			Ref:              "x-bookmark:explicit-001",
+			URL:              "https://example.invalid/bookmarks/explicit-classes",
+			BookmarkedAt:     rfc3339(testNow.Add(-time.Hour)),
+			CandidateClasses: []string{"reference", "technique", "market_take", "market_take", "unknown"},
+			Content:          "Synthetic bookmark text with explicitly requested source candidate classes.",
+		}},
+	}
+
+	report, err := Import(homePath, store, export, "", testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.SourceObservationIDs) != 1 || len(report.SourceCandidateIDs) != 3 || len(report.NoPromoteIDs) != 3 {
+		t.Fatalf("explicit bookmark source observations = %+v", report)
+	}
+	sourceList, err := sourceobs.ListSourceObservations(homePath, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotKinds := map[string]int{}
+	for _, item := range sourceList.Items {
+		gotKinds[item.Kind]++
+	}
+	wantKinds := map[string]int{
+		string(candidates.CapabilityObs):     1,
+		string(candidates.MethodUpgrade):     1,
+		string(candidates.ProductHypothesis): 1,
+	}
+	for kind, want := range wantKinds {
+		if gotKinds[kind] != want {
+			t.Fatalf("explicit source candidate kind %s = %d, want %d; all=%+v", kind, gotKinds[kind], want, gotKinds)
+		}
+	}
+	if len(gotKinds) != len(wantKinds) {
+		t.Fatalf("explicit source candidate kinds = %+v, want %+v", gotKinds, wantKinds)
 	}
 }
 
