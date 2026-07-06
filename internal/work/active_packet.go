@@ -89,7 +89,7 @@ func (s *Store) ActivePacketProof(now time.Time, surface string, expectedPacketE
 	if err != nil {
 		return report, err
 	}
-	item := s.workbenchItem(w, events, &projection)
+	item := s.workbenchItem(w, events, &projection, holdEvidenceIndex{})
 
 	report.Status = "risk"
 	report.WorkID = item.WorkID

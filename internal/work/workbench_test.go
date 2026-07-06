@@ -1051,6 +1051,123 @@ func TestWorkbenchSurfacesASCOperatorGateCardForHeldWork(t *testing.T) {
 	}
 }
 
+func TestWorkbenchMarksHeldCardConditionStaleWhenReceiptNamesGate(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private config before scheduler",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := closeSyntheticEvidenceWork(t, s, []string{"operator_gate:asc-private-config", "asc_credential_smoke=ok"})
+
+	report, err := s.Workbench(fixedNow.Add(5*time.Minute), WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findWorkbenchItem(t, report.Open, held.ID)
+	if len(item.ReviewCards) != 1 {
+		t.Fatalf("review cards = %+v", item.ReviewCards)
+	}
+	card := item.ReviewCards[0]
+	if card.ConditionStatus != workHoldConditionStale ||
+		card.TriggeringEvidenceRef != closed.Receipt.ID ||
+		!contains(card.MatchedConditionRefs, "operator_gate:asc-private-config") ||
+		!strings.Contains(card.NextAction, "condition stale") ||
+		!strings.Contains(card.NextAction, "inspect normalized output") {
+		t.Fatalf("stale held card missing evidence/next action: %+v receipt=%s", card, closed.Receipt.ID)
+	}
+	if item.State != "held" || item.NextAction != card.NextAction {
+		t.Fatalf("held item should remain held with corrected next action: %+v", item)
+	}
+	action, ok := adjacentActionByID(report.DispatchNext.AdjacentProgress.NonPacketActions, card.ID)
+	if !ok || action.NextAction != card.NextAction || action.ReviewCard == nil || action.ReviewCard.ConditionStatus != workHoldConditionStale {
+		t.Fatalf("adjacent action missing stale review card fields: %+v", action)
+	}
+}
+
+func TestHeldConditionStaleEvidenceDoesNotAutoReleaseWork(t *testing.T) {
+	s := newStore(t)
+	held, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "held app-store-connect ASC daily signals need private config before scheduler",
+		State:            "held",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := closeSyntheticEvidenceWork(t, s, []string{"operator_gate:asc-private-config"})
+	if _, err := s.Workbench(fixedNow.Add(5*time.Minute), WorkbenchOptions{RecentLimit: 10}); err != nil {
+		t.Fatal(err)
+	}
+	afterWorkbench, err := s.Get(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterWorkbench.State != "held" {
+		t.Fatalf("workbench evidence projection auto-released held work: %+v", afterWorkbench)
+	}
+	plan, err := s.AdvancePlan(held.ID, fixedNow.Add(6*time.Minute), AdvancePlanOptions{To: "ready", Actor: "codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != "not_advanceable" || plan.NoAction == "" || len(plan.AdvanceCommand) != 0 {
+		t.Fatalf("non-operator held release plan should stay blocked: %+v", plan)
+	}
+	if _, err := s.Advance(held.ID, AdvanceInput{To: "ready", Actor: "codex", VerificationID: closed.Receipt.ID}, fixedNow.Add(7*time.Minute)); err == nil || !strings.Contains(err.Error(), "operator provenance") {
+		t.Fatalf("codex evidence-triggered release err = %v, want operator provenance rejection", err)
+	}
+	afterAdvance, err := s.Get(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterAdvance.State != "held" {
+		t.Fatalf("failed release attempt mutated held work: %+v", afterAdvance)
+	}
+}
+
+func TestWorkbenchOldFormatHeldRecordProjectsCleanly(t *testing.T) {
+	s := newStore(t)
+	legacy := BuildWork(CreateInput{
+		WorkID:           "work_legacyheld",
+		Owner:            "compound-core",
+		SuccessPredicate: "legacy held app-store-connect ASC private config valve",
+		State:            "held",
+	}, fixedNow)
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	delete(raw, "evidence_refs")
+	delete(raw, "non_goals")
+	delete(raw, "run_ids")
+	delete(raw, "artifact_ids")
+	delete(raw, "verification_ids")
+	delete(raw, "memory_candidate_ids")
+	if err := s.writeJSON(s.workPath(legacy.ID), raw); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findWorkbenchItem(t, report.Open, legacy.ID)
+	if item.State != "held" || len(item.ReviewCards) != 1 {
+		t.Fatalf("legacy held record did not project cleanly: %+v", item)
+	}
+	card := item.ReviewCards[0]
+	if card.ConditionStatus != "" || card.TriggeringEvidenceRef != "" || len(card.MatchedConditionRefs) != 0 {
+		t.Fatalf("legacy held record should not get stale marker without evidence: %+v", card)
+	}
+}
+
 func TestWorkbenchSurfacesTerminalActivePacketProof(t *testing.T) {
 	s := newStore(t)
 	packetPath := filepath.Join("..", "..", "fixtures", "work", "goal-packet.md")
@@ -1481,6 +1598,34 @@ func writeWorkbenchRouteOutcomeReview(t *testing.T, homePath string, review map[
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func closeSyntheticEvidenceWork(t *testing.T, s *Store, proofRefs []string) CloseResult {
+	t.Helper()
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "synthetic evidence work"}, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "codex", fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "codex"}, fixedNow.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex", VerificationID: "ver_synthetic_evidence"}, fixedNow.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "synthetic held condition evidence",
+		Changed:   true,
+		ProofRefs: proofRefs,
+	}, fixedNow.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return closed
 }
 
 func findWorkbenchItem(t *testing.T, items []WorkbenchItem, workID string) WorkbenchItem {

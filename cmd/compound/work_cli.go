@@ -161,6 +161,12 @@ func cmdWork(args []string) {
 			return
 		}
 		fmt.Printf("review-card-plan %s status=%s work=%s card=%s kind=%s\n", report.WorkPlan.ID, report.Status, report.WorkPlan.WorkID, report.ReviewCard.CardID, report.ReviewCard.CardKind)
+		if report.ReviewCard.ConditionStatus != "" {
+			fmt.Printf("condition_status: %s evidence=%s\n", report.ReviewCard.ConditionStatus, report.ReviewCard.TriggeringEvidenceRef)
+		}
+		if report.ReviewCard.NextAction != "" {
+			fmt.Printf("next_action: %s\n", report.ReviewCard.NextAction)
+		}
 		fmt.Printf("action_context: %s\n", strings.Join(report.ReviewCard.ActionCommand, " "))
 		if len(report.ReviewCard.RequiredInputs) > 0 {
 			fmt.Printf("required_inputs: %s\n", strings.Join(report.ReviewCard.RequiredInputs, " | "))

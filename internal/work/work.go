@@ -366,6 +366,13 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	if in.To != w.State && !canTransition(w.State, in.To) {
 		return w, fmt.Errorf("illegal transition %s -> %s (allowed: %s)", w.State, in.To, strings.Join(transitions[w.State], ", "))
 	}
+	actor := strings.TrimSpace(in.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	if err := heldReleaseOperatorError(w.State, in.To, actor); err != nil {
+		return w, err
+	}
 	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
 	if err != nil {
 		return w, err
@@ -500,6 +507,13 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	}
 	if w.State != in.Outcome && !canTransition(w.State, in.Outcome) {
 		return res, fmt.Errorf("cannot close %s from state %q to %q", workID, w.State, in.Outcome)
+	}
+	actor := strings.TrimSpace(in.Actor)
+	if actor == "" {
+		actor = "codex"
+	}
+	if err := heldReleaseOperatorError(w.State, in.Outcome, actor); err != nil {
+		return res, err
 	}
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
 		return res, fmt.Errorf("close --move-type must be one of %v, got %q", envelope.MoveTypes, in.MoveType)

@@ -115,6 +115,7 @@ type WorkbenchAdjacentAction struct {
 	ID                   string               `json:"id"`
 	Kind                 string               `json:"kind"`
 	Title                string               `json:"title"`
+	NextAction           string               `json:"next_action,omitempty"`
 	Command              []string             `json:"command,omitempty"`
 	RequiredInputs       []string             `json:"required_inputs,omitempty"`
 	ExpectedValidation   []string             `json:"expected_validation,omitempty"`
@@ -192,6 +193,10 @@ type WorkbenchReviewCard struct {
 	ID                     string   `json:"id"`
 	Kind                   string   `json:"kind"`
 	Title                  string   `json:"title"`
+	NextAction             string   `json:"next_action,omitempty"`
+	ConditionStatus        string   `json:"condition_status,omitempty"`
+	TriggeringEvidenceRef  string   `json:"triggering_evidence_ref,omitempty"`
+	MatchedConditionRefs   []string `json:"matched_condition_refs,omitempty"`
 	WorkID                 string   `json:"work_id"`
 	GateID                 string   `json:"gate_id,omitempty"`
 	SourceKind             string   `json:"source_kind,omitempty"`
@@ -294,6 +299,10 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 	if err != nil {
 		return report, err
 	}
+	holdEvidence, holdEvidenceWarnings := s.workHoldEvidenceIndex()
+	for _, warning := range holdEvidenceWarnings {
+		report.Integrity = append(report.Integrity, warning)
+	}
 	routeOutcomes, routeWarnings := s.workbenchRouteOutcomeIndex()
 	for _, warning := range routeWarnings {
 		report.Integrity = append(report.Integrity, warning)
@@ -310,7 +319,7 @@ func (s *Store) Workbench(now time.Time, opts WorkbenchOptions) (WorkbenchReport
 		if err != nil {
 			return report, err
 		}
-		item := s.workbenchItem(w, events, &report)
+		item := s.workbenchItem(w, events, &report, holdEvidence)
 		routeOutcomes.attach(&item)
 		item.ObservatoryTags = workbenchObservatoryTags(item)
 		report.Counts.RunObservations += len(item.RunObservations)
@@ -608,7 +617,7 @@ func lastCreatePlanID(events []Event) string {
 	return ""
 }
 
-func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport) WorkbenchItem {
+func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *WorkbenchReport, holdEvidence holdEvidenceIndex) WorkbenchItem {
 	item := WorkbenchItem{
 		WorkID:             w.ID,
 		State:              w.State,
@@ -650,8 +659,9 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 	}
 	item.ReviewCards = s.workbenchReviewCards(w.ID, item.RunArtifacts)
 	item.ReviewCards = append(item.ReviewCards, workbenchOperatorGateCards(w, item)...)
+	item.ReviewCards = markStaleHoldReviewCards(w, item, item.ReviewCards, holdEvidence)
 	if len(item.ReviewCards) > 0 && (w.State == "held" || w.State == "blocked") {
-		item.NextAction = item.ReviewCards[0].Title
+		item.NextAction = firstNonEmpty(item.ReviewCards[0].NextAction, item.ReviewCards[0].Title)
 	}
 	if actionContext, warnings := s.actionContextFromCreatePlan(w, events); actionContext != nil || len(warnings) > 0 {
 		item.ActionContext = actionContext
@@ -1093,6 +1103,7 @@ func workbenchOperatorGateCards(w envelope.WorkEnvelope, item WorkbenchItem) []W
 		},
 		ExpectedValidation: []string{
 			"asc preflight returns status ok or warn",
+			"asc_credential_smoke=ok evidence ref names credential readiness",
 			"product authority checked for mapped products",
 			"no product signal apply and no scheduler load",
 		},
@@ -1640,6 +1651,7 @@ func adjacentNonPacketActions(report WorkbenchReport, heldWorkIDs []string) []Wo
 				ID:                 card.ID,
 				Kind:               "review_card",
 				Title:              card.Title,
+				NextAction:         card.NextAction,
 				Command:            append([]string{}, card.Command...),
 				RequiredInputs:     append([]string{}, card.RequiredInputs...),
 				ExpectedValidation: append([]string{}, card.ExpectedValidation...),

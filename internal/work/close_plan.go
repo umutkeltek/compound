@@ -203,11 +203,14 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 			return plan, nil
 		}
 	}
+	heldReleaseErr := heldReleaseOperatorError(w.State, outcome, actor)
 	switch {
 	case !terminalStates[outcome]:
 		plan.NoAction = fmt.Sprintf("invalid close outcome %q", outcome)
 	case !oneOf(moveType, envelope.MoveTypes):
 		plan.NoAction = fmt.Sprintf("invalid move_type %q", moveType)
+	case heldReleaseErr != nil:
+		plan.NoAction = heldReleaseErr.Error()
 	case w.State == outcome || canTransition(w.State, outcome):
 		plan.CloseCommand = []string{"compound", "work", "close", w.ID, "--outcome", outcome, "--move-type", moveType, "--by", actor}
 		if len(proofRefs) > 0 {

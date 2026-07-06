@@ -110,7 +110,10 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 			"does not enforce policy; it reports advance gate decision",
 		},
 	}
+	heldReleaseErr := heldReleaseOperatorError(w.State, to, actor)
 	switch {
+	case heldReleaseErr != nil:
+		plan.NoAction = heldReleaseErr.Error()
 	case terminalStates[w.State]:
 		plan.NoAction = fmt.Sprintf("work is terminal in state %q", w.State)
 	case to == w.State || canTransition(w.State, to):

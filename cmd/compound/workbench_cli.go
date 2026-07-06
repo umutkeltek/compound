@@ -407,6 +407,12 @@ func cmdWorkbench(args []string) {
 					break
 				}
 				fmt.Printf("adjacent_non_packet_action: %s kind=%s operator=%t proof=%s\n", action.ID, action.Kind, action.RequiresOperator, action.Proof)
+				if action.NextAction != "" {
+					fmt.Printf(" action_next: %s\n", action.NextAction)
+				}
+				if action.ReviewCard != nil && action.ReviewCard.ConditionStatus != "" {
+					fmt.Printf(" action_condition_status: %s evidence=%s\n", action.ReviewCard.ConditionStatus, action.ReviewCard.TriggeringEvidenceRef)
+				}
 				if len(action.Command) > 0 {
 					fmt.Printf(" action_command: %s\n", strings.Join(action.Command, " "))
 				}
