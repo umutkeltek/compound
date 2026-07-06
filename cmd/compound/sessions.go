@@ -2,38 +2,48 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
+	"compound/internal/capgraph"
+	"compound/internal/distiller"
 	"compound/internal/home"
+	"compound/internal/mem"
+	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
 
 const sessionMiningReportSchemaVersion = "compound.sessions_mine_report.v0.1"
+const sessionMiningApplyReportSchemaVersion = "compound.sessions_mine_apply_report.v0.1"
 
 type sessionMiningReport struct {
-	SchemaVersion         string                 `json:"schema_version"`
-	Status                string                 `json:"status"`
-	GeneratedAt           string                 `json:"generated_at"`
-	Since                 string                 `json:"since"`
-	SinceCutoff           string                 `json:"since_cutoff"`
-	DryRun                bool                   `json:"dry_run"`
-	SessionCount          int                    `json:"session_count"`
-	HarnessCounts         map[string]int         `json:"harness_counts"`
-	HookCounts            map[string]int         `json:"hook_counts"`
-	PreferencesFound      []sessionMiningFinding `json:"preferences_found"`
-	StuckPoints           []sessionMiningFinding `json:"stuck_points"`
-	RepeatedReinventions  []sessionMiningFinding `json:"repeated_reinventions"`
-	CandidateSkillUpdates []sessionMiningFinding `json:"candidate_skill_updates"`
-	RulesToRetire         []sessionMiningFinding `json:"rules_to_retire"`
-	MemoryCandidates      []sessionMiningFinding `json:"memory_candidates"`
-	ProofRequired         []string               `json:"proof_required"`
-	Checks                []sessionMiningCheck   `json:"checks"`
-	NextCommand           []string               `json:"next_command"`
+	SchemaVersion         string                    `json:"schema_version"`
+	Status                string                    `json:"status"`
+	GeneratedAt           string                    `json:"generated_at"`
+	Since                 string                    `json:"since"`
+	SinceCutoff           string                    `json:"since_cutoff"`
+	DryRun                bool                      `json:"dry_run"`
+	SessionCount          int                       `json:"session_count"`
+	HarnessCounts         map[string]int            `json:"harness_counts"`
+	HookCounts            map[string]int            `json:"hook_counts"`
+	PreferencesFound      []sessionMiningFinding    `json:"preferences_found"`
+	StuckPoints           []sessionMiningFinding    `json:"stuck_points"`
+	RepeatedReinventions  []sessionMiningFinding    `json:"repeated_reinventions"`
+	CandidateSkillUpdates []sessionMiningFinding    `json:"candidate_skill_updates"`
+	RulesToRetire         []sessionMiningFinding    `json:"rules_to_retire"`
+	MemoryCandidates      []sessionMiningFinding    `json:"memory_candidates"`
+	ProofRequired         []string                  `json:"proof_required"`
+	Checks                []sessionMiningCheck      `json:"checks"`
+	NextCommand           []string                  `json:"next_command"`
+	Apply                 *sessionMiningApplyReport `json:"apply,omitempty"`
 }
 
 type sessionMiningFinding struct {
@@ -49,13 +59,40 @@ type sessionMiningCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+type sessionMiningApplyReport struct {
+	SchemaVersion          string                        `json:"schema_version"`
+	Status                 string                        `json:"status"`
+	CreatedAt              string                        `json:"created_at"`
+	DryRun                 bool                          `json:"dry_run"`
+	PreferenceCandidateIDs []string                      `json:"preference_candidate_ids,omitempty"`
+	RetireProposalIDs      []string                      `json:"retire_proposal_ids,omitempty"`
+	SkillUpdateProposalIDs []string                      `json:"skill_update_proposal_ids,omitempty"`
+	RoutedArtifacts        []sessionMiningRoutedArtifact `json:"routed_artifacts,omitempty"`
+	Warnings               []string                      `json:"warnings,omitempty"`
+}
+
+type sessionMiningRoutedArtifact struct {
+	Route          string   `json:"route"`
+	ID             string   `json:"id"`
+	CandidateID    string   `json:"candidate_id,omitempty"`
+	PlanPath       string   `json:"plan_path,omitempty"`
+	ReviewPath     string   `json:"review_path,omitempty"`
+	ReviewYAMLPath string   `json:"review_yaml_path,omitempty"`
+	EvidenceRefs   []string `json:"evidence_refs"`
+}
+
 type sessionHookEvent struct {
-	ID        string `json:"id"`
-	CreatedAt string `json:"created_at"`
-	Harness   string `json:"harness"`
-	HookName  string `json:"hook_name"`
-	Status    string `json:"status"`
-	IDs       struct {
+	ID             string   `json:"id"`
+	CreatedAt      string   `json:"created_at"`
+	Harness        string   `json:"harness"`
+	HookName       string   `json:"hook_name"`
+	HookCapability string   `json:"hook_capability,omitempty"`
+	InputHash      string   `json:"input_hash,omitempty"`
+	SideEffects    []string `json:"side_effects,omitempty"`
+	OutputRef      string   `json:"output_ref,omitempty"`
+	Status         string   `json:"status"`
+	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
+	IDs            struct {
 		SessionID string `json:"session_id"`
 		WorkID    string `json:"work_id"`
 	} `json:"ids"`
@@ -76,13 +113,14 @@ func cmdSessions(args []string) {
 }
 
 func sessionsUsage() string {
-	return "usage: compound sessions mine --dry-run [--since 24h] [--json]"
+	return "usage: compound sessions mine [--dry-run|--apply] [--since 24h] [--json]"
 }
 
 func cmdSessionsMine(args []string) {
 	since := "24h"
 	jsonOut := false
 	dryRun := false
+	apply := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--since":
@@ -94,6 +132,8 @@ func cmdSessionsMine(args []string) {
 			i++
 		case "--dry-run":
 			dryRun = true
+		case "--apply":
+			apply = true
 		case "--json":
 			jsonOut = true
 		default:
@@ -101,8 +141,8 @@ func cmdSessionsMine(args []string) {
 			os.Exit(2)
 		}
 	}
-	if !dryRun {
-		fmt.Fprintln(os.Stderr, "sessions mine: only --dry-run is supported")
+	if dryRun && apply {
+		fmt.Fprintln(os.Stderr, "sessions mine: choose --dry-run or --apply")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -115,17 +155,40 @@ func cmdSessionsMine(args []string) {
 		fmt.Fprintln(os.Stderr, "sessions mine:", err)
 		os.Exit(1)
 	}
+	if apply {
+		applyReport, err := applySessionMiningReport(homePath, &report, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sessions mine apply:", err)
+			os.Exit(1)
+		}
+		report.Apply = &applyReport
+		report.DryRun = false
+		report.Status = applyReport.Status
+		report.NextCommand = []string{"compound", "reviews", "--json"}
+	} else if !dryRun {
+		report.NextCommand = []string{"compound", "sessions", "mine", "--since", since, "--apply", "--json"}
+	}
 	if jsonOut {
 		printJSON(report)
 		return
 	}
-	fmt.Printf("# session mining dry-run\n\n")
+	if apply {
+		fmt.Printf("# session mining apply\n\n")
+	} else {
+		fmt.Printf("# session mining dry-run\n\n")
+	}
 	fmt.Printf("- status: %s\n", report.Status)
 	fmt.Printf("- since: %s\n", report.Since)
 	fmt.Printf("- sessions: %d\n", report.SessionCount)
 	fmt.Printf("- stuck_points: %d\n", len(report.StuckPoints))
 	fmt.Printf("- memory_candidates: %d\n", len(report.MemoryCandidates))
 	fmt.Printf("- skill_updates: %d\n", len(report.CandidateSkillUpdates))
+	fmt.Printf("- preferences_found: %d\n", len(report.PreferencesFound))
+	if report.Apply != nil {
+		fmt.Printf("- preference_candidates: %d\n", len(report.Apply.PreferenceCandidateIDs))
+		fmt.Printf("- retire_proposals: %d\n", len(report.Apply.RetireProposalIDs))
+		fmt.Printf("- skill_update_proposals: %d\n", len(report.Apply.SkillUpdateProposalIDs))
+	}
 	for _, proof := range report.ProofRequired {
 		fmt.Printf("- proof_required: %s\n", proof)
 	}
@@ -192,7 +255,7 @@ func buildSessionMiningReport(homePath, since string, now time.Time) (sessionMin
 	report.CandidateSkillUpdates = sessionMiningSkillUpdates(events)
 	report.RepeatedReinventions = sessionMiningRepeatedReinventions(workbench)
 	report.RulesToRetire = sessionMiningRulesToRetire(workbench)
-	report.PreferencesFound = []sessionMiningFinding{}
+	report.PreferencesFound = sessionMiningPreferences(events, workbench)
 	return report, nil
 }
 
@@ -326,23 +389,26 @@ func sessionMiningSkillUpdates(events []sessionHookEvent) []sessionMiningFinding
 	if len(events) == 0 {
 		return nil
 	}
-	byHarness := map[string]int{}
+	byHarness := map[string][]sessionHookEvent{}
 	for _, ev := range events {
 		if ev.Harness != "" {
-			byHarness[ev.Harness]++
+			byHarness[ev.Harness] = append(byHarness[ev.Harness], ev)
 		}
 	}
 	var out []sessionMiningFinding
-	for harness, count := range byHarness {
+	for harness, grouped := range byHarness {
+		count := len(grouped)
 		if count < 2 {
 			continue
 		}
 		out = append(out, sessionMiningFinding{
-			Kind:       "session_pattern_review",
-			Summary:    fmt.Sprintf("Review %d recent %s hook events for repeated tool gaps or reusable skill updates.", count, harness),
-			Confidence: 0.35,
+			Kind:         "session_pattern_review",
+			Summary:      fmt.Sprintf("Review %d recent %s hook events for repeated tool gaps or reusable skill updates.", count, harness),
+			EvidenceRefs: sessionEventGroupEvidenceRefs(grouped),
+			Confidence:   0.35,
 		})
 	}
+	sortSessionFindings(out)
 	return out
 }
 
@@ -361,9 +427,392 @@ func sessionMiningRulesToRetire(workbench work.WorkbenchReport) []sessionMiningF
 	if workbench.Counts.NeedsReview == 0 {
 		return nil
 	}
+	refs := []string{}
+	for _, item := range workbench.Open {
+		if item.State != "held" && item.State != "blocked" {
+			continue
+		}
+		refs = compactSessionRefs(append([]string{"work:" + item.WorkID}, item.EvidenceRefs...)...)
+		if len(refs) > 0 {
+			break
+		}
+	}
 	return []sessionMiningFinding{{
-		Kind:       "review_friction",
-		Summary:    "Review-held work exists; retire or hide any rule that only creates a decision card without changing future execution.",
-		Confidence: 0.3,
+		Kind:         "review_friction",
+		Summary:      "Review-held work exists; retire or hide any rule that only creates a decision card without changing future execution.",
+		EvidenceRefs: refs,
+		Confidence:   0.3,
 	}}
+}
+
+type sessionPreferenceSignal struct {
+	Kind         string
+	Label        string
+	EvidenceRefs []string
+}
+
+type sessionPreferenceGroup struct {
+	Kind         string
+	Label        string
+	Count        int
+	EvidenceRefs []string
+}
+
+func sessionMiningPreferences(events []sessionHookEvent, workbench work.WorkbenchReport) []sessionMiningFinding {
+	groups := map[string]*sessionPreferenceGroup{}
+	add := func(sig sessionPreferenceSignal) {
+		if sig.Kind == "" || sig.Label == "" || len(sig.EvidenceRefs) == 0 {
+			return
+		}
+		key := sig.Kind + "\x00" + strings.ToLower(strings.TrimSpace(sig.Label))
+		group := groups[key]
+		if group == nil {
+			group = &sessionPreferenceGroup{Kind: sig.Kind, Label: sig.Label}
+			groups[key] = group
+		}
+		group.Count++
+		group.EvidenceRefs = compactSessionRefs(append(group.EvidenceRefs, sig.EvidenceRefs...)...)
+	}
+	for _, ev := range events {
+		for _, sig := range sessionPreferenceSignalsFromEvent(ev) {
+			add(sig)
+		}
+	}
+	for _, sig := range sessionPreferenceSignalsFromWorkbench(workbench) {
+		add(sig)
+	}
+	out := make([]sessionMiningFinding, 0, len(groups))
+	for _, group := range groups {
+		if group.Count < 2 {
+			continue
+		}
+		out = append(out, sessionMiningFinding{
+			Kind:         group.Kind,
+			Summary:      sessionPreferenceSummary(group.Kind, group.Label, group.Count),
+			EvidenceRefs: group.EvidenceRefs,
+			Confidence:   sessionPreferenceConfidence(group.Kind, group.Count),
+		})
+	}
+	sortSessionFindings(out)
+	return out
+}
+
+func sessionPreferenceSignalsFromEvent(ev sessionHookEvent) []sessionPreferenceSignal {
+	refs := sessionEventEvidenceRefs(ev)
+	if len(refs) == 0 {
+		return nil
+	}
+	var out []sessionPreferenceSignal
+	for _, effect := range ev.SideEffects {
+		kind, label, ok := sessionPreferenceSignalFromSideEffect(effect, ev.HookName)
+		if !ok {
+			continue
+		}
+		out = append(out, sessionPreferenceSignal{Kind: kind, Label: label, EvidenceRefs: refs})
+	}
+	return out
+}
+
+func sessionPreferenceSignalFromSideEffect(effect, hookName string) (string, string, bool) {
+	raw := strings.TrimSpace(effect)
+	if raw == "" {
+		return "", "", false
+	}
+	lower := strings.ToLower(raw)
+	prefixes := []struct {
+		Prefix string
+		Kind   string
+	}{
+		{"operator_correction:", "operator_correction"},
+		{"correction:", "operator_correction"},
+		{"manual_override:", "manual_override"},
+		{"operator_override:", "manual_override"},
+		{"override:", "manual_override"},
+		{"tool_choice:", "repeated_tool_choice"},
+		{"tool:", "repeated_tool_choice"},
+		{"lane_choice:", "repeated_lane_choice"},
+		{"route_lane:", "repeated_lane_choice"},
+		{"lane:", "repeated_lane_choice"},
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(lower, prefix.Prefix) {
+			label := strings.TrimSpace(raw[len(prefix.Prefix):])
+			if label == "" {
+				return "", "", false
+			}
+			return prefix.Kind, label, true
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(hookName), "PostToolUse") && plainSessionToken(raw) {
+		return "repeated_tool_choice", raw, true
+	}
+	return "", "", false
+}
+
+func sessionPreferenceSignalsFromWorkbench(workbench work.WorkbenchReport) []sessionPreferenceSignal {
+	var out []sessionPreferenceSignal
+	items := append([]work.WorkbenchItem{}, workbench.Open...)
+	items = append(items, workbench.Recent...)
+	for _, item := range items {
+		for _, obs := range item.RunObservations {
+			for _, raw := range []string{obs.Note, obs.State} {
+				kind, label, ok := sessionPreferenceSignalFromSideEffect(raw, "")
+				if !ok {
+					continue
+				}
+				out = append(out, sessionPreferenceSignal{
+					Kind:         kind,
+					Label:        label,
+					EvidenceRefs: compactSessionRefs("work:"+item.WorkID, "run_observation:"+obs.ID, obs.ActionIntentID, obs.PolicyDecisionID),
+				})
+			}
+		}
+		for _, route := range item.RouteOutcomes {
+			label := strings.Join(compactSessionRefs(route.Provider, route.Model, route.Protocol), "/")
+			if label == "" {
+				continue
+			}
+			out = append(out, sessionPreferenceSignal{
+				Kind:         "repeated_lane_choice",
+				Label:        label,
+				EvidenceRefs: compactSessionRefs("work:"+item.WorkID, "receipt:"+route.ReceiptID, route.ReviewRef, route.RouteEvidenceID),
+			})
+		}
+	}
+	return out
+}
+
+func sessionPreferenceSummary(kind, label string, count int) string {
+	switch kind {
+	case "operator_correction":
+		return fmt.Sprintf("Operator repeated the same correction %q across %d session evidence refs.", label, count)
+	case "manual_override":
+		return fmt.Sprintf("Operator repeatedly overrode the same suggestion %q across %d session evidence refs.", label, count)
+	case "repeated_tool_choice":
+		return fmt.Sprintf("Operator or harness repeatedly chose tool %q across %d session evidence refs.", label, count)
+	case "repeated_lane_choice":
+		return fmt.Sprintf("Operator or harness repeatedly chose lane %q across %d session evidence refs.", label, count)
+	default:
+		return fmt.Sprintf("Repeated session preference %q across %d evidence refs.", label, count)
+	}
+}
+
+func sessionPreferenceConfidence(kind string, count int) float64 {
+	base := map[string]float64{
+		"operator_correction":  0.72,
+		"manual_override":      0.7,
+		"repeated_tool_choice": 0.62,
+		"repeated_lane_choice": 0.62,
+	}
+	conf := base[kind]
+	if conf == 0 {
+		conf = 0.55
+	}
+	conf += float64(count-2) * 0.05
+	if conf > 0.9 {
+		return 0.9
+	}
+	return conf
+}
+
+func plainSessionToken(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "/") || strings.Contains(value, "\\") || strings.Contains(value, ":") || strings.Contains(value, " ") {
+		return false
+	}
+	return len(value) <= 48
+}
+
+func sessionEventEvidenceRefs(ev sessionHookEvent) []string {
+	refs := []string{}
+	if ev.ID != "" {
+		refs = append(refs, "hook:"+ev.ID)
+	}
+	if ev.IDs.SessionID != "" {
+		refs = append(refs, "session:"+ev.IDs.SessionID)
+	}
+	if ev.IDs.WorkID != "" {
+		refs = append(refs, "work:"+ev.IDs.WorkID)
+	}
+	if ev.OutputRef != "" {
+		refs = append(refs, ev.OutputRef)
+	}
+	refs = append(refs, ev.EvidenceRefs...)
+	return compactSessionRefs(refs...)
+}
+
+func sessionEventGroupEvidenceRefs(events []sessionHookEvent) []string {
+	refs := []string{}
+	for _, ev := range events {
+		refs = append(refs, sessionEventEvidenceRefs(ev)...)
+	}
+	return compactSessionRefs(refs...)
+}
+
+func sortSessionFindings(findings []sessionMiningFinding) {
+	sort.SliceStable(findings, func(i, j int) bool {
+		if findings[i].Kind != findings[j].Kind {
+			return findings[i].Kind < findings[j].Kind
+		}
+		return findings[i].Summary < findings[j].Summary
+	})
+}
+
+func applySessionMiningReport(homePath string, report *sessionMiningReport, now time.Time) (sessionMiningApplyReport, error) {
+	out := sessionMiningApplyReport{
+		SchemaVersion: sessionMiningApplyReportSchemaVersion,
+		Status:        "review_required",
+		CreatedAt:     now.UTC().Format(time.RFC3339),
+		DryRun:        false,
+	}
+	for _, finding := range report.PreferencesFound {
+		candidateID, err := recordSessionPreferenceCandidate(homePath, finding, now)
+		if err != nil {
+			return out, err
+		}
+		out.PreferenceCandidateIDs = append(out.PreferenceCandidateIDs, candidateID)
+		out.RoutedArtifacts = append(out.RoutedArtifacts, sessionMiningRoutedArtifact{
+			Route:        "memory_candidate",
+			ID:           candidateID,
+			EvidenceRefs: finding.EvidenceRefs,
+		})
+	}
+	for _, finding := range report.RulesToRetire {
+		artifact, err := recordSessionRuleRetireProposal(homePath, finding, now)
+		if err != nil {
+			return out, err
+		}
+		out.RetireProposalIDs = append(out.RetireProposalIDs, artifact.ID)
+		out.RoutedArtifacts = append(out.RoutedArtifacts, artifact)
+	}
+	for _, finding := range report.CandidateSkillUpdates {
+		artifact, err := recordSessionSkillLifecycleProposal(homePath, finding, now)
+		if err != nil {
+			return out, err
+		}
+		out.SkillUpdateProposalIDs = append(out.SkillUpdateProposalIDs, artifact.ID)
+		out.RoutedArtifacts = append(out.RoutedArtifacts, artifact)
+	}
+	if len(out.PreferenceCandidateIDs) == 0 && len(out.RetireProposalIDs) == 0 && len(out.SkillUpdateProposalIDs) == 0 {
+		out.Status = "ok"
+		out.Warnings = append(out.Warnings, "no routed findings met deterministic thresholds")
+	}
+	sort.Strings(out.PreferenceCandidateIDs)
+	sort.Strings(out.RetireProposalIDs)
+	sort.Strings(out.SkillUpdateProposalIDs)
+	return out, nil
+}
+
+func recordSessionPreferenceCandidate(homePath string, finding sessionMiningFinding, now time.Time) (string, error) {
+	if err := requireSessionFindingEvidence(finding); err != nil {
+		return "", err
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return "", err
+	}
+	candidates, err := store.Capture([]mem.Candidate{{
+		Entity:          "operator",
+		Predicate:       "preference." + reviewartifact.Slugify(finding.Kind, 32),
+		Object:          finding.Summary,
+		ObservationDate: now.UTC().Format(time.RFC3339),
+		Confidence:      finding.Confidence,
+		Derivation:      "deterministic",
+		ClaimType:       "preference",
+		Qualifiers: map[string]string{
+			"domain":       "behavioral",
+			"source":       "sessions_mine",
+			"finding_kind": finding.Kind,
+		},
+		SourceTraceRef: finding.EvidenceRefs[0],
+		SnippetHash:    "sha256:" + sessionMiningDigest(finding.Summary, strings.Join(finding.EvidenceRefs, "\n")),
+		Visibility:     "contextual",
+		Reason:         "session-mined behavioral preference candidate; requires adjudication before recall",
+	}}, now)
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("preference candidate was not recorded for finding %q", finding.Summary)
+	}
+	return candidates[0].ID, nil
+}
+
+func recordSessionRuleRetireProposal(homePath string, finding sessionMiningFinding, now time.Time) (sessionMiningRoutedArtifact, error) {
+	if err := requireSessionFindingEvidence(finding); err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	candidateID := "session_rule_retire_" + reviewartifact.Digest12(finding.Kind+finding.Summary+strings.Join(finding.EvidenceRefs, "\x00"))
+	candidate := distiller.Candidate{
+		ID:            candidateID,
+		Kind:          distiller.KindPolicyPatch,
+		Subject:       "session-mined rule retirement proposal",
+		Statement:     finding.Summary,
+		Detail:        "Review whether this rule only creates review friction without changing future execution. Do not retire any rule without an operator-recorded review.",
+		Confidence:    finding.Confidence,
+		Derivation:    "deterministic",
+		EvidenceRefs:  compactSessionRefs(finding.EvidenceRefs...),
+		PolicyVersion: distiller.DefaultPolicy().Stamp(),
+		Verdict:       candidates.NoPromote,
+	}
+	if err := candidates.WriteCandidate(homePath, candidates.PolicyPatch, candidateID, candidate); err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	plan, err := distiller.BuildImprovementPlan(homePath, candidateID, "", now)
+	if err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	paths, err := distiller.RecordImprovementPlan(homePath, plan)
+	if err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	return sessionMiningRoutedArtifact{
+		Route:          "distiller_improvement_plan",
+		ID:             plan.ID,
+		CandidateID:    candidateID,
+		PlanPath:       paths.PlanPath,
+		ReviewPath:     paths.ReviewPath,
+		ReviewYAMLPath: paths.ReviewYAMLPath,
+		EvidenceRefs:   plan.EvidenceRefs,
+	}, nil
+}
+
+func recordSessionSkillLifecycleProposal(homePath string, finding sessionMiningFinding, now time.Time) (sessionMiningRoutedArtifact, error) {
+	if err := requireSessionFindingEvidence(finding); err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	proposal, err := capgraph.BuildCapabilityLifecycleProposal(capgraph.CapabilityLifecycleProposalInput{
+		ProposalKind: "revise",
+		Subject:      "session-mined skill update proposal",
+		Statement:    finding.Summary,
+		Detail:       "Review whether the repeated session pattern should revise, narrow, or retire an existing capability. Do not install or mutate skills from this proposal.",
+		Confidence:   finding.Confidence,
+		EvidenceRefs: finding.EvidenceRefs,
+	}, now)
+	if err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	paths, err := capgraph.RecordCapabilityLifecycleProposal(homePath, proposal)
+	if err != nil {
+		return sessionMiningRoutedArtifact{}, err
+	}
+	return sessionMiningRoutedArtifact{
+		Route:        "capability_lifecycle_proposal",
+		ID:           proposal.ID,
+		PlanPath:     paths.PlanPath,
+		ReviewPath:   paths.ReviewPath,
+		EvidenceRefs: proposal.EvidenceRefs,
+	}, nil
+}
+
+func requireSessionFindingEvidence(finding sessionMiningFinding) error {
+	if len(compactSessionRefs(finding.EvidenceRefs...)) == 0 {
+		return fmt.Errorf("finding %q missing session evidence refs", finding.Summary)
+	}
+	return nil
+}
+
+func sessionMiningDigest(values ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(values, "\x00")))
+	return hex.EncodeToString(sum[:])
 }
