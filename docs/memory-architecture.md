@@ -26,15 +26,17 @@ smallest promotable durable memory object.
 - **EvidenceItem**: immutable, citable raw material. Evidence supports claims; it
   is never truth by itself.
 - **Entity**: routed thing such as a project, product, repo, server, person,
-  concept, doctrine, or tool.
+  concept, topic, doctrine, or tool.
 - **Claim**: smallest durable statement Compound can reason about. A claim can be
   candidate, promoted, superseded, retired, or rejected.
-- **Position**: current stance for an entity/topic, derived from active claims.
-  Current truth is a position, not the newest note or highest-ranked search hit.
+- **Position**: current stance for an entity/topic, derived from promoted
+  claims and supersession/review edges. Position rows are rebuildable
+  materialized folds; claims and edges remain authority. Current truth is a
+  position, not the newest note or highest-ranked search hit.
 - **Pattern**: repeated through-line across claims or positions.
-- **Edge**: relation such as supersedes, contradicts, refines, supports, mentions,
-  owns, or part_of. Relation hints are structural ledger edges, not a `relation`
-  candidate kind or inbox.
+- **Edge**: relation such as supersedes, contradicts, refines, supports,
+  mentions, owns, part_of, or narrows_to. Relation hints are structural ledger
+  edges, not a `relation` candidate kind or inbox.
 
 ## Ledger Is Authority; Engine Is View
 
@@ -49,8 +51,11 @@ patterns.jsonl
 edges.jsonl
 ```
 
-Layered scope currently rides typed edges such as `part_of`; a separate
-`scope_assignments.jsonl` ledger is not implemented.
+Layered scope currently rides typed topic/entity edges such as `part_of` and
+`narrows_to`; a separate `scope_assignments.jsonl` ledger is not implemented.
+Claims may carry optional `topic_refs[]`. Rows that predate `topic_refs[]`
+remain valid and recallable; topic-scoped recall simply excludes them when a
+topic subtree filter is requested.
 
 Retrieval engines are rebuildable views. They may own indexes, ranking, embeddings,
 and low-level query execution, but they must not own visibility, promotion,

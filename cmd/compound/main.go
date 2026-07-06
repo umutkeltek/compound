@@ -167,10 +167,16 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory adjudicate <id> --verdict reject|park|promote|no_promote [--work W]"
 	case "graph":
 		return "usage: compound memory graph <seed> [--depth N] [--budget N] [--min-conf F] [--direction up|down] [--kind KIND[,KIND]...]"
+	case "import-topics":
+		return "usage: compound memory import-topics <topics.json> [--json]"
+	case "fold":
+		return "usage: compound memory fold [--entity E] [--json]"
+	case "position":
+		return "usage: compound memory position <entity> [--as-of N] [--topic topic-slug] [--json]"
 	case "engine-config":
 		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain] [--clear] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|adjudicate <id> --verdict V|recall <entity> [--as-of N] [--include-evidence]|timeline <entity>|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|doctor>"
 	}
 }
 
@@ -254,7 +260,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
-compound memory <candidate|candidates|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
+compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|engine-doctor|engine-compare [--allow-expansion]|doctor>
                 spine memory: candidates, claims, positions, patterns, evidence
   compound synthesis sweep [--stage cluster,contradict] [--json]
                 memory synthesis reports; contradictions append needs_review markers only
@@ -2635,6 +2641,8 @@ func cmdMemory(args []string) {
 			die(err)
 			fmt.Printf("related  %s -%s-> %s  (seq %d, conf %.2f)\n", e.From, e.Kind, e.To, e.Seq, e.Confidence)
 		}
+	case "import-topics":
+		cmdMemoryImportTopics(store, rest)
 	case "candidates":
 		limit := 0
 		if v := flag("--limit"); v != "" {
@@ -2735,22 +2743,7 @@ func cmdMemory(args []string) {
 			fmt.Printf("%s: %s%s\n", res.Candidate.ID, res.Verdict, dashNote(res.Note))
 		}
 	case "recall":
-		var asOf int64
-		if v := flag("--as-of"); v != "" {
-			asOf, _ = strconv.ParseInt(v, 10, 64)
-		}
-		rr, err := store.Recall(firstPos(map[string]bool{"--as-of": true}), mem.RecallOpts{AsOfSeq: asOf, IncludeRetired: has("--include-retired"), IncludeEvidence: has("--include-evidence")})
-		die(err)
-		fmt.Println("# " + rr.Coverage)
-		for _, c := range rr.Claims {
-			fmt.Printf("%s.%s = %s  (seq %d, since %s, %s, conf %.2f)\n", c.Entity, c.Predicate, c.Object, c.Seq, c.ValidFrom, c.Derivation, c.Confidence)
-		}
-		for _, c := range rr.EvidenceCandidates {
-			fmt.Printf("evidence %s.%s = %s (%s, conf %.2f, annotations %d)\n", c.Entity, c.Predicate, c.Object, c.State, c.Confidence, len(c.Annotations))
-			for _, ann := range c.Annotations {
-				fmt.Printf(" annotation %s decision=%s original=%s confidence=%.2f run=%s verdict=%s\n", ann.ID, ann.Decision, ann.OriginalDecision, ann.Confidence, ann.RunID, ann.VerdictArtifact)
-			}
-		}
+		cmdMemoryRecall(store, rest)
 	case "timeline":
 		claims, err := store.Timeline(pos())
 		die(err)
@@ -2768,6 +2761,10 @@ func cmdMemory(args []string) {
 			}
 			fmt.Println(line)
 		}
+	case "fold":
+		cmdMemoryFold(store, rest)
+	case "position":
+		cmdMemoryPosition(store, rest)
 	case "positions":
 		// the spine-native Position: current durable stance per (entity, topic) WITH the
 		// supersession chain (old→new) — the convergence of Gen-1 internal/position onto the spine.

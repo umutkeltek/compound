@@ -9,7 +9,7 @@ import (
 )
 
 // EntityKinds — the routing-backbone vocabulary (what an entity can be).
-var EntityKinds = []string{"project", "product", "repo", "server", "person", "concept", "doctrine", "tool"}
+var EntityKinds = []string{"project", "product", "repo", "server", "person", "concept", "topic", "doctrine", "tool"}
 
 // Entity is a canonical identity that survives path / host / name moves — the routing backbone the
 // audit found missing in mem (where Claim.Entity was a bare string with no catalog/aliasing). All

@@ -49,6 +49,7 @@ type knowledgePageClaim struct {
 	Derivation      string            `yaml:"derivation"`
 	ClaimType       string            `yaml:"claim_type"`
 	Qualifiers      map[string]string `yaml:"qualifiers"`
+	TopicRefs       []string          `yaml:"topic_refs"`
 	PromotionBasis  string            `yaml:"promotion_basis"`
 	Visibility      string            `yaml:"visibility"`
 	EvidenceQuote   string            `yaml:"evidence_quote"`
@@ -167,6 +168,7 @@ func candidateFromKnowledgeClaim(pageID, evidenceID string, fm knowledgePageFron
 		Derivation:      derivation,
 		ClaimType:       claim.ClaimType,
 		Qualifiers:      q,
+		TopicRefs:       normalizeStringRefs(claim.TopicRefs),
 		PromotionBasis:  promotionBasis,
 		SourceTraceRef:  evidenceID,
 		SnippetHash:     digestForPage(firstNonEmpty(claim.EvidenceQuote, object), evidenceID),

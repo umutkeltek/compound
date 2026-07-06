@@ -65,6 +65,7 @@ type Candidate struct {
 	Derivation      string                `json:"derivation"`
 	ClaimType       string                `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
 	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
+	TopicRefs       []string              `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; old rows omit this safely
 	PromotionBasis  string                `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
 	SourceTraceRef  string                `json:"source_trace_ref"`          // provenance: where it came from
 	SnippetHash     string                `json:"snippet_hash"`              // bounded snippet, not the raw body
@@ -116,6 +117,7 @@ type Claim struct {
 	Derivation      string            `json:"derivation"`                // provenance: how derived
 	ClaimType       string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes)
 	Qualifiers      map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → Topic()
+	TopicRefs       []string          `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; additive for older rows
 	PromotionBasis  string            `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
 	EvidenceRefs    []string          `json:"evidence_refs"`             // provenance: source candidate/trace
 	Supersedes      string            `json:"supersedes,omitempty"`
@@ -155,13 +157,21 @@ type Edge struct {
 // (Gen-1 grouped by (entity, topic) over a candidate/promoted status model; here topic = predicate
 // and "current" is derived by folding supersession, never by mutation).
 type Position struct {
-	ID            string   `json:"id"` // entity::topic
-	Entity        string   `json:"entity"`
-	Topic         string   `json:"topic"` // mem's topic axis = predicate
-	ActiveClaimID string   `json:"active_claim_id"`
-	ActiveObject  string   `json:"active_object"` // the current value (convenience)
-	Status        string   `json:"status"`        // active | retired
-	ClaimChain    []string `json:"claim_chain"`   // all versions oldest→newest (the supersession history)
+	ID                    string   `json:"id"` // entity::topic
+	Entity                string   `json:"entity"`
+	Topic                 string   `json:"topic"` // mem's topic axis = domain qualifier, else predicate
+	Predicate             string   `json:"predicate,omitempty"`
+	ActiveClaimID         string   `json:"active_claim_id"`
+	ActiveObject          string   `json:"active_object"` // the current value (convenience)
+	Status                string   `json:"status"`        // active | retired | contested
+	SupportingClaimRefs   []string `json:"supporting_claim_refs,omitempty"`
+	SupersededHistoryRefs []string `json:"superseded_history_refs,omitempty"`
+	ClaimChain            []string `json:"claim_chain"` // all versions oldest→newest (the supersession history)
+	ReviewRefs            []string `json:"review_refs,omitempty"`
+	EvidenceRefs          []string `json:"evidence_refs,omitempty"`
+	TopicRefs             []string `json:"topic_refs,omitempty"`
+	FoldedAt              string   `json:"folded_at,omitempty"`
+	AsOfSeq               int64    `json:"as_of_seq,omitempty"`
 }
 
 // Store is the memory ledger rooted at a COMPOUND_HOME.
@@ -203,6 +213,7 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		if c.ClaimType != "" && !oneOf(c.ClaimType, ClaimTypes) {
 			return out, fmt.Errorf("candidate %s: bad claim_type %q (allowed: %v)", c.Entity, c.ClaimType, ClaimTypes)
 		}
+		c.TopicRefs = normalizeStringRefs(c.TopicRefs)
 		if c.Visibility == "" {
 			c.Visibility = "operational"
 		}
@@ -441,6 +452,7 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 		Derivation:     c.Derivation,
 		ClaimType:      c.ClaimType, // carry the taxonomy + topic qualifiers onto the durable claim
 		Qualifiers:     c.Qualifiers,
+		TopicRefs:      normalizeStringRefs(c.TopicRefs),
 		PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
 		EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
 		Visibility:     orDef(c.Visibility, "operational"),
@@ -542,11 +554,14 @@ type RecallOpts struct {
 	IncludeEvidence    bool     // include annotated candidates; default false
 	MinConfidence      float64  // hard floor
 	Visibilities       []string // allowed tiers; empty = all (minus retired unless IncludeRetired)
+	Topic              string   // optional topic subtree root; filters claims by topic_refs
 }
 
 type RecallResult struct {
 	Entity             string      `json:"entity"`
 	AsOfSeq            int64       `json:"as_of_seq"`
+	Topic              string      `json:"topic,omitempty"`
+	TopicSubtree       []string    `json:"topic_subtree,omitempty"`
 	Claims             []Claim     `json:"claims"`
 	EvidenceCandidates []Candidate `json:"evidence_candidates,omitempty"`
 	Filtered           int         `json:"filtered"`
@@ -561,11 +576,18 @@ func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
 	if err != nil {
 		return RecallResult{Entity: entity}, err
 	}
-	entity, err = s.canonicalRecallEntity(entity, claims, opts.IncludeEvidence)
+	entity = strings.TrimSpace(entity)
+	if entity != "" {
+		entity, err = s.canonicalRecallEntity(entity, claims, opts.IncludeEvidence)
+		if err != nil {
+			return RecallResult{Entity: entity}, err
+		}
+	}
+	topicSet, topicSubtree, err := s.topicScopeSet(opts.Topic)
 	if err != nil {
 		return RecallResult{Entity: entity}, err
 	}
-	res := RecallResult{Entity: entity}
+	res := RecallResult{Entity: entity, Topic: strings.TrimSpace(opts.Topic), TopicSubtree: topicSubtree}
 	asOf := opts.AsOfSeq
 	if asOf == 0 {
 		asOf = s.maxSeq(claims)
@@ -575,7 +597,13 @@ func (s *Store) Recall(entity string, opts RecallOpts) (RecallResult, error) {
 	// 1. HARD gates first (scope/time/visibility/confidence).
 	var gated []Claim
 	for _, c := range claims {
-		if c.Entity != entity || c.Seq > asOf {
+		if entity != "" && c.Entity != entity {
+			continue
+		}
+		if c.Seq > asOf {
+			continue
+		}
+		if len(topicSet) > 0 && !claimHasTopicRef(c, topicSet) {
 			continue
 		}
 		if !opts.IncludeRetired && c.Visibility == "retired" {
@@ -794,58 +822,6 @@ func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, er
 		}
 	}
 	return best, found, nil
-}
-
-// Positions folds the whole ledger into the current durable stance per (entity, topic), each with
-// its supersession chain (oldest→newest). Topic = predicate. The active claim is the current
-// (non-superseded) version; a group whose current claim is retired-visibility is "retired", else
-// "active". This is the spine-native Position the audit found missing in mem — additive, derived
-// (rebuildable), and mutation-free.
-func (s *Store) Positions() ([]Position, error) {
-	claims, err := s.loadClaims()
-	if err != nil {
-		return nil, err
-	}
-	superseded, err := s.supersededAsOf(s.maxSeq(claims))
-	if err != nil {
-		return nil, err
-	}
-	type key struct{ entity, topic string }
-	groups := map[key][]Claim{}
-	var order []key
-	for _, c := range claims {
-		k := key{c.Entity, c.Topic()} // domain-aware topic axis (falls back to predicate)
-		if _, ok := groups[k]; !ok {
-			order = append(order, k)
-		}
-		groups[k] = append(groups[k], c)
-	}
-	out := make([]Position, 0, len(order))
-	for _, k := range order {
-		cs := groups[k]
-		sort.Slice(cs, func(i, j int) bool { return cs[i].Seq < cs[j].Seq }) // oldest→newest
-		chain := make([]string, len(cs))
-		var active Claim
-		found := false
-		for i, c := range cs {
-			chain[i] = c.ID
-			if !superseded[c.ID] {
-				active, found = c, true // the single current version of this topic
-			}
-		}
-		if !found {
-			continue // defensive: every group has a current claim by MVCC construction
-		}
-		status := "active"
-		if active.Visibility == "retired" {
-			status = "retired"
-		}
-		out = append(out, Position{
-			ID: k.entity + "::" + k.topic, Entity: k.entity, Topic: k.topic,
-			ActiveClaimID: active.ID, ActiveObject: active.Object, Status: status, ClaimChain: chain,
-		})
-	}
-	return out, nil
 }
 
 // --- doctor (which hop) ---

@@ -14,7 +14,7 @@ import (
 
 // RelationKinds are entity-level edge kinds task-shaped recall traverses.
 // Claim-level version/review edges are stored in the same log but excluded.
-var RelationKinds = []string{"relates", "contradicts", "depends_on", "refines", "supports", "mentions", "owns", "part_of"}
+var RelationKinds = []string{"relates", "contradicts", "depends_on", "refines", "supports", "mentions", "owns", "part_of", "narrows_to"}
 
 // RelationHint is an extracted relation between two entities.
 type RelationHint struct {
