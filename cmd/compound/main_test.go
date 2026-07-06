@@ -614,16 +614,32 @@ func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
 	if projection.Counts.Observed == 0 || projection.Counts.Connected != 0 {
 		t.Fatalf("source connection counts = %+v, want historical rows observed and no live connected proof", projection.Counts)
 	}
+	if projection.Counts.EvidenceObserved == 0 || projection.Counts.AvailabilityHealthy != 0 {
+		t.Fatalf("split source state counts = %+v, want observed evidence and no healthy live connection", projection.Counts)
+	}
 	gsc := findCLISourceConnection(projection.Connections, "google_search_console")
-	if gsc == nil || gsc.Status != "observed" || gsc.RowCount == 0 || !stringSliceContains(gsc.Produces, "product signal") {
+	if gsc == nil ||
+		gsc.Status != "observed" ||
+		gsc.Availability != "unknown" ||
+		gsc.EvidenceState != "observed" ||
+		gsc.RowCount == 0 ||
+		!stringSliceContains(gsc.Produces, "product signal") {
 		t.Fatalf("gsc connection = %+v", gsc)
 	}
 	asc := findCLISourceConnection(projection.Connections, "asc_daily_signals")
-	if asc == nil || asc.Status != "blocked_private_config" || !asc.PrivateSetupNeeded || asc.NextSafeAction == "" {
+	if asc == nil ||
+		asc.Status != "blocked_private_config" ||
+		asc.Availability != "needs_private_config" ||
+		asc.EvidenceState != "never_seen" ||
+		!asc.PrivateSetupNeeded ||
+		asc.NextSafeAction == "" {
 		t.Fatalf("asc connection = %+v", asc)
 	}
 	githubStars := findCLISourceConnection(projection.Connections, "github_stars")
-	if githubStars == nil || githubStars.Status != "not_connected" {
+	if githubStars == nil ||
+		githubStars.Status != "not_connected" ||
+		githubStars.Availability != "not_configured" ||
+		githubStars.EvidenceState != "never_seen" {
 		t.Fatalf("github stars connection = %+v", githubStars)
 	}
 }

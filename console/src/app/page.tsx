@@ -352,12 +352,26 @@ function Agents({ lines }: { lines: AgentLine[] }) {
 function SourcesStrip({ projection }: { projection: Json | null }) {
   const counts = (projection?.counts ?? {}) as Json;
   const connections = arr(projection?.connections);
-  const seen = num(counts.observed) + num(counts.imported);
-  const needsInput = num(counts.needs_input);
+  const evidenceCount =
+    num(counts.evidence_observed) +
+    num(counts.evidence_imported) +
+    num(counts.evidence_has_cards) +
+    num(counts.evidence_stale);
+  const seen = evidenceCount || num(counts.observed) + num(counts.imported);
+  const needsInput = num(counts.availability_needs_private_config) || num(counts.needs_input);
   const cards = num(counts.action_required);
   const privateSetup = num(counts.private_setup);
   const top = connections
-    .filter((connection) => ["needs_private_input", "blocked_private_config", "ready_preflight", "needs_review", "needs_mapping"].includes(str(connection.status)))
+    .filter((connection) => {
+      const availability = str(connection.availability);
+      const evidenceState = str(connection.evidence_state);
+      const status = str(connection.status);
+      return (
+        availability === "needs_private_config" ||
+        evidenceState === "has_cards" ||
+        ["needs_private_input", "blocked_private_config", "ready_preflight", "needs_review", "needs_mapping"].includes(status)
+      );
+    })
     .slice(0, 2);
 
   return (
@@ -369,11 +383,11 @@ function SourcesStrip({ projection }: { projection: Json | null }) {
         </div>
         <div>
           <div className="text-[24px] font-semibold leading-none tabular-nums">{seen}</div>
-          <div className="mt-1 text-[12px] text-ink-3">seen or imported</div>
+          <div className="mt-1 text-[12px] text-ink-3">with evidence</div>
         </div>
         <div>
           <div className="text-[24px] font-semibold leading-none tabular-nums">{needsInput}</div>
-          <div className="mt-1 text-[12px] text-ink-3">need input</div>
+          <div className="mt-1 text-[12px] text-ink-3">private setup</div>
         </div>
         <div>
           <div className="text-[24px] font-semibold leading-none tabular-nums">{cards}</div>

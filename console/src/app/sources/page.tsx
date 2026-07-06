@@ -6,10 +6,13 @@ export const dynamic = "force-dynamic";
 
 function statusTone(status: string): Accent {
   switch (status) {
+    case "healthy":
     case "connected":
     case "imported":
     case "observed":
+    case "configured":
       return "green";
+    case "needs_private_config":
     case "blocked_private_config":
     case "needs_private_input":
     case "ready_preflight":
@@ -18,14 +21,31 @@ function statusTone(status: string): Accent {
     case "needs_mapping":
       return "violet";
     case "stale":
+    case "failing":
       return "red";
+    case "not_configured":
+    case "never_seen":
+    case "unknown":
+      return "gray";
     default:
       return "gray";
   }
 }
 
-function statusLabel(status: string): string {
-  switch (status) {
+function stateLabel(value: string): string {
+  switch (value) {
+    case "healthy":
+      return "healthy";
+    case "configured":
+      return "configured";
+    case "needs_private_config":
+      return "needs private config";
+    case "not_configured":
+      return "not configured";
+    case "never_seen":
+      return "never seen";
+    case "has_cards":
+      return "has cards";
     case "blocked_private_config":
       return "needs private config";
     case "needs_private_input":
@@ -41,7 +61,7 @@ function statusLabel(status: string): string {
     case "not_connected":
       return "not connected";
     default:
-      return status.replace(/_/g, " ") || "unknown";
+      return value.replace(/_/g, " ") || "unknown";
   }
 }
 
@@ -93,6 +113,8 @@ function SourceActionCard({ card }: { card: Json }) {
 
 function SourceConnectionCard({ connection }: { connection: Json }) {
   const status = str(connection.status);
+  const availability = str(connection.availability) || "unknown";
+  const evidenceState = str(connection.evidence_state) || "never_seen";
   const sourceKinds = arr(connection.source_kinds).map(String).filter(Boolean);
   const produces = arr(connection.produces).map(String).filter(Boolean);
   const cards = arr(connection.latest_cards);
@@ -103,7 +125,7 @@ function SourceConnectionCard({ connection }: { connection: Json }) {
       title={str(connection.label) || str(connection.id)}
       accent={statusTone(status)}
       glyph="S"
-      right={<Chip tone={statusTone(status)}>{statusLabel(status)}</Chip>}
+      right={<Chip tone={statusTone(status)}>{stateLabel(status)}</Chip>}
     >
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap gap-1.5">
@@ -112,6 +134,8 @@ function SourceConnectionCard({ connection }: { connection: Json }) {
               {kind}
             </Chip>
           ))}
+          <Chip tone={statusTone(availability)}>availability: {stateLabel(availability)}</Chip>
+          <Chip tone={statusTone(evidenceState)}>evidence: {stateLabel(evidenceState)}</Chip>
           {connection.private_setup_needed ? <Chip tone="orange">private setup</Chip> : null}
           {connection.row_count ? <Chip tone="blue">{connection.row_count} rows</Chip> : null}
           {lastSeen ? <Chip tone="gray">{ago(lastSeen) || lastSeen}</Chip> : null}
@@ -175,8 +199,24 @@ export default async function SourcesPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Sources" value={Number(counts.total) || connections.length} glyph="S" accent="blue" />
-        <Stat label="Seen" value={(Number(counts.observed) || 0) + (Number(counts.imported) || 0)} glyph=">" accent="green" />
-        <Stat label="Needs input" value={Number(counts.needs_input) || 0} glyph="!" accent="orange" />
+        <Stat
+          label="Evidence"
+          value={
+            (Number(counts.evidence_observed) || 0) +
+            (Number(counts.evidence_imported) || 0) +
+            (Number(counts.evidence_has_cards) || 0) +
+            (Number(counts.evidence_stale) || 0) ||
+            (Number(counts.observed) || 0) + (Number(counts.imported) || 0)
+          }
+          glyph=">"
+          accent="green"
+        />
+        <Stat
+          label="Private setup"
+          value={Number(counts.availability_needs_private_config) || Number(counts.needs_input) || 0}
+          glyph="!"
+          accent="orange"
+        />
         <Stat label="Cards" value={Number(counts.action_required) || 0} glyph="C" accent="violet" />
       </div>
 

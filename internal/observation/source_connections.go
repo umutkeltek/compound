@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	SourceConnectionsProjectionSchemaVersion = "compound.source_connections_projection.v0.1"
+	SourceConnectionsProjectionSchemaVersion = "compound.source_connections_projection.v0.2"
 	SourceConnectionsAuthorityRef            = "compound://sources/connections"
 )
 
@@ -28,22 +28,35 @@ type SourceConnectionsProjection struct {
 }
 
 type SourceConnectionsCounts struct {
-	Total          int `json:"total"`
-	Connected      int `json:"connected"`
-	Imported       int `json:"imported"`
-	Observed       int `json:"observed"`
-	NeedsInput     int `json:"needs_input"`
-	NeedsReview    int `json:"needs_review"`
-	Stale          int `json:"stale"`
-	NotConnected   int `json:"not_connected"`
-	ActionRequired int `json:"action_required"`
-	PrivateSetup   int `json:"private_setup"`
+	Total                          int `json:"total"`
+	Connected                      int `json:"connected"`
+	Imported                       int `json:"imported"`
+	Observed                       int `json:"observed"`
+	NeedsInput                     int `json:"needs_input"`
+	NeedsReview                    int `json:"needs_review"`
+	Stale                          int `json:"stale"`
+	NotConnected                   int `json:"not_connected"`
+	ActionRequired                 int `json:"action_required"`
+	PrivateSetup                   int `json:"private_setup"`
+	AvailabilityUnknown            int `json:"availability_unknown"`
+	AvailabilityNotConfigured      int `json:"availability_not_configured"`
+	AvailabilityNeedsPrivateConfig int `json:"availability_needs_private_config"`
+	AvailabilityConfigured         int `json:"availability_configured"`
+	AvailabilityHealthy            int `json:"availability_healthy"`
+	AvailabilityFailing            int `json:"availability_failing"`
+	EvidenceNeverSeen              int `json:"evidence_never_seen"`
+	EvidenceObserved               int `json:"evidence_observed"`
+	EvidenceImported               int `json:"evidence_imported"`
+	EvidenceStale                  int `json:"evidence_stale"`
+	EvidenceHasCards               int `json:"evidence_has_cards"`
 }
 
 type SourceConnection struct {
 	ID                 string                   `json:"id"`
 	Label              string                   `json:"label"`
 	Status             string                   `json:"status"`
+	Availability       string                   `json:"availability"`
+	EvidenceState      string                   `json:"evidence_state"`
 	SourceKinds        []string                 `json:"source_kinds,omitempty"`
 	SourceKind         string                   `json:"source_kind,omitempty"`
 	SourceRef          string                   `json:"source_ref,omitempty"`
@@ -218,6 +231,9 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 		if conn.Status == "" {
 			conn.Status = firstNonEmpty(defaultStatusByID[conn.ID], "not_connected")
 		}
+		conn.EvidenceState = sourceConnectionEvidenceState(*conn)
+		conn.Availability = sourceConnectionAvailability(*conn)
+		conn.Status = sourceConnectionLegacyStatus(conn.Availability, conn.EvidenceState, conn.Status)
 		if conn.NextSafeAction == "" {
 			conn.NextSafeAction = sourceConnectionNextAction(conn.Status)
 		}
@@ -243,6 +259,32 @@ func LoadSourceConnectionsProjection(homePath string, now time.Time) (SourceConn
 	})
 	out.Counts.Total = len(out.Connections)
 	for _, conn := range out.Connections {
+		switch conn.Availability {
+		case "not_configured":
+			out.Counts.AvailabilityNotConfigured++
+		case "needs_private_config":
+			out.Counts.AvailabilityNeedsPrivateConfig++
+		case "configured":
+			out.Counts.AvailabilityConfigured++
+		case "healthy":
+			out.Counts.AvailabilityHealthy++
+		case "failing":
+			out.Counts.AvailabilityFailing++
+		default:
+			out.Counts.AvailabilityUnknown++
+		}
+		switch conn.EvidenceState {
+		case "observed":
+			out.Counts.EvidenceObserved++
+		case "imported":
+			out.Counts.EvidenceImported++
+		case "stale":
+			out.Counts.EvidenceStale++
+		case "has_cards":
+			out.Counts.EvidenceHasCards++
+		default:
+			out.Counts.EvidenceNeverSeen++
+		}
 		switch conn.Status {
 		case "connected":
 			out.Counts.Connected++
@@ -493,6 +535,65 @@ func sourceConnectionRowStatus(connectionID string, row SourceIntakeRow, now tim
 		return "observed"
 	default:
 		return firstNonEmpty(row.Status, "observed")
+	}
+}
+
+func sourceConnectionAvailability(conn SourceConnection) string {
+	switch conn.Status {
+	case "connected":
+		return "healthy"
+	case "blocked_private_config", "needs_private_input":
+		return "needs_private_config"
+	case "ready_preflight":
+		return "configured"
+	case "not_connected", "needs_mapping":
+		return "not_configured"
+	default:
+		if conn.PrivateSetupNeeded {
+			return "needs_private_config"
+		}
+		return "unknown"
+	}
+}
+
+func sourceConnectionEvidenceState(conn SourceConnection) string {
+	if conn.LatestCardCount > 0 {
+		return "has_cards"
+	}
+	switch conn.Status {
+	case "stale":
+		return "stale"
+	case "imported":
+		return "imported"
+	case "observed", "connected", "needs_review", "needs_mapping", "blocked_private_config", "needs_private_input":
+		if conn.RowCount > 0 || conn.LastSeen != "" || conn.SourceRef != "" {
+			return "observed"
+		}
+	}
+	if conn.RowCount > 0 || conn.LastSeen != "" || conn.SourceRef != "" {
+		return "observed"
+	}
+	return "never_seen"
+}
+
+func sourceConnectionLegacyStatus(availability, evidenceState, existing string) string {
+	if strings.TrimSpace(existing) != "" {
+		return existing
+	}
+	if evidenceState != "" && evidenceState != "never_seen" {
+		return evidenceState
+	}
+	switch availability {
+	case "healthy":
+		return "connected"
+	case "needs_private_config":
+		return "needs_private_input"
+	case "configured":
+		return "ready_preflight"
+	case "not_configured":
+		return "not_connected"
+	default:
+		return "not_connected"
 	}
 }
 
