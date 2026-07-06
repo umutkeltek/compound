@@ -12,7 +12,7 @@ func TestImportOperatorStateWritesAuthorityAndAppliesCeiling(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "operator-state.json")
 	raw := []byte(`{
   "mode": "closure_over_expansion",
-  "needs_umut": [],
+  "needs_me": [],
   "blocked": [],
   "autonomy_lever": {
     "level": "L1",

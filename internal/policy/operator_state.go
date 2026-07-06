@@ -23,7 +23,7 @@ type OperatorState struct {
 	Mode            string                 `json:"mode,omitempty"`
 	CurrentPriority string                 `json:"current_priority,omitempty"`
 	AutonomyLever   OperatorAutonomyLever  `json:"autonomy_lever,omitempty"`
-	NeedsUmut       []string               `json:"needs_umut,omitempty"`
+	NeedsMe         []string               `json:"needs_me,omitempty"`
 	Blocked         []map[string]any       `json:"blocked,omitempty"`
 	Raw             map[string]interface{} `json:"-"`
 }
@@ -42,7 +42,7 @@ type OperatorStateImportReport struct {
 	SourceAuthority   OperatorStateSourceAuthorityRecord `json:"source_authority"`
 	AutonomyLevel     string                             `json:"autonomy_level"`
 	Mode              string                             `json:"mode,omitempty"`
-	NeedsUmutCount    int                                `json:"needs_umut_count"`
+	NeedsMeCount      int                                `json:"needs_me_count"`
 	BlockedCount      int                                `json:"blocked_count"`
 }
 
@@ -137,7 +137,7 @@ func ImportOperatorState(homePath, sourcePath string, now time.Time) (OperatorSt
 		SourceAuthority:   rec,
 		AutonomyLevel:     level,
 		Mode:              state.Mode,
-		NeedsUmutCount:    len(state.NeedsUmut),
+		NeedsMeCount:      len(state.NeedsMe),
 		BlockedCount:      len(state.Blocked),
 	}, nil
 }

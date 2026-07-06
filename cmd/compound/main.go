@@ -4254,7 +4254,7 @@ func cmdPolicy(args []string) {
 			Installed        bool                                        `json:"installed"`
 			AutonomyLevel    string                                      `json:"autonomy_level,omitempty"`
 			Mode             string                                      `json:"mode,omitempty"`
-			NeedsUmutCount   int                                         `json:"needs_umut_count,omitempty"`
+			NeedsMeCount     int                                         `json:"needs_me_count,omitempty"`
 			BlockedCount     int                                         `json:"blocked_count,omitempty"`
 			SourceAuthority  []policy.OperatorStateSourceAuthorityRecord `json:"source_authority,omitempty"`
 			SourceRecordPath string                                      `json:"source_record_path"`
@@ -4274,7 +4274,7 @@ func cmdPolicy(args []string) {
 			report.Installed = true
 			report.AutonomyLevel = policy.OperatorStateLevel(state)
 			report.Mode = state.Mode
-			report.NeedsUmutCount = len(state.NeedsUmut)
+			report.NeedsMeCount = len(state.NeedsMe)
 			report.BlockedCount = len(state.Blocked)
 		}
 		records, err := policy.LoadOperatorStateSourceAuthority(homePath)
