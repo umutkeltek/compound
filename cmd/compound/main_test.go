@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -88,6 +89,33 @@ func containsString(set []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// TestVersionStringEmbedsBuildSHA proves `compound version` carries the build SHA that
+// install.sh's ldflags embed — buildSHA is a package var (set via -X at build time), so
+// the test sets it directly rather than needing a real ldflags-built binary (T3).
+func TestVersionStringEmbedsBuildSHA(t *testing.T) {
+	original := buildSHA
+	defer func() { buildSHA = original }()
+
+	buildSHA = ""
+	if got := versionString(); !strings.Contains(got, "(build dev)") {
+		t.Fatalf("unset buildSHA: versionString() = %q, want it to report dev", got)
+	}
+
+	buildSHA = "a1b2c3d"
+	got := versionString()
+	if !strings.Contains(got, "a1b2c3d") {
+		t.Fatalf("versionString() = %q, want embedded sha a1b2c3d", got)
+	}
+	if strings.Contains(got, "(build dev)") {
+		t.Fatalf("versionString() = %q, still reports dev after buildSHA was set", got)
+	}
+
+	out := captureStdout(t, func() { fmt.Println(versionString()) })
+	if !strings.Contains(out, "a1b2c3d") {
+		t.Fatalf("printed version output = %q, want embedded sha", out)
+	}
 }
 
 func TestSchemaCLIExportAndValidate(t *testing.T) {

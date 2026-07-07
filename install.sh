@@ -25,7 +25,8 @@ else
 fi
 
 mkdir -p "$install_dir"
-go build -o "$install_dir/compound" ./cmd/compound
+build_sha=$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo "")
+go build -ldflags "-X main.buildSHA=$build_sha" -o "$install_dir/compound" ./cmd/compound
 go build -o "$install_dir/compound-breadth-engine" ./cmd/compound-breadth-engine
 
 PATH="$install_dir:$PATH" COMPOUND_HOME="$compound_home" "$install_dir/compound" home init --home "$compound_home" --global

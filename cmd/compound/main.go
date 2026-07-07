@@ -49,6 +49,30 @@ import (
 
 const version = "0.1.0"
 
+// buildSHA is embedded at build time via
+//
+//	-ldflags "-X main.buildSHA=$(git rev-parse --short HEAD)"
+//
+// (see install.sh, the entry point `make install` calls). Empty when built without
+// ldflags (e.g. a plain `go build`/`go run` during dev) — `compound version` then
+// reports "dev" rather than silently claiming a build provenance it doesn't have.
+// This is the freshness signal consumed by internal/arch's build-freshness check:
+// a hook/consumer running a stale installed binary is otherwise undetectable.
+var buildSHA string
+
+func buildSHAOrDev() string {
+	if strings.TrimSpace(buildSHA) == "" {
+		return "dev"
+	}
+	return strings.TrimSpace(buildSHA)
+}
+
+// versionString is what `compound version`/`--version`/`-v` prints. Split out from the
+// switch so tests can assert build-SHA embedding without shelling out to a built binary.
+func versionString() string {
+	return fmt.Sprintf("compound %s (build %s)", version, buildSHAOrDev())
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -56,7 +80,7 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "version", "--version", "-v":
-		fmt.Printf("compound %s\n", version)
+		fmt.Println(versionString())
 	case "distill", "scope", "promote", "build", "reconcile", "timeline", "recall", "pack", "ledger":
 		cmdRetiredGen1(os.Args[1])
 	case "authority":
