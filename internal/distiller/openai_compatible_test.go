@@ -355,6 +355,47 @@ func TestChatCompletionJSONReturnsRawContentUsageAndLatency(t *testing.T) {
 	}
 }
 
+func TestChatCompletionJSONCapturesSwitchbackHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-switchback-route", "strategy=auto/extract selected=nvidia/minimaxai/minimax-m3 fallbacks=[openrouter/deepseek/deepseek-chat-v3-0324:free] rejected=0")
+		w.Header().Set("x-switchback-request-id", "req_abcdef123456")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": `{"ok":true}`},
+			}},
+			"usage": map[string]int{"total_tokens": 9},
+		})
+	}))
+	defer server.Close()
+
+	_, _, _, meta, err := ChatCompletionJSONWithMeta(context.Background(), server.Client(), server.URL, "", "auto/extract", "system", "user")
+	if err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	if meta.ResolvedModel != "nvidia/minimaxai/minimax-m3" || meta.GatewayRequestID != "req_abcdef123456" {
+		t.Fatalf("metadata = %+v", meta)
+	}
+}
+
+func TestChatCompletionJSONLeavesSwitchbackMetadataEmptyWhenHeadersAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": `{"ok":true}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	_, _, _, meta, err := ChatCompletionJSONWithMeta(context.Background(), server.Client(), server.URL, "", "auto/extract", "system", "user")
+	if err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	if meta.ResolvedModel != "" || meta.GatewayRequestID != "" {
+		t.Fatalf("metadata = %+v, want empty", meta)
+	}
+}
+
 func TestChatCompletionJSONRetriesWithoutResponseFormat(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

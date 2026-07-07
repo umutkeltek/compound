@@ -65,11 +65,11 @@ func (g GatewayCaller) Call(ctx context.Context, req CallRequest) (CallResult, e
 	}
 	callCtx, cancel := context.WithTimeout(ctx, defaultGatewayCallTimeout)
 	defer cancel()
-	content, usage, latencyMS, err := distiller.ChatCompletionJSON(callCtx, g.HTTPClient, baseURL, g.APIKey, model, req.System, req.User)
+	content, usage, latencyMS, meta, err := distiller.ChatCompletionJSONWithMeta(callCtx, g.HTTPClient, baseURL, g.APIKey, model, req.System, req.User)
 	if err != nil {
-		return CallResult{TotalTokens: usage.TotalTokens, LatencyMS: latencyMS}, err
+		return CallResult{TotalTokens: usage.TotalTokens, LatencyMS: latencyMS, ResolvedModel: meta.ResolvedModel, GatewayRequestID: meta.GatewayRequestID}, err
 	}
-	return CallResult{Content: content, TotalTokens: usage.TotalTokens, LatencyMS: latencyMS}, nil
+	return CallResult{Content: content, TotalTokens: usage.TotalTokens, LatencyMS: latencyMS, ResolvedModel: meta.ResolvedModel, GatewayRequestID: meta.GatewayRequestID}, nil
 }
 
 func (g GatewayCaller) resolveModel(lane LaneRef) string {

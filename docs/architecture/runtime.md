@@ -48,6 +48,8 @@ $COMPOUND_HOME/
   tmp/
 ```
 
+A RouteDecision through a gateway alias records both the requested lane and the gateway-resolved model (`resolved_model`); measurements MUST attribute to the resolved model, never the alias.
+
 Typed semantics (the layout *is* the guardrail): `ledger/` durable append-only · `inbox/` untrusted
 candidates · `projections/` rebuildable views · `indexes/` rented · `artifacts/` content-addressed ·
 `events/` raw · `work/` execution lifecycle · `context/` what agents actually consumed. `compound home

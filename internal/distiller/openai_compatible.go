@@ -28,15 +28,17 @@ type OpenAICompatibleOptions struct {
 type OpenAIUsage = routeevidence.Usage
 
 type LiveExtractionReport struct {
-	SchemaVersion  string                `json:"schema_version"`
-	Provider       string                `json:"provider"`
-	Model          string                `json:"model"`
-	Called         bool                  `json:"called"`
-	Eval           EvalCorpusReport      `json:"eval"`
-	Usage          OpenAIUsage           `json:"usage,omitempty"`
-	LatencyMS      int64                 `json:"latency_ms,omitempty"`
-	Response       LLMExtractionResponse `json:"response,omitempty"`
-	LiveModelCalls int                   `json:"live_model_calls"`
+	SchemaVersion    string                `json:"schema_version"`
+	Provider         string                `json:"provider"`
+	Model            string                `json:"model"`
+	ResolvedModel    string                `json:"resolved_model,omitempty"`
+	GatewayRequestID string                `json:"gateway_request_id,omitempty"`
+	Called           bool                  `json:"called"`
+	Eval             EvalCorpusReport      `json:"eval"`
+	Usage            OpenAIUsage           `json:"usage,omitempty"`
+	LatencyMS        int64                 `json:"latency_ms,omitempty"`
+	Response         LLMExtractionResponse `json:"response,omitempty"`
+	LiveModelCalls   int                   `json:"live_model_calls"`
 }
 
 type openAIChatRequest struct {
@@ -56,6 +58,11 @@ type openAIChatResponse struct {
 		Message openAIChatMessage `json:"message"`
 	} `json:"choices"`
 	Usage OpenAIUsage `json:"usage,omitempty"`
+}
+
+type OpenAICompatibleResponseMeta struct {
+	ResolvedModel    string `json:"resolved_model,omitempty"`
+	GatewayRequestID string `json:"gateway_request_id,omitempty"`
 }
 
 func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, opts OpenAICompatibleOptions) (LiveExtractionReport, error) {
@@ -94,12 +101,14 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 		client = http.DefaultClient
 	}
 	started := time.Now()
-	response, usage, liveModelCalls, err := callOpenAICompatible(ctx, client, opts.BaseURL, opts.APIKey, report.Model, req)
+	response, usage, liveModelCalls, meta, err := callOpenAICompatible(ctx, client, opts.BaseURL, opts.APIKey, report.Model, req)
 	report.Called = true
 	report.LiveModelCalls = liveModelCalls
 	report.Usage = usage
 	report.LatencyMS = time.Since(started).Milliseconds()
 	report.Response = response
+	report.ResolvedModel = meta.ResolvedModel
+	report.GatewayRequestID = meta.GatewayRequestID
 	if err != nil {
 		return report, err
 	}
@@ -107,26 +116,35 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 }
 
 func ChatCompletionJSON(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string) (content []byte, usage OpenAIUsage, latencyMS int64, err error) {
+	content, usage, latencyMS, _, err = ChatCompletionJSONWithMeta(ctx, client, baseURL, apiKey, model, system, user)
+	return content, usage, latencyMS, err
+}
+
+func ChatCompletionJSONWithMeta(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string) (content []byte, usage OpenAIUsage, latencyMS int64, meta OpenAICompatibleResponseMeta, err error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
 	jsonResponseFormat := true
-	content, usage, latencyMS, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
+	content, usage, latencyMS, meta, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
 	// Some local gateways (e.g. LM Studio) reject response_format "json_object";
 	// retry once without it — the prompts already demand strict JSON and callers
 	// strict-decode the content.
 	if err != nil && strings.Contains(err.Error(), "response_format") {
 		var retryLatency int64
+		var retryMeta OpenAICompatibleResponseMeta
 		jsonResponseFormat = false
-		content, usage, retryLatency, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
+		content, usage, retryLatency, retryMeta, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
 		latencyMS += retryLatency
+		meta = retryMeta
 	}
 	if isTransientOpenAICompatibleUpstreamError(err) {
 		var retryLatency int64
-		content, usage, retryLatency, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
+		var retryMeta OpenAICompatibleResponseMeta
+		content, usage, retryLatency, retryMeta, err = chatCompletionOnce(ctx, client, baseURL, apiKey, model, system, user, jsonResponseFormat)
 		latencyMS += retryLatency
+		meta = retryMeta
 	}
-	return content, usage, latencyMS, err
+	return content, usage, latencyMS, meta, err
 }
 
 func isTransientOpenAICompatibleUpstreamError(err error) bool {
@@ -142,7 +160,7 @@ func isTransientOpenAICompatibleUpstreamError(err error) bool {
 		strings.Contains(msg, "missing `choices[0]`")
 }
 
-func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string, jsonResponseFormat bool) (content []byte, usage OpenAIUsage, latencyMS int64, err error) {
+func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKey, model, system, user string, jsonResponseFormat bool) (content []byte, usage OpenAIUsage, latencyMS int64, meta OpenAICompatibleResponseMeta, err error) {
 	body := openAIChatRequest{
 		Model:       model,
 		Temperature: 0,
@@ -164,11 +182,11 @@ func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKe
 	}
 	rawBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, OpenAIUsage{}, 0, err
+		return nil, OpenAIUsage{}, 0, OpenAICompatibleResponseMeta{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(rawBody))
 	if err != nil {
-		return nil, OpenAIUsage{}, 0, err
+		return nil, OpenAIUsage{}, 0, OpenAICompatibleResponseMeta{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(apiKey) != "" {
@@ -178,30 +196,49 @@ func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKe
 	resp, err := client.Do(httpReq)
 	latencyMS = time.Since(started).Milliseconds()
 	if err != nil {
-		return nil, OpenAIUsage{}, latencyMS, err
+		return nil, OpenAIUsage{}, latencyMS, OpenAICompatibleResponseMeta{}, err
 	}
 	defer resp.Body.Close()
+	meta = openAICompatibleResponseMeta(resp.Header)
 	rawResp, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, OpenAIUsage{}, latencyMS, err
+		return nil, OpenAIUsage{}, latencyMS, meta, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, OpenAIUsage{}, latencyMS, fmt.Errorf("openai-compatible status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawResp)))
+		return nil, OpenAIUsage{}, latencyMS, meta, fmt.Errorf("openai-compatible status %d: %s", resp.StatusCode, strings.TrimSpace(string(rawResp)))
 	}
 	var chat openAIChatResponse
 	if err := json.Unmarshal(rawResp, &chat); err != nil {
-		return nil, OpenAIUsage{}, latencyMS, fmt.Errorf("parse openai-compatible response: %w", err)
+		return nil, OpenAIUsage{}, latencyMS, meta, fmt.Errorf("parse openai-compatible response: %w", err)
 	}
 	if len(chat.Choices) == 0 || strings.TrimSpace(chat.Choices[0].Message.Content) == "" {
-		return nil, chat.Usage, latencyMS, fmt.Errorf("openai-compatible response missing choice content")
+		return nil, chat.Usage, latencyMS, meta, fmt.Errorf("openai-compatible response missing choice content")
 	}
-	return []byte(chat.Choices[0].Message.Content), chat.Usage, latencyMS, nil
+	return []byte(chat.Choices[0].Message.Content), chat.Usage, latencyMS, meta, nil
 }
 
-func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, int, error) {
+func openAICompatibleResponseMeta(header http.Header) OpenAICompatibleResponseMeta {
+	return OpenAICompatibleResponseMeta{
+		ResolvedModel:    parseSwitchbackSelectedModel(header.Get("x-switchback-route")),
+		GatewayRequestID: strings.TrimSpace(header.Get("x-switchback-request-id")),
+	}
+}
+
+func parseSwitchbackSelectedModel(routeHeader string) string {
+	for _, field := range strings.Fields(routeHeader) {
+		value, ok := strings.CutPrefix(field, "selected=")
+		if !ok {
+			continue
+		}
+		return strings.Trim(strings.TrimSpace(value), `"'`)
+	}
+	return ""
+}
+
+func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, apiKey, model string, req LLMExtractionRequest) (LLMExtractionResponse, OpenAIUsage, int, OpenAICompatibleResponseMeta, error) {
 	packet, err := json.MarshalIndent(req, "", " ")
 	if err != nil {
-		return LLMExtractionResponse{}, OpenAIUsage{}, 0, err
+		return LLMExtractionResponse{}, OpenAIUsage{}, 0, OpenAICompatibleResponseMeta{}, err
 	}
 	system := strings.Join([]string{
 		"Return only JSON matching compound.distiller.llm_extraction.v0.1.",
@@ -209,10 +246,10 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 		"You extract candidates only; Compound owns adjudication, promotion, writeback.",
 	}, "\n")
 	user := string(packet)
-	content, usage, _, err := ChatCompletionJSON(ctx, client, baseURL, apiKey, model, system, user)
+	content, usage, _, meta, err := ChatCompletionJSONWithMeta(ctx, client, baseURL, apiKey, model, system, user)
 	liveModelCalls := 1
 	if err != nil {
-		return LLMExtractionResponse{}, usage, liveModelCalls, err
+		return LLMExtractionResponse{}, usage, liveModelCalls, meta, err
 	}
 	extraction, err := decodeOpenAICompatibleExtraction(content, req.TraceRef)
 	if err == nil {
@@ -221,11 +258,11 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 	if isCorrectableExtractionError(err) {
 		correctiveSystem := system + "\n" + correctiveExtractionInstruction(err)
 		var retryUsage OpenAIUsage
-		content, retryUsage, _, err = ChatCompletionJSON(ctx, client, baseURL, apiKey, model, correctiveSystem, user)
+		content, retryUsage, _, meta, err = ChatCompletionJSONWithMeta(ctx, client, baseURL, apiKey, model, correctiveSystem, user)
 		liveModelCalls++
 		usage = addOpenAIUsage(usage, retryUsage)
 		if err != nil {
-			return LLMExtractionResponse{}, usage, liveModelCalls, err
+			return LLMExtractionResponse{}, usage, liveModelCalls, meta, err
 		}
 		extraction, err = decodeOpenAICompatibleExtraction(content, req.TraceRef)
 		if err == nil {
@@ -233,9 +270,9 @@ func callOpenAICompatible(ctx context.Context, client *http.Client, baseURL, api
 		}
 	}
 	if err != nil {
-		return LLMExtractionResponse{}, usage, liveModelCalls, err
+		return LLMExtractionResponse{}, usage, liveModelCalls, meta, err
 	}
-	return extraction, usage, liveModelCalls, nil
+	return extraction, usage, liveModelCalls, meta, nil
 }
 
 func validateOpenAICompatibleExtraction(req LLMExtractionRequest, extraction LLMExtractionResponse) (LLMExtractionResponse, error) {

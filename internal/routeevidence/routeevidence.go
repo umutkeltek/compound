@@ -35,37 +35,41 @@ type RejectedTarget struct {
 }
 
 type Evidence struct {
-	SchemaVersion  string           `json:"schema_version"`
-	ID             string           `json:"id"`
-	CreatedAt      string           `json:"created_at"`
-	RequestID      string           `json:"request_id"`
-	WorkID         string           `json:"work_id,omitempty"`
-	TransitionID   string           `json:"transition_id,omitempty"`
-	ClientProfile  string           `json:"client_profile"`
-	Protocol       string           `json:"protocol"`
-	SelectedTarget Target           `json:"selected_target"`
-	Fallbacks      []Target         `json:"fallbacks,omitempty"`
-	Rejected       []RejectedTarget `json:"rejected,omitempty"`
-	Usage          Usage            `json:"usage,omitempty"`
-	CostMicros     int64            `json:"cost_micros,omitempty"`
-	LatencyMS      int64            `json:"latency_ms,omitempty"`
-	Status         string           `json:"status"`
-	EvidenceRefs   []string         `json:"evidence_refs,omitempty"`
+	SchemaVersion    string           `json:"schema_version"`
+	ID               string           `json:"id"`
+	CreatedAt        string           `json:"created_at"`
+	RequestID        string           `json:"request_id"`
+	WorkID           string           `json:"work_id,omitempty"`
+	TransitionID     string           `json:"transition_id,omitempty"`
+	ClientProfile    string           `json:"client_profile"`
+	Protocol         string           `json:"protocol"`
+	SelectedTarget   Target           `json:"selected_target"`
+	ResolvedModel    string           `json:"resolved_model,omitempty"`
+	GatewayRequestID string           `json:"gateway_request_id,omitempty"`
+	Fallbacks        []Target         `json:"fallbacks,omitempty"`
+	Rejected         []RejectedTarget `json:"rejected,omitempty"`
+	Usage            Usage            `json:"usage,omitempty"`
+	CostMicros       int64            `json:"cost_micros,omitempty"`
+	LatencyMS        int64            `json:"latency_ms,omitempty"`
+	Status           string           `json:"status"`
+	EvidenceRefs     []string         `json:"evidence_refs,omitempty"`
 }
 
 type BuildInput struct {
-	CreatedAt     time.Time
-	RequestID     string
-	WorkID        string
-	ClientProfile string
-	Protocol      string
-	Provider      string
-	Model         string
-	Usage         Usage
-	CostMicros    int64
-	LatencyMS     int64
-	Status        string
-	EvidenceRefs  []string
+	CreatedAt        time.Time
+	RequestID        string
+	WorkID           string
+	ClientProfile    string
+	Protocol         string
+	Provider         string
+	Model            string
+	ResolvedModel    string
+	GatewayRequestID string
+	Usage            Usage
+	CostMicros       int64
+	LatencyMS        int64
+	Status           string
+	EvidenceRefs     []string
 }
 
 type ImportResult struct {
@@ -94,11 +98,13 @@ func Build(in BuildInput) (Evidence, error) {
 			Model:    strings.TrimSpace(in.Model),
 			Protocol: strings.TrimSpace(in.Protocol),
 		},
-		Usage:        in.Usage,
-		CostMicros:   in.CostMicros,
-		LatencyMS:    in.LatencyMS,
-		Status:       status,
-		EvidenceRefs: dedupeRefs(in.EvidenceRefs),
+		ResolvedModel:    strings.TrimSpace(in.ResolvedModel),
+		GatewayRequestID: strings.TrimSpace(in.GatewayRequestID),
+		Usage:            in.Usage,
+		CostMicros:       in.CostMicros,
+		LatencyMS:        in.LatencyMS,
+		Status:           status,
+		EvidenceRefs:     dedupeRefs(in.EvidenceRefs),
 	}
 	ev.ID = idFor("route_", ev.RequestID, ev.CreatedAt, ev.SelectedTarget.Provider, ev.SelectedTarget.Model, ev.Status)
 	if err := Validate(ev); err != nil {

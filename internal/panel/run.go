@@ -407,7 +407,7 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 	} else if ok {
 		return existing.ID, nil
 	}
-	ev, err := routeevidence.Build(routeevidence.BuildInput{CreatedAt: createdAt, RequestID: requestID, WorkID: workID, ClientProfile: clientProfile, Protocol: "panel-lane", Provider: "compound-route-plan", Model: lane.ModelID, Usage: routeevidence.Usage{TotalTokens: result.TotalTokens}, LatencyMS: result.LatencyMS, Status: status, EvidenceRefs: []string{routeevidence.ModelCapabilitiesAuthorityRef}})
+	ev, err := routeevidence.Build(routeevidence.BuildInput{CreatedAt: createdAt, RequestID: requestID, WorkID: workID, ClientProfile: clientProfile, Protocol: "panel-lane", Provider: "compound-route-plan", Model: lane.ModelID, ResolvedModel: result.ResolvedModel, GatewayRequestID: result.GatewayRequestID, Usage: routeevidence.Usage{TotalTokens: result.TotalTokens}, LatencyMS: result.LatencyMS, Status: status, EvidenceRefs: []string{routeevidence.ModelCapabilitiesAuthorityRef}})
 	if err != nil {
 		return "", err
 	}

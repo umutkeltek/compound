@@ -302,6 +302,33 @@ func routeEvidenceRows(t *testing.T, home string) int {
 	return strings.Count(trimmed, "\n") + 1
 }
 
+func TestRecordPanelRouteEvidenceIncludesGatewayMetadata(t *testing.T) {
+	home := t.TempDir()
+	_, err := recordPanelRouteEvidence(home, fixedPanelNow(), "work_1", "panel:req_1", "compound.panel.judge", LaneRef{ModelID: "auto/judge", Tier: "cheap"}, CallResult{
+		TotalTokens:      7,
+		LatencyMS:        12,
+		ResolvedModel:    "nvidia/minimaxai/minimax-m3",
+		GatewayRequestID: "req_switchback_1",
+	}, "completed")
+	if err != nil {
+		t.Fatalf("record route evidence: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(home, "ledger", "execution-route-evidence.jsonl"))
+	if err != nil {
+		t.Fatalf("read route evidence ledger: %v", err)
+	}
+	var row routeevidence.Evidence
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &row); err != nil {
+		t.Fatalf("parse route evidence row: %v", err)
+	}
+	if row.SelectedTarget.Model != "auto/judge" {
+		t.Fatalf("selected target model = %q, want requested alias", row.SelectedTarget.Model)
+	}
+	if row.ResolvedModel != "nvidia/minimaxai/minimax-m3" || row.GatewayRequestID != "req_switchback_1" {
+		t.Fatalf("gateway metadata = resolved:%q request:%q", row.ResolvedModel, row.GatewayRequestID)
+	}
+}
+
 func TestExecuteDryRunBlocksAndPersistsPreflightFailure(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")

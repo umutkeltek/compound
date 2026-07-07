@@ -20,9 +20,11 @@ type CallRequest struct {
 }
 
 type CallResult struct {
-	Content     []byte `json:"content"`
-	TotalTokens int    `json:"total_tokens"`
-	LatencyMS   int64  `json:"latency_ms"`
+	Content          []byte `json:"content"`
+	TotalTokens      int    `json:"total_tokens"`
+	LatencyMS        int64  `json:"latency_ms"`
+	ResolvedModel    string `json:"resolved_model,omitempty"`
+	GatewayRequestID string `json:"gateway_request_id,omitempty"`
 }
 
 type LensCaller interface {

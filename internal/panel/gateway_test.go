@@ -33,6 +33,8 @@ func TestGatewayCallerSuccess(t *testing.T) {
 		if body.ResponseFormat["type"] != "json_object" || len(body.Messages) != 2 || body.Messages[0]["content"] != "system" || body.Messages[1]["content"] != "user" {
 			t.Fatalf("request body = %+v", body)
 		}
+		w.Header().Set("x-switchback-route", "strategy=auto/judge selected=nvidia/minimaxai/minimax-m3 fallbacks=[] rejected=0")
+		w.Header().Set("x-switchback-request-id", "req_panel_gateway")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{"message": map[string]string{"content": `{"confidence":0.8,"findings":[]}`}}},
 			"usage":   map[string]int{"total_tokens": 33},
@@ -52,6 +54,9 @@ func TestGatewayCallerSuccess(t *testing.T) {
 	}
 	if gotModel != "served-model" || got.TotalTokens != 33 || !strings.Contains(string(got.Content), `"confidence"`) || got.LatencyMS < 0 {
 		t.Fatalf("result model=%q got=%+v", gotModel, got)
+	}
+	if got.ResolvedModel != "nvidia/minimaxai/minimax-m3" || got.GatewayRequestID != "req_panel_gateway" {
+		t.Fatalf("gateway metadata = %+v", got)
 	}
 }
 
