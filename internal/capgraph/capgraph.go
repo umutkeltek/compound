@@ -77,11 +77,14 @@ type Node struct {
 
 // Edge is a typed relation. For feedback edges From is "context:<token>" and To is a node id.
 type Edge struct {
-	Kind       string  `json:"kind"`
-	From       string  `json:"from"`
-	To         string  `json:"to"`
-	Confidence float64 `json:"confidence"`
-	CreatedAt  string  `json:"created_at"`
+	Kind          string  `json:"kind"`
+	From          string  `json:"from"`
+	To            string  `json:"to"`
+	Confidence    float64 `json:"confidence"`
+	Weight        float64 `json:"weight,omitempty"`
+	Provenance    string  `json:"provenance,omitempty"`
+	SourceReceipt string  `json:"source_receipt,omitempty"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 type Store struct {
@@ -441,7 +444,8 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 	s.setSemanticLane(semanticLane)
 
 	// learned context → node adjustments
-	add := map[string]float64{}
+	validatedAdd := map[string]float64{}
+	missedAdd := map[string]float64{}
 	sub := map[string]float64{}
 	harnesses := map[string]map[string]bool{}
 	evidenceBonus, evidenceRefs := evidenceMatchedOwnerBonuses(nodes, edges, tokens)
@@ -458,16 +462,21 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 			continue
 		}
 		switch e.Kind {
+		case EdValidatedBy:
+			if !contextTokenMatches(tokens, ctx) {
+				continue
+			}
+			validatedAdd[e.To] += edgeScore(e)
 		case EdMissedWhen:
 			if !contextTokenMatches(tokens, ctx) {
 				continue
 			}
-			add[e.To] += e.Confidence
+			missedAdd[e.To] += edgeScore(e)
 		case EdFalseTriggeredBy:
 			if !contextTokenMatches(feedbackTokens, ctx) {
 				continue
 			}
-			sub[e.To] += e.Confidence
+			sub[e.To] += edgeScore(e)
 		}
 	}
 
@@ -499,7 +508,7 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if semanticMatched {
 			semanticBonus = semanticWeight * (sem - semanticFloor) / (1 - semanticFloor) * n.Weight
 		}
-		score := base*n.Weight + semanticBonus + add[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
+		score := base*n.Weight + semanticBonus + validatedAdd[n.ID] + missedAdd[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
 		}
@@ -507,8 +516,11 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if semanticBonus > 0 {
 			why += fmt.Sprintf(" +semantic=%.2f", sem)
 		}
-		if add[n.ID] > 0 {
-			why += fmt.Sprintf(" +missed_when=%.1f", add[n.ID])
+		if validatedAdd[n.ID] > 0 {
+			why += fmt.Sprintf(" +validated_by=%.1f", validatedAdd[n.ID])
+		}
+		if missedAdd[n.ID] > 0 {
+			why += fmt.Sprintf(" +missed_when=%.1f", missedAdd[n.ID])
 		}
 		if evidenceBonus[n.ID] > 0 {
 			why += fmt.Sprintf(" +evidence=%.1f", evidenceBonus[n.ID])
@@ -820,6 +832,8 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 		if !changed {
 			report.SkippedUnchanged++
 		}
+		contextTokens := tokenList(rec.StateDelta.Summary)
+		provenance, weight := receiptEdgeProvenance(rec)
 
 		if canValidateUse {
 			for _, raw := range rec.Skills.Used {
@@ -835,17 +849,25 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 					}
 					continue
 				}
-				edge := Edge{Kind: EdValidatedBy, From: nodeID, To: rec.ID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+				edge := receiptEdge(EdValidatedBy, nodeID, rec.ID, rec.ID, provenance, weight, now)
 				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
 					return report, err
 				} else if added {
 					report.AppliedEdges++
 					report.AppliedValidatedEdges++
 				}
+				for _, tok := range contextTokens {
+					contextEdge := receiptEdge(EdValidatedBy, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
+					if added, err := s.addEdgeOnce(contextEdge, existingEdges, now); err != nil {
+						return report, err
+					} else if added {
+						report.AppliedEdges++
+						report.AppliedValidatedEdges++
+					}
+				}
 			}
 		}
 
-		contextTokens := tokenList(rec.StateDelta.Summary)
 		for _, raw := range rec.Skills.Missed {
 			nodeID := capabilityNodeID(raw)
 			if nodeID == "" {
@@ -864,7 +886,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 				continue
 			}
 			for _, tok := range contextTokens {
-				edge := Edge{Kind: EdMissedWhen, From: "context:" + tok, To: nodeID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+				edge := receiptEdge(EdMissedWhen, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
 				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
 					return report, err
 				} else if added {
@@ -892,7 +914,7 @@ func (s *Store) ConsumeReceipts(homePath string, now time.Time) (ReceiptConsumeR
 				continue
 			}
 			for _, tok := range contextTokens {
-				edge := Edge{Kind: EdFalseTriggeredBy, From: "context:" + tok, To: nodeID, Confidence: 1.0, CreatedAt: now.UTC().Format(time.RFC3339)}
+				edge := receiptEdge(EdFalseTriggeredBy, "context:"+tok, nodeID, rec.ID, provenance, weight, now)
 				if added, err := s.addEdgeOnce(edge, existingEdges, now); err != nil {
 					return report, err
 				} else if added {
@@ -978,8 +1000,8 @@ func (s *Store) loadNodes() ([]Node, error) {
 	return out, nil
 }
 
-// loadEdges dedups last-wins by (kind, from, to), so re-Consuming the same observation is
-// IDEMPOTENT (it does not double-count a feedback edge); distinct contexts still accumulate.
+// loadEdges dedups last-wins by edgeKey, so re-Consuming the same observation is
+// IDEMPOTENT (it does not double-count a feedback edge); distinct contexts or receipts still accumulate.
 func (s *Store) loadEdges() ([]Edge, error) {
 	byKey := map[string]Edge{}
 	var order []string
@@ -988,7 +1010,7 @@ func (s *Store) loadEdges() ([]Edge, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			return nil // skip a torn/malformed line
 		}
-		k := e.Kind + "|" + e.From + "|" + e.To
+		k := edgeKey(e)
 		if _, seen := byKey[k]; !seen {
 			order = append(order, k)
 		}
@@ -1330,6 +1352,52 @@ func capabilityNodeID(ref string) string {
 	return strings.TrimSpace(ref)
 }
 
+func receiptEdge(kind, from, to, receiptID, provenance string, weight float64, now time.Time) Edge {
+	return Edge{
+		Kind:          kind,
+		From:          from,
+		To:            to,
+		Confidence:    1.0,
+		Weight:        weight,
+		Provenance:    provenance,
+		SourceReceipt: strings.TrimSpace(receiptID),
+		CreatedAt:     now.UTC().Format(time.RFC3339),
+	}
+}
+
+func receiptEdgeProvenance(rec envelope.Receipt) (string, float64) {
+	const (
+		cheapLaneWeight    = 1.0
+		verifiedLaneWeight = 2.0
+	)
+	parts := []string{rec.Producer.Kind, rec.Producer.Name}
+	parts = append(parts, rec.Cost.ModelCalls...)
+	parts = append(parts, rec.ProofRefs...)
+	text := strings.ToLower(strings.Join(parts, " "))
+	if strings.Contains(text, "verified") ||
+		strings.Contains(text, "oracle") ||
+		strings.Contains(text, "human-reviewed") ||
+		strings.Contains(text, "human_reviewed") {
+		return "verified_lane", verifiedLaneWeight
+	}
+	if strings.Contains(text, "local") {
+		return "local_lane", cheapLaneWeight
+	}
+	return "cheap_lane", cheapLaneWeight
+}
+
+func edgeScore(e Edge) float64 {
+	conf := e.Confidence
+	if conf == 0 {
+		conf = 1
+	}
+	weight := e.Weight
+	if weight == 0 {
+		weight = 1
+	}
+	return conf * weight
+}
+
 func sortConstraints(values []SurfacingConstraint) {
 	sort.Slice(values, func(i, j int) bool {
 		if values[i].Kind != values[j].Kind {
@@ -1343,5 +1411,9 @@ func sortConstraints(values []SurfacingConstraint) {
 }
 
 func edgeKey(e Edge) string {
-	return e.Kind + "|" + e.From + "|" + e.To
+	key := e.Kind + "|" + e.From + "|" + e.To
+	if strings.TrimSpace(e.SourceReceipt) != "" {
+		key += "|" + strings.TrimSpace(e.SourceReceipt)
+	}
+	return key
 }

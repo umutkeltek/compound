@@ -216,7 +216,7 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	if report.ReceiptsScanned != 3 || report.UsedCapabilitiesSeen != 3 || report.MissedCapabilitiesSeen != 1 {
 		t.Fatalf("report = %+v", report)
 	}
-	if report.AppliedValidatedEdges != 2 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 4 {
+	if report.AppliedValidatedEdges != 6 || report.AppliedMissedEdges != 2 || report.AppliedEdges != 8 {
 		t.Fatalf("report = %+v", report)
 	}
 	if report.SkippedNonCompleted != 1 || report.SkippedUnchanged != 0 {
@@ -231,6 +231,13 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	edges := readCapEdges(t, home)
 	if !hasEdge(edges, EdValidatedBy, "skill:pricing", "rec_used") {
 		t.Fatalf("edges = %+v, want used skill validated by receipt", edges)
+	}
+	contextEdge := findEdge(edges, EdValidatedBy, "context:receipt", "skill:pricing")
+	if contextEdge == nil {
+		t.Fatalf("edges = %+v, want used skill validated by receipt context", edges)
+	}
+	if contextEdge.SourceReceipt != "rec_used" || contextEdge.Provenance != "cheap_lane" || contextEdge.Weight <= 0 {
+		t.Fatalf("validated context edge missing receipt provenance: %+v", contextEdge)
 	}
 	if !hasEdge(edges, EdValidatedBy, "skill:offered-only", "rec_unchanged") {
 		t.Fatalf("edges = %+v, want legacy proof-bearing receipt to validate used skill", edges)
@@ -256,6 +263,72 @@ func TestConsumeReceiptsValidatesUsedCapabilitiesOnly(t *testing.T) {
 	}
 	if got := len(readCapEdges(t, home)); got != len(edges) {
 		t.Fatalf("replay appended duplicate edges: before %d after %d", len(edges), got)
+	}
+}
+
+func TestConsumeReceiptsValidatedSkillRaisesFutureSurfacing(t *testing.T) {
+	home, s := newStore(t)
+	const nodeID = "skill:capability-writeback"
+	if err := s.Add(Node{ID: nodeID, Kind: "skill", Name: "Capability Writeback", Triggers: []string{"unrelated"}}); err != nil {
+		t.Fatal(err)
+	}
+	task := "capability writeback edge follow-up"
+	before := surfaced(s, task)[nodeID]
+	if before != 0 {
+		t.Fatalf("precondition: used skill should not surface before receipts, got score %.1f", before)
+	}
+
+	rec1 := testReceipt("rec_validate_one", "completed", true, []string{"capability://" + nodeID}, nil, nil)
+	rec1.StateDelta.Summary = "capability writeback edge"
+	writeReceipt(t, home, rec1)
+	rec2 := testReceipt("rec_validate_two", "completed", true, []string{"capability://" + nodeID}, nil, nil)
+	rec2.StateDelta.Summary = "capability writeback edge"
+	writeReceipt(t, home, rec2)
+
+	report, err := s.ConsumeReceipts(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.AppliedValidatedEdges < 4 {
+		t.Fatalf("report = %+v, want validating receipt context edges", report)
+	}
+	after := surfaced(s, task)[nodeID]
+	if after <= before {
+		t.Fatalf("validated receipts should raise surfacing score for %s: before %.1f after %.1f", nodeID, before, after)
+	}
+	edges := readCapEdges(t, home)
+	if !hasEdge(edges, EdValidatedBy, "context:writeback", nodeID) {
+		t.Fatalf("edges = %+v, want validated_by context edge on real node", edges)
+	}
+}
+
+func TestConsumeReceiptsWithoutSkillIDsDoesNotCreateBlankFeedbackEdges(t *testing.T) {
+	home, s := newStore(t)
+	if err := s.Add(Node{ID: "skill:present", Kind: "skill", Name: "Present", Triggers: []string{"present"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := testReceipt("rec_no_skills", "completed", true, nil, nil, nil)
+	rec.StateDelta.Summary = "blank provenance should not create edges"
+	rec.Skills.Used = []string{"", "   ", "capability://"}
+	writeReceipt(t, home, rec)
+
+	report, err := s.ConsumeReceipts(home, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.AppliedEdges != 0 || report.UsedCapabilitiesSeen != 0 || report.MissedCapabilitiesSeen != 0 || report.FalseTriggersSeen != 0 {
+		t.Fatalf("blank skill ids must not create feedback edges: %+v", report)
+	}
+	edgePath := filepath.Join(home, "registries", "capability-edges.jsonl")
+	if _, err := os.Stat(edgePath); os.IsNotExist(err) {
+		return
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range readCapEdges(t, home) {
+		if strings.TrimSpace(edge.From) == "" || strings.TrimSpace(edge.To) == "" || strings.TrimSpace(edge.Provenance) == "" {
+			t.Fatalf("blank-provenance edge created: %+v", edge)
+		}
 	}
 }
 
@@ -679,7 +752,7 @@ func TestConsumeReceiptsIfGraphExistsConsumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ok || report.AppliedValidatedEdges != 1 {
+	if !ok || report.AppliedValidatedEdges != 3 {
 		t.Fatalf("report = %+v ok=%v", report, ok)
 	}
 	if !hasEdge(readCapEdges(t, home), EdValidatedBy, "skill:auto", "rec_auto") {
@@ -1027,12 +1100,16 @@ func writeReceipt(t *testing.T, home string, rec envelope.Receipt) {
 }
 
 func hasEdge(edges []Edge, kind, from, to string) bool {
+	return findEdge(edges, kind, from, to) != nil
+}
+
+func findEdge(edges []Edge, kind, from, to string) *Edge {
 	for _, edge := range edges {
 		if edge.Kind == kind && edge.From == from && edge.To == to {
-			return true
+			return &edge
 		}
 	}
-	return false
+	return nil
 }
 
 func surfaced(s *Store, task string) map[string]float64 {

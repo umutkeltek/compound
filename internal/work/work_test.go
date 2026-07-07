@@ -251,7 +251,8 @@ func TestClosePreservesExplicitCapabilityFeedback(t *testing.T) {
 		MoveType:                   "outward_delta",
 		Summary:                    "pricing capability feedback",
 		Changed:                    true,
-		MissedCapabilities:         []string{"capability://skill:pricing"},
+		UsedCapabilities:           []string{"skill:golang-testing", "not-a-capability-node"},
+		MissedCapabilities:         []string{"skill:pricing"},
 		FalseTriggeredCapabilities: []string{"capability://skill:generic-copy"},
 	}, fixedNow)
 	if err != nil {
@@ -263,11 +264,20 @@ func TestClosePreservesExplicitCapabilityFeedback(t *testing.T) {
 	if !contains(closed.Receipt.Skills.FalseTriggered, "capability://skill:generic-copy") {
 		t.Fatalf("receipt false_triggered skills = %v", closed.Receipt.Skills.FalseTriggered)
 	}
+	if !contains(closed.Receipt.Skills.Used, "capability://skill:golang-testing") {
+		t.Fatalf("receipt used skills = %v", closed.Receipt.Skills.Used)
+	}
+	if contains(closed.Receipt.Skills.Used, "not-a-capability-node") {
+		t.Fatalf("non graph node leaked into used skills: %v", closed.Receipt.Skills.Used)
+	}
 	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:pricing", "missed") {
 		t.Fatalf("transition typed projections missing missed skill: %+v", closed.Transition.Projections.Typed)
 	}
 	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:generic-copy", "false_triggered") {
 		t.Fatalf("transition typed projections missing false-triggered skill: %+v", closed.Transition.Projections.Typed)
+	}
+	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:golang-testing", "used") {
+		t.Fatalf("transition typed projections missing used skill: %+v", closed.Transition.Projections.Typed)
 	}
 }
 
@@ -286,8 +296,13 @@ func TestContextPackOffersAreTypedAsOfferedNotUsed(t *testing.T) {
 			Risk:          "tier1",
 			Uncertainty:   envelope.Uncertainty{Level: "known"},
 		},
-		Included: []envelope.IncludedRef{{Ref: "capability://skill:pricing", SourceClass: "runtime", Status: "current"}},
+		Included: []envelope.IncludedRef{},
 		Excluded: []envelope.ExcludedRef{},
+		CapabilityOffers: []envelope.CapabilityOffer{{
+			Ref:  "capability://skill:pricing",
+			Kind: "skill",
+			Name: "Pricing",
+		}},
 	}
 	packPath := filepath.Join(s.home, "context", "packs", pack.ID+".json")
 	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
@@ -348,7 +363,7 @@ func TestRecordActionGate(t *testing.T) {
 				Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
 				EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
 			},
-			Capability: "filesystem.write", Action: "write_file",
+			Capability: "capability://skill:filesystem-write", Action: "write_file",
 			Target:        envelope.ActionTarget{Kind: "file", Path: "docs/x.md"},
 			MutationClass: "local_reversible", Reversibility: "easy",
 		}
@@ -395,8 +410,8 @@ func TestRecordActionGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	if !contains(closed.Receipt.Skills.Used, "filesystem.write") {
-		t.Fatalf("receipt used skills = %v, want filesystem.write", closed.Receipt.Skills.Used)
+	if !contains(closed.Receipt.Skills.Used, "capability://skill:filesystem-write") {
+		t.Fatalf("receipt used skills = %v, want capability://skill:filesystem-write", closed.Receipt.Skills.Used)
 	}
 	if contains(closed.Receipt.Skills.Used, "filesystem.delete") {
 		t.Fatalf("denied capability leaked into used skills: %v", closed.Receipt.Skills.Used)
@@ -410,11 +425,11 @@ func TestRecordActionGate(t *testing.T) {
 	if len(closed.Receipt.Skills.Candidate) != 0 {
 		t.Fatalf("no context pack offers in this test, got candidates %v", closed.Receipt.Skills.Candidate)
 	}
-	if !contains(closed.Transition.Projections.Skill, "filesystem.write") {
-		t.Fatalf("transition skill projections = %v, want filesystem.write", closed.Transition.Projections.Skill)
+	if !contains(closed.Transition.Projections.Skill, "capability://skill:filesystem-write") {
+		t.Fatalf("transition skill projections = %v, want capability://skill:filesystem-write", closed.Transition.Projections.Skill)
 	}
-	if !containsProjection(closed.Transition.Projections.Typed, "skill", "filesystem.write", "used") {
-		t.Fatalf("transition typed projections = %+v, want used filesystem.write", closed.Transition.Projections.Typed)
+	if !containsProjection(closed.Transition.Projections.Typed, "skill", "capability://skill:filesystem-write", "used") {
+		t.Fatalf("transition typed projections = %+v, want used capability://skill:filesystem-write", closed.Transition.Projections.Typed)
 	}
 }
 

@@ -498,6 +498,7 @@ type CloseInput struct {
 	Actor                      string
 	Summary                    string
 	Changed                    bool
+	UsedCapabilities           []string
 	MissedCapabilities         []string
 	FalseTriggeredCapabilities []string
 	ProofRefs                  []string
@@ -554,11 +555,14 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	if err != nil {
 		return res, err
 	}
-	usedCapabilities, err := s.usedCapabilitiesForRuns(w.RunIDs)
+	usedCapabilitiesForRuns, err := s.usedCapabilitiesForRuns(w.RunIDs, capabilityRefs)
 	if err != nil {
 		return res, err
 	}
-	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs, in.MissedCapabilities, in.FalseTriggeredCapabilities)
+	usedCapabilities := mergeUnique(normalizeCapabilityRefs(in.UsedCapabilities), usedCapabilitiesForRuns)
+	missedCapabilities := normalizeCapabilityRefs(in.MissedCapabilities)
+	falseTriggeredCapabilities := normalizeCapabilityRefs(in.FalseTriggeredCapabilities)
+	skillProjectionRefs := mergeUnique(usedCapabilities, capabilityRefs, missedCapabilities, falseTriggeredCapabilities)
 	proofRefs := mergeUnique(in.ProofRefs, w.ArtifactIDs, w.VerificationIDs)
 	if err := validateProofMedium(w.ProofMedium, in.Outcome, proofRefs); err != nil {
 		return res, err
@@ -581,8 +585,8 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		Cost: envelope.ReceiptCost{ModelCalls: []string{}},
 		Skills: envelope.ReceiptSkills{
 			Used:                usedCapabilities,
-			Missed:              orEmpty(in.MissedCapabilities),
-			FalseTriggered:      orEmpty(in.FalseTriggeredCapabilities),
+			Missed:              missedCapabilities,
+			FalseTriggered:      falseTriggeredCapabilities,
 			Candidate:           capabilityRefs,
 			CapabilitiesOffered: capabilityRefs,
 		},
@@ -676,19 +680,29 @@ func (s *Store) capabilityRefsForContextPack(contextPackID string) ([]string, er
 	}
 	seen := map[string]bool{}
 	refs := []string{}
-	for _, included := range pack.Included {
-		if !strings.HasPrefix(included.Ref, "capability://") || seen[included.Ref] {
+	for _, offer := range pack.CapabilityOffers {
+		ref := normalizeCapabilityRef(offer.Ref)
+		if ref == "" || seen[ref] {
 			continue
 		}
-		seen[included.Ref] = true
-		refs = append(refs, included.Ref)
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	for _, included := range pack.Included {
+		ref := normalizeCapabilityRef(included.Ref)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
 	}
 	return refs, nil
 }
 
-func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
+func (s *Store) usedCapabilitiesForRuns(runIDs, offeredRefs []string) ([]string, error) {
 	seen := map[string]bool{}
 	used := []string{}
+	offeredByNode := capabilityRefsByNodeID(offeredRefs)
 	for _, runID := range runIDs {
 		var ai envelope.ActionIntent
 		if err := s.readJSON(s.envPath(runID), &ai); err != nil {
@@ -700,13 +714,87 @@ func (s *Store) usedCapabilitiesForRuns(runIDs []string) ([]string, error) {
 		if err := ai.Validate(); err != nil {
 			return nil, fmt.Errorf("action intent %s invalid: %w", runID, err)
 		}
-		if strings.TrimSpace(ai.Capability) == "" || internalLifecycleCapability(ai.Capability) || seen[ai.Capability] {
+		if strings.TrimSpace(ai.Capability) == "" || internalLifecycleCapability(ai.Capability) {
 			continue
 		}
-		seen[ai.Capability] = true
-		used = append(used, ai.Capability)
+		ref := normalizeCapabilityRef(ai.Capability)
+		if ref == "" {
+			continue
+		}
+		if offeredRef := offeredByNode[capabilityNodeID(ref)]; offeredRef != "" {
+			ref = offeredRef
+		}
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		used = append(used, ref)
 	}
 	return used, nil
+}
+
+func normalizeCapabilityRefs(values []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, value := range values {
+		ref := normalizeCapabilityRef(value)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
+func normalizeCapabilityRef(value string) string {
+	nodeID := capabilityNodeID(value)
+	if !realCapabilityNodeID(nodeID) {
+		return ""
+	}
+	return "capability://" + nodeID
+}
+
+func capabilityRefsByNodeID(refs []string) map[string]string {
+	out := map[string]string{}
+	for _, ref := range refs {
+		normalized := normalizeCapabilityRef(ref)
+		if normalized == "" {
+			continue
+		}
+		out[capabilityNodeID(normalized)] = normalized
+	}
+	return out
+}
+
+func capabilityNodeID(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "capability://")
+	return strings.TrimSpace(ref)
+}
+
+func realCapabilityNodeID(nodeID string) bool {
+	for _, prefix := range []string{
+		"lens:",
+		"procedure:",
+		"script:",
+		"tool:",
+		"mcp:",
+		"model_profile:",
+		"harness:",
+		"eval:",
+		"workflow:",
+		"adapter:",
+		"doctrine:",
+		"taste_standard:",
+		"skill:",
+		"instruction_rule:",
+	} {
+		if strings.HasPrefix(nodeID, prefix) && strings.TrimSpace(strings.TrimPrefix(nodeID, prefix)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func internalLifecycleCapability(capability string) bool {

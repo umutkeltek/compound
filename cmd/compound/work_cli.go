@@ -1006,13 +1006,14 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--missed C] [--false-triggered C] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]"
 		if err := validateKnownFlags(rest, map[string]bool{
 			"--outcome":          true,
 			"--move-type":        true,
 			"--summary":          true,
 			"--by":               true,
 			"--actor":            true,
+			"--used":             true,
 			"--missed":           true,
 			"--false-triggered":  true,
 			"--proof":            true,
@@ -1034,6 +1035,7 @@ func cmdWork(args []string) {
 			Actor:                      firstNonEmpty(flag("--by"), flag("--actor")),
 			Summary:                    flag("--summary"),
 			Changed:                    has("--changed"),
+			UsedCapabilities:           splitCSV(flag("--used")),
 			MissedCapabilities:         splitCSV(flag("--missed")),
 			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
 			ProofRefs:                  flagCSVValues(rest, "--proof", "--proof-ref"),

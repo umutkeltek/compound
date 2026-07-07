@@ -62,6 +62,7 @@ type Fixture struct {
 	MoveType       string                        `json:"move_type,omitempty"`
 	Outcome        string                        `json:"outcome,omitempty"`
 	Summary        string                        `json:"summary,omitempty"`
+	Used           []string                      `json:"used,omitempty"`
 	Missed         []string                      `json:"missed,omitempty"`
 	FalseTriggered []string                      `json:"false_triggered,omitempty"`
 	Tool           string                        `json:"tool,omitempty"` // post-tool-use
@@ -470,6 +471,7 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		MoveType:                   moveType,
 		Summary:                    fx.Summary,
 		Changed:                    strings.TrimSpace(fx.Summary) != "",
+		UsedCapabilities:           fx.Used,
 		MissedCapabilities:         fx.Missed,
 		FalseTriggeredCapabilities: fx.FalseTriggered,
 	}, now)
