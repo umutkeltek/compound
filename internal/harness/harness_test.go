@@ -16,9 +16,47 @@ func TestSupportsByHarness(t *testing.T) {
 	if r.Supports("codex", "PreToolUse") {
 		t.Error("codex should NOT be assumed to block a tool call natively")
 	}
-	// Both capture session-end receipts.
-	if !r.Supports("claude_code", "SessionEnd") || !r.Supports("codex", "SessionEnd") {
-		t.Error("both should support session-end receipts")
+	// claude_code has a real SessionEnd event; codex has none (Stop is its only
+	// end-of-turn hook) — conflating them would silently overclaim a receipt codex
+	// never delivers.
+	if !r.Supports("claude_code", "SessionEnd") {
+		t.Error("claude_code should support session-end receipts")
+	}
+	if r.Supports("codex", "SessionEnd") {
+		t.Error("codex should NOT claim session-end receipts — no such event exists")
+	}
+	// Both can inject/continue at end-of-turn via Stop (codex via JSON block/continuation).
+	if !r.Supports("claude_code", "Stop") || !r.Supports("codex", "Stop") {
+		t.Error("both should support stop feedback/continuation")
+	}
+}
+
+// TestStopAndSessionEndCapabilitiesAreIndependent proves the registry no longer
+// conflates the two events: mutating one capability must not move the other.
+func TestStopAndSessionEndCapabilitiesAreIndependent(t *testing.T) {
+	reg := Registry{Harnesses: map[string]Harness{
+		"only_stop": {
+			Name:                 "only_stop",
+			InstructionMechanism: "test fixture",
+			Capabilities:         Capabilities{StopFeedback: true, SessionEndReceipt: false},
+		},
+		"only_session_end": {
+			Name:                 "only_session_end",
+			InstructionMechanism: "test fixture",
+			Capabilities:         Capabilities{StopFeedback: false, SessionEndReceipt: true},
+		},
+	}}
+	if !reg.Supports("only_stop", "Stop") {
+		t.Error("only_stop should support Stop")
+	}
+	if reg.Supports("only_stop", "SessionEnd") {
+		t.Error("only_stop should NOT support SessionEnd — mutating StopFeedback leaked into SessionEndReceipt")
+	}
+	if !reg.Supports("only_session_end", "SessionEnd") {
+		t.Error("only_session_end should support SessionEnd")
+	}
+	if reg.Supports("only_session_end", "Stop") {
+		t.Error("only_session_end should NOT support Stop — mutating SessionEndReceipt leaked into StopFeedback")
 	}
 }
 

@@ -432,22 +432,34 @@ func postToolUse(name string, fx Fixture, now time.Time) (Result, error) {
 	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "recorded tool event: " + orDash(fx.Tool) + " (ToolEvent/ArtifactRef land at P6+)"}, nil
 }
 
+// sessionEnd handles both the SessionEnd and Stop hooks. They share this receipt/close
+// path, but their honesty signal differs: Stop is consulted against StopFeedback (some
+// harnesses, e.g. codex, CAN inject/continue at end-of-turn with no SessionEnd event at
+// all), SessionEnd against SessionEndReceipt (does the event exist at all). A harness that
+// does not support the event degrades honestly — fail_open + a WARNING in the summary,
+// mirroring the PreToolUse capability-aware enforcement pattern — never a silent pretense
+// that the harness delivered a receipt it cannot.
 func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
+	st := status(deps, fx.Harness, name)
+	warn := ""
+	if st == "fail_open" {
+		warn = fmt.Sprintf(" — WARNING: %s has no native %s event; receipt not delivered by the harness", fx.Harness, name)
+	}
 	if fx.WorkID == "" {
 		if strings.TrimSpace(fx.SessionID) == "" {
 			return Result{}, fmt.Errorf("session-end fixture needs work_id or session_id")
 		}
 		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.Cwd, fx.Summary}, "\x00"))
-		ev := newEvent(name, fx, status(deps, fx.Harness, name), inputHash, nil, now)
-		summary := fmt.Sprintf("recorded %s receipt event for session %s", name, fx.SessionID)
+		ev := newEvent(name, fx, st, inputHash, nil, now)
+		summary := fmt.Sprintf("recorded %s receipt event for session %s%s", name, fx.SessionID, warn)
 		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 	}
 	outcome := strings.TrimSpace(fx.Outcome)
 	moveType := strings.TrimSpace(fx.MoveType)
 	if outcome == "" || moveType == "" {
 		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.WorkID, fx.Cwd, fx.Summary, outcome, moveType}, "\x00"))
-		ev := newEvent(name, fx, status(deps, fx.Harness, name), inputHash, nil, now)
-		summary := fmt.Sprintf("recorded %s receipt event for work %s; explicit outcome and move_type required to close work", name, fx.WorkID)
+		ev := newEvent(name, fx, st, inputHash, nil, now)
+		summary := fmt.Sprintf("recorded %s receipt event for work %s; explicit outcome and move_type required to close work%s", name, fx.WorkID, warn)
 		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 	}
 	if deps.Store == nil {
@@ -464,9 +476,9 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	ev := newEvent(name, fx, status(deps, fx.Harness, name), hashStr(fx.WorkID), []string{res.Receipt.ID, res.Transition.ID}, now)
+	ev := newEvent(name, fx, st, hashStr(fx.WorkID), []string{res.Receipt.ID, res.Transition.ID}, now)
 	ev.IDs.ContextPackID = res.Work.IDs.ContextPackID
-	summary := fmt.Sprintf("closed %s: %s, receipt %s, transition %s", res.Work.ID, res.Work.State, res.Receipt.ID, res.Transition.ID)
+	summary := fmt.Sprintf("closed %s: %s, receipt %s, transition %s%s", res.Work.ID, res.Work.State, res.Receipt.ID, res.Transition.ID, warn)
 	return Result{Event: ev, Produced: []envelope.Envelope{&res.Receipt, &res.Transition}, Summary: summary}, nil
 }
 

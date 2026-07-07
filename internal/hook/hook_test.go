@@ -1033,6 +1033,58 @@ func TestSessionEndWithWorkIDDoesNotCloseWithoutExplicitOutcomeAndMoveType(t *te
 	}
 }
 
+// codex has no native SessionEnd event (Stop, via JSON block/continuation, is its only
+// end-of-turn hook); claude_code has both. TestSessionEndCapabilityAware proves the
+// registry split is actually consulted end-to-end through hook.Run, mirroring the
+// TestPreToolUseCapabilityAware honesty-seam proof: same computation, capability-aware
+// enforcement/status, never a silent pretense of a receipt the harness never delivers.
+func TestSessionEndCapabilityAware(t *testing.T) {
+	mkFx := func(h string) Fixture {
+		return Fixture{Hook: "session-end", Harness: h, SessionID: "sess_cap_aware", Summary: "session ended"}
+	}
+
+	claude, err := Run(mkFx("claude_code"), baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("claude run: %v", err)
+	}
+	if claude.Event.Status != "ok" {
+		t.Errorf("claude_code has a real SessionEnd event → should be ok, got %q", claude.Event.Status)
+	}
+	if strings.Contains(claude.Summary, "WARNING") {
+		t.Errorf("claude_code summary should not warn, got %q", claude.Summary)
+	}
+
+	codex, err := Run(mkFx("codex"), baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("codex run: %v", err)
+	}
+	if codex.Event.Status != "fail_open" {
+		t.Errorf("codex has no native SessionEnd event → should be fail_open, got %q", codex.Event.Status)
+	}
+	if !strings.Contains(codex.Summary, "WARNING") || !strings.Contains(codex.Summary, "no native SessionEnd event") {
+		t.Errorf("codex summary should warn honestly about the missing event, got %q", codex.Summary)
+	}
+
+	// Stop is the inverse: codex supports it (JSON continuation exists) just like claude_code.
+	stopClaude, err := Run(Fixture{Hook: "stop", Harness: "claude_code", SessionID: "sess_stop"}, baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("claude stop run: %v", err)
+	}
+	if stopClaude.Event.Status != "ok" {
+		t.Errorf("claude_code Stop should be ok, got %q", stopClaude.Event.Status)
+	}
+	stopCodex, err := Run(Fixture{Hook: "stop", Harness: "codex", SessionID: "sess_stop"}, baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("codex stop run: %v", err)
+	}
+	if stopCodex.Event.Status != "ok" {
+		t.Errorf("codex Stop should be ok (JSON block/continuation exists), got %q", stopCodex.Event.Status)
+	}
+	if strings.Contains(stopCodex.Summary, "WARNING") {
+		t.Errorf("codex Stop summary should not warn, got %q", stopCodex.Summary)
+	}
+}
+
 func TestSessionEndWithoutWorkIDRecordsReceiptEvent(t *testing.T) {
 	homePath := t.TempDir()
 	deps := baseDeps()

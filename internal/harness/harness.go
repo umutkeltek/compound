@@ -23,12 +23,19 @@ const RegistryManifestSchemaVersion = "compound.harness_registry.v0.1"
 const OSEntrypointsAdapterID = "compound.os-harness-entrypoints"
 
 // Capabilities is what a harness can verifiably do across the hook lifecycle.
+//
+// StopFeedback and SessionEndReceipt are deliberately distinct: some harnesses
+// (e.g. codex) fire an end-of-turn Stop event that CAN inject/continue but have
+// no SessionEnd event at all. Conflating them into one flag makes the registry
+// lie for whichever event the flag doesn't actually describe — see
+// docs_private/plan/workstreams/W2-hooks-context-injection.md "SMART HOOK DESIGN".
 type Capabilities struct {
 	SessionStartContext bool `json:"session_start_context"`
 	UserPromptContext   bool `json:"user_prompt_context"`
 	PreToolUseBlock     bool `json:"pre_tool_use_block"` // can it actually DENY a tool call?
 	PostToolUseEvent    bool `json:"post_tool_use_event"`
-	SessionEndReceipt   bool `json:"session_end_receipt"`
+	StopFeedback        bool `json:"stop_feedback"`       // can it inject/continue at end-of-turn (Stop)?
+	SessionEndReceipt   bool `json:"session_end_receipt"` // does a SessionEnd event exist at all (telemetry-only)?
 	NativeSkills        bool `json:"native_skills"`
 	MCP                 bool `json:"mcp"`
 }
@@ -96,6 +103,7 @@ type ManifestCapabilities struct {
 	UserPromptContext   bool `json:"user_prompt_context" yaml:"user_prompt_context"`
 	PreToolUseBlock     bool `json:"pre_tool_use_block" yaml:"pre_tool_use_block"`
 	PostToolUseEvent    bool `json:"post_tool_use_event" yaml:"post_tool_use_event"`
+	StopFeedback        bool `json:"stop_feedback" yaml:"stop_feedback"`
 	SessionEndReceipt   bool `json:"session_end_receipt" yaml:"session_end_receipt"`
 	NativeSkills        bool `json:"native_skills" yaml:"native_skills"`
 	MCP                 bool `json:"mcp" yaml:"mcp"`
@@ -111,7 +119,8 @@ func DefaultRegistry() Registry {
 			InstructionMechanism: "settings + hooks + CLAUDE.md",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
-				PostToolUseEvent: true, SessionEndReceipt: true, NativeSkills: true, MCP: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
+				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{"long-session instruction drift", "instruction/context budget cap"},
 		},
@@ -120,10 +129,12 @@ func DefaultRegistry() Registry {
 			InstructionMechanism: "AGENTS.md + skills (progressive disclosure)",
 			Capabilities: Capabilities{
 				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: false,
-				PostToolUseEvent: true, SessionEndReceipt: true, NativeSkills: true, MCP: true,
+				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: false,
+				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
 				"no verified native pre-tool-use block — enforce via wrapper/adapter",
+				"no SessionEnd event — Stop (JSON block/continuation) is the only end-of-turn hook",
 				"initial skill list capped (progressive disclosure)",
 				"cwd-dependent guidance",
 			},
@@ -258,6 +269,7 @@ func (m RegistryManifest) Registry() (Registry, error) {
 				UserPromptContext:   in.Capabilities.UserPromptContext,
 				PreToolUseBlock:     in.Capabilities.PreToolUseBlock,
 				PostToolUseEvent:    in.Capabilities.PostToolUseEvent,
+				StopFeedback:        in.Capabilities.StopFeedback,
 				SessionEndReceipt:   in.Capabilities.SessionEndReceipt,
 				NativeSkills:        in.Capabilities.NativeSkills,
 				MCP:                 in.Capabilities.MCP,
@@ -367,7 +379,9 @@ func (r Registry) Supports(name, hookName string) bool {
 		return h.Capabilities.PreToolUseBlock
 	case "PostToolUse":
 		return h.Capabilities.PostToolUseEvent
-	case "SessionEnd", "Stop":
+	case "Stop":
+		return h.Capabilities.StopFeedback
+	case "SessionEnd":
 		return h.Capabilities.SessionEndReceipt
 	}
 	return false
