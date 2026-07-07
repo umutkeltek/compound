@@ -15,11 +15,9 @@ import {
 export const dynamic = "force-dynamic";
 
 /**
- * Flow pipeline (EP-U1 slice 1, per the approved cockpit mock): the envelope
- * lifecycle as columns — Signal · Propose · Admit · Claim · Execute · Receipt ·
- * Learn — each holding REAL items from read-only projections. The flow itself
- * is the surface: where things are, what is waiting on the operator, what the
- * system just learned.
+ * Flow pipeline (EP-U1 slice 1, per the approved cockpit mock): one readable
+ * job path over real read-only projections. Internal lifecycle words stay in
+ * the data model; this page uses operator language.
  */
 
 type Stage = {
@@ -60,7 +58,7 @@ function workItem(item: Json, extra?: Partial<StageItem>): StageItem {
 }
 
 export default async function FlowPage() {
-  const [workbench, executors, sources, director] = await Promise.all([
+  const [workbench, executors, sources, suggestions] = await Promise.all([
     getWorkbench(),
     getExecutors(),
     getSourceConnections(),
@@ -73,7 +71,7 @@ export default async function FlowPage() {
   const byStates = (states: string[]) => open.filter((w) => states.includes(str(w.state)));
 
   const connections = arr(sources?.connections ?? sources?.sources ?? sources?.rows);
-  const proposals = arr(director?.proposals ?? director?.proposed ?? director?.items);
+  const proposals = arr(suggestions?.proposals ?? suggestions?.proposed ?? suggestions?.items);
   const runningExecutors = arr(executors?.executors ?? executors?.rows).filter(
     (e) => str(e.status) === "running" || arr(e.active_work).length > 0,
   );
@@ -98,8 +96,8 @@ export default async function FlowPage() {
     },
     {
       key: "propose",
-      label: "Propose",
-      plain: "The director suggests bounded jobs from live evidence. Nothing advances without you.",
+      label: "Suggest",
+      plain: "Bounded jobs suggested from live evidence. Nothing advances without you.",
       accent: "violet",
       liveness: "live",
       items: [
@@ -114,8 +112,8 @@ export default async function FlowPage() {
     },
     {
       key: "admit",
-      label: "Admit",
-      plain: "Your seat. Approving makes a job claimable — it does not run anything yet.",
+      label: "Add to work",
+      plain: "Your seat. Adding a job makes it claimable; it does not run anything yet.",
       accent: "orange",
       liveness: "live",
       items: byStates(["admitted", "held"]).map((w) =>
@@ -124,7 +122,7 @@ export default async function FlowPage() {
     },
     {
       key: "claim",
-      label: "Claim",
+      label: "Assign",
       plain: "An executor takes the job under a lease, so two agents never collide.",
       accent: "blue",
       liveness: "live",
@@ -132,7 +130,7 @@ export default async function FlowPage() {
     },
     {
       key: "execute",
-      label: "Execute",
+      label: "Run",
       plain: "Rented executors do the work inside policy. Every mutation needs a decision record.",
       accent: "green",
       liveness: "live",
@@ -150,7 +148,7 @@ export default async function FlowPage() {
     },
     {
       key: "receipt",
-      label: "Receipt",
+      label: "Proof",
       plain: "Proof a job ran: what was touched, what it cost, what came out.",
       accent: "gray",
       liveness: "live",
@@ -188,7 +186,7 @@ export default async function FlowPage() {
             {gatedCount > 0 ? ` (${gatedCount} now)` : ""}; everything else flows on its own.
           </p>
         </div>
-        <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench / executors / sources / director dry-run" />
+        <FreshnessChip generatedAt={str(workbench?.generated_at)} source="compound workbench / executors / sources / suggestions dry-run" />
       </div>
 
       <div className="overflow-x-auto pb-3">
