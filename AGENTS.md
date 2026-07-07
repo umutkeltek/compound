@@ -62,6 +62,9 @@ loop compound provides:
 - The topology is the **target**, not a license to build all of it. One vertical slice, proven with a command +
   fixtures, then retire the parallel handling. Never create a kernel service ahead of a slice that needs it.
 - Every move ends in one canonical `move_type`; `audit_only` (docs/dashboards) does not count.
+- Tests never compare wall-clock time against fixed fixture dates (a fixture that ages past a
+  staleness window becomes a time bomb that reds main days after a green landing). Inject the
+  clock, or freshen fixture timestamps at runtime.
 - Integration has levels: **orientation < pointer < merge < proof.** Only merge and runtime proof count.
 - Generated runtime state goes under `COMPOUND_HOME`, never the repo source tree. No `cwd` as authority.
 
