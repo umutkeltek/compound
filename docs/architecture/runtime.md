@@ -133,7 +133,10 @@ UserPromptSubmit → ContextRequest + ContextPack + proposed WorkEnvelope (persi
 PreToolUse     → ActionIntent + PolicyDecision (+ held WorkEnvelope review for dirty source-control holds)
                                                                   (returns allow | allow_with_obligations | hold | deny)
 PostToolUse    → ToolEvent + ArtifactRef + VerificationCandidate
-SessionEnd/Stop → Receipt + Transition + MemoryCandidate/SkillCandidate/FailurePattern/RouteObservation
+Stop           → Receipt + Transition + MemoryCandidate/SkillCandidate/FailurePattern/RouteObservation
+                                                                  (Stop may inject end-of-turn feedback; capability: StopFeedback)
+SessionEnd     → same receipt family, telemetry-only — SessionEnd can never inject context,
+                                                                  and some harnesses have no SessionEnd at all (capability: SessionEndReceipt)
 ```
 
 **Capability-aware by harness — not fantasy-uniform.** Claude Code supports rich lifecycle hooks (incl.
