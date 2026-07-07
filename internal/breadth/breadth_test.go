@@ -239,3 +239,33 @@ func docsFromClaims(claims []mem.ClaimText) []doc {
 	}
 	return docs
 }
+
+func TestExactIdentifierQueryRanksClaimIndexedByID(t *testing.T) {
+	// Falsifier for decision-lookup recall (measured 2026-07-07): 24/25 golden-set
+	// misses were DEC-*/brain-D* rows whose only discriminating surface is the claim
+	// ID itself — ClaimIndexText dropped the ID, so "what does brain-D4 decide" could
+	// never rank the brain-D4 row over decoys dense in the same content words. Claims
+	// are composed via the production text builder so this guards the real pair.
+	target := mem.Claim{ID: "brain-D4", Entity: "decisions", Predicate: "decided", Object: "distillation stays owned; the index engine is rented"}
+	decoyObjects := []string{
+		"distillation pipeline decided rerun daily",
+		"distillation pipeline decided compaction window",
+		"distillation pipeline decided sampling tier",
+		"distillation pipeline decided replay cadence",
+		"distillation pipeline decided export shape",
+	}
+	cts := []mem.ClaimText{{ClaimID: target.ID, Text: mem.ClaimIndexText(target)}}
+	for i, obj := range decoyObjects {
+		c := mem.Claim{ID: "claim_noise" + string(rune('a'+i)), Entity: "memory", Predicate: "observed", Object: obj}
+		cts = append(cts, mem.ClaimText{ClaimID: c.ID, Text: mem.ClaimIndexText(c)})
+	}
+	var eng Engine
+	eng.Index(cts, 1)
+	got := eng.Query("what does brain-D4 decide about the distillation pipeline", mem.GateAll, nil, 3)
+	if len(got) == 0 {
+		t.Fatalf("query returned no hits")
+	}
+	if got[0].ClaimID != "brain-D4" {
+		t.Fatalf("exact-identifier query must rank the ID-matched claim #1; top-3 = %+v", got)
+	}
+}

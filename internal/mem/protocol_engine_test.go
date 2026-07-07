@@ -259,3 +259,13 @@ func TestProtocolWarmCoprocess(t *testing.T) {
 		}
 	}
 }
+
+func TestClaimIndexTextLeadsWithClaimID(t *testing.T) {
+	// The ID is part of the indexable surface so exact-identifier lookups
+	// (DEC-0021, brain-D4) can rank the claim itself. Stable contract: mock and
+	// real sidecar must agree on this text.
+	c := Claim{ID: "DEC-0042", Entity: "decisions", Predicate: "decided", Object: "widgets stay blue"}
+	if got := ClaimIndexText(c); got != "DEC-0042 decisions decided widgets stay blue" {
+		t.Fatalf("ClaimIndexText = %q, want ID-led surface", got)
+	}
+}

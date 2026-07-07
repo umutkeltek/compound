@@ -95,8 +95,10 @@ type WireError struct {
 	Message string `json:"message"`
 }
 
-// ClaimIndexText is the indexable text for a claim — the entity/predicate/object surface the
-// engine matches or embeds. Stable so the mock and the real sidecar agree.
+// ClaimIndexText is the indexable text for a claim — the id/entity/predicate/object surface the
+// engine matches or embeds. Stable so the mock and the real sidecar agree. The claim ID leads so
+// exact-identifier lookups (DEC-0021, brain-D4) rank the claim itself, not just neighbors whose
+// entity happens to embed the identifier.
 func ClaimIndexText(c Claim) string {
-	return c.Entity + " " + c.Predicate + " " + c.Object
+	return c.ID + " " + c.Entity + " " + c.Predicate + " " + c.Object
 }
