@@ -1933,10 +1933,10 @@ type memoryEngineConfig struct {
 }
 
 type memoryEmbedConfig struct {
-	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`   // e.g. ollama | openai
-	Model    string `json:"model,omitempty" yaml:"model,omitempty"`         // e.g. nomic-embed-text | text-embedding-3-large
-	BaseURL  string `json:"base_url,omitempty" yaml:"base_url,omitempty"`   // e.g. http://localhost:11434/v1
-	Embedder string `json:"embedder,omitempty" yaml:"embedder,omitempty"`   // optional identity guard (provider:model:dim:bits)
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"` // e.g. ollama | openai
+	Model    string `json:"model,omitempty" yaml:"model,omitempty"`       // e.g. nomic-embed-text | text-embedding-3-large
+	BaseURL  string `json:"base_url,omitempty" yaml:"base_url,omitempty"` // e.g. http://localhost:11434/v1
+	Embedder string `json:"embedder,omitempty" yaml:"embedder,omitempty"` // optional identity guard (provider:model:dim:bits)
 }
 
 type memoryEngineConfigReport struct {
