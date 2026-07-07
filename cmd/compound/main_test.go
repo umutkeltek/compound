@@ -292,6 +292,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-move-type-drift-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
+		"profiles-check-installed-only",
 		"workbench-projection-refresh",
 		"codex-pretooluse-wrapper-proof",
 		"memory-doctor",

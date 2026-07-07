@@ -8,7 +8,7 @@ import (
 )
 
 func cmdProfiles(args []string) {
-	usage := "usage: compound profiles <generate|check>"
+	usage := "usage: compound profiles <generate|check> [--installed-only]"
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -17,12 +17,13 @@ func cmdProfiles(args []string) {
 		fmt.Println(usage)
 		return
 	}
-	if len(args) != 1 {
+	if len(args) > 2 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 
 	check := false
+	installedOnly := false
 	switch args[0] {
 	case "generate":
 	case "check":
@@ -30,6 +31,13 @@ func cmdProfiles(args []string) {
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
+	}
+	if len(args) == 2 {
+		if args[1] != "--installed-only" || !check {
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		installedOnly = true
 	}
 
 	catalog, err := profiles.LoadCatalog()
@@ -42,7 +50,7 @@ func cmdProfiles(args []string) {
 		fmt.Fprintln(os.Stderr, "profiles:", err)
 		os.Exit(1)
 	}
-	report, err := profiles.Sync(catalog.Roles, profiles.TargetsForHome(homeDir), profiles.SyncOptions{Check: check})
+	report, err := profiles.Sync(catalog.Roles, profiles.TargetsForHome(homeDir), profiles.SyncOptions{Check: check, InstalledOnly: installedOnly})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "profiles:", err)
 		os.Exit(1)

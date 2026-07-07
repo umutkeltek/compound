@@ -81,6 +81,44 @@ func TestProfilesCheckDetectsDriftWithoutMutation(t *testing.T) {
 	}
 }
 
+func TestProfilesInstalledOnlyCheckSkipsMissingButDetectsGeneratedDrift(t *testing.T) {
+	homeDir := t.TempDir()
+	catalog, err := profiles.LoadCatalogWithOptions(profiles.LoadOptions{OverlayPaths: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets := profiles.TargetsForHome(homeDir)
+	missing, err := profiles.Sync(catalog.Roles, targets, profiles.SyncOptions{Check: true, InstalledOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.Drift != 0 || !strings.Contains(profiles.FinalLine(missing), "IN SYNC") {
+		t.Fatalf("installed-only check should ignore missing generated profiles: %+v", missing)
+	}
+
+	if _, err := profiles.Sync(catalog.Roles, targets, profiles.SyncOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(targets[profiles.HarnessCodex], "executor.md")
+	if err := os.WriteFile(path, []byte("compound-profile: generated\nDRIFT\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drift, err := profiles.Sync(catalog.Roles, targets, profiles.SyncOptions{Check: true, InstalledOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if drift.Drift == 0 {
+		t.Fatalf("installed-only check should detect drift in installed generated profile: %+v", drift)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "compound-profile: generated\nDRIFT\n" {
+		t.Fatalf("installed-only check mutated drifted profile:\n%s", string(got))
+	}
+}
+
 func TestProfilesRolesOnlyFallbackIsPublicSafe(t *testing.T) {
 	catalog, err := profiles.LoadCatalogWithOptions(profiles.LoadOptions{OverlayPaths: []string{}})
 	if err != nil {

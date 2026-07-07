@@ -48,7 +48,8 @@ type LoadOptions struct {
 type Targets map[Harness]string
 
 type SyncOptions struct {
-	Check bool
+	Check         bool
+	InstalledOnly bool
 }
 
 type SyncReport struct {
@@ -159,6 +160,10 @@ func Sync(roles []Role, targets Targets, opts SyncOptions) (SyncReport, error) {
 			have, exists, err := readString(path)
 			if err != nil {
 				return report, err
+			}
+			if opts.Check && opts.InstalledOnly && !exists {
+				report.Summary = append(report.Summary, fmt.Sprintf("skip %s/%s not installed", harness, role.ID))
+				continue
 			}
 			if exists && !strings.Contains(have, GenMarker) {
 				report.Summary = append(report.Summary, fmt.Sprintf("SKIP %s/%s — exists and hand-written (no marker); not overwriting", harness, role.ID))
