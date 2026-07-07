@@ -88,3 +88,11 @@ the same envelope.
 Extraction bridge -> parked annotated-evidence candidates. Memory adjudication,
 panel review, and product/distiller plans consume candidates through their own
 gates. `compound orient --task` serves only promoted results.
+
+## Applications
+
+- **Expertise packs** (`knowledge/expertise-packs.md`): "everything a world-class X
+  knows" compressed into a `source.kind: expertise-synthesis` bundle of `technique`
+  items. Model-synthesized profession knowledge enters as low-trust evidence, grounds
+  through extraction, and promotes only on a governed basis (review → curated page) —
+  the worked example that model output cannot self-certify into canon.
