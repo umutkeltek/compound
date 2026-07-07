@@ -3,6 +3,7 @@ package capgraph
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -244,5 +245,55 @@ func TestInstructionRuleWhenGateSatisfiedSemantically(t *testing.T) {
 	}
 	if !strings.Contains(hit.Why, "+semantic=") {
 		t.Fatalf("semantic when-gate match not explained: %+v", hit)
+	}
+}
+
+// flakySemanticEmbedder succeeds for a fixed number of Embed calls, then
+// errors — the shape of a cold start dying at a surfacing timeout mid-graph.
+type flakySemanticEmbedder struct {
+	semanticStubEmbedder
+	failAfterCalls int
+}
+
+func (f *flakySemanticEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	if f.failAfterCalls > 0 && len(f.calls) >= f.failAfterCalls {
+		f.calls = append(f.calls, append([]string(nil), texts...))
+		return nil, errors.New("embed backend timed out")
+	}
+	return f.semanticStubEmbedder.Embed(ctx, texts)
+}
+
+// A cold start that dies mid-graph must keep the chunks it finished; the next
+// call embeds only the remainder. Without partial persistence this test fails:
+// the second call re-embeds every node and the lane can never converge.
+func TestSemanticCachePersistsPartialProgressOnEmbedFailure(t *testing.T) {
+	home := t.TempDir()
+	nodeCount := semanticEmbedChunk*2 + 2 // three chunks: 64+64+2
+	nodes := make([]Node, 0, nodeCount)
+	for i := 0; i < nodeCount; i++ {
+		nodes = append(nodes, Node{ID: fmt.Sprintf("node-%03d", i), Kind: "skill", Name: fmt.Sprintf("skill %03d", i), Weight: 1})
+	}
+
+	flaky := &flakySemanticEmbedder{failAfterCalls: 2} // task embed + first chunk succeed, second chunk dies
+	flaky.identity = "stub:partial:2"
+	flaky.dim = 2
+	flaky.defaultVec = []float32{0, 1}
+	if _, err := semanticScores(context.Background(), flaky, home, nodes, "any task"); err == nil {
+		t.Fatalf("expected embed failure to propagate")
+	}
+
+	healthy := newSemanticStub("stub:partial:2")
+	if _, err := semanticScores(context.Background(), healthy, home, nodes, "any task"); err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if len(healthy.calls) < 2 {
+		t.Fatalf("expected task + remainder embed calls, got %d calls", len(healthy.calls))
+	}
+	remainder := 0
+	for _, call := range healthy.calls[1:] {
+		remainder += len(call)
+	}
+	if want := nodeCount - semanticEmbedChunk; remainder != want {
+		t.Fatalf("second call embedded %d node texts, want only the un-persisted remainder %d", remainder, want)
 	}
 }

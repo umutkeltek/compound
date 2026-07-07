@@ -101,27 +101,37 @@ func semanticScores(ctx context.Context, embedder NodeEmbedder, compoundHome str
 		}
 		pending = append(pending, pendingNode{id: node.ID, text: text, contentHash: contentHash})
 	}
-	if len(pending) > 0 {
-		texts := make([]string, 0, len(pending))
-		for _, item := range pending {
+	// Embed pending nodes in bounded chunks and persist progress when a chunk
+	// fails: a cold start over a large graph cannot finish inside one surfacing
+	// timeout, and without partial persistence every later call would re-embed
+	// the full set and time out the same way — a permanently degraded lane.
+	for start := 0; start < len(pending); start += semanticEmbedChunk {
+		end := start + semanticEmbedChunk
+		if end > len(pending) {
+			end = len(pending)
+		}
+		chunk := pending[start:end]
+		texts := make([]string, 0, len(chunk))
+		for _, item := range chunk {
 			texts = append(texts, item.text)
 		}
 		embedded, err := embedder.Embed(ctx, texts)
 		if err != nil {
+			_ = writeNodeVectorCache(cacheDir, partialNodeVectorManifest(currentManifest, currentVectors), currentVectors)
 			return nil, err
 		}
-		if len(embedded) != len(pending) {
-			return nil, fmt.Errorf("semantic node embed returned %d vectors for %d nodes", len(embedded), len(pending))
+		if len(embedded) != len(chunk) {
+			return nil, fmt.Errorf("semantic node embed returned %d vectors for %d nodes", len(embedded), len(chunk))
 		}
 		for i, vec := range embedded {
 			normalized, err := normalizeSemanticVector(vec)
 			if err != nil {
-				return nil, fmt.Errorf("semantic node vector %s: %w", pending[i].id, err)
+				return nil, fmt.Errorf("semantic node vector %s: %w", chunk[i].id, err)
 			}
 			if len(normalized) != dim {
-				return nil, fmt.Errorf("semantic node vector %s dim %d != %d", pending[i].id, len(normalized), dim)
+				return nil, fmt.Errorf("semantic node vector %s dim %d != %d", chunk[i].id, len(normalized), dim)
 			}
-			currentVectors[pending[i].id] = normalized
+			currentVectors[chunk[i].id] = normalized
 		}
 	}
 	// Cache write failures should not degrade a successful semantic ranking; the
@@ -134,6 +144,28 @@ func semanticScores(ctx context.Context, embedder NodeEmbedder, compoundHome str
 		}
 	}
 	return out, nil
+}
+
+// semanticEmbedChunk bounds one embed request so an interrupted cold start
+// keeps per-chunk progress. Sized to a typical embedding-server batch.
+const semanticEmbedChunk = 64
+
+// partialNodeVectorManifest keeps only entries whose vectors were actually
+// embedded, so an interrupted cold start never records a content hash it
+// cannot back with a vector.
+func partialNodeVectorManifest(full nodeVectorManifest, vectors map[string][]float32) nodeVectorManifest {
+	out := nodeVectorManifest{
+		SchemaVersion:    full.SchemaVersion,
+		EmbedderIdentity: full.EmbedderIdentity,
+		Dim:              full.Dim,
+		Nodes:            map[string]nodeVectorCacheEntry{},
+	}
+	for id := range vectors {
+		if entry, ok := full.Nodes[id]; ok {
+			out.Nodes[id] = entry
+		}
+	}
+	return out
 }
 
 func readNodeVectorCache(dir, identity string, dim int) (nodeVectorManifest, map[string][]float32) {

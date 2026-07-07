@@ -65,6 +65,10 @@ loop compound provides:
 - Tests never compare wall-clock time against fixed fixture dates (a fixture that ages past a
   staleness window becomes a time bomb that reds main days after a green landing). Inject the
   clock, or freshen fixture timestamps at runtime.
+- A timeout-guarded lane needs a falsifier for the timeout path at realistic scale, and must
+  persist partial progress. Instant stubs cannot catch a cold start that can never finish inside
+  the deadline — without partial persistence the lane re-fails identically forever and reads as
+  "degraded" while every test is green. (Lived: semantic capgraph cold start, 574 nodes vs 3s.)
 - Integration has levels: **orientation < pointer < merge < proof.** Only merge and runtime proof count.
 - **A capability with no live production consumer is bench-only.** A great bakeoff/test number is not proof the
   feature reaches its real caller — `grep` for the production consumer of the code you landed. (Lived example:
