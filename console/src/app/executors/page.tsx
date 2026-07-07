@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { Card, Chip, EmptyState, FreshnessChip, Stat, StateBadge, type Accent } from "@/components/ui";
-import { arr, getExecutors, num, str, type Json } from "@/lib/compound";
+import { ago, arr, getExecutors, num, str, type Json } from "@/lib/compound";
 import { shortText } from "@/lib/work-data";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +17,18 @@ function textList(value: unknown): string {
 
 function workTitle(work: Json): string {
   return str(work.title) || str(work.success_predicate) || str(work.desired_outcome) || str(work.work_id);
+}
+
+function optionalNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function durationLabel(seconds: number | null): string {
+  if (seconds === null) return "";
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 90 * 60) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 36 * 3600) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
 }
 
 function WorkRef({ work }: { work: Json }) {
@@ -54,9 +66,16 @@ function ExecutorCard({ executor }: { executor: Json }) {
   const tone = accent(str(executor.tone));
   const currentWork = arr(executor.current_work);
   const leases = arr(executor.leases);
+  const lastHookEvent =
+    executor.last_hook_event && typeof executor.last_hook_event === "object" ? (executor.last_hook_event as Json) : null;
   const lastSuccess = executor.last_success && typeof executor.last_success === "object" ? (executor.last_success as Json) : null;
   const lastFailure = executor.last_failure && typeof executor.last_failure === "object" ? (executor.last_failure as Json) : null;
   const nextAssigned = executor.next_assigned && typeof executor.next_assigned === "object" ? (executor.next_assigned as Json) : null;
+  const waitReason = str(executor.wait_reason);
+  const oldestLeaseAge = optionalNumber(executor.oldest_lease_age_seconds);
+  const routeEvidenceCount = optionalNumber(executor.route_evidence_count);
+  const routeEvidenceVisible =
+    executor.route_evidence_present === true || (str(executor.id) === "switchback_api" && (routeEvidenceCount ?? 0) > 0);
 
   return (
     <Card
@@ -85,9 +104,40 @@ function ExecutorCard({ executor }: { executor: Json }) {
           </div>
         </div>
 
-        <div>
-          <div className="section-label mb-1">Status source</div>
-          <p className="text-[12px] leading-relaxed text-ink-3">{str(executor.status_source) || "unknown"}</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <div className="section-label mb-1">Status source</div>
+            <p className="text-[12px] leading-relaxed text-ink-3">{str(executor.status_source) || "unknown"}</p>
+          </div>
+          {waitReason ? (
+            <div>
+              <div className="section-label mb-1">Wait reason</div>
+              <p className="text-[12px] leading-relaxed text-ink-3">{waitReason}</p>
+            </div>
+          ) : null}
+          {lastHookEvent ? (
+            <div>
+              <div className="section-label mb-1">Last hook</div>
+              <p className="text-[12px] leading-relaxed text-ink-3">
+                {str(lastHookEvent.hook) || "hook"} · {str(lastHookEvent.status) || "unknown"}
+                {ago(lastHookEvent.created_at) ? ` · ${ago(lastHookEvent.created_at)}` : ""}
+              </p>
+            </div>
+          ) : null}
+          {oldestLeaseAge !== null ? (
+            <div>
+              <div className="section-label mb-1">Oldest lease</div>
+              <p className="text-[12px] leading-relaxed text-ink-3">{durationLabel(oldestLeaseAge)}</p>
+            </div>
+          ) : null}
+          {routeEvidenceVisible ? (
+            <div>
+              <div className="section-label mb-1">Route evidence</div>
+              <p className="text-[12px] leading-relaxed text-ink-3">
+                {routeEvidenceCount ?? 0} {routeEvidenceCount === 1 ? "row" : "rows"}
+              </p>
+            </div>
+          ) : null}
         </div>
 
         {textList(executor.best_for) ? (
@@ -139,7 +189,16 @@ function ExecutorCard({ executor }: { executor: Json }) {
 
         {leases.length ? (
           <p className="text-[11.5px] leading-relaxed text-ink-3">
-            Active leases: {leases.map((lease) => str(lease.work_id)).filter(Boolean).join(", ")}
+            Active leases:{" "}
+            {leases
+              .map((lease) => {
+                const workID = str(lease.work_id);
+                if (!workID) return "";
+                const age = durationLabel(optionalNumber(lease.age_seconds));
+                return age ? `${workID} (${age})` : workID;
+              })
+              .filter(Boolean)
+              .join(", ")}
           </p>
         ) : null}
 

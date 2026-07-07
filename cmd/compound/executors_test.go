@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -31,6 +34,7 @@ func TestExecutorsCLIProjectsWorkbenchAndLeases(t *testing.T) {
 	if _, err := store.Claim(codexWork.ID, "codex", cliTestNow.Add(time.Minute)); err != nil {
 		t.Fatalf("claim codex work: %v", err)
 	}
+	writeExecutorHealthFixtures(t, homePath, codexWork.ID)
 	readyWork, err := store.Create(work.CreateInput{
 		Owner:            "operator",
 		Actor:            "operator-test",
@@ -55,15 +59,36 @@ func TestExecutorsCLIProjectsWorkbenchAndLeases(t *testing.T) {
 	}
 	if !containsString(projection.SourceRefs, "compound.workbench") ||
 		!containsString(projection.SourceRefs, "compound.work.leases") ||
-		!containsString(projection.SourceRefs, "compound.executor.profile_guide") {
+		!containsString(projection.SourceRefs, "compound.executor.profile_guide") ||
+		!containsString(projection.SourceRefs, "compound.events.hook_events") ||
+		!containsString(projection.SourceRefs, "compound.ledger.route_evidence") {
 		t.Fatalf("projection missing source refs: %+v", projection.SourceRefs)
 	}
 	codex := requireExecutorRow(t, projection, "codex")
 	if codex.StatusSource != "profile_guide" || codex.RunningCount != 1 || codex.LeaseCount != 1 || len(codex.CurrentWork) != 1 {
 		t.Fatalf("codex row should be profile-guided with claimed work and lease: %+v", codex)
 	}
+	if codex.WaitReason != "actor_claimed_work" {
+		t.Fatalf("codex wait_reason = %q, want actor_claimed_work", codex.WaitReason)
+	}
+	if codex.LastHookEvent == nil ||
+		codex.LastHookEvent.CreatedAt != cliTestNow.Add(3*time.Minute).UTC().Format(time.RFC3339) ||
+		codex.LastHookEvent.Hook != "SessionStart" ||
+		codex.LastHookEvent.Status != "ok" {
+		t.Fatalf("codex last hook event mismatch: %+v", codex.LastHookEvent)
+	}
+	if len(codex.Leases) != 1 || codex.Leases[0].AgeSeconds <= 0 {
+		t.Fatalf("codex lease should expose positive age: %+v", codex.Leases)
+	}
+	if codex.OldestLeaseAgeSeconds == nil || *codex.OldestLeaseAgeSeconds != codex.Leases[0].AgeSeconds {
+		t.Fatalf("codex oldest lease age mismatch: oldest=%v leases=%+v", codex.OldestLeaseAgeSeconds, codex.Leases)
+	}
 	if codex.CurrentWork[0].WorkID != codexWork.ID || codex.CurrentWork[0].State != "claimed" || codex.CurrentWork[0].Title == "" {
 		t.Fatalf("codex current work mismatch: %+v", codex.CurrentWork)
+	}
+	switchback := requireExecutorRow(t, projection, "switchback_api")
+	if !switchback.RouteEvidencePresent || switchback.RouteEvidenceCount != 1 {
+		t.Fatalf("switchback route evidence mismatch: %+v", switchback)
 	}
 	unassigned := requireExecutorRow(t, projection, "unassigned")
 	if unassigned.StatusSource != "workbench" || unassigned.ReadyCount != 1 || unassigned.NextAssigned == nil || unassigned.NextAssigned.WorkID != readyWork.ID {
@@ -71,6 +96,52 @@ func TestExecutorsCLIProjectsWorkbenchAndLeases(t *testing.T) {
 	}
 	if projection.Counts.ProfileGuide != 6 || projection.Counts.Running != 1 || projection.Counts.Ready != 1 || projection.Counts.Leases != 1 {
 		t.Fatalf("unexpected projection counts: %+v", projection.Counts)
+	}
+}
+
+func writeExecutorHealthFixtures(t *testing.T, homePath, workID string) {
+	t.Helper()
+	eventsDir := filepath.Join(homePath, "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatalf("mkdir events: %v", err)
+	}
+	hookEvent := map[string]any{
+		"created_at": cliTestNow.Add(3 * time.Minute).UTC().Format(time.RFC3339),
+		"harness":    "codex",
+		"hook_name":  "SessionStart",
+		"status":     "ok",
+	}
+	hookLine, err := json.Marshal(hookEvent)
+	if err != nil {
+		t.Fatalf("marshal hook event: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(eventsDir, "hook-events.ndjson"), append(hookLine, '\n'), 0o644); err != nil {
+		t.Fatalf("write hook events: %v", err)
+	}
+
+	ledgerDir := filepath.Join(homePath, "ledger")
+	if err := os.MkdirAll(ledgerDir, 0o755); err != nil {
+		t.Fatalf("mkdir ledger: %v", err)
+	}
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     cliTestNow.Add(4 * time.Minute),
+		RequestID:     "req_executor_health_fixture",
+		WorkID:        workID,
+		ClientProfile: "switchback",
+		Protocol:      "openai-chat-completions",
+		Provider:      "switchback",
+		Model:         "auto/judge",
+		Status:        "completed",
+	})
+	if err != nil {
+		t.Fatalf("build route evidence: %v", err)
+	}
+	routeLine, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal route evidence: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ledgerDir, "execution-route-evidence.jsonl"), append(routeLine, '\n'), 0o644); err != nil {
+		t.Fatalf("write route evidence: %v", err)
 	}
 }
 

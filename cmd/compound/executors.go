@@ -8,17 +8,29 @@ import (
 	"time"
 
 	"compound/internal/home"
+	"compound/internal/localmodel"
 	"compound/internal/work"
 )
 
-const executorsUsage = "usage: compound executors [--json]"
+const executorsUsage = "usage: compound executors [--json] [--probe-local] [--lm-studio-url URL]"
 
 func cmdExecutors(args []string) {
 	jsonOut := false
-	for _, arg := range args {
-		switch arg {
+	probeLocal := false
+	lmStudioURL := ""
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i]; arg {
 		case "--json":
 			jsonOut = true
+		case "--probe-local":
+			probeLocal = true
+		case "--lm-studio-url":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, executorsUsage)
+				os.Exit(2)
+			}
+			lmStudioURL = strings.TrimSpace(args[i])
 		default:
 			fmt.Fprintln(os.Stderr, executorsUsage)
 			os.Exit(2)
@@ -35,7 +47,14 @@ func cmdExecutors(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	projection, err := store.ExecutorsProjection(time.Now())
+	opts := work.ExecutorsProjectionOptions{ProbeLocal: probeLocal}
+	if probeLocal {
+		if lmStudioURL == "" {
+			lmStudioURL = localRoutingBaseURL()
+		}
+		opts.LMStudioClient = localmodel.LMStudioClient{BaseURL: lmStudioURL}
+	}
+	projection, err := store.ExecutorsProjection(time.Now(), opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -67,6 +86,18 @@ func printExecutorsProjection(projection work.ExecutorsProjection) {
 	for _, executor := range projection.Executors {
 		fmt.Printf("\n## %s\n", executor.Label)
 		fmt.Printf("- status: %s (%s)\n", executor.Status, executor.StatusSource)
+		if executor.WaitReason != "" {
+			fmt.Printf("- wait_reason: %s\n", executor.WaitReason)
+		}
+		if executor.LastHookEvent != nil {
+			fmt.Printf("- last_hook_event: %s hook=%s status=%s\n", executor.LastHookEvent.CreatedAt, executor.LastHookEvent.Hook, executor.LastHookEvent.Status)
+		}
+		if executor.RouteEvidencePresent || executor.RouteEvidenceCount > 0 {
+			fmt.Printf("- route_evidence: present=%t count=%d\n", executor.RouteEvidencePresent, executor.RouteEvidenceCount)
+		}
+		if executor.OldestLeaseAgeSeconds != nil {
+			fmt.Printf("- oldest_lease_age_seconds: %d\n", *executor.OldestLeaseAgeSeconds)
+		}
 		fmt.Printf("- counts: assigned=%d running=%d ready=%d needs_me=%d leases=%d\n",
 			executor.AssignedCount,
 			executor.RunningCount,
@@ -93,6 +124,12 @@ func printExecutorsProjection(projection work.ExecutorsProjection) {
 			fmt.Println("- current_work:")
 			for _, item := range executor.CurrentWork {
 				fmt.Printf("  - %s state=%s title=%q\n", item.WorkID, item.State, item.Title)
+			}
+		}
+		if len(executor.Leases) > 0 {
+			fmt.Println("- leases:")
+			for _, lease := range executor.Leases {
+				fmt.Printf("  - %s by=%s age_seconds=%d\n", lease.WorkID, lease.By, lease.AgeSeconds)
 			}
 		}
 		if executor.LastSuccess != nil {

@@ -1,9 +1,18 @@
 package work
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"compound/internal/localmodel"
 )
 
 const ExecutorsProjectionSchemaVersion = "compound.executors_projection.v0.1"
@@ -36,26 +45,31 @@ type ExecutorCounts struct {
 }
 
 type ExecutorRow struct {
-	ID             string             `json:"id"`
-	Label          string             `json:"label"`
-	Status         string             `json:"status"`
-	StatusSource   string             `json:"status_source"`
-	Tone           string             `json:"tone,omitempty"`
-	Aliases        []string           `json:"aliases,omitempty"`
-	BestFor        []string           `json:"best_for,omitempty"`
-	CanUseTools    []string           `json:"can_use_tools,omitempty"`
-	CostLimits     []string           `json:"cost_limits,omitempty"`
-	AssignedCount  int                `json:"assigned_count"`
-	RunningCount   int                `json:"running_count"`
-	ReadyCount     int                `json:"ready_count"`
-	NeedsMeCount   int                `json:"needs_me_count"`
-	LeaseCount     int                `json:"lease_count"`
-	CurrentWork    []ExecutorWorkRef  `json:"current_work,omitempty"`
-	Leases         []ExecutorLeaseRef `json:"leases,omitempty"`
-	LastSuccess    *ExecutorWorkRef   `json:"last_success,omitempty"`
-	LastFailure    *ExecutorWorkRef   `json:"last_failure,omitempty"`
-	NextAssigned   *ExecutorWorkRef   `json:"next_assigned,omitempty"`
-	ProjectionNote string             `json:"projection_note,omitempty"`
+	ID                    string                `json:"id"`
+	Label                 string                `json:"label"`
+	Status                string                `json:"status"`
+	StatusSource          string                `json:"status_source"`
+	Tone                  string                `json:"tone,omitempty"`
+	Aliases               []string              `json:"aliases,omitempty"`
+	BestFor               []string              `json:"best_for,omitempty"`
+	CanUseTools           []string              `json:"can_use_tools,omitempty"`
+	CostLimits            []string              `json:"cost_limits,omitempty"`
+	AssignedCount         int                   `json:"assigned_count"`
+	RunningCount          int                   `json:"running_count"`
+	ReadyCount            int                   `json:"ready_count"`
+	NeedsMeCount          int                   `json:"needs_me_count"`
+	LeaseCount            int                   `json:"lease_count"`
+	OldestLeaseAgeSeconds *int64                `json:"oldest_lease_age_seconds,omitempty"`
+	RouteEvidenceCount    int                   `json:"route_evidence_count"`
+	RouteEvidencePresent  bool                  `json:"route_evidence_present"`
+	WaitReason            string                `json:"wait_reason,omitempty"`
+	LastHookEvent         *ExecutorHookEventRef `json:"last_hook_event,omitempty"`
+	CurrentWork           []ExecutorWorkRef     `json:"current_work,omitempty"`
+	Leases                []ExecutorLeaseRef    `json:"leases,omitempty"`
+	LastSuccess           *ExecutorWorkRef      `json:"last_success,omitempty"`
+	LastFailure           *ExecutorWorkRef      `json:"last_failure,omitempty"`
+	NextAssigned          *ExecutorWorkRef      `json:"next_assigned,omitempty"`
+	ProjectionNote        string                `json:"projection_note,omitempty"`
 }
 
 type ExecutorWorkRef struct {
@@ -73,9 +87,21 @@ type ExecutorWorkRef struct {
 }
 
 type ExecutorLeaseRef struct {
-	WorkID    string `json:"work_id"`
-	By        string `json:"by"`
-	ClaimedAt string `json:"claimed_at"`
+	WorkID     string `json:"work_id"`
+	By         string `json:"by"`
+	ClaimedAt  string `json:"claimed_at"`
+	AgeSeconds int64  `json:"age_seconds"`
+}
+
+type ExecutorHookEventRef struct {
+	CreatedAt string `json:"created_at"`
+	Hook      string `json:"hook"`
+	Status    string `json:"status"`
+}
+
+type ExecutorsProjectionOptions struct {
+	ProbeLocal     bool
+	LMStudioClient localmodel.LMStudioClient
 }
 
 type executorProfile struct {
@@ -91,9 +117,13 @@ type executorProfile struct {
 	ProjectionNote string
 }
 
-func (s *Store) ExecutorsProjection(now time.Time) (ExecutorsProjection, error) {
+func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjectionOptions) (ExecutorsProjection, error) {
 	if now.IsZero() {
 		now = time.Now()
+	}
+	opts := ExecutorsProjectionOptions{}
+	if len(optionSets) > 0 {
+		opts = optionSets[0]
 	}
 	workbench, err := s.Workbench(now, WorkbenchOptions{RecentLimit: 8})
 	if err != nil {
@@ -115,6 +145,7 @@ func (s *Store) ExecutorsProjection(now time.Time) (ExecutorsProjection, error) 
 	}
 
 	rows := map[string]*ExecutorRow{}
+	profiles := map[string]executorProfile{}
 	for _, profile := range executorProfiles() {
 		row := ExecutorRow{
 			ID:             profile.ID,
@@ -129,7 +160,41 @@ func (s *Store) ExecutorsProjection(now time.Time) (ExecutorsProjection, error) 
 			ProjectionNote: profile.ProjectionNote,
 		}
 		rows[row.ID] = &row
+		profiles[row.ID] = profile
 		projection.Counts.ProfileGuide++
+	}
+
+	for _, profile := range profiles {
+		row := rows[profile.ID]
+		if row == nil {
+			continue
+		}
+		dispatch := workbenchDispatchNext(workbench, executorDispatchActor(profile))
+		row.WaitReason = firstNonEmptyExecutorString(dispatch.WaitReason, dispatch.Reason)
+	}
+
+	if hookEventsPathExists(s.home) {
+		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.events.hook_events")
+		hookEvents, warnings, err := s.loadExecutorHookEvents()
+		if err != nil {
+			return ExecutorsProjection{}, err
+		}
+		projection.Integrity = append(projection.Integrity, warnings...)
+		applyExecutorHookEvents(rows, hookEvents)
+	}
+
+	if routeEvidencePathExists(s.home) {
+		projection.SourceRefs = appendSourceRef(projection.SourceRefs, "compound.ledger.route_evidence")
+		report, warnings, err := loadExecutorRouteEvidence(s.home)
+		if err != nil {
+			return ExecutorsProjection{}, err
+		}
+		projection.Integrity = append(projection.Integrity, warnings...)
+		applyExecutorRouteEvidence(rows, profiles, report)
+	}
+
+	if opts.ProbeLocal {
+		applyLocalLMStudioProbe(rows["local_lm_studio"], opts.LMStudioClient)
 	}
 
 	runningStates := map[string]bool{"claimed": true, "running": true, "in_progress": true, "verifying": true}
@@ -162,12 +227,17 @@ func (s *Store) ExecutorsProjection(now time.Time) (ExecutorsProjection, error) 
 		if row == nil {
 			row = rows["unassigned"]
 		}
+		ageSeconds := executorAgeSeconds(now, lease.ClaimAt)
 		row.LeaseCount++
 		row.Leases = append(row.Leases, ExecutorLeaseRef{
-			WorkID:    lease.WorkID,
-			By:        lease.By,
-			ClaimedAt: lease.ClaimAt,
+			WorkID:     lease.WorkID,
+			By:         lease.By,
+			ClaimedAt:  lease.ClaimAt,
+			AgeSeconds: ageSeconds,
 		})
+		if row.OldestLeaseAgeSeconds == nil || ageSeconds > *row.OldestLeaseAgeSeconds {
+			row.OldestLeaseAgeSeconds = int64Ref(ageSeconds)
+		}
 		projection.Counts.Leases++
 	}
 
@@ -223,6 +293,167 @@ func (s *Store) ExecutorsProjection(now time.Time) (ExecutorsProjection, error) 
 	projection.Counts.Total = len(projection.Executors)
 	projection.Counts.Open = workbench.Counts.Open
 	return projection, nil
+}
+
+type executorHookEventLine struct {
+	CreatedAt string `json:"created_at"`
+	Harness   string `json:"harness"`
+	HookName  string `json:"hook_name"`
+	Hook      string `json:"hook"`
+	Status    string `json:"status"`
+}
+
+func (s *Store) loadExecutorHookEvents() ([]executorHookEventLine, []string, error) {
+	path := executorHookEventsPath(s.home)
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("read hook events: %w", err)
+	}
+	defer f.Close()
+	var out []executorHookEventLine
+	var warnings []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var ev executorHookEventLine
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			warnings = append(warnings, fmt.Sprintf("hook_events line %d unreadable", lineNo))
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, ev.CreatedAt); err != nil {
+			warnings = append(warnings, fmt.Sprintf("hook_events line %d missing created_at", lineNo))
+			continue
+		}
+		out = append(out, ev)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, warnings, fmt.Errorf("scan hook events: %w", err)
+	}
+	return out, warnings, nil
+}
+
+func applyExecutorHookEvents(rows map[string]*ExecutorRow, events []executorHookEventLine) {
+	for _, ev := range events {
+		row := rows[executorIDForActor(ev.Harness)]
+		if row == nil {
+			row = rows["unassigned"]
+		}
+		if row == nil {
+			continue
+		}
+		hook := firstNonEmptyExecutorString(ev.HookName, ev.Hook)
+		if row.LastHookEvent != nil && !executorTimestampAfter(ev.CreatedAt, row.LastHookEvent.CreatedAt) {
+			continue
+		}
+		row.LastHookEvent = &ExecutorHookEventRef{
+			CreatedAt: ev.CreatedAt,
+			Hook:      hook,
+			Status:    ev.Status,
+		}
+	}
+}
+
+type executorRouteEvidenceReport struct {
+	RouteEvidenceCount int
+	ProviderCounts     map[string]int
+}
+
+func loadExecutorRouteEvidence(homePath string) (executorRouteEvidenceReport, []string, error) {
+	path := executorRouteEvidencePath(homePath)
+	report := executorRouteEvidenceReport{ProviderCounts: map[string]int{}}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return report, nil, nil
+		}
+		return executorRouteEvidenceReport{}, nil, fmt.Errorf("read route evidence: %w", err)
+	}
+	defer f.Close()
+	var warnings []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			SelectedTarget struct {
+				Provider string `json:"provider"`
+			} `json:"selected_target"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			warnings = append(warnings, fmt.Sprintf("route_evidence line %d unreadable", lineNo))
+			continue
+		}
+		report.RouteEvidenceCount++
+		provider := strings.TrimSpace(ev.SelectedTarget.Provider)
+		if provider != "" {
+			report.ProviderCounts[provider]++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return executorRouteEvidenceReport{}, warnings, fmt.Errorf("scan route evidence: %w", err)
+	}
+	return report, warnings, nil
+}
+
+func applyExecutorRouteEvidence(rows map[string]*ExecutorRow, profiles map[string]executorProfile, report executorRouteEvidenceReport) {
+	row := rows["switchback_api"]
+	if row == nil {
+		return
+	}
+	count := routeEvidenceCountForProfile(profiles["switchback_api"], report)
+	row.RouteEvidenceCount = count
+	row.RouteEvidencePresent = count > 0
+}
+
+func routeEvidenceCountForProfile(profile executorProfile, report executorRouteEvidenceReport) int {
+	aliases := append([]string{profile.ID}, profile.Aliases...)
+	count := 0
+	for provider, providerCount := range report.ProviderCounts {
+		if executorAliasMatchesAny(provider, aliases) {
+			count += providerCount
+		}
+	}
+	if count == 0 {
+		return report.RouteEvidenceCount
+	}
+	return count
+}
+
+func applyLocalLMStudioProbe(row *ExecutorRow, client localmodel.LMStudioClient) {
+	if row == nil {
+		return
+	}
+	row.StatusSource = "live_probe"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	models, err := client.Models(ctx)
+	if err != nil {
+		row.Status = "unreachable"
+		row.Tone = "red"
+		row.ProjectionNote = "LM Studio probe failed: " + err.Error()
+		return
+	}
+	row.Status = "reachable"
+	row.Tone = "green"
+	if len(models) == 0 {
+		row.ProjectionNote = "LM Studio reachable; no models reported"
+		return
+	}
+	row.ProjectionNote = fmt.Sprintf("LM Studio reachable; %d model(s) reported", len(models))
 }
 
 func executorProfiles() []executorProfile {
@@ -300,6 +531,15 @@ func executorProfiles() []executorProfile {
 
 func executorActor(item WorkbenchItem) string {
 	return firstNonEmptyExecutorString(item.ClaimedBy, item.Owner)
+}
+
+func executorDispatchActor(profile executorProfile) string {
+	for _, alias := range profile.Aliases {
+		if strings.TrimSpace(alias) != "" {
+			return alias
+		}
+	}
+	return profile.ID
 }
 
 func executorIDForActor(actor string) string {
@@ -383,6 +623,103 @@ func normalizeExecutorAlias(value string) string {
 	value = strings.ReplaceAll(value, " ", "_")
 	value = strings.ReplaceAll(value, "-", "_")
 	return value
+}
+
+func executorAliasMatchesAny(value string, aliases []string) bool {
+	normalized := normalizeExecutorAlias(value)
+	if normalized == "" {
+		return false
+	}
+	for _, alias := range aliases {
+		alias = normalizeExecutorAlias(alias)
+		if alias == "" {
+			continue
+		}
+		if strings.Contains(normalized, alias) || strings.Contains(alias, normalized) {
+			return true
+		}
+	}
+	return false
+}
+
+func executorAgeSeconds(now time.Time, value string) int64 {
+	claimedAt, ok := executorClaimedAtTime(value)
+	if !ok {
+		return 0
+	}
+	seconds := int64(now.Sub(claimedAt).Seconds())
+	if seconds < 0 {
+		return 0
+	}
+	return seconds
+}
+
+func executorTimestampAfter(candidate, current string) bool {
+	candidateTime, candidateOK := executorClaimedAtTime(candidate)
+	currentTime, currentOK := executorClaimedAtTime(current)
+	if candidateOK && currentOK {
+		return candidateTime.After(currentTime)
+	}
+	return candidate > current
+}
+
+func executorClaimedAtTime(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, true
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	switch {
+	case n > 1e16:
+		return time.Unix(0, n), true
+	case n > 1e13:
+		return time.Unix(0, n*int64(time.Microsecond)), true
+	case n > 1e11:
+		return time.Unix(0, n*int64(time.Millisecond)), true
+	default:
+		return time.Unix(n, 0), true
+	}
+}
+
+func int64Ref(value int64) *int64 {
+	v := value
+	return &v
+}
+
+func executorHookEventsPath(homePath string) string {
+	return filepath.Join(homePath, "events", "hook-events.ndjson")
+}
+
+func hookEventsPathExists(homePath string) bool {
+	return regularFileExists(executorHookEventsPath(homePath))
+}
+
+func routeEvidencePathExists(homePath string) bool {
+	return regularFileExists(executorRouteEvidencePath(homePath))
+}
+
+func executorRouteEvidencePath(homePath string) string {
+	return filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
+}
+
+func regularFileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func appendSourceRef(sourceRefs []string, sourceRef string) []string {
+	for _, existing := range sourceRefs {
+		if existing == sourceRef {
+			return sourceRefs
+		}
+	}
+	return append(sourceRefs, sourceRef)
 }
 
 func firstNonEmptyExecutorString(values ...string) string {
