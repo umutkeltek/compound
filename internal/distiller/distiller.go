@@ -62,22 +62,29 @@ const confidenceFloor = 0.5
 // Candidate is a typed, untrusted extraction. memory-kind carries entity/predicate/object; other
 // kinds carry subject/statement/detail. All cite evidence and the policy version that produced them.
 type Candidate struct {
-	ID             string            `json:"id"`
-	Kind           string            `json:"kind"`
-	Entity         string            `json:"entity,omitempty"`
-	Predicate      string            `json:"predicate,omitempty"`
-	Object         string            `json:"object,omitempty"`
-	Subject        string            `json:"subject,omitempty"`
-	Statement      string            `json:"statement,omitempty"`
-	Detail         string            `json:"detail,omitempty"`
-	Confidence     float64           `json:"confidence"`
-	Derivation     string            `json:"derivation"`
-	ClaimType      string            `json:"claim_type,omitempty"`      // memory-kind: the claim taxonomy (mem.ClaimTypes)
-	Qualifiers     map[string]string `json:"qualifiers,omitempty"`      // memory-kind: e.g. {"domain": "languages"} → Topic()
-	PromotionBasis string            `json:"promotion_basis,omitempty"` // memory-kind: the basis that allows promotion (candidates.PromotionBases); empty = none
-	EvidenceRefs   []string          `json:"evidence_refs"`
-	PolicyVersion  string            `json:"policy_version"`
-	Verdict        string            `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
+	ID             string                    `json:"id"`
+	Kind           string                    `json:"kind"`
+	Entity         string                    `json:"entity,omitempty"`
+	Predicate      string                    `json:"predicate,omitempty"`
+	Object         string                    `json:"object,omitempty"`
+	Subject        string                    `json:"subject,omitempty"`
+	Statement      string                    `json:"statement,omitempty"`
+	Detail         string                    `json:"detail,omitempty"`
+	Confidence     float64                   `json:"confidence"`
+	Derivation     string                    `json:"derivation"`
+	ClaimType      string                    `json:"claim_type,omitempty"` // memory-kind: the claim taxonomy (mem.ClaimTypes)
+	Qualifiers     map[string]string         `json:"qualifiers,omitempty"` // memory-kind: e.g. {"domain": "languages"} → Topic()
+	Tags           []string                  `json:"tags,omitempty"`
+	Salience       string                    `json:"salience,omitempty"`
+	Expectation    *mem.CandidateExpectation `json:"expectation,omitempty"`
+	ExpiresAt      string                    `json:"expires_at,omitempty"`
+	Visibility     string                    `json:"visibility,omitempty"`
+	State          string                    `json:"state,omitempty"`
+	CreatedAt      string                    `json:"created_at,omitempty"`
+	PromotionBasis string                    `json:"promotion_basis,omitempty"` // memory-kind: the basis that allows promotion (candidates.PromotionBases); empty = none
+	EvidenceRefs   []string                  `json:"evidence_refs"`
+	PolicyVersion  string                    `json:"policy_version"`
+	Verdict        string                    `json:"verdict,omitempty"` // stamped at adjudication, so a consumer respects it
 }
 
 // Promotion modes: in live_candidate_only (the DEFAULT for real traces) a memory candidate parks
@@ -191,11 +198,16 @@ func normalizeTrace(t Trace, policy Policy) (Trace, error) {
 		if c.Derivation == "" {
 			c.Derivation = "extracted"
 		}
+		normalizeSeedCandidate(c)
 		c.PolicyVersion = policy.Stamp()
 		// Stable deterministic id over ALL identity-significant content (incl. Detail, which the
 		// capability bridge keys on) ⇒ replay = same ids, and two candidates differing only in
 		// Detail get DISTINCT ids (no silent inbox-file collision).
-		c.ID = idFor("cand_", c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail, t.TraceRef)
+		if isSeedCandidate(*c) {
+			c.ID = idFor("cand_", c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail, expectationKey(c.Expectation), c.ExpiresAt, t.TraceRef)
+		} else {
+			c.ID = idFor("cand_", c.Kind, c.Entity, c.Predicate, c.Object, c.Subject, c.Statement, c.Detail, t.TraceRef)
+		}
 		if len(c.EvidenceRefs) == 0 {
 			c.EvidenceRefs = []string{t.TraceRef}
 		}
@@ -220,6 +232,9 @@ func validateCandidateShape(index int, c Candidate) error {
 		}
 		if len(missing) > 0 {
 			return fmt.Errorf("candidate %d memory requires %s", index, strings.Join(missing, ", "))
+		}
+		if c.Expectation != nil && (strings.TrimSpace(c.Expectation.Predicate) == "" || strings.TrimSpace(c.Expectation.Object) == "") {
+			return fmt.Errorf("candidate %d seed expectation requires predicate and object", index)
 		}
 		return nil
 	}
@@ -279,11 +294,52 @@ func critique(c Candidate, prior PriorState) Critique {
 	return Critique{IsNew: true}
 }
 
+func normalizeSeedCandidate(c *Candidate) {
+	if c == nil || !isSeedCandidate(*c) {
+		return
+	}
+	c.Tags = appendUniqueTag(c.Tags, "seed")
+	c.Salience = "low"
+	c.Visibility = "contextual"
+	c.PromotionBasis = ""
+}
+
+func isSeedCandidate(c Candidate) bool {
+	if c.Expectation != nil {
+		return true
+	}
+	for _, tag := range c.Tags {
+		if strings.EqualFold(strings.TrimSpace(tag), "seed") {
+			return true
+		}
+	}
+	return false
+}
+
+func appendUniqueTag(tags []string, tag string) []string {
+	for _, got := range tags {
+		if strings.EqualFold(strings.TrimSpace(got), tag) {
+			return tags
+		}
+	}
+	return append(tags, tag)
+}
+
+func expectationKey(exp *mem.CandidateExpectation) string {
+	if exp == nil {
+		return ""
+	}
+	return strings.Join([]string{strings.TrimSpace(exp.Entity), strings.TrimSpace(exp.Predicate), strings.TrimSpace(exp.Object), strings.TrimSpace(exp.Detail)}, "\x00")
+}
+
 // adjudicate decides the verdict. Code decides (not the model): low confidence parks; a duplicate
 // rejects; new/changed memory promotes; a distiller mistake or a capability observation
 // OPERATIONALIZES (into its corpus/graph); a method upgrade or policy patch PARKS (an operator
 // reviews — a method change is never auto-applied); other kinds park as candidates.
 func adjudicate(c Candidate, crit Critique, mode string) (string, string) {
+	if c.Kind == KindMemory && isSeedCandidate(c) {
+		return Park, "seed expectation parked at low salience until later evidence corroborates it"
+	}
 	if crit.Duplicate {
 		if crit.DuplicateCandidateID != "" {
 			return Reject, "duplicate prior " + c.Kind + " candidate " + crit.DuplicateCandidateID
@@ -348,6 +404,17 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 			basis = "fixture auto-promote memory (basis: " + c.PromotionBasis + ")"
 		}
 		c.Verdict = verdict // stamp onto the written record so a consumer respects adjudication
+		if c.Kind == KindMemory {
+			if strings.TrimSpace(c.CreatedAt) == "" {
+				c.CreatedAt = rfc3339(now)
+			}
+			switch verdict {
+			case Park:
+				c.State = "parked"
+			case Reject:
+				c.State = "rejected"
+			}
+		}
 		rel, priorClaim, priorCandidate := "new", "", ""
 		switch {
 		case crit.Duplicate && crit.DuplicateCandidateID != "":
@@ -368,12 +435,17 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 		switch {
 		case c.Kind == KindMemory && verdict == Promote:
 			// route through the mem ledger — it is the source of truth for memory dup/supersede.
+			visibility := c.Visibility
+			if strings.TrimSpace(visibility) == "" {
+				visibility = "operational"
+			}
 			got, err := store.Capture([]mem.Candidate{{
 				Entity: c.Entity, Predicate: c.Predicate, Object: c.Object,
 				Confidence: c.Confidence, Derivation: c.Derivation,
 				ClaimType: c.ClaimType, Qualifiers: c.Qualifiers, // taxonomy + topic axis
+				Tags: c.Tags, Salience: c.Salience, Expectation: c.Expectation, ExpiresAt: c.ExpiresAt,
 				PromotionBasis: c.PromotionBasis, // persist the "why" of promotion onto the claim
-				SourceTraceRef: t.TraceRef, Visibility: "operational",
+				SourceTraceRef: t.TraceRef, Visibility: visibility,
 			}}, now)
 			if err != nil {
 				return res, err
@@ -403,6 +475,9 @@ func Run(homePath string, store *mem.Store, raw []byte, policy Policy, ext Extra
 			// prior meaning.
 		default:
 			// candidate-first: write the record to its inbox; it never becomes a claim here.
+			if c.Kind == KindMemory && strings.TrimSpace(c.Visibility) == "" {
+				c.Visibility = "operational"
+			}
 			if err := writeCandidate(homePath, c); err != nil {
 				return res, err
 			}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,16 +16,18 @@ import (
 const (
 	synthesisSweepArea         = "synthesis-sweeps"
 	synthesisContradictionArea = "synthesis-contradictions"
+	seedCorroborationArea      = "seed-corroborations"
 )
 
 type synthesisSweepOutput struct {
-	SchemaVersion            string                   `json:"schema_version"`
-	WorkID                   string                   `json:"work_id"`
-	ReceiptID                string                   `json:"receipt_id"`
-	TransitionID             string                   `json:"transition_id"`
-	ReportPath               string                   `json:"report_path"`
-	ContradictionReviewPaths []string                 `json:"contradiction_review_paths,omitempty"`
-	Report                   mem.SynthesisSweepReport `json:"report"`
+	SchemaVersion                string                   `json:"schema_version"`
+	WorkID                       string                   `json:"work_id"`
+	ReceiptID                    string                   `json:"receipt_id"`
+	TransitionID                 string                   `json:"transition_id"`
+	ReportPath                   string                   `json:"report_path"`
+	ContradictionReviewPaths     []string                 `json:"contradiction_review_paths,omitempty"`
+	SeedCorroborationReviewPaths []string                 `json:"seed_corroboration_review_paths,omitempty"`
+	Report                       mem.SynthesisSweepReport `json:"report"`
 }
 
 type synthesisSweepArtifact struct {
@@ -57,6 +60,23 @@ type synthesisContradictionArtifact struct {
 	Boundaries    []string                           `json:"boundaries,omitempty"`
 	EvidenceRefs  []string                           `json:"evidence_refs,omitempty"`
 	Proposal      mem.SynthesisContradictionProposal `json:"proposal"`
+}
+
+type synthesisSeedCorroborationArtifact struct {
+	SchemaVersion string                             `json:"schema_version"`
+	ID            string                             `json:"id"`
+	CreatedAt     string                             `json:"created_at"`
+	Status        string                             `json:"status"`
+	Readiness     string                             `json:"readiness"`
+	WorkID        string                             `json:"work_id"`
+	Owner         string                             `json:"owner,omitempty"`
+	SourceKind    string                             `json:"source_kind,omitempty"`
+	CandidateID   string                             `json:"candidate_id,omitempty"`
+	NextAction    string                             `json:"next_action,omitempty"`
+	NotToDo       string                             `json:"not_to_do,omitempty"`
+	Boundaries    []string                           `json:"boundaries,omitempty"`
+	EvidenceRefs  []string                           `json:"evidence_refs,omitempty"`
+	Proposal      mem.SynthesisCorroborationProposal `json:"proposal"`
 }
 
 func cmdSynthesis(args []string) {
@@ -171,6 +191,31 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 		}
 		contradictionPaths = append(contradictionPaths, paths.PlanPath)
 	}
+	var seedCorroborationPaths []string
+	for _, proposal := range report.CorroborationProposals {
+		reviewID := reviewartifact.ID("seed_corroboration_", created.ID, proposal.ID)
+		artifact := synthesisSeedCorroborationArtifact{
+			SchemaVersion: "compound.seed_corroboration_review.v0.1",
+			ID:            reviewID,
+			CreatedAt:     reviewartifact.Timestamp(now),
+			Status:        "review_required",
+			Readiness:     "needs_review",
+			WorkID:        created.ID,
+			Owner:         "Memory synthesis",
+			SourceKind:    "memory-seed-corroboration",
+			CandidateID:   proposal.SeedCandidateID,
+			NextAction:    seedCorroborationNextAction,
+			NotToDo:       seedCorroborationNotToDo,
+			Boundaries:    seedCorroborationBoundaries(),
+			EvidenceRefs:  seedCorroborationEvidenceRefs(created.ID, proposal),
+			Proposal:      proposal,
+		}
+		paths, err := reviewartifact.Write(homePath, seedCorroborationArea, reviewID, artifact, " ", renderSeedCorroborationMarkdown(artifact))
+		if err != nil {
+			return out, err
+		}
+		seedCorroborationPaths = append(seedCorroborationPaths, paths.PlanPath)
+	}
 	if _, err := workStore.Advance(created.ID, work.AdvanceInput{
 		To:             "verifying",
 		Actor:          "compound synthesis",
@@ -187,8 +232,8 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 	if report.ReviewDebtCount > 0 {
 		moveType = "memory_delta"
 		changed = true
-		summary = fmt.Sprintf("memory synthesis sweep reopened %d claim(s) for review", report.ReviewDebtCount)
-		memoryRefs = reopenedClaimRefs(report.ReopenedClaims)
+		summary = fmt.Sprintf("memory synthesis sweep raised %d item(s) for review", report.ReviewDebtCount)
+		memoryRefs = append(reopenedClaimRefs(report.ReopenedClaims), raisedSeedRefs(report.RaisedSeeds)...)
 	}
 	closed, err := workStore.Close(created.ID, work.CloseInput{
 		Outcome:          "completed",
@@ -203,13 +248,14 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 		return out, err
 	}
 	return synthesisSweepOutput{
-		SchemaVersion:            "compound.synthesis_sweep_run.v0.1",
-		WorkID:                   created.ID,
-		ReceiptID:                closed.Receipt.ID,
-		TransitionID:             closed.Transition.ID,
-		ReportPath:               reportPaths.PlanPath,
-		ContradictionReviewPaths: contradictionPaths,
-		Report:                   report,
+		SchemaVersion:                "compound.synthesis_sweep_run.v0.1",
+		WorkID:                       created.ID,
+		ReceiptID:                    closed.Receipt.ID,
+		TransitionID:                 closed.Transition.ID,
+		ReportPath:                   reportPaths.PlanPath,
+		ContradictionReviewPaths:     contradictionPaths,
+		SeedCorroborationReviewPaths: seedCorroborationPaths,
+		Report:                       report,
 	}, nil
 }
 
@@ -258,6 +304,64 @@ func reopenedClaimRefs(reopened []mem.SynthesisClaimReview) []string {
 	return reviewartifact.Unique(refs)
 }
 
+func renderSeedCorroborationMarkdown(a synthesisSeedCorroborationArtifact) string {
+	return fmt.Sprintf("# Seed corroboration\n\n%s\n", seedCorroborationClaim(a.Proposal))
+}
+
+const (
+	seedCorroborationNextAction = "review corroborated seed; promote only through normal memory adjudication if the cited later outcome is a sufficient basis"
+	seedCorroborationNotToDo    = "do not auto-promote, bulk-promote, or make seed claims ambient from corroboration alone"
+)
+
+func seedCorroborationEvidenceRefs(workID string, proposal mem.SynthesisCorroborationProposal) []string {
+	refs := []string{"compound://synthesis/sweep", workID, proposal.ID, "candidate:" + proposal.SeedCandidateID}
+	refs = append(refs, proposal.EvidenceRefs...)
+	return reviewartifact.Unique(refs)
+}
+
+func raisedSeedRefs(raised []mem.SynthesisSeedReview) []string {
+	refs := make([]string, 0, len(raised))
+	for _, item := range raised {
+		refs = append(refs, "candidate_review:"+item.CandidateID)
+	}
+	return reviewartifact.Unique(refs)
+}
+
+func seedCorroborationBoundaries() []string {
+	return reviewartifact.Unique(append(synthesisReviewBoundaries(),
+		"seed corroboration raises review debt only",
+		"no automatic memory promotion",
+		"promoted stance seeds remain contextual unless an operator changes visibility",
+	))
+}
+
+func seedCorroborationClaim(proposal mem.SynthesisCorroborationProposal) string {
+	return fmt.Sprintf("You said %s on %s. It just turned out to matter, because %s happened. Promote it?",
+		proposal.SeedText, shortReviewDate(proposal.SeedCreatedAt), proposal.EvidenceSummary)
+}
+
+func shortReviewDate(raw string) string {
+	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(raw)); err == nil {
+		return t.UTC().Format("2006-01-02")
+	}
+	if i := strings.Index(raw, "T"); i > 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
+func loadSeedCorroborationArtifact(path string) (synthesisSeedCorroborationArtifact, error) {
+	var artifact synthesisSeedCorroborationArtifact
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return artifact, err
+	}
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return artifact, err
+	}
+	return artifact, nil
+}
+
 func annotateSynthesisReviewQueue(report *reviewartifact.QueueReport) {
 	if report == nil {
 		return
@@ -269,8 +373,70 @@ func annotateSynthesisReviewQueue(report *reviewartifact.QueueReport) {
 			annotateSynthesisQueueItem(item, "memory-synthesis-sweep", synthesisSweepNextAction)
 		case synthesisContradictionArea:
 			annotateSynthesisQueueItem(item, "memory-synthesis-contradiction", synthesisContradictionNextAction)
+		case seedCorroborationArea:
+			annotateSeedCorroborationQueueItem(item)
 		}
 	}
+}
+
+func annotateSeedCorroborationQueueItem(item *reviewartifact.QueueItem) {
+	item.Status = "review_required"
+	item.Owner = reviewartifact.FirstNonEmpty(item.Owner, "Memory synthesis")
+	item.SourceKind = reviewartifact.FirstNonEmpty(item.SourceKind, "memory-seed-corroboration")
+	item.Readiness = "needs_review"
+	item.NextAction = reviewartifact.FirstNonEmpty(item.NextAction, seedCorroborationNextAction)
+	item.NotToDo = reviewartifact.FirstNonEmpty(item.NotToDo, seedCorroborationNotToDo)
+	item.Boundaries = reviewartifact.Unique(append(item.Boundaries, seedCorroborationBoundaries()...))
+	artifact, err := loadSeedCorroborationArtifact(item.JSONPath)
+	if err != nil {
+		item.BlockedReason = "seed corroboration artifact unreadable: " + err.Error()
+		return
+	}
+	item.CandidateID = reviewartifact.FirstNonEmpty(item.CandidateID, artifact.CandidateID, artifact.Proposal.SeedCandidateID)
+	item.EvidenceRefs = reviewartifact.Unique(append(item.EvidenceRefs, artifact.EvidenceRefs...))
+	card := seedCorroborationDecisionCard(artifact)
+	item.DecisionCard = card
+	item.Actions = seedCorroborationActions(item.CandidateID, card)
+}
+
+func seedCorroborationDecisionCard(artifact synthesisSeedCorroborationArtifact) *reviewartifact.DecisionCard {
+	command := fmt.Sprintf("compound memory adjudicate %q --verdict promote", artifact.Proposal.SeedCandidateID)
+	return &reviewartifact.DecisionCard{
+		Claim: seedCorroborationClaim(artifact.Proposal),
+		Why: []reviewartifact.DecisionCardReason{
+			{Label: "later-outcome", Detail: artifact.Proposal.EvidenceSummary},
+			{Label: "evidence", Detail: strings.Join(artifact.Proposal.EvidenceRefs, ",")},
+		},
+		Choices: []reviewartifact.DecisionCardChoice{{
+			ID:             "promote_seed_candidate",
+			Label:          "Promote",
+			Effect:         "Runs the normal memory adjudication gate; corroboration supplies runtime-proof basis but does not auto-promote.",
+			Command:        command,
+			Argv:           []string{"compound", "memory", "adjudicate", artifact.Proposal.SeedCandidateID, "--verdict", "promote"},
+			RequiresReview: true,
+		}},
+		CanonicalActionHint: command,
+		Boundary:            seedCorroborationBoundaries(),
+		Meta: map[string]string{
+			"candidate_id":      artifact.Proposal.SeedCandidateID,
+			"review_ref":        artifact.Proposal.ID,
+			"evidence_claim_id": artifact.Proposal.EvidenceClaimID,
+		},
+	}
+}
+
+func seedCorroborationActions(candidateID string, card *reviewartifact.DecisionCard) []reviewartifact.Action {
+	if strings.TrimSpace(candidateID) == "" || card == nil || len(card.Choices) == 0 {
+		return nil
+	}
+	choice := card.Choices[0]
+	return []reviewartifact.Action{{
+		ID:             choice.ID,
+		Label:          choice.Label,
+		Command:        choice.Command,
+		Argv:           append([]string(nil), choice.Argv...),
+		RequiresReview: true,
+	}}
 }
 
 func annotateSynthesisQueueItem(item *reviewartifact.QueueItem, sourceKind, nextAction string) {

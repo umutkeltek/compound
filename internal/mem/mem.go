@@ -53,7 +53,16 @@ const (
 	EdgeKindReinforces    = "reinforces"
 	EdgeKindNeedsReview   = "needs_review"
 	EdgeKindReviewCleared = "needs_review_cleared"
+	EdgeKindCorroboration = "corroboration"
 )
+
+// CandidateExpectation is the structured later fact that would make a parked seed matter.
+type CandidateExpectation struct {
+	Entity    string `json:"entity,omitempty"`
+	Predicate string `json:"predicate"`
+	Object    string `json:"object"`
+	Detail    string `json:"detail,omitempty"`
+}
 
 // Candidate is an untrusted, proposed fact awaiting adjudication (lives in the inbox).
 type Candidate struct {
@@ -64,9 +73,13 @@ type Candidate struct {
 	ObservationDate string                `json:"observation_date"` // temporal grounding (when the fact was true)
 	Confidence      float64               `json:"confidence"`
 	Derivation      string                `json:"derivation"`
-	ClaimType       string                `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
-	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
-	TopicRefs       []string              `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; old rows omit this safely
+	ClaimType       string                `json:"claim_type,omitempty"` // the claim taxonomy (mem.ClaimTypes); empty = untyped
+	Qualifiers      map[string]string     `json:"qualifiers,omitempty"` // e.g. {"domain": "languages"} → sharpens Topic()
+	TopicRefs       []string              `json:"topic_refs,omitempty"` // optional concept taxonomy refs; old rows omit this safely
+	Tags            []string              `json:"tags,omitempty"`
+	Salience        string                `json:"salience,omitempty"`
+	Expectation     *CandidateExpectation `json:"expectation,omitempty"`
+	ExpiresAt       string                `json:"expires_at,omitempty"`
 	PromotionBasis  string                `json:"promotion_basis,omitempty"` // WHY it may promote (candidates.PromotionBases); empty = none
 	SourceTraceRef  string                `json:"source_trace_ref"`          // provenance: where it came from
 	SnippetHash     string                `json:"snippet_hash"`              // bounded snippet, not the raw body
@@ -341,6 +354,13 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	}
 
 	if !candidates.ValidBasis(c.PromotionBasis) {
+		basis, err := s.corroborationPromotionBasis(c.ID)
+		if err != nil {
+			return res, err
+		}
+		c.PromotionBasis = basis
+	}
+	if !candidates.ValidBasis(c.PromotionBasis) {
 		return res, fmt.Errorf("candidate %s cannot promote without valid promotion_basis (got %q; allowed: %v)", candID, c.PromotionBasis, candidates.PromotionBases)
 	}
 
@@ -417,6 +437,17 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 // nonPromoteState maps a non-promote verdict to the candidate's resulting state.
 func nonPromoteState(verdict string) string {
 	return map[string]string{"reject": "rejected", "park": "parked", "no_promote": "no_promote"}[verdict]
+}
+
+func (s *Store) corroborationPromotionBasis(candidateID string) (string, error) {
+	marks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		return "", err
+	}
+	if mark, ok := marks[candidateID]; ok && len(mark.Refs) > 0 {
+		return candidates.BasisRuntimeProof, nil
+	}
+	return "", nil
 }
 
 // isDuplicatePromotion reports whether promoting c would only restate the current
@@ -1107,6 +1138,10 @@ type claimReviewMark struct {
 	ConfidenceDelta float64
 }
 
+type candidateReviewMark struct {
+	Refs []string
+}
+
 func (s *Store) decorateClaimReviewStates(claims []Claim, asOf int64) ([]Claim, error) {
 	marks, err := s.claimReviewMarksAsOf(asOf)
 	if err != nil {
@@ -1191,6 +1226,31 @@ func (s *Store) claimReviewMarksAsOf(asOf int64) (map[string]claimReviewMark, er
 		}
 	}
 	return out, nil
+}
+
+func (s *Store) candidateReviewMarksAsOf(asOf int64) (map[string]candidateReviewMark, error) {
+	marks := map[string]candidateReviewMark{}
+	err := readJSONL(s.edgesLog(), func(line []byte) error {
+		var e Edge
+		if err := json.Unmarshal(line, &e); err != nil {
+			return err
+		}
+		if e.Kind != EdgeKindCorroboration {
+			return nil
+		}
+		if asOf > 0 && e.Seq > asOf {
+			return nil
+		}
+		mark := marks[e.To]
+		mark.Refs = append(mark.Refs, e.From)
+		marks[e.To] = mark
+		return nil
+	})
+	for id, mark := range marks {
+		sort.Strings(mark.Refs)
+		marks[id] = mark
+	}
+	return marks, err
 }
 
 func (s *Store) supersededAsOf(asOf int64) (map[string]bool, error) {

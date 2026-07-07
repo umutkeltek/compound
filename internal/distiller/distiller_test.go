@@ -107,6 +107,65 @@ func TestReplayStableIDs(t *testing.T) {
 	}
 }
 
+func TestSeedCandidateParksLowSalienceWithExpectation(t *testing.T) {
+	home, store := setup(t)
+	trace := `{"trace_ref":"trace_seed","candidates":[
+	  {
+	    "kind":"memory",
+	    "entity":"project:alpha",
+	    "predicate":"operator_stance",
+	    "object":"integration risk will matter later",
+	    "confidence":0.92,
+	    "promotion_basis":"explicit_confirmation",
+	    "expectation":{"entity":"project:alpha","predicate":"runtime_outcome","object":"integration risk materialized"},
+	    "expires_at":"2026-08-01T00:00:00Z"
+	  }
+	]}`
+
+	res := runWith(t, home, store, trace, FixturePolicy())
+	if len(res.Decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1: %+v", len(res.Decisions), res.Decisions)
+	}
+	decision := res.Decisions[0]
+	if decision.Verdict != Park || decision.ClaimID != "" {
+		t.Fatalf("seed decision = verdict %q claim %q, want parked with no claim", decision.Verdict, decision.ClaimID)
+	}
+	if !strings.Contains(decision.Basis, "seed expectation") {
+		t.Fatalf("seed basis should explain expectation parking, got %q", decision.Basis)
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, candidates.InboxDir(candidates.Memory), decision.CandidateID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved mem.Candidate
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Expectation == nil ||
+		saved.Expectation.Entity != "project:alpha" ||
+		saved.Expectation.Predicate != "runtime_outcome" ||
+		saved.Expectation.Object != "integration risk materialized" {
+		t.Fatalf("saved expectation = %+v", saved.Expectation)
+	}
+	if saved.State != "parked" || saved.CreatedAt == "" {
+		t.Fatalf("seed state = %q created_at=%q, want parked with timestamp", saved.State, saved.CreatedAt)
+	}
+	if saved.Salience != "low" || saved.Visibility != "contextual" || saved.ExpiresAt != "2026-08-01T00:00:00Z" {
+		t.Fatalf("seed class tier = salience %q visibility %q expires %q", saved.Salience, saved.Visibility, saved.ExpiresAt)
+	}
+	if !stringSliceContains(saved.Tags, "seed") {
+		t.Fatalf("seed tags = %+v, want seed tag", saved.Tags)
+	}
+	recall, err := store.Recall("project:alpha", mem.RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recall.Claims) != 0 {
+		t.Fatalf("seed must never auto-promote into recall, got %+v", recall.Claims)
+	}
+}
+
 func TestNormalizeTraceRejectsThinCandidates(t *testing.T) {
 	tests := []struct {
 		name string

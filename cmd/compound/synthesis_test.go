@@ -141,6 +141,89 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 	}
 }
 
+func TestSynthesisSweepCLIWritesSeedCorroborationReviewCard(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seed := mem.Candidate{
+		Entity:         "project:alpha",
+		Predicate:      "operator_stance",
+		Object:         "integration risk will matter later",
+		Confidence:     0.25,
+		Derivation:     "extracted",
+		SourceTraceRef: "trace_seed_cli",
+		SnippetHash:    "hash_seed_cli",
+		Visibility:     "contextual",
+		Tags:           []string{"seed"},
+		Salience:       "low",
+		ExpiresAt:      "2026-08-01T00:00:00Z",
+		Expectation: &mem.CandidateExpectation{
+			Entity:    "project:alpha",
+			Predicate: "runtime_outcome",
+			Object:    "integration risk materialized",
+		},
+	}
+	seedCandidates, err := store.Capture([]mem.Candidate{seed}, time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(seedCandidates[0].ID, "park", "work_seed_cli", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	outcome := mem.Candidate{
+		Entity:         "project:alpha",
+		Predicate:      "runtime_outcome",
+		Object:         "integration risk materialized",
+		Confidence:     0.95,
+		Derivation:     "deterministic",
+		PromotionBasis: candidates.BasisRuntimeProof,
+		SourceTraceRef: "receipt:runtime-outcome-cli",
+		SnippetHash:    "hash_runtime_outcome_cli",
+		Visibility:     "operational",
+	}
+	outcomeCandidates, err := store.Capture([]mem.Candidate{outcome}, time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.Adjudicate(outcomeCandidates[0].ID, "promote", "work_outcome_cli", time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdSynthesis([]string{"sweep", "--stage", "corroborate", "--json"})
+	})
+	var result synthesisSweepOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		t.Fatalf("parse synthesis output: %v\n%s", err, out)
+	}
+	if result.Report.CorroborationProposalCount != 1 || len(result.SeedCorroborationReviewPaths) != 1 {
+		t.Fatalf("corroboration output = count %d paths %+v", result.Report.CorroborationProposalCount, result.SeedCorroborationReviewPaths)
+	}
+
+	queue, err := buildReviewQueueReport(homePath, seedCorroborationArea, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 || len(queue.Items) != 1 {
+		t.Fatalf("seed corroboration queue counts = %+v items=%d", queue.Counts, len(queue.Items))
+	}
+	item := queue.Items[0]
+	if item.CandidateID != seedCandidates[0].ID || !containsString(item.EvidenceRefs, "claim:"+promoted.Claim.ID) {
+		t.Fatalf("review item refs = candidate %q evidence %+v", item.CandidateID, item.EvidenceRefs)
+	}
+	if item.DecisionCard == nil || !strings.Contains(item.DecisionCard.Claim, "You said integration risk will matter later on 2026-07-01") || !strings.Contains(item.DecisionCard.Claim, "It just turned out to matter") {
+		t.Fatalf("plain-language decision card missing: %+v", item.DecisionCard)
+	}
+	if !strings.Contains(item.DecisionCard.Claim, "Promote it?") || !strings.Contains(item.Actions[0].Command, "compound memory adjudicate") {
+		t.Fatalf("decision card should offer gated memory promotion: card=%+v actions=%+v", item.DecisionCard, item.Actions)
+	}
+}
+
 func TestSynthesisReviewQueueAnnotatesLegacyStatuslessArtifacts(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

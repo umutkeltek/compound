@@ -281,5 +281,15 @@ func (s *Store) reviewStateByCandidate() (map[string]string, []string) {
 			}
 		}
 	}
+	candidateMarks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		return out, []string{"candidate review state unavailable: " + err.Error()}
+	}
+	for candidateID, mark := range candidateMarks {
+		if len(mark.Refs) == 0 {
+			continue
+		}
+		out[candidateID] = ClaimStateNeedsReview
+	}
 	return out, nil
 }

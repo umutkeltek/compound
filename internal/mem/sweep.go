@@ -10,7 +10,7 @@ import (
 
 const SynthesisSweepSchemaVersion = "compound.synthesis_sweep.v0.1"
 
-var synthesisSweepStages = []string{"cluster", "contradict"}
+var synthesisSweepStages = []string{"cluster", "contradict", "corroborate"}
 
 type SynthesisSweepReport struct {
 	SchemaVersion              string                           `json:"schema_version"`
@@ -21,11 +21,14 @@ type SynthesisSweepReport struct {
 	ClusterCount               int                              `json:"cluster_count"`
 	EchoFoldProposalCount      int                              `json:"echo_fold_proposal_count"`
 	ContradictionProposalCount int                              `json:"contradiction_proposal_count"`
+	CorroborationProposalCount int                              `json:"corroboration_proposal_count"`
 	ReviewDebtCount            int                              `json:"review_debt_count"`
 	Clusters                   []SynthesisCluster               `json:"clusters,omitempty"`
 	EchoFoldProposals          []SynthesisEchoFoldProposal      `json:"echo_fold_proposals,omitempty"`
 	ContradictionProposals     []SynthesisContradictionProposal `json:"contradiction_proposals,omitempty"`
+	CorroborationProposals     []SynthesisCorroborationProposal `json:"corroboration_proposals,omitempty"`
 	ReopenedClaims             []SynthesisClaimReview           `json:"reopened_claims,omitempty"`
+	RaisedSeeds                []SynthesisSeedReview            `json:"raised_seeds,omitempty"`
 }
 
 type SynthesisCluster struct {
@@ -56,6 +59,27 @@ type SynthesisClaimReview struct {
 	ReviewRef       string   `json:"review_ref"`
 	CandidateIDs    []string `json:"candidate_ids,omitempty"`
 	ConfidenceDelta float64  `json:"confidence_delta"`
+	CreatedAt       string   `json:"created_at"`
+}
+
+type SynthesisCorroborationProposal struct {
+	ID                string               `json:"id"`
+	SeedCandidateID   string               `json:"seed_candidate_id"`
+	SeedText          string               `json:"seed_text"`
+	SeedCreatedAt     string               `json:"seed_created_at"`
+	Expectation       CandidateExpectation `json:"expectation"`
+	EvidenceClaimID   string               `json:"evidence_claim_id"`
+	EvidenceSummary   string               `json:"evidence_summary"`
+	EvidenceCreatedAt string               `json:"evidence_created_at"`
+	EvidenceRefs      []string             `json:"evidence_refs"`
+}
+
+type SynthesisSeedReview struct {
+	CandidateID     string   `json:"candidate_id"`
+	State           string   `json:"state"`
+	ReviewRef       string   `json:"review_ref"`
+	EvidenceClaimID string   `json:"evidence_claim_id"`
+	EvidenceRefs    []string `json:"evidence_refs,omitempty"`
 	CreatedAt       string   `json:"created_at"`
 }
 
@@ -101,7 +125,26 @@ func (s *Store) SynthesisSweep(stages []string, now time.Time) (SynthesisSweepRe
 		report.ContradictionProposals = proposals
 		report.ContradictionProposalCount = len(proposals)
 		report.ReopenedClaims = reopened
-		report.ReviewDebtCount = len(reopened)
+		report.ReviewDebtCount += len(reopened)
+	}
+	if stageSet["corroborate"] {
+		claims, err := s.loadClaims()
+		if err != nil {
+			return report, err
+		}
+		candidates, err := s.AllCandidates()
+		if err != nil {
+			return report, err
+		}
+		report.ClaimCount = len(claims)
+		proposals, raised, err := s.synthesisCorroborations(claims, candidates, now)
+		if err != nil {
+			return report, err
+		}
+		report.CorroborationProposals = proposals
+		report.CorroborationProposalCount = len(proposals)
+		report.RaisedSeeds = raised
+		report.ReviewDebtCount += len(raised)
 	}
 	return report, nil
 }
@@ -377,6 +420,200 @@ func contradictionConfidenceDelta(claim Claim, proposal SynthesisContradictionPr
 		}
 	}
 	return best
+}
+
+func (s *Store) synthesisCorroborations(claims []Claim, candidates []Candidate, now time.Time) ([]SynthesisCorroborationProposal, []SynthesisSeedReview, error) {
+	marks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		return nil, nil, err
+	}
+	superseded, err := s.supersededAsOf(s.maxSeq(claims))
+	if err != nil {
+		return nil, nil, err
+	}
+	claims = laterEvidenceClaims(claims, superseded)
+	sort.Slice(claims, func(i, j int) bool {
+		if claims[i].Seq == claims[j].Seq {
+			return claims[i].ID < claims[j].ID
+		}
+		return claims[i].Seq < claims[j].Seq
+	})
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+
+	var proposals []SynthesisCorroborationProposal
+	for _, seed := range candidates {
+		if !openSeedCandidate(seed, now) {
+			continue
+		}
+		if mark, ok := marks[seed.ID]; ok && len(mark.Refs) > 0 {
+			continue
+		}
+		for _, claim := range claims {
+			if !claimIsLaterThanCandidate(claim, seed) {
+				continue
+			}
+			if !expectationSatisfiedByClaim(*seed.Expectation, seed, claim) {
+				continue
+			}
+			proposals = append(proposals, synthesisCorroborationProposal(seed, claim))
+			break
+		}
+	}
+	raised, err := s.raiseSeedsForCorroborations(proposals, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return proposals, raised, nil
+}
+
+func laterEvidenceClaims(claims []Claim, superseded map[string]bool) []Claim {
+	out := make([]Claim, 0, len(claims))
+	for _, claim := range claims {
+		if superseded[claim.ID] || claim.Visibility == "retired" || len(claim.EvidenceRefs) == 0 {
+			continue
+		}
+		out = append(out, claim)
+	}
+	return out
+}
+
+func openSeedCandidate(c Candidate, now time.Time) bool {
+	if c.State != "parked" {
+		return false
+	}
+	if c.Expectation == nil || strings.TrimSpace(c.Expectation.Predicate) == "" || strings.TrimSpace(c.Expectation.Object) == "" {
+		return false
+	}
+	if !candidateHasTag(c, "seed") && strings.TrimSpace(c.Salience) != "low" {
+		return false
+	}
+	if candidateExpired(c, now) {
+		return false
+	}
+	return true
+}
+
+func candidateHasTag(c Candidate, tag string) bool {
+	for _, got := range c.Tags {
+		if strings.EqualFold(strings.TrimSpace(got), tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func candidateExpired(c Candidate, now time.Time) bool {
+	expiresAt := strings.TrimSpace(c.ExpiresAt)
+	if expiresAt == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return true
+	}
+	return !now.Before(parsed)
+}
+
+func claimIsLaterThanCandidate(claim Claim, seed Candidate) bool {
+	seedAt, err := time.Parse(time.RFC3339, seed.CreatedAt)
+	if err != nil {
+		return false
+	}
+	claimAt, err := time.Parse(time.RFC3339, claim.CreatedAt)
+	if err != nil {
+		return false
+	}
+	return claimAt.After(seedAt)
+}
+
+func expectationSatisfiedByClaim(exp CandidateExpectation, seed Candidate, claim Claim) bool {
+	entity := firstNonEmpty(exp.Entity, seed.Entity)
+	if strings.TrimSpace(entity) != "" && !strings.EqualFold(strings.TrimSpace(claim.Entity), strings.TrimSpace(entity)) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(claim.Predicate), strings.TrimSpace(exp.Predicate)) {
+		return false
+	}
+	return SameClaimObject(claim.Object, exp.Object)
+}
+
+func synthesisCorroborationProposal(seed Candidate, claim Claim) SynthesisCorroborationProposal {
+	exp := *seed.Expectation
+	evidenceSummary := fmt.Sprintf("%s.%s = %s", claim.Entity, claim.Predicate, claim.Object)
+	refs := []string{"claim:" + claim.ID, "candidate:" + seed.ID}
+	for _, ref := range claim.EvidenceRefs {
+		if strings.TrimSpace(ref) != "" {
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs[2:])
+	return SynthesisCorroborationProposal{
+		ID:                idFor("synth_corroboration_", seed.ID, claim.ID, exp.Predicate, exp.Object),
+		SeedCandidateID:   seed.ID,
+		SeedText:          seed.Object,
+		SeedCreatedAt:     seed.CreatedAt,
+		Expectation:       exp,
+		EvidenceClaimID:   claim.ID,
+		EvidenceSummary:   evidenceSummary,
+		EvidenceCreatedAt: claim.CreatedAt,
+		EvidenceRefs:      uniqueStrings(refs),
+	}
+}
+
+func (s *Store) raiseSeedsForCorroborations(proposals []SynthesisCorroborationProposal, now time.Time) ([]SynthesisSeedReview, error) {
+	var raised []SynthesisSeedReview
+	err := s.withLock(func() error {
+		marks, err := s.candidateReviewMarksAsOf(0)
+		if err != nil {
+			return err
+		}
+		for _, proposal := range proposals {
+			if mark, ok := marks[proposal.SeedCandidateID]; ok && len(mark.Refs) > 0 {
+				continue
+			}
+			seq, err := s.nextSeq()
+			if err != nil {
+				return err
+			}
+			edge := Edge{
+				Seq:          seq,
+				Kind:         EdgeKindCorroboration,
+				From:         proposal.ID,
+				To:           proposal.SeedCandidateID,
+				Confidence:   1,
+				EvidenceRefs: append([]string(nil), proposal.EvidenceRefs...),
+				CreatedAt:    rfc3339(now),
+			}
+			if err := appendJSONL(s.edgesLog(), &edge); err != nil {
+				return err
+			}
+			marks[proposal.SeedCandidateID] = candidateReviewMark{Refs: []string{proposal.ID}}
+			raised = append(raised, SynthesisSeedReview{
+				CandidateID:     proposal.SeedCandidateID,
+				State:           ClaimStateNeedsReview,
+				ReviewRef:       proposal.ID,
+				EvidenceClaimID: proposal.EvidenceClaimID,
+				EvidenceRefs:    append([]string(nil), proposal.EvidenceRefs...),
+				CreatedAt:       rfc3339(now),
+			})
+		}
+		return nil
+	})
+	return raised, err
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func sortedKeys[V any](m map[string]V) []string {

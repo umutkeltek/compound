@@ -1,6 +1,10 @@
 package mem
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestSynthesisSweepFindsEchoAndContradictionProposals(t *testing.T) {
 	s := newStore(t)
@@ -163,4 +167,142 @@ func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T)
 	if again.ReviewDebtCount != 0 || len(again.ReopenedClaims) != 0 {
 		t.Fatalf("second contradiction sweep should not duplicate review markers: %+v", again.ReopenedClaims)
 	}
+}
+
+func TestSynthesisSweepRaisesParkedSeedOnLaterCorroboratingClaim(t *testing.T) {
+	s := newStore(t)
+
+	seedID := parkSeed(t, s, CandidateExpectation{
+		Entity:    "project:alpha",
+		Predicate: "runtime_outcome",
+		Object:    "integration risk materialized",
+	})
+	promoted := promoteOutcome(t, s, "integration risk materialized", t0.AddDate(0, 0, 1))
+
+	report, err := s.SynthesisSweep([]string{"corroborate"}, t0.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CorroborationProposalCount != 1 || len(report.CorroborationProposals) != 1 {
+		t.Fatalf("corroboration count = %d proposals=%+v, want one", report.CorroborationProposalCount, report.CorroborationProposals)
+	}
+	proposal := report.CorroborationProposals[0]
+	if proposal.SeedCandidateID != seedID || proposal.EvidenceClaimID != promoted.Claim.ID {
+		t.Fatalf("proposal refs = seed %q claim %q, want %q/%q", proposal.SeedCandidateID, proposal.EvidenceClaimID, seedID, promoted.Claim.ID)
+	}
+	if len(proposal.EvidenceRefs) == 0 || proposal.EvidenceRefs[0] != "claim:"+promoted.Claim.ID {
+		t.Fatalf("proposal evidence refs = %+v, want claim evidence", proposal.EvidenceRefs)
+	}
+	if report.ReviewDebtCount != 1 || len(report.RaisedSeeds) != 1 {
+		t.Fatalf("review debt = %d raised=%+v, want one raised seed", report.ReviewDebtCount, report.RaisedSeeds)
+	}
+	if report.RaisedSeeds[0].CandidateID != seedID || report.RaisedSeeds[0].State != ClaimStateNeedsReview || report.RaisedSeeds[0].ReviewRef != proposal.ID {
+		t.Fatalf("raised seed marker incomplete: %+v", report.RaisedSeeds[0])
+	}
+
+	candidates, err := s.ListCandidates(t0.AddDate(0, 0, 1), CandidateListOptions{State: ClaimStateNeedsReview, IncludeEvidence: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates.Counts.Matched != 1 || candidates.Items[0].ID != seedID || candidates.Items[0].ReviewState != ClaimStateNeedsReview {
+		t.Fatalf("needs_review candidate list = %+v, want raised seed %s", candidates.Items, seedID)
+	}
+}
+
+func TestSynthesisSweepDoesNotRaiseSeedWithoutSatisfiedExpectation(t *testing.T) {
+	s := newStore(t)
+
+	seedID := parkSeed(t, s, CandidateExpectation{
+		Entity:    "project:alpha",
+		Predicate: "runtime_outcome",
+		Object:    "integration risk materialized",
+	})
+	promoteOutcome(t, s, "deployment remained smooth", t0.AddDate(0, 0, 1))
+
+	report, err := s.SynthesisSweep([]string{"corroborate"}, t0.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CorroborationProposalCount != 0 || len(report.RaisedSeeds) != 0 || report.ReviewDebtCount != 0 {
+		t.Fatalf("unsatisfied seed raised unexpectedly: report=%+v", report)
+	}
+	candidates, err := s.ListCandidates(t0.AddDate(0, 0, 1), CandidateListOptions{State: ClaimStateNeedsReview})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates.Counts.Matched != 0 {
+		t.Fatalf("seed %s should not be needs_review without satisfied expectation: %+v", seedID, candidates.Items)
+	}
+}
+
+func TestCorroborationRaisesSeedWithoutAutoPromoting(t *testing.T) {
+	s := newStore(t)
+
+	seedID := parkSeed(t, s, CandidateExpectation{
+		Entity:    "project:alpha",
+		Predicate: "runtime_outcome",
+		Object:    "integration risk materialized",
+	})
+	if _, err := s.Adjudicate(seedID, "promote", "work_seed_promote", t0); err == nil || !strings.Contains(err.Error(), "without valid promotion_basis") {
+		t.Fatalf("basis-less seed promote error = %v, want promotion_basis refusal", err)
+	}
+	promoteOutcome(t, s, "integration risk materialized", t0.AddDate(0, 0, 1))
+	beforeClaims, err := s.loadClaims()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.SynthesisSweep([]string{"corroborate"}, t0.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.RaisedSeeds) != 1 {
+		t.Fatalf("expected one raised seed, got %+v", report.RaisedSeeds)
+	}
+	afterClaims, err := s.loadClaims()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterClaims) != len(beforeClaims) {
+		t.Fatalf("corroboration sweep auto-promoted a seed: claims before=%d after=%d", len(beforeClaims), len(afterClaims))
+	}
+}
+
+func parkSeed(t *testing.T, s *Store, expectation CandidateExpectation) string {
+	t.Helper()
+	seed := cand("project:alpha", "operator_stance", "integration risk will matter later", "")
+	seed.Confidence = 0.25
+	seed.PromotionBasis = ""
+	seed.Visibility = "contextual"
+	seed.Tags = []string{"seed"}
+	seed.Salience = "low"
+	seed.ExpiresAt = rfc3339(t0.AddDate(0, 1, 0))
+	seed.Expectation = &expectation
+	got, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(got[0].ID, "park", "work_seed_park", t0); err != nil {
+		t.Fatal(err)
+	}
+	return got[0].ID
+}
+
+func promoteOutcome(t *testing.T, s *Store, object string, now time.Time) AdjudicateResult {
+	t.Helper()
+	outcome := cand("project:alpha", "runtime_outcome", object, rfc3339(now))
+	outcome.SourceTraceRef = "receipt:runtime-outcome"
+	outcome.SnippetHash = "hash_runtime_outcome"
+	got, err := s.Capture([]Candidate{outcome}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := s.Adjudicate(got[0].ID, "promote", "work_runtime_outcome", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Claim == nil {
+		t.Fatal("outcome should promote to claim")
+	}
+	return promoted
 }
