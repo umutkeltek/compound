@@ -203,6 +203,13 @@ func TestWrite(t *testing.T) {
 	if err := json.Unmarshal(jsonBytes, &got); err != nil || got != p {
 		t.Fatalf("round-trip = %+v err=%v", got, err)
 	}
+	var raw map[string]any
+	if err := json.Unmarshal(jsonBytes, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw["operator_summary"] == "" || raw["summary_source"] != SummarySourceFallback {
+		t.Fatalf("fallback operator card not injected: %+v", raw)
+	}
 
 	md, _ := os.ReadFile(paths.ReviewPath)
 	if string(md) != "# Title\n" {

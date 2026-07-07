@@ -49,6 +49,12 @@ type QueueItem struct {
 	Area                    string        `json:"area"`
 	ID                      string        `json:"id"`
 	Status                  string        `json:"status"`
+	OperatorSummary         string        `json:"operator_summary,omitempty"`
+	ContextLabel            string        `json:"context_label,omitempty"`
+	GroupKey                string        `json:"group_key,omitempty"`
+	OperatorUnlock          string        `json:"operator_unlock,omitempty"`
+	Band                    string        `json:"band,omitempty"`
+	SummarySource           string        `json:"summary_source,omitempty"`
 	CreatedAt               string        `json:"created_at,omitempty"`
 	JSONPath                string        `json:"json_path"`
 	MarkdownPath            string        `json:"markdown_path,omitempty"`
@@ -254,6 +260,12 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 		Area:                    area,
 		ID:                      firstString(payload, "id", "plan_id", "review_id", "repair_plan_id"),
 		Status:                  firstString(payload, "status", "verdict", "result"),
+		OperatorSummary:         firstString(payload, "operator_summary"),
+		ContextLabel:            firstString(payload, "context_label"),
+		GroupKey:                firstString(payload, "group_key"),
+		OperatorUnlock:          firstString(payload, "operator_unlock"),
+		Band:                    firstString(payload, "band"),
+		SummarySource:           firstString(payload, "summary_source"),
 		CreatedAt:               firstString(payload, "created_at", "generated_at"),
 		JSONPath:                path,
 		SourceKind:              firstString(payload, "source_kind"),
@@ -282,6 +294,25 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 	}
 	if item.Status == "" {
 		item.Status = "unknown"
+	}
+	if item.Band == "" {
+		item.Band = BandForStatus(item.Status, item.Readiness)
+	}
+	if card, ok := OperatorCardFromMap(payload); ok && ValidateOperatorCard(card) == nil {
+		item.OperatorSummary = card.Summary
+		item.ContextLabel = card.ContextLabel
+		item.GroupKey = card.GroupKey
+		item.OperatorUnlock = card.Unlock
+		if item.SummarySource == "" {
+			item.SummarySource = SummarySourceWriter
+		}
+	} else {
+		card := FallbackOperatorCard(area, item.ID)
+		item.OperatorSummary = card.Summary
+		item.ContextLabel = card.ContextLabel
+		item.GroupKey = card.GroupKey
+		item.OperatorUnlock = card.Unlock
+		item.SummarySource = SummarySourceFallback
 	}
 	if item.RepairCount == 0 {
 		if repairs, ok := payload["repairs"].([]any); ok {

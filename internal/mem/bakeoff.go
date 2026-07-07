@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/reviewartifact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,6 +49,8 @@ type BakeoffRunOptions struct {
 }
 
 type BakeoffReport struct {
+	Status string `json:"status,omitempty"`
+	reviewartifact.OperatorCard
 	SchemaVersion         string               `json:"schema_version"`
 	GeneratedAt           string               `json:"generated_at"`
 	QueriesPath           string               `json:"queries_path"`
@@ -204,6 +207,10 @@ func (s *Store) RunBakeoff(opts BakeoffRunOptions) (BakeoffReport, error) {
 	}
 	report.Determinism = compareBakeoffPasses(first.queries, second.queries)
 	report.Metrics = bakeoffMetrics(first.queries)
+	report.Status = "recorded"
+	if card, err := OperatorCardForBakeoffReport(report); err == nil {
+		report.OperatorCard = card
+	}
 
 	writeErr := s.writeBakeoffReport(&report, opts.Now)
 	var errs []string
@@ -267,7 +274,7 @@ func (s *Store) runBakeoffPass(queries []BakeoffQuery, opts BakeoffRunOptions) (
 }
 
 func (s *Store) writeBakeoffReport(report *BakeoffReport, now time.Time) error {
-	dir := filepath.Join(s.home, "reviews")
+	dir := filepath.Join(s.home, "reviews", "memory-bakeoffs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

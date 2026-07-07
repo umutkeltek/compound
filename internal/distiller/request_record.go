@@ -34,7 +34,16 @@ func RecordLLMExtractionRequest(homePath string, req LLMExtractionRequest) (LLMR
 		return LLMRequestRecord{}, err
 	}
 	id := reviewartifact.ID("llmreq_", req.TraceRef, string(data))
-	path, err := reviewartifact.WriteJSON(homePath, LLMRequestRecordArea, id+".json", req, " ")
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return LLMRequestRecord{}, err
+	}
+	card, err := OperatorCardForLLMRequest(req)
+	if err != nil {
+		return LLMRequestRecord{}, err
+	}
+	reviewartifact.PutOperatorCard(payload, card)
+	path, err := reviewartifact.WriteJSON(homePath, LLMRequestRecordArea, id+".json", payload, " ")
 	if err != nil {
 		return LLMRequestRecord{}, err
 	}

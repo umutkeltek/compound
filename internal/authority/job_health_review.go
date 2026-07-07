@@ -218,12 +218,17 @@ func annotateJobHealthItem(item *reviewartifact.QueueItem) {
 	if item.JSONPath == "" {
 		item.Readiness = "blocked"
 		item.NextAction = "job-health plan path missing"
+		item.Band = reviewartifact.BandNeedsYou
 		return
 	}
+	plan, planErr := loadJobHealthPlanFile(item.JSONPath)
 	if reviewedPath := jobHealthReviewedPath(*item); reviewedPath != "" {
 		item.Status = "recorded"
 		item.Readiness = "review_recorded"
 		item.NextAction = "job-health review recorded; re-import job roster to prove closure or continuing debt"
+		if planErr == nil {
+			annotateJobHealthOperatorCard(item, plan, reviewartifact.BandFiled, "The scheduled job "+reviewartifact.ShortLabel(plan.JobName, 40)+" review is already recorded.")
+		}
 		if report, err := LoadJobHealthReviewReport(reviewedPath); err == nil {
 			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, "job-health review recorded: "+report.Decision)
 		}
@@ -235,13 +240,20 @@ func annotateJobHealthItem(item *reviewartifact.QueueItem) {
 		item.BlockedReason = ""
 		item.NextAction = "job-health artifact superseded by current compound://registries/job-roster; rerun job-health-plan only if the failure returns"
 		item.Actions = nil
+		if planErr == nil {
+			annotateJobHealthOperatorCard(item, plan, reviewartifact.BandFiled, "The scheduled job "+reviewartifact.ShortLabel(plan.JobName, 40)+" failure is already resolved.")
+		}
 		return
+	}
+	if planErr == nil {
+		annotateJobHealthOperatorCard(item, plan, reviewartifact.BandNeedsYou, "")
 	}
 	reviewYAML := jobHealthReviewYAMLPath(*item)
 	if reviewYAML == "" {
 		item.Readiness = "blocked"
 		item.BlockedReason = "job-health review YAML draft missing"
 		item.NextAction = "regenerate job-health plan to create review YAML draft"
+		item.Band = reviewartifact.BandNeedsYou
 		return
 	}
 	argv := []string{"compound", "authority", "job-health-review", reviewYAML}
@@ -267,6 +279,24 @@ func annotateJobHealthItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed job-health disposition"
+}
+
+func annotateJobHealthOperatorCard(item *reviewartifact.QueueItem, plan JobHealthPlan, band, summaryOverride string) {
+	card, err := OperatorCardForJobHealthPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "job-health operator card invalid: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(summaryOverride) != "" {
+		card.Summary = reviewartifact.ShortLabel(summaryOverride, 159)
+		if !strings.HasSuffix(card.Summary, ".") {
+			card.Summary += "."
+		}
+		card.Unlock = ""
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "job-health operator card invalid: "+err.Error())
+	}
 }
 
 func jobHealthPlanSupersededByCurrentRoster(item reviewartifact.QueueItem) bool {

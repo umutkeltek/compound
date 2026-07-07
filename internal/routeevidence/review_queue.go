@@ -29,6 +29,7 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.Readiness = "blocked"
 		item.BlockedReason = "route promotion review artifact unreadable"
 		item.NextAction = "regenerate route promotion-review artifacts"
+		item.Band = reviewartifact.BandNeedsYou
 		item.Actions = nil
 		return
 	}
@@ -39,6 +40,7 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.BlockedReason = ""
 		item.Actions = nil
 		item.NextAction = "route promotion hold review recorded"
+		annotatePromotionOperatorCard(item, review, reviewartifact.BandFiled, "The route watcher hold review for "+review.LaneID+" is already recorded.")
 		item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, holdReport.EvidenceRefs...))
 		item.NextAction = reviewartifact.FirstNonEmpty(holdReport.NextAction, item.NextAction)
 		item.ExtraPaths = reviewartifact.UniqueSorted(append(item.ExtraPaths, reviewedPath))
@@ -49,10 +51,16 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.Readiness = "no_action"
 		item.NextAction = "route promotion review artifact terminal"
 		item.Actions = nil
+		annotatePromotionOperatorCard(item, review, reviewartifact.BandFiled, "")
 	case "review_required":
 		item.Readiness = "needs_review"
 		item.BlockedReason = ""
 		item.Actions = nil
+		band := reviewartifact.BandNeedsYou
+		if review.Recommendation == promotionRecommendationHoldInsufficient {
+			band = reviewartifact.BandWatching
+		}
+		annotatePromotionOperatorCard(item, review, band, "")
 		switch review.Recommendation {
 		case promotionRecommendationHoldInsufficient:
 			item.NextAction = "owner review: hold lane promotion until more route evidence meets criteria"
@@ -66,7 +74,26 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 	default:
 		item.Readiness = "needs_review"
 		item.NextAction = "owner review required for route promotion artifact"
+		annotatePromotionOperatorCard(item, review, reviewartifact.BandNeedsYou, "")
 		item.Actions = nil
+	}
+}
+
+func annotatePromotionOperatorCard(item *reviewartifact.QueueItem, review PromotionReview, band, summaryOverride string) {
+	card, err := OperatorCardForPromotionReview(review)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "route promotion operator card invalid: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(summaryOverride) != "" {
+		card.Summary = reviewartifact.ShortLabel(summaryOverride, 159)
+		if !strings.HasSuffix(card.Summary, ".") {
+			card.Summary += "."
+		}
+		card.Unlock = ""
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "route promotion operator card invalid: "+err.Error())
 	}
 }
 

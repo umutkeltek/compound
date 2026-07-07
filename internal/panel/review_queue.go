@@ -50,6 +50,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.Readiness = "blocked"
 		item.BlockedReason = "panel verdict artifact unreadable"
 		item.NextAction = "regenerate panel verdict artifacts"
+		item.Band = reviewartifact.BandNeedsYou
 		item.Actions = nil
 		return
 	}
@@ -62,6 +63,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.Readiness = "review_recorded"
 		item.BlockedReason = ""
 		item.NextAction = "panel verdict human review recorded"
+		annotateVerdictOperatorCard(item, verdict, reviewartifact.BandFiled, "The judge panel verdict for "+panelVerdictContextLabel(verdict.Target)+" is already recorded.")
 		if report, err := LoadVerdictHumanReviewReport(reviewedPath); err == nil {
 			item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, report.EvidenceRefs...))
 			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, item.NextAction)
@@ -75,6 +77,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.BlockedReason = ""
 		target := panelVerdictTarget(verdict.Target)
 		item.NextAction = fmt.Sprintf("panel verdict already applied by %s (target=%s decision=%s mapped=%s)", app.RunID, target, strings.TrimSpace(verdict.Synthesis.Decision), app.Application.MappedVerdict)
+		annotateVerdictOperatorCard(item, verdict, reviewartifact.BandFiled, "The judge panel verdict for "+panelVerdictContextLabel(verdict.Target)+" is already applied.")
 		return
 	}
 	if nextAction, ok := resolvedPanelVerdictTarget(homePath, verdict, memoryTargets); ok {
@@ -82,6 +85,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = nextAction
+		annotateVerdictOperatorCard(item, verdict, reviewartifact.BandFiled, "The judge panel verdict for "+panelVerdictContextLabel(verdict.Target)+" is already resolved.")
 		return
 	}
 
@@ -91,6 +95,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = "panel verdict artifact terminal"
+		annotateVerdictOperatorCard(item, verdict, reviewartifact.BandFiled, "")
 		return
 	}
 
@@ -102,6 +107,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.Readiness = "blocked"
 		item.BlockedReason = "panel verdict missing synthesis.decision"
 		item.NextAction = "regenerate panel verdict artifact with synthesis decision"
+		item.Band = reviewartifact.BandNeedsYou
 		return
 	}
 
@@ -112,6 +118,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	item.BlockedReason = ""
 	item.DecisionCard = buildPanelDecisionCard(*item, verdict)
 	item.Actions = panelDecisionCardActions(item.DecisionCard)
+	annotateVerdictOperatorCard(item, verdict, reviewartifact.BandNeedsYou, "")
 	target := panelVerdictTarget(verdict.Target)
 	failedLenses := failedLensCount(verdict.LensFindings)
 	switch decision {
@@ -121,6 +128,24 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 		item.NextAction = fmt.Sprintf("owner review required before panel apply (target=%s decision=%s failed_lenses=%d)", target, decision, failedLenses)
 	default:
 		item.NextAction = fmt.Sprintf("owner review required for panel verdict (target=%s decision=%s failed_lenses=%d)", target, decision, failedLenses)
+	}
+}
+
+func annotateVerdictOperatorCard(item *reviewartifact.QueueItem, verdict verdictArtifactPayload, band, summaryOverride string) {
+	card, err := OperatorCardForVerdict(verdict)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "panel verdict operator card invalid: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(summaryOverride) != "" {
+		card.Summary = reviewartifact.ShortLabel(summaryOverride, 159)
+		if !strings.HasSuffix(card.Summary, ".") {
+			card.Summary += "."
+		}
+		card.Unlock = ""
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "panel verdict operator card invalid: "+err.Error())
 	}
 }
 

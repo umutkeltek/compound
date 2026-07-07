@@ -99,6 +99,34 @@ func Write(homePath, area, id string, payload any, indent, markdown string) (Pat
 	if err := validName(id); err != nil {
 		return Paths{}, err
 	}
+	data, err := json.MarshalIndent(payload, "", indent)
+	if err != nil {
+		return Paths{}, err
+	}
+	card, ok, err := operatorCardFromJSON(data)
+	if err != nil {
+		return Paths{}, err
+	}
+	if !ok {
+		provider, providesCard := payload.(operatorCardProvider)
+		source := SummarySourceWriter
+		if providesCard {
+			card, err = provider.ReviewOperatorCard()
+			if err != nil {
+				return Paths{}, fmt.Errorf("review artifact %s/%s operator card: %w", area, id, err)
+			}
+		} else {
+			card = FallbackOperatorCard(area, id)
+			source = SummarySourceFallback
+		}
+		data, err = injectOperatorCardJSON(data, card, indent, source)
+		if err != nil {
+			return Paths{}, err
+		}
+	}
+	if err := ValidateOperatorCard(card); err != nil {
+		return Paths{}, fmt.Errorf("review artifact %s/%s invalid operator card: %w", area, id, err)
+	}
 	dir, err := Dir(homePath, area)
 	if err != nil {
 		return Paths{}, err
@@ -106,10 +134,6 @@ func Write(homePath, area, id string, payload any, indent, markdown string) (Pat
 	paths := Paths{
 		PlanPath:   filepath.Join(dir, id+".json"),
 		ReviewPath: filepath.Join(dir, id+".md"),
-	}
-	data, err := json.MarshalIndent(payload, "", indent)
-	if err != nil {
-		return paths, err
 	}
 	if err := os.WriteFile(paths.PlanPath, append(data, '\n'), 0o644); err != nil {
 		return paths, err

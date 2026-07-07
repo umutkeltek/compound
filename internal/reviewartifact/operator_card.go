@@ -1,0 +1,294 @@
+package reviewartifact
+
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
+
+const (
+	BandNeedsYou = "needs_you"
+	BandWatching = "watching"
+	BandFiled    = "filed"
+
+	SummarySourceWriter    = "writer"
+	SummarySourceBackfill  = "backfill"
+	SummarySourceAnnotator = "annotator"
+	SummarySourceFallback  = "fallback"
+)
+
+var operatorCardBanlist = regexp.MustCompile(`(=|--|_[a-f0-9]{8,}|/Users/|\.json|\.md)`)
+
+// OperatorCard is the plain-language surface every core review artifact must
+// carry for operator queues and console projections.
+type OperatorCard struct {
+	Summary      string `json:"operator_summary,omitempty"`
+	ContextLabel string `json:"context_label,omitempty"`
+	GroupKey     string `json:"group_key,omitempty"`
+	Unlock       string `json:"operator_unlock,omitempty"`
+}
+
+func (c OperatorCard) normalized() OperatorCard {
+	return OperatorCard{
+		Summary:      strings.TrimSpace(c.Summary),
+		ContextLabel: strings.TrimSpace(c.ContextLabel),
+		GroupKey:     strings.TrimSpace(c.GroupKey),
+		Unlock:       strings.TrimSpace(c.Unlock),
+	}
+}
+
+// ValidateOperatorCard enforces the S1 operator sentence grammar checks that
+// can be validated mechanically at the writer seam.
+func ValidateOperatorCard(card OperatorCard) error {
+	card = card.normalized()
+	if card.Summary == "" {
+		return fmt.Errorf("operator_summary required")
+	}
+	if utf8.RuneCountInString(card.Summary) > 160 {
+		return fmt.Errorf("operator_summary exceeds 160 chars")
+	}
+	if strings.ContainsAny(card.Summary, "\r\n") {
+		return fmt.Errorf("operator_summary must be one line")
+	}
+	if !strings.HasSuffix(card.Summary, "?") && !strings.HasSuffix(card.Summary, ".") {
+		return fmt.Errorf("operator_summary must end with ? or .")
+	}
+	if card.ContextLabel == "" {
+		return fmt.Errorf("context_label required")
+	}
+	if utf8.RuneCountInString(card.ContextLabel) > 60 {
+		return fmt.Errorf("context_label exceeds 60 chars")
+	}
+	if strings.ContainsAny(card.ContextLabel, "\r\n") {
+		return fmt.Errorf("context_label must be one line")
+	}
+	if operatorCardBanlist.MatchString(card.Summary) {
+		return fmt.Errorf("operator_summary contains banned machine syntax")
+	}
+	if operatorCardBanlist.MatchString(card.ContextLabel) {
+		return fmt.Errorf("context_label contains banned machine syntax")
+	}
+	if card.GroupKey == "" {
+		return fmt.Errorf("group_key required")
+	}
+	before, after, ok := strings.Cut(card.GroupKey, "|")
+	if !ok || strings.TrimSpace(before) == "" || strings.TrimSpace(after) == "" {
+		return fmt.Errorf("group_key must have {area}|{shape} form")
+	}
+	if strings.ContainsAny(card.GroupKey, "\r\n") {
+		return fmt.Errorf("group_key must be one line")
+	}
+	if utf8.RuneCountInString(card.Unlock) > 90 {
+		return fmt.Errorf("operator_unlock exceeds 90 chars")
+	}
+	if strings.Contains(card.Unlock, "?") {
+		return fmt.Errorf("operator_unlock must not ask a question")
+	}
+	if strings.ContainsAny(card.Unlock, "\r\n") {
+		return fmt.Errorf("operator_unlock must be one line")
+	}
+	return nil
+}
+
+func operatorCardFromJSON(data []byte) (OperatorCard, bool, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return OperatorCard{}, false, err
+	}
+	card, ok := OperatorCardFromMap(payload)
+	return card, ok, nil
+}
+
+type operatorCardProvider interface {
+	ReviewOperatorCard() (OperatorCard, error)
+}
+
+func injectOperatorCardJSON(data []byte, card OperatorCard, indent string, summarySource ...string) ([]byte, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	PutOperatorCard(payload, card)
+	if source := FirstNonEmpty(summarySource...); source != "" {
+		payload["summary_source"] = source
+	}
+	return json.MarshalIndent(payload, "", indent)
+}
+
+// OperatorCardFromMap sniffs the card fields from a raw JSON object.
+func OperatorCardFromMap(payload map[string]any) (OperatorCard, bool) {
+	card := OperatorCard{
+		Summary:      firstString(payload, "operator_summary"),
+		ContextLabel: firstString(payload, "context_label"),
+		GroupKey:     firstString(payload, "group_key"),
+		Unlock:       firstString(payload, "operator_unlock"),
+	}
+	return card, card.Summary != "" || card.ContextLabel != "" || card.GroupKey != "" || card.Unlock != ""
+}
+
+// PutOperatorCard writes the card fields into a generic payload map.
+func PutOperatorCard(payload map[string]any, card OperatorCard) map[string]any {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	card = card.normalized()
+	payload["operator_summary"] = card.Summary
+	payload["context_label"] = card.ContextLabel
+	payload["group_key"] = card.GroupKey
+	if card.Unlock != "" {
+		payload["operator_unlock"] = card.Unlock
+	} else {
+		delete(payload, "operator_unlock")
+	}
+	return payload
+}
+
+func NewOperatorCard(summary, contextLabel, groupKey, unlock string) (OperatorCard, error) {
+	card := OperatorCard{
+		Summary:      ShortLabel(summary, 160),
+		ContextLabel: ShortLabel(contextLabel, 60),
+		GroupKey:     strings.TrimSpace(groupKey),
+		Unlock:       ShortLabel(unlock, 90),
+	}
+	if err := ValidateOperatorCard(card); err != nil {
+		return OperatorCard{}, err
+	}
+	return card.normalized(), nil
+}
+
+func RequireText(field string, values ...string) (string, error) {
+	value := FirstNonEmpty(values...)
+	if value == "" {
+		return "", fmt.Errorf("%s required for operator card", field)
+	}
+	return value, nil
+}
+
+// SetOperatorCard applies a validated card to a queue item. Annotators use it
+// when they refine lifecycle state after the writer-created card is loaded.
+func SetOperatorCard(item *QueueItem, card OperatorCard, source, band string) error {
+	if item == nil {
+		return nil
+	}
+	if err := ValidateOperatorCard(card); err != nil {
+		return err
+	}
+	card = card.normalized()
+	item.OperatorSummary = card.Summary
+	item.ContextLabel = card.ContextLabel
+	item.GroupKey = card.GroupKey
+	item.OperatorUnlock = card.Unlock
+	item.SummarySource = FirstNonEmpty(source, SummarySourceAnnotator)
+	item.Band = FirstNonEmpty(band, BandForStatus(item.Status, item.Readiness))
+	return nil
+}
+
+// BandForStatus gives queue readers a deterministic fallback band. Domain
+// writers and annotators should set a more specific band for hold/report cases.
+func BandForStatus(status, readiness string) string {
+	status = strings.TrimSpace(status)
+	readiness = strings.TrimSpace(readiness)
+	switch status {
+	case "recorded", "applied", "resolved", "ok", "accepted", "candidate_recorded":
+		return BandFiled
+	case "held", "blocked":
+		return BandWatching
+	case "review_required", "unknown", "":
+		return BandNeedsYou
+	}
+	switch readiness {
+	case "review_recorded", "no_action", "ok":
+		return BandFiled
+	case "blocked":
+		return BandWatching
+	case "needs_review", "ready_to_apply":
+		return BandNeedsYou
+	default:
+		return BandNeedsYou
+	}
+}
+
+func FallbackOperatorCard(area, id string) OperatorCard {
+	plain := PlainLabel(area)
+	if plain == "" {
+		plain = "Review"
+	}
+	context := ShortLabel(plain, 60)
+	return OperatorCard{
+		Summary:      ShortLabel(plain+": a new record needs your read.", 160),
+		ContextLabel: context,
+		GroupKey:     FirstNonEmpty(area, "unclassified") + "|fallback",
+	}
+}
+
+func PlainLabel(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer("_", " ", "-", " ", ".", " ", ":", " ")
+	parts := strings.Fields(replacer.Replace(value))
+	return strings.Join(parts, " ")
+}
+
+func ShortLabel(value string, max int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if max <= 0 || utf8.RuneCountInString(value) <= max {
+		return value
+	}
+	runes := []rune(value)
+	if max <= 1 {
+		return string(runes[:max])
+	}
+	out := strings.TrimSpace(string(runes[:max-1]))
+	out = strings.TrimRight(out, " .,:;-")
+	if out == "" {
+		out = strings.TrimSpace(string(runes[:max-1]))
+	}
+	return out + "…"
+}
+
+func FirstClause(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, sep := range []string{". ", "; ", " — ", " - ", "\n"} {
+		if idx := strings.Index(value, sep); idx > 0 {
+			return strings.TrimSpace(value[:idx])
+		}
+	}
+	return value
+}
+
+func HumanizeEntity(value string) string {
+	value = strings.TrimSpace(value)
+	for _, prefix := range []string{"product:", "capability:", "knowledge:arxiv:arxiv:", "arxiv:"} {
+		value = strings.TrimPrefix(value, prefix)
+	}
+	value = strings.TrimSuffix(value, "v1")
+	value = strings.Trim(value, ":/")
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(value), "260") || strings.Count(value, ".") >= 1 && len(value) <= 16 {
+		return "arXiv " + value
+	}
+	return value
+}
+
+func shortID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "new"
+	}
+	id = strings.TrimSuffix(id, ".json")
+	id = strings.TrimSuffix(id, ".md")
+	if utf8.RuneCountInString(id) <= 12 {
+		return id
+	}
+	runes := []rune(id)
+	return string(runes[:12])
+}
