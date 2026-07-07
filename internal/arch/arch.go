@@ -154,6 +154,7 @@ func Doctor(repoRoot string, strict bool) Report {
 	if repoRoot != "" {
 		f = append(f, checkClassificationTotal(repoRoot)...)
 		f = append(f, checkDocLeak(repoRoot, strict)...)
+		f = append(f, checkPrivateSourceBodyContract(repoRoot)...)
 		f = append(f, checkStatusHotPath(repoRoot)...)
 		f = append(f, checkRetiredSurfaceReferences(repoRoot)...)
 		f = append(f, checkDistillerDuplicateContract(repoRoot)...)
@@ -411,6 +412,94 @@ func leakScanFile(path string) bool {
 	default:
 		return false
 	}
+}
+
+// privateSourceBodyMarker matches a `source_of_truth: brain` (or similar)
+// frontmatter/marker line — the semantic signature of a page whose BODY was
+// authored as a brain/decisions page and copied in verbatim. checkDocLeak has
+// no concept of this marker at all (it only matches path/email SHAPES and an
+// operator-configured literal token list), so this closes a distinct gap.
+var privateSourceBodyMarker = regexp.MustCompile(`(?i)^\s*source_of_truth\s*:\s*brain\b`)
+
+// privateSourceBodyPathPrefix matches an absolute macOS home-directory path
+// literal that descends into either private source tree by name (the brain
+// notes tree, or the operating-system control-plane tree) — proof a private
+// source tree's actual on-disk LOCATION (not just a name) was copied into a
+// tracked file. This is NARROWER than checkDocLeak's genericLeak
+// (`/Users/[a-z]`), which matches ANY home-directory path, but checkDocLeak
+// only applies that generic scan to docs/;
+// it never reaches internal/cmd/fixtures/tools/console (its source-dir pass
+// only checks a configured literal token list, never a path shape). This
+// guard's distinct job is catching the brain/operating-system path SHAPE
+// specifically, wherever it lands outside docs/ and test fixtures.
+var privateSourceBodyPathPrefix = regexp.MustCompile(`(?i)/Users/[^\s"']+?/(brain|operating-system)(/|$)`)
+
+// privateSourceBodySkipDirs are never walked: .git/node_modules are noise,
+// docs_private is the gitignored private overlay this guard must not police
+// (it is source material, not a leak target), and the rest mirror .gitignore
+// top-level entries that hold no tracked source.
+var privateSourceBodySkipDirs = map[string]bool{
+	".git":         true,
+	"node_modules": true,
+	"docs_private": true,
+	".claude":      true,
+	"Plans":        true,
+	"memory":       true,
+	"bin":          true,
+	"home":         true,
+}
+
+// checkPrivateSourceBodyContract fails --strict (indeed, fails outright: it
+// is a Fail-severity finding regardless of strict) when a tracked repo file
+// carries evidence that a private brain/decisions/operating-system source
+// BODY was copied in — not just a leaked path or product name (checkDocLeak's
+// job), but the two structural signatures of a wholesale body-copy: a
+// `source_of_truth: brain` marker line, or a literal /Users/.../brain|
+// operating-system/ path prefix landing outside docs/ and test fixtures
+// (where checkDocLeak's generic path/email scan does not reach). Both checks
+// exempt _test.go files by design: this guard's own tests plant synthetic
+// sentinel fixtures (as Go string literals) to prove detection, and excluding
+// _test.go keeps those plants from ever being live evidence against the real
+// repo when the real doctor scans internal/arch/arch_test.go itself — the
+// guard proves itself via direct unit calls on synthetic temp repos, not by
+// tripping over its own test source.
+func checkPrivateSourceBodyContract(repoRoot string) []Finding {
+	var f []Finding
+	_ = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if path != repoRoot && privateSourceBodySkipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !leakScanFile(path) || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if relErr != nil {
+			rel = path
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if privateSourceBodyMarker.MatchString(line) {
+				f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a source_of_truth: brain marker — a private source BODY was copied into a tracked file"})
+			}
+			if m := privateSourceBodyPathPrefix.FindString(line); m != "" {
+				f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a private source path prefix " + strconv(m)})
+			}
+		}
+		return nil
+	})
+	if len(f) == 0 {
+		f = append(f, Finding{"private-source-body", Info, "no tracked file carries a source_of_truth: brain marker or a private brain/operating-system path-prefix body copy"})
+	}
+	return f
 }
 
 // checkRetiredSurfaceReferences keeps proven-retired public surfaces from

@@ -70,6 +70,73 @@ func TestDocLeakUsesSourceLeakTokensForPublicSourceSurfaces(t *testing.T) {
 	}
 }
 
+// TestPrivateSourceBodyContractCatchesPlantedBodyAndClearsWhenRemoved is J16's
+// falsifier. checkDocLeak already catches generic /Users/ path and email
+// SHAPES, but only in docs/, and its source-dir pass only matches an
+// operator-configured literal token list — neither ever reaches a semantic
+// "this body came from brain" marker, nor a brain/operating-system path
+// SHAPE landing in internal/cmd/fixtures/tools/console. This guard closes
+// both gaps. The planted fixture uses a synthetic username (never the
+// operator's real one) since it is written to a plain fixture file, not a
+// _test.go file — the guard exempts _test.go from both checks so its own
+// test source can safely describe the sentinel shapes without ever being
+// live evidence against the real repo.
+func TestPrivateSourceBodyContractCatchesPlantedBodyAndClearsWhenRemoved(t *testing.T) {
+	repo := t.TempDir()
+	srcDir := filepath.Join(repo, "internal", "planted")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plantPath := filepath.Join(srcDir, "body.md")
+	planted := "source_of_truth: brain\n/Users/faketester/brain/private-note.md\n"
+	if err := os.WriteFile(plantPath, []byte(planted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := checkPrivateSourceBodyContract(repo)
+	var failCount int
+	for _, f := range findings {
+		if f.Check == "private-source-body" && f.Severity == Fail {
+			failCount++
+		}
+	}
+	if failCount != 2 {
+		t.Fatalf("expected 2 failures (source_of_truth marker + brain path prefix), got %+v", findings)
+	}
+
+	if err := os.Remove(plantPath); err != nil {
+		t.Fatal(err)
+	}
+	clean := checkPrivateSourceBodyContract(repo)
+	for _, f := range clean {
+		if f.Severity == Fail {
+			t.Fatalf("expected green after removing the plant, got %+v", clean)
+		}
+	}
+}
+
+// TestPrivateSourceBodyContractExemptsTestFiles proves the _test.go exemption
+// is real: the same sentinel content in a _test.go file must not fail, since
+// this guard's own tests need to describe/plant these shapes safely.
+func TestPrivateSourceBodyContractExemptsTestFiles(t *testing.T) {
+	repo := t.TempDir()
+	srcDir := filepath.Join(repo, "internal", "planted")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plantPath := filepath.Join(srcDir, "fixture_test.go")
+	planted := "source_of_truth: brain\n/Users/faketester/operating-system/notes.md\n"
+	if err := os.WriteFile(plantPath, []byte(planted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings := checkPrivateSourceBodyContract(repo)
+	for _, f := range findings {
+		if f.Severity == Fail {
+			t.Fatalf("expected _test.go files to be exempt, got %+v", findings)
+		}
+	}
+}
+
 func TestCandidateMapInvariantPure(t *testing.T) {
 	r := Doctor("", false)
 	for _, f := range r.Findings {
