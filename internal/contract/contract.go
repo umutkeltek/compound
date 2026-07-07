@@ -437,7 +437,9 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	ec.ActiveDecisions = decisions
 	ec.Excluded = append(ec.Excluded, excludedDecisions...)
 	ec.SourceRevisions = mergeSourceRevisions(ec.SourceRevisions, decisionRevs)
-	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
+	// One breadth-engine call feeds both loaders (owned engine ranks; ledger still gates).
+	semanticRanks := semanticTaskRanks(homePath, in)
+	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
 	if err != nil {
 		return ec, err
 	}
@@ -445,7 +447,7 @@ func CompileWithRuntime(in Input, pol OrientationPolicy, homePath string, now ti
 	for _, ref := range memoryRefs {
 		ec.ActiveMemory = append(ec.ActiveMemory, ref.Ref)
 	}
-	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind])
+	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
 	if err != nil {
 		return ec, err
 	}
@@ -622,7 +624,9 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if len(decisions) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d active decision ref(s) included from Compound runtime.", len(decisions))
 	}
-	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind])
+	// One breadth-engine call feeds both loaders (owned engine ranks; ledger still gates).
+	semanticRanks := semanticTaskRanks(homePath, in)
+	memoryRefs, excludedMemoryRefs, err := loadMemoryRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
 	if err != nil {
 		return pack, err
 	}
@@ -637,7 +641,7 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			Status:      "current",
 		})
 	}
-	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind])
+	positionRefs, excludedPositionRefs, err := loadPositionRefs(homePath, in, pol.Memory[in.RepoKind], semanticRanks)
 	if err != nil {
 		return pack, err
 	}
@@ -1162,7 +1166,48 @@ type contextPositionRef struct {
 	Rank       float64
 }
 
-func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
+// breadthEngineFactory builds the rented breadth engine for ambient recall. It is a package var
+// so tests can substitute a deterministic fake; production points at the ONE shared factory the
+// CLI also uses, so the agent-facing path inherits the exact engine that gives `memory query` its
+// measured recall.
+var breadthEngineFactory = mem.DefaultBreadthEngine
+
+// semanticTaskRankK bounds how many breadth hits contribute a relevance weight; the ambient pack
+// only surfaces maxContextMemoryRefs, so a small top-k is plenty.
+const semanticTaskRankK = 24
+
+// semanticTaskRanks returns claimID → relevance weight from the owned breadth engine for the task,
+// used ONLY to sharpen the ambient ranker — the ledger still gates class-tier/visibility (the
+// engine ranks, the ledger gates). It engages precisely when a breadth sidecar is configured
+// (COMPOUND_MEM_ENGINE_BIN) AND the task has content tokens; otherwise, or on ANY engine error, it
+// returns nil so loadMemoryRefs runs exactly as before (bulletproof degradation — orient never
+// fails because the embedder/sidecar is down). Weights are descending rank positions (not raw
+// cosine) so they compose with the small-integer entity/token scores instead of swamping them.
+func semanticTaskRanks(homePath string, in Input) map[string]float64 {
+	if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) == "" {
+		return nil
+	}
+	if len(memoryTextTokens(in.Task)) == 0 {
+		return nil
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil
+	}
+	eng, closeEng := breadthEngineFactory(homePath)
+	defer closeEng()
+	claims, err := store.QueryBreadth(in.Task, semanticTaskRankK, eng)
+	if err != nil || len(claims) == 0 {
+		return nil
+	}
+	ranks := make(map[string]float64, len(claims))
+	for i, c := range claims {
+		ranks[c.ID] = float64(len(claims) - i)
+	}
+	return ranks
+}
+
+func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks map[string]float64) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
 	}
@@ -1182,7 +1227,8 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
-		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens)
+		sem := semanticRanks[claim.ID]
+		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, sem)
 		if reason := memoryPolicyExclusionReason(claim, rule, relevanceRank); reason != "" {
 			excluded = append(excluded, contextMemoryRef{
 				Ref:    "claim://" + claim.ID,
@@ -1192,7 +1238,7 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 			})
 			continue
 		}
-		rank := ambientMemoryRank(claim, rule, entities, taskTokens)
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens, sem)
 		if rank <= 0 {
 			continue
 		}
@@ -1239,7 +1285,7 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule) ([]contextMemory
 	return out, excludedRefs, nil
 }
 
-func loadPositionRefs(homePath string, in Input, rule MemoryRule) ([]contextPositionRef, []envelope.ExcludedRef, error) {
+func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks map[string]float64) ([]contextPositionRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
 	}
@@ -1278,7 +1324,8 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule) ([]contextPosi
 		if activePosition.Ref == "" {
 			continue
 		}
-		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens)
+		sem := semanticRanks[activeClaim.ID]
+		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens, sem)
 		if reason := memoryPolicyExclusionReason(activeClaim, rule, relevanceRank); reason != "" {
 			excluded = append(excluded, contextPositionRef{
 				Ref:    activePosition.Ref,
@@ -1288,7 +1335,7 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule) ([]contextPosi
 			})
 			continue
 		}
-		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens)
+		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem)
 		if rank <= 0 {
 			continue
 		}
@@ -1376,7 +1423,10 @@ func memoryLedgerRevision(homePath string) (string, error) {
 	return store.LedgerDigest()
 }
 
-func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool) float64 {
+func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, semanticScore float64) float64 {
+	// Gates first — the engine RANKS, the ledger GATES. A claim these zero out stays zeroed no
+	// matter how relevant the breadth engine judged it (decisions go through loadDecisionRefs;
+	// volatile repo-state and non-ambient-visible claims never enter ambient memory).
 	if claim.ClaimType == "decision" {
 		return 0
 	}
@@ -1390,7 +1440,14 @@ func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool) 
 	if entities[memoryKey(claim.Entity)] {
 		rank += 2
 	}
-	rank += memoryTaskOverlapScore(claim, taskTokens)
+	// Semantic relevance and literal token overlap answer the same question ("is this claim about
+	// the task"); take the stronger signal so a semantically-relevant claim with zero shared
+	// tokens still clears the >0 cutoff and surfaces — the whole point of wiring the engine.
+	if overlap := memoryTaskOverlapScore(claim, taskTokens); overlap > semanticScore {
+		rank += overlap
+	} else {
+		rank += semanticScore
+	}
 	return rank
 }
 
@@ -1410,8 +1467,8 @@ func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank
 	return ""
 }
 
-func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool) float64 {
-	rank := memoryRelevanceRank(claim, entities, taskTokens)
+func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool, semanticScore float64) float64 {
+	rank := memoryRelevanceRank(claim, entities, taskTokens, semanticScore)
 	if memoryPolicyExclusionReason(claim, rule, rank) != "" {
 		return 0
 	}

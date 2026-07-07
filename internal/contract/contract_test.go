@@ -2840,3 +2840,102 @@ func sameIncludedRefs(a, b []envelope.IncludedRef) bool {
 	}
 	return true
 }
+
+// fakeBreadthEngine is a deterministic mem.Engine test double: it returns a fixed, caller-set hit
+// list (still honoring the ledger-computed allowlist), so a test can assert the ContextPack's
+// ambient selection uses the engine's ranking WITHOUT a live sidecar or embedder.
+type fakeBreadthEngine struct{ hits []mem.Hit }
+
+func (f *fakeBreadthEngine) Capabilities() mem.EngineCapabilities {
+	return mem.EngineCapabilities{Name: "fake", Breadth: true}
+}
+func (f *fakeBreadthEngine) Index(_ []mem.Claim, _ int64) error { return nil }
+func (f *fakeBreadthEngine) Query(_, _ string, allowlist []string, _ int) ([]mem.Hit, error) {
+	allowed := map[string]bool{}
+	for _, id := range allowlist {
+		allowed[id] = true
+	}
+	out := make([]mem.Hit, 0, len(f.hits))
+	for _, h := range f.hits {
+		if allowed[h.ClaimID] { // respect the ledger gate — the engine never surfaces a non-visible claim
+			out = append(out, h)
+		}
+	}
+	return out, nil
+}
+
+// TestPackWithCapabilitiesUsesBreadthEngineForAmbientSelection proves the keystone wiring: the
+// ContextPack's ambient memory is ranked by the owned breadth engine, not just token overlap — a
+// claim that shares NO tokens with the task surfaces only because the engine ranked it (fails
+// before the wiring, passes after). The second assertion guards the boundary: a claim the ledger
+// gates (volatile repo-state), even ranked #1 by the engine, must NOT surface — the engine RANKS,
+// the ledger GATES.
+func TestPackWithCapabilitiesUsesBreadthEngineForAmbientSelection(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands := []mem.Candidate{
+		{ // A — token-overlapping control: naive ranker already surfaces it
+			Entity: "lookup-notes", Predicate: "state", Object: "the lookup path latency was reduced",
+			Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
+			Qualifiers: map[string]string{"domain": "lookup-notes"},
+			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_a", SnippetHash: "sha256:a",
+			Visibility: "operational", ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		{ // B — semantically related but TOKEN-DISJOINT from the task: only the engine can surface it
+			Entity: "vector-index", Predicate: "state", Object: "embeddings enable semantic retrieval over the corpus",
+			Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
+			Qualifiers: map[string]string{"domain": "vector-index"},
+			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_b", SnippetHash: "sha256:b",
+			Visibility: "operational", ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		{ // C — volatile repo-state: LEDGER-GATED; must never enter ambient even ranked #1
+			Entity: "repo:compound", Predicate: "changed_path_count", Object: "9",
+			Confidence: 1, Derivation: "deterministic", ClaimType: "status",
+			Qualifiers: map[string]string{"domain": "changed_path_count"},
+			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_c", SnippetHash: "sha256:c",
+			Visibility: "operational", ObservationDate: "2026-07-02T00:00:00Z",
+		},
+	}
+	got, err := store.Capture(cands, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for i := range got {
+		res, err := store.Adjudicate(got[i].ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Claim != nil {
+			ids[res.Claim.Entity] = res.Claim.ID
+		}
+	}
+	idB, idC := ids["vector-index"], ids["repo:compound"]
+	if idB == "" || idC == "" {
+		t.Fatalf("seed claims not promoted: ids=%v", ids)
+	}
+
+	// The engine ranks C highest and B next; A is left to the naive ranker (it has token overlap).
+	fake := &fakeBreadthEngine{hits: []mem.Hit{{ClaimID: idC, Score: 0.99}, {ClaimID: idB, Score: 0.80}}}
+	orig := breadthEngineFactory
+	breadthEngineFactory = func(string) (mem.Engine, func()) { return fake, func() {} }
+	t.Cleanup(func() { breadthEngineFactory = orig })
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "fake-sidecar") // engages semanticTaskRanks; factory is faked
+
+	in := Input{Harness: "claude", Cwd: "/repo/compound", Task: "speed up the lookup path", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refB := "claim://" + idB
+	if !contains(pack.ActiveMemory, refB) {
+		t.Fatalf("token-disjoint claim %s not surfaced by the breadth engine: active_memory=%v", refB, pack.ActiveMemory)
+	}
+	refC := "claim://" + idC
+	if contains(pack.ActiveMemory, refC) || hasIncluded(pack, refC) {
+		t.Fatalf("ledger-gated volatile claim %s leaked into ambient despite engine rank #1: active=%v", refC, pack.ActiveMemory)
+	}
+}

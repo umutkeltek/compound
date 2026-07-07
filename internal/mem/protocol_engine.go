@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,27 @@ func NewHeldCoprocess(argv, extraEnv []string) *HeldCoprocessTransport {
 		}
 	}
 	return &HeldCoprocessTransport{argv: argv, env: extraEnv, timeout: to}
+}
+
+// DefaultBreadthEngine selects the rented breadth engine the same way the CLI does: a held
+// protocol sidecar when COMPOUND_MEM_ENGINE_BIN is set (e.g. the owned compound-breadth-engine),
+// otherwise the in-process LexicalEngine. homePath is the already-resolved COMPOUND_HOME; it is
+// forwarded to the sidecar so its vector cache lands in the right home even when the caller relied
+// on the default without exporting COMPOUND_HOME (measured 2026-07-07: an empty home took the whole
+// engine down). This is the ONE factory both the CLI and the orient/ContextPack path share, so the
+// agent-facing recall inherits the exact engine that gives `memory query` its measured recall.
+func DefaultBreadthEngine(homePath string) (Engine, func()) {
+	bin := strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN"))
+	if bin == "" {
+		return &LexicalEngine{}, func() {}
+	}
+	var extraEnv []string
+	if strings.TrimSpace(os.Getenv("COMPOUND_HOME")) == "" && strings.TrimSpace(homePath) != "" {
+		extraEnv = append(extraEnv, "COMPOUND_HOME="+homePath)
+	}
+	tr := NewHeldCoprocess(strings.Fields(bin), extraEnv)
+	eng := NewProtocolEngine(tr, os.Getenv("COMPOUND_MEM_ENGINE_EMBEDDER"))
+	return eng, func() { _ = eng.Close() }
 }
 
 func (t *HeldCoprocessTransport) start() error {

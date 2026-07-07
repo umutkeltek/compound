@@ -3028,23 +3028,14 @@ func cmdMemory(args []string) {
 // speaks a different protocol and retires with the legacy engine. COMPOUND_MEM_ENGINE_EMBEDDER is
 // compound's record of what it indexed with; it drives the identity guard (empty = adopt on first use).
 func memBreadthEngine() (mem.Engine, func()) {
-	bin := strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN"))
-	if bin == "" {
-		return &mem.LexicalEngine{}, func() {}
+	// One shared factory (mem.DefaultBreadthEngine) so the CLI and the orient/ContextPack
+	// path build the identical engine. Resolve the home here (CLI layer owns home resolution)
+	// and hand it to the factory, which forwards it to the sidecar's vector cache.
+	resolved := ""
+	if hp, err := home.Resolve(""); err == nil {
+		resolved = strings.TrimSpace(hp)
 	}
-	// Forward the resolved COMPOUND_HOME so the sidecar's vector cache persists in the
-	// right home even when the operator relied on the default (~/.compound) without
-	// exporting COMPOUND_HOME. Without this the sidecar saw an empty home and refused to
-	// start, taking the whole engine (even lexical) down (measured 2026-07-07).
-	var extraEnv []string
-	if os.Getenv("COMPOUND_HOME") == "" {
-		if hp, err := home.Resolve(""); err == nil && strings.TrimSpace(hp) != "" {
-			extraEnv = append(extraEnv, "COMPOUND_HOME="+hp)
-		}
-	}
-	tr := mem.NewHeldCoprocess(strings.Fields(bin), extraEnv)
-	eng := mem.NewProtocolEngine(tr, os.Getenv("COMPOUND_MEM_ENGINE_EMBEDDER"))
-	return eng, func() { _ = eng.Close() }
+	return mem.DefaultBreadthEngine(resolved)
 }
 
 const memoryEngineConfigSchemaVersion = "compound.memory_engine_config.v0.1"
@@ -3704,6 +3695,11 @@ func runHookCommand(args []string) int {
 		deps.HomePath = homePath
 		if store, err := work.Open(homePath); err == nil {
 			deps.Store = store // session-end needs it; others tolerate nil
+		}
+		// Resolve the memory-engine profile so a session-start / user-prompt-submit hook injects
+		// ambient recall from the SAME owned engine `memory query` uses (else it stays lexical).
+		if restoreEngine, err := configureMemoryEngineFromHome(homePath, ""); err == nil {
+			defer restoreEngine()
 		}
 	}
 
@@ -5414,6 +5410,13 @@ func nativePreToolUseBlockMap(reg harness.Registry) map[string]bool {
 func cmdOrient(args []string) {
 	homePath, err := home.Resolve("")
 	die(err)
+	// Resolve the configured memory-engine profile (e.g. breadth → COMPOUND_MEM_ENGINE_BIN) so the
+	// ContextPack's ambient recall engages the SAME owned engine the operator's `memory query` uses.
+	// Without this the profile is resolved only in the `memory` dispatch and the agent-facing recall
+	// path silently stays lexical — the "landed but dormant" trap.
+	restoreEngine, err := configureMemoryEngineFromHome(homePath, "")
+	die(err)
+	defer restoreEngine()
 	if hasFlag(args, "--operator") {
 		cmdOrientOperator(homePath, args)
 		return
