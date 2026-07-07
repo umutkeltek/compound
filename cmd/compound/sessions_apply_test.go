@@ -44,6 +44,7 @@ func TestSessionsMineApplyRoutesSyntheticFindingsProposeOnly(t *testing.T) {
 	if len(report.Apply.PreferenceCandidateIDs) == 0 || len(report.Apply.RetireProposalIDs) == 0 || len(report.Apply.SkillUpdateProposalIDs) == 0 {
 		t.Fatalf("apply routes missing: %+v", report.Apply)
 	}
+	assertSessionApplyRoutesAllFindings(t, report)
 
 	memStore, err := mem.Open(homePath)
 	if err != nil {
@@ -115,6 +116,58 @@ func TestSessionsMineApplyDoesNotMutateWithoutOperatorReview(t *testing.T) {
 	assertNoReviewDecisionArtifacts(t, homePath)
 	assertCandidateInboxStates(t, filepath.Join(homePath, candidates.InboxDir(candidates.Memory)), "proposed")
 	assertCandidateInboxStates(t, filepath.Join(homePath, candidates.InboxDir(candidates.PolicyPatch)), candidates.NoPromote)
+}
+
+func TestSessionsMineApplyRejectsFindingsWithoutEvidenceRefs(t *testing.T) {
+	tests := []struct {
+		name   string
+		report sessionMiningReport
+	}{
+		{
+			name: "preference",
+			report: sessionMiningReport{
+				PreferencesFound: []sessionMiningFinding{{
+					Kind:       "operator_correction",
+					Summary:    "prefer reversible edits",
+					Confidence: 0.8,
+				}},
+			},
+		},
+		{
+			name: "rule_retire",
+			report: sessionMiningReport{
+				RulesToRetire: []sessionMiningFinding{{
+					Kind:       "review_friction",
+					Summary:    "retire stale review-only rule",
+					Confidence: 0.3,
+				}},
+			},
+		},
+		{
+			name: "skill_update",
+			report: sessionMiningReport{
+				CandidateSkillUpdates: []sessionMiningFinding{{
+					Kind:       "session_pattern_review",
+					Summary:    "revise skill for repeated gap",
+					Confidence: 0.4,
+				}},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			t.Setenv("COMPOUND_HOME", homePath)
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatalf("init home: %v", err)
+			}
+			_, err := applySessionMiningReport(homePath, &tt.report, cliTestNow)
+			if err == nil || !strings.Contains(err.Error(), "missing session evidence refs") {
+				t.Fatalf("apply without evidence refs err = %v, want missing evidence failure", err)
+			}
+			assertNoSessionApplyArtifacts(t, homePath)
+		})
+	}
 }
 
 func TestSessionsMineDailyDryRunDigestJobRosterFixture(t *testing.T) {
@@ -216,6 +269,44 @@ func assertSessionFindingsHaveEvidenceRefs(t *testing.T, findings []sessionMinin
 	}
 }
 
+func assertSessionApplyRoutesAllFindings(t *testing.T, report sessionMiningReport) {
+	t.Helper()
+	if report.Apply == nil {
+		t.Fatal("apply report missing")
+	}
+	wantPreference := len(report.PreferencesFound)
+	wantRetire := len(report.RulesToRetire)
+	wantSkill := len(report.CandidateSkillUpdates)
+	if len(report.Apply.PreferenceCandidateIDs) != wantPreference {
+		t.Fatalf("preference routes = %d, want %d", len(report.Apply.PreferenceCandidateIDs), wantPreference)
+	}
+	if len(report.Apply.RetireProposalIDs) != wantRetire {
+		t.Fatalf("retire proposal routes = %d, want %d", len(report.Apply.RetireProposalIDs), wantRetire)
+	}
+	if len(report.Apply.SkillUpdateProposalIDs) != wantSkill {
+		t.Fatalf("skill update routes = %d, want %d", len(report.Apply.SkillUpdateProposalIDs), wantSkill)
+	}
+	routeCounts := map[string]int{}
+	routedIDs := map[string]bool{}
+	for _, artifact := range report.Apply.RoutedArtifacts {
+		if artifact.ID == "" || len(artifact.EvidenceRefs) == 0 {
+			t.Fatalf("routed artifact must carry id and evidence refs: %+v", artifact)
+		}
+		routeCounts[artifact.Route]++
+		routedIDs[artifact.ID] = true
+	}
+	if routeCounts["memory_candidate"] != wantPreference ||
+		routeCounts["distiller_improvement_plan"] != wantRetire ||
+		routeCounts["capability_lifecycle_proposal"] != wantSkill {
+		t.Fatalf("routed artifact counts = %+v, want prefs=%d retire=%d skill=%d", routeCounts, wantPreference, wantRetire, wantSkill)
+	}
+	for _, id := range append(append([]string{}, report.Apply.PreferenceCandidateIDs...), append(report.Apply.RetireProposalIDs, report.Apply.SkillUpdateProposalIDs...)...) {
+		if !routedIDs[id] {
+			t.Fatalf("route id %q missing from routed_artifacts: %+v", id, report.Apply.RoutedArtifacts)
+		}
+	}
+}
+
 func assertNoReviewDecisionArtifacts(t *testing.T, homePath string) {
 	t.Helper()
 	root := filepath.Join(homePath, "reviews")
@@ -231,6 +322,30 @@ func assertNoReviewDecisionArtifacts(t *testing.T, homePath string) {
 	})
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+}
+
+func assertNoSessionApplyArtifacts(t *testing.T, homePath string) {
+	t.Helper()
+	for _, dir := range []string{
+		filepath.Join(homePath, candidates.InboxDir(candidates.Memory)),
+		filepath.Join(homePath, candidates.InboxDir(candidates.PolicyPatch)),
+		filepath.Join(homePath, "reviews", "distiller-improvements"),
+		filepath.Join(homePath, "reviews", capgraph.CapabilityLifecycleProposalReviewArea),
+	} {
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			t.Fatalf("unexpected apply artifact without evidence refs: %s", filepath.Join(dir, entry.Name()))
+		}
 	}
 }
 
