@@ -3123,14 +3123,16 @@ func checkExternalRepoContextEvaluationContract(repoRoot string) []Finding {
 		},
 		"cmd/compound/main.go": {
 			"ExternalRepoMatchedEvidenceForTask",
+			"outbound-dry-run-plan",
+			"outbound-dry-run-review",
+		},
+		"cmd/compound/capability.go": {
 			"report.MatchedEvidence",
 			"outbound-distribution-plan",
 			"outbound-distribution-verdict-plan",
 			"outbound-distribution-verdict-review",
 			"outbound-distribution-dry-run-receipt",
 			"outbound-distribution-dry-run-review",
-			"outbound-dry-run-plan",
-			"outbound-dry-run-review",
 			"BuildOutboundDistributionPlan",
 			"BuildOutboundDistributionVerdictPlan",
 			"report.RequiredGates",
@@ -3231,7 +3233,7 @@ func checkExternalRepoIntakeStateProjectionContract(repoRoot string) []Finding {
 			"CapabilityEvaluationStatus != \"pending\"",
 			"CapabilityGraphStatus != \"blocked_on_capability_evaluation\"",
 		},
-		"cmd/compound/main.go": {
+		"cmd/compound/capability.go": {
 			"keep_needs_review_decision",
 			"open_owner_reviews",
 			"high_value: %s decision=%s lane=%s owner_review=%s capability_evaluation=%s graph=%s owner=%s",

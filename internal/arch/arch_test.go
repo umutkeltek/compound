@@ -1625,7 +1625,7 @@ func TestExternalRepoIntakeStateProjectionContractFailsWithoutOpenOwnerDebt(t *t
 		`CapabilityEvaluationStatus != "pending"`,
 		`CapabilityGraphStatus != "blocked_on_capability_evaluation"`,
 	}, "\n"))
-	mustWriteArchFixture(t, repo, "cmd/compound/main.go", strings.Join([]string{
+	mustWriteArchFixture(t, repo, "cmd/compound/capability.go", strings.Join([]string{
 		"keep_needs_review_decision",
 		"high_value: %s decision=%s lane=%s owner_review=%s capability_evaluation=%s graph=%s owner=%s",
 	}, "\n"))
