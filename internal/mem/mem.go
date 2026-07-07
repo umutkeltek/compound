@@ -49,9 +49,10 @@ const (
 	ClaimStatePromoted    = "promoted"
 	ClaimStateNeedsReview = "needs_review"
 
-	EdgeKindSupersedes  = "supersedes"
-	EdgeKindReinforces  = "reinforces"
-	EdgeKindNeedsReview = "needs_review"
+	EdgeKindSupersedes    = "supersedes"
+	EdgeKindReinforces    = "reinforces"
+	EdgeKindNeedsReview   = "needs_review"
+	EdgeKindReviewCleared = "needs_review_cleared"
 )
 
 // Candidate is an untrusted, proposed fact awaiting adjudication (lives in the inbox).
@@ -131,10 +132,7 @@ type Claim struct {
 // Topic is the axis Position/Pattern group by: the claim's domain qualifier if set, else the
 // predicate. So domain-tagged claims cluster by domain while plain ones stay predicate-grouped.
 func (c Claim) Topic() string {
-	if d := c.Qualifiers["domain"]; d != "" {
-		return d
-	}
-	return c.Predicate
+	return topicFromQualifiers(c.Predicate, c.Qualifiers)
 }
 
 // Edge is an append-only relation between claims. Its seq is when the relation took effect,
@@ -1128,27 +1126,71 @@ func (s *Store) decorateClaimReviewStates(claims []Claim, asOf int64) ([]Claim, 
 }
 
 func (s *Store) claimReviewMarksAsOf(asOf int64) (map[string]claimReviewMark, error) {
-	out := map[string]claimReviewMark{}
+	type sourceState struct {
+		markSeq         int64
+		clearSeq        int64
+		confidenceDelta float64
+	}
+	byClaim := map[string]map[string]*sourceState{}
 	err := readJSONL(s.edgesLog(), func(line []byte) error {
 		var e Edge
 		if err := json.Unmarshal(line, &e); err != nil {
 			return err
 		}
-		if e.Kind != EdgeKindNeedsReview {
+		if e.Kind != EdgeKindNeedsReview && e.Kind != EdgeKindReviewCleared {
 			return nil
 		}
 		if asOf > 0 && e.Seq > asOf {
 			return nil
 		}
-		mark := out[e.To]
-		if e.From != "" {
-			mark.Refs = append(mark.Refs, e.From)
+		sources := byClaim[e.To]
+		if sources == nil {
+			sources = map[string]*sourceState{}
+			byClaim[e.To] = sources
 		}
-		mark.ConfidenceDelta = e.ConfidenceDelta
-		out[e.To] = mark
+		state := sources[e.From]
+		if state == nil {
+			state = &sourceState{}
+			sources[e.From] = state
+		}
+		switch e.Kind {
+		case EdgeKindNeedsReview:
+			if e.Seq >= state.markSeq {
+				state.markSeq = e.Seq
+				state.confidenceDelta = e.ConfidenceDelta
+			}
+		case EdgeKindReviewCleared:
+			if e.Seq >= state.clearSeq {
+				state.clearSeq = e.Seq
+			}
+		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]claimReviewMark{}
+	for claimID, sources := range byClaim {
+		var mark claimReviewMark
+		var latestSeq int64
+		for source, state := range sources {
+			if state.markSeq == 0 || state.clearSeq > state.markSeq {
+				continue
+			}
+			if source != "" {
+				mark.Refs = append(mark.Refs, source)
+			}
+			if state.markSeq >= latestSeq {
+				latestSeq = state.markSeq
+				mark.ConfidenceDelta = state.confidenceDelta
+			}
+		}
+		sort.Strings(mark.Refs)
+		if latestSeq > 0 {
+			out[claimID] = mark
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) supersededAsOf(asOf int64) (map[string]bool, error) {

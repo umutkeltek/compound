@@ -15,10 +15,7 @@ func ClusterKey(entity, topic, claimType string) string {
 
 // Topic is the candidate-side topic axis: domain qualifier first, predicate fallback.
 func (c Candidate) Topic() string {
-	if d := c.Qualifiers["domain"]; d != "" {
-		return d
-	}
-	return c.Predicate
+	return topicFromQualifiers(c.Predicate, c.Qualifiers)
 }
 
 // ClusterKey resolves the entity through the registry when there is one unambiguous slug.
@@ -33,11 +30,11 @@ func (s *Store) ClusterKey(entity, topic, claimType string) (string, error) {
 }
 
 func (s *Store) candidateClusterKey(c Candidate) (string, error) {
-	return s.ClusterKey(c.Entity, c.Topic(), c.ClaimType)
+	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, ""), c.Topic(), c.ClaimType)
 }
 
 func (s *Store) claimClusterKey(c Claim) (string, error) {
-	return s.ClusterKey(c.Entity, c.Topic(), c.ClaimType)
+	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, c.ID), c.Topic(), c.ClaimType)
 }
 
 func sameClusterKey(a, b string) bool {
@@ -63,4 +60,37 @@ func SameClaimQualifiers(a, b map[string]string) bool {
 
 func SameClaimObject(a, b string) bool {
 	return NormalizeClaimValue(a) == NormalizeClaimValue(b)
+}
+
+func topicFromQualifiers(predicate string, qualifiers map[string]string) string {
+	if d := qualifiers["domain"]; d != "" {
+		return d
+	}
+	if d := qualifiers["domains"]; d != "" {
+		return d
+	}
+	return predicate
+}
+
+func decisionClusterEntity(entity, claimType string, qualifiers map[string]string, fallbackID string) string {
+	if NormalizeClaimValue(claimType) != "decision" {
+		return entity
+	}
+	if strings.HasPrefix(NormalizeClaimValue(entity), "decision:") {
+		return entity
+	}
+	if id := qualifiers["decision_id"]; id != "" {
+		return decisionEntityKey(id)
+	}
+	if isMeaningfulClaimID(fallbackID) {
+		return decisionEntityKey(fallbackID)
+	}
+	return entity
+}
+
+func decisionEntityKey(id string) string {
+	if strings.HasPrefix(NormalizeClaimValue(id), "decision:") {
+		return id
+	}
+	return "decision:" + id
 }

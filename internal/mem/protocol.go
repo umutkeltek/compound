@@ -1,5 +1,7 @@
 package mem
 
+import "regexp"
+
 // The breadth-engine wire protocol. compound OWNS this protocol; the engine (turbovec sidecar,
 // or the pure-Go mock) is rented behind it. It is transport-agnostic: the same request/response
 // shapes ride a held coprocess (stdio), a per-op exec, or a socket. One JSON object per line;
@@ -8,6 +10,12 @@ package mem
 // the mock and the real turbovec sidecar must satisfy. See docs/memory-architecture.md.
 
 const ProtocolVersion = 1
+
+var hashLikeClaimID = regexp.MustCompile(`^(cl_|ev_|rec_|claim_)`)
+
+func isMeaningfulClaimID(id string) bool {
+	return id != "" && !hashLikeClaimID.MatchString(id)
+}
 
 // Ops.
 const (
@@ -98,5 +106,9 @@ type WireError struct {
 // ClaimIndexText is the indexable text for a claim — the entity/predicate/object surface the
 // engine matches or embeds. Stable so the mock and the real sidecar agree.
 func ClaimIndexText(c Claim) string {
-	return c.Entity + " " + c.Predicate + " " + c.Object
+	text := c.Entity + " " + c.Predicate + " " + c.Object
+	if isMeaningfulClaimID(c.ID) {
+		text += " " + c.ID
+	}
+	return text
 }

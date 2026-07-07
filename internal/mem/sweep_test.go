@@ -7,10 +7,10 @@ func TestSynthesisSweepFindsEchoAndContradictionProposals(t *testing.T) {
 
 	first := cand("project:api", "runtime", "Go", "")
 	first.ClaimType = "decision"
-	first.Qualifiers = map[string]string{"domain": "language"}
+	first.Qualifiers = map[string]string{"domain": "language", "decision_id": "api-language"}
 	second := cand("project:api", "implementation_language", " go ", "")
 	second.ClaimType = "decision"
-	second.Qualifiers = map[string]string{"domain": "language"}
+	second.Qualifiers = map[string]string{"domain": "language", "decision_id": "api-language"}
 	if _, err := s.Capture([]Candidate{first, second}, t0); err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestSynthesisSweepFindsEchoAndContradictionProposals(t *testing.T) {
 		Predicate:  "runtime",
 		Object:     "Go",
 		ClaimType:  "decision",
-		Qualifiers: map[string]string{"domain": "language"},
+		Qualifiers: map[string]string{"domain": "language", "decision_id": "api-language"},
 		Confidence: 0.9,
 		Visibility: "public",
 		CreatedAt:  rfc3339(t0),
@@ -36,7 +36,7 @@ func TestSynthesisSweepFindsEchoAndContradictionProposals(t *testing.T) {
 		Predicate:  "implementation_language",
 		Object:     "Rust",
 		ClaimType:  "decision",
-		Qualifiers: map[string]string{"domain": "language"},
+		Qualifiers: map[string]string{"domain": "language", "decision_id": "api-language"},
 		Confidence: 0.8,
 		Visibility: "public",
 		CreatedAt:  rfc3339(t0),
@@ -64,7 +64,7 @@ func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T)
 
 	original := cand("project:api", "runtime", "Go", "")
 	original.ClaimType = "decision"
-	original.Qualifiers = map[string]string{"domain": "language"}
+	original.Qualifiers = map[string]string{"domain": "language", "decision_id": "api-language"}
 	promotedCandidates, err := s.Capture([]Candidate{original}, t0)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestSynthesisSweepReopensPromotedClaimOnContradictingEvidence(t *testing.T)
 
 	contradicting := cand("project:api", "implementation_language", "Rust", "")
 	contradicting.ClaimType = "decision"
-	contradicting.Qualifiers = map[string]string{"domain": "language"}
+	contradicting.Qualifiers = map[string]string{"domain": "language", "decision_id": "api-language"}
 	contradicting.Confidence = 0.55
 	contradictingCandidates, err := s.Capture([]Candidate{contradicting}, t0)
 	if err != nil {

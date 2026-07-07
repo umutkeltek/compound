@@ -200,7 +200,7 @@ func (s *Store) synthesisContradictions(claims []Claim, candidates []Candidate, 
 		return g
 	}
 	for _, claim := range claims {
-		if superseded[claim.ID] || claim.Visibility == "retired" || claim.State == ClaimStateNeedsReview {
+		if superseded[claim.ID] || claim.Visibility == "retired" {
 			continue
 		}
 		key, err := s.claimClusterKey(claim)
@@ -226,6 +226,7 @@ func (s *Store) synthesisContradictions(claims []Claim, candidates []Candidate, 
 
 	var proposals []SynthesisContradictionProposal
 	claimByID := map[string]Claim{}
+	claimsInContradiction := map[string]bool{}
 	candidatesByID := map[string]Candidate{}
 	for _, key := range sortedKeys(groups) {
 		group := groups[key]
@@ -246,6 +247,7 @@ func (s *Store) synthesisContradictions(claims []Claim, candidates []Candidate, 
 		var claimIDs []string
 		for _, claim := range group.claims {
 			claimIDs = append(claimIDs, claim.ID)
+			claimsInContradiction[claim.ID] = true
 			claimByID[claim.ID] = claim
 		}
 		var candidateIDs []string
@@ -261,17 +263,14 @@ func (s *Store) synthesisContradictions(claims []Claim, candidates []Candidate, 
 			Objects:      objects,
 		})
 	}
-	reopened, err := s.reopenClaimsForContradictions(proposals, claimByID, candidatesByID, now)
+	reopened, err := s.reopenClaimsForContradictions(proposals, claimByID, candidatesByID, claimsInContradiction, now)
 	if err != nil {
 		return nil, nil, err
 	}
 	return proposals, reopened, nil
 }
 
-func (s *Store) reopenClaimsForContradictions(proposals []SynthesisContradictionProposal, claims map[string]Claim, candidates map[string]Candidate, now time.Time) ([]SynthesisClaimReview, error) {
-	if len(proposals) == 0 {
-		return nil, nil
-	}
+func (s *Store) reopenClaimsForContradictions(proposals []SynthesisContradictionProposal, claims map[string]Claim, candidates map[string]Candidate, claimsInContradiction map[string]bool, now time.Time) ([]SynthesisClaimReview, error) {
 	var reopened []SynthesisClaimReview
 	err := s.withLock(func() error {
 		marks, err := s.claimReviewMarksAsOf(0)
@@ -317,9 +316,39 @@ func (s *Store) reopenClaimsForContradictions(proposals []SynthesisContradiction
 				reopened = append(reopened, review)
 			}
 		}
+		for claimID, mark := range marks {
+			if claimsInContradiction[claimID] {
+				continue
+			}
+			for _, ref := range mark.Refs {
+				if !isSynthesisContradictionRef(ref) {
+					continue
+				}
+				seq, err := s.nextSeq()
+				if err != nil {
+					return err
+				}
+				edge := Edge{
+					Seq:          seq,
+					Kind:         EdgeKindReviewCleared,
+					From:         ref,
+					To:           claimID,
+					Confidence:   1,
+					EvidenceRefs: []string{ref},
+					CreatedAt:    rfc3339(now),
+				}
+				if err := appendJSONL(s.edgesLog(), &edge); err != nil {
+					return err
+				}
+			}
+		}
 		return nil
 	})
 	return reopened, err
+}
+
+func isSynthesisContradictionRef(ref string) bool {
+	return strings.HasPrefix(ref, "synth_contradiction_")
 }
 
 func contradictionConfidenceDelta(claim Claim, proposal SynthesisContradictionProposal, claims map[string]Claim, candidates map[string]Candidate) float64 {
