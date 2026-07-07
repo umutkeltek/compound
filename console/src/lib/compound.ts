@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -29,6 +30,14 @@ function resolveBin(): string {
 export const COMPOUND_BIN = resolveBin();
 
 export type Json = Record<string, any>;
+
+export type InstalledBinaryFreshness = {
+  status: "fresh" | "stale" | "missing" | "unknown";
+  binary: string;
+  installedBuild: string;
+  head: string;
+  message: string;
+};
 
 export type CompoundRunResult = {
   stdout: string;
@@ -132,6 +141,13 @@ type RunJsonCacheEntry = {
 const runJsonCache = new Map<string, RunJsonCacheEntry>();
 const runJsonInflight = new Map<string, Promise<Json | null>>();
 
+let binaryFreshnessCache:
+  | {
+      storedAt: number;
+      value: InstalledBinaryFreshness;
+    }
+  | null = null;
+
 function pruneRunJsonCache() {
   while (runJsonCache.size > RUN_JSON_MAX_ENTRIES) {
     const oldestKey = runJsonCache.keys().next().value;
@@ -194,6 +210,84 @@ export async function runJson(args: string[]): Promise<Json | null> {
 export function invalidateRunJsonCache(): void {
   runJsonCache.clear();
   runJsonInflight.clear();
+  binaryFreshnessCache = null;
+}
+
+function repoRootFromConsole(): string {
+  const candidates = [
+    process.env.COMPOUND_REPO_ROOT,
+    process.env.COMPOUND_REPO,
+    resolve(process.cwd(), ".."),
+    process.cwd(),
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) {
+    if (existsSync(resolve(candidate, "go.mod"))) return candidate;
+  }
+  return resolve(process.cwd(), "..");
+}
+
+function parseBuildSHA(versionOutput: string): string {
+  return versionOutput.match(/\(build ([0-9a-fA-F]+|dev)\)/)?.[1] ?? "";
+}
+
+function classifyBuild(installedBuild: string, head: string): InstalledBinaryFreshness["status"] {
+  if (!installedBuild || installedBuild === "dev" || !head) return "unknown";
+  if (head.startsWith(installedBuild) || installedBuild.startsWith(head)) return "fresh";
+  return "stale";
+}
+
+export async function getInstalledBinaryFreshness(): Promise<InstalledBinaryFreshness> {
+  if (binaryFreshnessCache && Date.now() - binaryFreshnessCache.storedAt < RUN_JSON_TTL_MS) {
+    return binaryFreshnessCache.value;
+  }
+
+  const binary = COMPOUND_BIN;
+  const binaryLooksMissing = binary !== "compound" && !existsSync(binary);
+  if (binaryLooksMissing) {
+    const value: InstalledBinaryFreshness = {
+      status: "missing",
+      binary,
+      installedBuild: "",
+      head: "",
+      message: `Installed compound binary is missing at ${binary}.`,
+    };
+    binaryFreshnessCache = { storedAt: Date.now(), value };
+    return value;
+  }
+
+  try {
+    const [{ stdout: versionOut }, { stdout: headOut }] = await Promise.all([
+      exec(binary, ["version"], { timeout: 1_500 }),
+      exec("git", ["-C", repoRootFromConsole(), "rev-parse", "--short", "HEAD"], { timeout: 1_500 }),
+    ]);
+    const installedBuild = parseBuildSHA(versionOut);
+    const head = headOut.trim();
+    const status = classifyBuild(installedBuild, head);
+    const value: InstalledBinaryFreshness = {
+      status,
+      binary,
+      installedBuild,
+      head,
+      message:
+        status === "stale"
+          ? `Installed compound is ${installedBuild}; source HEAD is ${head}.`
+          : status === "fresh"
+            ? `Installed compound matches source HEAD ${head}.`
+            : "Installed compound build freshness is unknown.",
+    };
+    binaryFreshnessCache = { storedAt: Date.now(), value };
+    return value;
+  } catch {
+    const value: InstalledBinaryFreshness = {
+      status: "unknown",
+      binary,
+      installedBuild: "",
+      head: "",
+      message: "Installed compound build freshness is unknown.",
+    };
+    binaryFreshnessCache = { storedAt: Date.now(), value };
+    return value;
+  }
 }
 
 /* ---------- defensive accessors (schemas evolve; never crash surface) ---------- */
