@@ -146,6 +146,98 @@ func TestEvaluateLanePromotionsRecommendations(t *testing.T) {
 	}
 }
 
+func TestPromotionMalformedActionShapeRepair(t *testing.T) {
+	baseCriterion := PromotionCriterion{
+		LaneID:           "*",
+		CapabilityClass:  "classify-extract",
+		MinSamples:       3,
+		MaxErrorRate:     0.25,
+		MaxMalformedRate: 0,
+		MinWindowDays:    3,
+	}
+	malformedTallies := PromotionTallies{
+		Samples:                4,
+		FailedStatusRate:       0,
+		WindowDays:             3,
+		JudgeJSONMalformedRate: 0.5,
+	}
+	shapeRepairCriterion := baseCriterion
+	shapeRepairCriterion.MalformedAction = promotionMalformedActionShapeRepair
+	tests := []struct {
+		name        string
+		level       string
+		criterion   PromotionCriterion
+		tallies     PromotionTallies
+		wantRec     string
+		wantTarget  string
+		wantReason  string
+		validateErr string
+	}{
+		{
+			name:       "shape repair promotes assumed despite malformed breach",
+			level:      "assumed",
+			criterion:  shapeRepairCriterion,
+			tallies:    malformedTallies,
+			wantRec:    promotionRecommendationPromote,
+			wantTarget: "capable",
+			wantReason: "shape-repair",
+		},
+		{
+			name:       "default malformed breach holds assumed",
+			level:      "assumed",
+			criterion:  baseCriterion,
+			tallies:    malformedTallies,
+			wantRec:    promotionRecommendationHoldFailing,
+			wantReason: "failing rates exceed criteria",
+		},
+		{
+			name:      "failed status breach demotes capable with shape repair",
+			level:     "capable",
+			criterion: shapeRepairCriterion,
+			tallies: PromotionTallies{
+				Samples:                4,
+				FailedStatusRate:       0.5,
+				WindowDays:             3,
+				JudgeJSONMalformedRate: 0.5,
+			},
+			wantRec:    promotionRecommendationDemote,
+			wantTarget: "assumed",
+			wantReason: "failed_status_rate",
+		},
+		{
+			name: "invalid malformed action rejected",
+			criterion: PromotionCriterion{
+				LaneID:           "*",
+				CapabilityClass:  "classify-extract",
+				MinSamples:       1,
+				MaxErrorRate:     0.1,
+				MaxMalformedRate: 0.1,
+				MalformedAction:  "banana",
+			},
+			validateErr: "malformed_action",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.validateErr != "" {
+				err := validatePromotionCriteria(PromotionCriteriaRegistry{
+					SchemaVersion: PromotionCriteriaSchemaVersion,
+					Entries:       []PromotionCriterion{tt.criterion},
+				})
+				if err == nil || !strings.Contains(err.Error(), tt.validateErr) {
+					t.Fatalf("err = %v, want containing %q", err, tt.validateErr)
+				}
+				return
+			}
+			rec, target, reason := promotionRecommendation(tt.level, true, tt.criterion, tt.tallies)
+			if rec != tt.wantRec || target != tt.wantTarget || !strings.Contains(reason, tt.wantReason) {
+				t.Fatalf("rec=%q target=%q reason=%q, want rec=%q target=%q reason containing %q", rec, target, reason, tt.wantRec, tt.wantTarget, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestRecordPromotionHoldReviewRejectsMutatingRecommendation(t *testing.T) {
 	home := t.TempDir()
 	paths, err := reviewartifact.Write(home, routePromotionReviewArea, "route_promotion_promote_guard", PromotionReview{

@@ -29,6 +29,7 @@ const (
 	promotionRecommendationDemote           = "demote"
 	promotionRecommendationHoldInsufficient = "hold_insufficient_evidence"
 	promotionRecommendationHoldFailing      = "hold_failing"
+	promotionMalformedActionShapeRepair     = "shape_repair"
 )
 
 type PromotionCriteriaRegistry struct {
@@ -42,6 +43,7 @@ type PromotionCriterion struct {
 	MinSamples       int     `json:"min_samples" yaml:"min_samples"`
 	MaxErrorRate     float64 `json:"max_error_rate" yaml:"max_error_rate"`
 	MaxMalformedRate float64 `json:"max_malformed_rate" yaml:"max_malformed_rate"`
+	MalformedAction  string  `json:"malformed_action,omitempty" yaml:"malformed_action"`
 	MinWindowDays    int     `json:"min_window_days" yaml:"min_window_days"`
 	Notes            string  `json:"notes,omitempty" yaml:"notes,omitempty"`
 }
@@ -388,19 +390,30 @@ func promotionRecommendation(level string, criteriaMatched bool, criterion Promo
 	if tallies.WindowDays < float64(criterion.MinWindowDays) {
 		return promotionRecommendationHoldInsufficient, "", fmt.Sprintf("evidence window %.2f days below min_window_days %d", tallies.WindowDays, criterion.MinWindowDays)
 	}
-	if tallies.FailedStatusRate > criterion.MaxErrorRate || tallies.JudgeJSONMalformedRate > criterion.MaxMalformedRate {
+	if tallies.FailedStatusRate > criterion.MaxErrorRate {
 		if level == "capable" {
 			return promotionRecommendationDemote, "assumed", fmt.Sprintf("failing rates exceed criteria: failed_status_rate %.3f <= %.3f, judge_json_malformed_rate %.3f <= %.3f", tallies.FailedStatusRate, criterion.MaxErrorRate, tallies.JudgeJSONMalformedRate, criterion.MaxMalformedRate)
 		}
 		return promotionRecommendationHoldFailing, "", fmt.Sprintf("failing rates exceed criteria: failed_status_rate %.3f <= %.3f, judge_json_malformed_rate %.3f <= %.3f", tallies.FailedStatusRate, criterion.MaxErrorRate, tallies.JudgeJSONMalformedRate, criterion.MaxMalformedRate)
 	}
+	malformedBreach := tallies.JudgeJSONMalformedRate > criterion.MaxMalformedRate
+	if malformedBreach && strings.TrimSpace(criterion.MalformedAction) != promotionMalformedActionShapeRepair {
+		if level == "capable" {
+			return promotionRecommendationDemote, "assumed", fmt.Sprintf("failing rates exceed criteria: failed_status_rate %.3f <= %.3f, judge_json_malformed_rate %.3f <= %.3f", tallies.FailedStatusRate, criterion.MaxErrorRate, tallies.JudgeJSONMalformedRate, criterion.MaxMalformedRate)
+		}
+		return promotionRecommendationHoldFailing, "", fmt.Sprintf("failing rates exceed criteria: failed_status_rate %.3f <= %.3f, judge_json_malformed_rate %.3f <= %.3f", tallies.FailedStatusRate, criterion.MaxErrorRate, tallies.JudgeJSONMalformedRate, criterion.MaxMalformedRate)
+	}
+	malformedReason := ""
+	if malformedBreach {
+		malformedReason = fmt.Sprintf("; malformed_rate %.3f exceeds %.3f treated as repairable shape defect (meaning>shape) - route outputs via shape-repair pass", tallies.JudgeJSONMalformedRate, criterion.MaxMalformedRate)
+	}
 	switch level {
 	case "assumed":
-		return promotionRecommendationPromote, "capable", "criteria satisfied for assumed -> capable"
+		return promotionRecommendationPromote, "capable", "criteria satisfied for assumed -> capable" + malformedReason
 	case "capable":
-		return promotionRecommendationPromote, "primary", "criteria satisfied for capable -> primary"
+		return promotionRecommendationPromote, "primary", "criteria satisfied for capable -> primary" + malformedReason
 	default:
-		return promotionRecommendationHoldInsufficient, "", "claim level is not promotion-eligible"
+		return promotionRecommendationHoldInsufficient, "", "claim level is not promotion-eligible" + malformedReason
 	}
 }
 
@@ -681,6 +694,10 @@ func validatePromotionCriteria(registry PromotionCriteriaRegistry) error {
 		}
 		if entry.MaxMalformedRate < 0 || entry.MaxMalformedRate > 1 {
 			errs = append(errs, prefix+".max_malformed_rate must be 0..1")
+		}
+		malformedAction := strings.TrimSpace(entry.MalformedAction)
+		if malformedAction != "" && malformedAction != promotionMalformedActionShapeRepair {
+			errs = append(errs, fmt.Sprintf("%s.malformed_action must be empty or %q", prefix, promotionMalformedActionShapeRepair))
 		}
 		if entry.MinWindowDays < 0 {
 			errs = append(errs, prefix+".min_window_days must be non-negative")
