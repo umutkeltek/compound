@@ -140,6 +140,24 @@ export async function loadSourceEvidenceCandidates(state = "proposed"): Promise<
   return candidates.filter(isKnowledgeClassCandidate);
 }
 
+/**
+ * The /memory page needs both the actionable split and the source-evidence
+ * split of the SAME "proposed" set. Calling loadActionableMemoryCandidates()
+ * and loadSourceEvidenceCandidates("proposed") separately execs
+ * `memory candidates --state proposed` twice; this fetches it once and
+ * filters in memory for both.
+ */
+export async function loadProposedMemorySplit(): Promise<{
+  actionable: MemoryCandidate[];
+  sourceEvidence: MemoryCandidate[];
+}> {
+  const proposed = await loadMemoryCandidates("proposed");
+  return {
+    actionable: proposed.filter(isActionableMemoryCandidate),
+    sourceEvidence: proposed.filter(isKnowledgeClassCandidate),
+  };
+}
+
 export async function loadMemoryCounts(): Promise<Record<string, number>> {
   const all = await loadMemoryCandidates();
   const counts: Record<string, number> = {};

@@ -96,23 +96,104 @@ export function compoundFailure(error: unknown): CompoundRunFailure {
   };
 }
 
+async function execRunJson(args: string[]): Promise<Json | null> {
+  const { stdout } = await exec(COMPOUND_BIN, args, {
+    env: { ...process.env, COMPOUND_HOME },
+    timeout: 15_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  const json = firstJsonObject(stdout.trim());
+  return json ? JSON.parse(json) : null;
+}
+
+/* ---------- runJson memo: TTL cache + stale-while-revalidate + in-flight de-dup ----------
+ * Every `compound ... --json` re-exec is a subprocess spawn; without this, every
+ * request (and every N+1 caller within a request) pays that cost again. Keyed
+ * by JSON.stringify(argv):
+ *  - fresh (<25s old): served straight from cache, no exec.
+ *  - stale (>=25s old): served immediately from cache (never blocks the
+ *    request), one background exec refreshes it for the next reader.
+ *  - cold + concurrent callers for the SAME argv (e.g. Promise.all fan-out):
+ *    collapse into one in-flight exec - this is what kills N+1 fan-outs
+ *    (packets list per work item, system stats called 3x on one request).
+ * Bounded to ~50 entries (oldest-touched evicted first). Never throws - same
+ * fail-soft contract as the pre-cache runJson. Mutations call
+ * invalidateRunJsonCache() so router.refresh() always shows fresh truth.
+ */
+const RUN_JSON_TTL_MS = 25_000;
+const RUN_JSON_MAX_ENTRIES = 50;
+
+type RunJsonCacheEntry = {
+  value: Json | null;
+  storedAt: number;
+  revalidating: boolean;
+};
+
+const runJsonCache = new Map<string, RunJsonCacheEntry>();
+const runJsonInflight = new Map<string, Promise<Json | null>>();
+
+function pruneRunJsonCache() {
+  while (runJsonCache.size > RUN_JSON_MAX_ENTRIES) {
+    const oldestKey = runJsonCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    runJsonCache.delete(oldestKey);
+  }
+}
+
+function storeRunJsonEntry(key: string, value: Json | null) {
+  // delete-then-set moves the key to the end of Map's iteration order, so the
+  // eviction above naturally drops the least-recently-refreshed entry first.
+  runJsonCache.delete(key);
+  runJsonCache.set(key, { value, storedAt: Date.now(), revalidating: false });
+  pruneRunJsonCache();
+}
+
 /**
  * Run read-only compound verb that emits JSON. The console surfaces mutation
  * commands but only API routes below execute allowlisted mutations.
  */
 export async function runJson(args: string[]): Promise<Json | null> {
-  try {
-    const { stdout } = await exec(COMPOUND_BIN, args, {
-      env: { ...process.env, COMPOUND_HOME },
-      timeout: 15_000,
-      maxBuffer: 64 * 1024 * 1024,
-    });
-    const json = firstJsonObject(stdout.trim());
-    if (!json) return null;
-    return JSON.parse(json);
-  } catch {
-    return null;
+  const key = JSON.stringify(args);
+  const cached = runJsonCache.get(key);
+
+  if (cached) {
+    if (Date.now() - cached.storedAt < RUN_JSON_TTL_MS) return cached.value;
+
+    // Stale: serve what we have immediately; refresh once in the background.
+    if (!cached.revalidating) {
+      cached.revalidating = true;
+      execRunJson(args)
+        .then((value) => storeRunJsonEntry(key, value))
+        .catch(() => {
+          cached.revalidating = false; // let the next read retry the refresh
+        });
+    }
+    return cached.value;
   }
+
+  const inflight = runJsonInflight.get(key);
+  if (inflight) return inflight;
+
+  const promise = execRunJson(args)
+    .then((value) => {
+      storeRunJsonEntry(key, value);
+      return value;
+    })
+    .catch(() => {
+      storeRunJsonEntry(key, null);
+      return null;
+    })
+    .finally(() => {
+      runJsonInflight.delete(key);
+    });
+  runJsonInflight.set(key, promise);
+  return promise;
+}
+
+/** Mutations call this so the next read (router.refresh()) shows live truth. */
+export function invalidateRunJsonCache(): void {
+  runJsonCache.clear();
+  runJsonInflight.clear();
 }
 
 /* ---------- defensive accessors (schemas evolve; never crash surface) ---------- */

@@ -1,17 +1,18 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 export function RefreshControl() {
   const router = useRouter();
   const [auto, setAuto] = useState(true);
   const [tick, setTick] = useState(0);
+  const [pending, startTransition] = useTransition();
 
   useEffect(() => {
     if (!auto) return;
     const id = setInterval(() => {
-      router.refresh();
+      startTransition(() => router.refresh());
       setTick((t) => t + 1);
     }, 30_000);
     return () => clearInterval(id);
@@ -29,10 +30,11 @@ export function RefreshControl() {
         auto 30s {auto ? "on" : "off"}
       </button>
       <button
-        onClick={() => router.refresh()}
-        className="rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-600 transition-colors hover:bg-slate-200"
+        onClick={() => startTransition(() => router.refresh())}
+        disabled={pending}
+        className="rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-600 transition-colors hover:bg-slate-200 disabled:cursor-wait disabled:opacity-60"
       >
-        refresh
+        {pending ? "refreshing..." : "refresh"}
       </button>
     </div>
   );

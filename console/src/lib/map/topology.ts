@@ -9,6 +9,7 @@ import {
   getLedgerStats,
   getProductAuthority,
   getRouteAuthority,
+  getSystemStatsProjection,
 } from "@/lib/map/projections";
 import type {
   Lane,
@@ -60,14 +61,19 @@ export async function loadTopology(): Promise<TopologySnapshot> {
     };
   }
 
-  const [file, cap, prod, route, ledger, ksCount, ksKinds] = await Promise.all([
+  // `system stats --json` backs ledger/knowledge-source stats below - fetched
+  // ONCE and shared, instead of each reader re-execing the same command.
+  const [file, cap, prod, route, systemStats] = await Promise.all([
     loadTopologyFile(),
     getCapabilityAuthority(),
     getProductAuthority(),
     getRouteAuthority(),
-    getLedgerStats(),
-    getKnowledgeSourceCount(),
-    getKnowledgeSourceKinds(),
+    getSystemStatsProjection(),
+  ]);
+  const [ledger, ksCount, ksKinds] = await Promise.all([
+    getLedgerStats(systemStats),
+    getKnowledgeSourceCount(systemStats),
+    getKnowledgeSourceKinds(systemStats),
   ]);
 
   const nodes: SystemNode[] = file.nodes.map((entry) => {

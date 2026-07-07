@@ -42,12 +42,18 @@ export type LedgerStats = {
   knowledgeImports: number;
 };
 
-async function getSystemStatsProjection(): Promise<Json | null> {
+/**
+ * Fetches `system stats --json` - the ledger/knowledge/intake fallback
+ * readers below all derive from this ONE projection. Callers with several of
+ * these needed at once (see loadTopology) should fetch it once and pass it
+ * in, rather than let each reader call this independently.
+ */
+export async function getSystemStatsProjection(): Promise<Json | null> {
   return runJson(["system", "stats", "--json"]);
 }
 
-export async function getLedgerStats(): Promise<LedgerStats> {
-  const projected = await getSystemStatsProjection();
+export async function getLedgerStats(stats?: Json | null): Promise<LedgerStats> {
+  const projected = stats === undefined ? await getSystemStatsProjection() : stats;
   if (projected) {
     return {
       entities: num(projected.entities),
@@ -81,16 +87,16 @@ export async function getLedgerStats(): Promise<LedgerStats> {
   return { entities, claims, edges, evidence, routeEvidence, noPromote, knowledgeImports };
 }
 
-export async function getKnowledgeSourceCount(): Promise<number> {
-  const projected = await getSystemStatsProjection();
+export async function getKnowledgeSourceCount(stats?: Json | null): Promise<number> {
+  const projected = stats === undefined ? await getSystemStatsProjection() : stats;
   if (projected) return num(projected.knowledge_sources);
 
   return countLines(path.resolve(COMPOUND_HOME, "registries", "knowledge-sources.jsonl"));
 }
 
 /** Names of the active capture sources (for the capture node's evidence list). */
-export async function getKnowledgeSourceKinds(): Promise<string[]> {
-  const projected = await getSystemStatsProjection();
+export async function getKnowledgeSourceKinds(stats?: Json | null): Promise<string[]> {
+  const projected = stats === undefined ? await getSystemStatsProjection() : stats;
   if (projected) return arr(projected.knowledge_source_kinds).map(str).filter(Boolean);
 
   if (!privateFallbacksEnabled()) return [];
@@ -117,8 +123,8 @@ export async function getKnowledgeSourceKinds(): Promise<string[]> {
   }
 }
 
-export async function getIntakeRepoCount(): Promise<number> {
-  const projected = await getSystemStatsProjection();
+export async function getIntakeRepoCount(stats?: Json | null): Promise<number> {
+  const projected = stats === undefined ? await getSystemStatsProjection() : stats;
   if (projected) return num(projected.intake_repos);
 
   if (!privateFallbacksEnabled()) return 0;

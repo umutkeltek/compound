@@ -2,9 +2,8 @@ import { DecisionCard } from "@/components/DecisionCard";
 import { Card, Chip, EmptyState, FreshnessChip, Stat } from "@/components/ui";
 import { ago, arr, str, type Json } from "@/lib/compound";
 import {
-  loadActionableMemoryCandidates,
   loadMemoryCounts,
-  loadSourceEvidenceCandidates,
+  loadProposedMemorySplit,
   type MemoryCandidate,
 } from "@/lib/memory-data";
 
@@ -113,9 +112,8 @@ function SourceEvidenceCard({ candidate }: { candidate: MemoryCandidate }) {
 }
 
 export default async function Memory() {
-  const [actionable, sourceEvidence, counts] = await Promise.all([
-    loadActionableMemoryCandidates(),
-    loadSourceEvidenceCandidates("proposed"),
+  const [{ actionable, sourceEvidence }, counts] = await Promise.all([
+    loadProposedMemorySplit(),
     loadMemoryCounts(),
   ]);
   const proposedTotal = counts.proposed ?? 0;

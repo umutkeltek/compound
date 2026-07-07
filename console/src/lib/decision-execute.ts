@@ -8,6 +8,7 @@ import {
 import {
   arr,
   compoundFailure,
+  invalidateRunJsonCache,
   type Json,
   reviewItems,
   runCompound,
@@ -225,6 +226,10 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
 
   try {
     const result = await runCompound(argv);
+    // The mutation succeeded - every cached `compound ... --json` read is now
+    // potentially stale. Clear the memo so the client's router.refresh() (see
+    // DecisionForm/ReviewDecisionForm/ContinueButton) re-execs and shows truth.
+    invalidateRunJsonCache();
     return Response.json({
       ok: true,
       stdout: result.stdout,

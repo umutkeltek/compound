@@ -13,7 +13,7 @@ export function CopyCmd({ cmd, compact = false }: { cmd: string; compact?: boole
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
+      setTimeout(() => setCopied(false), 1500);
     } catch {
       /* clipboard unavailable — show the command anyway */
     }
@@ -53,7 +53,7 @@ export function CliCaption({ argv }: { argv: string[] | null }) {
     try {
       await navigator.clipboard.writeText(cmd);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
+      setTimeout(() => setCopied(false), 1500);
     } catch {
       /* clipboard unavailable */
     }

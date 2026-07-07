@@ -101,8 +101,10 @@ function renderOperatorWork(work: WorkCardData): ReactNode {
 
 export default async function WorkBoard() {
   const workbench = await getWorkbench();
-  const open = await enrichWorkItems(arr(workbench?.open));
-  const recent = await enrichWorkItems(arr(workbench?.recent).slice(0, 8));
+  const [open, recent] = await Promise.all([
+    enrichWorkItems(arr(workbench?.open)),
+    enrichWorkItems(arr(workbench?.recent).slice(0, 8)),
+  ]);
   const byState = ((workbench?.counts ?? {}).by_state ?? {}) as Record<string, number>;
 
   return (

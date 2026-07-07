@@ -26,11 +26,7 @@ export function shortText(value: string, max = 300): string {
   return `${compact.slice(0, max - 1).trimEnd()}...`;
 }
 
-export async function packetForSurface(surface: string): Promise<PacketSummary | null> {
-  if (!surface.startsWith("packet:")) return null;
-  const data = await runJson(["packets", "list", "--json"]);
-  const item = arr(data?.items).find((candidate) => str(candidate.canonical_surface) === surface);
-  if (!item) return null;
+function packetSummaryFromItem(item: Json): PacketSummary {
   return {
     path: str(item.path) || str(item.source_ref),
     title: str(item.title),
@@ -43,14 +39,41 @@ export async function packetForSurface(surface: string): Promise<PacketSummary |
   };
 }
 
+/** `compound packets list --json` fetched once and indexed by canonical_surface. */
+async function packetsBySurface(): Promise<Map<string, PacketSummary>> {
+  const data = await runJson(["packets", "list", "--json"]);
+  const index = new Map<string, PacketSummary>();
+  for (const item of arr(data?.items)) {
+    const surface = str(item.canonical_surface);
+    if (surface) index.set(surface, packetSummaryFromItem(item));
+  }
+  return index;
+}
+
+export async function packetForSurface(surface: string): Promise<PacketSummary | null> {
+  if (!surface.startsWith("packet:")) return null;
+  const index = await packetsBySurface();
+  return index.get(surface) ?? null;
+}
+
 export async function enrichWorkItem(item: Json): Promise<WorkCardData> {
   const id = workId(item);
   const packet = await packetForSurface(str(item.canonical_surface));
   return { ...item, displayId: id, packet };
 }
 
+/**
+ * Fetches the packets list ONCE for the whole batch and maps it in memory -
+ * previously this ran `packets list --json` once per item (N+1 fan-out).
+ */
 export async function enrichWorkItems(items: Json[]): Promise<WorkCardData[]> {
-  return Promise.all(items.map(enrichWorkItem));
+  const index = await packetsBySurface();
+  return items.map((item) => {
+    const id = workId(item);
+    const surface = str(item.canonical_surface);
+    const packet = surface.startsWith("packet:") ? index.get(surface) ?? null : null;
+    return { ...item, displayId: id, packet };
+  });
 }
 
 export async function findWorkbenchItem(id: string): Promise<Json | null> {
