@@ -50,6 +50,7 @@ var Classification = map[string]Class{
 	"observation":    ObjectFamily,
 	"panel":          ObjectFamily,
 	"product":        ObjectFamily,
+	"profiles":       ObjectFamily,
 	"projection":     ObjectFamily,
 	"routeevidence":  ObjectFamily,
 	"runtimebinding": ObjectFamily,

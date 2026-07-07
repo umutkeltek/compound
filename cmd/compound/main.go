@@ -139,6 +139,8 @@ func main() {
 		cmdTransition(os.Args[2:])
 	case "route":
 		cmdRoute(os.Args[2:])
+	case "profiles":
+		cmdProfiles(os.Args[2:])
 	case "memory":
 		cmdMemory(os.Args[2:])
 	case "synthesis":
