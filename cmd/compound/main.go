@@ -3032,7 +3032,17 @@ func memBreadthEngine() (mem.Engine, func()) {
 	if bin == "" {
 		return &mem.LexicalEngine{}, func() {}
 	}
-	tr := mem.NewHeldCoprocess(strings.Fields(bin), nil)
+	// Forward the resolved COMPOUND_HOME so the sidecar's vector cache persists in the
+	// right home even when the operator relied on the default (~/.compound) without
+	// exporting COMPOUND_HOME. Without this the sidecar saw an empty home and refused to
+	// start, taking the whole engine (even lexical) down (measured 2026-07-07).
+	var extraEnv []string
+	if os.Getenv("COMPOUND_HOME") == "" {
+		if hp, err := home.Resolve(""); err == nil && strings.TrimSpace(hp) != "" {
+			extraEnv = append(extraEnv, "COMPOUND_HOME="+hp)
+		}
+	}
+	tr := mem.NewHeldCoprocess(strings.Fields(bin), extraEnv)
 	eng := mem.NewProtocolEngine(tr, os.Getenv("COMPOUND_MEM_ENGINE_EMBEDDER"))
 	return eng, func() { _ = eng.Close() }
 }

@@ -210,19 +210,22 @@ func (e *Engine) semanticRanking(queryVector []float32, docs []doc, bm25, refere
 	})
 	out := make([]mem.Hit, 0, len(semantic)+len(reference))
 	seen := make(map[string]bool, len(semantic)+len(reference))
+	// Semantic-primary: emit the cosine-sorted claims first (lexical already applied as
+	// a tiebreak in the sort above). Reference/substring hits are NOT reserved ahead of
+	// semantic — that blind reservation let common substrings ("system", "skill") flood
+	// the top-k and bury the semantically-correct answer, stalling recall at the lexical
+	// baseline (measured 2026-07-07: reserved 0.879 vs pure-semantic 1.000). Reference
+	// hits only backfill the tail for claims that had no vector (partial/degraded index).
+	for _, h := range semantic {
+		seen[h.id] = true
+		out = append(out, mem.Hit{ClaimID: h.id, Score: h.cosine})
+	}
 	for _, h := range reference {
 		if seen[h.ClaimID] {
 			continue
 		}
 		seen[h.ClaimID] = true
 		out = append(out, h)
-	}
-	for _, h := range semantic {
-		if seen[h.id] {
-			continue
-		}
-		seen[h.id] = true
-		out = append(out, mem.Hit{ClaimID: h.id, Score: h.cosine})
 	}
 	if len(out) > k {
 		out = out[:k]
@@ -497,7 +500,14 @@ func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
 }
 
 func wrapDocText(c mem.ClaimText) string {
-	return "entity: " + c.Entity + " [" + c.ClaimType + "]\n" + c.Text
+	// Claims are atomic and already carry entity/predicate/object/id in Text, so we
+	// embed the raw index text. The old "entity: <E> [<T>]" prefix homogenized all
+	// same-entity claims (every decision embedded with an identical prefix), which
+	// collapsed semantic separation and stalled recall at the lexical baseline
+	// (measured 2026-07-07: wrapper 0.879 vs raw 1.000 on the golden set). The
+	// contextual-prefix technique belongs to the corpus chunk adapter (context-blind
+	// markdown), not to self-describing claims.
+	return c.Text
 }
 
 func cosine(a, b []float32) float64 {

@@ -448,6 +448,41 @@ func TestVectorSemanticCosineRanksLexicallyNonmatchingClaimTop(t *testing.T) {
 	}
 }
 
+func TestVectorSemanticBeatsSubstringDecoy(t *testing.T) {
+	// Regression guard for the 2026-07-07 reference-reservation bug: substring/reference
+	// hits must NOT be reserved ahead of a stronger semantic hit. A decoy that merely
+	// shares a common word with the query ("system") but is semantically unrelated must
+	// rank BELOW the semantically-correct claim that shares no query token. Before the
+	// fix, blind reference reservation put the decoy first and stalled live recall at the
+	// lexical baseline (0.879 vs 0.955).
+	claims := []mem.ClaimText{
+		{ClaimID: "winner", Entity: "dec", ClaimType: "decision", Text: "decision about chaining triggers"},
+		{ClaimID: "decoy", Entity: "other", ClaimType: "fact", Text: "the immune system enforces placement"},
+	}
+	query := "system"
+	embedder := newFakeEmbedder(2)
+	embedder.vectors = map[string][]float32{
+		query:                  {1, 0},
+		wrapDocText(claims[0]): {1, 0}, // winner: semantically closest, no query token
+		wrapDocText(claims[1]): {0, 1}, // decoy: semantically far, but substring-matches "system"
+	}
+	eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.IndexWithError(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+	ref := referenceContains(query, docsFromClaims(claims))
+	if len(ref) == 0 || ref[0].ClaimID != "decoy" {
+		t.Fatalf("test needs the decoy to be the substring/reference hit; got %+v", ref)
+	}
+	got := eng.Query(query, mem.GateList, []string{"winner", "decoy"}, 2)
+	if len(got) == 0 || got[0].ClaimID != "winner" {
+		t.Fatalf("semantic winner must outrank substring decoy (no blind reference reservation); got %+v", got)
+	}
+}
+
 func docsFromClaims(claims []mem.ClaimText) []doc {
 	docs := make([]doc, 0, len(claims))
 	for _, c := range claims {

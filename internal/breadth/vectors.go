@@ -20,7 +20,7 @@ import (
 
 const (
 	vectorSchemaVersion = "compound.breadth.index.v1"
-	wrapTemplate        = "entity: {Entity} [{ClaimType}]\\n{indexText}"
+	wrapTemplate        = "{indexText}"
 )
 
 var (
@@ -87,7 +87,11 @@ type vectorRow struct {
 
 func newVectorCache(compoundHome, identity string) (*vectorCache, error) {
 	if strings.TrimSpace(compoundHome) == "" {
-		return nil, errors.New("COMPOUND_HOME required for vector cache")
+		// No home to persist the cache — degrade to a temp dir rather than fail the whole
+		// engine (which used to drop even lexical recall to zero, measured 2026-07-07).
+		// Vectors are a cache: losing them across restarts costs re-embed time, never
+		// correctness. The operator path always gets a real home (compound forwards it).
+		compoundHome = filepath.Join(os.TempDir(), "compound-breadth-cache")
 	}
 	stamp, err := parseEmbedderIdentity(identity)
 	if err != nil {
