@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,14 @@ const (
 	maxProposalsPerRun  = 5
 )
 
+var proposalClassSeverityOrder = []string{
+	"job_health",
+	"source_connection_readiness",
+	"product_loop",
+	"synthesis_contradiction",
+	"review_debt",
+}
+
 type Options struct {
 	Apply bool
 	Now   time.Time
@@ -40,6 +49,12 @@ type Report struct {
 	ProposalCount            int                   `json:"proposal_count"`
 	SuppressedDuplicateCount int                   `json:"suppressed_duplicate_count"`
 	SkippedCount             int                   `json:"skipped_count"`
+	SkipHistogram            map[string]int        `json:"skip_histogram,omitempty"`
+	RunWorkID                string                `json:"run_work_id,omitempty"`
+	RunReceiptID             string                `json:"run_receipt_id,omitempty"`
+	RunTransitionID          string                `json:"run_transition_id,omitempty"`
+	RunMoveType              string                `json:"run_move_type,omitempty"`
+	NoDelta                  bool                  `json:"no_delta,omitempty"`
 	ResultPath               string                `json:"result_path,omitempty"`
 	Proposals                []Proposal            `json:"proposals,omitempty"`
 	SuppressedDuplicates     []SuppressedDuplicate `json:"suppressed_duplicates,omitempty"`
@@ -73,6 +88,7 @@ type SuppressedDuplicate struct {
 }
 
 type SkippedCandidate struct {
+	Class        string   `json:"class,omitempty"`
 	Kind         string   `json:"kind"`
 	Title        string   `json:"title,omitempty"`
 	Reason       string   `json:"reason"`
@@ -96,6 +112,7 @@ type candidate struct {
 	Boundary           string
 	Proof              string
 	EvidenceRefs       []string
+	CreatedAt          string
 }
 
 type duplicateIndex struct {
@@ -132,9 +149,10 @@ func Propose(homePath string, opts Options) (Report, error) {
 	report.Warnings = append(report.Warnings, warnings...)
 	candidates, warnings := scanCandidates(homePath, now)
 	report.Warnings = append(report.Warnings, warnings...)
-	for _, cand := range candidates {
+	for _, cand := range fairCandidateOrder(candidates) {
 		if len(report.Proposals) >= maxProposalsPerRun {
-			report.Skipped = append(report.Skipped, SkippedCandidate{
+			addSkipped(&report, SkippedCandidate{
+				Class:        candidateClass(cand),
 				Kind:         cand.Kind,
 				Title:        cand.Title,
 				Reason:       "cap_reached",
@@ -144,7 +162,10 @@ func Propose(homePath string, opts Options) (Report, error) {
 		}
 		proposal, skipped := buildProposal(homePath, store, cand, now)
 		if skipped != nil {
-			report.Skipped = append(report.Skipped, *skipped)
+			if skipped.Class == "" {
+				skipped.Class = candidateClass(cand)
+			}
+			addSkipped(&report, *skipped)
 			continue
 		}
 		if dup := dupes.find(proposal.TriggerRef); dup != nil {
@@ -198,6 +219,9 @@ func Propose(homePath string, opts Options) (Report, error) {
 			return report, err
 		}
 		report.ResultPath = path
+		if err := recordApplyRunEnvelope(store, &report, now); err != nil {
+			return report, err
+		}
 		if err := rewriteReport(path, report); err != nil {
 			return report, err
 		}
@@ -236,6 +260,98 @@ func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
 		out = append(out, items...)
 	}
 	return out, warnings
+}
+
+func fairCandidateOrder(candidates []candidate) []candidate {
+	buckets := map[string][]candidate{}
+	unknownClasses := map[string]bool{}
+	for _, cand := range candidates {
+		class := candidateClass(cand)
+		buckets[class] = append(buckets[class], cand)
+		if !knownProposalClass(class) {
+			unknownClasses[class] = true
+		}
+	}
+	for class := range buckets {
+		sort.SliceStable(buckets[class], func(i, j int) bool {
+			return candidateLessWithinClass(buckets[class][i], buckets[class][j])
+		})
+	}
+	classes := append([]string{}, proposalClassSeverityOrder...)
+	for class := range unknownClasses {
+		classes = append(classes, class)
+	}
+	sort.SliceStable(classes[len(proposalClassSeverityOrder):], func(i, j int) bool {
+		return classes[len(proposalClassSeverityOrder)+i] < classes[len(proposalClassSeverityOrder)+j]
+	})
+
+	out := make([]candidate, 0, len(candidates))
+	for len(out) < len(candidates) {
+		added := false
+		for _, class := range classes {
+			if len(buckets[class]) == 0 {
+				continue
+			}
+			out = append(out, buckets[class][0])
+			buckets[class] = buckets[class][1:]
+			added = true
+		}
+		if !added {
+			break
+		}
+	}
+	return out
+}
+
+func candidateClass(cand candidate) string {
+	switch cand.Kind {
+	case "product_signal_without_hypothesis", "product_action_card":
+		return "product_loop"
+	default:
+		return cand.Kind
+	}
+}
+
+func knownProposalClass(class string) bool {
+	for _, known := range proposalClassSeverityOrder {
+		if class == known {
+			return true
+		}
+	}
+	return false
+}
+
+func candidateLessWithinClass(a, b candidate) bool {
+	aCreated := strings.TrimSpace(a.CreatedAt)
+	bCreated := strings.TrimSpace(b.CreatedAt)
+	if aCreated != bCreated {
+		if aCreated == "" {
+			return false
+		}
+		if bCreated == "" {
+			return true
+		}
+		return aCreated < bCreated
+	}
+	if a.SourceID != b.SourceID {
+		return a.SourceID < b.SourceID
+	}
+	if a.Title != b.Title {
+		return a.Title < b.Title
+	}
+	return strings.Join(compactRefs(a.EvidenceRefs), "|") < strings.Join(compactRefs(b.EvidenceRefs), "|")
+}
+
+func addSkipped(report *Report, skipped SkippedCandidate) {
+	report.Skipped = append(report.Skipped, skipped)
+	class := strings.TrimSpace(skipped.Class)
+	if class == "" {
+		class = skipped.Kind
+	}
+	if report.SkipHistogram == nil {
+		report.SkipHistogram = map[string]int{}
+	}
+	report.SkipHistogram[class]++
 }
 
 func buildProposal(homePath string, store *work.Store, cand candidate, now time.Time) (Proposal, *SkippedCandidate) {
@@ -431,6 +547,7 @@ func synthesisContradictionCandidates(homePath string, now time.Time) ([]candida
 			Boundary:       "review-only synthesis handling; no bulk apply, auto-adjudication, memory promotion, rejection, or supersession",
 			Proof:          "review artifact or follow-up WorkEnvelope cites the contradiction evidence refs",
 			EvidenceRefs:   reviewEvidenceRefs(item),
+			CreatedAt:      item.CreatedAt,
 		})
 	}
 	return out, nil
@@ -467,6 +584,7 @@ func reviewDebtCandidates(homePath string, now time.Time) ([]candidate, error) {
 			Boundary:       "review-debt work only; no owner mutation except through the review artifact's explicit command and policy path",
 			Proof:          "review queue no longer reports the same item as unresolved, or a follow-up receipt explains why it remains blocked",
 			EvidenceRefs:   reviewEvidenceRefs(item),
+			CreatedAt:      item.CreatedAt,
 		})
 	}
 	return out, nil
@@ -551,6 +669,7 @@ func jobHealthCandidates(homePath string, now time.Time) ([]candidate, error) {
 			Boundary:       plan.ReviewDraft.MutationGuardrail,
 			Proof:          plan.ReviewDraft.Verification,
 			EvidenceRefs:   refs,
+			CreatedAt:      firstNonEmpty(plan.LastRunAt, plan.CreatedAt),
 		})
 	}
 	return out, nil
@@ -665,6 +784,105 @@ func recordReport(homePath string, report Report) (string, error) {
 	}
 	path := filepath.Join(dir, report.ID+".json")
 	return path, rewriteReport(path, report)
+}
+
+func recordApplyRunEnvelope(store *work.Store, report *Report, now time.Time) error {
+	if store == nil {
+		return fmt.Errorf("work_store_unavailable")
+	}
+	report.RunWorkID = idFor("work_", "director_run", report.ID)
+	report.RunMoveType = "control_plane_repair"
+	report.NoDelta = false
+	if report.ProposalCount == 0 {
+		report.RunMoveType = "audit_only"
+		report.NoDelta = true
+	}
+	created, err := store.Create(work.CreateInput{
+		WorkID:           report.RunWorkID,
+		Owner:            "compound-director",
+		Actor:            DirectorActor,
+		CanonicalSurface: "director:run:" + report.ID,
+		SuccessPredicate: "Record director propose --apply run receipt and closing transition",
+		DesiredOutcome:   "Director apply run is enveloped with proposal, duplicate, and skip counts",
+		NonGoals: []string{
+			"do not admit, claim, advance, dispatch, or close proposed work generated by the director",
+			"do not mutate scheduler, source, product, review, or memory owner state",
+		},
+		EvidenceRefs: directorRunEvidenceRefs(*report),
+		State:        "running",
+		Risk:         "tier1",
+		Privacy:      "private",
+	}, now)
+	if err != nil {
+		return err
+	}
+	closed, err := store.Close(created.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  report.RunMoveType,
+		Actor:     DirectorActor,
+		Summary:   directorRunSummary(*report),
+		Changed:   report.ProposalCount > 0,
+		ProofRefs: directorRunEvidenceRefs(*report),
+	}, now)
+	if err != nil {
+		return err
+	}
+	report.RunWorkID = closed.Work.ID
+	report.RunReceiptID = closed.Receipt.ID
+	report.RunTransitionID = closed.Transition.ID
+	return nil
+}
+
+func directorRunSummary(report Report) string {
+	parts := []string{
+		"director propose --apply",
+		fmt.Sprintf("proposal_count=%d", report.ProposalCount),
+		fmt.Sprintf("suppressed_duplicate_count=%d", report.SuppressedDuplicateCount),
+		fmt.Sprintf("skipped_count=%d", report.SkippedCount),
+	}
+	if len(report.SkipHistogram) > 0 {
+		parts = append(parts, "skip_histogram="+histogramString(report.SkipHistogram))
+	}
+	if report.NoDelta {
+		parts = append(parts, "no_delta=true")
+	}
+	return strings.Join(parts, "; ")
+}
+
+func directorRunEvidenceRefs(report Report) []string {
+	refs := []string{
+		"director_run:" + report.ID,
+		fmt.Sprintf("director_counts:proposal_count=%d,suppressed_duplicate_count=%d,skipped_count=%d", report.ProposalCount, report.SuppressedDuplicateCount, report.SkippedCount),
+	}
+	if report.ResultPath != "" {
+		refs = append(refs, "director_run_report:"+filepath.ToSlash(report.ResultPath))
+	}
+	if report.NoDelta {
+		refs = append(refs, "no_delta:director_apply_empty")
+	}
+	for _, class := range sortedHistogramKeys(report.SkipHistogram) {
+		refs = append(refs, fmt.Sprintf("director_skip_histogram:%s=%d", class, report.SkipHistogram[class]))
+	}
+	return reviewartifact.UniqueSorted(refs)
+}
+
+func histogramString(histogram map[string]int) string {
+	var parts []string
+	for _, class := range sortedHistogramKeys(histogram) {
+		parts = append(parts, fmt.Sprintf("%s:%d", class, histogram[class]))
+	}
+	return strings.Join(parts, ",")
+}
+
+func sortedHistogramKeys(histogram map[string]int) []string {
+	var keys []string
+	for key := range histogram {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func rewriteReport(path string, report Report) error {

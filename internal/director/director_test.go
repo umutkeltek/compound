@@ -1,11 +1,16 @@
 package director
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"compound/internal/authority"
+	"compound/internal/envelope"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 	"compound/internal/work"
@@ -79,6 +84,82 @@ func TestProposeDedupesPriorDirectorProposal(t *testing.T) {
 	}
 }
 
+func TestProposeApplyCreatesRunLevelReceiptTransition(t *testing.T) {
+	home := seededDirectorHome(t)
+	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
+
+	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProposalCount != 1 {
+		t.Fatalf("director apply should record one proposal: %+v", report)
+	}
+	if report.RunWorkID == "" || report.RunReceiptID == "" || report.RunTransitionID == "" {
+		t.Fatalf("apply run missing enclosing work/receipt/transition ids: %+v", report)
+	}
+	if report.RunMoveType != "control_plane_repair" || report.NoDelta {
+		t.Fatalf("proposal-producing apply should be a changed control-plane run: %+v", report)
+	}
+	store, err := work.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runWork, err := store.Get(report.RunWorkID)
+	if err != nil {
+		t.Fatalf("run work %s not stored: %v", report.RunWorkID, err)
+	}
+	if err := runWork.Validate(); err != nil {
+		t.Fatalf("run work invalid: %v", err)
+	}
+	if runWork.State != "completed" || runWork.IDs.TransitionID != report.RunTransitionID {
+		t.Fatalf("run work not closed through transition: %+v", runWork)
+	}
+	receipt := loadReceipt(t, home, report.RunReceiptID)
+	if receipt.IDs.WorkID != report.RunWorkID || receipt.MoveType != "control_plane_repair" || !receipt.StateDelta.Changed {
+		t.Fatalf("run receipt not tied to changed run work: %+v", receipt)
+	}
+	for _, want := range []string{"proposal_count=1", "suppressed_duplicate_count=0", "skipped_count=0"} {
+		if !strings.Contains(receipt.StateDelta.Summary, want) {
+			t.Fatalf("run receipt summary missing %q: %q", want, receipt.StateDelta.Summary)
+		}
+	}
+	assertHasPrefix(t, receipt.ProofRefs, "director_counts:proposal_count=1,suppressed_duplicate_count=0,skipped_count=0")
+	transition := loadTransition(t, home, report.RunTransitionID)
+	if transition.IDs.WorkID != report.RunWorkID || !transition.SecondOrder.FutureBehaviorChanged {
+		t.Fatalf("run transition not tied to changed run work: %+v", transition)
+	}
+}
+
+func TestProposeApplyEmptyRunUsesAuditOnlyNoDeltaReceipt(t *testing.T) {
+	home := seededDirectorHome(t)
+
+	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProposalCount != 0 || report.RunWorkID == "" || report.RunReceiptID == "" || report.RunTransitionID == "" {
+		t.Fatalf("empty apply should still create enclosing run proof: %+v", report)
+	}
+	if report.RunMoveType != "audit_only" || !report.NoDelta {
+		t.Fatalf("empty apply should be explicitly no-delta audit_only: %+v", report)
+	}
+	receipt := loadReceipt(t, home, report.RunReceiptID)
+	if receipt.MoveType != "audit_only" || receipt.StateDelta.Changed {
+		t.Fatalf("empty run receipt should count for nothing: %+v", receipt)
+	}
+	for _, want := range []string{"proposal_count=0", "suppressed_duplicate_count=0", "skipped_count=0", "no_delta=true"} {
+		if !strings.Contains(receipt.StateDelta.Summary, want) {
+			t.Fatalf("empty run receipt summary missing %q: %q", want, receipt.StateDelta.Summary)
+		}
+	}
+	assertHasRef(t, receipt.ProofRefs, "no_delta:director_apply_empty")
+	transition := loadTransition(t, home, report.RunTransitionID)
+	if transition.SecondOrder.FutureBehaviorChanged {
+		t.Fatalf("audit_only transition should not claim future behavior changed: %+v", transition)
+	}
+}
+
 func TestProposeDedupesOpenWork(t *testing.T) {
 	home := seededDirectorHome(t)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
@@ -116,6 +197,26 @@ func TestProposeDedupesOpenWork(t *testing.T) {
 	if dup.Reason != "open_work" || len(dup.ExistingWorkIDs) == 0 || len(dup.EvidenceRefs) == 0 {
 		t.Fatalf("open-work duplicate should carry work ids and evidence refs: %+v", dup)
 	}
+}
+
+func TestProposeDoesNotStarveOtherClasses(t *testing.T) {
+	home := seededDirectorHome(t)
+	for i := 0; i < 100; i++ {
+		seedReviewDebtWithCreatedAt(t, home, "synthetic-review-debt", fmt.Sprintf("review-debt-%03d", i), directorTestNow.Add(time.Duration(i)*time.Minute))
+	}
+	seedFailingJobHealth(t, home)
+
+	report, err := Propose(home, Options{Now: directorTestNow.Add(2 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ProposalCount != 5 {
+		t.Fatalf("director run should still cap proposals at five: %+v", report)
+	}
+	if !hasProposalKind(report, "job_health") {
+		t.Fatalf("job_health candidate was starved by overflowing review debt: %+v", report.Proposals)
+	}
+	assertNoHigherSeverityClassCapSkippedBelowSelected(t, report)
 }
 
 func TestProposeCapsRunAtFive(t *testing.T) {
@@ -196,6 +297,11 @@ func seededDirectorHome(t *testing.T) string {
 
 func seedReviewDebt(t *testing.T, home, area, id string) {
 	t.Helper()
+	seedReviewDebtWithCreatedAt(t, home, area, id, time.Time{})
+}
+
+func seedReviewDebtWithCreatedAt(t *testing.T, home, area, id string, createdAt time.Time) {
+	t.Helper()
 	payload := map[string]any{
 		"id":            id,
 		"status":        "review_required",
@@ -203,9 +309,105 @@ func seedReviewDebt(t *testing.T, home, area, id string) {
 		"evidence_refs": []string{"synthetic:evidence:" + id},
 		"next_action":   "decide bounded synthetic follow-up",
 	}
+	if !createdAt.IsZero() {
+		payload["created_at"] = createdAt.UTC().Format(time.RFC3339)
+	}
 	if _, err := reviewartifact.Write(home, area, id, payload, "  ", "synthetic review debt\n"); err != nil {
 		t.Fatalf("write review debt: %v", err)
 	}
+}
+
+func seedFailingJobHealth(t *testing.T, home string) {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "cron-jobs.json")
+	data := `{
+  "version": 1,
+  "generated_at": "2026-07-06T08:00:00Z",
+  "jobs": [
+    {
+      "job_id": "critical-job",
+      "name": "critical failing job",
+      "enabled": true,
+      "state": "scheduled",
+      "schedule": "every hour",
+      "script": "critical.sh",
+      "last_status": "error",
+      "last_error": "synthetic failure",
+      "last_run_at": "2026-07-06T07:30:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(source, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.ImportJobRoster(home, source, directorTestNow); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func loadReceipt(t *testing.T, home, id string) envelope.Receipt {
+	t.Helper()
+	var receipt envelope.Receipt
+	readEnvelope(t, home, id, &receipt)
+	if err := receipt.Validate(); err != nil {
+		t.Fatalf("receipt %s invalid: %v", id, err)
+	}
+	return receipt
+}
+
+func loadTransition(t *testing.T, home, id string) envelope.Transition {
+	t.Helper()
+	var transition envelope.Transition
+	readEnvelope(t, home, id, &transition)
+	if err := transition.Validate(); err != nil {
+		t.Fatalf("transition %s invalid: %v", id, err)
+	}
+	return transition
+}
+
+func readEnvelope(t *testing.T, home, id string, out any) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, "events", id+".json"))
+	if err != nil {
+		t.Fatalf("read envelope %s: %v", id, err)
+	}
+	if err := json.Unmarshal(data, out); err != nil {
+		t.Fatalf("parse envelope %s: %v", id, err)
+	}
+}
+
+func hasProposalKind(report Report, kind string) bool {
+	for _, proposal := range report.Proposals {
+		if proposal.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func assertNoHigherSeverityClassCapSkippedBelowSelected(t *testing.T, report Report) {
+	t.Helper()
+	for _, skipped := range report.Skipped {
+		if skipped.Reason != "cap_reached" {
+			continue
+		}
+		skippedRank := proposalClassRank(skipped.Class)
+		for _, proposal := range report.Proposals {
+			selectedClass := candidateClass(candidate{Kind: proposal.Kind})
+			if proposalClassRank(selectedClass) > skippedRank {
+				t.Fatalf("higher-severity class %s was cap-skipped while lower-severity class %s got a slot: report=%+v", skipped.Class, selectedClass, report)
+			}
+		}
+	}
+}
+
+func proposalClassRank(class string) int {
+	for i, known := range proposalClassSeverityOrder {
+		if class == known {
+			return i
+		}
+	}
+	return len(proposalClassSeverityOrder)
 }
 
 func assertHasRef(t *testing.T, refs []string, want string) {
