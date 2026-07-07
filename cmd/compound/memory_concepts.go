@@ -115,6 +115,12 @@ func cmdMemoryRecall(store *mem.Store, args []string) {
 			fmt.Printf(" annotation %s decision=%s original=%s confidence=%.2f run=%s verdict=%s\n", ann.ID, ann.Decision, ann.OriginalDecision, ann.Confidence, ann.RunID, ann.VerdictArtifact)
 		}
 	}
+	// `recall <name>` is EXACT/as-of recall over a single entity. A multi-word natural-language
+	// arg is almost always meant as a free-text question — point it at the breadth engine so the
+	// verb split isn't a silent footgun (recall returns nothing where query would answer).
+	if len(rr.Claims) == 0 && len(rr.EvidenceCandidates) == 0 && strings.ContainsAny(strings.TrimSpace(entity), " ") {
+		fmt.Printf("# hint: `recall` matches one entity by name; for a free-text/semantic question use `compound memory query %q`\n", entity)
+	}
 }
 
 func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem.Engine, func())) {
