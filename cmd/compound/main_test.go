@@ -12312,3 +12312,113 @@ func findCLIActionCard(products []product.ProductLoop, kind string) product.Loop
 	}
 	return product.LoopActionCard{}
 }
+
+func TestMemoryEngineBreadthProfileAppliesOptInEmbedderFromConfig(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	// A fake breadth sidecar so profile=breadth resolves a bin.
+	binDir := t.TempDir()
+	sidecarPath := filepath.Join(binDir, "compound-breadth-engine")
+	if err := os.WriteFile(sidecarPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake breadth engine: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfgPath := memoryEngineConfigPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	yamlBody := "schema_version: compound.memory_engine_config.v0.1\n" +
+		"profile: breadth\n" +
+		"embed:\n" +
+		"  provider: ollama\n" +
+		"  model: nomic-embed-text\n" +
+		"  base_url: http://localhost:11434/v1\n"
+	if err := os.WriteFile(cfgPath, []byte(yamlBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Ensure a stripped env before configuring.
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_BASE_URL", "")
+
+	restore, err := configureMemoryEngineFromHome(homePath, "")
+	if err != nil {
+		t.Fatalf("configure from breadth+embed config: %v", err)
+	}
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_MODEL"); got != "nomic-embed-text" {
+		t.Fatalf("embed model from config = %q, want nomic-embed-text (semantic lane would stay OFF)", got)
+	}
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_PROVIDER"); got != "ollama" {
+		t.Fatalf("embed provider = %q, want ollama", got)
+	}
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_BASE_URL"); got != "http://localhost:11434/v1" {
+		t.Fatalf("embed base_url = %q", got)
+	}
+	restore()
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_MODEL"); got != "" {
+		t.Fatalf("restore should clear embed model, got %q", got)
+	}
+}
+
+func TestMemoryEngineOptInEmbedderIsFillInOnly_ShellExportWins(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	binDir := t.TempDir()
+	sidecarPath := filepath.Join(binDir, "compound-breadth-engine")
+	if err := os.WriteFile(sidecarPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake breadth engine: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfgPath := memoryEngineConfigPath(homePath)
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	yamlBody := "schema_version: compound.memory_engine_config.v0.1\nprofile: breadth\nembed:\n  provider: ollama\n  model: config-model\n"
+	if err := os.WriteFile(cfgPath, []byte(yamlBody), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "shell-model") // explicit export must win
+
+	restore, err := configureMemoryEngineFromHome(homePath, "")
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer restore()
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_MODEL"); got != "shell-model" {
+		t.Fatalf("shell export should win over config, got %q", got)
+	}
+}
+
+func TestMemoryEngineNoEmbedBlockLeavesLaneOff(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	binDir := t.TempDir()
+	sidecarPath := filepath.Join(binDir, "compound-breadth-engine")
+	if err := os.WriteFile(sidecarPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake breadth engine: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if _, err := writeMemoryEngineConfig(homePath, "breadth"); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "")
+	restore, err := configureMemoryEngineFromHome(homePath, "")
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	defer restore()
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_MODEL"); got != "" {
+		t.Fatalf("no embed block must leave lane OFF (no silent default), got model=%q", got)
+	}
+}

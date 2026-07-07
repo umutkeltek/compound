@@ -3043,6 +3043,18 @@ const memoryEngineConfigSchemaVersion = "compound.memory_engine_config.v0.1"
 type memoryEngineConfig struct {
 	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
 	Profile       string `json:"profile,omitempty" yaml:"profile,omitempty"`
+	// Embed is the OPT-IN embedder for the breadth profile's semantic lane. Absent/empty =
+	// lexical only (OFF by default, no silent default — the EP-A6 ruling). When Model is set,
+	// the breadth profile forwards these to the sidecar so semantic recall engages WITHOUT the
+	// operator exporting COMPOUND_BREADTH_EMBED_* in every shell.
+	Embed *memoryEmbedConfig `json:"embed,omitempty" yaml:"embed,omitempty"`
+}
+
+type memoryEmbedConfig struct {
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`   // e.g. ollama | openai
+	Model    string `json:"model,omitempty" yaml:"model,omitempty"`         // e.g. nomic-embed-text | text-embedding-3-large
+	BaseURL  string `json:"base_url,omitempty" yaml:"base_url,omitempty"`   // e.g. http://localhost:11434/v1
+	Embedder string `json:"embedder,omitempty" yaml:"embedder,omitempty"`   // optional identity guard (provider:model:dim:bits)
 }
 
 type memoryEngineConfigReport struct {
@@ -3105,6 +3117,11 @@ func writeMemoryEngineConfig(homePath, profile string) (memoryEngineConfigReport
 		return memoryEngineConfigReport{}, err
 	}
 	cfg := memoryEngineConfig{SchemaVersion: memoryEngineConfigSchemaVersion, Profile: profile}
+	// Preserve an existing opt-in embedder block so switching profile doesn't silently disable
+	// the semantic lane the operator configured.
+	if existing, _, err := loadMemoryEngineConfig(homePath); err == nil && existing.Embed != nil {
+		cfg.Embed = existing.Embed
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return memoryEngineConfigReport{}, err
@@ -3138,15 +3155,50 @@ func configureMemoryEngineFromHome(homePath, explicitProfile string) (func(), er
 	if err != nil {
 		return func() {}, err
 	}
+	var cfg memoryEngineConfig
+	cfg, _, err = loadMemoryEngineConfig(homePath)
+	if err != nil {
+		return func() {}, err
+	}
 	if profile == "" {
-		var cfg memoryEngineConfig
-		cfg, _, err = loadMemoryEngineConfig(homePath)
-		if err != nil {
-			return func() {}, err
-		}
 		profile = cfg.Profile
 	}
-	return configureMemoryEngineProfile(profile)
+	restore, err := configureMemoryEngineProfile(profile)
+	if err != nil {
+		return restore, err
+	}
+	// Opt-in embedder: makes the breadth semantic lane engage from home config, not shell exports.
+	// Fill-in only (a shell export still wins) and gated on Model being set, so an empty/absent
+	// block leaves the lane lexical — OFF by default, no silent default (EP-A6 ruling).
+	if profile == "breadth" && cfg.Embed != nil && strings.TrimSpace(cfg.Embed.Model) != "" {
+		embedRestore := applyEmbedConfigEnv(*cfg.Embed)
+		return func() { embedRestore(); restore() }, nil
+	}
+	return restore, nil
+}
+
+// applyEmbedConfigEnv fills the breadth sidecar's embedder env from config WITHOUT overriding an
+// explicit shell export, capturing prior values so the caller can restore them.
+func applyEmbedConfigEnv(embed memoryEmbedConfig) func() {
+	restore := captureEnv(
+		"COMPOUND_BREADTH_EMBED_MODEL",
+		"COMPOUND_BREADTH_EMBED_PROVIDER",
+		"COMPOUND_BREADTH_EMBED_BASE_URL",
+		"COMPOUND_MEM_ENGINE_EMBEDDER",
+	)
+	setIfUnset := func(key, val string) {
+		if strings.TrimSpace(val) == "" {
+			return
+		}
+		if strings.TrimSpace(os.Getenv(key)) == "" {
+			_ = os.Setenv(key, val)
+		}
+	}
+	setIfUnset("COMPOUND_BREADTH_EMBED_MODEL", embed.Model)
+	setIfUnset("COMPOUND_BREADTH_EMBED_PROVIDER", embed.Provider)
+	setIfUnset("COMPOUND_BREADTH_EMBED_BASE_URL", embed.BaseURL)
+	setIfUnset("COMPOUND_MEM_ENGINE_EMBEDDER", embed.Embedder)
+	return restore
 }
 
 func configureMemoryEngineProfile(profile string) (func(), error) {
