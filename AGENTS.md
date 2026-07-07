@@ -66,6 +66,12 @@ loop compound provides:
   staleness window becomes a time bomb that reds main days after a green landing). Inject the
   clock, or freshen fixture timestamps at runtime.
 - Integration has levels: **orientation < pointer < merge < proof.** Only merge and runtime proof count.
+- **A capability with no live production consumer is bench-only.** A great bakeoff/test number is not proof the
+  feature reaches its real caller — `grep` for the production consumer of the code you landed. (Lived example:
+  the 0.955 semantic recall was consumed only by `memory query`; the agent-facing orient/hook path used a naive
+  ranker and never called it, so live sessions got worse recall than the bench claimed.) And a fix can land
+  *correct but dormant* if its env/config gate never engages on the operator's live config — verify the gate is
+  live where the consumer actually runs, not just where your test shell exports it.
 - Generated runtime state goes under `COMPOUND_HOME`, never the repo source tree. No `cwd` as authority.
 
 ## Public / private boundary (this repo is destined to be public)
