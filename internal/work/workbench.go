@@ -1529,6 +1529,7 @@ func (s *Store) workbenchContinueRuns(limit int) ([]ContinueRunSummary, []string
 				summary.StepWorkIDs = append(summary.StepWorkIDs, step.WorkID)
 			}
 		}
+		summary = s.resolveContinueRunSummary(summary)
 		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1553,27 +1554,84 @@ func (s *Store) resolveDispatchStepRunSummary(summary DispatchStepRunSummary) Di
 		summary.NextAction = "no open work at run time; no dispatch action remains for this run"
 		return summary
 	}
-	var terminalRefs []string
-	for _, blocked := range summary.BlockedOn {
-		workID, ok := dispatchBlockedWorkID(blocked)
-		if !ok {
-			return summary
-		}
-		w, err := s.Get(workID)
-		if err != nil || !terminalStates[w.State] {
-			return summary
-		}
-		terminalRefs = append(terminalRefs, "work.terminal:"+workID)
+	workIDs, ok := blockedWorkIDs(summary.BlockedOn)
+	if !ok {
+		return summary
 	}
-	if len(terminalRefs) == 0 {
+	terminalRefs, ok := s.terminalWorkRefs(workIDs)
+	if !ok {
 		return summary
 	}
 	summary.Status = "resolved"
 	summary.CanContinue = false
 	summary.WaitReason = "terminal_work"
-	summary.BlockedOn = mergeUnique(terminalRefs)
+	summary.BlockedOn = terminalRefs
 	summary.NextAction = "referenced work is terminal; no dispatch action required"
 	return summary
+}
+
+// resolveContinueRunSummary mirrors resolveDispatchStepRunSummary for continue
+// runs: when every work id a waiting run references (blocked_on work refs ∪
+// step_work_ids) is terminal, the run has no continue action left. Projection
+// only — the recorded run file is never mutated.
+func (s *Store) resolveContinueRunSummary(summary ContinueRunSummary) ContinueRunSummary {
+	if summary.Status != "waiting" {
+		return summary
+	}
+	workIDs, ok := blockedWorkIDs(summary.BlockedOn)
+	if !ok {
+		return summary
+	}
+	workIDs = append(workIDs, summary.StepWorkIDs...)
+	terminalRefs, ok := s.terminalWorkRefs(workIDs)
+	if !ok {
+		return summary
+	}
+	summary.Status = "resolved"
+	summary.CanContinue = false
+	summary.WaitReason = "terminal_work"
+	summary.BlockedOn = terminalRefs
+	summary.NextAction = "referenced work is terminal; no continue action required"
+	return summary
+}
+
+// blockedWorkIDs extracts work ids from work.<reason>:<id> blocked_on entries.
+// ok is false when any entry is not a work reference: a non-work blocker cannot
+// be proven terminal, so the caller must stay waiting.
+func blockedWorkIDs(blockedOn []string) ([]string, bool) {
+	ids := make([]string, 0, len(blockedOn))
+	for _, blocked := range blockedOn {
+		workID, ok := dispatchBlockedWorkID(blocked)
+		if !ok {
+			return nil, false
+		}
+		ids = append(ids, workID)
+	}
+	return ids, true
+}
+
+// terminalWorkRefs returns deduplicated work.terminal:<id> refs when every work
+// id resolves to a terminal WorkEnvelope. ok is false when the set is empty or
+// any referenced work is missing or non-terminal.
+func (s *Store) terminalWorkRefs(workIDs []string) ([]string, bool) {
+	seen := map[string]bool{}
+	var refs []string
+	for _, workID := range workIDs {
+		workID = strings.TrimSpace(workID)
+		if workID == "" || seen[workID] {
+			continue
+		}
+		seen[workID] = true
+		w, err := s.Get(workID)
+		if err != nil || !terminalStates[w.State] {
+			return nil, false
+		}
+		refs = append(refs, "work.terminal:"+workID)
+	}
+	if len(refs) == 0 {
+		return nil, false
+	}
+	return mergeUnique(refs), true
 }
 
 func dispatchNoOpenWorkWait(blockedOn []string) bool {

@@ -12,18 +12,22 @@ import (
 	"compound/internal/work"
 )
 
-const executorsUsage = "usage: compound executors [--json] [--probe-local] [--lm-studio-url URL]"
+const executorsUsage = "usage: compound executors [--json] [--probe-local] [--lm-studio-url URL] [--probe-jobs] [--jobs-state-dir DIR]"
 
 func cmdExecutors(args []string) {
 	jsonOut := false
 	probeLocal := false
+	probeJobs := false
 	lmStudioURL := ""
+	jobsStateDir := ""
 	for i := 0; i < len(args); i++ {
 		switch arg := args[i]; arg {
 		case "--json":
 			jsonOut = true
 		case "--probe-local":
 			probeLocal = true
+		case "--probe-jobs":
+			probeJobs = true
 		case "--lm-studio-url":
 			i++
 			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
@@ -31,6 +35,13 @@ func cmdExecutors(args []string) {
 				os.Exit(2)
 			}
 			lmStudioURL = strings.TrimSpace(args[i])
+		case "--jobs-state-dir":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				fmt.Fprintln(os.Stderr, executorsUsage)
+				os.Exit(2)
+			}
+			jobsStateDir = strings.TrimSpace(args[i])
 		default:
 			fmt.Fprintln(os.Stderr, executorsUsage)
 			os.Exit(2)
@@ -47,7 +58,7 @@ func cmdExecutors(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	opts := work.ExecutorsProjectionOptions{ProbeLocal: probeLocal}
+	opts := work.ExecutorsProjectionOptions{ProbeLocal: probeLocal, ProbeJobs: probeJobs, JobsStateDir: jobsStateDir}
 	if probeLocal {
 		if lmStudioURL == "" {
 			lmStudioURL = localRoutingBaseURL()
@@ -82,6 +93,9 @@ func printExecutorsProjection(projection work.ExecutorsProjection) {
 		projection.Counts.NeedsMe,
 		projection.Counts.Leases,
 	)
+	if projection.Counts.StaleLeases > 0 || projection.Counts.StalledJobs > 0 {
+		fmt.Printf("- residue: stale_leases=%d stalled_jobs=%d\n", projection.Counts.StaleLeases, projection.Counts.StalledJobs)
+	}
 	fmt.Printf("- source_refs: %s\n", strings.Join(projection.SourceRefs, ", "))
 	for _, executor := range projection.Executors {
 		fmt.Printf("\n## %s\n", executor.Label)
@@ -105,6 +119,9 @@ func printExecutorsProjection(projection work.ExecutorsProjection) {
 			executor.NeedsMeCount,
 			executor.LeaseCount,
 		)
+		if executor.StaleLeaseCount > 0 {
+			fmt.Printf("- stale_leases: %d\n", executor.StaleLeaseCount)
+		}
 		if len(executor.BestFor) > 0 {
 			fmt.Printf("- best_for: %s\n", strings.Join(executor.BestFor, ", "))
 		}
@@ -124,12 +141,21 @@ func printExecutorsProjection(projection work.ExecutorsProjection) {
 			fmt.Println("- current_work:")
 			for _, item := range executor.CurrentWork {
 				fmt.Printf("  - %s state=%s title=%q\n", item.WorkID, item.State, item.Title)
+				if item.NeedsMe != "" {
+					fmt.Printf("    needs_me: %s\n", item.NeedsMe)
+				}
 			}
 		}
 		if len(executor.Leases) > 0 {
 			fmt.Println("- leases:")
 			for _, lease := range executor.Leases {
 				fmt.Printf("  - %s by=%s age_seconds=%d\n", lease.WorkID, lease.By, lease.AgeSeconds)
+			}
+		}
+		if len(executor.StalledJobs) > 0 {
+			fmt.Println("- stalled_jobs:")
+			for _, job := range executor.StalledJobs {
+				fmt.Printf("  - %s work=%s pid=%d age_seconds=%d reason=%q\n", job.JobID, job.WorkID, job.PID, job.AgeSeconds, job.Reason)
 			}
 		}
 		if executor.LastSuccess != nil {

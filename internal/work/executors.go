@@ -41,35 +41,39 @@ type ExecutorCounts struct {
 	NeedsMe      int `json:"needs_me"`
 	Assigned     int `json:"assigned"`
 	Leases       int `json:"leases"`
+	StaleLeases  int `json:"stale_leases,omitempty"`
+	StalledJobs  int `json:"stalled_jobs,omitempty"`
 	ProfileGuide int `json:"profile_guide"`
 }
 
 type ExecutorRow struct {
-	ID                    string                `json:"id"`
-	Label                 string                `json:"label"`
-	Status                string                `json:"status"`
-	StatusSource          string                `json:"status_source"`
-	Tone                  string                `json:"tone,omitempty"`
-	Aliases               []string              `json:"aliases,omitempty"`
-	BestFor               []string              `json:"best_for,omitempty"`
-	CanUseTools           []string              `json:"can_use_tools,omitempty"`
-	CostLimits            []string              `json:"cost_limits,omitempty"`
-	AssignedCount         int                   `json:"assigned_count"`
-	RunningCount          int                   `json:"running_count"`
-	ReadyCount            int                   `json:"ready_count"`
-	NeedsMeCount          int                   `json:"needs_me_count"`
-	LeaseCount            int                   `json:"lease_count"`
-	OldestLeaseAgeSeconds *int64                `json:"oldest_lease_age_seconds,omitempty"`
-	RouteEvidenceCount    int                   `json:"route_evidence_count"`
-	RouteEvidencePresent  bool                  `json:"route_evidence_present"`
-	WaitReason            string                `json:"wait_reason,omitempty"`
-	LastHookEvent         *ExecutorHookEventRef `json:"last_hook_event,omitempty"`
-	CurrentWork           []ExecutorWorkRef     `json:"current_work,omitempty"`
-	Leases                []ExecutorLeaseRef    `json:"leases,omitempty"`
-	LastSuccess           *ExecutorWorkRef      `json:"last_success,omitempty"`
-	LastFailure           *ExecutorWorkRef      `json:"last_failure,omitempty"`
-	NextAssigned          *ExecutorWorkRef      `json:"next_assigned,omitempty"`
-	ProjectionNote        string                `json:"projection_note,omitempty"`
+	ID                    string                  `json:"id"`
+	Label                 string                  `json:"label"`
+	Status                string                  `json:"status"`
+	StatusSource          string                  `json:"status_source"`
+	Tone                  string                  `json:"tone,omitempty"`
+	Aliases               []string                `json:"aliases,omitempty"`
+	BestFor               []string                `json:"best_for,omitempty"`
+	CanUseTools           []string                `json:"can_use_tools,omitempty"`
+	CostLimits            []string                `json:"cost_limits,omitempty"`
+	AssignedCount         int                     `json:"assigned_count"`
+	RunningCount          int                     `json:"running_count"`
+	ReadyCount            int                     `json:"ready_count"`
+	NeedsMeCount          int                     `json:"needs_me_count"`
+	LeaseCount            int                     `json:"lease_count"`
+	StaleLeaseCount       int                     `json:"stale_lease_count,omitempty"`
+	OldestLeaseAgeSeconds *int64                  `json:"oldest_lease_age_seconds,omitempty"`
+	RouteEvidenceCount    int                     `json:"route_evidence_count"`
+	RouteEvidencePresent  bool                    `json:"route_evidence_present"`
+	WaitReason            string                  `json:"wait_reason,omitempty"`
+	LastHookEvent         *ExecutorHookEventRef   `json:"last_hook_event,omitempty"`
+	CurrentWork           []ExecutorWorkRef       `json:"current_work,omitempty"`
+	Leases                []ExecutorLeaseRef      `json:"leases,omitempty"`
+	StalledJobs           []ExecutorStalledJobRef `json:"stalled_jobs,omitempty"`
+	LastSuccess           *ExecutorWorkRef        `json:"last_success,omitempty"`
+	LastFailure           *ExecutorWorkRef        `json:"last_failure,omitempty"`
+	NextAssigned          *ExecutorWorkRef        `json:"next_assigned,omitempty"`
+	ProjectionNote        string                  `json:"projection_note,omitempty"`
 }
 
 type ExecutorWorkRef struct {
@@ -84,6 +88,7 @@ type ExecutorWorkRef struct {
 	ReceiptID        string `json:"receipt_id,omitempty"`
 	TransitionID     string `json:"transition_id,omitempty"`
 	CanonicalSurface string `json:"canonical_surface,omitempty"`
+	NeedsMe          string `json:"needs_me,omitempty"`
 }
 
 type ExecutorLeaseRef struct {
@@ -91,6 +96,20 @@ type ExecutorLeaseRef struct {
 	By         string `json:"by"`
 	ClaimedAt  string `json:"claimed_at"`
 	AgeSeconds int64  `json:"age_seconds"`
+}
+
+// ExecutorStalledJobRef surfaces a codex companion job that reports itself
+// running but whose owning process is not alive (a dead executor). It is a
+// projection-only truth signal; the underlying work item is never mutated.
+type ExecutorStalledJobRef struct {
+	JobID      string `json:"job_id"`
+	WorkID     string `json:"work_id,omitempty"`
+	Status     string `json:"status"`
+	Phase      string `json:"phase,omitempty"`
+	PID        int    `json:"pid,omitempty"`
+	AgeSeconds int64  `json:"age_seconds"`
+	LogPath    string `json:"log_path,omitempty"`
+	Reason     string `json:"reason"`
 }
 
 type ExecutorHookEventRef struct {
@@ -102,6 +121,13 @@ type ExecutorHookEventRef struct {
 type ExecutorsProjectionOptions struct {
 	ProbeLocal     bool
 	LMStudioClient localmodel.LMStudioClient
+	// ProbeJobs opts into the codex job-liveness cross-check: a running-status
+	// job whose pid is not alive marks its work item as needing a re-dispatch
+	// instead of counting as running.
+	ProbeJobs bool
+	// JobsStateDir overrides the codex jobs state directory scanned by the
+	// probe. Empty falls back to DefaultCodexJobsStateDir (machine-local).
+	JobsStateDir string
 }
 
 type executorProfile struct {
@@ -197,6 +223,21 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		applyLocalLMStudioProbe(rows["local_lm_studio"], opts.LMStudioClient)
 	}
 
+	deadExecutorWork := map[string]bool{}
+	if opts.ProbeJobs {
+		jobsDir := strings.TrimSpace(opts.JobsStateDir)
+		if jobsDir == "" {
+			if d, ok := DefaultCodexJobsStateDir(); ok {
+				jobsDir = d
+			}
+		}
+		projection.SourceRefs = appendSourceRef(projection.SourceRefs, ExecutorJobsProbeSourceRef)
+		stalled, warnings := scanStalledCodexJobs(jobsDir, now)
+		projection.Integrity = append(projection.Integrity, warnings...)
+		applyStalledCodexJobs(rows["codex"], stalled, deadExecutorWork)
+		projection.Counts.StalledJobs = len(stalled)
+	}
+
 	runningStates := map[string]bool{"claimed": true, "running": true, "in_progress": true, "verifying": true}
 	readyStates := map[string]bool{"ready": true, "admitted": true, "proposed": true}
 	needsMeStates := map[string]bool{"held": true, "blocked": true}
@@ -206,10 +247,19 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 			row = rows["unassigned"]
 		}
 		ref := executorWorkRef(item)
+		executorDied := runningStates[item.State] && deadExecutorWork[item.WorkID]
+		if executorDied {
+			ref.NeedsMe = executorDiedNeedsMe
+		}
 		row.AssignedCount++
 		row.CurrentWork = append(row.CurrentWork, ref)
 		projection.Counts.Assigned++
 		switch {
+		case executorDied:
+			// A dead executor means the work is not really running; surface it
+			// as needing me instead of an inflated running count.
+			row.NeedsMeCount++
+			projection.Counts.NeedsMe++
 		case runningStates[item.State]:
 			row.RunningCount++
 			projection.Counts.Running++
@@ -226,6 +276,14 @@ func (s *Store) ExecutorsProjection(now time.Time, optionSets ...ExecutorsProjec
 		row := rows[executorIDForActor(lease.By)]
 		if row == nil {
 			row = rows["unassigned"]
+		}
+		if s.leaseWorkTerminal(lease.WorkID) {
+			// Terminal-work leases are residue, not active claims; keep them
+			// out of the active lease list/count and surface a stale count so
+			// `home archive-history --kind lease` sweep debt stays visible.
+			row.StaleLeaseCount++
+			projection.Counts.StaleLeases++
+			continue
 		}
 		ageSeconds := executorAgeSeconds(now, lease.ClaimAt)
 		row.LeaseCount++
@@ -454,6 +512,50 @@ func applyLocalLMStudioProbe(row *ExecutorRow, client localmodel.LMStudioClient)
 		return
 	}
 	row.ProjectionNote = fmt.Sprintf("LM Studio reachable; %d model(s) reported", len(models))
+}
+
+// executorDiedNeedsMe is the needs-me card shown on a work item whose executor
+// process died while the work still reads as running.
+const executorDiedNeedsMe = "executor died — re-dispatch or release"
+
+// applyStalledCodexJobs records stalled jobs on the codex executor row and marks
+// their referenced work ids so a running work item with a dead executor can be
+// reclassified as needing me. It never mutates work items.
+func applyStalledCodexJobs(row *ExecutorRow, stalled []stalledCodexJob, deadWork map[string]bool) {
+	for _, job := range stalled {
+		for _, id := range job.WorkIDs {
+			deadWork[id] = true
+		}
+		if row == nil {
+			continue
+		}
+		workID := ""
+		if len(job.WorkIDs) > 0 {
+			workID = job.WorkIDs[0]
+		}
+		row.StalledJobs = append(row.StalledJobs, ExecutorStalledJobRef{
+			JobID:      job.JobID,
+			WorkID:     workID,
+			Status:     job.Status,
+			Phase:      job.Phase,
+			PID:        job.PID,
+			AgeSeconds: job.AgeSeconds,
+			LogPath:    job.LogPath,
+			Reason:     job.Reason,
+		})
+	}
+}
+
+// leaseWorkTerminal reports whether a lease's work is no longer live: its work
+// is terminal, archived, or missing entirely. Such leases are stale residue,
+// excluded from the active lease count; the governed sweep is `home
+// archive-history --kind lease`. Mirrors internal/home staleLeaseCandidates.
+func (s *Store) leaseWorkTerminal(workID string) bool {
+	w, err := s.Get(workID)
+	if err != nil {
+		return true
+	}
+	return terminalStates[w.State]
 }
 
 func executorProfiles() []executorProfile {
