@@ -32,6 +32,10 @@ var proposalClassSeverityOrder = []string{
 	"product_loop",
 	"synthesis_contradiction",
 	"review_debt",
+	// absorption_debt ranks last: os-absorption retirement debt is real but
+	// never more urgent than live review debt (W5 J15). The operator can
+	// reorder later; today it just must not starve behind the cap forever.
+	"absorption_debt",
 }
 
 type Options struct {
@@ -256,6 +260,11 @@ func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
 		if !errors.Is(err, os.ErrNotExist) {
 			warnings = append(warnings, "job health scan skipped: "+err.Error())
 		}
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := absorptionDebtCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "absorption debt scan skipped: "+err.Error())
 	} else {
 		out = append(out, items...)
 	}
@@ -673,6 +682,196 @@ func jobHealthCandidates(homePath string, now time.Time) ([]candidate, error) {
 		})
 	}
 	return out, nil
+}
+
+// absorptionDebtCandidates turns os-absorption-doctor debt into director
+// proposals (W5 J15 → W9 seam): the doctor already distinguishes machine
+// proven (proof_status=ok) rows from asserted-but-unproven (manual) and
+// broken (failed) rows; this scanner reads that existing doctor report plus
+// the underlying matrix (both existing authority readers — no new state, no
+// matrix mutation) and proposes the next retirement move so an orchestrator
+// does not have to notice by hand.
+//
+// Every manual/failed row becomes a candidate (bounded further by the
+// per-run cap and class-fair round-robin). Only ONE pending row is proposed
+// per run, chosen by ascending row ID — the matrix's IDs are stable and
+// lexicographic order is simplest to reason about and reproduce without
+// encoding a second wave-order table that could drift from the workstream
+// doc. If that row's retirement gate names an operator-only next step (the
+// gate/consumer/proof text mentions "operator"), the proposal names the gate
+// instead of instructing the gated step.
+func absorptionDebtCandidates(homePath string, now time.Time) ([]candidate, error) {
+	doctor, err := authority.OSAbsorptionDoctor(homePath)
+	if err != nil {
+		return nil, err
+	}
+	if !doctor.Installed || len(doctor.Rows) == 0 {
+		return nil, nil
+	}
+	matrix, err := authority.LoadOSAbsorptionMatrix(homePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	rowsByID := make(map[string]authority.OSAbsorptionMatrixRow, len(matrix.Rows))
+	for _, row := range matrix.Rows {
+		rowsByID[row.ID] = row
+	}
+
+	var out []candidate
+	var pending []authority.OSAbsorptionDoctorRow
+	for _, dr := range doctor.Rows {
+		switch dr.ProofStatus {
+		case "manual":
+			out = append(out, absorptionManualCandidate(dr, rowsByID[dr.ID]))
+		case "failed":
+			out = append(out, absorptionFailedCandidate(dr, rowsByID[dr.ID]))
+		case "pending":
+			pending = append(pending, dr)
+		}
+	}
+	if len(pending) > 0 {
+		sort.Slice(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
+		out = append(out, absorptionPendingCandidate(pending[0], rowsByID[pending[0].ID]))
+	}
+	return out, nil
+}
+
+func absorptionManualCandidate(dr authority.OSAbsorptionDoctorRow, row authority.OSAbsorptionMatrixRow) candidate {
+	legacy := absorptionLegacySurface(dr, row)
+	consequence := "Proving this row retires " + legacy + " as authority"
+	return candidate{
+		Kind:             "absorption_debt",
+		SourceID:         dr.ID,
+		Title:            "Wire the machine proof for " + dr.ID,
+		Consequence:      consequence,
+		CapabilityClass:  "judge-critique",
+		Owner:            "compound-authority",
+		CanonicalSurface: "director:absorption-debt:" + dr.ID,
+		SuccessPredicate: "Wire an auto-proof for os-absorption row " + dr.ID + " so proof_status moves off manual (self-asserted) to ok (machine-checked) or failed",
+		DesiredOutcome:   consequence,
+		Command:          []string{"compound", "authority", "os-absorption-doctor", "--json"},
+		RequiredInputs:   []string{"os-absorption doctor report for " + dr.ID, "the row's real consumer named in compound_owner/consumer"},
+		ExpectedValidation: []string{
+			"`compound authority os-absorption-doctor --json` reports proof_status=ok or proof_status=failed (never manual) for " + dr.ID,
+		},
+		StopConditions: []string{"the row has no real consumer yet to prove against"},
+		Boundary:       "read-only auto-proof wiring in the absorption doctor; no matrix status-string change, no new registry",
+		Proof:          "os-absorption doctor row " + dr.ID + " carries proof_status=ok with a proof_ref, or proof_status=failed with a proof_detail",
+		EvidenceRefs:   absorptionEvidenceRefs(dr, row),
+	}
+}
+
+func absorptionFailedCandidate(dr authority.OSAbsorptionDoctorRow, row authority.OSAbsorptionMatrixRow) candidate {
+	legacy := absorptionLegacySurface(dr, row)
+	consequence := "Proving this row retires " + legacy + " as authority"
+	return candidate{
+		Kind:             "absorption_debt",
+		SourceID:         dr.ID,
+		Title:            "Repair failed absorption proof for " + dr.ID,
+		Consequence:      consequence,
+		CapabilityClass:  "judge-critique",
+		Owner:            "compound-authority",
+		CanonicalSurface: "director:absorption-debt:" + dr.ID,
+		SuccessPredicate: "Repair the failing auto-proof for os-absorption row " + dr.ID + " (" + firstNonEmpty(dr.ProofDetail, "no proof_detail recorded") + ") so proof_status returns to ok",
+		DesiredOutcome:   consequence,
+		Command:          []string{"compound", "authority", "os-absorption-doctor", "--json"},
+		RequiredInputs:   []string{"os-absorption doctor proof_detail for " + dr.ID, "the row's real consumer named in compound_owner/consumer"},
+		ExpectedValidation: []string{
+			"`compound authority os-absorption-doctor --json` reports proof_status=ok with a proof_ref for " + dr.ID,
+		},
+		StopConditions: []string{"the underlying consumer/ledger this row proves against is itself gone"},
+		Boundary:       "read-only auto-proof repair in the absorption doctor; no matrix status-string change, no new registry",
+		Proof:          "os-absorption doctor row " + dr.ID + " carries proof_status=ok with a proof_ref",
+		EvidenceRefs:   absorptionEvidenceRefs(dr, row),
+	}
+}
+
+func absorptionPendingCandidate(dr authority.OSAbsorptionDoctorRow, row authority.OSAbsorptionMatrixRow) candidate {
+	legacy := absorptionLegacySurface(dr, row)
+	gate := absorptionOperatorGateText(row)
+	if gate != "" {
+		consequence := "Proving this row (" + dr.ID + ") retires " + legacy + " as authority, once the operator runs: " + gate
+		return candidate{
+			Kind:             "absorption_debt",
+			SourceID:         dr.ID,
+			Title:            "Blocked on operator: " + gate,
+			Consequence:      consequence,
+			CapabilityClass:  "judge-critique",
+			Owner:            "compound-authority",
+			CanonicalSurface: "director:absorption-debt:" + dr.ID,
+			SuccessPredicate: "Confirm the operator-gated step for " + dr.ID + " ran; the director never runs it itself. Gate: " + gate,
+			DesiredOutcome:   consequence,
+			Command:          []string{"compound", "authority", "os-absorption-doctor", "--json"},
+			RequiredInputs:   []string{"the row's retirement gate text", "operator confirmation the gated step ran"},
+			ExpectedValidation: []string{
+				"os-absorption doctor row " + dr.ID + " moves off pending only after the operator confirms the gated step ran",
+			},
+			StopConditions: []string{"blocked on operator: " + gate, "do not run ssh, DB export/delete, or any other operator-only command on this row's behalf"},
+			Boundary:       "propose-only; never execute the operator-gated step named in the retirement gate",
+			Proof:          "the operator confirms the gated step ran; a later os-absorption doctor run shows " + dr.ID + " progressed",
+			EvidenceRefs:   absorptionEvidenceRefs(dr, row),
+		}
+	}
+	consequence := "Proving this row retires " + legacy + " as authority"
+	return candidate{
+		Kind:             "absorption_debt",
+		SourceID:         dr.ID,
+		Title:            "Advance pending absorption row " + dr.ID,
+		Consequence:      consequence,
+		CapabilityClass:  "judge-critique",
+		Owner:            "compound-authority",
+		CanonicalSurface: "director:absorption-debt:" + dr.ID,
+		SuccessPredicate: "Make bounded progress absorbing " + dr.ID + " (" + firstNonEmpty(row.CompoundOwner, dr.CompoundOwner) + ") toward its retirement gate",
+		DesiredOutcome:   consequence,
+		Command:          []string{"compound", "authority", "os-absorption-doctor", "--json"},
+		RequiredInputs:   []string{"row retirement_gate/consumer text for " + dr.ID},
+		ExpectedValidation: []string{
+			"a later os-absorption doctor run shows " + dr.ID + " proof_status moved off pending (ok, failed, or an explicit operator gate)",
+		},
+		StopConditions: []string{"the next step requires operator-only action (ssh, DB export, credential use)"},
+		Boundary:       "propose-only; no matrix mutation, no new registry",
+		Proof:          "a follow-up os-absorption doctor run shows " + dr.ID + " no longer pending, or names why it remains blocked",
+		EvidenceRefs:   absorptionEvidenceRefs(dr, row),
+	}
+}
+
+// absorptionOperatorGateText reports the row's operator-only gate text, if
+// any, by checking the same free-text fields the matrix already carries
+// (retirement_gate, proof, consumer) for the word "operator" — the matrix
+// schema is not mutated to add a new boolean field; this reads what is
+// already there. Empty means the row's next step is not operator-gated.
+func absorptionOperatorGateText(row authority.OSAbsorptionMatrixRow) string {
+	for _, field := range []string{row.RetirementGate, row.Proof, row.Consumer} {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(field), "operator") {
+			return field
+		}
+	}
+	return ""
+}
+
+func absorptionLegacySurface(dr authority.OSAbsorptionDoctorRow, row authority.OSAbsorptionMatrixRow) string {
+	return firstNonEmpty(row.SourceRef, dr.SourceRef, dr.ID)
+}
+
+func absorptionEvidenceRefs(dr authority.OSAbsorptionDoctorRow, row authority.OSAbsorptionMatrixRow) []string {
+	refs := []string{
+		authority.OSAbsorptionAuthorityRef,
+		"os_absorption_row:" + dr.ID,
+	}
+	if dr.ProofRef != "" {
+		refs = append(refs, "os_absorption_proof_ref:"+dr.ProofRef)
+	}
+	if row.SourceRef != "" {
+		refs = append(refs, "source_ref:"+row.SourceRef)
+	}
+	return reviewartifact.UniqueSorted(refs)
 }
 
 func actionContextFor(cand candidate, proposal Proposal) *work.WorkActionContext {
