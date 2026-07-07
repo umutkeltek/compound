@@ -1,0 +1,46 @@
+/**
+ * Plain-language glossary (EP-U1): one-liners for every term and review area
+ * an operator sees. The design law: if a term needs a glossary to be
+ * understood, any UI showing the term must carry its one-liner in place.
+ * Single source for tooltips/subtitles across the console.
+ */
+
+export const AREA_GLOSSARY: Record<string, string> = {
+  "external-repo-intake": "Repos or frameworks you shared, awaiting your keep / reference / reject decision.",
+  "route-promotions": "Model lanes that performed well and are proposed for an upgraded role.",
+  "route-remorse": "A routing choice that looks wrong in hindsight — review whether the lane should be demoted.",
+  "panel-verdicts": "Judge-panel results waiting to be applied to memory.",
+  "synthesis-contradictions": "The memory sweep found claims that disagree; someone must rule.",
+  "synthesis-sweeps": "Reports from the background pass that clusters, contradicts, and corroborates memory.",
+  "seed-corroborations": "Something you once said just turned out to matter — a later outcome corroborates it. Promote it or leave it parked.",
+  "job-health": "Background jobs (crons, daemons) that failed or look unhealthy.",
+  "source-control-cleanup": "Git hygiene chores (dirty files, stray artifacts) queued for cleanup.",
+  "distiller-improvements": "The extraction organ proposing upgrades to its own method.",
+  "distiller-requests": "Asks for the distiller to (re)process specific material.",
+  "capability-lifecycle-proposals": "Proposals to revise, narrow, or retire a skill — mined from your real sessions. Nothing changes without you.",
+  "capability-evaluation-intake": "Shared repos queued for a deeper capability evaluation before any adoption.",
+  "observation-candidates": "Raw observations that arrived through the intake door, not yet trusted.",
+  "source-observation-verdicts": "Verdicts on observed sources waiting for your confirmation.",
+  "product-action-cards": "Suggested next moves on a product loop, derived from live signals.",
+};
+
+export const TERM_GLOSSARY: Record<string, string> = {
+  proposed: "Suggested. Nothing runs until you admit it.",
+  admitted: "You approved it — it may be picked up, nothing runs yet.",
+  claimed: "An executor took it (with a lease so two agents can't collide).",
+  running: "An executor is working on it now.",
+  verifying: "Being proof-checked before close.",
+  held: "Parked for your judgment. Nothing happens until you act.",
+  completed: "Done, with proof on record.",
+  review_required: "Waiting on your decision.",
+  needs_review: "Raised for your attention by evidence, not by a schedule.",
+  receipt: "Proof a job ran: what was touched, what it cost, what came out.",
+  transition: "The ledger entry: the system moved from state A to B because of this work.",
+  candidate: "Arrived but not trusted yet. Everything is born a candidate.",
+  promote: "Becomes real memory agents can recall. Needs a recorded reason.",
+  park: "Keep it, decide later. The safe default.",
+};
+
+export function areaPlain(area: string): string {
+  return AREA_GLOSSARY[area] ?? "A review area awaiting a decision.";
+}
