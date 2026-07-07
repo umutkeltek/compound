@@ -1,7 +1,10 @@
 package breadth
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sort"
@@ -19,24 +22,58 @@ const (
 )
 
 type Engine struct {
-	claims []mem.ClaimText
-	docs   []doc
-	gen    int64
-	ready  bool
+	claims       []mem.ClaimText
+	docs         []doc
+	gen          int64
+	ready        bool
+	embedder     EmbedderAdapter
+	compoundHome string
+	cache        *vectorCache
 }
 
 type doc struct {
-	claim  mem.ClaimText
-	tokens []string
-	freq   map[string]int
+	claim    mem.ClaimText
+	tokens   []string
+	freq     map[string]int
+	wrapped  string
+	textHash [32]byte
+	vector   []float32
+}
+
+type EngineConfig struct {
+	Embedder     EmbedderAdapter
+	CompoundHome string
+}
+
+type QueryResult struct {
+	Hits          []mem.Hit
+	DegradedLanes []string
+	Warning       string
+}
+
+func NewEngine(cfg EngineConfig) (*Engine, error) {
+	e := &Engine{embedder: cfg.Embedder, compoundHome: cfg.CompoundHome}
+	if cfg.Embedder != nil && cfg.Embedder.Dim() > 0 {
+		cache, err := newVectorCache(cfg.CompoundHome, cfg.Embedder.Identity())
+		if err != nil {
+			return nil, err
+		}
+		e.cache = cache
+	}
+	return e, nil
 }
 
 func (e *Engine) CorpusGen() int64 { return e.gen }
 func (e *Engine) Ready() bool      { return e.ready }
 
 func (e *Engine) Index(claims []mem.ClaimText, gen int64) int {
+	indexed, _ := e.IndexWithError(claims, gen)
+	return indexed
+}
+
+func (e *Engine) IndexWithError(claims []mem.ClaimText, gen int64) (int, error) {
 	if e.ready && e.gen == gen {
-		return 0
+		return 0, nil
 	}
 	e.claims = append([]mem.ClaimText(nil), claims...)
 	e.docs = make([]doc, 0, len(claims))
@@ -46,16 +83,27 @@ func (e *Engine) Index(claims []mem.ClaimText, gen int64) int {
 		for _, tok := range tokens {
 			freq[tok]++
 		}
-		e.docs = append(e.docs, doc{claim: c, tokens: tokens, freq: freq})
+		wrapped := wrapDocText(c)
+		e.docs = append(e.docs, doc{claim: c, tokens: tokens, freq: freq, wrapped: wrapped, textHash: textHash(wrapped)})
+	}
+	if e.embedder != nil {
+		if err := e.indexVectors(context.Background(), gen); err != nil {
+			return 0, err
+		}
 	}
 	e.gen = gen
 	e.ready = true
-	return len(claims)
+	return len(claims), nil
 }
 
 func (e *Engine) Query(text, gate string, allowlist []string, k int) []mem.Hit {
+	result, _ := e.QueryWithLanes(text, gate, allowlist, k)
+	return result.Hits
+}
+
+func (e *Engine) QueryWithLanes(text, gate string, allowlist []string, k int) (QueryResult, error) {
 	if k <= 0 || !e.ready {
-		return nil
+		return QueryResult{}, nil
 	}
 	allowed := allowSet(gate, allowlist)
 	allowedDocs := make([]doc, 0, len(e.docs))
@@ -66,11 +114,26 @@ func (e *Engine) Query(text, gate string, allowlist []string, k int) []mem.Hit {
 		allowedDocs = append(allowedDocs, d)
 	}
 	if len(allowedDocs) == 0 {
-		return nil
+		return QueryResult{}, nil
 	}
 
 	bm25 := e.bm25(text, allowedDocs)
 	reference := referenceContains(text, allowedDocs)
+	if e.embedder != nil {
+		queryVectors, err := e.embedder.Embed(context.Background(), []string{text})
+		if err != nil || len(queryVectors) != 1 {
+			warn := fmt.Sprintf("vector lane degraded: %v", err)
+			if err == nil {
+				warn = fmt.Sprintf("vector lane degraded: embedder returned %d query vectors", len(queryVectors))
+			}
+			return QueryResult{Hits: lexicalRanking(bm25, reference, k), DegradedLanes: []string{"vector"}, Warning: warn}, nil
+		}
+		return QueryResult{Hits: e.semanticRanking(queryVectors[0], allowedDocs, bm25, reference, k)}, nil
+	}
+	return QueryResult{Hits: lexicalRanking(bm25, reference, k)}, nil
+}
+
+func lexicalRanking(bm25, reference []mem.Hit, k int) []mem.Hit {
 	scores := reciprocalRankFusion([]rankedLane{{weight: 1, hits: bm25}})
 	// Reference hits are reserved before the final k cut so exact/substring
 	// coverage competes on order, not membership. Expansion/BM25 hits fill only
@@ -98,6 +161,69 @@ func (e *Engine) Query(text, gate string, allowlist []string, k int) []mem.Hit {
 		return extras[i].Score > extras[j].Score
 	})
 	out = append(out, extras...)
+	if len(out) > k {
+		out = out[:k]
+	}
+	return out
+}
+
+func (e *Engine) semanticRanking(queryVector []float32, docs []doc, bm25, reference []mem.Hit, k int) []mem.Hit {
+	lexScore := make(map[string]float64, len(bm25))
+	lexRank := make(map[string]int, len(bm25))
+	for i, h := range bm25 {
+		lexScore[h.ClaimID] = h.Score
+		lexRank[h.ClaimID] = i
+	}
+	type semanticHit struct {
+		id       string
+		cosine   float64
+		lexScore float64
+		lexRank  int
+	}
+	semantic := make([]semanticHit, 0, len(docs))
+	for _, d := range docs {
+		if len(d.vector) != len(queryVector) {
+			continue
+		}
+		rank, ok := lexRank[d.claim.ClaimID]
+		if !ok {
+			rank = int(^uint(0) >> 1)
+		}
+		semantic = append(semantic, semanticHit{
+			id:       d.claim.ClaimID,
+			cosine:   cosine(queryVector, d.vector),
+			lexScore: lexScore[d.claim.ClaimID],
+			lexRank:  rank,
+		})
+	}
+	sort.SliceStable(semantic, func(i, j int) bool {
+		if semantic[i].cosine != semantic[j].cosine {
+			return semantic[i].cosine > semantic[j].cosine
+		}
+		if semantic[i].lexScore != semantic[j].lexScore {
+			return semantic[i].lexScore > semantic[j].lexScore
+		}
+		if semantic[i].lexRank != semantic[j].lexRank {
+			return semantic[i].lexRank < semantic[j].lexRank
+		}
+		return semantic[i].id < semantic[j].id
+	})
+	out := make([]mem.Hit, 0, len(semantic)+len(reference))
+	seen := make(map[string]bool, len(semantic)+len(reference))
+	for _, h := range reference {
+		if seen[h.ClaimID] {
+			continue
+		}
+		seen[h.ClaimID] = true
+		out = append(out, h)
+	}
+	for _, h := range semantic {
+		if seen[h.id] {
+			continue
+		}
+		seen[h.id] = true
+		out = append(out, mem.Hit{ClaimID: h.id, Score: h.cosine})
+	}
 	if len(out) > k {
 		out = out[:k]
 	}
@@ -301,13 +427,110 @@ func splitIdentifier(s string) []string {
 	return parts
 }
 
-func RunProtocol(in io.Reader, out io.Writer, embedder string) error {
-	if embedder == "" {
-		embedder = DefaultEmbedder
+func (e *Engine) indexVectors(ctx context.Context, gen int64) error {
+	existing := map[vectorKey]vectorRow{}
+	if e.cache == nil && e.embedder.Dim() > 0 {
+		cache, err := newVectorCache(e.compoundHome, e.embedder.Identity())
+		if err != nil {
+			return err
+		}
+		e.cache = cache
+	}
+	if e.cache != nil {
+		loaded, err := e.cache.load()
+		if err != nil {
+			switch {
+			case errors.Is(err, errVectorCacheMiss), errors.Is(err, errVectorTemplateMismatch):
+				existing = map[vectorKey]vectorRow{}
+			default:
+				return err
+			}
+		} else {
+			existing = loaded
+		}
+	}
+	rows := make([]vectorRow, len(e.docs))
+	missingTexts := make([]string, 0)
+	missingPositions := make([]int, 0)
+	for i, d := range e.docs {
+		key := vectorKey{claimID: d.claim.ClaimID, textHash: d.textHash}
+		if row, ok := existing[key]; ok {
+			rows[i] = row
+			continue
+		}
+		missingTexts = append(missingTexts, d.wrapped)
+		missingPositions = append(missingPositions, i)
+	}
+	if len(missingTexts) > 0 {
+		vecs, err := e.embedder.Embed(ctx, missingTexts)
+		if err != nil {
+			return err
+		}
+		if len(vecs) != len(missingTexts) {
+			return fmt.Errorf("embedder returned %d vectors for %d documents", len(vecs), len(missingTexts))
+		}
+		if e.cache == nil {
+			cache, err := newVectorCache(e.compoundHome, e.embedder.Identity())
+			if err != nil {
+				return err
+			}
+			e.cache = cache
+		}
+		for i, vec := range vecs {
+			pos := missingPositions[i]
+			if len(vec) != e.embedder.Dim() {
+				return fmt.Errorf("%w: embedded doc dim %d != adapter dim %d", errVectorDimMismatch, len(vec), e.embedder.Dim())
+			}
+			rows[pos] = vectorRow{ClaimID: e.docs[pos].claim.ClaimID, TextHash: e.docs[pos].textHash, Vector: vec}
+		}
+	}
+	for i := range rows {
+		e.docs[i].vector = rows[i].Vector
+	}
+	if e.cache == nil {
+		return errors.New("vector cache unavailable")
+	}
+	if err := e.cache.write(rows, gen); err != nil {
+		return err
+	}
+	return nil
+}
+
+func wrapDocText(c mem.ClaimText) string {
+	return "entity: " + c.Entity + " [" + c.ClaimType + "]\n" + c.Text
+}
+
+func cosine(a, b []float32) float64 {
+	if len(a) != len(b) {
+		return 0
+	}
+	sum := 0.0
+	for i := range a {
+		sum += float64(a[i]) * float64(b[i])
+	}
+	return sum
+}
+
+type ProtocolConfig struct {
+	Embedder     EmbedderAdapter
+	CompoundHome string
+	Stderr       io.Writer
+}
+
+func (cfg ProtocolConfig) identity() string {
+	if cfg.Embedder == nil {
+		return DefaultEmbedder
+	}
+	return cfg.Embedder.Identity()
+}
+
+func RunProtocol(in io.Reader, out io.Writer, cfg ProtocolConfig) error {
+	engine, err := NewEngine(EngineConfig{Embedder: cfg.Embedder, CompoundHome: cfg.CompoundHome})
+	if err != nil {
+		return err
 	}
 	dec := json.NewDecoder(in)
 	enc := json.NewEncoder(out)
-	var engine Engine
 	for {
 		var req mem.Request
 		if err := dec.Decode(&req); err != nil {
@@ -326,15 +549,34 @@ func RunProtocol(in io.Reader, out io.Writer, embedder string) error {
 		}
 		switch req.Op {
 		case mem.OpCapabilities:
-			resp.OK, resp.Name, resp.Breadth, resp.Embedder, resp.Ready, resp.CorpusGen = true, Name, true, embedder, engine.Ready(), engine.CorpusGen()
+			resp.OK, resp.Name, resp.Breadth, resp.Embedder, resp.Ready, resp.CorpusGen = true, Name, true, cfg.identity(), engine.Ready(), engine.CorpusGen()
 		case mem.OpIndex:
-			resp.OK, resp.Indexed, resp.CorpusGen = true, engine.Index(req.Claims, req.CorpusGen), engine.CorpusGen()
+			indexed, err := engine.IndexWithError(req.Claims, req.CorpusGen)
+			if err != nil {
+				resp.OK = false
+				resp.Error = breadthWireError(err)
+			} else {
+				resp.OK, resp.Indexed, resp.CorpusGen = true, indexed, engine.CorpusGen()
+			}
 		case mem.OpQuery:
 			if !engine.Ready() {
 				resp.OK = false
 				resp.Error = &mem.WireError{Code: mem.CodeIndexMissing, Message: "index before query"}
 			} else {
-				resp.OK, resp.Hits, resp.CorpusGen = true, engine.Query(req.Text, req.Gate, req.Allowlist, req.K), engine.CorpusGen()
+				result, err := engine.QueryWithLanes(req.Text, req.Gate, req.Allowlist, req.K)
+				if err != nil {
+					resp.OK = false
+					resp.Error = breadthWireError(err)
+				} else {
+					resp.OK, resp.Hits, resp.DegradedLanes, resp.CorpusGen = true, result.Hits, result.DegradedLanes, engine.CorpusGen()
+					if result.Warning != "" {
+						warn := cfg.Stderr
+						if warn == nil {
+							warn = io.Discard
+						}
+						fmt.Fprintln(warn, "compound-breadth-engine:", result.Warning)
+					}
+				}
 			}
 		default:
 			resp.OK = false
@@ -344,4 +586,17 @@ func RunProtocol(in io.Reader, out io.Writer, embedder string) error {
 			return err
 		}
 	}
+}
+
+func breadthWireError(err error) *mem.WireError {
+	code := mem.CodeEngineUnavailable
+	switch {
+	case errors.Is(err, errVectorEmbedderMismatch):
+		code = mem.CodeEmbedderMismatch
+	case errors.Is(err, errVectorDimMismatch):
+		code = mem.CodeDimMismatch
+	case errors.Is(err, errVectorCacheMiss):
+		code = mem.CodeIndexMissing
+	}
+	return &mem.WireError{Code: code, Message: err.Error()}
 }

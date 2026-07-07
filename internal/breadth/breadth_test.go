@@ -2,7 +2,11 @@ package breadth
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -151,7 +155,7 @@ func TestRunProtocolWireLoop(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	if err := RunProtocol(&in, &out, "test:lexical:0:0"); err != nil {
+	if err := RunProtocol(&in, &out, ProtocolConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	dec := json.NewDecoder(&out)
@@ -161,7 +165,7 @@ func TestRunProtocolWireLoop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if caps.Name != Name || !caps.Breadth || caps.Embedder != "test:lexical:0:0" {
+	if caps.Name != Name || !caps.Breadth || caps.Embedder != DefaultEmbedder {
 		t.Fatalf("capabilities = %+v", caps)
 	}
 	if idx.Indexed != 1 || idx.CorpusGen != 7 {
@@ -178,7 +182,7 @@ func TestRunProtocolQueryBeforeIndexFailsTyped(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := RunProtocol(&in, &out, ""); err != nil {
+	if err := RunProtocol(&in, &out, ProtocolConfig{}); err != nil {
 		t.Fatal(err)
 	}
 	var resp mem.Response
@@ -227,6 +231,223 @@ func TestFixtureCorpusReferenceCovered(t *testing.T) {
 	}
 }
 
+func TestVectorIncrementalIndexEqualsFullRebuild(t *testing.T) {
+	initial := []mem.ClaimText{
+		{ClaimID: "c1", Entity: "alpha", ClaimType: "decision", Text: "alpha owns the runtime spine"},
+		{ClaimID: "c2", Entity: "beta", ClaimType: "fact", Text: "beta keeps the ledger visible"},
+	}
+	added := mem.ClaimText{ClaimID: "c3", Entity: "gamma", ClaimType: "fact", Text: "gamma carries receipts"}
+	all := append(append([]mem.ClaimText(nil), initial...), added)
+
+	incrementalHome := t.TempDir()
+	incremental, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(6), CompoundHome: incrementalHome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := incremental.IndexWithError(initial, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := incremental.IndexWithError(all, 2); err != nil {
+		t.Fatal(err)
+	}
+	incrementalVectors := readVectorsFile(t, incrementalHome, incremental.embedder)
+
+	fullHome := t.TempDir()
+	full, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(6), CompoundHome: fullHome})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := full.IndexWithError(all, 2); err != nil {
+		t.Fatal(err)
+	}
+	fullVectors := readVectorsFile(t, fullHome, full.embedder)
+
+	if !bytes.Equal(incrementalVectors, fullVectors) {
+		t.Fatalf("incremental vectors.bin differs from full rebuild")
+	}
+}
+
+func TestVectorCacheLoadGuardsDimAndEmbedderStamp(t *testing.T) {
+	t.Run("dim mismatch hard refuses whole load", func(t *testing.T) {
+		home := t.TempDir()
+		embedder := newFakeEmbedder(4)
+		eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims := []mem.ClaimText{{ClaimID: "c1", Entity: "alpha", ClaimType: "fact", Text: "alpha cache row"}}
+		if _, err := eng.IndexWithError(claims, 1); err != nil {
+			t.Fatal(err)
+		}
+		path := vectorsFilePath(t, home, embedder)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rowDimOffset := firstRowDimOffset(t, raw)
+		binary.LittleEndian.PutUint32(raw[rowDimOffset:rowDimOffset+4], uint32(99))
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reload, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(4), CompoundHome: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reload.IndexWithError(claims, 2); !errors.Is(err, errVectorDimMismatch) {
+			t.Fatalf("IndexWithError dim mismatch err = %v, want %v", err, errVectorDimMismatch)
+		}
+	})
+
+	t.Run("embedder stamp mismatch hard refuses load", func(t *testing.T) {
+		home := t.TempDir()
+		embedder := newFakeEmbedder(4)
+		eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		claims := []mem.ClaimText{{ClaimID: "c1", Entity: "alpha", ClaimType: "fact", Text: "alpha cache row"}}
+		if _, err := eng.IndexWithError(claims, 1); err != nil {
+			t.Fatal(err)
+		}
+		manifestPath := filepath.Join(vectorCacheDir(t, home, embedder), "manifest.json")
+		raw, err := os.ReadFile(manifestPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest vectorManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		manifest.Embedder.Model = "other-space"
+		raw, err = json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(manifestPath, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reload, err := NewEngine(EngineConfig{Embedder: newFakeEmbedder(4), CompoundHome: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := reload.IndexWithError(claims, 2); !errors.Is(err, errVectorEmbedderMismatch) {
+			t.Fatalf("IndexWithError stamp mismatch err = %v, want %v", err, errVectorEmbedderMismatch)
+		}
+	})
+}
+
+func TestVectorQueryDegradesToLexicalWhenEmbedderUnavailable(t *testing.T) {
+	embedder := newFakeEmbedder(4)
+	embedder.failAtCall = 2
+	embedder.err = errors.New("embed server down")
+	var in bytes.Buffer
+	enc := json.NewEncoder(&in)
+	for _, req := range []mem.Request{
+		{SchemaVersion: mem.ProtocolVersion, RequestID: "idx", Op: mem.OpIndex, CorpusGen: 7, Claims: []mem.ClaimText{
+			{ClaimID: "substring", Entity: "compound", ClaimType: "fact", Text: "compounding substrate"},
+			{ClaimID: "exact", Entity: "compound", ClaimType: "fact", Text: "compound memory"},
+		}},
+		{SchemaVersion: mem.ProtocolVersion, RequestID: "query", Op: mem.OpQuery, Text: "compound", Gate: mem.GateList, Allowlist: []string{"substring", "exact"}, K: 2},
+	} {
+		if err := enc.Encode(req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out, stderr bytes.Buffer
+	if err := RunProtocol(&in, &out, ProtocolConfig{Embedder: embedder, CompoundHome: t.TempDir(), Stderr: &stderr}); err != nil {
+		t.Fatal(err)
+	}
+	dec := json.NewDecoder(&out)
+	var idx, query mem.Response
+	if err := dec.Decode(&idx); err != nil {
+		t.Fatal(err)
+	}
+	if err := dec.Decode(&query); err != nil {
+		t.Fatal(err)
+	}
+	if !idx.OK {
+		t.Fatalf("index response = %+v", idx)
+	}
+	if !query.OK || !reflect.DeepEqual(query.DegradedLanes, []string{"vector"}) {
+		t.Fatalf("query should degrade vector lane only, got %+v", query)
+	}
+	seen := map[string]bool{}
+	for _, h := range query.Hits {
+		seen[h.ClaimID] = true
+	}
+	if !seen["substring"] || !seen["exact"] {
+		t.Fatalf("degraded lexical query must preserve reference hits, got %+v", query.Hits)
+	}
+	if !bytes.Contains(stderr.Bytes(), []byte("vector lane degraded")) {
+		t.Fatalf("stderr missing degradation warning: %q", stderr.String())
+	}
+}
+
+func TestVectorQueryNeverSurfacesMaskedClaim(t *testing.T) {
+	claims := []mem.ClaimText{
+		{ClaimID: "allowed", Entity: "public", ClaimType: "fact", Text: "public allowed claim"},
+		{ClaimID: "masked", Entity: "secret", ClaimType: "fact", Text: "hidden semantic answer"},
+	}
+	query := "semantic nearest"
+	embedder := newFakeEmbedder(2)
+	embedder.vectors = map[string][]float32{
+		query:                  {1, 0},
+		wrapDocText(claims[0]): {0, 1},
+		wrapDocText(claims[1]): {1, 0},
+	}
+	eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.IndexWithError(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+	got, err := eng.QueryWithLanes(query, mem.GateList, []string{"allowed"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Hits) == 0 {
+		t.Fatalf("expected allowed semantic result")
+	}
+	for _, h := range got.Hits {
+		if h.ClaimID == "masked" {
+			t.Fatalf("masked claim surfaced with vector lane on: %+v", got.Hits)
+		}
+		if h.ClaimID != "allowed" {
+			t.Fatalf("vector lane added non-allowed id %q in %+v", h.ClaimID, got.Hits)
+		}
+	}
+}
+
+func TestVectorSemanticCosineRanksLexicallyNonmatchingClaimTop(t *testing.T) {
+	claims := []mem.ClaimText{
+		{ClaimID: "semantic", Entity: "alpha", ClaimType: "fact", Text: "alpha carries receipts"},
+		{ClaimID: "far", Entity: "beta", ClaimType: "fact", Text: "beta keeps ledgers"},
+	}
+	query := "where is the answer hiding"
+	embedder := newFakeEmbedder(2)
+	embedder.vectors = map[string][]float32{
+		query:                  {1, 0},
+		wrapDocText(claims[0]): {1, 0},
+		wrapDocText(claims[1]): {0, 1},
+	}
+	eng, err := NewEngine(EngineConfig{Embedder: embedder, CompoundHome: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eng.IndexWithError(claims, 1); err != nil {
+		t.Fatal(err)
+	}
+	lexical := eng.bm25(query, docsFromClaims(claims))
+	if len(lexical) != 0 {
+		t.Fatalf("test requires lexically nonmatching claims, got lexical hits %+v", lexical)
+	}
+	got := eng.Query(query, mem.GateList, []string{"semantic", "far"}, 2)
+	if len(got) == 0 || got[0].ClaimID != "semantic" {
+		t.Fatalf("semantic cosine should rank non-lexical closest claim first, got %+v", got)
+	}
+}
+
 func docsFromClaims(claims []mem.ClaimText) []doc {
 	docs := make([]doc, 0, len(claims))
 	for _, c := range claims {
@@ -238,4 +459,41 @@ func docsFromClaims(claims []mem.ClaimText) []doc {
 		docs = append(docs, doc{claim: c, tokens: tokens, freq: freq})
 	}
 	return docs
+}
+
+func vectorCacheDir(t *testing.T, home string, embedder EmbedderAdapter) string {
+	t.Helper()
+	cache, err := newVectorCache(home, embedder.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cache.dir
+}
+
+func vectorsFilePath(t *testing.T, home string, embedder EmbedderAdapter) string {
+	t.Helper()
+	return filepath.Join(vectorCacheDir(t, home, embedder), "vectors.bin")
+}
+
+func readVectorsFile(t *testing.T, home string, embedder EmbedderAdapter) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(vectorsFilePath(t, home, embedder))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func firstRowDimOffset(t *testing.T, raw []byte) int {
+	t.Helper()
+	const headerLen = 8 + 4 + 8
+	if len(raw) < headerLen+4 {
+		t.Fatalf("vectors.bin too short: %d bytes", len(raw))
+	}
+	idLen := int(binary.LittleEndian.Uint32(raw[headerLen : headerLen+4]))
+	offset := headerLen + 4 + idLen + 32
+	if len(raw) < offset+4 {
+		t.Fatalf("vectors.bin too short for first row dim: %d bytes, offset %d", len(raw), offset)
+	}
+	return offset
 }
