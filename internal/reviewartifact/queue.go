@@ -22,12 +22,13 @@ type QueueOptions struct {
 
 // QueueReport is a read-only projection over COMPOUND_HOME/reviews.
 type QueueReport struct {
-	SchemaVersion string      `json:"schema_version"`
-	GeneratedAt   string      `json:"generated_at"`
-	ReviewRoot    string      `json:"review_root"`
-	Area          string      `json:"area,omitempty"`
-	Counts        QueueCounts `json:"counts"`
-	Items         []QueueItem `json:"items"`
+	SchemaVersion string       `json:"schema_version"`
+	GeneratedAt   string       `json:"generated_at"`
+	ReviewRoot    string       `json:"review_root"`
+	Area          string       `json:"area,omitempty"`
+	Counts        QueueCounts  `json:"counts"`
+	Groups        []QueueGroup `json:"groups,omitempty"`
+	Items         []QueueItem  `json:"items"`
 }
 
 // QueueCounts summarizes review artifact status without interpreting domain payloads.
@@ -36,12 +37,33 @@ type QueueCounts struct {
 	ReviewRequired                    int            `json:"review_required"`
 	ReadyToApply                      int            `json:"ready_to_apply"`
 	OK                                int            `json:"ok"`
+	ReviewGroupCount                  int            `json:"review_group_count,omitempty"`
 	DecisionCardCount                 int            `json:"decision_card_count"`
 	ActionableCount                   int            `json:"actionable_count"`
 	ReviewRequiredMissingDecisionCard int            `json:"review_required_missing_decision_card"`
 	ReviewRequiredMissingAction       int            `json:"review_required_missing_action"`
 	ByArea                            map[string]int `json:"by_area"`
 	ByStatus                          map[string]int `json:"by_status"`
+}
+
+// QueueGroup is the operator-level review projection: one card per decision
+// shape, with item details still available through Items/member_ids.
+type QueueGroup struct {
+	Key             string     `json:"key"`
+	Area            string     `json:"area"`
+	Count           int        `json:"count"`
+	Status          string     `json:"status,omitempty"`
+	Readiness       string     `json:"readiness,omitempty"`
+	Band            string     `json:"band,omitempty"`
+	OperatorSummary string     `json:"operator_summary"`
+	ContextLabel    string     `json:"context_label,omitempty"`
+	OperatorUnlock  string     `json:"operator_unlock,omitempty"`
+	SummarySource   string     `json:"summary_source,omitempty"`
+	ItemIDs         []string   `json:"item_ids"`
+	EvidenceRefs    []string   `json:"evidence_refs,omitempty"`
+	SafeBatchAction *Action    `json:"safe_batch_action,omitempty"`
+	TerminalReason  string     `json:"terminal_reason,omitempty"`
+	Sample          *QueueItem `json:"sample,omitempty"`
 }
 
 // QueueItem describes one review artifact JSON payload and nearby review files.
@@ -198,10 +220,12 @@ func Recount(report *QueueReport) {
 	if report == nil {
 		return
 	}
+	report.Groups = buildQueueGroups(report.Items)
 	report.Counts = QueueCounts{
 		ByArea:   map[string]int{},
 		ByStatus: map[string]int{},
 	}
+	report.Counts.ReviewGroupCount = len(report.Groups)
 	for _, item := range report.Items {
 		report.Counts.Total++
 		report.Counts.ByArea[item.Area]++
@@ -227,6 +251,125 @@ func Recount(report *QueueReport) {
 				report.Counts.ReviewRequiredMissingAction++
 			}
 		}
+	}
+}
+
+func buildQueueGroups(items []QueueItem) []QueueGroup {
+	if len(items) == 0 {
+		return nil
+	}
+	byKey := map[string]*QueueGroup{}
+	order := []string{}
+	for i := range items {
+		item := items[i]
+		if !itemNeedsReviewGroup(item) {
+			continue
+		}
+		key := queueGroupKey(item)
+		mapKey := item.Area + "\x00" + key
+		group := byKey[mapKey]
+		if group == nil {
+			sample := item
+			group = &QueueGroup{
+				Key:             key,
+				Area:            item.Area,
+				Status:          item.Status,
+				Readiness:       item.Readiness,
+				Band:            item.Band,
+				OperatorSummary: FirstNonEmpty(item.OperatorSummary, item.NextAction, item.ContextLabel, item.ID, "Review this item."),
+				ContextLabel:    FirstNonEmpty(item.ContextLabel, item.Area),
+				OperatorUnlock:  item.OperatorUnlock,
+				SummarySource:   item.SummarySource,
+				Sample:          &sample,
+			}
+			byKey[mapKey] = group
+			order = append(order, mapKey)
+		}
+		group.Count++
+		group.ItemIDs = append(group.ItemIDs, item.ID)
+		group.EvidenceRefs = append(group.EvidenceRefs, item.EvidenceRefs...)
+		group.EvidenceRefs = UniqueSorted(group.EvidenceRefs)
+	}
+	out := make([]QueueGroup, 0, len(order))
+	for _, key := range order {
+		group := *byKey[key]
+		group.ItemIDs = Unique(group.ItemIDs)
+		group.SafeBatchAction, group.TerminalReason = queueGroupAction(group, items)
+		out = append(out, group)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Band != out[j].Band {
+			return bandPriority(out[i].Band) < bandPriority(out[j].Band)
+		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		if out[i].Area != out[j].Area {
+			return out[i].Area < out[j].Area
+		}
+		return out[i].Key < out[j].Key
+	})
+	return out
+}
+
+func itemNeedsReviewGroup(item QueueItem) bool {
+	if item.Status == "" || item.Status == "unknown" || item.Status == "review_required" || item.Readiness == "needs_review" || item.Readiness == "ready_to_apply" || len(item.Actions) > 0 {
+		return true
+	}
+	switch item.Status {
+	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
+		return false
+	default:
+		return true
+	}
+}
+
+func queueGroupKey(item QueueItem) string {
+	if strings.TrimSpace(item.GroupKey) != "" {
+		return strings.TrimSpace(item.GroupKey)
+	}
+	context := FirstNonEmpty(item.ContextLabel, item.OperatorSummary, item.NextAction, item.ID, "review")
+	return FirstNonEmpty(item.Area, "review") + "|" + Slugify(context, 72)
+}
+
+func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
+	var action *Action
+	for _, item := range items {
+		if item.Area != group.Area || queueGroupKey(item) != group.Key || !itemNeedsReviewGroup(item) {
+			continue
+		}
+		if len(item.Actions) == 0 {
+			return nil, "owner has not exposed a safe action for this decision group"
+		}
+		if len(item.Actions) != 1 {
+			return nil, "group has multiple item actions; review item details before acting"
+		}
+		next := item.Actions[0]
+		if action == nil {
+			copy := next
+			action = &copy
+			continue
+		}
+		if action.ID != next.ID || action.Command != next.Command || action.RequiresReview != next.RequiresReview || strings.Join(action.Argv, "\x00") != strings.Join(next.Argv, "\x00") {
+			return nil, "actions are item-specific; no safe batch action exposed"
+		}
+	}
+	if action == nil {
+		return nil, "owner has not exposed a safe action for this decision group"
+	}
+	return action, ""
+}
+
+func bandPriority(band string) int {
+	switch band {
+	case BandNeedsYou:
+		return 0
+	case BandWatching:
+		return 1
+	case BandFiled:
+		return 3
+	default:
+		return 2
 	}
 }
 

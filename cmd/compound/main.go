@@ -3594,6 +3594,21 @@ func cmdReviews(args []string) {
 			fmt.Printf("- %s: %d\n", status, report.Counts.ByStatus[status])
 		}
 	}
+	if len(report.Groups) > 0 {
+		fmt.Println("groups:")
+		for _, group := range report.Groups {
+			fmt.Printf("- %s count=%d area=%s", group.Key, group.Count, group.Area)
+			if group.ContextLabel != "" {
+				fmt.Printf(" context=%q", group.ContextLabel)
+			}
+			if group.SafeBatchAction != nil {
+				fmt.Printf(" action=%s", group.SafeBatchAction.Command)
+			} else if group.TerminalReason != "" {
+				fmt.Printf(" reason=%q", group.TerminalReason)
+			}
+			fmt.Println()
+		}
+	}
 	if len(report.Items) == 0 {
 		fmt.Println("review_required: none")
 		return

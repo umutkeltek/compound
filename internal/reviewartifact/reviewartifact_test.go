@@ -235,6 +235,74 @@ func TestWrite(t *testing.T) {
 	}
 }
 
+func TestRecountBuildsDecisionGroups(t *testing.T) {
+	report := QueueReport{Items: []QueueItem{
+		{
+			Area:            "panel-verdicts",
+			ID:              "pv_1",
+			Status:          "review_required",
+			Readiness:       "needs_review",
+			Band:            BandNeedsYou,
+			OperatorSummary: "The judge panel needs your call. Record it?",
+			ContextLabel:    "bakeoff round",
+			GroupKey:        "panel-verdicts|round|reject",
+			EvidenceRefs:    []string{"claim:a"},
+			Actions: []Action{{
+				ID:             "record_review",
+				Command:        "compound reviews record one",
+				RequiresReview: true,
+			}},
+		},
+		{
+			Area:            "panel-verdicts",
+			ID:              "pv_2",
+			Status:          "review_required",
+			Readiness:       "needs_review",
+			Band:            BandNeedsYou,
+			OperatorSummary: "The judge panel needs your call. Record it?",
+			ContextLabel:    "bakeoff round",
+			GroupKey:        "panel-verdicts|round|reject",
+			EvidenceRefs:    []string{"claim:b", "claim:a"},
+			Actions: []Action{{
+				ID:             "record_review",
+				Command:        "compound reviews record two",
+				RequiresReview: true,
+			}},
+		},
+		{
+			Area:            "panel-verdicts",
+			ID:              "pv_done",
+			Status:          "recorded",
+			Readiness:       "review_recorded",
+			Band:            BandFiled,
+			OperatorSummary: "Already recorded.",
+			ContextLabel:    "bakeoff round",
+			GroupKey:        "panel-verdicts|round|reject",
+		},
+	}}
+	Recount(&report)
+
+	if report.Counts.ReviewGroupCount != 1 || len(report.Groups) != 1 {
+		t.Fatalf("groups = %+v counts=%+v, want one open group", report.Groups, report.Counts)
+	}
+	group := report.Groups[0]
+	if group.Key != "panel-verdicts|round|reject" || group.Count != 2 {
+		t.Fatalf("group identity/count = %+v", group)
+	}
+	if strings.Join(group.ItemIDs, ",") != "pv_1,pv_2" {
+		t.Fatalf("group item ids = %+v", group.ItemIDs)
+	}
+	if strings.Join(group.EvidenceRefs, ",") != "claim:a,claim:b" {
+		t.Fatalf("group evidence refs = %+v", group.EvidenceRefs)
+	}
+	if group.SafeBatchAction != nil || !strings.Contains(group.TerminalReason, "item-specific") {
+		t.Fatalf("unsafe item-specific actions should not batch: %+v", group)
+	}
+	if group.Sample == nil || group.Sample.ID != "pv_1" {
+		t.Fatalf("sample = %+v, want pv_1", group.Sample)
+	}
+}
+
 func TestTimestamp(t *testing.T) {
 	at := time.Date(2026, 6, 30, 12, 0, 0, 0, time.FixedZone("x", 3*3600))
 	if got := Timestamp(at); got != "2026-06-30T09:00:00Z" {

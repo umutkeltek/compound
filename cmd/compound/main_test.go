@@ -1417,6 +1417,9 @@ func TestSourceObserveBatchCLIRecordsCandidateReviewMaterial(t *testing.T) {
 	if queue.Counts.ReviewRequired != 1 || queue.Counts.DecisionCardCount != 1 || queue.Counts.ActionableCount != 1 || len(queue.Items) != 1 {
 		t.Fatalf("observation review queue should expose actionable decision card: %+v", queue)
 	}
+	if queue.Counts.ReviewGroupCount != 1 || len(queue.Groups) != 1 || queue.Groups[0].Count != 1 {
+		t.Fatalf("observation review queue should expose one decision group: %+v", queue.Groups)
+	}
 	card := queue.Items[0].DecisionCard
 	if card == nil || card.Meta["target_kind"] != "capability_observation" || card.Meta["candidate_id"] != result.CandidateID {
 		t.Fatalf("decision card = %+v", card)
@@ -1488,6 +1491,9 @@ func TestSourceObserveBatchCLIRecordsCandidateReviewMaterial(t *testing.T) {
 	}
 	if verdictQueue.Counts.ReviewRequired != 1 || verdictQueue.Counts.DecisionCardCount != 1 || len(verdictQueue.Items) != 1 {
 		t.Fatalf("panel verdict queue should expose reviewable observation verdict: %+v", verdictQueue)
+	}
+	if verdictQueue.Counts.ReviewGroupCount != 1 || len(verdictQueue.Groups) != 1 || verdictQueue.Groups[0].Count != 1 {
+		t.Fatalf("panel verdict queue should expose grouped review decision: %+v", verdictQueue.Groups)
 	}
 	if verdictQueue.Items[0].DecisionCard == nil || !strings.Contains(verdictQueue.Items[0].NextAction, "owner review required") {
 		t.Fatalf("panel verdict queue item should be reviewable: %+v", verdictQueue.Items[0])
