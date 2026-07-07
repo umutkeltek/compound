@@ -21,6 +21,7 @@ type Class string
 
 const (
 	Spine           Class = "spine"            // canonical runtime / spine-bound Gen-2 — no duplication
+	ObjectFamily    Class = "object-family"    // an object family the spine's transitions create/own/adjudicate (LAYERS.md); authority for its objects, never for the runtime grammar
 	Leaf            Class = "leaf"             // shared leaf util (e.g. the candidate map)
 	MemTarget       Class = "mem-target"       // the convergence TARGET the Gen-1 object model migrates into
 	ConvergePending Class = "converge-pending" // Gen-1 capability to migrate onto the spine, THEN retire (test-gated)
@@ -29,27 +30,29 @@ const (
 
 // Classification — every internal/ package, with its job. This is enforced: see CheckClassificationTotal.
 var Classification = map[string]Class{
-	// spine (canonical runtime + spine-bound Gen-2)
-	"arch":           Spine,
-	"capgraph":       Spine,
-	"contract":       Spine,
-	"director":       Spine,
-	"distiller":      Spine,
-	"envelope":       Spine,
-	"harness":        Spine,
-	"home":           Spine,
-	"hook":           Spine,
-	"localmodel":     Spine,
-	"observation":    Spine,
-	"panel":          Spine,
-	"policy":         Spine,
-	"product":        Spine,
-	"projection":     Spine,
-	"routeevidence":  Spine,
-	"runtimebinding": Spine,
-	"schema":         Spine,
-	"work":           Spine,
-	"writeback":      Spine,
+	// spine (the envelope runtime grammar itself — allowlist-ratcheted, see spineCore)
+	"arch":      Spine,
+	"contract":  Spine,
+	"envelope":  Spine,
+	"harness":   Spine,
+	"home":      Spine,
+	"hook":      Spine,
+	"policy":    Spine,
+	"schema":    Spine,
+	"work":      Spine,
+	"writeback": Spine,
+	// object families the spine's transitions create/own/adjudicate (LAYERS.md) — authority for
+	// their objects, never for the runtime grammar
+	"capgraph":       ObjectFamily,
+	"director":       ObjectFamily,
+	"distiller":      ObjectFamily,
+	"localmodel":     ObjectFamily,
+	"observation":    ObjectFamily,
+	"panel":          ObjectFamily,
+	"product":        ObjectFamily,
+	"projection":     ObjectFamily,
+	"routeevidence":  ObjectFamily,
+	"runtimebinding": ObjectFamily,
 	// shared leaf
 	"breadth":        Leaf,
 	"candidates":     Leaf,
@@ -64,6 +67,25 @@ var Classification = map[string]Class{
 	"knowledge":    Importer,
 	"sourceobs":    Importer,
 	"tooltopology": Importer,
+}
+
+// spineCore is the ALLOWLIST of packages that ARE the runtime spine (the envelope grammar every
+// harness/hook/run flows through). Membership is a conscious edit here, never a default: if
+// everything is spine, agents treat everything as equally authoritative. checkClassificationTotal
+// fails if a package is classified Spine without a spineCore entry (or a spineCore entry is not
+// classified Spine), so a new package must be classified as object-family/leaf/importer instead of
+// quietly joining the authoritative spine. Keep this in lockstep with the Spine rows above.
+var spineCore = map[string]bool{
+	"arch":      true,
+	"contract":  true,
+	"envelope":  true,
+	"harness":   true,
+	"home":      true,
+	"hook":      true,
+	"policy":    true,
+	"schema":    true,
+	"work":      true,
+	"writeback": true,
 }
 
 // Severity of a finding. fail = the doctor is not OK; warn/info are reported, not fatal.
@@ -226,7 +248,7 @@ func checkClassificationTotal(repoRoot string) []Finding {
 		}
 		found[e.Name()] = true
 		if _, ok := Classification[e.Name()]; !ok {
-			f = append(f, Finding{"classification", Fail, "internal/" + e.Name() + " is UNCLASSIFIED — classify it in arch.Classification (spine/leaf/mem-target/converge-pending/importer) so it isn't a silent new front door"})
+			f = append(f, Finding{"classification", Fail, "internal/" + e.Name() + " is UNCLASSIFIED — classify it in arch.Classification (spine/object-family/leaf/mem-target/converge-pending/importer) so it isn't a silent new front door"})
 		}
 	}
 	for pkg := range Classification {
@@ -234,8 +256,39 @@ func checkClassificationTotal(repoRoot string) []Finding {
 			f = append(f, Finding{"classification", Warn, "arch.Classification names internal/" + pkg + " but the dir is gone (retired?) — drop it from the map"})
 		}
 	}
+	f = append(f, checkSpineCoreDrift(Classification, spineCore)...)
 	if len(f) == 0 {
 		f = append(f, Finding{"classification", Info, "all " + itoa(len(found)) + " internal/ packages classified"})
+	}
+	return f
+}
+
+// checkSpineCoreDrift enforces that Spine membership stays a conscious allowlist: the spineCore set
+// and the packages classified Spine must name exactly the same packages. Two Fail directions: a
+// package classified Spine with no spineCore entry (someone widened the authoritative spine without
+// an allowlist edit), and a spineCore entry not classified Spine (map drift). Pure (map-only) so the
+// ratchet is testable without the filesystem.
+func checkSpineCoreDrift(classification map[string]Class, core map[string]bool) []Finding {
+	var f []Finding
+	var unlisted []string
+	for pkg, c := range classification {
+		if c == Spine && !core[pkg] {
+			unlisted = append(unlisted, pkg)
+		}
+	}
+	sort.Strings(unlisted)
+	for _, pkg := range unlisted {
+		f = append(f, Finding{"classification", Fail, "internal/" + pkg + " is classified Spine but is not in the spineCore allowlist — spine membership is a conscious allowlist edit; classify a new package as object-family/leaf/importer instead of joining the runtime spine"})
+	}
+	var drift []string
+	for pkg := range core {
+		if classification[pkg] != Spine {
+			drift = append(drift, pkg)
+		}
+	}
+	sort.Strings(drift)
+	for _, pkg := range drift {
+		f = append(f, Finding{"classification", Fail, "spineCore names internal/" + pkg + " but it is not classified Spine (map drift) — keep spineCore and the Spine classification in lockstep"})
 	}
 	return f
 }

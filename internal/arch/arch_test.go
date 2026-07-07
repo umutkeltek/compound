@@ -97,6 +97,72 @@ func TestClassificationIsTotal(t *testing.T) {
 	}
 }
 
+// Spine is one envelope grammar plus object families the spine processes (LAYERS.md), NOT every
+// package. If everything were spine, agents would treat everything as equally authoritative. This
+// pins the split: exactly the ten spine packages, and the ten reclassified object families, so a
+// silent re-widening of the spine fails here.
+func TestSpineAndObjectFamilySplit(t *testing.T) {
+	wantSpine := []string{"arch", "contract", "envelope", "harness", "home", "hook", "policy", "schema", "work", "writeback"}
+	for _, pkg := range wantSpine {
+		if Classification[pkg] != Spine {
+			t.Errorf("%q must be classified Spine, got %q", pkg, Classification[pkg])
+		}
+		if !spineCore[pkg] {
+			t.Errorf("%q must be in the spineCore allowlist", pkg)
+		}
+	}
+	wantObjectFamily := []string{"capgraph", "director", "distiller", "localmodel", "observation", "panel", "product", "projection", "routeevidence", "runtimebinding"}
+	for _, pkg := range wantObjectFamily {
+		if Classification[pkg] != ObjectFamily {
+			t.Errorf("%q must be classified ObjectFamily (a family the spine processes), got %q", pkg, Classification[pkg])
+		}
+		if spineCore[pkg] {
+			t.Errorf("%q is an object family and must NOT be in the spineCore allowlist", pkg)
+		}
+	}
+	var spineCount int
+	for _, c := range Classification {
+		if c == Spine {
+			spineCount++
+		}
+	}
+	if spineCount != len(wantSpine) {
+		t.Errorf("Classification has %d Spine packages, want exactly %d (the envelope grammar); new packages are object-family/leaf/importer", spineCount, len(wantSpine))
+	}
+	if len(spineCore) != len(wantSpine) {
+		t.Errorf("spineCore has %d entries, want exactly %d", len(spineCore), len(wantSpine))
+	}
+}
+
+// The spine allowlist is a ratchet: spineCore and the Spine classification MUST name the same
+// packages. Adding a package to spineCore without classifying it Spine (or classifying a package
+// Spine without an allowlist entry) is drift and must FAIL the doctor. This exercises both
+// directions against synthetic maps plus lockstep against the real maps.
+func TestSpineCoreAllowlistRatchetCatchesDrift(t *testing.T) {
+	if findings := checkSpineCoreDrift(Classification, spineCore); len(findings) != 0 {
+		t.Fatalf("real spineCore and Classification must be in lockstep, got drift %+v", findings)
+	}
+
+	// Direction 1: a package is classified Spine but never allowlisted.
+	findings := checkSpineCoreDrift(map[string]Class{"newpkg": Spine, "home": Spine}, map[string]bool{"home": true})
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one spine-allowlist failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "spineCore allowlist") ||
+		!strings.Contains(findings[0].Message, "object-family/leaf/importer") {
+		t.Fatalf("failure should point the author at the allowlist and object-family classes: %+v", findings)
+	}
+
+	// Direction 2: a spineCore entry is not classified Spine (map drift).
+	findings = checkSpineCoreDrift(map[string]Class{"ghostcore": ObjectFamily}, map[string]bool{"ghostcore": true})
+	if len(findings) != 1 || findings[0].Severity != Fail {
+		t.Fatalf("findings = %+v, want one map-drift failure", findings)
+	}
+	if !strings.Contains(findings[0].Message, "map drift") || !strings.Contains(findings[0].Message, "lockstep") {
+		t.Fatalf("failure should name the map drift and lockstep requirement: %+v", findings)
+	}
+}
+
 // The convergence debt is reported (observable), not hidden — the coherent treatment of a duplicate
 // that cannot yet be retired.
 func TestStatusHotPathFailsAboveLineBudget(t *testing.T) {

@@ -66,6 +66,12 @@ Detail per object: `architecture/contracts/README.md`. Memory slice in depth: `m
 Recurring analytical/audit/optimization prompts are Procedures/Capabilities nodes on this spine, not a
 new home: `architecture/recurring-work-as-capability.md`.
 
+> **Enforced, not just narrated:** `internal/arch.Classification` now distinguishes `spine` (the
+> runtime grammar itself) from `object-family` (the families the spine processes, above), so not
+> everything reads as equally authoritative. Spine membership is an allowlist ratcheted by the
+> architecture doctor (`spineCore`): a package cannot quietly join the authoritative spine — a new
+> package is classified as an object family, leaf, or importer, and the doctor fails on drift.
+
 ---
 
 ## The rented edge *(NOT a layer, NOT an object family)*

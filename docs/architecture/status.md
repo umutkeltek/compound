@@ -69,7 +69,8 @@ Capability status note: `capgraph` owns `compound capability skill-plan`; skill 
 
 | Package | Status | Role |
 |---|---|---|
-| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook`, `localmodel` | canonical | runtime spine |
+| `home`, `envelope`, `contract`, `work`, `policy`, `harness`, `hook` | canonical | runtime spine |
+| `localmodel` | canonical | object family: local model lifecycle advice/probe surface |
 | `candidates` | canonical leaf | candidate kinds -> inbox dirs and verdicts |
 | `release` | canonical leaf | public source export gate over `git archive HEAD`; validates tracked archive entries do not include private/runtime surfaces |
 | `mem` | canonical | memory object family: entities, evidence, claims, positions, patterns, edges, adjudication, recall, meaning write plans |
