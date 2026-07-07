@@ -176,6 +176,7 @@ func proofCheckSteps() ([]proofCheckStep, error) {
 		{Name: "go-test", Command: []string{"go", "test", "-count=1", "./..."}, ProofRef: "go-test-count-1-all"},
 		{Name: "go-vet", Command: []string{"go", "vet", "./..."}, ProofRef: "go-vet-all"},
 		{Name: "go-build", Command: []string{"go", "build", "./..."}, ProofRef: "go-build-all"},
+		{Name: "gofmt", Command: []string{"gofmt", "-l", "<tracked *.go>"}, ProofRef: "gofmt-check"},
 		{Name: "diff-check", Command: []string{"git", "diff", "--check"}, ProofRef: "diff-check"},
 		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
 		{Name: "console-smoke", Command: consoleSmokeCommand("scripts/smoke.mjs"), Dir: "console", ProofRef: "console-smoke"},
@@ -212,6 +213,8 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 	}
 	if step.Name == "redact-public" {
 		output, err = runProofCheckRedact(repo)
+	} else if step.Name == "gofmt" {
+		output, err = runProofCheckGofmt(repo)
 	} else if step.Name == "codex-pretooluse-wrapper" {
 		output, err = runProofCheckCodexPreToolUseWrapper(repo, step)
 	} else if step.Name == "bun-tools-test" {
@@ -276,6 +279,27 @@ func runProofCheckBunTools(repo string) ([]byte, error) {
 	cmd.Dir = repo
 	cmd.Env = os.Environ()
 	return cmd.CombinedOutput()
+}
+
+func runProofCheckGofmt(repo string) ([]byte, error) {
+	files, err := proofCheckGitNULList(repo, "ls-files", "*.go", "-z")
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return []byte("no tracked Go files\n"), nil
+	}
+	args := append([]string{"-l"}, files...)
+	cmd := exec.Command("gofmt", args...)
+	cmd.Dir = repo
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, err
+	}
+	if strings.TrimSpace(string(output)) != "" {
+		return output, fmt.Errorf("gofmt reported unformatted tracked Go files")
+	}
+	return []byte("all tracked Go files gofmt-clean\n"), nil
 }
 
 func proofCheckUsesGo(step proofCheckStep) bool {

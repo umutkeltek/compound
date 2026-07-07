@@ -282,6 +282,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"go-test-count-1-all",
 		"go-vet-all",
 		"go-build-all",
+		"gofmt-check",
 		"diff-check",
 		"console-tsc-noemit",
 		"console-smoke",
@@ -397,6 +398,34 @@ func TestProofCheckGoStepsUseLocalToolchain(t *testing.T) {
 	})
 	if result.Status != "ok" || !strings.Contains(result.OutputTail, "GOTOOLCHAIN=local") {
 		t.Fatalf("proof-check go env = %+v", result)
+	}
+}
+
+func TestProofCheckGofmtFailsOnUnformattedTrackedGo(t *testing.T) {
+	repo := t.TempDir()
+	runCommandGit(t, repo, "init")
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\nfunc main(){\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", "main.go")
+
+	out, err := runProofCheckGofmt(repo)
+	if err == nil {
+		t.Fatalf("expected gofmt check to fail for unformatted tracked Go file, output=%s", out)
+	}
+	if !strings.Contains(string(out), "main.go") {
+		t.Fatalf("gofmt output should identify unformatted file, got %q", out)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\n\nfunc main() {\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runProofCheckGofmt(repo)
+	if err != nil {
+		t.Fatalf("expected gofmt check to pass after formatting: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "gofmt-clean") {
+		t.Fatalf("clean gofmt output should be explicit, got %q", out)
 	}
 }
 
