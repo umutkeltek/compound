@@ -287,14 +287,10 @@ func cmdSourceConnections(args []string) {
 	fmt.Printf("# source connections\n\n")
 	fmt.Printf("- status: %s\n", projection.Status)
 	fmt.Printf("- connections: %d\n", projection.Counts.Total)
-	fmt.Printf("- connected: %d\n", projection.Counts.Connected)
-	fmt.Printf("- imported: %d\n", projection.Counts.Imported)
-	fmt.Printf("- observed: %d\n", projection.Counts.Observed)
-	fmt.Printf("- needs_input: %d\n", projection.Counts.NeedsInput)
-	fmt.Printf("- needs_review: %d\n", projection.Counts.NeedsReview)
-	fmt.Printf("- not_connected: %d\n", projection.Counts.NotConnected)
+	fmt.Printf("- availability: unknown=%d not_configured=%d needs_private_config=%d configured=%d healthy=%d failing=%d\n", projection.Counts.AvailabilityUnknown, projection.Counts.AvailabilityNotConfigured, projection.Counts.AvailabilityNeedsPrivateConfig, projection.Counts.AvailabilityConfigured, projection.Counts.AvailabilityHealthy, projection.Counts.AvailabilityFailing)
+	fmt.Printf("- evidence_state: never_seen=%d observed=%d imported=%d stale=%d has_cards=%d\n", projection.Counts.EvidenceNeverSeen, projection.Counts.EvidenceObserved, projection.Counts.EvidenceImported, projection.Counts.EvidenceStale, projection.Counts.EvidenceHasCards)
 	for _, conn := range projection.Connections {
-		fmt.Printf("- %s status=%s rows=%d latest_cards=%d next=%s\n", conn.ID, conn.Status, conn.RowCount, conn.LatestCardCount, conn.NextSafeAction)
+		fmt.Printf("- %s availability=%s evidence_state=%s rows=%d latest_cards=%d next=%s\n", conn.ID, conn.Availability, conn.EvidenceState, conn.RowCount, conn.LatestCardCount, conn.NextSafeAction)
 	}
 }
 

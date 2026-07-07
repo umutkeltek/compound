@@ -357,19 +357,20 @@ function SourcesStrip({ projection }: { projection: Json | null }) {
     num(counts.evidence_imported) +
     num(counts.evidence_has_cards) +
     num(counts.evidence_stale);
-  const seen = evidenceCount || num(counts.observed) + num(counts.imported);
-  const needsInput = num(counts.availability_needs_private_config) || num(counts.needs_input);
+  const seen = evidenceCount;
+  const needsInput = num(counts.availability_needs_private_config);
   const cards = num(counts.action_required);
   const privateSetup = num(counts.private_setup);
   const top = connections
     .filter((connection) => {
       const availability = str(connection.availability);
       const evidenceState = str(connection.evidence_state);
-      const status = str(connection.status);
       return (
         availability === "needs_private_config" ||
+        availability === "configured" ||
+        availability === "failing" ||
         evidenceState === "has_cards" ||
-        ["needs_private_input", "blocked_private_config", "ready_preflight", "needs_review", "needs_mapping"].includes(status)
+        evidenceState === "stale"
       );
     })
     .slice(0, 2);
@@ -401,7 +402,10 @@ function SourcesStrip({ projection }: { projection: Json | null }) {
             <div key={str(connection.id)} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2">
               <div className="min-w-0">
                 <div className="truncate text-[12.5px] font-semibold text-ink">{str(connection.label) || str(connection.id)}</div>
-                <div className="truncate text-[11.5px] text-ink-3">{str(connection.next_safe_action) || str(connection.status).replace(/_/g, " ")}</div>
+                <div className="truncate text-[11.5px] text-ink-3">
+                  {str(connection.next_safe_action) ||
+                    (str(connection.evidence_state) || str(connection.availability)).replace(/_/g, " ")}
+                </div>
               </div>
               <Link href="/sources" className="shrink-0 text-[12px] font-semibold text-teal-700 hover:underline">
                 Sources

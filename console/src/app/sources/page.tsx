@@ -4,21 +4,18 @@ import { ago, arr, getSourceConnections, str, type Json } from "@/lib/compound";
 
 export const dynamic = "force-dynamic";
 
-function statusTone(status: string): Accent {
-  switch (status) {
+function stateTone(value: string): Accent {
+  switch (value) {
     case "healthy":
-    case "connected":
     case "imported":
     case "observed":
     case "configured":
       return "green";
     case "needs_private_config":
-    case "blocked_private_config":
     case "needs_private_input":
-    case "ready_preflight":
       return "orange";
     case "needs_review":
-    case "needs_mapping":
+    case "has_cards":
       return "violet";
     case "stale":
     case "failing":
@@ -42,24 +39,24 @@ function stateLabel(value: string): string {
       return "needs private config";
     case "not_configured":
       return "not configured";
+    case "unknown":
+      return "unknown";
     case "never_seen":
       return "never seen";
     case "has_cards":
       return "has cards";
-    case "blocked_private_config":
-      return "needs private config";
     case "needs_private_input":
       return "needs private input";
-    case "ready_preflight":
-      return "ready for preflight";
     case "needs_review":
       return "needs review";
-    case "needs_mapping":
-      return "needs mapping";
     case "imported":
       return "imported";
-    case "not_connected":
-      return "not connected";
+    case "observed":
+      return "observed";
+    case "stale":
+      return "stale";
+    case "failing":
+      return "failing";
     default:
       return value.replace(/_/g, " ") || "unknown";
   }
@@ -83,7 +80,7 @@ function SourceActionCard({ card }: { card: Json }) {
   return (
     <li className="border-t border-line pt-3 first:border-t-0 first:pt-0">
       <div className="flex flex-wrap items-center gap-1.5">
-        <Chip tone={statusTone(str(card.severity) === "high" ? "needs_private_input" : "needs_review")}>
+        <Chip tone={stateTone(str(card.severity) === "high" ? "needs_private_input" : "needs_review")}>
           {str(card.severity) || "review"}
         </Chip>
         {str(card.kind) ? <Chip tone="gray">{str(card.kind).replace(/_/g, " ")}</Chip> : null}
@@ -112,7 +109,6 @@ function SourceActionCard({ card }: { card: Json }) {
 }
 
 function SourceConnectionCard({ connection }: { connection: Json }) {
-  const status = str(connection.status);
   const availability = str(connection.availability) || "unknown";
   const evidenceState = str(connection.evidence_state) || "never_seen";
   const sourceKinds = arr(connection.source_kinds).map(String).filter(Boolean);
@@ -123,9 +119,9 @@ function SourceConnectionCard({ connection }: { connection: Json }) {
   return (
     <Card
       title={str(connection.label) || str(connection.id)}
-      accent={statusTone(status)}
+      accent={stateTone(availability)}
       glyph="S"
-      right={<Chip tone={statusTone(status)}>{stateLabel(status)}</Chip>}
+      right={<Chip tone={stateTone(evidenceState)}>{stateLabel(evidenceState)}</Chip>}
     >
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap gap-1.5">
@@ -134,8 +130,7 @@ function SourceConnectionCard({ connection }: { connection: Json }) {
               {kind}
             </Chip>
           ))}
-          <Chip tone={statusTone(availability)}>availability: {stateLabel(availability)}</Chip>
-          <Chip tone={statusTone(evidenceState)}>evidence: {stateLabel(evidenceState)}</Chip>
+          <Chip tone={stateTone(availability)}>availability: {stateLabel(availability)}</Chip>
           {connection.private_setup_needed ? <Chip tone="orange">private setup</Chip> : null}
           {connection.row_count ? <Chip tone="blue">{connection.row_count} rows</Chip> : null}
           {lastSeen ? <Chip tone="gray">{ago(lastSeen) || lastSeen}</Chip> : null}
@@ -205,15 +200,14 @@ export default async function SourcesPage() {
             (Number(counts.evidence_observed) || 0) +
             (Number(counts.evidence_imported) || 0) +
             (Number(counts.evidence_has_cards) || 0) +
-            (Number(counts.evidence_stale) || 0) ||
-            (Number(counts.observed) || 0) + (Number(counts.imported) || 0)
+            (Number(counts.evidence_stale) || 0)
           }
           glyph=">"
           accent="green"
         />
         <Stat
           label="Private setup"
-          value={Number(counts.availability_needs_private_config) || Number(counts.needs_input) || 0}
+          value={Number(counts.availability_needs_private_config) || 0}
           glyph="!"
           accent="orange"
         />

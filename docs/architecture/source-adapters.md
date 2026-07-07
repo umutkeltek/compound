@@ -29,6 +29,19 @@ Writeback requires an OwnerWritebackGate plus PolicyDecision.
 This is the difference between using an existing operating system as a dogfood
 source and rebuilding its fragmentation inside Compound.
 
+## Source Connections State
+
+`compound source connections --json` exposes two state axes per connection:
+
+| Axis | Values | Meaning |
+|---|---|---|
+| `availability` | `unknown`, `not_configured`, `needs_private_config`, `configured`, `healthy`, `failing` | Whether Compound can reach or preflight the source. `needs_private_config` means operator/private setup is required; `configured` means setup is known enough to run a read-only preflight; `healthy` means live proof exists. `failing` is reserved for connector probe failures; no live connector probe emits it yet. |
+| `evidence_state` | `never_seen`, `observed`, `imported`, `stale`, `has_cards` | Whether source evidence has entered Compound. `observed` is runtime/source-row evidence, `imported` is imported knowledge evidence, `stale` is evidence past the freshness window, and `has_cards` means pending source action exists before seen data. |
+
+The flat per-connection `status` field is a compatibility bridge. Console and
+CLI consumers read `availability` and `evidence_state`; remove `status` only
+after external consumers confirm migration.
+
 Conversation coverage summaries are source-quality evidence, not corpus imports.
 `compound distiller import-conversation-coverage <summary.json>` is summary-only:
 it records source counts, mapped/unmapped coverage, retained-ratio signal,

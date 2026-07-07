@@ -637,6 +637,26 @@ func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
 	if projection.Counts.EvidenceObserved == 0 || projection.Counts.AvailabilityHealthy != 0 {
 		t.Fatalf("split source state counts = %+v, want observed evidence and no healthy live connection", projection.Counts)
 	}
+	textOut := captureStdout(t, func() {
+		cmdSource([]string{"connections"})
+	})
+	wantAvailabilityLine := "- availability: unknown=" + strconv.Itoa(projection.Counts.AvailabilityUnknown) +
+		" not_configured=" + strconv.Itoa(projection.Counts.AvailabilityNotConfigured) +
+		" needs_private_config=" + strconv.Itoa(projection.Counts.AvailabilityNeedsPrivateConfig) +
+		" configured=" + strconv.Itoa(projection.Counts.AvailabilityConfigured) +
+		" healthy=" + strconv.Itoa(projection.Counts.AvailabilityHealthy) +
+		" failing=" + strconv.Itoa(projection.Counts.AvailabilityFailing)
+	wantEvidenceLine := "- evidence_state: never_seen=" + strconv.Itoa(projection.Counts.EvidenceNeverSeen) +
+		" observed=" + strconv.Itoa(projection.Counts.EvidenceObserved) +
+		" imported=" + strconv.Itoa(projection.Counts.EvidenceImported) +
+		" stale=" + strconv.Itoa(projection.Counts.EvidenceStale) +
+		" has_cards=" + strconv.Itoa(projection.Counts.EvidenceHasCards)
+	if !strings.Contains(textOut, wantAvailabilityLine) || !strings.Contains(textOut, wantEvidenceLine) {
+		t.Fatalf("source connections text output missing split state counts:\nwant %q\nwant %q\ngot:\n%s", wantAvailabilityLine, wantEvidenceLine, textOut)
+	}
+	if strings.Contains(textOut, " status=") {
+		t.Fatalf("source connections text output still prints legacy connection status:\n%s", textOut)
+	}
 	gsc := findCLISourceConnection(projection.Connections, "google_search_console")
 	if gsc == nil ||
 		gsc.Status != "observed" ||
