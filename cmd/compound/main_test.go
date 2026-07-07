@@ -579,6 +579,26 @@ func TestSourceIntakeCLIAndOrientConsumeRecordedObservationBatches(t *testing.T)
 	}
 }
 
+// freshGSCBatchFixture rewrites the batch fixture's absolute timestamps to
+// now-1h. The connections projection derives staleness from wall-clock (72h),
+// so a fixture with fixed dates time-bombs this test the day it ages past the
+// threshold — fresh applied evidence must deterministically read "observed".
+func freshGSCBatchFixture(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../fixtures/observation/gsc-product-metric.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	body := strings.ReplaceAll(string(raw), "2026-07-04T12:00:00Z", fresh)
+	body = strings.ReplaceAll(body, "2026-07-04T00:00:00Z", fresh)
+	path := filepath.Join(t.TempDir(), "gsc-product-metric-fresh.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -598,7 +618,7 @@ func TestSourceConnectionsCLIShowsKnownAndObservedSources(t *testing.T) {
 	}
 
 	captureStdout(t, func() {
-		cmdSource([]string{"observe-batch", "../../fixtures/observation/gsc-product-metric.json", "--apply-product-signals", "--json"})
+		cmdSource([]string{"observe-batch", freshGSCBatchFixture(t), "--apply-product-signals", "--json"})
 	})
 
 	out := captureStdout(t, func() {

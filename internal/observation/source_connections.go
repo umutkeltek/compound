@@ -517,9 +517,6 @@ func sourceConnectionRowStatus(connectionID string, row SourceIntakeRow, now tim
 		}
 		return "needs_private_input"
 	}
-	if row.ActionRequired {
-		return "needs_review"
-	}
 	if row.Status == RouteUnsupportedKind {
 		return "needs_mapping"
 	}
@@ -527,15 +524,18 @@ func sourceConnectionRowStatus(connectionID string, row SourceIntakeRow, now tim
 		return "stale"
 	}
 	switch row.Status {
-	case "applied", "review_recorded":
+	case "applied", "review_recorded", "planned":
+		// Applied evidence stays observed even when advisory action cards ride
+		// along — cards surface operator work, they do not demote seen evidence.
 		return "observed"
-	case "skipped":
-		return "needs_review"
-	case "planned":
-		return "observed"
-	default:
-		return firstNonEmpty(row.Status, "observed")
 	}
+	if row.ActionRequired {
+		return "needs_review"
+	}
+	if row.Status == "skipped" {
+		return "needs_review"
+	}
+	return firstNonEmpty(row.Status, "observed")
 }
 
 func sourceConnectionAvailability(conn SourceConnection) string {
@@ -557,21 +557,19 @@ func sourceConnectionAvailability(conn SourceConnection) string {
 }
 
 func sourceConnectionEvidenceState(conn SourceConnection) string {
-	if conn.LatestCardCount > 0 {
-		return "has_cards"
-	}
 	switch conn.Status {
 	case "stale":
 		return "stale"
 	case "imported":
 		return "imported"
-	case "observed", "connected", "needs_review", "needs_mapping", "blocked_private_config", "needs_private_input":
-		if conn.RowCount > 0 || conn.LastSeen != "" || conn.SourceRef != "" {
-			return "observed"
-		}
 	}
 	if conn.RowCount > 0 || conn.LastSeen != "" || conn.SourceRef != "" {
 		return "observed"
+	}
+	// Cards without any seen evidence: the source has pending operator action
+	// but no data yet. Seen evidence above always outranks pending cards.
+	if conn.LatestCardCount > 0 {
+		return "has_cards"
 	}
 	return "never_seen"
 }
