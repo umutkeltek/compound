@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/decisions"
+	"compound/internal/policy"
 )
 
 const (
@@ -17,6 +19,17 @@ const (
 	OSAbsorptionAuthorityRef = "compound://registries/os-absorption-source-matrix"
 
 	osAbsorptionMatrixFile = "os-absorption-source-matrix.json"
+
+	// osAbsorptionDecisionsLedgerRef is the compound_owner ref used by the
+	// os_source_decisions_repo absorption row. It is proven by the decisions
+	// source-authority ledger (compound/internal/decisions), not asserted.
+	osAbsorptionDecisionsLedgerRef = "compound://ledger/decisions"
+
+	// proof_mode values a matrix row can set explicitly to opt into an
+	// auto-proof mechanism regardless of its compound_owner string.
+	osAbsorptionProofModeCapability    = "capability_source_authority"
+	osAbsorptionProofModeDecisions     = "decisions_source_authority"
+	osAbsorptionProofModeOperatorState = "operator_state_registry"
 )
 
 type OSAbsorptionSourceMatrix struct {
@@ -57,18 +70,19 @@ type OSAbsorptionImportReport struct {
 }
 
 type OSAbsorptionDoctorReport struct {
-	SchemaVersion          string                           `json:"schema_version"`
-	AuthorityRef           string                           `json:"authority_ref"`
-	AuthorityPath          string                           `json:"authority_path"`
-	Status                 string                           `json:"status"`
-	Installed              bool                             `json:"installed"`
-	RowCount               int                              `json:"row_count"`
-	AbsorbedCount          int                              `json:"absorbed_count"`
-	PendingCount           int                              `json:"pending_count"`
-	AutoProofCount         int                              `json:"auto_proof_count"`
-	PendingWithGateCount   int                              `json:"pending_with_gate_count"`
-	MissingRequiredCount   int                              `json:"missing_required_count"`
-	FailedAutoProofCount   int                              `json:"failed_auto_proof_count"`
+	SchemaVersion        string `json:"schema_version"`
+	AuthorityRef         string `json:"authority_ref"`
+	AuthorityPath        string `json:"authority_path"`
+	Status               string `json:"status"`
+	Installed            bool   `json:"installed"`
+	RowCount             int    `json:"row_count"`
+	AbsorbedCount        int    `json:"absorbed_count"`
+	PendingCount         int    `json:"pending_count"`
+	AutoProofCount       int    `json:"auto_proof_count"`
+	PendingWithGateCount int    `json:"pending_with_gate_count"`
+	MissingRequiredCount int    `json:"missing_required_count"`
+	FailedAutoProofCount int    `json:"failed_auto_proof_count"`
+
 	Checks                 []OSAbsorptionDoctorCheck        `json:"checks"`
 	Rows                   []OSAbsorptionDoctorRow          `json:"rows,omitempty"`
 	SourceAuthorityRecords []capgraph.SourceAuthorityRecord `json:"-"`
@@ -87,6 +101,7 @@ type OSAbsorptionDoctorRow struct {
 	CompoundOwner string   `json:"compound_owner"`
 	ProofStatus   string   `json:"proof_status"`
 	ProofRef      string   `json:"proof_ref,omitempty"`
+	ProofDetail   string   `json:"proof_detail,omitempty"`
 	MissingFields []string `json:"missing_fields,omitempty"`
 }
 
@@ -194,17 +209,18 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		if row.Status == "pending" && row.CompoundOwner != "" && row.Consumer != "" && row.RetirementGate != "" {
 			report.PendingWithGateCount++
 		}
-		if osAbsorptionNeedsCapabilityProof(row) {
-			rec, ok := capabilityAuthorityProofRecord(row, capRecords)
-			if ok {
-				report.AutoProofCount++
-				dr.ProofStatus = "ok"
-				dr.ProofRef = rec.ID
+		switch {
+		case osAbsorptionNeedsCapabilityProof(row):
+			if rec, ok := capabilityAuthorityProofRecord(row, capRecords); ok {
+				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{ok: true, proofRef: rec.ID})
 			} else {
-				report.FailedAutoProofCount++
-				dr.ProofStatus = "failed"
+				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{reason: "no matching capability source-authority record for " + row.SourceRef})
 			}
-		} else if row.Status == "pending" {
+		case osAbsorptionNeedsDecisionsProof(row):
+			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionDecisionsProof(homePath))
+		case osAbsorptionNeedsOperatorStateProof(row):
+			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionOperatorStateProof(homePath))
+		case row.Status == "pending":
 			dr.ProofStatus = "pending"
 		}
 		report.Rows = append(report.Rows, dr)
@@ -336,10 +352,91 @@ func missingOSAbsorptionFields(row OSAbsorptionMatrixRow) []string {
 }
 
 func osAbsorptionNeedsCapabilityProof(row OSAbsorptionMatrixRow) bool {
-	if row.ProofMode == "capability_source_authority" {
+	if row.ProofMode == osAbsorptionProofModeCapability {
 		return true
 	}
 	return row.CompoundOwner == capgraph.CapabilityGraphAuthorityRef && row.Status == "absorbed"
+}
+
+// osAbsorptionNeedsDecisionsProof matches the os_source_decisions_repo row (and
+// any row that opts in via proof_mode): it is proven by the decisions
+// source-authority ledger having at least one record, not by the row's status
+// string (today "evidence_only").
+func osAbsorptionNeedsDecisionsProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode == osAbsorptionProofModeDecisions {
+		return true
+	}
+	return row.CompoundOwner == osAbsorptionDecisionsLedgerRef
+}
+
+// osAbsorptionNeedsOperatorStateProof matches the os_source_operator_state row
+// (and any row that opts in via proof_mode): it is proven by the same
+// operator-state registry reader internal/policy uses to apply autonomy state
+// and cite compound://registries/operator-state on policy decisions.
+func osAbsorptionNeedsOperatorStateProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode == osAbsorptionProofModeOperatorState {
+		return true
+	}
+	return row.CompoundOwner == policy.OperatorStateAuthorityRef
+}
+
+// osAbsorptionProofResult is the outcome of one row's auto-proof attempt.
+type osAbsorptionProofResult struct {
+	ok       bool
+	proofRef string
+	reason   string
+}
+
+// osAbsorptionDecisionsProof is the auto-proof for os_source_decisions_repo:
+// the decisions source-authority ledger (compound/internal/decisions) loads
+// and has at least one record. Falsifier: an absent/empty ledger fails, it
+// does not silently pass.
+func osAbsorptionDecisionsProof(homePath string) osAbsorptionProofResult {
+	records, err := decisions.LoadSourceAuthority(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "decisions source authority: " + err.Error()}
+	}
+	if len(records) == 0 {
+		return osAbsorptionProofResult{reason: "decisions source authority ledger has record_count=0"}
+	}
+	return osAbsorptionProofResult{ok: true, proofRef: osAbsorptionDecisionsLedgerRef}
+}
+
+// osAbsorptionOperatorStateProof is the auto-proof for os_source_operator_state:
+// the operator-state registry (compound/internal/policy's own reader) loads
+// and is non-empty. That reader is what feeds ApplyOperatorState, which is
+// what makes policy decisions cite compound://registries/operator-state — so
+// "loads + non-empty" is the weakest real check that still proves the live
+// consumer path, without inventing new state.
+func osAbsorptionOperatorStateProof(homePath string) osAbsorptionProofResult {
+	path := policy.OperatorStatePath(homePath)
+	state, err := policy.LoadOperatorState(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return osAbsorptionProofResult{reason: "operator-state registry not found at " + path}
+		}
+		return osAbsorptionProofResult{reason: "operator-state registry: " + err.Error()}
+	}
+	if len(state.Raw) == 0 {
+		return osAbsorptionProofResult{reason: "operator-state registry at " + path + " is empty"}
+	}
+	return osAbsorptionProofResult{ok: true, proofRef: policy.OperatorStateAuthorityRef}
+}
+
+// applyOSAbsorptionAutoProof records one row's auto-proof outcome onto the
+// doctor report/row in place, mirroring the capability-proof bookkeeping:
+// proof_status=ok + proof_ref on success, proof_status=failed on failure
+// (never manual, never a status-string change).
+func applyOSAbsorptionAutoProof(report *OSAbsorptionDoctorReport, dr *OSAbsorptionDoctorRow, result osAbsorptionProofResult) {
+	if result.ok {
+		report.AutoProofCount++
+		dr.ProofStatus = "ok"
+		dr.ProofRef = result.proofRef
+		return
+	}
+	report.FailedAutoProofCount++
+	dr.ProofStatus = "failed"
+	dr.ProofDetail = result.reason
 }
 
 func doctorCheck(name string, ok bool, detail string) OSAbsorptionDoctorCheck {
