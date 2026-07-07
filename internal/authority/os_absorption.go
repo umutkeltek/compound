@@ -82,6 +82,13 @@ type OSAbsorptionDoctorReport struct {
 	PendingWithGateCount int    `json:"pending_with_gate_count"`
 	MissingRequiredCount int    `json:"missing_required_count"`
 	FailedAutoProofCount int    `json:"failed_auto_proof_count"`
+	// MachineProvenCount/AssertedCount/FailedProofCount split the misleading
+	// single AbsorbedCount bucket (status-string based) into what proof_status
+	// actually says (evidence based): a row can carry status=absorbed and
+	// still be proof_status=manual. PendingCount is unchanged/existing.
+	MachineProvenCount int `json:"machine_proven_count"`
+	AssertedCount      int `json:"asserted_count"`
+	FailedProofCount   int `json:"failed_proof_count"`
 
 	Checks                 []OSAbsorptionDoctorCheck        `json:"checks"`
 	Rows                   []OSAbsorptionDoctorRow          `json:"rows,omitempty"`
@@ -222,6 +229,14 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionOperatorStateProof(homePath))
 		case row.Status == "pending":
 			dr.ProofStatus = "pending"
+		}
+		switch dr.ProofStatus {
+		case "ok":
+			report.MachineProvenCount++
+		case "manual":
+			report.AssertedCount++
+		case "failed":
+			report.FailedProofCount++
 		}
 		report.Rows = append(report.Rows, dr)
 	}

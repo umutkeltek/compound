@@ -229,6 +229,65 @@ func TestOSAbsorptionOperatorStateProofFailsWhenRegistryAbsent(t *testing.T) {
 	}
 }
 
+// TestOSAbsorptionCountsSplitProvenVsAsserted is J2's falsifier: on a fixture
+// with one machine-proven absorbed row, one manual (unproven) absorbed-bucket
+// row, and one pending row, machine_proven_count must diverge from the
+// legacy absorbed_count bucket — proving the split reflects real evidence,
+// not the same status-string tally under a new name.
+func TestOSAbsorptionCountsSplitProvenVsAsserted(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+
+	capSource := "/synthetic/umut-os/spine/views/skill-manifest.json"
+	if _, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+		SourcePath:     capSource,
+		SourceRevision: "sha256:" + digest12(capSource),
+		ImportedVia:    "test import",
+		NodeIDs:        []string{"skill:manifest"},
+		EvidenceRefs:   []string{"fixture:manifest"},
+	}, now); err != nil {
+		t.Fatalf("record cap source authority: %v", err)
+	}
+
+	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
+	matrix := OSAbsorptionSourceMatrix{
+		SchemaVersion: OSAbsorptionMatrixSchema,
+		Rows: []OSAbsorptionMatrixRow{
+			row("skill_manifest", capSource, "absorbed", capgraph.CapabilityGraphAuthorityRef, "compound capability authority", "capability_source_authority"),
+			row("os_capability_cli", "/synthetic/cli/os-capability", "wrapper", capgraph.CapabilityGraphAuthorityRef, "os capability wrapper", ""),
+			row("brain", "/synthetic/brain/projects/compound.md", "pending", "compound://ledger/memory", "compound memory recall", ""),
+		},
+	}
+	writeJSONFixture(t, matrixPath, matrix)
+	importReport, err := ImportOSAbsorptionMatrix(homePath, matrixPath, now)
+	if err != nil {
+		t.Fatalf("import matrix: %v", err)
+	}
+	if importReport.AbsorbedCount != 2 || importReport.PendingCount != 1 {
+		t.Fatalf("unexpected import counts: %+v", importReport)
+	}
+
+	doctor, err := OSAbsorptionDoctor(homePath)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if doctor.AbsorbedCount != 2 {
+		t.Fatalf("expected legacy absorbed_count=2 (status bucket), got %+v", doctor)
+	}
+	if doctor.MachineProvenCount != 1 {
+		t.Fatalf("expected machine_proven_count=1 (only the capability-proven row), got %+v", doctor)
+	}
+	if doctor.AssertedCount != 1 {
+		t.Fatalf("expected asserted_count=1 (the manual wrapper row), got %+v", doctor)
+	}
+	if doctor.PendingCount != 1 {
+		t.Fatalf("expected pending_count=1 (existing), got %+v", doctor)
+	}
+	if doctor.MachineProvenCount == doctor.AbsorbedCount {
+		t.Fatalf("machine_proven_count must diverge from absorbed_count to prove the split is real: %+v", doctor)
+	}
+}
+
 func row(id, source, status, owner, consumer, proofMode string) OSAbsorptionMatrixRow {
 	return OSAbsorptionMatrixRow{
 		ID:             id,

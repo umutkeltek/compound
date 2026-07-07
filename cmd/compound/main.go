@@ -4969,6 +4969,7 @@ func cmdAuthority(args []string) {
 		}
 		fmt.Printf("os absorption doctor: %s\n", report.Status)
 		fmt.Printf("rows: %d auto_proved=%d pending_with_gate=%d missing=%d failed_auto=%d\n", report.RowCount, report.AutoProofCount, report.PendingWithGateCount, report.MissingRequiredCount, report.FailedAutoProofCount)
+		fmt.Printf("proof split: machine_proven=%d asserted=%d pending=%d failed_proof=%d (absorbed_count=%d is status-string only, not proof)\n", report.MachineProvenCount, report.AssertedCount, report.PendingCount, report.FailedProofCount, report.AbsorbedCount)
 		for _, check := range report.Checks {
 			fmt.Printf("- %s: %s", check.Name, check.Status)
 			if check.Detail != "" {
