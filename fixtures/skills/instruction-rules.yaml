@@ -47,9 +47,17 @@ skills:
       - public boundary
       - redact
       - docs
+      - push
+      - remote
+      - publish
+      - release
+      - ship
+      - leak
+      - secret
+      - credential
     when:
       - kind: task-class
-        values: [public, private, redact, docs]
+        values: [public, private, redact, docs, push, publish, release]
     read:
       - docs/BOUNDARIES.md
     route:
