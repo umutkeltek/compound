@@ -9,6 +9,7 @@
 package capgraph
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"compound/internal/candidates"
@@ -82,15 +84,30 @@ type Edge struct {
 	CreatedAt  string  `json:"created_at"`
 }
 
-type Store struct{ home string }
+type Store struct {
+	home string
+
+	semanticMu   sync.Mutex
+	semanticLane string
+}
 
 type Stats struct {
 	NodeCount      int            `json:"node_count"`
 	EdgeCount      int            `json:"edge_count"`
 	EdgeKindCounts map[string]int `json:"edge_kind_counts,omitempty"`
+	SemanticLane   string         `json:"semantic_lane,omitempty"`
 }
 
 const SurfaceSchemaVersion = "compound.capability_surface.v0.1"
+
+const (
+	semanticLaneOff      = "off"
+	semanticLaneOn       = "on"
+	semanticLaneDegraded = "degraded"
+	semanticFloor        = 0.55
+	semanticWeight       = 2.0
+	defaultEmbedTimeout  = 3 * time.Second
+)
 
 func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
@@ -100,6 +117,24 @@ func Open(homePath string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{home: homePath}, nil
+}
+
+func (s *Store) setSemanticLane(lane string) {
+	if lane == "" {
+		lane = semanticLaneOff
+	}
+	s.semanticMu.Lock()
+	s.semanticLane = lane
+	s.semanticMu.Unlock()
+}
+
+func (s *Store) getSemanticLane() string {
+	s.semanticMu.Lock()
+	defer s.semanticMu.Unlock()
+	if s.semanticLane == "" {
+		return semanticLaneOff
+	}
+	return s.semanticLane
 }
 
 func (s *Store) nodesLog() string {
@@ -359,11 +394,13 @@ func (s *Store) SurfaceForHarness(task, harness string) ([]Surfaced, error) {
 
 // SurfaceContext is the scoped trigger input for capability and instruction-rule surfacing.
 type SurfaceContext struct {
-	Task     string
-	RepoKind string
-	Harness  string
-	FilePath string
-	Phase    string
+	Task         string
+	RepoKind     string
+	Harness      string
+	FilePath     string
+	Phase        string
+	Embedder     NodeEmbedder
+	EmbedTimeout time.Duration
 }
 
 // SurfaceForContext returns task-relevant offers for the full orientation context.
@@ -384,6 +421,24 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 	tokens := tokenSet(task)
 	instructionTokens := instructionRuleTokenSet(ctx)
 	pruneLegacyAdaptationMetaTokens(tokens, task)
+	semanticLane := semanticLaneOff
+	semantic := map[string]float64{}
+	if ctx.Embedder != nil {
+		timeout := ctx.EmbedTimeout
+		if timeout <= 0 {
+			timeout = defaultEmbedTimeout
+		}
+		semanticCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		scores, err := semanticScores(semanticCtx, ctx.Embedder, s.home, nodes, task)
+		cancel()
+		if err != nil {
+			semanticLane = semanticLaneDegraded
+		} else {
+			semanticLane = semanticLaneOn
+			semantic = scores
+		}
+	}
+	s.setSemanticLane(semanticLane)
 
 	// learned context → node adjustments
 	add := map[string]float64{}
@@ -424,9 +479,11 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if harness != "" && len(harnesses[n.ID]) > 0 && !harnesses[n.ID][harness] {
 			continue
 		}
+		sem := semantic[n.ID]
+		semanticMatched := sem >= semanticFloor
 		matchTokens := tokens
 		if n.Kind == "instruction_rule" {
-			if !instructionRuleMatches(n, ctx, tokens, instructionTokens) {
+			if !instructionRuleMatches(n, ctx, tokens, instructionTokens) && !semanticMatched {
 				continue
 			}
 			matchTokens = instructionTokens
@@ -438,11 +495,18 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 		if evidenceBonus[n.ID] > 0 {
 			matchedTokens = appendMatchedTokens(matchedTokens, "evidence")
 		}
-		score := base*n.Weight + add[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
+		semanticBonus := 0.0
+		if semanticMatched {
+			semanticBonus = semanticWeight * (sem - semanticFloor) / (1 - semanticFloor) * n.Weight
+		}
+		score := base*n.Weight + semanticBonus + add[n.ID] + evidenceBonus[n.ID] - sub[n.ID]
 		if score <= 0 {
 			continue
 		}
 		why := fmt.Sprintf("trigger×weight=%.1f", base*n.Weight)
+		if semanticBonus > 0 {
+			why += fmt.Sprintf(" +semantic=%.2f", sem)
+		}
 		if add[n.ID] > 0 {
 			why += fmt.Sprintf(" +missed_when=%.1f", add[n.ID])
 		}
@@ -885,7 +949,7 @@ func (s *Store) Stats() (Stats, error) {
 	for _, edge := range edges {
 		edgeKindCounts[edge.Kind]++
 	}
-	return Stats{NodeCount: len(nodes), EdgeCount: len(edges), EdgeKindCounts: edgeKindCounts}, nil
+	return Stats{NodeCount: len(nodes), EdgeCount: len(edges), EdgeKindCounts: edgeKindCounts, SemanticLane: s.getSemanticLane()}, nil
 }
 
 // --- load (append-only, last-wins by id) ---

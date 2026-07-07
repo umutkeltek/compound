@@ -20,6 +20,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"compound/internal/breadth"
 	"compound/internal/capgraph"
 	"compound/internal/envelope"
 	"compound/internal/harness"
@@ -770,13 +771,18 @@ func surfaceCapabilityHits(homePath string, in Input) ([]capgraph.Surfaced, int,
 	if err != nil {
 		return nil, 0, err
 	}
-	surfaced, err := store.SurfaceForContext(capgraph.SurfaceContext{
+	surfaceCtx := capgraph.SurfaceContext{
 		Task:     in.Task,
 		RepoKind: in.RepoKind,
 		Harness:  in.Harness,
 		FilePath: in.Cwd,
 		Phase:    in.Mode,
-	})
+	}
+	if embedder, ok := breadth.ResolveEmbedder(homePath); ok {
+		surfaceCtx.Embedder = embedder
+		surfaceCtx.EmbedTimeout = 3 * time.Second
+	}
+	surfaced, err := store.SurfaceForContext(surfaceCtx)
 	if err != nil {
 		return nil, 0, err
 	}
