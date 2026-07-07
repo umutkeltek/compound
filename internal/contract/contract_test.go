@@ -1771,6 +1771,125 @@ func TestPackWithCapabilitiesIncludesRelevantCompoundMemory(t *testing.T) {
 	}
 }
 
+// TestPackWithCapabilitiesNarrowsAmbientMemoryByTopic proves the topic-scoped recall
+// capability reaches the ContextPack builder (a live work-path consumer), not just the
+// `memory recall --topic` CLI. With Input.Topic set, ambient recall keeps only claims in
+// the topic subtree and records the excluded out-of-topic claim; with Topic empty, both
+// claims surface (regression guard: empty topic = behavior unchanged).
+func TestPackWithCapabilitiesNarrowsAmbientMemoryByTopic(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two-topic taxonomy: alpha (with a child) and beta, imported the same way memory
+	// import-topics does. alpha-workflows parts into alpha, so alpha's subtree covers it.
+	topics := []byte(`{
+	  "schema_version": "compound.memory_topics.v0.1",
+	  "topics": [
+	    {"slug": "topic:alpha", "narrows_to": ["topic:alpha-workflows"]},
+	    {"slug": "topic:alpha-workflows", "part_of": ["topic:alpha"]},
+	    {"slug": "topic:beta"}
+	  ]
+	}`)
+	if _, err := store.ImportTopics(topics, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:          "compound",
+			Predicate:       "alpha_stance",
+			Object:          "workflow automation ledger stance",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			TopicRefs:       []string{"topic:alpha-workflows"}, // child of alpha → in alpha's subtree
+			PromotionBasis:  candidates.BasisCuratedPage,
+			SourceTraceRef:  "ev_alpha",
+			SnippetHash:     "sha256:alpha",
+			Visibility:      "contextual",
+			ObservationDate: "2026-06-30T00:00:00Z",
+		},
+		{
+			Entity:          "compound",
+			Predicate:       "beta_stance",
+			Object:          "workflow automation gateway stance",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			TopicRefs:       []string{"topic:beta"},
+			PromotionBasis:  candidates.BasisCuratedPage,
+			SourceTraceRef:  "ev_beta",
+			SnippetHash:     "sha256:beta",
+			Visibility:      "contextual",
+			ObservationDate: "2026-06-30T00:00:00Z",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha, err := store.Adjudicate(got[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err := store.Adjudicate(got[1].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alphaRef := "claim://" + alpha.Claim.ID
+	betaRef := "claim://" + beta.Claim.ID
+
+	base := Input{Harness: "codex", Cwd: "/repo/compound", Task: "workflow automation stance", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
+
+	// Topic-narrowed: only the alpha-subtree claim survives; the beta claim is excluded.
+	scoped := base
+	scoped.Topic = "topic:alpha"
+	narrowed, err := PackWithCapabilities(scoped, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(narrowed.ActiveMemory, alphaRef) {
+		t.Fatalf("topic-narrowed active_memory = %v, want alpha ref %s", narrowed.ActiveMemory, alphaRef)
+	}
+	if contains(narrowed.ActiveMemory, betaRef) {
+		t.Fatalf("topic-narrowed active_memory = %v, must NOT include out-of-topic beta ref %s", narrowed.ActiveMemory, betaRef)
+	}
+	if !hasExcluded(narrowed, betaRef) {
+		t.Fatalf("topic-narrowed pack should record beta ref %s as excluded with reason; excluded=%v", betaRef, narrowed.Excluded)
+	}
+	if !excludedReasonContains(narrowed, betaRef, "narrowed to topic") {
+		t.Fatalf("beta exclusion reason should name the topic narrowing; excluded=%v", narrowed.Excluded)
+	}
+	if !strings.Contains(narrowed.SummaryMD, "Ambient recall narrowed to topic") {
+		t.Fatalf("topic-narrowed summary should stamp the topic scope, got %q", narrowed.SummaryMD)
+	}
+
+	// Regression guard: empty topic keeps the pre-topic behavior — BOTH claims surface,
+	// neither is topic-excluded, and no topic stamp appears.
+	both, err := PackWithCapabilities(base, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(both.ActiveMemory, alphaRef) || !contains(both.ActiveMemory, betaRef) {
+		t.Fatalf("empty-topic active_memory = %v, want both %s and %s", both.ActiveMemory, alphaRef, betaRef)
+	}
+	if hasExcluded(both, betaRef) {
+		t.Fatalf("empty-topic pack must not topic-exclude beta ref %s; excluded=%v", betaRef, both.Excluded)
+	}
+	if strings.Contains(both.SummaryMD, "Ambient recall narrowed to topic") {
+		t.Fatalf("empty-topic summary must not carry a topic stamp, got %q", both.SummaryMD)
+	}
+}
+
+func excludedReasonContains(pack envelope.ContextPack, ref, want string) bool {
+	for _, exc := range pack.Excluded {
+		if exc.Ref == ref && strings.Contains(exc.Reason, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
@@ -2880,21 +2999,21 @@ func TestPackWithCapabilitiesUsesBreadthEngineForAmbientSelection(t *testing.T) 
 		{ // A — token-overlapping control: naive ranker already surfaces it
 			Entity: "lookup-notes", Predicate: "state", Object: "the lookup path latency was reduced",
 			Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
-			Qualifiers: map[string]string{"domain": "lookup-notes"},
+			Qualifiers:     map[string]string{"domain": "lookup-notes"},
 			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_a", SnippetHash: "sha256:a",
 			Visibility: "operational", ObservationDate: "2026-07-02T00:00:00Z",
 		},
 		{ // B — semantically related but TOKEN-DISJOINT from the task: only the engine can surface it
 			Entity: "vector-index", Predicate: "state", Object: "embeddings enable semantic retrieval over the corpus",
 			Confidence: 0.9, Derivation: "deterministic", ClaimType: "status",
-			Qualifiers: map[string]string{"domain": "vector-index"},
+			Qualifiers:     map[string]string{"domain": "vector-index"},
 			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_b", SnippetHash: "sha256:b",
 			Visibility: "operational", ObservationDate: "2026-07-02T00:00:00Z",
 		},
 		{ // C — volatile repo-state: LEDGER-GATED; must never enter ambient even ranked #1
 			Entity: "repo:compound", Predicate: "changed_path_count", Object: "9",
 			Confidence: 1, Derivation: "deterministic", ClaimType: "status",
-			Qualifiers: map[string]string{"domain": "changed_path_count"},
+			Qualifiers:     map[string]string{"domain": "changed_path_count"},
 			PromotionBasis: candidates.BasisRuntimeProof, SourceTraceRef: "ev_c", SnippetHash: "sha256:c",
 			Visibility: "operational", ObservationDate: "2026-07-02T00:00:00Z",
 		},

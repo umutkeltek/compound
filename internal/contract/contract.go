@@ -236,6 +236,7 @@ type Input struct {
 	RepoKind    string
 	RepoKindVia string // "flag" | "<marker path>" | "default"
 	Mode        string // observe | plan | execute | review
+	Topic       string // optional topic slug; when set, ambient recall narrows to this topic's subtree. Empty = behavior unchanged.
 }
 
 const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"
@@ -552,7 +553,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 			summary += " Tier-0 constitution: " + laws
 		}
 	}
-	hdr := header(envelope.SVContextPack, idFor("ctx_", in.Harness, in.RepoKind, in.Task, modeIDPart(in.Mode)), now, in)
+	hdr := header(envelope.SVContextPack, packIDForInput(in), now, in)
 	hdr.IDs.ContractID = contractIDForInput(in)
 	return envelope.ContextPack{
 		Header:             hdr,
@@ -677,6 +678,11 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 			lines = append(lines, ref.Line)
 		}
 		pack.SummaryMD += " Compound positions (folded checkpoint): " + strings.Join(lines, "; ")
+	}
+	// Stamp the topic narrowing on the artifact even when nothing was excluded, so the pack
+	// always shows recall was topic-scoped; empty topic adds nothing (behavior unchanged).
+	if topic := strings.TrimSpace(in.Topic); topic != "" {
+		pack.SummaryMD += fmt.Sprintf(" Ambient recall narrowed to topic %q (subtree-scoped); empty topic leaves recall unchanged.", topic)
 	}
 	pack, err = appendOSAdaptationSteeringOffer(pack, in)
 	if err != nil {
@@ -1207,6 +1213,29 @@ func semanticTaskRanks(homePath string, in Input) map[string]float64 {
 	return ranks
 }
 
+// topicScopeForInput resolves a topic slug to the set of subtree slugs ambient recall
+// narrows to (the topic itself plus everything that parts/narrows into it), reusing the
+// proven TopicSubtree walk. An empty topic returns a nil set, so the caller's topic gate
+// is skipped entirely and ambient recall behaves EXACTLY as it did before topic wiring.
+func topicScopeForInput(store *mem.Store, topic string) (map[string]bool, error) {
+	if strings.TrimSpace(topic) == "" {
+		return nil, nil
+	}
+	subtree, err := store.TopicSubtree(topic)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(subtree)+1)
+	for _, slug := range subtree {
+		set[slug] = true
+	}
+	return set, nil
+}
+
+func topicScopeExclusionReason(topic string) string {
+	return fmt.Sprintf("ambient recall narrowed to topic %q; claim outside topic subtree left out of active_memory", strings.TrimSpace(topic))
+}
+
 func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks map[string]float64) ([]contextMemoryRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
@@ -1224,11 +1253,29 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks ma
 	if err != nil {
 		return nil, nil, err
 	}
+	topicSet, err := topicScopeForInput(store, in.Topic)
+	if err != nil {
+		return nil, nil, err
+	}
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
 		sem := semanticRanks[claim.ID]
 		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, sem)
+		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
+			// Topic narrowing is a HARD scope gate (mirrors the recall/position topic filter):
+			// a claim outside the subtree never enters ambient recall. Record only the ones that
+			// WOULD have surfaced (relevant) so the narrowing is observable without noise.
+			if relevanceRank > 0 {
+				excluded = append(excluded, contextMemoryRef{
+					Ref:    "claim://" + claim.ID,
+					Reason: topicScopeExclusionReason(in.Topic),
+					Seq:    claim.Seq,
+					Rank:   relevanceRank,
+				})
+			}
+			continue
+		}
 		if reason := memoryPolicyExclusionReason(claim, rule, relevanceRank); reason != "" {
 			excluded = append(excluded, contextMemoryRef{
 				Ref:    "claim://" + claim.ID,
@@ -1309,6 +1356,10 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 	if err != nil {
 		return nil, nil, err
 	}
+	topicSet, err := topicScopeForInput(store, in.Topic)
+	if err != nil {
+		return nil, nil, err
+	}
 	claimByID := map[string]mem.Claim{}
 	for _, claim := range claims {
 		claimByID[claim.ID] = claim
@@ -1326,6 +1377,18 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 		}
 		sem := semanticRanks[activeClaim.ID]
 		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens, sem)
+		if topicSet != nil && !mem.ClaimHasTopicRef(activeClaim, topicSet) {
+			// Same hard topic gate as claim recall, keyed off the position's active claim.
+			if relevanceRank > 0 {
+				excluded = append(excluded, contextPositionRef{
+					Ref:    activePosition.Ref,
+					Reason: topicScopeExclusionReason(in.Topic),
+					Seq:    activeClaim.Seq,
+					Rank:   relevanceRank,
+				})
+			}
+			continue
+		}
 		if reason := memoryPolicyExclusionReason(activeClaim, rule, relevanceRank); reason != "" {
 			excluded = append(excluded, contextPositionRef{
 				Ref:    activePosition.Ref,
@@ -3057,7 +3120,23 @@ func idFor(prefix string, parts ...string) string {
 }
 
 func contractIDForInput(in Input) string {
-	return idFor("contract_", in.Harness, in.RepoKind, in.Task, modeIDPart(in.Mode))
+	return idFor("contract_", inputIDParts(in)...)
+}
+
+func packIDForInput(in Input) string {
+	return idFor("ctx_", inputIDParts(in)...)
+}
+
+// inputIDParts are the deterministic id inputs shared by the effective contract and the
+// context pack. Topic is appended ONLY when set, so an empty topic yields byte-identical
+// ids (behavior unchanged) while distinct topics get distinct artifacts instead of
+// clobbering the same pack/contract file.
+func inputIDParts(in Input) []string {
+	parts := []string{in.Harness, in.RepoKind, in.Task, modeIDPart(in.Mode)}
+	if topic := strings.TrimSpace(in.Topic); topic != "" {
+		parts = append(parts, "topic:"+topic)
+	}
+	return parts
 }
 
 func modeIDPart(mode string) string {

@@ -313,6 +313,14 @@ func claimHasTopicRef(claim Claim, topicSet map[string]bool) bool {
 	return false
 }
 
+// ClaimHasTopicRef is the exported form of the recall/position topic gate: it reports
+// whether a claim carries any topic ref inside topicSet (the slug set of a topic subtree,
+// e.g. built from TopicSubtree). Ambient orientation reuses this one proven predicate to
+// narrow recall by topic instead of reimplementing the intersection.
+func ClaimHasTopicRef(claim Claim, topicSet map[string]bool) bool {
+	return claimHasTopicRef(claim, topicSet)
+}
+
 func writePositionsLog(path string, positions []Position) error {
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)

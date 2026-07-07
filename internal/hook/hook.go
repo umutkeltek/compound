@@ -54,6 +54,7 @@ type Fixture struct {
 	Task           string                        `json:"task,omitempty"`
 	Mode           string                        `json:"mode,omitempty"`
 	RepoKind       string                        `json:"repo_kind,omitempty"`
+	Topic          string                        `json:"topic,omitempty"`  // optional; narrows ambient recall to this topic's subtree
 	Prompt         string                        `json:"prompt,omitempty"` // user-prompt-submit; only hashed, never stored raw
 	Action         *envelope.ActionIntent        `json:"action,omitempty"` // pre-tool-use
 	SessionID      string                        `json:"session_id,omitempty"`
@@ -246,7 +247,7 @@ func orientationInput(fx Fixture, deps Deps, mode string) (contract.Input, error
 	if err != nil {
 		return contract.Input{}, err
 	}
-	return contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via, Mode: mode}, nil
+	return contract.Input{Harness: fx.Harness, Cwd: fx.Cwd, Task: fx.Task, RepoKind: kind, RepoKindVia: via, Mode: mode, Topic: fx.Topic}, nil
 }
 
 func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {

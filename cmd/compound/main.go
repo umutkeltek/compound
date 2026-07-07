@@ -237,7 +237,7 @@ compound home <init|doctor|where|backup|export|verify|restore|archive-history|re
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
-  compound orient --harness H [--cwd D] [--task T]              ContextPack orient from records excluded
+  compound orient --harness H [--cwd D] [--task T] [--topic S]  ContextPack orient from records excluded; --topic narrows ambient recall
   compound console --operator [--private-fallbacks]             start local operator console with mutation env wired
 compound work <create-plan|admit-plan|review-card-plan|create|import-packet|show|list|leases|active-packet-proof|proof-chain-doctor|continue|dispatch-plan|dispatch-claim|dispatch-advance|dispatch-close-plan|dispatch-close|dispatch-step|claim-plan|claim|advance-plan|advance|observe-run|action-plan|act|close-plan|close> one work_id: intent -> context -> action -> receipt -> transition
 compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] read-only open work / receipt / transition board; optional packet offers, bounded capability offers, and route plan; no dispatch
@@ -4030,7 +4030,7 @@ func parseOrientArgs(args []string) contract.Input {
 }
 
 func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, error) {
-	var harness, cwd, task, repoKind, mode string
+	var harness, cwd, task, repoKind, mode, topic string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--harness":
@@ -4053,6 +4053,11 @@ func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, er
 				i++
 				repoKind = args[i]
 			}
+		case "--topic":
+			if i+1 < len(args) {
+				i++
+				topic = args[i]
+			}
 		case "--mode":
 			if i+1 < len(args) {
 				i++
@@ -4067,7 +4072,7 @@ func parseOrientArgsWithHome(args []string, homePath string) (contract.Input, er
 	if err != nil {
 		return contract.Input{}, err
 	}
-	return contract.Input{Harness: harness, Cwd: cwd, Task: task, RepoKind: kind, RepoKindVia: via, Mode: mode}, nil
+	return contract.Input{Harness: harness, Cwd: cwd, Task: task, RepoKind: kind, RepoKindVia: via, Mode: mode, Topic: topic}, nil
 }
 
 func orientPolicy() contract.OrientationPolicy {
@@ -4358,7 +4363,7 @@ func cmdOrient(args []string) {
 	in, err := parseOrientArgsWithHome(args, homePath)
 	die(err)
 	if in.Harness == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>]")
+		fmt.Fprintln(os.Stderr, "usage: compound orient --harness <h> [--cwd <dir>] [--task <t>] [--repo-kind <k>] [--mode <m>] [--topic <topic-slug>]")
 		os.Exit(2)
 	}
 	now := time.Now()

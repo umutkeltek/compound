@@ -57,6 +57,18 @@ Claims may carry optional `topic_refs[]`. Rows that predate `topic_refs[]`
 remain valid and recallable; topic-scoped recall simply excludes them when a
 topic subtree filter is requested.
 
+Topic narrowing now has a live work-path consumer, not just the `memory recall
+--topic` / `memory position --topic` CLI. The ContextPack builder threads an
+optional topic (`Input.Topic`, surfaced as `compound orient --topic <slug>` and
+`hook.Fixture.topic`): when set, ambient recall resolves the topic subtree once
+via `TopicSubtree` and keeps only claims/positions whose `topic_refs[]` intersect
+it, using the same exported `mem.ClaimHasTopicRef` gate the recall/position paths
+use. Out-of-topic claims that would otherwise have surfaced are recorded in the
+pack's `excluded` list with a topic reason, and the pack summary stamps the
+narrowing so the artifact shows recall was topic-scoped. An empty topic is a
+guaranteed no-op: the gate is skipped, ids are byte-identical, and ambient recall
+behaves exactly as before.
+
 Retrieval engines are rebuildable views. They may own indexes, ranking, embeddings,
 and low-level query execution, but they must not own visibility, promotion,
 supersession, source identity, or canonical IDs.
