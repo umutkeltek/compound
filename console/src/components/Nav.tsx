@@ -7,7 +7,7 @@ type NavLink = { label: string; href?: string; soon?: boolean };
 type Group = { label: string; links: NavLink[] };
 
 const GROUPS: Group[] = [
-  { label: "Overview", links: [{ label: "Briefing", href: "/" }] },
+  { label: "Overview", links: [{ label: "Briefing", href: "/" }, { label: "Flow", href: "/flow" }] },
   { label: "Work", links: [{ label: "Board", href: "/work" }, { label: "Executors", href: "/executors" }] },
   {
     label: "Meaning",

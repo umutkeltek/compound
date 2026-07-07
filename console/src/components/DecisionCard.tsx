@@ -28,6 +28,18 @@ export function DecisionCard({ area, item }: { area: string; item: Json }) {
         <p className="mt-1 text-[12px] text-ink-3">
           {str(item.next_action) || "No registry entry yet — this area needs a terminal action for now."}
         </p>
+        <div className="mt-2 rounded-lg bg-canvas px-2.5 py-1.5 text-[11px] leading-relaxed">
+          <div className="text-ink-2">
+            <span className="font-semibold text-emerald-700">if you act</span>
+            <span className="text-ink-3"> → </span>
+            {str(item.next_action) || "the recorded review unblocks this area's next step — nothing runs from this card"}
+          </div>
+          <div className="text-ink-3">
+            <span className="font-semibold">if you wait</span>
+            <span> → </span>
+            nothing happens; it stays in this queue
+          </div>
+        </div>
         <code className="mono mt-1 block truncate text-[10.5px] text-ink-3">{id}</code>
       </div>
     );
@@ -65,6 +77,21 @@ export function DecisionCard({ area, item }: { area: string; item: Json }) {
       </div>
 
       {pl.body ? <p className="mt-2 text-[12.5px] leading-relaxed text-ink-2">{pl.body}</p> : null}
+
+      {pl.consequences ? (
+        <div className="mt-2 rounded-lg bg-canvas px-2.5 py-1.5 text-[11px] leading-relaxed">
+          <div className="text-ink-2">
+            <span className="font-semibold text-emerald-700">if you act</span>
+            <span className="text-ink-3"> → </span>
+            {pl.consequences.approve}
+          </div>
+          <div className="text-ink-3">
+            <span className="font-semibold">if you wait</span>
+            <span> → </span>
+            {pl.consequences.hold}
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <DecisionDetailsDialog area={area} itemId={id} item={item} pl={pl} formSpec={formSpec} />

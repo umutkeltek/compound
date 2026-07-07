@@ -63,6 +63,8 @@ export type PlainLanguage = {
   evidence?: string[];
   boundaries?: string[];
   chips?: { label: string; tone: Accent }[];
+  /** The consequence pair (EP-U6): what acting unblocks vs what waiting does. */
+  consequences?: { approve: string; hold: string };
 };
 
 export type ExecContext = {
@@ -233,6 +235,11 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
           ...(owner ? [{ label: shortText(owner, 34), tone: "violet" as Accent }] : []),
           ...(strength ? [{ label: `evidence ${strength}`, tone: "orange" as Accent }] : []),
         ],
+        consequences: {
+          approve:
+            "your decision + rationale go on the permanent record and steer what happens to this repo — it is never cloned, installed, or run by this card",
+          hold: "nothing happens; it stays in this queue",
+        },
       };
     },
     options: [
@@ -267,10 +274,25 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         ? surface.slice("packet:".length).replace(/-/g, " ")
         : str(item.success_predicate) || id;
       const claimer = str(item.claimed_by) || str(item.owner);
+      const state = str(item.state);
+      const approveByState: Record<string, string> = {
+        proposed: "it becomes claimable — an executor may pick it up; nothing runs yet",
+        admitted: "it becomes ready for an executor to claim",
+        ready: "an executor is assigned and can start",
+        claimed: "the executor moves it forward",
+        running: "it advances toward proof and close",
+        verifying: "it closes with a receipt + transition that feed learning",
+        blocked: "it resumes or closes honestly",
+        held: "it re-enters the queue",
+      };
       return {
         headline: title,
         body: shortText(str(item.next_action) || str(item.desired_outcome), 200),
         chips: claimer ? [{ label: claimer, tone: "violet" as Accent }] : [],
+        consequences: {
+          approve: approveByState[state] ?? "the job moves one step forward in its lifecycle",
+          hold: `nothing changes — it stays ${state || "where it is"}`,
+        },
       };
     },
     fields: [
@@ -322,6 +344,10 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       return {
         headline: `Continue ${id}`,
         body: "Move safe lifecycle steps until the next real wait. This does not execute task commands.",
+        consequences: {
+          approve: "safe bookkeeping steps run until the next real wait — task commands never run from this button",
+          hold: "the work waits exactly where it is",
+        },
       };
     },
     fields: [],
@@ -358,6 +384,10 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       return {
         headline: `Continue ${id}`,
         body: "Move one safe lifecycle step. This does not execute task commands.",
+        consequences: {
+          approve: "one safe bookkeeping step runs — task commands never run from this button",
+          hold: "the work waits exactly where it is",
+        },
       };
     },
     fields: [],
@@ -434,6 +464,11 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         body: shortText(`${str(item.predicate)}: ${str(item.object)}`, 220),
         evidence,
         chips,
+        consequences: {
+          approve:
+            "promote → agents can recall this as durable memory (needs the reason you pick); park/reject → it never enters recall on its own",
+          hold: "it stays an untrusted candidate — visible here, invisible to agents",
+        },
       };
     },
     defaultOption: "park",
