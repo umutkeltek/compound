@@ -343,6 +343,152 @@ func TestSessionStartInjectionIncludesRelevantCompoundMemory(t *testing.T) {
 	}
 }
 
+func TestSessionStartInjectionUsesConfiguredBreadthEngine(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := mem.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Capture([]mem.Candidate{
+		{
+			Entity:          "lookup-notes",
+			Predicate:       "state",
+			Object:          "the lookup path latency reduced",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "lookup-notes"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_lookup",
+			SnippetHash:     "sha256:lookup",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+		{
+			Entity:          "vector-index",
+			Predicate:       "state",
+			Object:          "embeddings enable semantic retrieval over corpus",
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "status",
+			Qualifiers:      map[string]string{"domain": "vector-index"},
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_vector",
+			SnippetHash:     "sha256:vector",
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for i := range got {
+		res, err := store.Adjudicate(got[i].ID, "promote", "test", fixedNow.Add(time.Duration(i)*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Claim != nil {
+			ids[res.Claim.Entity] = res.Claim.ID
+		}
+	}
+	wantRef := "claim://" + ids["vector-index"]
+	if wantRef == "claim://" {
+		t.Fatalf("semantic target claim was not promoted: ids=%v", ids)
+	}
+
+	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_SIDECAR", "1")
+	t.Setenv("COMPOUND_TEST_FAKE_BREADTH_HIT", ids["vector-index"])
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", os.Args[0]+" -test.run=TestFakeBreadthSidecar")
+
+	deps := baseDeps()
+	deps.HomePath = homePath
+	fx := Fixture{
+		Hook:     "session-start",
+		Harness:  "codex",
+		Cwd:      "/repo/compound",
+		Task:     "speed up lookup path",
+		RepoKind: "control-plane",
+	}
+	res, err := Run(fx, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.Injection == nil {
+		t.Fatal("session-start should persist injection with HomePath")
+	}
+	pack := res.Produced[2].(*envelope.ContextPack)
+	if !containsString(pack.ActiveMemory, wantRef) {
+		t.Fatalf("hook ContextPack missing breadth-ranked memory %s: active=%v", wantRef, pack.ActiveMemory)
+	}
+	packBytes, err := os.ReadFile(res.Injection.ContextPackPath)
+	if err != nil {
+		t.Fatalf("read persisted context pack: %v", err)
+	}
+	var persisted envelope.ContextPack
+	if err := json.Unmarshal(packBytes, &persisted); err != nil {
+		t.Fatalf("parse persisted context pack: %v", err)
+	}
+	if !containsString(persisted.ActiveMemory, wantRef) {
+		t.Fatalf("persisted ContextPack missing breadth-ranked memory %s: active=%v", wantRef, persisted.ActiveMemory)
+	}
+	injectionBytes, err := os.ReadFile(res.Injection.Path)
+	if err != nil {
+		t.Fatalf("read injection: %v", err)
+	}
+	injection := string(injectionBytes)
+	if !strings.Contains(injection, "## Active Memory") || !strings.Contains(injection, wantRef) {
+		t.Fatalf("injection missing breadth-ranked memory %s:\n%s", wantRef, injection)
+	}
+}
+
+func TestFakeBreadthSidecar(t *testing.T) {
+	if os.Getenv("COMPOUND_TEST_FAKE_BREADTH_SIDECAR") != "1" {
+		return
+	}
+	fakeBreadthSidecar()
+	os.Exit(0)
+}
+
+func fakeBreadthSidecar() {
+	hitID := os.Getenv("COMPOUND_TEST_FAKE_BREADTH_HIT")
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	var corpusGen int64
+	for {
+		var req mem.Request
+		if err := dec.Decode(&req); err != nil {
+			return
+		}
+		resp := mem.Response{
+			OK:            true,
+			SchemaVersion: mem.ProtocolVersion,
+			RequestID:     req.RequestID,
+			Name:          "fake-hook-breadth",
+			Breadth:       true,
+			Ready:         true,
+			CorpusGen:     corpusGen,
+		}
+		switch req.Op {
+		case mem.OpCapabilities:
+		case mem.OpIndex:
+			corpusGen = req.CorpusGen
+			resp.CorpusGen = corpusGen
+			resp.Indexed = len(req.Claims)
+		case mem.OpQuery:
+			if hitID != "" && containsString(req.Allowlist, hitID) {
+				resp.Hits = []mem.Hit{{ClaimID: hitID, Score: 0.99}}
+			}
+		default:
+			resp.OK = false
+			resp.Error = &mem.WireError{Code: mem.CodeBadRequest, Message: "unknown op"}
+		}
+		if err := enc.Encode(resp); err != nil {
+			return
+		}
+	}
+}
+
 func TestRenderInjectionEmitsActiveMemorySection(t *testing.T) {
 	pack := envelope.ContextPack{
 		SummaryMD:    "summary",
