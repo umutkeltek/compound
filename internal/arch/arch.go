@@ -55,6 +55,7 @@ var Classification = map[string]Class{
 	"routeevidence":  ObjectFamily,
 	"runtimebinding": ObjectFamily,
 	// shared leaf
+	"bench":          Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
 	"breadth":        Leaf,
 	"candidates":     Leaf,
 	"release":        Leaf,
