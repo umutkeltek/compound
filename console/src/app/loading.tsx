@@ -3,7 +3,7 @@ import { SkeletonBlock, SkeletonLine } from "@/components/Skeleton";
 /** Mirrors the briefing home: greeting + attention chip, insight line, DECIDE rows + rail, KNOWS strip. */
 export default function DashboardLoading() {
   return (
-    <div className="mx-auto max-w-[1060px] py-8">
+    <div className="mx-auto max-w-[1060px] px-7 pt-14 pb-[72px]">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex flex-col gap-2">
           <SkeletonLine className="h-8 w-56" />
@@ -12,9 +12,9 @@ export default function DashboardLoading() {
         <SkeletonBlock className="h-7 w-40 rounded-full" />
       </header>
 
-      <section className="my-10 max-w-[44ch]">
-        <SkeletonLine className="h-5 w-full" />
-        <SkeletonLine className="mt-2 h-5 w-4/5" />
+      <section className="my-[52px] max-w-[44ch]">
+        <SkeletonLine className="h-6 w-full" />
+        <SkeletonLine className="mt-2 h-6 w-4/5" />
       </section>
 
       <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(300px,2fr)] lg:items-start">
@@ -36,8 +36,8 @@ export default function DashboardLoading() {
           </div>
         </section>
 
-        <div className="flex flex-col gap-9">
-          {["Agents", "Sources", "World Delta"].map((label) => (
+        <div className="flex flex-col gap-10">
+          {["Agents", "World Delta"].map((label) => (
             <section key={label}>
               <SkeletonLine className="mb-4 h-3 w-16" />
               <div className="flex flex-col gap-2 rounded-[14px] border border-line bg-white p-4">
@@ -50,7 +50,7 @@ export default function DashboardLoading() {
         </div>
       </div>
 
-      <section className="mt-12">
+      <section className="mt-14">
         <SkeletonLine className="mb-4 h-3 w-16" />
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {[0, 1, 2, 3].map((i) => (
