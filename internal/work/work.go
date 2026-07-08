@@ -93,6 +93,7 @@ type CreateInput struct {
 	Owner            string
 	Actor            string
 	CanonicalSurface string
+	TargetSurface    string
 	SuccessPredicate string
 	DesiredOutcome   string
 	NonGoals         []string
@@ -115,6 +116,7 @@ func BuildWork(in CreateInput, now time.Time) envelope.WorkEnvelope {
 		Header:             newHeader(envelope.SVWork, workID, now, "", in.ContextPackID, orDefault(in.Privacy, "private"), orDefault(in.Risk, "tier1")),
 		Owner:              in.Owner,
 		CanonicalSurface:   strings.TrimSpace(in.CanonicalSurface),
+		TargetSurface:      strings.TrimSpace(in.TargetSurface),
 		State:              orDefault(in.State, "ready"),
 		DesiredOutcome:     in.DesiredOutcome,
 		SuccessPredicate:   in.SuccessPredicate,
@@ -380,6 +382,13 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	// claim, and normal advance never enter this branch; when the halt is unset it is a
 	// no-op, so behavior is unchanged.
 	if err := s.autonomyHaltGuard(w, in.To, actor, now); err != nil {
+		return w, err
+	}
+	// Editable-surfaces (EVOLVE-BLOCK), defense-in-depth: a system-originated admission of
+	// a director-proposed work that declares a target_surface is denied through this generic
+	// seam too, unless that surface is actively whitelisted. The halt guard above runs first,
+	// so a halt wins; work without a target_surface is unaffected.
+	if err := s.editableSurfaceGuard(w, in.To, actor, now); err != nil {
 		return w, err
 	}
 	if err := heldReleaseOperatorError(w.State, in.To, actor); err != nil {

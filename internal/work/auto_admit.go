@@ -69,6 +69,14 @@ func (s *Store) AdmitAuto(workID string, in AutoAdmitInput, now time.Time) (Auto
 			fmt.Errorf("autonomy halted (%s): %s", class, reason)
 	}
 
+	// 1.5 Editable-surfaces (EVOLVE-BLOCK): if this proposal declares a target harness
+	// surface, it may be admitted only while that surface is actively whitelisted. Runs
+	// AFTER the kill-switch (so a halt wins) and BEFORE eligibility. A proposal with no
+	// target_surface is ordinary work and passes untouched.
+	if err := s.editableSurfaceGuard(w, "admitted", actor, now); err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: err.Error()}, err
+	}
+
 	// 2. Eligibility (W9-J6 supplies this; unset by default => nothing auto-admits).
 	eligibility := strings.TrimSpace(in.EligibilityReason)
 	if eligibility == "" {
@@ -135,6 +143,63 @@ func (s *Store) recordAutonomyHalt(w envelope.WorkEnvelope, actor, to, reason st
 		To:       w.State,
 		By:       actor,
 		Note:     "autonomy halt: " + reason,
+		Attached: []string{ai.ID, pd.ID},
+	})
+}
+
+// editableSurfaceGuard is the editable-surfaces (EVOLVE-BLOCK) check at the admission seam.
+// It denies a system-originated (director-proposed, non-operator) admission that declares a
+// target_surface when that surface is not ACTIVELY whitelisted in the policy-owned
+// editable-surfaces registry, and records a deny PolicyDecision. It is a no-op for operator
+// admits, non-proposed work, and — critically — for any work WITHOUT a target_surface, so
+// ordinary proposals are unaffected. This registry only constrains explicit harness-edit
+// proposals.
+func (s *Store) editableSurfaceGuard(w envelope.WorkEnvelope, to, actor string, now time.Time) error {
+	if !isAutonomousAdmission(w, to, actor) {
+		return nil
+	}
+	surface := strings.TrimSpace(w.TargetSurface)
+	if surface == "" {
+		return nil
+	}
+	allowed, reason, err := policy.EditableSurfaceAllowed(s.home, surface)
+	if err != nil {
+		return err
+	}
+	if allowed {
+		return nil
+	}
+	if err := s.recordEditableSurfaceDeny(w, actor, to, reason, now); err != nil {
+		return err
+	}
+	return fmt.Errorf("editable surface denied (%s): %s", surface, reason)
+}
+
+// recordEditableSurfaceDeny writes the ActionIntent and a deny PolicyDecision for a
+// system-originated proposal blocked by the editable-surfaces registry, plus a lifecycle
+// event, so the denial leaves an auditable trail while the work stays in place.
+func (s *Store) recordEditableSurfaceDeny(w envelope.WorkEnvelope, actor, to, reason string, now time.Time) error {
+	ai := s.advanceActionIntent(w, actor, to, now, AdvancePlanOptions{Actor: actor, To: to})
+	if err := ai.Validate(); err != nil {
+		return err
+	}
+	pd := policy.EditableSurfaceDenyDecision(ai, reason, now)
+	if err := pd.Validate(); err != nil {
+		return err
+	}
+	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+		return err
+	}
+	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+		return err
+	}
+	return s.appendEvent(Event{
+		TS:       ts(now),
+		WorkID:   w.ID,
+		From:     w.State,
+		To:       w.State,
+		By:       actor,
+		Note:     "editable-surface deny: " + reason,
 		Attached: []string{ai.ID, pd.ID},
 	})
 }

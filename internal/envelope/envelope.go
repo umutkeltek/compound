@@ -370,8 +370,14 @@ func validateCapabilityOfferConstraints(v *verr, field string, values []Capabili
 
 type WorkEnvelope struct {
 	Header
-	Owner              string   `json:"owner"`
-	CanonicalSurface   string   `json:"canonical_surface,omitempty"`
+	Owner            string `json:"owner"`
+	CanonicalSurface string `json:"canonical_surface,omitempty"`
+	// TargetSurface, when set, marks this work as an explicit harness-edit proposal
+	// aimed at a named editable surface (EVOLVE-BLOCK). It is OPTIONAL and additive: work
+	// without it is ordinary work. A system-originated proposal that declares a
+	// TargetSurface is admitted only while that surface is actively whitelisted in the
+	// policy-owned editable-surfaces registry (see internal/policy/editable_surfaces.go).
+	TargetSurface      string   `json:"target_surface,omitempty"`
 	State              string   `json:"state"`
 	DesiredOutcome     string   `json:"desired_outcome,omitempty"`
 	SuccessPredicate   string   `json:"success_predicate"`
