@@ -555,16 +555,26 @@ type ReceiptNext struct {
 	SuggestedWork []string `json:"suggested_work"`
 	ReviewTrigger string   `json:"review_trigger,omitempty"`
 }
+
+// FailureCause is the OPTIONAL causal-failure annotation on a close receipt:
+// what the operator/agent observed (surface_outcome) and the mechanism they
+// attribute it to. Additive and omitempty — absence changes no existing behavior;
+// present, it lets the usage projection aggregate why work failed.
+type FailureCause struct {
+	SurfaceOutcome string `json:"surface_outcome,omitempty"`
+	Mechanism      string `json:"mechanism,omitempty"`
+}
 type Receipt struct {
 	Header
-	Outcome    string        `json:"outcome"`
-	MoveType   string        `json:"move_type"`
-	StateDelta StateDelta    `json:"state_delta"`
-	Cost       ReceiptCost   `json:"cost"`
-	Skills     ReceiptSkills `json:"skills"`
-	Memory     ReceiptMemory `json:"memory"`
-	Next       ReceiptNext   `json:"next"`
-	ProofRefs  []string      `json:"proof_refs,omitempty"`
+	Outcome      string        `json:"outcome"`
+	MoveType     string        `json:"move_type"`
+	StateDelta   StateDelta    `json:"state_delta"`
+	Cost         ReceiptCost   `json:"cost"`
+	Skills       ReceiptSkills `json:"skills"`
+	Memory       ReceiptMemory `json:"memory"`
+	Next         ReceiptNext   `json:"next"`
+	ProofRefs    []string      `json:"proof_refs,omitempty"`
+	FailureCause *FailureCause `json:"failure_cause,omitempty"`
 }
 
 func (e *Receipt) Kind() string { return "receipt" }

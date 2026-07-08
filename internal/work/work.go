@@ -515,6 +515,8 @@ type CloseInput struct {
 	MemoryPromoted             []string
 	MemoryParked               []string
 	MemoryRejected             []string
+	FailureSurfaceOutcome      string
+	FailureMechanism           string
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -607,6 +609,9 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		},
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs: proofRefs,
+	}
+	if fc := failureCause(in.FailureSurfaceOutcome, in.FailureMechanism); fc != nil {
+		rec.FailureCause = fc
 	}
 	rec.StateDelta.Changed = rec.EffectiveChanged()
 	if err := rec.Validate(); err != nil {
@@ -1046,4 +1051,15 @@ func orEmpty(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// failureCause builds the optional causal-failure annotation; nil when both
+// fields are empty so the receipt stays byte-identical to pre-field behavior.
+func failureCause(surfaceOutcome, mechanism string) *envelope.FailureCause {
+	surfaceOutcome = strings.TrimSpace(surfaceOutcome)
+	mechanism = strings.TrimSpace(mechanism)
+	if surfaceOutcome == "" && mechanism == "" {
+		return nil
+	}
+	return &envelope.FailureCause{SurfaceOutcome: surfaceOutcome, Mechanism: mechanism}
 }

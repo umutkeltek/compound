@@ -1006,22 +1006,24 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]"
 		if err := validateKnownFlags(rest, map[string]bool{
-			"--outcome":          true,
-			"--move-type":        true,
-			"--summary":          true,
-			"--by":               true,
-			"--actor":            true,
-			"--used":             true,
-			"--missed":           true,
-			"--false-triggered":  true,
-			"--proof":            true,
-			"--proof-ref":        true,
-			"--memory-candidate": true,
-			"--memory-promoted":  true,
-			"--memory-parked":    true,
-			"--memory-rejected":  true,
+			"--outcome":           true,
+			"--move-type":         true,
+			"--summary":           true,
+			"--by":                true,
+			"--actor":             true,
+			"--used":              true,
+			"--missed":            true,
+			"--false-triggered":   true,
+			"--failure-surface":   true,
+			"--failure-mechanism": true,
+			"--proof":             true,
+			"--proof-ref":         true,
+			"--memory-candidate":  true,
+			"--memory-promoted":   true,
+			"--memory-parked":     true,
+			"--memory-rejected":   true,
 		}, map[string]bool{
 			"--changed": true,
 		}); err != nil {
@@ -1043,6 +1045,8 @@ func cmdWork(args []string) {
 			MemoryPromoted:             splitCSV(flag("--memory-promoted")),
 			MemoryParked:               splitCSV(flag("--memory-parked")),
 			MemoryRejected:             splitCSV(flag("--memory-rejected")),
+			FailureSurfaceOutcome:      flag("--failure-surface"),
+			FailureMechanism:           flag("--failure-mechanism"),
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",
