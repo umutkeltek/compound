@@ -314,6 +314,31 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 	}
 }
 
+func TestProofCheckChangedFilesIncludesCleanCommittedRange(t *testing.T) {
+	repo := initCompoundCommandGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "console.ts"), []byte("console.log('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCommandGit(t, repo, "add", "console.ts")
+	runCommandGit(t, repo, "commit", "-m", "add console")
+
+	files, err := proofCheckChangedFiles(repo, "HEAD~1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(files, ",") != "console.ts" {
+		t.Fatalf("changed files = %+v, want committed range file", files)
+	}
+
+	defaultFiles, err := proofCheckChangedFiles(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defaultFiles) != 0 {
+		t.Fatalf("default changed files = %+v, want clean worktree empty", defaultFiles)
+	}
+}
+
 func TestProofCheckArtifactConsumesVerificationAdjacentActions(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
@@ -396,7 +421,7 @@ func TestProofCheckGoStepsUseLocalToolchain(t *testing.T) {
 		Name:     "go-test",
 		Command:  []string{"go", "version"},
 		ProofRef: "go-version-local-toolchain",
-	})
+	}, "")
 	if result.Status != "ok" || !strings.Contains(result.OutputTail, "GOTOOLCHAIN=local") {
 		t.Fatalf("proof-check go env = %+v", result)
 	}

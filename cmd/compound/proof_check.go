@@ -19,6 +19,7 @@ type proofCheckReport struct {
 	Status        string           `json:"status"`
 	GeneratedAt   string           `json:"generated_at"`
 	Repo          string           `json:"repo"`
+	BaseRef       string           `json:"base_ref,omitempty"`
 	DryRun        bool             `json:"dry_run"`
 	ArtifactRef   string           `json:"artifact_ref,omitempty"`
 	Warnings      []string         `json:"warnings,omitempty"`
@@ -40,13 +41,14 @@ type proofCheckStep struct {
 
 func cmdProofCheck(args []string) {
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--repo P]")
+		fmt.Println("usage: compound proof-check [--json] [--dry-run] [--repo P] [--base REF]")
 		return
 	}
 	jsonOut := hasFlag(args, "--json")
 	dryRun := hasFlag(args, "--dry-run")
 	repoPath := flagValue(args, "--repo")
-	report, err := runProofCheck(repoPath, dryRun, time.Now())
+	baseRef := flagValue(args, "--base")
+	report, err := runProofCheck(repoPath, dryRun, baseRef, time.Now())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "proof-check:", err)
 		os.Exit(2)
@@ -73,12 +75,13 @@ func cmdProofCheck(args []string) {
 	}
 }
 
-func runProofCheck(repoPath string, dryRun bool, now time.Time) (proofCheckReport, error) {
+func runProofCheck(repoPath string, dryRun bool, baseRef string, now time.Time) (proofCheckReport, error) {
 	repo, err := resolveProofCheckRepo(repoPath)
 	if err != nil {
 		return proofCheckReport{}, err
 	}
-	steps, err := proofCheckSteps()
+	baseRef = strings.TrimSpace(baseRef)
+	steps, err := proofCheckSteps(baseRef)
 	if err != nil {
 		return proofCheckReport{}, err
 	}
@@ -87,6 +90,7 @@ func runProofCheck(repoPath string, dryRun bool, now time.Time) (proofCheckRepor
 		Status:        "ok",
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
 		Repo:          repo,
+		BaseRef:       baseRef,
 		DryRun:        dryRun,
 		Steps:         make([]proofCheckStep, 0, len(steps)),
 	}
@@ -95,7 +99,7 @@ func runProofCheck(repoPath string, dryRun bool, now time.Time) (proofCheckRepor
 		if dryRun {
 			result.Status = "planned"
 		} else {
-			result = runProofCheckStep(repo, step)
+			result = runProofCheckStep(repo, step, baseRef)
 			if result.Status == "failed" {
 				report.Status = "failed"
 			}
@@ -167,10 +171,14 @@ func resolveProofCheckRepo(repoPath string) (string, error) {
 	return abs, nil
 }
 
-func proofCheckSteps() ([]proofCheckStep, error) {
+func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
+	}
+	redactCommand := []string{"redact", "--repo-visibility", "public", "--from-file", "<changed files>"}
+	if strings.TrimSpace(baseRef) != "" {
+		redactCommand = []string{"redact", "--repo-visibility", "public", "--from-file", "<files changed in " + strings.TrimSpace(baseRef) + "...HEAD>"}
 	}
 	return []proofCheckStep{
 		{Name: "go-test", Command: []string{"go", "test", "-count=1", "./..."}, ProofRef: "go-test-count-1-all"},
@@ -190,7 +198,7 @@ func proofCheckSteps() ([]proofCheckStep, error) {
 		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
 		{Name: "codex-pretooluse-wrapper", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-wrapper-proof"},
 		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor"}, ProofRef: "memory-doctor"},
-		{Name: "redact-public", Command: []string{"redact", "--repo-visibility", "public", "--from-file", "<changed files>"}, ProofRef: "redact-public-clean"},
+		{Name: "redact-public", Command: redactCommand, ProofRef: "redact-public-clean"},
 	}, nil
 }
 
@@ -198,7 +206,7 @@ func consoleSmokeCommand(script string) []string {
 	return []string{"node", "--experimental-strip-types", script}
 }
 
-func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
+func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCheckStep {
 	start := time.Now()
 	result := step
 	result.Status = "ok"
@@ -213,7 +221,7 @@ func runProofCheckStep(repo string, step proofCheckStep) proofCheckStep {
 		}
 	}
 	if step.Name == "redact-public" {
-		output, err = runProofCheckRedact(repo)
+		output, err = runProofCheckRedact(repo, baseRef)
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmt(repo)
 	} else if step.Name == "codex-pretooluse-wrapper" {
@@ -315,8 +323,8 @@ func proofCheckExitCode(err error) int {
 	return 1
 }
 
-func runProofCheckRedact(repo string) ([]byte, error) {
-	files, err := proofCheckChangedFiles(repo)
+func runProofCheckRedact(repo, baseRef string) ([]byte, error) {
+	files, err := proofCheckChangedFiles(repo, baseRef)
 	if err != nil {
 		return nil, err
 	}
@@ -331,12 +339,16 @@ func runProofCheckRedact(repo string) ([]byte, error) {
 		}
 	}
 	if len(files) == 0 {
-		combined.WriteString("redact scan skipped: no changed files\n")
+		if strings.TrimSpace(baseRef) != "" {
+			combined.WriteString("redact scan skipped: no files changed in " + strings.TrimSpace(baseRef) + "...HEAD and no dirty files\n")
+		} else {
+			combined.WriteString("redact scan skipped: no changed files\n")
+		}
 	}
 	return combined.Bytes(), nil
 }
 
-func proofCheckChangedFiles(repo string) ([]string, error) {
+func proofCheckChangedFiles(repo, baseRef string) ([]string, error) {
 	seen := map[string]bool{}
 	var files []string
 	add := func(paths []string) {
@@ -348,6 +360,13 @@ func proofCheckChangedFiles(repo string) ([]string, error) {
 			seen[path] = true
 			files = append(files, path)
 		}
+	}
+	if baseRef = strings.TrimSpace(baseRef); baseRef != "" {
+		paths, err := proofCheckGitNULList(repo, "diff", "--name-only", "--diff-filter=ACM", "-z", baseRef+"...HEAD")
+		if err != nil {
+			return nil, err
+		}
+		add(paths)
 	}
 	for _, args := range [][]string{
 		{"diff", "--name-only", "--diff-filter=ACM", "-z"},
