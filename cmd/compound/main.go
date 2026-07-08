@@ -154,6 +154,8 @@ func main() {
 		cmdDistiller(os.Args[2:])
 	case "capability":
 		cmdCapability(os.Args[2:])
+	case "bench":
+		cmdBench(os.Args[2:])
 	case "panel":
 		cmdPanel(os.Args[2:])
 	case "local-models":
