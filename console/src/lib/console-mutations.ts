@@ -72,6 +72,11 @@ function sessionTokenBlockedResponse(request: Request, label: string): Response 
   return null;
 }
 
+/** Server-component-safe check (no Request available at render time). */
+export function consoleMutationsEnabled(): boolean {
+  return process.env[CONSOLE_MUTATIONS_ENV] === "1";
+}
+
 export function consoleMutationBlockedResponse(request: Request): Response | null {
   if (process.env[CONSOLE_MUTATIONS_ENV] !== "1") {
     return Response.json(

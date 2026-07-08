@@ -498,6 +498,41 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       return argv;
     },
   },
+
+  "panel-apply": {
+    area: "panel-apply",
+    title: "Apply panel run",
+    glyph: "P",
+    accent: "violet",
+    // No projection item backs a run id; the id itself (validated below) is
+    // the whole input. `source: "orient"` without `requiresResolvedItem`
+    // lets executeDecision skip item resolution instead of 404ing.
+    source: "orient",
+    // Real CLI shape (verified 2026-07-08): `panel run --plan <run_id> --apply`.
+    // There is no `panel apply` subcommand. argv is built server-side below;
+    // the allowlist prefix is safe because buildArgv always appends --apply.
+    argvAllowlist: [["panel", "run"]],
+    idPattern: /^prun_[A-Za-z0-9_]+$/,
+    plainLanguage: () => ({
+      headline: "Apply this panel run",
+      body: "Records every verdict in the run under one operator act; each applied target still gets its own PolicyDecision.",
+      consequences: {
+        approve: "the run's verdicts are recorded (one PolicyDecision per target); the pile clears from Needs You",
+        hold: "the run stays unapplied; verdicts remain individually reviewable",
+      },
+    }),
+    options: [
+      {
+        value: "apply",
+        label: "Apply",
+        tone: "green",
+        description: "Record every verdict in this panel run.",
+      },
+    ],
+    defaultOption: "apply",
+    fields: [],
+    buildArgv: (ctx) => ["panel", "run", "--plan", ctx.itemId, "--apply"],
+  },
 };
 
 /** Look up a spec by area. */

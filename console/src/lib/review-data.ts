@@ -50,8 +50,15 @@ export function externalReviewRows(reviews: Json | null, workbench: Json | null 
 
   return [...merged.values()].filter((item) => {
     const area = str(item.area) || str(item.review_area);
+    if (area !== EXTERNAL_AREA) return false;
+    // Band-driven projections (compound reviews --json) already say whether
+    // this row is still awaiting the operator (needs_you/watching) or done
+    // (filed) — trust that over guessing from status/readiness/next_action
+    // prose, which drifted out of sync with the live writer's wording.
+    const band = str(item.band);
+    if (band) return band !== "filed";
     const status = `${str(item.status)} ${str(item.readiness)} ${str(item.next_action)}`.toLowerCase();
-    return area === EXTERNAL_AREA && status.includes("review") && status.includes("required");
+    return status.includes("review") && status.includes("required");
   });
 }
 

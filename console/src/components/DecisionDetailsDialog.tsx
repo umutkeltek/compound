@@ -60,6 +60,40 @@ function compactLabel(value: string): string {
   return `${value.slice(0, 28)}…${value.slice(-22)}`;
 }
 
+/**
+ * The trust feature (spec §6): "What this will NOT do". Boundaries live in
+ * different spots depending on the writer — top-level `boundaries`/`not_to_do`
+ * on some areas (external-repo-intake), nested `decision_card.boundary` on
+ * others (panel-verdicts), and sometimes only on the already-computed
+ * plain-language object (`pl.boundaries`, e.g. the registry's own
+ * uniqueBoundaries()). Collect and dedupe across all of them so the section
+ * shows real limits whichever shape the artifact uses — never a fabricated
+ * "nothing to show" line when the array is simply empty.
+ */
+function collectNotToDo(item: Json, pl: PlainLanguage): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (raw: unknown) => {
+    for (const value of arr(raw)) {
+      const part = str(value).trim();
+      if (part.length < 3) continue;
+      const key = part.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(part);
+    }
+  };
+
+  push(item.boundaries);
+  push(item.warnings);
+  const notToDo = str(item.not_to_do);
+  if (notToDo) push(notToDo.split(/[,;]/));
+  if (isObject(item.decision_card)) push((item.decision_card as Json).boundary);
+  push(pl.boundaries);
+
+  return out;
+}
+
 function collectDocumentTargets(item: Json, pl: PlainLanguage): DocumentTarget[] {
   const seen = new Set<string>();
   const targets: DocumentTarget[] = [];
@@ -232,6 +266,7 @@ export function DecisionDetailsDialog({
   const [loadingDocument, setLoadingDocument] = useState(false);
   const [idCopied, setIdCopied] = useState(false);
   const targets = useMemo(() => collectDocumentTargets(item, pl), [item, pl]);
+  const notToDo = useMemo(() => collectNotToDo(item, pl), [item, pl]);
 
   useEffect(() => {
     if (!open) return;
@@ -344,6 +379,19 @@ export function DecisionDetailsDialog({
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
               {tab === "claim" ? (
                 <div className="grid gap-3">
+                  {notToDo.length ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                      <div className="section-label mb-2 text-amber-700">What this will NOT do</div>
+                      <ul className="flex flex-col gap-1.5">
+                        {notToDo.map((boundary) => (
+                          <li key={boundary} className="flex items-start gap-2 text-[12.5px] leading-relaxed text-amber-900">
+                            <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-amber-500" />
+                            {boundary}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                   <div className="rounded-xl border border-line bg-white p-3">
                     <div className="section-label mb-1">Full Claim</div>
                     <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-ink">

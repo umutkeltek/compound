@@ -3,8 +3,8 @@
 import { useState } from "react";
 
 /**
- * Decisions surface as exact CLI commands — copied to the clipboard, never
- * auto-executed (DEC-0021: surface, never execute).
+ * Terminal escape hatch: copy the exact CLI command. Primary operator buttons
+ * may execute allowlisted local commands through the governed decision API.
  */
 export function CopyCmd({ cmd, compact = false }: { cmd: string; compact?: boolean }) {
   const [copied, setCopied] = useState(false);

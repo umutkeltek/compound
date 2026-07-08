@@ -76,10 +76,24 @@ async function consoleSourceFor(candidate: Json): Promise<Json | null> {
   return Object.keys(out).length ? out : null;
 }
 
+/*
+ * Perf fix (measured 2026-07-08): `memory candidates --json --include-evidence`
+ * does a per-candidate evidence-ledger lookup. Over the full unfiltered candidate
+ * set (~1,100 rows locally) that took ~50s wall clock — well past the 15s
+ * execRunJson timeout, so every /memory page load hung and failed. The plain
+ * `memory candidates --json` call (no --include-evidence) returns the same
+ * items/counts/generated_at shape in well under a second; it only omits
+ * `source_trace_ref`, `evidence_refs`, the nested `evidence` quote object,
+ * `annotations`, and `believed_before` per item. No page-load render path
+ * reads those fields (the memory-adjudicate DecisionCard/Dialog fall back to
+ * `qualifiers.*`, which is always present), so they are dropped entirely from
+ * this loader rather than fetched-then-ignored. If a future component needs
+ * per-item evidence/annotations, fetch it on demand for that one item rather
+ * than reintroducing this flag on the list loader.
+ */
 async function loadFromProjection(filterState?: string): Promise<MemoryCandidate[] | null> {
   const args = ["memory", "candidates", "--json"];
   if (filterState) args.push("--state", filterState);
-  args.push("--include-evidence");
 
   const data = await runJson(args);
   if (!data) return null;
