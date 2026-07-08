@@ -68,6 +68,7 @@ func NewOpenAICompatEmbedder(cfg OpenAICompatEmbedderConfig) (EmbedderAdapter, e
 	if baseURL == "" {
 		baseURL = defaultOllamaBaseURL
 	}
+	baseURL = normalizeOpenAICompatBaseURL(baseURL)
 	batch := cfg.Batch
 	if batch <= 0 {
 		batch = defaultEmbedBatch
@@ -210,6 +211,21 @@ func embeddingsURL(baseURL string) string {
 		return base
 	}
 	return base + "/embeddings"
+}
+
+func normalizeOpenAICompatBaseURL(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return baseURL
+	}
+	if strings.Contains(baseURL, "://") {
+		return baseURL
+	}
+	low := strings.ToLower(baseURL)
+	if strings.HasPrefix(low, "localhost:") || strings.HasPrefix(low, "127.0.0.1:") || strings.HasPrefix(low, "[::1]:") {
+		return "http://" + baseURL
+	}
+	return baseURL
 }
 
 func inferEmbeddingDim(model string) int {
