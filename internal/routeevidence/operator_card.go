@@ -63,8 +63,12 @@ func (r RouteOutcomeReview) ReviewOperatorCard() (reviewartifact.OperatorCard, e
 }
 
 func OperatorCardForRouteOutcomeReview(r RouteOutcomeReview) (reviewartifact.OperatorCard, error) {
-	receipt, err := reviewartifact.RequireText("receipt_id", r.ReceiptID, r.RouteEvidenceID)
-	if err != nil {
+	// The receipt/route-evidence id is required as an existence check, but
+	// must not surface as the context_label — G3 bans raw ids in
+	// operator-facing text; ids belong in the card's mono meta line, not
+	// here. The capability class (or move type) is the human-legible "what
+	// is this about" the context_label needs instead.
+	if _, err := reviewartifact.RequireText("receipt_id", r.ReceiptID, r.RouteEvidenceID); err != nil {
 		return reviewartifact.OperatorCard{}, err
 	}
 	class := reviewartifact.PlainLabel(reviewartifact.FirstNonEmpty(firstCapabilityClass(r.CapabilityClasses), r.ReceiptMoveType, "route outcome"))
@@ -72,7 +76,7 @@ func OperatorCardForRouteOutcomeReview(r RouteOutcomeReview) (reviewartifact.Ope
 	if !r.Assessment.ShouldReviewPolicy {
 		summary = fmt.Sprintf("The route watcher recorded %s route evidence. Read the outcome.", class)
 	}
-	return reviewartifact.NewOperatorCard(summary, receipt, "route-remorse|"+reviewartifact.FirstNonEmpty(r.Assessment.CostClass, r.RouteStatus, "outcome"), "routing policy gets cleaner evidence")
+	return reviewartifact.NewOperatorCard(summary, class, "route-remorse|"+reviewartifact.FirstNonEmpty(r.Assessment.CostClass, r.RouteStatus, "outcome"), "routing policy gets cleaner evidence")
 }
 
 func (p RoutePolicyPlan) ReviewOperatorCard() (reviewartifact.OperatorCard, error) {
