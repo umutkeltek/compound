@@ -200,6 +200,7 @@ func annotateExternalRepoIntakeQueueItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "external repo review plan path missing"
 		return
 	}
+	plan, planErr := loadExternalRepoIntakePlanFile(item.JSONPath)
 	if reviewedPath := externalRepoIntakeReviewedPath(*item); reviewedPath != "" {
 		item.Status = "recorded"
 		item.Readiness = "review_recorded"
@@ -209,7 +210,15 @@ func annotateExternalRepoIntakeQueueItem(item *reviewartifact.QueueItem) {
 		if report, err := LoadExternalRepoIntakeReviewReport(reviewedPath); err == nil {
 			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, "external repo review recorded: "+report.Decision)
 		}
+		if planErr == nil {
+			// A recorded hold/keep is a reviewed, filed disposition, not an
+			// open decision. It must not keep rendering in needs_you.
+			annotateExternalRepoIntakeOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 		return
+	}
+	if planErr == nil {
+		annotateExternalRepoIntakeOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	}
 	reviewYAML := externalRepoIntakeReviewYAMLPath(*item)
 	if reviewYAML == "" {
@@ -326,6 +335,38 @@ func externalRepoIntakeReviewCommand(reviewYAML string) string {
 	}
 	quoted := shellQuote(reviewYAML)
 	return "$EDITOR " + quoted + " && compound capability external-intake-review " + quoted
+}
+
+func annotateExternalRepoIntakeOperatorCard(item *reviewartifact.QueueItem, plan ExternalRepoIntakeReviewPlanItem, band string) {
+	card, err := OperatorCardForExternalRepoIntake(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "external repo intake operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "external repo intake operator card invalid: "+err.Error())
+	}
+}
+
+func loadExternalRepoIntakePlanFile(path string) (ExternalRepoIntakeReviewPlanItem, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ExternalRepoIntakeReviewPlanItem{}, err
+	}
+	var plan ExternalRepoIntakeReviewPlanItem
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return ExternalRepoIntakeReviewPlanItem{}, err
+	}
+	return plan, nil
+}
+
+func init() {
+	reviewartifact.RegisterGroupSummary(ExternalRepoIntakeReviewArea, func(group reviewartifact.QueueGroup) reviewartifact.GroupSummaryResult {
+		return reviewartifact.GroupSummaryResult{
+			Summary: fmt.Sprintf("Repo intake reviewed %d external repos; all kept as read-only evidence. File them?", group.Count),
+			Unlock:  "they become citable evidence, or clear out honestly",
+		}
+	})
 }
 
 func loadExternalRepoIntakeReviewPlanForReview(reviewPath, planID string) (ExternalRepoIntakeReviewPlanItem, error) {

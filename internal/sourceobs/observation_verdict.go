@@ -382,16 +382,19 @@ func AnnotateObservationVerdictQueue(report *reviewartifact.QueueReport) {
 }
 
 func annotateSourceObservationVerdictItem(item *reviewartifact.QueueItem) {
-	if record, ok := sourceObservationVerdictReviewedFromExtras(item.ExtraPaths); ok {
+	plan, ok := sourceObservationVerdictPlanFromQueueItem(*item)
+	if record, recordOk := sourceObservationVerdictReviewedFromExtras(item.ExtraPaths); recordOk {
 		item.Status = record.Status
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = "source observation verdict review recorded"
 		item.Actions = nil
 		item.DecisionCard = nil
+		if ok {
+			annotateSourceObservationVerdictOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 		return
 	}
-	plan, ok := sourceObservationVerdictPlanFromQueueItem(*item)
 	if !ok {
 		item.Status = "blocked"
 		item.Readiness = "blocked"
@@ -400,6 +403,7 @@ func annotateSourceObservationVerdictItem(item *reviewartifact.QueueItem) {
 		item.Actions = nil
 		return
 	}
+	annotateSourceObservationVerdictOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	reviewPath := sourceObservationVerdictReviewYAMLPath(*item)
 	if reviewPath == "" {
 		item.Readiness = "blocked"
@@ -424,6 +428,17 @@ func annotateSourceObservationVerdictItem(item *reviewartifact.QueueItem) {
 		Argv:           []string{"compound", "source", "observation-verdict-review", reviewPath},
 		RequiresReview: true,
 	}}
+}
+
+func annotateSourceObservationVerdictOperatorCard(item *reviewartifact.QueueItem, plan SourceObservationVerdictPlan, band string) {
+	card, err := OperatorCardForObservationVerdictPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "source observation verdict operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "source observation verdict operator card invalid: "+err.Error())
+	}
 }
 
 func sourceObservationVerdictDecisionCard(plan SourceObservationVerdictPlan, reviewPath string) *reviewartifact.DecisionCard {

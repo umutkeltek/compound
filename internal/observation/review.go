@@ -221,6 +221,7 @@ func annotateObservationReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, plan.EvidenceRefs...))
 		item.DecisionCard = nil
 		item.Actions = nil
+		annotateObservationOperatorCard(item, plan, reviewartifact.BandFiled)
 		return
 	}
 	item.Status = "review_required"
@@ -234,6 +235,18 @@ func annotateObservationReviewQueueItem(item *reviewartifact.QueueItem) {
 	card := observationReviewDecisionCard(plan)
 	item.DecisionCard = card
 	item.Actions = []reviewartifact.Action{observationReviewPlanAction(plan)}
+	annotateObservationOperatorCard(item, plan, reviewartifact.BandNeedsYou)
+}
+
+func annotateObservationOperatorCard(item *reviewartifact.QueueItem, plan ObservationReviewPlan, band string) {
+	card, err := OperatorCardForReviewPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "observation review operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "observation review operator card invalid: "+err.Error())
+	}
 }
 
 func observationReviewCandidateVerdict(item reviewartifact.QueueItem, plan ObservationReviewPlan) string {

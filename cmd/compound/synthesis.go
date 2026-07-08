@@ -370,13 +370,78 @@ func annotateSynthesisReviewQueue(report *reviewartifact.QueueReport) {
 		item := &report.Items[i]
 		switch item.Area {
 		case synthesisSweepArea:
+			// Capture the pre-annotation band: annotateSynthesisQueueItem
+			// forces Status to "recorded" for writer-debt (empty/unknown)
+			// artifacts, and SetOperatorCard would otherwise recompute the
+			// band from that new status, losing the needs_you/filed split
+			// the original on-disk status already carried.
+			band := item.Band
 			annotateSynthesisQueueItem(item, "memory-synthesis-sweep", synthesisSweepNextAction)
+			annotateSynthesisSweepOperatorCard(item, band)
 		case synthesisContradictionArea:
+			band := item.Band
 			annotateSynthesisQueueItem(item, "memory-synthesis-contradiction", synthesisContradictionNextAction)
+			annotateSynthesisContradictionOperatorCard(item, band)
 		case seedCorroborationArea:
 			annotateSeedCorroborationQueueItem(item)
 		}
 	}
+}
+
+func annotateSynthesisSweepOperatorCard(item *reviewartifact.QueueItem, band string) {
+	if item.JSONPath == "" {
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return
+	}
+	var artifact synthesisSweepArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return
+	}
+	artifact.WorkID = reviewartifact.FirstNonEmpty(artifact.WorkID, item.ID)
+	card, err := operatorCardForSynthesisSweep(artifact)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "synthesis sweep operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "synthesis sweep operator card invalid: "+err.Error())
+	}
+}
+
+func annotateSynthesisContradictionOperatorCard(item *reviewartifact.QueueItem, band string) {
+	if item.JSONPath == "" {
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return
+	}
+	var artifact synthesisContradictionArtifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		return
+	}
+	artifact.WorkID = reviewartifact.FirstNonEmpty(artifact.WorkID, item.ID)
+	card, err := operatorCardForSynthesisContradiction(artifact)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "synthesis contradiction operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "synthesis contradiction operator card invalid: "+err.Error())
+	}
+}
+
+func init() {
+	reviewartifact.RegisterGroupSummary(synthesisContradictionArea, func(group reviewartifact.QueueGroup) reviewartifact.GroupSummaryResult {
+		return reviewartifact.GroupSummaryResult{
+			Summary:                fmt.Sprintf("Memory found %d pairs of claims that disagree with each other. Settle them one by one?", group.Count),
+			Unlock:                 "memory stops carrying both versions",
+			BatchUnavailableReason: "each contradiction needs its own read",
+		}
+	})
 }
 
 func annotateSeedCorroborationQueueItem(item *reviewartifact.QueueItem) {

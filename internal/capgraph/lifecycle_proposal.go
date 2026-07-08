@@ -1,7 +1,9 @@
 package capgraph
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -110,6 +112,62 @@ func BuildCapabilityLifecycleProposal(in CapabilityLifecycleProposalInput, now t
 		},
 	}
 	return proposal, nil
+}
+
+// AnnotateCapabilityLifecycleProposalQueue fills in the operator card for
+// capability-lifecycle-proposals review artifacts. There is no separate
+// applied/reviewed sidecar for this area yet (RecordCapabilityLifecycleProposal
+// only ever writes the proposal itself), so every item is a still-open
+// review_required decision.
+func AnnotateCapabilityLifecycleProposalQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != CapabilityLifecycleProposalReviewArea {
+			continue
+		}
+		annotateCapabilityLifecycleProposalItem(item)
+	}
+}
+
+func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem) {
+	if item.JSONPath == "" {
+		item.Readiness = "blocked"
+		item.BlockedReason = "capability lifecycle proposal path missing"
+		item.NextAction = "regenerate capability lifecycle proposal"
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "capability lifecycle proposal unreadable"
+		return
+	}
+	var proposal CapabilityLifecycleProposal
+	if err := json.Unmarshal(data, &proposal); err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "capability lifecycle proposal unreadable"
+		return
+	}
+	band := reviewartifact.BandNeedsYou
+	if proposal.Status == "recorded" || proposal.Status == "resolved" || proposal.Status == "accepted" || proposal.Status == "applied" || proposal.Status == "ok" {
+		band = reviewartifact.BandFiled
+		item.Readiness = "no_action"
+		item.NextAction = "capability lifecycle proposal recorded"
+	} else {
+		item.Readiness = "needs_review"
+		item.NextAction = "review capability lifecycle proposal " + reviewartifact.FirstNonEmpty(proposal.Subject, proposal.ID)
+	}
+	card, err := OperatorCardForLifecycleProposal(proposal)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "capability lifecycle operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "capability lifecycle operator card invalid: "+err.Error())
+	}
 }
 
 func RecordCapabilityLifecycleProposal(homePath string, proposal CapabilityLifecycleProposal) (CapabilityLifecycleProposalPaths, error) {

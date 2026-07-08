@@ -505,6 +505,7 @@ func annotateImprovementQueueItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "regenerate distiller improvement-plan"
 		return
 	}
+	plan, planErr := loadImprovementPlanFile(item.JSONPath)
 	if reviewed, reviewedPath, ok := reviewedImprovementForPlan(*item); ok {
 		item.Status = "recorded"
 		item.Readiness = "review_recorded"
@@ -513,7 +514,13 @@ func annotateImprovementQueueItem(item *reviewartifact.QueueItem) {
 		item.ExtraPaths = reviewartifact.Unique(append(item.ExtraPaths, reviewedPath))
 		item.EvidenceRefs = reviewartifact.Unique(append(item.EvidenceRefs, reviewed.EvidenceRefs...))
 		item.NextAction = fmt.Sprintf("distiller improvement review recorded: %s; no source mutation performed", reviewed.Decision)
+		if planErr == nil {
+			annotateImprovementOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 		return
+	}
+	if planErr == nil {
+		annotateImprovementOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	}
 	reviewYAML := improvementReviewYAMLPath(*item)
 	if reviewYAML == "" {
@@ -538,6 +545,29 @@ func annotateImprovementQueueItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_apply"
 	item.NextAction = "record reviewed distiller improvement decision; review command does not mutate policy, prompts, code, eval corpus, or memory"
+}
+
+func annotateImprovementOperatorCard(item *reviewartifact.QueueItem, plan ImprovementPlan, band string) {
+	card, err := OperatorCardForImprovementPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "distiller improvement operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "distiller improvement operator card invalid: "+err.Error())
+	}
+}
+
+func loadImprovementPlanFile(path string) (ImprovementPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ImprovementPlan{}, err
+	}
+	var plan ImprovementPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return ImprovementPlan{}, err
+	}
+	return plan, nil
 }
 
 func improvementReviewYAMLPath(item reviewartifact.QueueItem) string {

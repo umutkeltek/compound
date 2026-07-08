@@ -295,6 +295,15 @@ func TestRecountBuildsDecisionGroups(t *testing.T) {
 	if strings.Join(group.EvidenceRefs, ",") != "claim:a,claim:b" {
 		t.Fatalf("group evidence refs = %+v", group.EvidenceRefs)
 	}
+	if len(group.EvidenceSummaries) != 2 {
+		t.Fatalf("group evidence summaries = %+v, want 2", group.EvidenceSummaries)
+	}
+	if got := group.EvidenceSummaries[0]; got.Ref != "claim:a" || got.Label != "a" || got.SourceKind != "claim" || got.Privacy != "unknown" || got.OpenCommand != "compound system lineage claim:a --json" {
+		t.Fatalf("first evidence summary = %+v", got)
+	}
+	if got := group.EvidenceSummaries[1]; got.Ref != "claim:b" || got.Label != "b" || got.SourceKind != "claim" || got.OpenCommand != "compound system lineage claim:b --json" {
+		t.Fatalf("second evidence summary = %+v", got)
+	}
 	if group.SafeBatchAction != nil || !strings.Contains(group.TerminalReason, "item-specific") {
 		t.Fatalf("unsafe item-specific actions should not batch: %+v", group)
 	}

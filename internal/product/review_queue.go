@@ -2,6 +2,7 @@ package product
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,12 +82,16 @@ func annotateProductReviewItem(item *reviewartifact.QueueItem) {
 }
 
 func annotateProductActionReviewItem(item *reviewartifact.QueueItem) {
+	plan, planErr := actionPlanFromQueueItem(*item)
 	if record, ok := productActionReviewRecordFromExtras(item.ExtraPaths); ok {
 		item.Status = record.Status
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = "product action review recorded"
 		item.Actions = nil
+		if planErr == nil {
+			annotateActionPlanOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 		return
 	}
 	switch strings.TrimSpace(item.Status) {
@@ -94,10 +99,16 @@ func annotateProductActionReviewItem(item *reviewartifact.QueueItem) {
 		item.Readiness = "no_action"
 		item.NextAction = "product action review artifact terminal"
 		item.Actions = nil
+		if planErr == nil {
+			annotateActionPlanOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 		return
 	default:
 		item.Readiness = "needs_review"
 		item.NextAction = "fill action review YAML, then record product action review"
+		if planErr == nil {
+			annotateActionPlanOperatorCard(item, plan, reviewartifact.BandNeedsYou)
+		}
 	}
 	reviewYAML := productActionReviewYAMLPath(*item)
 	if reviewYAML == "" {
@@ -137,6 +148,32 @@ func annotateProductActionReviewItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "regenerate product action-plan"
 		item.Actions = nil
 	}
+}
+
+func annotateActionPlanOperatorCard(item *reviewartifact.QueueItem, plan ActionPlan, band string) {
+	card, err := OperatorCardForActionPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "product action plan operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "product action plan operator card invalid: "+err.Error())
+	}
+}
+
+func actionPlanFromQueueItem(item reviewartifact.QueueItem) (ActionPlan, error) {
+	if strings.TrimSpace(item.JSONPath) == "" {
+		return ActionPlan{}, fmt.Errorf("product action plan path missing")
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return ActionPlan{}, err
+	}
+	var plan ActionPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return ActionPlan{}, err
+	}
+	return plan, nil
 }
 
 func productActionReviewYAMLPath(item reviewartifact.QueueItem) string {

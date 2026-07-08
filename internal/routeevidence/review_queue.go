@@ -8,6 +8,48 @@ import (
 	"compound/internal/reviewartifact"
 )
 
+const routeOutcomeReviewArea = "route-remorse"
+
+// AnnotateRouteOutcomeQueue fills in the operator card for route-remorse
+// (RouteOutcomeReview) review artifacts. There is no separate applied/reviewed
+// sidecar for this area; the artifact's own status (set once at creation by
+// BuildRouteOutcomeReview) is already terminal ("recorded") or open
+// ("review_required"), so the existing band is trusted as-is.
+func AnnotateRouteOutcomeQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != routeOutcomeReviewArea {
+			continue
+		}
+		annotateRouteOutcomeQueueItem(item)
+	}
+}
+
+func annotateRouteOutcomeQueueItem(item *reviewartifact.QueueItem) {
+	if item.JSONPath == "" {
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return
+	}
+	var review RouteOutcomeReview
+	if err := json.Unmarshal(data, &review); err != nil || review.SchemaVersion != RouteOutcomeReviewSchemaVersion {
+		return
+	}
+	card, err := OperatorCardForRouteOutcomeReview(review)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "route outcome operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, item.Band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "route outcome operator card invalid: "+err.Error())
+	}
+}
+
 // AnnotatePromotionReviewQueue makes route-promotion review artifacts actionable
 // without applying lane promotions or mutating routing authority.
 func AnnotatePromotionReviewQueue(report *reviewartifact.QueueReport) {
@@ -40,7 +82,16 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.BlockedReason = ""
 		item.Actions = nil
 		item.NextAction = "route promotion hold review recorded"
-		annotatePromotionOperatorCard(item, review, reviewartifact.BandFiled, "The route watcher hold review for "+review.LaneID+" is already recorded.")
+		// A recorded hold-insufficient-evidence review is still an
+		// informational monitoring state, not an applied decision. It must
+		// stay in watching, not disappear into filed.
+		band := reviewartifact.BandFiled
+		summaryOverride := "The route watcher hold review for " + review.LaneID + " is already recorded."
+		if review.Recommendation == promotionRecommendationHoldInsufficient {
+			band = reviewartifact.BandWatching
+			summaryOverride = ""
+		}
+		annotatePromotionOperatorCard(item, review, band, summaryOverride)
 		item.EvidenceRefs = reviewartifact.UniqueSorted(append(item.EvidenceRefs, holdReport.EvidenceRefs...))
 		item.NextAction = reviewartifact.FirstNonEmpty(holdReport.NextAction, item.NextAction)
 		item.ExtraPaths = reviewartifact.UniqueSorted(append(item.ExtraPaths, reviewedPath))

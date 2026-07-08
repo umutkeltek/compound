@@ -29,14 +29,17 @@ func AnnotateCapabilityEvaluationQueue(report *reviewartifact.QueueReport) {
 
 func annotateCapabilityEvaluationQueueItem(item *reviewartifact.QueueItem) {
 	item.EvidenceRefs = reviewartifact.UniqueSorted(item.EvidenceRefs)
+	plan, ok := capabilityEvaluationPlanFromQueueItem(*item)
 	switch strings.TrimSpace(item.Status) {
 	case "recorded", "candidate_recorded", "ok", "resolved", "accepted", "applied":
 		item.Readiness = "no_action"
 		item.BlockedReason = ""
 		item.NextAction = "capability evaluation review recorded; graph mutation requires separate reviewed manifest import"
 		item.Actions = nil
+		if ok {
+			annotateCapabilityEvaluationOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 	case "", "unknown", "review_required":
-		plan, ok := capabilityEvaluationPlanFromQueueItem(*item)
 		if !ok {
 			item.Status = "blocked"
 			item.Readiness = "blocked"
@@ -54,6 +57,18 @@ func annotateCapabilityEvaluationQueueItem(item *reviewartifact.QueueItem) {
 		item.DecisionCard = buildCapabilityEvaluationDecisionCard(*item, plan)
 		item.Actions = capabilityEvaluationDecisionCardActions(item.DecisionCard)
 		item.NextAction = fmt.Sprintf("review capability evaluation for %s; edit YAML, then run evaluation-review", reviewartifact.FirstNonEmpty(plan.Capability, plan.NodeDraft.NodeID, item.ID))
+		annotateCapabilityEvaluationOperatorCard(item, plan, reviewartifact.BandNeedsYou)
+	}
+}
+
+func annotateCapabilityEvaluationOperatorCard(item *reviewartifact.QueueItem, plan CapabilityEvaluationPlan, band string) {
+	card, err := OperatorCardForEvaluationPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "capability evaluation operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "capability evaluation operator card invalid: "+err.Error())
 	}
 }
 

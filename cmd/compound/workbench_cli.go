@@ -13,6 +13,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/home"
+	"compound/internal/mem"
 	"compound/internal/observation"
 	"compound/internal/panel"
 	"compound/internal/product"
@@ -506,13 +507,16 @@ func buildReviewQueueReport(homePath, area string, includeArchived bool) (review
 	capgraph.AnnotateOutboundDistributionVerdictQueue(&report)
 	capgraph.AnnotateOutboundDistributionDryRunQueue(&report)
 	capgraph.AnnotateSkillCandidateQueue(&report)
+	capgraph.AnnotateCapabilityLifecycleProposalQueue(&report)
 	distiller.AnnotateImprovementQueue(&report)
 	distiller.AnnotateRequestQueue(&report)
+	mem.AnnotateBakeoffQueue(&report)
 	observation.AnnotateReviewQueue(&report)
 	panel.AnnotateVerdictQueue(&report)
 	panel.AnnotateCapabilityFeedbackQueue(&report)
 	projection.AnnotateProjectionRegenerationQueue(&report)
 	routeevidence.AnnotatePromotionReviewQueue(&report)
+	routeevidence.AnnotateRouteOutcomeQueue(&report)
 	sourceobs.AnnotateObservationVerdictQueue(&report)
 	annotateSynthesisReviewQueue(&report)
 	reviewartifact.Recount(&report)

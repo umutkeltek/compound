@@ -134,14 +134,50 @@ function chipText(value: string): string {
 
 function EvidenceDrawer({ group }: { group: Json }) {
   const evidence = arr(group.evidence_refs).map(String).filter(Boolean);
+  const summaries = arr(group.evidence_summaries).filter(
+    (summary): summary is Json => Boolean(summary) && typeof summary === "object",
+  );
   const items = arr(group.item_ids).map(String).filter(Boolean);
-  if (!evidence.length && !items.length) return null;
+  if (!summaries.length && !evidence.length && !items.length) return null;
   return (
     <details className="mt-2 rounded-lg border border-line bg-canvas px-2.5 py-2 text-[11px] text-ink-3">
       <summary className="cursor-pointer font-medium text-ink-2">
         Evidence and member items
       </summary>
-      {evidence.length ? (
+      {summaries.length ? (
+        <div className="mt-2">
+          <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
+            Evidence
+          </div>
+          <div className="grid gap-1.5">
+            {summaries.map((summary) => {
+              const ref = str(summary.ref);
+              const label = str(summary.label) || ref || "evidence";
+              const kind = str(summary.source_kind);
+              const privacy = str(summary.privacy);
+              const text = str(summary.summary);
+              const openCommand = str(summary.open_command);
+              return (
+                <div key={ref || label} className="rounded-md border border-line bg-white px-2 py-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-semibold text-ink-2">{label}</span>
+                    {kind ? <Chip tone="gray">{chipText(kind)}</Chip> : null}
+                    {privacy ? <Chip tone={privacy === "private" ? "orange" : "gray"}>{chipText(privacy)}</Chip> : null}
+                  </div>
+                  {text ? <div className="mt-1 leading-relaxed text-ink-2">{text}</div> : null}
+                  {openCommand ? (
+                    <code className="mono mt-1 block truncate rounded-md bg-canvas px-1.5 py-0.5 text-[10px] text-ink-3">
+                      {openCommand}
+                    </code>
+                  ) : ref ? (
+                    <code className="mono mt-1 block truncate text-[10px] text-ink-3">{ref}</code>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : evidence.length ? (
         <div className="mt-2">
           <div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-3">
             Evidence

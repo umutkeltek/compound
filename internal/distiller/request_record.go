@@ -87,6 +87,11 @@ func annotateRequestQueueItem(item *reviewartifact.QueueItem) {
 	item.SourceKind = "distiller-llm-extraction-request"
 	item.EvidenceRefs = reviewartifact.Unique(append(item.EvidenceRefs, req.SourceRefs...))
 	item.NextAction = "distiller request replay packet recorded; use its distiller_request ref with distiller run/extract"
+	if card, err := OperatorCardForLLMRequest(req); err == nil {
+		_ = reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, reviewartifact.BandFiled)
+	} else {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "distiller request operator card invalid: "+err.Error())
+	}
 }
 
 func LoadLLMExtractionRequest(homePath, selector string) (LLMExtractionRequest, error) {

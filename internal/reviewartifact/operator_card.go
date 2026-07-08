@@ -21,6 +21,19 @@ const (
 
 var operatorCardBanlist = regexp.MustCompile(`(=|--|_[a-f0-9]{8,}|/Users/|\.json|\.md)`)
 
+var bracketTagPattern = regexp.MustCompile(`\[[^\]]*\]?`)
+
+// SanitizeFragment is the shared sentence-hygiene pass every operator-card
+// template funnels through (via ShortLabel/PlainLabel): it strips
+// [bracketed] machine tags (e.g. "[synthetic]", "[session PRIVACY...]") that
+// leak into free-text fields such as a target's raw summary, then collapses
+// whitespace. It never truncates; ShortLabel owns truncation, at a word
+// boundary, so an ellipsis never lands mid-token.
+func SanitizeFragment(value string) string {
+	value = bracketTagPattern.ReplaceAllString(value, " ")
+	return strings.Join(strings.Fields(value), " ")
+}
+
 // OperatorCard is the plain-language surface every core review artifact must
 // carry for operator queues and console projections.
 type OperatorCard struct {
@@ -234,7 +247,7 @@ func PlainLabel(value string) string {
 }
 
 func ShortLabel(value string, max int) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	value = SanitizeFragment(value)
 	if max <= 0 || utf8.RuneCountInString(value) <= max {
 		return value
 	}
@@ -242,10 +255,19 @@ func ShortLabel(value string, max int) string {
 	if max <= 1 {
 		return string(runes[:max])
 	}
-	out := strings.TrimSpace(string(runes[:max-1]))
-	out = strings.TrimRight(out, " .,:;-")
+	limit := max - 1 // reserve one rune for the ellipsis
+	cut := limit
+	for cut > 0 && runes[cut] != ' ' {
+		cut--
+	}
+	if cut == 0 {
+		// no whitespace within the limit (one long token), fall back to a
+		// hard cut rather than exceed max.
+		cut = limit
+	}
+	out := strings.TrimRight(string(runes[:cut]), " .,:;-")
 	if out == "" {
-		out = strings.TrimSpace(string(runes[:max-1]))
+		out = strings.TrimSpace(string(runes[:limit]))
 	}
 	return out + "…"
 }

@@ -3,6 +3,7 @@ package panel
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"compound/internal/reviewartifact"
@@ -47,14 +48,18 @@ func OperatorCardForVerdict(p verdictArtifactPayload) (reviewartifact.OperatorCa
 			unlock = "memory gets a reviewed answer for this candidate"
 		}
 	case "comparison":
-		candidate, baseline, surface := comparisonPlainParts(p.Target)
+		candidate, baseline, surface, private := comparisonPlainParts(p.Target)
 		result := "lost to"
 		record := "loss"
 		if decision == "promote" || decision == "accept" || decision == "win" {
 			result = "beat"
 			record = "win"
 		}
-		summary = fmt.Sprintf("The judge panel says %s %s %s on %s. Record the %s?", candidate, result, baseline, surface, record)
+		if private {
+			summary = fmt.Sprintf("The judge panel says %s %s %s at %s on a private transcript. Record the %s?", candidate, result, baseline, surface, record)
+		} else {
+			summary = fmt.Sprintf("The judge panel says %s %s %s on %s. Record the %s?", candidate, result, baseline, surface, record)
+		}
 		unlock = "the comparison result becomes reviewed route evidence"
 	default:
 		thing := reviewartifact.ShortLabel(reviewartifact.FirstNonEmpty(p.Target.Kind, "target"), 36)
@@ -108,18 +113,47 @@ func panelVerdictContextLabel(target TargetInput) string {
 	return cleanPanelContextLabel(reviewartifact.HumanizeEntity(target.Ref), target.Kind)
 }
 
-func comparisonPlainParts(target TargetInput) (string, string, string) {
+// comparisonRefPattern parses the "{candidate}_vs_{baseline}_{trailing id}"
+// shape a comparison target ref encodes, e.g.
+// "cmp_r3_PRIV_ornith_vs_hauhaucs_codex-rollout-2026-06-16T23-49-ba67d2e9" or
+// "cmp_r3_deepseek_vs_autoextract_fixture-07". The trailing segment (session,
+// transcript, or fixture id) is deliberately not captured; it must never
+// reach the sentence.
+var comparisonRefPattern = regexp.MustCompile(`^cmp_r\d+_(?:PRIV_)?(.+?)_vs_(.+)_[^_]+$`)
+
+// comparisonPlainParts resolves the candidate/baseline/surface names a
+// comparison sentence needs, and whether the comparison ran over a private
+// transcript (never named in the sentence). It prefers explicit flat payload
+// fields when a schema supplies them, then falls back to parsing the
+// target's own ref. The ref is the only place today's comparison_candidate
+// payload actually encodes human-readable candidate/baseline names (its
+// candidate/baseline objects carry lane_id, not a short plain name).
+func comparisonPlainParts(target TargetInput) (candidate, baseline, surface string, private bool) {
 	var payload map[string]any
 	if len(target.Payload) > 0 {
 		_ = json.Unmarshal(target.Payload, &payload)
 	}
-	candidate := mapString(payload, "candidate_plain", "candidate", "candidate_name")
-	baseline := mapString(payload, "baseline_plain", "baseline", "baseline_name")
-	surface := mapString(payload, "surface_plain", "surface", "subject")
+	private = strings.Contains(target.Ref, "_PRIV_")
+	candidate = mapString(payload, "candidate_plain", "candidate", "candidate_name")
+	baseline = mapString(payload, "baseline_plain", "baseline", "baseline_name")
+	if candidate == "" || baseline == "" {
+		if m := comparisonRefPattern.FindStringSubmatch(target.Ref); m != nil {
+			if candidate == "" {
+				candidate = strings.ReplaceAll(m[1], "_", " ")
+			}
+			if baseline == "" {
+				baseline = strings.ReplaceAll(m[2], "_", " ")
+			}
+		}
+	}
+	surface = mapString(payload, "surface_plain", "surface", "subject", "capability_class")
+	if surface == "" {
+		surface = reviewartifact.PlainLabel(reviewartifact.FirstClause(target.Summary))
+	}
 	candidate = reviewartifact.ShortLabel(reviewartifact.PlainLabel(reviewartifact.FirstNonEmpty(candidate, "candidate")), 34)
 	baseline = reviewartifact.ShortLabel(reviewartifact.PlainLabel(reviewartifact.FirstNonEmpty(baseline, "baseline")), 34)
-	surface = reviewartifact.ShortLabel(reviewartifact.PlainLabel(reviewartifact.FirstNonEmpty(surface, target.Summary, "test surface")), 34)
-	return candidate, baseline, surface
+	surface = reviewartifact.ShortLabel(reviewartifact.FirstNonEmpty(surface, "test surface"), 34)
+	return candidate, baseline, surface, private
 }
 
 func mapString(payload map[string]any, keys ...string) string {

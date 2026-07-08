@@ -1,7 +1,9 @@
 package mem
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 
 	"compound/internal/reviewartifact"
 )
@@ -38,4 +40,48 @@ func OperatorCardForBakeoffReport(r BakeoffReport) (reviewartifact.OperatorCard,
 		"memory-bakeoffs|"+engine,
 		"",
 	)
+}
+
+// AnnotateBakeoffQueue fills in the operator card for root-level
+// memory-bakeoff-*.json strays: reports written before RunBakeoff started
+// baking a card in (and before the memory-bakeoffs/ subdirectory convention
+// existed), so they sit at reviews/ root with area=="" and no
+// operator_summary on disk. It never rewrites the artifact; it only
+// completes the read-time queue projection, matching the pattern every other
+// domain annotator uses for pre-existing artifacts.
+func AnnotateBakeoffQueue(report *reviewartifact.QueueReport) {
+	if report == nil {
+		return
+	}
+	for i := range report.Items {
+		item := &report.Items[i]
+		if item.Area != "" {
+			continue
+		}
+		annotateBakeoffQueueItem(item)
+	}
+}
+
+func annotateBakeoffQueueItem(item *reviewartifact.QueueItem) {
+	if item.JSONPath == "" {
+		return
+	}
+	data, err := os.ReadFile(item.JSONPath)
+	if err != nil {
+		return
+	}
+	var bakeoff BakeoffReport
+	if err := json.Unmarshal(data, &bakeoff); err != nil || bakeoff.SchemaVersion != BakeoffReportSchemaVersion {
+		return
+	}
+	card, err := OperatorCardForBakeoffReport(bakeoff)
+	if err != nil {
+		return
+	}
+	if item.Status == "" || item.Status == "unknown" {
+		item.Status = "recorded"
+	}
+	item.Readiness = reviewartifact.FirstNonEmpty(item.Readiness, "no_action")
+	item.NextAction = reviewartifact.FirstNonEmpty(item.NextAction, "recall bake-off report filed; read the scores, no action required")
+	_ = reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, reviewartifact.BandFiled)
 }

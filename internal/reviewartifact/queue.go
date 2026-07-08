@@ -49,21 +49,31 @@ type QueueCounts struct {
 // QueueGroup is the operator-level review projection: one card per decision
 // shape, with item details still available through Items/member_ids.
 type QueueGroup struct {
-	Key             string     `json:"key"`
-	Area            string     `json:"area"`
-	Count           int        `json:"count"`
-	Status          string     `json:"status,omitempty"`
-	Readiness       string     `json:"readiness,omitempty"`
-	Band            string     `json:"band,omitempty"`
-	OperatorSummary string     `json:"operator_summary"`
-	ContextLabel    string     `json:"context_label,omitempty"`
-	OperatorUnlock  string     `json:"operator_unlock,omitempty"`
-	SummarySource   string     `json:"summary_source,omitempty"`
-	ItemIDs         []string   `json:"item_ids"`
-	EvidenceRefs    []string   `json:"evidence_refs,omitempty"`
-	SafeBatchAction *Action    `json:"safe_batch_action,omitempty"`
-	TerminalReason  string     `json:"terminal_reason,omitempty"`
-	Sample          *QueueItem `json:"sample,omitempty"`
+	Key               string            `json:"key"`
+	Area              string            `json:"area"`
+	Count             int               `json:"count"`
+	Status            string            `json:"status,omitempty"`
+	Readiness         string            `json:"readiness,omitempty"`
+	Band              string            `json:"band,omitempty"`
+	OperatorSummary   string            `json:"operator_summary"`
+	ContextLabel      string            `json:"context_label,omitempty"`
+	OperatorUnlock    string            `json:"operator_unlock,omitempty"`
+	SummarySource     string            `json:"summary_source,omitempty"`
+	ItemIDs           []string          `json:"item_ids"`
+	EvidenceRefs      []string          `json:"evidence_refs,omitempty"`
+	EvidenceSummaries []EvidenceSummary `json:"evidence_summaries,omitempty"`
+	SafeBatchAction   *Action           `json:"safe_batch_action,omitempty"`
+	TerminalReason    string            `json:"terminal_reason,omitempty"`
+	Sample            *QueueItem        `json:"sample,omitempty"`
+}
+
+type EvidenceSummary struct {
+	Ref         string `json:"ref"`
+	Label       string `json:"label"`
+	SourceKind  string `json:"source_kind"`
+	Privacy     string `json:"privacy,omitempty"`
+	Summary     string `json:"summary"`
+	OpenCommand string `json:"open_command,omitempty"`
 }
 
 // QueueItem describes one review artifact JSON payload and nearby review files.
@@ -295,6 +305,8 @@ func buildQueueGroups(items []QueueItem) []QueueGroup {
 		group := *byKey[key]
 		group.ItemIDs = Unique(group.ItemIDs)
 		group.SafeBatchAction, group.TerminalReason = queueGroupAction(group, items)
+		group.EvidenceSummaries = queueGroupEvidenceSummaries(group, items)
+		applyGroupSummary(&group)
 		out = append(out, group)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -358,6 +370,170 @@ func queueGroupAction(group QueueGroup, items []QueueItem) (*Action, string) {
 		return nil, "owner has not exposed a safe action for this decision group"
 	}
 	return action, ""
+}
+
+func queueGroupEvidenceSummaries(group QueueGroup, items []QueueItem) []EvidenceSummary {
+	if len(group.EvidenceRefs) == 0 {
+		return nil
+	}
+	const maxEvidenceSummaries = 12
+	out := make([]EvidenceSummary, 0, min(len(group.EvidenceRefs), maxEvidenceSummaries))
+	for _, ref := range group.EvidenceRefs {
+		if len(out) >= maxEvidenceSummaries {
+			break
+		}
+		item := queueGroupItemForEvidenceRef(group, ref, items)
+		out = append(out, evidenceSummary(ref, item))
+	}
+	return out
+}
+
+func queueGroupItemForEvidenceRef(group QueueGroup, ref string, items []QueueItem) QueueItem {
+	for _, item := range items {
+		if item.Area != group.Area || queueGroupKey(item) != group.Key || !itemNeedsReviewGroup(item) {
+			continue
+		}
+		for _, got := range item.EvidenceRefs {
+			if got == ref {
+				return item
+			}
+		}
+	}
+	if group.Sample != nil {
+		return *group.Sample
+	}
+	return QueueItem{Area: group.Area, ContextLabel: group.ContextLabel, OperatorSummary: group.OperatorSummary}
+}
+
+func evidenceSummary(ref string, item QueueItem) EvidenceSummary {
+	kind := evidenceSourceKind(ref, item.SourceKind)
+	label := evidenceLabel(ref)
+	context := FirstNonEmpty(item.ContextLabel, item.OperatorSummary, item.NextAction, item.Area, "review item")
+	return EvidenceSummary{
+		Ref:         ref,
+		Label:       label,
+		SourceKind:  kind,
+		Privacy:     evidencePrivacy(ref),
+		Summary:     ShortLabel(fmt.Sprintf("%s supporting %s", PlainLabel(kind), context), 120),
+		OpenCommand: evidenceOpenCommand(ref),
+	}
+}
+
+func evidenceSourceKind(ref, fallback string) string {
+	ref = strings.TrimSpace(ref)
+	low := strings.ToLower(ref)
+	switch {
+	case strings.HasPrefix(low, "ev_"), strings.HasPrefix(low, "evidence:"), strings.HasPrefix(low, "evidence/"):
+		return "evidence"
+	case strings.HasPrefix(low, "claim:"), strings.HasPrefix(low, "claim_"), strings.HasPrefix(low, "cl_"):
+		return "claim"
+	case strings.HasPrefix(low, "cand_"), strings.HasPrefix(low, "candidate:"):
+		return "candidate"
+	case strings.HasPrefix(low, "work_"):
+		return "work"
+	case strings.HasPrefix(low, "artifact:"):
+		return "artifact"
+	case strings.HasPrefix(low, "http://"), strings.HasPrefix(low, "https://"):
+		return "external_ref"
+	case strings.Contains(low, "route"), strings.Contains(low, "comparison"), strings.Contains(low, "model"):
+		return "route_evidence"
+	}
+	if fallback = strings.TrimSpace(fallback); fallback != "" {
+		return fallback
+	}
+	return "reference"
+}
+
+func evidencePrivacy(ref string) string {
+	low := strings.ToLower(ref)
+	switch {
+	case strings.Contains(low, "priv"), strings.Contains(low, "private"), strings.Contains(low, "docs_private"), strings.Contains(low, ".compound"):
+		return "private"
+	case strings.HasPrefix(low, "http://"), strings.HasPrefix(low, "https://"):
+		return "public"
+	default:
+		return "unknown"
+	}
+}
+
+func evidenceLabel(ref string) string {
+	label := strings.TrimSpace(ref)
+	if strings.HasPrefix(label, "http://") || strings.HasPrefix(label, "https://") {
+		label = strings.TrimRight(label, "/")
+		if idx := strings.LastIndex(label, "/"); idx >= 0 {
+			label = label[idx+1:]
+		}
+	}
+	for _, prefix := range []string{"artifact:", "evidence:", "claim:", "candidate:"} {
+		label = strings.TrimPrefix(label, prefix)
+	}
+	label = strings.Trim(label, " /")
+	label = FirstNonEmpty(PlainLabel(label), "evidence")
+	return ShortLabel(label, 64)
+}
+
+func evidenceOpenCommand(ref string) string {
+	if strings.TrimSpace(ref) == "" {
+		return ""
+	}
+	ref = strings.TrimSpace(ref)
+	low := strings.ToLower(ref)
+	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+		return ""
+	}
+	return "compound system lineage " + evidenceShellQuote(ref) + " --json"
+}
+
+func evidenceShellQuote(value string) string {
+	if value != "" && !strings.ContainsAny(value, " \t\r\n'\"\\$`;&|<>*?()[]{}!") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+// GroupSummaryResult is what a domain package's GroupSummaryFunc returns:
+// the plain-language group headline/unlock ("group" template lines) and, when the
+// area has no safe multi-item verb, the honest reason a batch act is
+// unavailable (the batch_act unavailable case must carry a reason).
+type GroupSummaryResult struct {
+	Summary                string
+	Unlock                 string
+	BatchUnavailableReason string
+}
+
+// GroupSummaryFunc composes a group's operator-facing sentence from the
+// already-built QueueGroup (area, count, band, sample). Domain packages
+// register one per area whose template documents a distinct "group:"
+// line. Grouping several items must not just repeat the first item's
+// singular sentence.
+type GroupSummaryFunc func(group QueueGroup) GroupSummaryResult
+
+var groupSummaryFuncs = map[string]GroupSummaryFunc{}
+
+// RegisterGroupSummary wires an area's group-sentence template into the
+// shared queue projection. Call it from a domain package's init().
+func RegisterGroupSummary(area string, fn GroupSummaryFunc) {
+	if strings.TrimSpace(area) == "" || fn == nil {
+		return
+	}
+	groupSummaryFuncs[area] = fn
+}
+
+func applyGroupSummary(group *QueueGroup) {
+	fn, ok := groupSummaryFuncs[group.Area]
+	if !ok {
+		return
+	}
+	res := fn(*group)
+	if strings.TrimSpace(res.Summary) != "" {
+		group.OperatorSummary = res.Summary
+		group.OperatorUnlock = res.Unlock
+		group.SummarySource = SummarySourceAnnotator
+	}
+	if strings.TrimSpace(res.BatchUnavailableReason) != "" {
+		group.SafeBatchAction = nil
+		group.TerminalReason = res.BatchUnavailableReason
+	}
 }
 
 func bandPriority(band string) int {

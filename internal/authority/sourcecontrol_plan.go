@@ -371,6 +371,7 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "regenerate dirty-plan"
 		return
 	}
+	plan, planErr := loadSourceControlPlanFile(item.JSONPath)
 	if reviewedPath := sourceControlReviewedPath(*item); reviewedPath != "" {
 		item.Status = "recorded"
 		item.Readiness = "review_recorded"
@@ -379,7 +380,13 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 			item.NextAction = reviewartifact.FirstNonEmpty(report.NextAction, "source-control cleanup review recorded: "+report.Decision)
 		}
 		item.Actions = nil
+		if planErr == nil {
+			annotateSourceControlOperatorCard(item, plan, reviewartifact.BandFiled)
+		}
 		return
+	}
+	if planErr == nil {
+		annotateSourceControlOperatorCard(item, plan, reviewartifact.BandNeedsYou)
 	}
 	reviewYAML := sourceControlReviewYAMLPath(*item)
 	if reviewYAML == "" {
@@ -411,6 +418,29 @@ func annotateSourceControlCleanupItem(item *reviewartifact.QueueItem) {
 	}
 	item.Readiness = "ready_to_record"
 	item.NextAction = "record reviewed source-control cleanup disposition"
+}
+
+func annotateSourceControlOperatorCard(item *reviewartifact.QueueItem, plan SourceControlReviewPlan, band string) {
+	card, err := OperatorCardForSourceControlReviewPlan(plan)
+	if err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "source-control cleanup operator card invalid: "+err.Error())
+		return
+	}
+	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
+		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "source-control cleanup operator card invalid: "+err.Error())
+	}
+}
+
+func loadSourceControlPlanFile(path string) (SourceControlReviewPlan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return SourceControlReviewPlan{}, err
+	}
+	var plan SourceControlReviewPlan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return SourceControlReviewPlan{}, err
+	}
+	return plan, nil
 }
 
 func loadSourceControlPlanForReview(reviewPath, planID string) (SourceControlReviewPlan, error) {
