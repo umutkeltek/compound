@@ -428,15 +428,48 @@ func queueGroupItemForEvidenceRef(group QueueGroup, ref string, items []QueueIte
 func evidenceSummary(ref string, item QueueItem) EvidenceSummary {
 	kind := evidenceSourceKind(ref, item.SourceKind)
 	label := evidenceLabel(ref)
-	context := FirstNonEmpty(item.ContextLabel, item.OperatorSummary, item.NextAction, item.Area, "review item")
+	summary := evidenceSummaryText(kind, item)
 	return EvidenceSummary{
 		Ref:         ref,
 		Label:       label,
 		SourceKind:  kind,
 		Privacy:     evidencePrivacy(ref),
-		Summary:     ShortLabel(fmt.Sprintf("%s supporting %s", PlainLabel(kind), context), 120),
+		Summary:     summary,
 		OpenCommand: evidenceOpenCommand(ref),
 	}
+}
+
+func evidenceSummaryText(kind string, item QueueItem) string {
+	if item.Area == "panel-verdicts" && item.DecisionCard != nil {
+		meta := item.DecisionCard.Meta
+		runID := strings.TrimSpace(meta["run_id"])
+		targetKind := strings.TrimSpace(meta["target_kind"])
+		targetRef := strings.TrimSpace(meta["target_ref"])
+		target := strings.Trim(strings.TrimSpace(targetKind+"/"+targetRef), "/")
+		lean := PlainLabel(FirstNonEmpty(item.DecisionCard.PanelLean, item.Status, item.Readiness))
+		claim := FirstNonEmpty(item.DecisionCard.Claim, item.ContextLabel, item.OperatorSummary)
+		var b strings.Builder
+		b.WriteString("Panel verdict")
+		if runID != "" {
+			b.WriteByte(' ')
+			b.WriteString(runID)
+		}
+		if lean != "" {
+			b.WriteString(" says ")
+			b.WriteString(lean)
+		}
+		if target != "" {
+			b.WriteString(" for ")
+			b.WriteString(target)
+		}
+		if claim != "" {
+			b.WriteString(": ")
+			b.WriteString(claim)
+		}
+		return ShortLabel(b.String(), 220)
+	}
+	context := FirstNonEmpty(item.ContextLabel, item.OperatorSummary, item.NextAction, item.Area, "review item")
+	return ShortLabel(fmt.Sprintf("%s supporting %s", PlainLabel(kind), context), 160)
 }
 
 func evidenceSourceKind(ref, fallback string) string {

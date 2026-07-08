@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
@@ -381,6 +382,69 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	item := report.Items[0]
 	if len(item.Actions) != 0 || !strings.Contains(item.NextAction, "keep target parked") {
 		t.Fatalf("recorded panel verdict should expose no-action next step: %+v", item)
+	}
+}
+
+func TestPanelVerdictRecordGroupCLI(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	runID := "prun_cli_group"
+	store, err := panel.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRun(panel.Run{
+		SchemaVersion: panel.RunSchemaVersion,
+		ID:            runID,
+		CreatedAt:     cliTestNow.Format(time.RFC3339),
+		Status:        "running",
+		TargetKind:    "memory_candidate",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"panel_verdict_group_a", "panel_verdict_group_b"} {
+		verdict := map[string]any{
+			"schema_version": "compound.panel_verdict.v0.1",
+			"id":             id,
+			"run_id":         runID,
+			"status":         "review_required",
+			"target": map[string]any{
+				"kind": "memory_candidate",
+				"ref":  "cand_" + id,
+				"payload": map[string]any{
+					"object": "operator should inspect " + id,
+				},
+			},
+			"synthesis": map[string]any{
+				"decision":   "needs_human",
+				"confidence": 0.4,
+				"rationale":  "panel asked for operator review",
+			},
+			"evidence_refs": []string{"artifact:" + id},
+		}
+		if _, err := reviewartifact.Write(homePath, "panel-verdicts", id, verdict, " ", "# Panel verdict\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := captureStdout(t, func() {
+		cmdPanel([]string{"verdict-record", "--group", "panel-verdicts|" + runID + "|needs_human", "--rationale", "recorded as one grouped decision", "--reviewed-by", "codex", "--json"})
+	})
+	var report panel.VerdictHumanReviewGroupReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("parse group verdict-record JSON: %v\n%s", err, out)
+	}
+	if report.Status != "recorded" || report.Count != 2 || report.GroupKey != "panel-verdicts|"+runID+"|needs_human" {
+		t.Fatalf("group report = %+v, want recorded count=2", report)
+	}
+	if strings.Join(report.VerdictIDs, ",") != "panel_verdict_group_a,panel_verdict_group_b" {
+		t.Fatalf("verdict ids = %+v", report.VerdictIDs)
+	}
+	if report.ReviewedBy != "codex" {
+		t.Fatalf("reviewed_by = %q, want codex", report.ReviewedBy)
 	}
 }
 

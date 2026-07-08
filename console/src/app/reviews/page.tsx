@@ -195,6 +195,12 @@ function actionArgv(action: Json): string[] {
   return argv[0] === "compound" ? argv.slice(1) : argv;
 }
 
+function actionFlag(action: Json, flag: string): string {
+  const argv = arr(action.argv).map(String);
+  const index = argv.indexOf(flag);
+  return index >= 0 ? str(argv[index + 1]) : "";
+}
+
 function sampleRunId(sample: Json): string {
   const card = sample.decision_card;
   if (!card || typeof card !== "object") return "";
@@ -273,8 +279,24 @@ function GroupActionArea({ group, sample }: { group: Json; sample: Json }) {
     );
   }
 
+  if (str(action.id) === "panel_verdict_record_group") {
+    return (
+      <PanelApplyButton
+        area="panel-verdict-record-group"
+        itemId={str(group.key)}
+        option="record"
+        fields={{
+          rationale: actionFlag(action, "--rationale"),
+          reviewed_by: actionFlag(action, "--reviewed-by"),
+        }}
+        label={batchActionLabel(group, action)}
+        argv={actionArgv(action)}
+      />
+    );
+  }
+
   return (
-    <PanelApplyButton runId={runId} label={batchActionLabel(group, action)} argv={actionArgv(action)} />
+    <PanelApplyButton itemId={runId} label={batchActionLabel(group, action)} argv={actionArgv(action)} />
   );
 }
 

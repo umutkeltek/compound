@@ -16,11 +16,17 @@ type Result = { ok: boolean; stdout?: string; stderr?: string };
  * label swap while pending, a tick on success, inline error on failure.
  */
 export function PanelApplyButton({
-  runId,
+  itemId,
+  area = "panel-apply",
+  option = "apply",
+  fields = {},
   label,
   argv,
 }: {
-  runId: string;
+  itemId: string;
+  area?: string;
+  option?: string;
+  fields?: Record<string, string>;
   label: string;
   argv: string[];
 }) {
@@ -36,7 +42,7 @@ export function PanelApplyButton({
       const response = await fetch("/api/decision/execute", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ area: "panel-apply", itemId: runId, option: "apply", fields: {} }),
+        body: JSON.stringify({ area, itemId, option, fields }),
       });
       const body = (await response.json().catch(() => null)) as Result | null;
       const outcome: Result = body ?? { ok: false, stderr: `Request failed with ${response.status}` };
@@ -60,7 +66,7 @@ export function PanelApplyButton({
         disabled={pending || done}
         className="rounded-lg bg-ink px-3 py-1.5 text-[12px] font-semibold text-white disabled:cursor-wait disabled:opacity-55"
       >
-        {pending ? "Applying..." : done ? "Applied" : label}
+        {pending ? "Working..." : done ? "Done" : label}
       </button>
       <CliCaption argv={argv} />
       {result && !result.ok ? (

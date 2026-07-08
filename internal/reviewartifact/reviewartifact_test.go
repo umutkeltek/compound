@@ -312,6 +312,40 @@ func TestRecountBuildsDecisionGroups(t *testing.T) {
 	}
 }
 
+func TestRecountEvidenceSummariesUsePanelDecisionContext(t *testing.T) {
+	report := QueueReport{Items: []QueueItem{{
+		Area:            "panel-verdicts",
+		ID:              "pv_context",
+		Status:          "review_required",
+		Readiness:       "needs_review",
+		Band:            BandNeedsYou,
+		OperatorSummary: "The judge panel needs your call. Record it?",
+		ContextLabel:    "private transcript bakeoff",
+		GroupKey:        "panel-verdicts|prun_context|needs_human",
+		EvidenceRefs:    []string{"artifact:panel-runs/prun_context.json"},
+		DecisionCard: &DecisionCard{
+			Claim:     "local model beat the baseline on classify-extract",
+			PanelLean: "needs_human",
+			Meta: map[string]string{
+				"run_id":      "prun_context",
+				"target_kind": "comparison",
+				"target_ref":  "cmp_context",
+			},
+		},
+	}}}
+	Recount(&report)
+
+	if len(report.Groups) != 1 || len(report.Groups[0].EvidenceSummaries) != 1 {
+		t.Fatalf("groups = %+v, want one evidence summary", report.Groups)
+	}
+	summary := report.Groups[0].EvidenceSummaries[0]
+	for _, want := range []string{"Panel verdict prun_context", "needs human", "comparison/cmp_context", "local model beat the baseline"} {
+		if !strings.Contains(summary.Summary, want) {
+			t.Fatalf("summary = %q, want %q", summary.Summary, want)
+		}
+	}
+}
+
 func TestTimestamp(t *testing.T) {
 	at := time.Date(2026, 6, 30, 12, 0, 0, 0, time.FixedZone("x", 3*3600))
 	if got := Timestamp(at); got != "2026-06-30T09:00:00Z" {

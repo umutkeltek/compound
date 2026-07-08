@@ -18,7 +18,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -151,9 +151,25 @@ func cmdPanel(args []string) {
 		}
 		printPanelRun(run)
 	case "verdict-record":
-		reviewPath, input, jsonOut := parsePanelVerdictRecordArgs(args[1:])
+		reviewPath, groupKey, input, jsonOut := parsePanelVerdictRecordArgs(args[1:])
 		homePath, err := home.Resolve("")
 		die(err)
+		if groupKey != "" {
+			report, err := panel.RecordVerdictHumanReviewGroup(homePath, groupKey, input, time.Now())
+			die(err)
+			if jsonOut {
+				printJSON(report)
+				return
+			}
+			fmt.Printf("# panel verdict-record group %s\n", report.ID)
+			fmt.Printf("- group: %s\n", report.GroupKey)
+			fmt.Printf("- count: %d\n", report.Count)
+			fmt.Printf("- status: %s\n", report.Status)
+			fmt.Printf("- reviewed_by: %s\n", report.ReviewedBy)
+			fmt.Printf("- review: %s\n", report.ReviewPath)
+			fmt.Printf("- next_action: %s\n", report.NextAction)
+			return
+		}
 		report, err := panel.RecordVerdictHumanReview(homePath, reviewPath, input, time.Now())
 		die(err)
 		if jsonOut {
@@ -226,11 +242,13 @@ func cmdPanel(args []string) {
 	}
 }
 
-func parsePanelVerdictRecordArgs(args []string) (reviewPath string, input panel.VerdictHumanReviewInput, jsonOut bool) {
+func parsePanelVerdictRecordArgs(args []string) (reviewPath, groupKey string, input panel.VerdictHumanReviewInput, jsonOut bool) {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--review":
 			reviewPath = requirePanelValue(args, &i, "panel verdict-record")
+		case "--group":
+			groupKey = requirePanelValue(args, &i, "panel verdict-record")
 		case "--rationale":
 			input.Rationale = requirePanelValue(args, &i, "panel verdict-record")
 		case "--reviewed-by", "--actor":
@@ -238,15 +256,15 @@ func parsePanelVerdictRecordArgs(args []string) (reviewPath string, input panel.
 		case "--json":
 			jsonOut = true
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound panel verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]")
+			fmt.Fprintln(os.Stderr, "usage: compound panel verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]")
 			os.Exit(2)
 		}
 	}
-	if strings.TrimSpace(reviewPath) == "" || strings.TrimSpace(input.Rationale) == "" || strings.TrimSpace(input.ReviewedBy) == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound panel verdict-record --review <panel_verdict.json> --rationale <text> --reviewed-by <actor> [--json]")
+	if (strings.TrimSpace(reviewPath) == "") == (strings.TrimSpace(groupKey) == "") || strings.TrimSpace(input.Rationale) == "" || strings.TrimSpace(input.ReviewedBy) == "" {
+		fmt.Fprintln(os.Stderr, "usage: compound panel verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]")
 		os.Exit(2)
 	}
-	return reviewPath, input, jsonOut
+	return reviewPath, groupKey, input, jsonOut
 }
 
 func parsePanelFeedbackPlanArgs(args []string) (string, bool) {

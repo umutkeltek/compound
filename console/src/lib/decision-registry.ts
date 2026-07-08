@@ -533,6 +533,44 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     fields: [],
     buildArgv: (ctx) => ["panel", "run", "--plan", ctx.itemId, "--apply"],
   },
+  "panel-verdict-record-group": {
+    area: "panel-verdict-record-group",
+    title: "Record panel reviews",
+    glyph: "P",
+    accent: "violet",
+    source: "orient",
+    argvAllowlist: [["panel", "verdict-record"]],
+    idPattern: /^panel-verdicts\|prun_[A-Za-z0-9_]+\|(needs_human|needs_trial)$/,
+    plainLanguage: () => ({
+      headline: "Record grouped panel reviews",
+      body: "Writes human-review sidecars for every member in the group. It does not apply panel verdicts or adjudicate memory.",
+      consequences: {
+        approve: "member review records are written; follow-up apply/adjudication remains explicit",
+        hold: "the group stays in Needs You",
+      },
+    }),
+    options: [
+      {
+        value: "record",
+        label: "Record",
+        tone: "green",
+        description: "Record human review sidecars for this group.",
+      },
+    ],
+    defaultOption: "record",
+    fields: [],
+    buildArgv: (ctx) => [
+      "panel",
+      "verdict-record",
+      "--group",
+      ctx.itemId,
+      "--rationale",
+      str(ctx.fields.rationale) || "operator recorded grouped panel human-review verdicts",
+      "--reviewed-by",
+      str(ctx.fields.reviewed_by) || "operator",
+      "--json",
+    ],
+  },
 };
 
 /** Look up a spec by area. */

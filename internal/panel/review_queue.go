@@ -153,17 +153,9 @@ func init() {
 	reviewartifact.RegisterGroupSummary(verdictReviewArea, panelVerdictGroupBatchAction)
 }
 
-// panelVerdictGroupBatchAction wires the currently-inert per-item batch act
-// for panel-verdicts groups. queueGroupAction (the generic default) always
-// returns unavailable here because each open verdict carries its own
-// item-specific verdict-record Action — but the real bulk verb operators
-// need is run-scoped: `compound panel run --plan <run_id> --apply` (there is
-// no `panel apply` subcommand). It only offers the batch act when the
-// underlying run's own status already permits apply (internal/panel/apply.go
-// requires verdicts_recorded or applied) — Apply() then emits one
-// PolicyDecision per applied target under that single run; this wiring does
-// not collapse that into one decision, it only lets the operator trigger it
-// once instead of hunting for the run id.
+// panelVerdictGroupBatchAction exposes only owner-proven group verbs. Human
+// review groups get a record-only batch command; canonical apply remains
+// run-scoped and is offered only after the run itself permits apply.
 func panelVerdictGroupBatchAction(group reviewartifact.QueueGroup) reviewartifact.GroupSummaryResult {
 	if group.Band != reviewartifact.BandNeedsYou {
 		return reviewartifact.GroupSummaryResult{}
@@ -174,6 +166,29 @@ func panelVerdictGroupBatchAction(group reviewartifact.QueueGroup) reviewartifac
 	}
 	if group.Sample == nil || group.Sample.JSONPath == "" {
 		return reviewartifact.GroupSummaryResult{}
+	}
+	if decision, ok := panelVerdictGroupDecision(group.Key); ok && panelDecisionRecordableByHuman(decision) {
+		argv := []string{
+			"compound",
+			"panel",
+			"verdict-record",
+			"--group",
+			group.Key,
+			"--rationale",
+			"operator recorded grouped panel human-review verdicts",
+			"--reviewed-by",
+			defaultPanelReviewedBy(),
+		}
+		return reviewartifact.GroupSummaryResult{
+			BatchAction: &reviewartifact.Action{
+				ID:             "panel_verdict_record_group",
+				Label:          fmt.Sprintf("Record %d reviews", group.Count),
+				Command:        panelShellJoin(argv),
+				Argv:           argv,
+				RequiresReview: true,
+				PolicyNote:     "one operator act; member review refs included; no panel apply or memory mutation",
+			},
+		}
 	}
 	homePath := homeFromReviewRoot(filepath.Dir(filepath.Dir(group.Sample.JSONPath)))
 	if homePath == "" {
@@ -216,6 +231,32 @@ func panelVerdictGroupRunID(groupKey string) (string, bool) {
 		return "", false
 	}
 	return parts[1], true
+}
+
+func panelVerdictGroupDecision(groupKey string) (string, bool) {
+	parts := strings.Split(groupKey, "|")
+	if len(parts) != 3 || parts[0] != verdictReviewArea || strings.TrimSpace(parts[2]) == "" {
+		return "", false
+	}
+	return normalizePanelPosition(parts[2]), true
+}
+
+func panelDecisionRecordableByHuman(decision string) bool {
+	switch normalizePanelPosition(decision) {
+	case "needs_human", "needs_trial":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultPanelReviewedBy() string {
+	for _, key := range []string{"COMPOUND_OPERATOR_ID", "COMPOUND_REVIEWED_BY"} {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return "operator"
 }
 
 func panelShellJoin(argv []string) string {
@@ -412,7 +453,7 @@ func panelDecisionChoices(reviewPath string, target TargetInput) []reviewartifac
 }
 
 func panelChoiceCommand(reviewPath, candidateID, verdict string) string {
-	reviewCmd := "compound panel verdict-record --review " + shellQuote(reviewPath) + " --rationale \"$RATIONALE\" --reviewed-by umut"
+	reviewCmd := "compound panel verdict-record --review " + shellQuote(reviewPath) + " --rationale \"$RATIONALE\" --reviewed-by " + panelShellQuote(defaultPanelReviewedBy())
 	adjudicateCmd := "compound memory adjudicate " + shellQuote(candidateID) + " --verdict " + shellQuote(verdict)
 	return reviewCmd + " && " + adjudicateCmd
 }

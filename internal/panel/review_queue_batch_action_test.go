@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -133,5 +134,78 @@ func TestPanelVerdictGroupBatchActionUnavailableForNonApplyableRun(t *testing.T)
 	}
 	if group.TerminalReason == "" {
 		t.Fatalf("TerminalReason empty, want an honest reason the batch act is unavailable")
+	}
+}
+
+func TestPanelVerdictGroupBatchActionRecordsHumanReviewGroup(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 8, 0, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	runID := "prun_test_needs_human"
+	run := Run{
+		SchemaVersion: RunSchemaVersion,
+		ID:            runID,
+		CreatedAt:     now.Format(time.RFC3339),
+		Status:        "running",
+		TargetKind:    "memory_candidate",
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatalf("save run: %v", err)
+	}
+	writeOpenVerdict(t, homePath, runID, "panel_verdict_human_a", "needs_human", "claim about topic A")
+	writeOpenVerdict(t, homePath, runID, "panel_verdict_human_b", "needs_human", "claim about topic B")
+
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: verdictReviewArea}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotateVerdictQueue(&report)
+	reviewartifact.Recount(&report)
+
+	if len(report.Groups) != 1 {
+		t.Fatalf("want 1 group, got %d: %+v", len(report.Groups), report.Groups)
+	}
+	group := report.Groups[0]
+	if group.SafeBatchAction == nil {
+		t.Fatalf("group SafeBatchAction is nil, want record-group action: %+v", group)
+	}
+	if group.SafeBatchAction.ID != "panel_verdict_record_group" {
+		t.Fatalf("safe batch action = %+v, want panel_verdict_record_group", group.SafeBatchAction)
+	}
+	wantGroup := "panel-verdicts|" + runID + "|needs_human"
+	wantArgv := []string{"compound", "panel", "verdict-record", "--group", wantGroup, "--rationale", "operator recorded grouped panel human-review verdicts", "--reviewed-by", "operator"}
+	if len(group.SafeBatchAction.Argv) != len(wantArgv) {
+		t.Fatalf("argv = %v, want %v", group.SafeBatchAction.Argv, wantArgv)
+	}
+	for i := range wantArgv {
+		if group.SafeBatchAction.Argv[i] != wantArgv[i] {
+			t.Fatalf("argv = %v, want %v", group.SafeBatchAction.Argv, wantArgv)
+		}
+	}
+	if group.TerminalReason != "" {
+		t.Fatalf("TerminalReason = %q, want empty when record-group is available", group.TerminalReason)
+	}
+}
+
+func TestPanelChoiceCommandUsesGenericOperatorDefault(t *testing.T) {
+	t.Setenv("COMPOUND_OPERATOR_ID", "")
+	cmd := panelChoiceCommand("/tmp/verdict.json", "cand_example", "park")
+	if strings.Contains(cmd, "--reviewed-by umut") {
+		t.Fatalf("panel choice command leaked personal reviewer: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--reviewed-by operator") {
+		t.Fatalf("panel choice command = %s, want generic operator default", cmd)
+	}
+
+	t.Setenv("COMPOUND_OPERATOR_ID", "reviewer-test")
+	cmd = panelChoiceCommand("/tmp/verdict.json", "cand_example", "park")
+	if !strings.Contains(cmd, "--reviewed-by reviewer-test") {
+		t.Fatalf("panel choice command = %s, want env reviewer", cmd)
 	}
 }
