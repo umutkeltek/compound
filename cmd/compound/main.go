@@ -2981,7 +2981,7 @@ func loadActionIntent(path string) envelope.ActionIntent {
 // (0 allow, 3 hold, 4 deny) so shell adapters can enforce without parsing JSON.
 func cmdPolicy(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
 		os.Exit(2)
 	}
 	switch args[0] {
@@ -3496,8 +3496,45 @@ func cmdPolicy(args []string) {
 				fmt.Printf("  - %s\n", dc.Class)
 			}
 		}
+	case "editable-surfaces":
+		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound policy editable-surfaces [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		reg, source, err := policy.LoadEditableSurfaces(homePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		report := buildEditableSurfacesReport(reg, source, policy.EditableSurfacesPath(homePath))
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("editable surfaces authority: %s\n", report.AuthorityRef)
+		fmt.Printf("source: %s\n", report.Source)
+		fmt.Printf("installed: %t\n", report.Installed)
+		fmt.Printf("valid: %t\n", report.Valid)
+		fmt.Printf("nothing_editable: %t\n", report.NothingEditable)
+		fmt.Printf("hard_deny_core: %s\n", strings.Join(report.HardDenyCore, ", "))
+		fmt.Printf("entries: %d (active: %d)\n", report.EntryCount, report.ActiveCount)
+		for _, e := range report.Entries {
+			fmt.Printf("  - %s [%s] class=%s", e.Surface, e.Status, e.ProposalClass)
+			if e.Description != "" {
+				fmt.Printf(" — %s", e.Description)
+			}
+			fmt.Println()
+		}
+		for _, ve := range report.ValidationErrors {
+			fmt.Printf("  ! validation_error: %s\n", ve)
+		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound policy <evaluate|import-placement-rules|placement-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt|editable-surfaces> ...")
 		os.Exit(2)
 	}
 }
@@ -4761,6 +4798,106 @@ func cmdHome(args []string) {
 	}
 }
 
+type editableSurfaceEntryReport struct {
+	Surface       string `json:"surface"`
+	Description   string `json:"description,omitempty"`
+	ProposalClass string `json:"proposal_class,omitempty"`
+	Status        string `json:"status"`
+}
+
+type editableSurfacesReport struct {
+	AuthorityRef     string                       `json:"authority_ref"`
+	AuthorityPath    string                       `json:"authority_path"`
+	Source           string                       `json:"source"`
+	Installed        bool                         `json:"installed"`
+	Valid            bool                         `json:"valid"`
+	NothingEditable  bool                         `json:"nothing_editable"`
+	HardDenyCore     []string                     `json:"hard_deny_core"`
+	Entries          []editableSurfaceEntryReport `json:"entries,omitempty"`
+	EntryCount       int                          `json:"entry_count"`
+	ActiveCount      int                          `json:"active_count"`
+	ValidationErrors []string                     `json:"validation_errors,omitempty"`
+}
+
+// buildEditableSurfacesReport mirrors the autonomy-halt report shape (authority_ref,
+// authority_path, source, installed, ...) so both governance switches read alike.
+func buildEditableSurfacesReport(reg policy.EditableSurfaces, source, authorityPath string) editableSurfacesReport {
+	report := editableSurfacesReport{
+		AuthorityRef:     policy.EditableSurfacesAuthorityRef,
+		AuthorityPath:    authorityPath,
+		Source:           source,
+		Installed:        source != "unset",
+		Valid:            reg.Valid(),
+		NothingEditable:  reg.NothingEditable(),
+		HardDenyCore:     policy.HardDenyCoreSurfaces(),
+		ActiveCount:      reg.ActiveCount(),
+		ValidationErrors: reg.ValidationErrors,
+	}
+	for _, e := range reg.Entries {
+		report.Entries = append(report.Entries, editableSurfaceEntryReport{
+			Surface:       e.Surface,
+			Description:   e.Description,
+			ProposalClass: e.ProposalClass,
+			Status:        e.Status,
+		})
+	}
+	report.EntryCount = len(report.Entries)
+	return report
+}
+
+// homeDoctorGovernanceReport co-locates the two policy-owned governance switches read live
+// from COMPOUND_HOME/config: the autonomy kill-switch and the editable-surfaces registry.
+type homeDoctorGovernanceReport struct {
+	AutonomyHalt     homeDoctorAutonomyHaltState     `json:"autonomy_halt"`
+	EditableSurfaces homeDoctorEditableSurfacesState `json:"editable_surfaces"`
+}
+
+type homeDoctorAutonomyHaltState struct {
+	Installed          bool `json:"installed"`
+	GlobalHalt         bool `json:"global_halt"`
+	DisabledClassCount int  `json:"disabled_class_count"`
+}
+
+type homeDoctorEditableSurfacesState struct {
+	Installed        bool `json:"installed"`
+	Valid            bool `json:"valid"`
+	NothingEditable  bool `json:"nothing_editable"`
+	EntryCount       int  `json:"entry_count"`
+	ActiveCount      int  `json:"active_count"`
+	ValidationErrors int  `json:"validation_errors"`
+}
+
+func buildHomeGovernanceReport(homePath string) homeDoctorGovernanceReport {
+	var gov homeDoctorGovernanceReport
+	if halt, source, err := policy.LoadAutonomyHalt(homePath); err == nil {
+		gov.AutonomyHalt = homeDoctorAutonomyHaltState{
+			Installed:          source != "unset",
+			GlobalHalt:         halt.Global,
+			DisabledClassCount: len(halt.DisabledClasses),
+		}
+	}
+	if reg, source, err := policy.LoadEditableSurfaces(homePath); err == nil {
+		gov.EditableSurfaces = homeDoctorEditableSurfacesState{
+			Installed:        source != "unset",
+			Valid:            reg.Valid(),
+			NothingEditable:  reg.NothingEditable(),
+			EntryCount:       len(reg.Entries),
+			ActiveCount:      reg.ActiveCount(),
+			ValidationErrors: len(reg.ValidationErrors),
+		}
+	}
+	return gov
+}
+
+func printHomeGovernanceDoctor(homePath string) {
+	gov := buildHomeGovernanceReport(homePath)
+	fmt.Printf("autonomy_halt: installed=%t global=%t disabled_classes=%d\n",
+		gov.AutonomyHalt.Installed, gov.AutonomyHalt.GlobalHalt, gov.AutonomyHalt.DisabledClassCount)
+	fmt.Printf("editable_surfaces: installed=%t valid=%t nothing_editable=%t entries=%d active=%d validation_errors=%d\n",
+		gov.EditableSurfaces.Installed, gov.EditableSurfaces.Valid, gov.EditableSurfaces.NothingEditable,
+		gov.EditableSurfaces.EntryCount, gov.EditableSurfaces.ActiveCount, gov.EditableSurfaces.ValidationErrors)
+}
+
 func homeOKStr(b bool) string {
 	if b {
 		return "ok"
@@ -4776,19 +4913,20 @@ func homeCleanStr(b bool) string {
 }
 
 type homeDoctorJSONReport struct {
-	SchemaVersion              string                    `json:"schema_version"`
-	Home                       string                    `json:"home"`
-	Kind                       string                    `json:"kind,omitempty"`
-	ManifestOK                 bool                      `json:"manifest_ok"`
-	DirsOK                     int                       `json:"dirs_ok"`
-	DirsTotal                  int                       `json:"dirs_total"`
-	InsideGitRepo              bool                      `json:"inside_git_repo"`
-	GeneratedStateInRepoSource bool                      `json:"generated_state_in_repo_source"`
-	OperationalHygiene         homeDoctorHygieneReport   `json:"operational_hygiene"`
-	OperationalHygieneActions  []homeDoctorHygieneAction `json:"operational_hygiene_actions,omitempty"`
-	Setup                      home.SetupReport          `json:"setup"`
-	SetupOK                    bool                      `json:"setup_ok"`
-	Verdict                    string                    `json:"verdict"`
+	SchemaVersion              string                     `json:"schema_version"`
+	Home                       string                     `json:"home"`
+	Kind                       string                     `json:"kind,omitempty"`
+	ManifestOK                 bool                       `json:"manifest_ok"`
+	DirsOK                     int                        `json:"dirs_ok"`
+	DirsTotal                  int                        `json:"dirs_total"`
+	InsideGitRepo              bool                       `json:"inside_git_repo"`
+	GeneratedStateInRepoSource bool                       `json:"generated_state_in_repo_source"`
+	OperationalHygiene         homeDoctorHygieneReport    `json:"operational_hygiene"`
+	OperationalHygieneActions  []homeDoctorHygieneAction  `json:"operational_hygiene_actions,omitempty"`
+	Governance                 homeDoctorGovernanceReport `json:"governance"`
+	Setup                      home.SetupReport           `json:"setup"`
+	SetupOK                    bool                       `json:"setup_ok"`
+	Verdict                    string                     `json:"verdict"`
 }
 
 type homeDoctorHygieneReport struct {
@@ -4835,6 +4973,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		GeneratedStateInRepoSource: smell,
 		OperationalHygiene:         operational,
 		OperationalHygieneActions:  buildHomeDoctorHygieneActions(operational),
+		Governance:                 buildHomeGovernanceReport(r.Home),
 		Setup:                      r.Setup,
 		SetupOK:                    r.SetupOK,
 		Verdict:                    verdict,
@@ -4928,6 +5067,7 @@ func printHomeDoctor(r home.Report) {
 			fmt.Printf("%s.fix: %s\n", item.Name, item.Fix)
 		}
 	}
+	printHomeGovernanceDoctor(r.Home)
 	fmt.Printf("verdict: %s\n", homeOKStr(r.OK && !smell))
 	if !r.OK {
 		os.Exit(1)
