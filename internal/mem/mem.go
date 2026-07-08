@@ -877,9 +877,27 @@ type Hop struct {
 	Detail string `json:"detail"`
 }
 type Report struct {
-	Hops []Hop  `json:"hops"`
-	OK   bool   `json:"ok"`
-	Note string `json:"note"`
+	Hops              []Hop              `json:"hops"`
+	OK                bool               `json:"ok"`
+	Note              string             `json:"note"`
+	SemanticReadiness *SemanticReadiness `json:"semantic_readiness,omitempty"`
+}
+
+type SemanticReadiness struct {
+	Status               string `json:"status"`
+	Profile              string `json:"profile,omitempty"`
+	ConfigPath           string `json:"config_path,omitempty"`
+	Sidecar              string `json:"sidecar"`
+	Engine               string `json:"engine,omitempty"`
+	EmbedderConfigured   bool   `json:"embedder_configured"`
+	EmbedderIdentity     string `json:"embedder_identity,omitempty"`
+	EmbedderGuard        string `json:"embedder_guard,omitempty"`
+	VectorCacheStatus    string `json:"vector_cache_status"`
+	VectorCachePath      string `json:"vector_cache_path,omitempty"`
+	VectorCacheCorpusGen int64  `json:"vector_cache_corpus_gen,omitempty"`
+	VectorCacheClaims    int    `json:"vector_cache_claims,omitempty"`
+	VectorCacheEmbedded  int    `json:"vector_cache_embedded,omitempty"`
+	Detail               string `json:"detail"`
 }
 
 // Doctor reports WHICH hop is healthy or failed, not just "missing" — the fix differs per hop.

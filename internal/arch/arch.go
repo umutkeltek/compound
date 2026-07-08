@@ -1731,6 +1731,7 @@ func checkMemoryEngineContract(repoRoot string) []Finding {
 	hasMemoryDoctor := false
 	hasConfiguredSidecar := false
 	hasSyncEmbedding := false
+	hasSemanticReadiness := false
 	hasLedgerUnchanged := false
 	hasNoAuthority := false
 	hasCompare := false
@@ -1753,6 +1754,9 @@ func checkMemoryEngineContract(repoRoot string) []Finding {
 		if strings.Contains(low, "sync/embedding") {
 			hasSyncEmbedding = true
 		}
+		if strings.Contains(low, "semantic_readiness") {
+			hasSemanticReadiness = true
+		}
 		if strings.Contains(low, "ledger_unchanged") || strings.Contains(low, "ledger bytes unchanged") || strings.Contains(low, "leaves owned ledger bytes unchanged") {
 			hasLedgerUnchanged = true
 		}
@@ -1764,8 +1768,8 @@ func checkMemoryEngineContract(repoRoot string) []Finding {
 		}
 		return nil
 	})
-	if !hasMemoryDoctor || !hasConfiguredSidecar || !hasSyncEmbedding || !hasLedgerUnchanged || !hasNoAuthority || !hasCompare {
-		return []Finding{{"memory-engine-contract", Fail, "public docs do not describe configured MemoryEngine health through memory doctor sync/embedding, ledger_unchanged proof, engine-compare swap parity, and never-authority semantics"}}
+	if !hasMemoryDoctor || !hasConfiguredSidecar || !hasSyncEmbedding || !hasSemanticReadiness || !hasLedgerUnchanged || !hasNoAuthority || !hasCompare {
+		return []Finding{{"memory-engine-contract", Fail, "public docs do not describe configured MemoryEngine health through memory doctor sync/embedding, semantic_readiness, ledger_unchanged proof, engine-compare swap parity, and never-authority semantics"}}
 	}
 	return []Finding{{"memory-engine-contract", Info, "configured MemoryEngine health stays observable rented ledger-safe"}}
 }
