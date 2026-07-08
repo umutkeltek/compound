@@ -4417,7 +4417,7 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 		t.Fatalf("product review queue item should expose validation blocker: %+v", productItem)
 	}
 	textOut := captureStdout(t, func() { cmdReviews([]string{"--area", "decision-lifecycle-repairs"}) })
-	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "review_surface decision_cards=0 actionable=1 missing_cards=1 missing_actions=0") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {
+	if !strings.Contains(textOut, "reviews total=1") || !strings.Contains(textOut, "review_surface decision_cards=0 actionable=1 missing_cards=1 missing_actions=0 fallback_summaries=") || !strings.Contains(textOut, "decision-lifecycle-repairs/dlrp_cli") || strings.Contains(textOut, "rpp_cli") {
 		t.Fatalf("filtered reviews output =\n%s", textOut)
 	}
 }
@@ -9633,6 +9633,9 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 	if !report.OK {
 		t.Fatalf("memory doctor --json should be ok: %+v", report)
 	}
+	if report.SemanticReadiness == nil || report.SemanticReadiness.Status != "lexical_only" || report.SemanticReadiness.Sidecar != "configured" {
+		t.Fatalf("memory doctor --json should report sidecar lexical readiness: %+v", report.SemanticReadiness)
+	}
 	var foundEngineHop bool
 	for _, hop := range report.Hops {
 		if hop.Name == "sync/embedding" && hop.Status == "ok" && strings.Contains(hop.Detail, "ledger_unchanged=true") {
@@ -9641,6 +9644,94 @@ func TestMemoryDoctorUsesConfiguredSidecarEngine(t *testing.T) {
 	}
 	if !foundEngineHop {
 		t.Fatalf("memory doctor --json missing configured engine hop: %+v", report.Hops)
+	}
+}
+
+func TestMemoryDoctorReportsLexicalSemanticReadiness(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_BASE_URL", "")
+	t.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", "")
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	jsonOut := captureStdout(t, func() { cmdMemory([]string{"doctor", "--json"}) })
+	var report mem.Report
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("memory doctor --json parse: %v\n%s", err, jsonOut)
+	}
+	if report.SemanticReadiness == nil {
+		t.Fatalf("semantic_readiness missing: %+v", report)
+	}
+	got := report.SemanticReadiness
+	if got.Status != "lexical_only" || got.Sidecar != "none" || got.VectorCacheStatus != "not_configured" || got.EmbedderConfigured {
+		t.Fatalf("semantic readiness = %+v, want lexical_only/no sidecar/no embedder", got)
+	}
+}
+
+func TestMemoryDoctorReportsSemanticConfiguredWithoutSidecar(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	t.Setenv("COMPOUND_MEM_ENGINE_BIN", "")
+	t.Setenv("COMPOUND_MEM_ENGINE_EMBEDDER", "")
+	t.Setenv("COMPOUND_BREADTH_EMBED_PROVIDER", "openai")
+	t.Setenv("COMPOUND_BREADTH_EMBED_MODEL", "text-embedding-3-small")
+	t.Setenv("COMPOUND_BREADTH_EMBED_BASE_URL", "https://api.openai.com/v1")
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	jsonOut := captureStdout(t, func() { cmdMemory([]string{"doctor", "--json"}) })
+	var report mem.Report
+	if err := json.Unmarshal([]byte(jsonOut), &report); err != nil {
+		t.Fatalf("memory doctor --json parse: %v\n%s", err, jsonOut)
+	}
+	got := report.SemanticReadiness
+	if got == nil || got.Status != "semantic_inactive" || !got.EmbedderConfigured || got.EmbedderIdentity != "openai:text-embedding-3-small:1536:f32" || got.Sidecar != "none" {
+		t.Fatalf("semantic readiness = %+v, want configured embedder without sidecar", got)
+	}
+}
+
+func TestMemoryVectorCacheReadinessReportsManifestState(t *testing.T) {
+	homePath := t.TempDir()
+	identity := "openai:text-embedding-3-small:1536:f32"
+	manifestPath := filepath.Join(homePath, "indexes", "breadth", memoryStampSlug(identity), "manifest.json")
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeManifest := func(t *testing.T, embedded int, model string) {
+		t.Helper()
+		raw := fmt.Sprintf(`{
+  "schema_version": "compound.breadth.index.v1",
+  "embedder": {"provider": "openai", "model": %q, "dim": 1536, "bits": "f32"},
+  "corpus_gen": 7,
+  "claim_count": 2,
+  "embedded_count": %d
+}
+`, model, embedded)
+		if err := os.WriteFile(manifestPath, []byte(raw), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeManifest(t, 2, "text-embedding-3-small")
+	status, _ := memoryVectorCacheReadiness(homePath, identity, 0)
+	if status.Status != "healthy" || status.CorpusGen != 7 || status.EmbeddedCount != 2 {
+		t.Fatalf("healthy status = %+v", status)
+	}
+	writeManifest(t, 1, "text-embedding-3-small")
+	status, _ = memoryVectorCacheReadiness(homePath, identity, 0)
+	if status.Status != "partial" {
+		t.Fatalf("partial status = %+v", status)
+	}
+	writeManifest(t, 2, "text-embedding-3-large")
+	status, _ = memoryVectorCacheReadiness(homePath, identity, 0)
+	if status.Status != "embedder_mismatch" {
+		t.Fatalf("mismatch status = %+v", status)
 	}
 }
 
@@ -12419,7 +12510,7 @@ func TestMemoryEngineBreadthProfileAppliesOptInEmbedderFromConfig(t *testing.T) 
 		"embed:\n" +
 		"  provider: ollama\n" +
 		"  model: nomic-embed-text\n" +
-		"  base_url: http://localhost:11434/v1\n"
+		"  base_url: http://embedder.invalid:11434/v1\n"
 	if err := os.WriteFile(cfgPath, []byte(yamlBody), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -12440,7 +12531,7 @@ func TestMemoryEngineBreadthProfileAppliesOptInEmbedderFromConfig(t *testing.T) 
 	if got := os.Getenv("COMPOUND_BREADTH_EMBED_PROVIDER"); got != "ollama" {
 		t.Fatalf("embed provider = %q, want ollama", got)
 	}
-	if got := os.Getenv("COMPOUND_BREADTH_EMBED_BASE_URL"); got != "http://localhost:11434/v1" {
+	if got := os.Getenv("COMPOUND_BREADTH_EMBED_BASE_URL"); got != "http://embedder.invalid:11434/v1" {
 		t.Fatalf("embed base_url = %q", got)
 	}
 	restore()

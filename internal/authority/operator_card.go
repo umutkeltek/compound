@@ -41,6 +41,8 @@ func OperatorCardForSourceControlReviewPlan(p SourceControlReviewPlan) (reviewar
 	if err != nil {
 		return reviewartifact.OperatorCard{}, err
 	}
+	// RepoID commonly carries a "repo:" machine prefix (e.g. "repo:compound").
+	repo = reviewartifact.HumanizeEntity(repo)
 	upstream := reviewartifact.FirstNonEmpty(p.Upstream, "upstream")
 	return reviewartifact.NewOperatorCard(
 		fmt.Sprintf("Repo watch sees %s has %d uncommitted files and %d commits ahead of %s. Tidy it?", reviewartifact.ShortLabel(repo, 34), p.ChangedPaths, p.Ahead, reviewartifact.ShortLabel(upstream, 24)),

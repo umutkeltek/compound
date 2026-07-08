@@ -233,6 +233,16 @@ func TestPanelPlanRunShowCLIHappyPath(t *testing.T) {
 	if applied.Status != "applied" || applied.WorkID == "" || applied.ReceiptID == "" || applied.TransitionID == "" {
 		t.Fatalf("applied run = %+v", applied)
 	}
+	reapplyOut := captureStdout(t, func() {
+		cmdPanel([]string{"run", "--plan", planned.ID, "--apply", "--json"})
+	})
+	var reapplied panel.Run
+	if err := json.Unmarshal([]byte(reapplyOut), &reapplied); err != nil {
+		t.Fatalf("parse reapply JSON: %v\n%s", err, reapplyOut)
+	}
+	if reapplied.Status != "applied" || reapplied.ReceiptID == "" || reapplied.TransitionID == "" {
+		t.Fatalf("reapplied run = %+v", reapplied)
+	}
 	applyShow := captureStdout(t, func() {
 		cmdPanel([]string{"show", planned.ID})
 	})

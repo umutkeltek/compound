@@ -42,8 +42,12 @@ type QueueCounts struct {
 	ActionableCount                   int            `json:"actionable_count"`
 	ReviewRequiredMissingDecisionCard int            `json:"review_required_missing_decision_card"`
 	ReviewRequiredMissingAction       int            `json:"review_required_missing_action"`
+	FallbackSummaryCount              int            `json:"fallback_summary_count,omitempty"`
+	ReviewRequiredFallbackSummary     int            `json:"review_required_fallback_summary,omitempty"`
+	NeedsYouFallbackGroupCount        int            `json:"needs_you_fallback_group_count,omitempty"`
 	ByArea                            map[string]int `json:"by_area"`
 	ByStatus                          map[string]int `json:"by_status"`
+	BySummarySource                   map[string]int `json:"by_summary_source,omitempty"`
 }
 
 // QueueGroup is the operator-level review projection: one card per decision
@@ -123,6 +127,7 @@ type Action struct {
 	Command        string   `json:"command"`
 	Argv           []string `json:"argv,omitempty"`
 	RequiresReview bool     `json:"requires_review,omitempty"`
+	PolicyNote     string   `json:"policy_note,omitempty"`
 }
 
 // DecisionCard is a read-only, operator-facing explanation of a review item.
@@ -232,14 +237,26 @@ func Recount(report *QueueReport) {
 	}
 	report.Groups = buildQueueGroups(report.Items)
 	report.Counts = QueueCounts{
-		ByArea:   map[string]int{},
-		ByStatus: map[string]int{},
+		ByArea:          map[string]int{},
+		ByStatus:        map[string]int{},
+		BySummarySource: map[string]int{},
 	}
 	report.Counts.ReviewGroupCount = len(report.Groups)
+	for _, group := range report.Groups {
+		if group.Band == BandNeedsYou && group.SummarySource == SummarySourceFallback {
+			report.Counts.NeedsYouFallbackGroupCount++
+		}
+	}
 	for _, item := range report.Items {
 		report.Counts.Total++
 		report.Counts.ByArea[item.Area]++
 		report.Counts.ByStatus[item.Status]++
+		if source := strings.TrimSpace(item.SummarySource); source != "" {
+			report.Counts.BySummarySource[source]++
+			if source == SummarySourceFallback {
+				report.Counts.FallbackSummaryCount++
+			}
+		}
 		if item.Readiness == "ready_to_apply" {
 			report.Counts.ReadyToApply++
 		}
@@ -254,6 +271,9 @@ func Recount(report *QueueReport) {
 			report.Counts.OK++
 		default:
 			report.Counts.ReviewRequired++
+			if item.SummarySource == SummarySourceFallback {
+				report.Counts.ReviewRequiredFallbackSummary++
+			}
 			if itemNeedsReviewCard(item) && item.DecisionCard == nil {
 				report.Counts.ReviewRequiredMissingDecisionCard++
 			}
@@ -499,6 +519,12 @@ type GroupSummaryResult struct {
 	Summary                string
 	Unlock                 string
 	BatchUnavailableReason string
+	// BatchAction, when set, overrides the default per-item-action-derived
+	// SafeBatchAction with a real run/area-scoped batch verb. Domain
+	// packages set this only when they can prove the underlying batch
+	// command is safe for every member of the group (e.g. a panel run
+	// whose status already permits apply).
+	BatchAction *Action
 }
 
 // GroupSummaryFunc composes a group's operator-facing sentence from the
@@ -530,7 +556,10 @@ func applyGroupSummary(group *QueueGroup) {
 		group.OperatorUnlock = res.Unlock
 		group.SummarySource = SummarySourceAnnotator
 	}
-	if strings.TrimSpace(res.BatchUnavailableReason) != "" {
+	if res.BatchAction != nil {
+		group.SafeBatchAction = res.BatchAction
+		group.TerminalReason = ""
+	} else if strings.TrimSpace(res.BatchUnavailableReason) != "" {
 		group.SafeBatchAction = nil
 		group.TerminalReason = res.BatchUnavailableReason
 	}

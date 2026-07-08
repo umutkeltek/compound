@@ -47,3 +47,25 @@ func TestAnnotateSourceControlCleanupQueueFillsFallback(t *testing.T) {
 		t.Fatalf("Band = %q, want needs_you", item.Band)
 	}
 }
+
+// TestOperatorCardForSourceControlReviewPlanStripsRepoPrefix pins a real
+// live bug: repo_id carries a "repo:" machine prefix on disk (e.g.
+// "repo:compound"), which must not leak into the sentence or context_label.
+func TestOperatorCardForSourceControlReviewPlanStripsRepoPrefix(t *testing.T) {
+	card, err := OperatorCardForSourceControlReviewPlan(SourceControlReviewPlan{
+		RepoID:       "repo:compound",
+		Upstream:     "origin/main",
+		Ahead:        17,
+		ChangedPaths: 95,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Repo watch sees compound has 95 uncommitted files and 17 commits ahead of origin/main. Tidy it?"
+	if card.Summary != want {
+		t.Fatalf("Summary = %q, want %q", card.Summary, want)
+	}
+	if card.ContextLabel != "compound" {
+		t.Fatalf("ContextLabel = %q, want %q", card.ContextLabel, "compound")
+	}
+}

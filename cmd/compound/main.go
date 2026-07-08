@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/breadth"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
@@ -1903,13 +1904,16 @@ func cmdMemory(args []string) {
 		}
 	case "doctor":
 		var r mem.Report
+		var eng mem.Engine
 		if strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")) != "" {
-			eng, closeEng := memBreadthEngine()
+			var closeEng func()
+			eng, closeEng = memBreadthEngine()
 			r = store.DoctorWithEngine(eng)
 			closeEng()
 		} else {
 			r = store.Doctor()
 		}
+		r.SemanticReadiness = memorySemanticReadiness(homePath, eng)
 		if has("--json") {
 			printJSON(r)
 			if !r.OK {
@@ -1919,6 +1923,9 @@ func cmdMemory(args []string) {
 		}
 		for _, h := range r.Hops {
 			fmt.Printf("%-15s %-8s %s\n", h.Name, h.Status, h.Detail)
+		}
+		if r.SemanticReadiness != nil {
+			fmt.Printf("%-15s %-8s %s\n", "semantic", r.SemanticReadiness.Status, r.SemanticReadiness.Detail)
 		}
 		fmt.Printf("verdict: %s — %s\n", okStr(r.OK), r.Note)
 		if !r.OK {
@@ -2107,6 +2114,182 @@ func applyEmbedConfigEnv(embed memoryEmbedConfig) func() {
 	setIfUnset("COMPOUND_BREADTH_EMBED_BASE_URL", embed.BaseURL)
 	setIfUnset("COMPOUND_MEM_ENGINE_EMBEDDER", embed.Embedder)
 	return restore
+}
+
+type memoryVectorCacheManifest struct {
+	SchemaVersion string `json:"schema_version"`
+	Embedder      struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Dim      int    `json:"dim"`
+		Bits     string `json:"bits"`
+	} `json:"embedder"`
+	CorpusGen     int64 `json:"corpus_gen"`
+	ClaimCount    int   `json:"claim_count"`
+	EmbeddedCount int   `json:"embedded_count"`
+}
+
+func memorySemanticReadiness(homePath string, eng mem.Engine) *mem.SemanticReadiness {
+	cfg, cfgPath, err := loadMemoryEngineConfig(homePath)
+	readiness := &mem.SemanticReadiness{
+		Status:            "lexical_only",
+		ConfigPath:        cfgPath,
+		Sidecar:           "none",
+		VectorCacheStatus: "not_configured",
+		Detail:            "breadth is lexical only; no semantic embedder model is configured",
+	}
+	if err != nil {
+		readiness.Status = "semantic_degraded"
+		readiness.Detail = "memory engine config unreadable: " + err.Error()
+		return readiness
+	}
+	readiness.Profile = cfg.Profile
+	if sidecar := strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_BIN")); sidecar != "" {
+		readiness.Sidecar = "configured"
+	}
+	if eng != nil {
+		caps := eng.Capabilities()
+		readiness.Engine = firstNonEmptyString(caps.Name, "configured-engine")
+	}
+
+	model := strings.TrimSpace(os.Getenv("COMPOUND_BREADTH_EMBED_MODEL"))
+	if model == "" && cfg.Embed != nil {
+		model = strings.TrimSpace(cfg.Embed.Model)
+	}
+	guard := strings.TrimSpace(os.Getenv("COMPOUND_MEM_ENGINE_EMBEDDER"))
+	if guard == "" && cfg.Embed != nil {
+		guard = strings.TrimSpace(cfg.Embed.Embedder)
+	}
+	readiness.EmbedderGuard = guard
+	if model == "" {
+		if readiness.Sidecar == "configured" {
+			readiness.Detail = fmt.Sprintf("profile=%s sidecar=%s engine=%s; semantic embedder model is not configured", firstNonEmptyString(readiness.Profile, "default"), readiness.Sidecar, firstNonEmptyString(readiness.Engine, "none"))
+		}
+		return readiness
+	}
+	readiness.EmbedderConfigured = true
+
+	embedder, ok := breadth.ResolveEmbedder(homePath)
+	if !ok || embedder == nil {
+		readiness.Status = "semantic_degraded"
+		readiness.VectorCacheStatus = "unknown"
+		readiness.Detail = fmt.Sprintf("profile=%s sidecar=%s; semantic embedder config did not resolve or guard mismatched", firstNonEmptyString(readiness.Profile, "default"), readiness.Sidecar)
+		return readiness
+	}
+	identity := embedder.Identity()
+	readiness.EmbedderIdentity = identity
+	cacheStatus, cacheDetail := memoryVectorCacheReadiness(homePath, identity, 0)
+	readiness.VectorCacheStatus = cacheStatus.Status
+	readiness.VectorCachePath = cacheStatus.Path
+	readiness.VectorCacheCorpusGen = cacheStatus.CorpusGen
+	readiness.VectorCacheClaims = cacheStatus.ClaimCount
+	readiness.VectorCacheEmbedded = cacheStatus.EmbeddedCount
+
+	if readiness.Sidecar != "configured" {
+		readiness.Status = "semantic_inactive"
+		readiness.Detail = fmt.Sprintf("profile=%s sidecar=none embedder=%s vector_cache=%s; semantic embedder configured but no breadth sidecar is active", firstNonEmptyString(readiness.Profile, "default"), identity, readiness.VectorCacheStatus)
+		return readiness
+	}
+	if eng == nil {
+		readiness.Status = "semantic_degraded"
+		readiness.Detail = fmt.Sprintf("profile=%s sidecar=configured embedder=%s vector_cache=%s; memory doctor did not attach engine", firstNonEmptyString(readiness.Profile, "default"), identity, readiness.VectorCacheStatus)
+		return readiness
+	}
+	caps := eng.Capabilities()
+	readiness.Engine = firstNonEmptyString(caps.Name, "configured-engine")
+	if caps.Embedder != "" && caps.Embedder != identity {
+		readiness.Status = "semantic_degraded"
+		readiness.Detail = fmt.Sprintf("profile=%s sidecar=configured engine=%s embedder_mismatch configured=%s engine=%s vector_cache=%s", firstNonEmptyString(readiness.Profile, "default"), readiness.Engine, identity, caps.Embedder, readiness.VectorCacheStatus)
+		return readiness
+	}
+	if caps.Embedder == "" || caps.Embedder == breadth.DefaultEmbedder {
+		readiness.Status = "semantic_inactive"
+		readiness.Detail = fmt.Sprintf("profile=%s sidecar=configured engine=%s embedder=%s vector_cache=%s; sidecar reported lexical/no semantic embedder", firstNonEmptyString(readiness.Profile, "default"), readiness.Engine, identity, readiness.VectorCacheStatus)
+		return readiness
+	}
+	if readiness.VectorCacheStatus == "embedder_mismatch" || readiness.VectorCacheStatus == "unreadable" || readiness.VectorCacheStatus == "schema_mismatch" {
+		readiness.Status = "semantic_degraded"
+		readiness.Detail = fmt.Sprintf("profile=%s sidecar=configured engine=%s embedder=%s vector_cache=%s: %s", firstNonEmptyString(readiness.Profile, "default"), readiness.Engine, identity, readiness.VectorCacheStatus, cacheDetail)
+		return readiness
+	}
+	readiness.Status = "semantic_active"
+	readiness.Detail = fmt.Sprintf("profile=%s sidecar=configured engine=%s embedder=%s vector_cache=%s", firstNonEmptyString(readiness.Profile, "default"), readiness.Engine, identity, readiness.VectorCacheStatus)
+	if cacheDetail != "" {
+		readiness.Detail += " (" + cacheDetail + ")"
+	}
+	return readiness
+}
+
+type memoryVectorCacheStatus struct {
+	Status        string
+	Path          string
+	CorpusGen     int64
+	ClaimCount    int
+	EmbeddedCount int
+}
+
+func memoryVectorCacheReadiness(homePath, identity string, engineGen int64) (memoryVectorCacheStatus, string) {
+	status := memoryVectorCacheStatus{Status: "not_configured"}
+	if strings.TrimSpace(identity) == "" {
+		return status, ""
+	}
+	status.Status = "missing"
+	status.Path = filepath.Join(homePath, "indexes", "breadth", memoryStampSlug(identity), "manifest.json")
+	raw, err := os.ReadFile(status.Path)
+	if os.IsNotExist(err) {
+		return status, "manifest missing"
+	}
+	if err != nil {
+		status.Status = "unreadable"
+		return status, err.Error()
+	}
+	var manifest memoryVectorCacheManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		status.Status = "unreadable"
+		return status, "parse manifest: " + err.Error()
+	}
+	status.CorpusGen = manifest.CorpusGen
+	status.ClaimCount = manifest.ClaimCount
+	status.EmbeddedCount = manifest.EmbeddedCount
+	if manifest.SchemaVersion != "compound.breadth.index.v1" {
+		status.Status = "schema_mismatch"
+		return status, "schema=" + manifest.SchemaVersion
+	}
+	if got := memoryManifestEmbedderIdentity(manifest); got != identity {
+		status.Status = "embedder_mismatch"
+		return status, fmt.Sprintf("cache=%s configured=%s", got, identity)
+	}
+	if manifest.EmbeddedCount < manifest.ClaimCount {
+		status.Status = "partial"
+		return status, fmt.Sprintf("%d/%d embedded", manifest.EmbeddedCount, manifest.ClaimCount)
+	}
+	if engineGen > 0 && manifest.CorpusGen < engineGen {
+		status.Status = "stale"
+		return status, fmt.Sprintf("cache_gen=%d engine_gen=%d", manifest.CorpusGen, engineGen)
+	}
+	status.Status = "healthy"
+	return status, fmt.Sprintf("gen=%d embedded=%d/%d", manifest.CorpusGen, manifest.EmbeddedCount, manifest.ClaimCount)
+}
+
+func memoryManifestEmbedderIdentity(manifest memoryVectorCacheManifest) string {
+	return fmt.Sprintf("%s:%s:%d:%s", manifest.Embedder.Provider, manifest.Embedder.Model, manifest.Embedder.Dim, manifest.Embedder.Bits)
+}
+
+func memoryStampSlug(identity string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(identity) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
 
 func configureMemoryEngineProfile(profile string) (func(), error) {
@@ -3579,8 +3762,8 @@ func cmdReviews(args []string) {
 		return
 	}
 	fmt.Printf("reviews total=%d review_required=%d ready_to_apply=%d ok=%d\n", report.Counts.Total, report.Counts.ReviewRequired, report.Counts.ReadyToApply, report.Counts.OK)
-	if report.Counts.DecisionCardCount > 0 || report.Counts.ActionableCount > 0 || report.Counts.ReviewRequiredMissingDecisionCard > 0 || report.Counts.ReviewRequiredMissingAction > 0 {
-		fmt.Printf("review_surface decision_cards=%d actionable=%d missing_cards=%d missing_actions=%d\n", report.Counts.DecisionCardCount, report.Counts.ActionableCount, report.Counts.ReviewRequiredMissingDecisionCard, report.Counts.ReviewRequiredMissingAction)
+	if report.Counts.DecisionCardCount > 0 || report.Counts.ActionableCount > 0 || report.Counts.ReviewRequiredMissingDecisionCard > 0 || report.Counts.ReviewRequiredMissingAction > 0 || report.Counts.FallbackSummaryCount > 0 || report.Counts.NeedsYouFallbackGroupCount > 0 {
+		fmt.Printf("review_surface decision_cards=%d actionable=%d missing_cards=%d missing_actions=%d fallback_summaries=%d needs_you_fallback_groups=%d\n", report.Counts.DecisionCardCount, report.Counts.ActionableCount, report.Counts.ReviewRequiredMissingDecisionCard, report.Counts.ReviewRequiredMissingAction, report.Counts.FallbackSummaryCount, report.Counts.NeedsYouFallbackGroupCount)
 	}
 	if len(report.Counts.ByArea) > 0 {
 		fmt.Println("areas:")

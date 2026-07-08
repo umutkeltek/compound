@@ -1220,6 +1220,8 @@ func checkReviewSurfaceCoverageContract(repoRoot string) []Finding {
 			"ActionableCount                   int            `json:\"actionable_count\"`",
 			"ReviewRequiredMissingDecisionCard int            `json:\"review_required_missing_decision_card\"`",
 			"ReviewRequiredMissingAction       int            `json:\"review_required_missing_action\"`",
+			"FallbackSummaryCount              int            `json:\"fallback_summary_count,omitempty\"`",
+			"NeedsYouFallbackGroupCount        int            `json:\"needs_you_fallback_group_count,omitempty\"`",
 			"itemNeedsReviewCard",
 		},
 		"internal/reviewartifact/reviewartifact_test.go": {
@@ -1227,17 +1229,22 @@ func checkReviewSurfaceCoverageContract(repoRoot string) []Finding {
 			"ActionableCount",
 			"ReviewRequiredMissingDecisionCard",
 			"ReviewRequiredMissingAction",
+			"FallbackSummaryCount",
+			"NeedsYouFallbackGroupCount",
 			"missing coverage counts",
 		},
 		"cmd/compound/main.go": {
 			"review_surface decision_cards=",
 			"missing_cards=",
 			"missing_actions=",
+			"fallback_summaries=",
+			"needs_you_fallback_groups=",
 		},
 		"cmd/compound/main_test.go": {
 			"review_surface decision_cards=",
 			"ReviewRequiredMissingDecisionCard",
 			"ReviewRequiredMissingAction",
+			"fallback_summaries=",
 		},
 		"docs/architecture/status.md": {
 			"Review queue surface-coverage note",
@@ -1245,6 +1252,8 @@ func checkReviewSurfaceCoverageContract(repoRoot string) []Finding {
 			"actionable_count",
 			"review_required_missing_decision_card",
 			"review_required_missing_action",
+			"fallback_summary_count",
+			"needs_you_fallback_group_count",
 		},
 	}
 	var failures []string

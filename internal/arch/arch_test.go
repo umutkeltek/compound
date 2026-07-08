@@ -629,7 +629,7 @@ func TestReviewSurfaceCoverageContractFailsOnRawArtifactList(t *testing.T) {
 		t.Fatalf("findings = %+v, want one failure", findings)
 	}
 	msg := findings[0].Message
-	for _, want := range []string{"decision_card_count", "review_surface", "review_required_missing_action"} {
+	for _, want := range []string{"decision_card_count", "review_surface", "review_required_missing_action", "fallback_summary_count"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("failure should name missing %q: %+v", want, findings)
 		}

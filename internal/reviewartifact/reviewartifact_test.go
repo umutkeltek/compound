@@ -469,10 +469,12 @@ func TestQueueEmptyReviews(t *testing.T) {
 func TestRecountTracksReviewCardCoverage(t *testing.T) {
 	report := QueueReport{Items: []QueueItem{
 		{
-			Area:      "capability-evaluation-intake",
-			ID:        "needs_card",
-			Status:    "review_required",
-			Readiness: "needs_review",
+			Area:          "capability-evaluation-intake",
+			ID:            "needs_card",
+			Status:        "review_required",
+			Readiness:     "needs_review",
+			Band:          BandNeedsYou,
+			SummarySource: SummarySourceFallback,
 		},
 		{
 			Area:      "panel-verdicts",
@@ -504,6 +506,12 @@ func TestRecountTracksReviewCardCoverage(t *testing.T) {
 	}
 	if report.Counts.ReviewRequiredMissingDecisionCard != 1 || report.Counts.ReviewRequiredMissingAction != 1 {
 		t.Fatalf("missing coverage counts = %+v", report.Counts)
+	}
+	if report.Counts.FallbackSummaryCount != 1 ||
+		report.Counts.ReviewRequiredFallbackSummary != 1 ||
+		report.Counts.NeedsYouFallbackGroupCount != 1 ||
+		report.Counts.BySummarySource[SummarySourceFallback] != 1 {
+		t.Fatalf("fallback summary debt counts = %+v", report.Counts)
 	}
 }
 

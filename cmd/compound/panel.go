@@ -136,9 +136,14 @@ func cmdPanel(args []string) {
 				die(err)
 			}
 		}
-		if parsed.apply && run.Status == "verdicts_recorded" {
-			run, err = panel.Apply(homePath, run, time.Now)
-			die(err)
+		if parsed.apply {
+			switch run.Status {
+			case "verdicts_recorded", "applied":
+				run, err = panel.Apply(homePath, run, time.Now)
+				die(err)
+			default:
+				die(fmt.Errorf("panel apply requires verdicts_recorded or applied run, got %q", run.Status))
+			}
 		}
 		if parsed.jsonOut {
 			printJSON(run)

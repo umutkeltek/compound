@@ -149,6 +149,95 @@ func annotateVerdictOperatorCard(item *reviewartifact.QueueItem, verdict verdict
 	}
 }
 
+func init() {
+	reviewartifact.RegisterGroupSummary(verdictReviewArea, panelVerdictGroupBatchAction)
+}
+
+// panelVerdictGroupBatchAction wires the currently-inert per-item batch act
+// for panel-verdicts groups. queueGroupAction (the generic default) always
+// returns unavailable here because each open verdict carries its own
+// item-specific verdict-record Action — but the real bulk verb operators
+// need is run-scoped: `compound panel run --plan <run_id> --apply` (there is
+// no `panel apply` subcommand). It only offers the batch act when the
+// underlying run's own status already permits apply (internal/panel/apply.go
+// requires verdicts_recorded or applied) — Apply() then emits one
+// PolicyDecision per applied target under that single run; this wiring does
+// not collapse that into one decision, it only lets the operator trigger it
+// once instead of hunting for the run id.
+func panelVerdictGroupBatchAction(group reviewartifact.QueueGroup) reviewartifact.GroupSummaryResult {
+	if group.Band != reviewartifact.BandNeedsYou {
+		return reviewartifact.GroupSummaryResult{}
+	}
+	runID, ok := panelVerdictGroupRunID(group.Key)
+	if !ok {
+		return reviewartifact.GroupSummaryResult{}
+	}
+	if group.Sample == nil || group.Sample.JSONPath == "" {
+		return reviewartifact.GroupSummaryResult{}
+	}
+	homePath := homeFromReviewRoot(filepath.Dir(filepath.Dir(group.Sample.JSONPath)))
+	if homePath == "" {
+		return reviewartifact.GroupSummaryResult{}
+	}
+	store, err := Open(homePath)
+	if err != nil {
+		return reviewartifact.GroupSummaryResult{}
+	}
+	run, err := store.LoadRun(runID)
+	if err != nil {
+		return reviewartifact.GroupSummaryResult{
+			BatchUnavailableReason: "panel run record unreadable; apply from the run directly",
+		}
+	}
+	if run.Status != "verdicts_recorded" && run.Status != "applied" {
+		return reviewartifact.GroupSummaryResult{
+			BatchUnavailableReason: fmt.Sprintf("panel run is %s, not ready to apply yet", reviewartifact.PlainLabel(run.Status)),
+		}
+	}
+	argv := []string{"compound", "panel", "run", "--plan", runID, "--apply"}
+	return reviewartifact.GroupSummaryResult{
+		BatchAction: &reviewartifact.Action{
+			ID:             "panel_run_apply",
+			Label:          fmt.Sprintf("Apply %d verdicts", group.Count),
+			Command:        panelShellJoin(argv),
+			Argv:           argv,
+			RequiresReview: true,
+			PolicyNote:     "one operator act; each target gets its own PolicyDecision",
+		},
+	}
+}
+
+// panelVerdictGroupRunID parses the run id out of a panel-verdicts group_key
+// shaped "panel-verdicts|{run_id}|{decision}" (reviewartifact.OperatorCardForVerdict
+// composes this key; the group_key is machine-facing and stable across a run).
+func panelVerdictGroupRunID(groupKey string) (string, bool) {
+	parts := strings.Split(groupKey, "|")
+	if len(parts) != 3 || parts[0] != verdictReviewArea || strings.TrimSpace(parts[1]) == "" {
+		return "", false
+	}
+	return parts[1], true
+}
+
+func panelShellJoin(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		parts = append(parts, panelShellQuote(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func panelShellQuote(arg string) string {
+	if arg == "" {
+		return "''"
+	}
+	if strings.IndexFunc(arg, func(r rune) bool {
+		return !(r == '-' || r == '_' || r == '/' || r == '.' || r == ':' || (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z'))
+	}) == -1 {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+}
+
 func buildPanelDecisionCard(item reviewartifact.QueueItem, verdict verdictArtifactPayload) *reviewartifact.DecisionCard {
 	card := &reviewartifact.DecisionCard{
 		Claim:               panelDecisionClaim(verdict),

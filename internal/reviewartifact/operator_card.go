@@ -287,7 +287,7 @@ func FirstClause(value string) string {
 
 func HumanizeEntity(value string) string {
 	value = strings.TrimSpace(value)
-	for _, prefix := range []string{"product:", "capability:", "knowledge:arxiv:arxiv:", "arxiv:"} {
+	for _, prefix := range []string{"product:", "capability:", "repo:", "knowledge:arxiv:arxiv:", "arxiv:"} {
 		value = strings.TrimPrefix(value, prefix)
 	}
 	value = strings.TrimSuffix(value, "v1")
