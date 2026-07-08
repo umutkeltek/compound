@@ -1338,6 +1338,85 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks ma
 	return out, excludedRefs, nil
 }
 
+// BenchMemoryRank ranks current memory claim IDs by the SAME ambient-recall relevance
+// orient's ContextPack uses (memoryRelevanceRank + ambientMemoryRank under the repo-kind
+// MemoryRule, with the identical rank/seq/id tie-breaks as loadMemoryRefs), for the
+// evaluator organ (`compound bench`). It lives next to loadMemoryRefs on purpose: it calls
+// the real scoring primitives instead of forking a parallel scorer, so the two cannot drift.
+//
+// It is read-only and deterministic: it uses the lexical relevance core and never invokes the
+// semantic sidecar (semanticScore is passed as 0), so a bench run makes zero model calls.
+//
+// Returns: claim IDs ranked most-relevant first; the set of ALL current claim IDs (so the
+// evaluator can separate "engine failed to rank it" from "the id isn't in the ledger"); and
+// whether recall was available at all (false => caller marks the memory cases skipped rather
+// than failing the run — the graceful-degrade contract).
+func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked []string, present map[string]bool, available bool, err error) {
+	rule := pol.Memory[in.RepoKind]
+	if len(rule.Ambient) == 0 {
+		return nil, nil, false, nil
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if len(claims) == 0 {
+		return nil, map[string]bool{}, false, nil
+	}
+	present = make(map[string]bool, len(claims))
+	for _, claim := range claims {
+		present[claim.ID] = true
+	}
+	entities := memoryEntityKeys(in)
+	taskTokens := memoryTextTokens(in.Task)
+	if len(entities) == 0 && len(taskTokens) == 0 {
+		// Ledger is available but the task carries no usable recall signal; nothing ranks.
+		return nil, present, true, nil
+	}
+	topicSet, err := topicScopeForInput(store, in.Topic)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	type scoredClaim struct {
+		id   string
+		rank float64
+		seq  int64
+	}
+	ordered := make([]scoredClaim, 0, len(claims))
+	for _, claim := range claims {
+		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
+			continue
+		}
+		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, 0)
+		if memoryPolicyExclusionReason(claim, rule, relevanceRank) != "" {
+			continue
+		}
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens, 0)
+		if rank <= 0 {
+			continue
+		}
+		ordered = append(ordered, scoredClaim{id: claim.ID, rank: rank, seq: claim.Seq})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].rank != ordered[j].rank {
+			return ordered[i].rank > ordered[j].rank
+		}
+		if ordered[i].seq != ordered[j].seq {
+			return ordered[i].seq > ordered[j].seq
+		}
+		return ordered[i].id < ordered[j].id
+	})
+	ranked = make([]string, 0, len(ordered))
+	for _, sc := range ordered {
+		ranked = append(ranked, sc.id)
+	}
+	return ranked, present, true, nil
+}
+
 func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks map[string]float64) ([]contextPositionRef, []envelope.ExcludedRef, error) {
 	if len(rule.Ambient) == 0 {
 		return nil, nil, nil
