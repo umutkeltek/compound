@@ -83,6 +83,9 @@ loop compound provides:
   put a personal path, credential, account, or private body into any tracked file, including comments/examples.
 - Public core = contracts, lifecycle, CLI, generic adapters, synthetic fixtures. Private overlay = personal
   data, real paths, credentials, account-specific connectors — the dogfood dataset, not a private fork of core.
+- Test fixtures use `.invalid`/`.example` hosts, never `localhost`/private URLs: the public redact gate scans the
+  FULL content of any changed file, so a pre-existing private-URL fixture fails the gate the first time the file
+  is touched — long after the fixture was written.
 
 ## Commit & safety
 - Scoped commits, clear boundaries (source/contracts; tests/fixtures; docs). Do not "commit all."
