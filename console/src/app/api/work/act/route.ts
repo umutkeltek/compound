@@ -3,6 +3,9 @@ import { executeDecision } from "@/lib/decision-execute";
 
 const WORK_ID_RE = /^work_[a-z0-9]{6,}$/;
 
+// Compatibility shim for early console buttons. New UI should call
+// /api/decision/execute directly; this path only maps legacy verbs into the
+// same governed decision executor and cannot bypass that registry.
 export async function POST(request: Request) {
   const blocked = consoleMutationBlockedResponse(request);
   if (blocked) return blocked;

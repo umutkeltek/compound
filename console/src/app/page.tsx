@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { summarizeMoveTypeMix, type MoveTypeGroup } from "@/components/ChangedProofStream";
+import { ContinuePanel } from "@/components/ContinuePanel";
 import { EmptyState, FreshnessChip } from "@/components/ui";
 import { humanAge } from "@/lib/briefing";
 import { arr, getExecutors, getReviews, num, runJson, str, toDate, type Json } from "@/lib/compound";
@@ -75,7 +76,8 @@ function greeting(now: Date): string {
     new Intl.DateTimeFormat("en-US", { timeZone: TZ, hour: "numeric", hour12: false }).format(now),
   );
   const part = hour < 12 ? "morning" : hour < 18 ? "afternoon" : "evening";
-  return `Good ${part}, Umut`;
+  const operatorName = str(process.env.COMPOUND_OPERATOR_DISPLAY_NAME || process.env.COMPOUND_OPERATOR_NAME);
+  return operatorName ? `Good ${part}, ${operatorName}` : `Good ${part}`;
 }
 
 function dateLabel(now: Date): string {
@@ -479,6 +481,10 @@ export default async function Dashboard() {
         </div>
         <AttentionPill count={needsYou.length} oldest={oldestNeedsYou} />
       </header>
+
+      <section className="mt-8">
+        <ContinuePanel workbench={workbench} open={arr(workbench?.open)} />
+      </section>
 
       <Insight group={insightGroup} runningAgents={runningAgents} />
 

@@ -25,8 +25,8 @@ export const AREA_GLOSSARY: Record<string, string> = {
 };
 
 export const TERM_GLOSSARY: Record<string, string> = {
-  proposed: "Suggested. Nothing runs until you admit it.",
-  admitted: "You approved it — it may be picked up, nothing runs yet.",
+  proposed: "Suggested. Nothing runs until you add it to work.",
+  admitted: "Queued. It may be picked up, but nothing runs yet.",
   claimed: "An executor took it (with a lease so two agents can't collide).",
   running: "An executor is working on it now.",
   verifying: "Being proof-checked before close.",
