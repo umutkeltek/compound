@@ -15,6 +15,10 @@ func OperatorCardForActionPlan(p ActionPlan) (reviewartifact.OperatorCard, error
 	if err != nil {
 		return reviewartifact.OperatorCard{}, err
 	}
+	// ProductName commonly carries a "product:" machine prefix (e.g.
+	// "product:demo-app"). HumanizeEntity strips it so the sentence and
+	// context_label read as a plain product name, not a machine ref.
+	product = reviewartifact.HumanizeEntity(product)
 	move, err := reviewartifact.RequireText("action summary", p.ActionSummary, p.CardTitle)
 	if err != nil {
 		return reviewartifact.OperatorCard{}, err
