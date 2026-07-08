@@ -22,7 +22,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|list|graph|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|usage|list|graph|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -1041,6 +1041,61 @@ func cmdCapability(args []string) {
 		fmt.Printf("- skipped_invalid_receipt: %d\n", report.SkippedInvalidReceipt)
 		for _, id := range report.SkippedUnknown {
 			fmt.Printf("- skipped_unknown: %s\n", id)
+		}
+	case "usage":
+		var since time.Time
+		if s := strings.TrimSpace(flag("--since")); s != "" {
+			parsed, perr := time.Parse(time.RFC3339, s)
+			if perr != nil {
+				fmt.Fprintln(os.Stderr, "error: --since must be RFC3339 (e.g. 2026-07-01T00:00:00Z):", perr)
+				os.Exit(2)
+			}
+			since = parsed
+		}
+		top := 0
+		if t := strings.TrimSpace(flag("--top")); t != "" {
+			parsed, perr := strconv.Atoi(t)
+			if perr != nil || parsed < 0 {
+				fmt.Fprintln(os.Stderr, "error: --top must be a non-negative integer")
+				os.Exit(2)
+			}
+			top = parsed
+		}
+		proj, err := capgraph.BuildCapabilityUsage(homePath, capgraph.UsageBuildOptions{
+			Since:       since,
+			GeneratedAt: time.Now(),
+			SummaryTop:  top,
+		})
+		die(err)
+		path, werr := capgraph.WriteCapabilityUsage(homePath, proj)
+		die(werr)
+		if hasFlag(rest, "--json") {
+			printJSON(proj)
+			return
+		}
+		fmt.Println("# capability usage")
+		fmt.Printf("- projection: %s\n", path)
+		if proj.Since != "" {
+			fmt.Printf("- since: %s\n", proj.Since)
+		}
+		fmt.Printf("- receipts_scanned: %d (in_window %d)\n", proj.ReceiptsScanned, proj.ReceiptsInWindow)
+		fmt.Printf("- context_packs_scanned: %d\n", proj.ContextPacksScanned)
+		fmt.Printf("- capabilities: %d  injected_refs: %d\n", len(proj.Capabilities), len(proj.InjectedRefs))
+		fmt.Println()
+		fmt.Println("## top ignored (injected, never used)")
+		if len(proj.Summary.TopIgnored) == 0 {
+			fmt.Println("- (none)")
+		}
+		for _, e := range proj.Summary.TopIgnored {
+			fmt.Printf("- %s  ignored=%d\n", e.Ref, e.Count)
+		}
+		fmt.Println()
+		fmt.Println("## never fired (offered, never used)")
+		if len(proj.Summary.NeverFired) == 0 {
+			fmt.Println("- (none)")
+		}
+		for _, e := range proj.Summary.NeverFired {
+			fmt.Printf("- %s  offered=%d\n", e.Ref, e.Count)
 		}
 	case "list":
 		nodes, err := store.List()
