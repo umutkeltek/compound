@@ -165,6 +165,8 @@ func main() {
 		cmdPanel(os.Args[2:])
 	case "local-models":
 		cmdLocalModels(os.Args[2:])
+	case "lanebeliefs":
+		cmdLaneBeliefs(os.Args[2:])
 	case "architecture":
 		cmdArchitecture(os.Args[2:])
 	default:
