@@ -254,3 +254,116 @@ Light primary, dark first-class (hues re-picked, not inverted). Three-state togg
   is not shadcn adoption.
 - **Charts: hand-built SVG** (`<Sparkline>`, `<Meter>`, `<Bars>`) matching tokens. No chart lib
   for v1. `@xyflow/react` stays for topology/memory/lineage graphs.
+
+## 9. Ambient depth & the data-viz vocabulary (v2 — operator-ratified direction, 2026-07-09)
+
+The operator supplied reference material and the ruling: *"people should want to look at this
+dashboard, not just execute."* This section extends §1–§5; where §7 and §9 conflict, §9's
+explicit allowances win, everything else in §7 still binds.
+
+### 9.1 Depth by tone, not borders
+
+Three surface levels, composed by NESTING, separated by tone shift first and hairline second:
+
+| Level | Token | Use |
+|---|---|---|
+| 0 recessed | `--page` | the page itself |
+| 1 section | `--panel` | section cards (radius `--radius-xl`, `--shadow-sm`) |
+| 2 inner | `--soft` / `--soft-2` | tiles, rows, tracks INSIDE a section |
+
+- A section card whose fill differs from the page may DROP its border entirely (shadow + tone
+  carry the edge). Inner tiles keep at most a `--hair-2` hairline.
+- Radius escalates outward: controls 9–10px → inner tiles `--radius-md` → section cards
+  `--radius-xl`. Never the reverse (an outer surface must never be sharper than its child).
+- Section headers use the SectionHeader anatomy (9.3) — uppercase tracked label led by an
+  IconTile — replacing bare `<h3>`s.
+
+### 9.2 Gradient doctrine — gradients are data ambience, never decoration
+
+New tokens (light + dark tuned, in globals.css):
+
+```css
+/* bottom-rising heat glows; ~18-22% domain color into transparent */
+--heat-work:   linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--work-fg) 20%, transparent));
+--heat-seam:   linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--seam-fg) 22%, transparent));
+--heat-memory: linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--memory-fg) 18%, transparent));
+--hatch: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, currentColor 22%, transparent) 3px 6px);
+```
+
+Placement rules (hard):
+1. A glow appears ONLY where the system is genuinely hot: the briefing attention hero
+   (`--heat-seam` when Class-A gates wait, `--heat-work` otherwise), the one running/beating
+   element in a view, a KPI hero tile. Never on static chrome, nav, or settings.
+2. **At most ONE ambient glow per viewport**, plus the live pulse dots. If two things compete,
+   the higher attention class wins and the other falls back to flat.
+3. `--hatch` marks capacity/projected/secondary series in charts (never a fill for real values).
+4. Reduced-motion never affects gradients (they are static); theme flips re-pick them via the
+   domain vars automatically.
+
+### 9.3 The reusable atoms (kit additions — build once, compose forever)
+
+| Component | Anatomy | Use |
+|---|---|---|
+| `IconTile` | rounded-square (radius-sm) tinted chip: `*-soft` fill + `*-fg` 15px glyph; sizes sm 24 / md 32 | leads every SectionHeader, KPI, knob row, feed item |
+| `SectionHeader` | IconTile(sm) + UPPERCASE tracked `--text-xs`/700 label + right slot (SegmentedControl / menu / chip) | every section card's first row |
+| `DeltaPill` | ↗/↘ glyph + tabular value; good-soft/crit-soft tint; `title` = comparison window | KPI deltas, burn-down counters |
+| `SegmentedControl` | pill-track of 2–5 options, active = panel-fill + shadow-sm; arrow-key navigable | in-card lens switching (time ranges, Gross/Net, Board/Pipeline). CLIENT VIEW STATE ONLY — never a governed act |
+| `TooltipCard` | Radix HoverCard: panel surface, `--shadow-lg`, radius-md, 12px pad; title row → series rows (dot + label + mono value) → hairline → derived line (delta/margin) | hover on every chart mark, dot-matrix cell, capsule column |
+| `DotMatrix` | waffle grid of radius-xs cells; intensity ramp `--soft-2` → `*-soft` → `*-line` → `*-fg`; cell hover → TooltipCard | density over time: attention age, activity coverage, verdict distribution |
+| `CapsuleColumn` | vertical capsule: full-height `--soft-2` capacity track + filled value segment (domain/state fill); optional `--hatch` segment for projected | budget vs spend, lane capacity, queue depth by day |
+| `SegmentedProgress` | count pill ("2/4") + n discrete segments: done = good-fg, active = work-fg + pulse, rest = `--soft-2` | staged processes: envelope stage position on cards, batch apply progress, phase completion |
+| `DateTile` | stacked mono block (day / month), soft fill, radius-sm | leads event rows: receipts, scheduled loops, transitions |
+| `MetaCount` | 15px icon + tabular count, muted; `title` expands | evidence refs, member counts, run counts on cards |
+| `AvatarTile` | initials tile, deterministic identity tint (hash → one of 6 pastel pairs) | executors, harnesses — identity that survives renames |
+| `ProcessPanel` | context row → input → ONE primary CTA → result chips streaming in (`--dur-slower` fade/slide) | the generator shape; THE contract for the future ai-console `proposeView` surface — suggestion chips are registered-view invocations / action proposals, acts stay governed |
+
+Composition law: **screens are assembled from these atoms; a new screen introducing a bespoke
+one-off where an atom exists is a review reject.** New atom → this table first, then kit, then use.
+
+### 9.4 Interactivity doctrine
+
+- Hover reveals depth, never hides essentials: every chart mark, matrix cell, and capsule answers
+  on hover with a TooltipCard; rows lift 1px + `--shadow` (`--dur-fast`).
+- Anything that opens something says so (chevron / "Open trace" / underline-on-hover mono id) —
+  no mystery-meat interactions.
+- Lens switches are instant and local; they never refetch governed state and never mutate.
+- Motion budget per viewport: 1 ambient glow + live pulse dots + hover physics. Nothing else moves
+  at rest. (Reduced-motion: pulses become static rings, hovers instant, glows stay.)
+
+### 9.5 Settings & knobs — the three-kind model (extends the Settings IA)
+
+Every tunable the system has (or will grow) is exactly one of:
+
+1. **Authority view** — file-owned truth (policy.yaml, lanes, criteria, lens prompts). Read-only
+   card + provenance chip `file-owned` + the exact `compound … import-…` command. Never editable
+   in-console.
+2. **Governed toggle** — one-click through the decision registry with receipt + undo path
+   (kill-switch arm/halt, grant revoke, hygiene repair). Provenance chip `governed`; always
+   ConfirmDialog'd; dangerous ones type-to-confirm.
+3. **View preference** — client-only (theme, density, default lenses, collapsed sections).
+   localStorage, provenance chip `local`, zero governance.
+
+Clustering law: blast-radius group FIRST (the seven danger-first Settings groups), domain second.
+A future feature adds knobs INTO an existing group; a new top-level group requires a new danger
+tier (rare, deliberate). Knob row anatomy: IconTile + name + current value (mono when machine) +
+provenance chip + right affordance (copy / governed act / toggle).
+
+**Process settings render as recipe cards**: inputs (what feeds it) → the knob values → outputs
+(what it produces), each a mono chip linking to its owner surface. A setting reads as a segment
+of a live pipeline, not a dead form field — e.g. memory-engine profile shows
+`sources → engine(knobs) → recall quality (bench hit@5)` with the real current numbers.
+
+### 9.6 Information flow — why the dashboard is worth looking at
+
+The console's spectacle is the organism visibly living. Representations that carry it:
+
+- **Briefing pipeline strip** gains per-stage counts + flow direction; the attention hero carries
+  the one heat glow. The fold answers "is it alive, and where am I needed" in one glance.
+- **Transitions feed as the learning ticker** — move_type chips streaming in (slide-in on
+  genuinely new events only).
+- **DotMatrix of attention age** (needs-you items by age × class) — the queue's shape, not just
+  its count.
+- **CapsuleColumns for lane traffic/capacity**, hatched projections; **SegmentedProgress on every
+  work card** (stage position); **TooltipCards everywhere** so hovering rewards curiosity.
+- Every number carries its DeltaPill and its FreshnessChip — a value without delta + provenance
+  is undressed.
