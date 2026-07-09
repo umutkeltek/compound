@@ -539,8 +539,15 @@ type ReceiptCost struct {
 	HumanMinutes *int     `json:"human_minutes"`
 }
 type ReceiptSkills struct {
-	Used                []string `json:"used"`
-	Missed              []string `json:"missed"`
+	Used   []string `json:"used"`
+	Missed []string `json:"missed"`
+	// UsedDeclared is the honesty flag for the injected-ref reinforcement projection:
+	// true means this receipt made an AFFIRMATIVE statement about what was used (a close
+	// that passed --used, or a session-end whose consumption detector ran), so an injected
+	// ref ABSENT from Used counts as IGNORED. false (the additive default for old receipts
+	// and closes that never declared) means Used is silent — absence is UNKNOWN, never
+	// ignored. Additive/omitempty: absence decodes to false and changes no prior behavior.
+	UsedDeclared        bool     `json:"used_declared,omitempty"`
 	FalseTriggered      []string `json:"false_triggered,omitempty"`
 	Candidate           []string `json:"candidate"`
 	CapabilitiesOffered []string `json:"capabilities_offered,omitempty"`

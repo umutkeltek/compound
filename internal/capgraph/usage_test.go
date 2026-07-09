@@ -88,6 +88,7 @@ func TestBuildCapabilityUsageCountsUsedAndIgnored(t *testing.T) {
 
 	rec := testReceipt("rec_u1", "completed", true, []string{usedRef}, nil, []string{usedRef, offeredOnlyRef})
 	rec.Skills.CapabilitiesOffered = []string{usedRef, offeredOnlyRef}
+	rec.Skills.UsedDeclared = true // this receipt DECLARED its used-list, so an injected-but-unused ref is honestly ignored
 	rec.IDs.ContextPackID = "ctx_u1"
 	writeReceipt(t, home, rec)
 
@@ -134,6 +135,57 @@ func TestBuildCapabilityUsageCountsUsedAndIgnored(t *testing.T) {
 	}
 	if proj.ContextPacksScanned != 1 {
 		t.Fatalf("context_packs_scanned = %d, want 1", proj.ContextPacksScanned)
+	}
+}
+
+// TestBuildCapabilityUsageUndeclaredDoesNotInflateIgnored is the honest-attribution
+// falsifier (§2): an injected ref that is NOT used counts as ignored ONLY when the receipt
+// declared its used-list. An undeclared receipt (Skills.UsedDeclared=false — the shape of
+// every ceremony close that omitted --used) must leave the injected ref at injected-only:
+// consumed 0, ignored 0. On the PRE-CHANGE code (unconditional ignored++) the undeclared
+// case reds because ignored would be 1. A declared twin of the same shape still cools.
+func TestBuildCapabilityUsageUndeclaredDoesNotInflateIgnored(t *testing.T) {
+	home := t.TempDir()
+	const injectedRef = "claim://claim_famine"
+
+	writeContextPack(t, home, "ctx_undeclared", []envelope.IncludedRef{
+		{Ref: injectedRef, SourceClass: "source", Reason: "recency", Confidence: 1, Status: "current"},
+	})
+	writeContextPack(t, home, "ctx_declared", []envelope.IncludedRef{
+		{Ref: injectedRef, SourceClass: "source", Reason: "recency", Confidence: 1, Status: "current"},
+	})
+
+	// Undeclared close: injected-but-unused, Skills.UsedDeclared stays false.
+	undeclared := testReceipt("rec_undeclared", "completed", true, nil, nil, nil)
+	undeclared.IDs.ContextPackID = "ctx_undeclared"
+	writeReceipt(t, home, undeclared)
+
+	// Declared close: same shape (injected-but-unused) but it DECLARED its used-list.
+	declared := testReceipt("rec_declared", "completed", true, nil, nil, nil)
+	declared.Skills.UsedDeclared = true
+	declared.IDs.ContextPackID = "ctx_declared"
+	writeReceipt(t, home, declared)
+
+	proj, err := BuildCapabilityUsage(home, UsageBuildOptions{GeneratedAt: t0})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inj := findInjected(proj, injectedRef)
+	if inj == nil {
+		t.Fatalf("injected ref %q missing from projection", injectedRef)
+	}
+	// Two packs each inject it once => injected 2; neither used it => consumed 0.
+	if inj.InjectedCount != 2 || inj.ConsumedCount != 0 {
+		t.Fatalf("injected ref %q = %+v, want injected 2 consumed 0", injectedRef, inj)
+	}
+	// Only the DECLARED receipt may mark it ignored: exactly 1, not 2.
+	if inj.IgnoredCount != 1 {
+		t.Fatalf("ignored_count for %q = %d, want 1 (declared only; undeclared must not inflate)", injectedRef, inj.IgnoredCount)
+	}
+	// consumed==0 with ignored>0 => it appears in top_ignored — but only via the declared receipt.
+	if !inSummary(proj.Summary.TopIgnored, injectedRef) {
+		t.Fatalf("declared-ignored ref %q missing from top_ignored: %+v", injectedRef, proj.Summary.TopIgnored)
 	}
 }
 

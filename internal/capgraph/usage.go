@@ -7,6 +7,15 @@
 // used refs) or IGNORED (injected but never used) — the reinforcement signal the
 // memory-temperature design needs.
 //
+// Honest attribution (the anti-famine rule): CONSUMED increments from ANY receipt that
+// lists the injected ref in Used. IGNORED increments ONLY from receipts whose Skills.
+// UsedDeclared=true — a receipt that affirmatively declared what it used. A receipt that
+// never declared (most ceremony closes; a session-end whose consumption detector could not
+// read a transcript) leaves its injected refs at the INJECTED count only: unknown, not
+// ignored. Undeclared silence must never be read as a cooling signal — that would punish a
+// claim for the harness never reporting, the same error as treating a never-injected claim
+// as cold. (Falsifier: an undeclared receipt with injected-but-unused refs keeps ignored 0.)
+//
 // It is a projection, never truth: rebuilt from scratch on every call, derived only
 // from receipts, and written only under projections/ (never the ledger). See
 // docs/architecture/runtime.md (§ home layout) and epistemics (generated view can
@@ -286,9 +295,13 @@ func BuildCapabilityUsage(homePath string, opts UsageBuildOptions) (CapabilityUs
 			}
 			if usedSet[ref] {
 				a.consumed++
-			} else {
+			} else if rec.Skills.UsedDeclared {
+				// IGNORED only when the receipt DECLARED its used-list (see ReceiptSkills.UsedDeclared):
+				// absence from a declaring receipt is real evidence the injected ref was not used.
 				a.ignored++
 			}
+			// else: undeclared receipt — the injected ref stays at its injected count only. Absence of
+			// a declaration is UNKNOWN, never ignored (mirrors temperature's "never-injected = neutral").
 			a.lastInjected = laterTS(a.lastInjected, ts)
 			a.injectedIn = append(a.injectedIn, refReceipt{id: rec.ID, ts: ts})
 		}

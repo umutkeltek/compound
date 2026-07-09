@@ -213,7 +213,11 @@ no LLM required. Temperature is a **derived** score (`salience·decay + reinforc
 hand-assigned tier, with `salience` driven by evidence-count and position-strength. Built as the
 `compound://projections/memory-temperature` projection (`compound memory temperature --rebuild`): a
 build-time, recency-decayed join of the capability-usage projection's injected/consumed/ignored signal
-against current claims, fed into ambient recall as a bounded (±0.25) additive rank term.
+against current claims, fed into ambient recall as a bounded (±0.25) additive rank term. That
+`ignored` signal is attributed **honestly**: an injected-but-unused ref cools (increments `ignored`)
+only from a receipt that *declared* its used-list (`skills.used_declared`); an undeclared close leaves
+the ref at its `injected` count (unknown, neutral), so a claim is never cooled for the harness simply
+never reporting what it used.
 
 **EFFICIENT — the engine rents, and is cheap.** The `MemoryEngine` advertises a `capabilities` set
 (unsupported ops raise, never silently no-op) and holds only vectors/ids/metadata — zero authoritative
