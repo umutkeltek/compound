@@ -14,7 +14,7 @@ func TestCloseStampsProducerLaneIDOnReceiptAndTransition(t *testing.T) {
 	if _, err := s.Claim(w.ID, "fixture/lane", fixedNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow.Add(2*time.Minute)); err != nil {
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "fixture/lane"}, fixedNow.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	res, err := s.Close(w.ID, CloseInput{
