@@ -12,4 +12,5 @@ export * from "./PageHeader";
 export * from "./Sparkline";
 export * from "./StateBadge";
 export * from "./StatusChip";
+export * from "./Tabs";
 export * from "./ThemeToggle";
