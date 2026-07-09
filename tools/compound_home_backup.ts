@@ -171,12 +171,12 @@ function drill(cfg: Config): void {
   const scratch = mkdtempSync(join(tmpdir(), "compound-home-drill-"));
   try {
     run(cfg.compoundBin, ["home", "restore", archive, "--target", scratch], childEnv(cfg));
+    const restoredFiles = countFiles(scratch);
+    const countsMatch = archiveFiles === undefined || archiveFiles === restoredFiles;
     const drillEnv = childEnv(cfg, { COMPOUND_HOME: scratch });
     run(cfg.compoundBin, ["home", "doctor"], drillEnv);
     const memory = run(cfg.compoundBin, ["memory", "doctor", "--json"], drillEnv);
     JSON.parse(memory.stdout);
-    const restoredFiles = countFiles(scratch);
-    const countsMatch = archiveFiles === undefined || archiveFiles === restoredFiles;
     if (!countsMatch) {
       throw new Error(`restored file count mismatch: archive_files=${archiveFiles} restored_files=${restoredFiles}`);
     }
