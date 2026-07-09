@@ -202,6 +202,8 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory import-topics <topics.json> [--json]"
 	case "temperature":
 		return "usage: compound memory temperature [--json] [--rebuild]"
+	case "canon":
+		return "usage: compound memory canon [--json]"
 	case "aliases":
 		return "usage: compound memory aliases <show|rebuild|expand <query>> [--json]"
 	case "fold":
@@ -213,7 +215,7 @@ func memoryUsage(sub string) string {
 	case "bakeoff":
 		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|doctor>"
 	}
 }
 
@@ -1566,6 +1568,8 @@ func cmdMemory(args []string) {
 		cmdMemoryImportTopics(store, rest)
 	case "temperature":
 		cmdMemoryTemperature(homePath, rest)
+	case "canon":
+		cmdMemoryCanon(store, rest)
 	case "aliases":
 		cmdMemoryAliases(homePath, store, rest)
 	case "candidates":

@@ -321,3 +321,36 @@ func printTemperatureSummary(proj mem.TemperatureProjection) {
 		fmt.Printf("  %+.4f  %s  (consumed %d / ignored %d)\n", e.Temperature, e.ClaimID, e.Consumed, e.Ignored)
 	}
 }
+
+// cmdMemoryCanon is the read-only door onto the canon-class taxonomy and live
+// distribution of EffectiveCanonClass over current claims. Zero ledger writes.
+func cmdMemoryCanon(store *mem.Store, args []string) {
+	wantJSON := hasFlag(args, "--json")
+	rep, err := store.CanonDistribution()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if wantJSON {
+		printJSON(rep)
+		return
+	}
+	fmt.Println("# memory canon")
+	fmt.Printf("- vocabulary: %s\n", strings.Join(rep.Vocabulary, ", "))
+	fmt.Println("- claim_type mapping:")
+	for _, ct := range mem.ClaimTypes {
+		fmt.Printf("  - %s → %s\n", ct, rep.Mapping[ct])
+	}
+	fmt.Println("- risk tiers:")
+	for _, class := range append(append([]string{}, rep.Vocabulary...), mem.CanonClassUnclassified) {
+		fmt.Printf("  - %s → %s\n", class, rep.Tiers[class])
+	}
+	fmt.Printf("- total current claims: %d\n", rep.Total)
+	fmt.Println("- distribution:")
+	// Stable order: vocabulary then unclassified.
+	for _, class := range append(append([]string{}, rep.Vocabulary...), mem.CanonClassUnclassified) {
+		if n := rep.Distribution[class]; n > 0 {
+			fmt.Printf("  - %s: %d\n", class, n)
+		}
+	}
+}

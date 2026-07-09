@@ -75,6 +75,7 @@ type Candidate struct {
 	Derivation      string                `json:"derivation"`
 	ProvenanceLane  string                `json:"provenance_lane,omitempty"` // provenance: producing model/lane when known
 	ClaimType       string                `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
+	CanonClass      string                `json:"canon_class,omitempty"`     // kind-of-truth tier (mem.CanonClasses); empty = derive from ClaimType
 	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
 	TopicRefs       []string              `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; old rows omit this safely
 	Tags            []string              `json:"tags,omitempty"`
@@ -132,6 +133,7 @@ type Claim struct {
 	Derivation      string            `json:"derivation"`                // provenance: how derived
 	ProvenanceLane  string            `json:"provenance_lane,omitempty"` // provenance: producing model/lane when known
 	ClaimType       string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes)
+	CanonClass      string            `json:"canon_class,omitempty"`     // kind-of-truth tier (mem.CanonClasses); empty = derive from ClaimType
 	Qualifiers      map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → Topic()
 	TopicRefs       []string          `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; additive for older rows
 	PromotionBasis  string            `json:"promotion_basis,omitempty"` // WHY it was promoted (the recallable "why" of canon)
@@ -225,6 +227,14 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		}
 		if c.ClaimType != "" && !oneOf(c.ClaimType, ClaimTypes) {
 			return out, fmt.Errorf("candidate %s: bad claim_type %q (allowed: %v)", c.Entity, c.ClaimType, ClaimTypes)
+		}
+		if c.CanonClass != "" {
+			if c.CanonClass == CanonClassUnclassified {
+				return out, fmt.Errorf("candidate %s: canon_class %q is derived-only and never storable (allowed: %v)", c.Entity, c.CanonClass, CanonClasses)
+			}
+			if !oneOf(c.CanonClass, CanonClasses) {
+				return out, fmt.Errorf("candidate %s: bad canon_class %q (allowed: %v)", c.Entity, c.CanonClass, CanonClasses)
+			}
 		}
 		c.TopicRefs = normalizeStringRefs(c.TopicRefs)
 		if c.Visibility == "" {
@@ -482,7 +492,8 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 		Confidence:     c.Confidence,
 		Derivation:     c.Derivation,
 		ProvenanceLane: c.ProvenanceLane,
-		ClaimType:      c.ClaimType, // carry the taxonomy + topic qualifiers onto the durable claim
+		ClaimType:      c.ClaimType,  // carry the taxonomy + topic qualifiers onto the durable claim
+		CanonClass:     c.CanonClass, // carry explicit kind-of-truth; empty rows derive via EffectiveCanonClass
 		Qualifiers:     c.Qualifiers,
 		TopicRefs:      normalizeStringRefs(c.TopicRefs),
 		PromotionBasis: c.PromotionBasis, // carry the "why" of promotion onto the durable claim
