@@ -149,9 +149,27 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 		allow = append(allow, c.ID)
 		byID[c.ID] = c
 	}
-	hits, err := eng.Query(text, GateList, allow, k)
+	// E1 deterministic query expansion: widen the QUERY only (never the gate).
+	// Absent/empty registry → original text only (fail-open, byte-identical path).
+	reg, _ := LoadRecallAliases(s.home)
+	expanded := ExpandQuery(text, reg)
+	fetchK := k
+	if fetchK > 0 && expanded.Active {
+		// Pull a wider pool so discounted expansion hits can still fill top-k.
+		fetchK = k * 2
+	}
+	hits, err := eng.Query(text, GateList, allow, fetchK)
 	if err != nil {
 		return nil, err
+	}
+	if expanded.Active && len(expanded.Added) > 0 {
+		expHits, expErr := eng.Query(strings.Join(expanded.Added, " "), GateList, allow, fetchK)
+		if expErr != nil {
+			return nil, expErr
+		}
+		hits = mergeHitsWithExpansionDiscount(hits, expHits, k)
+	} else if k > 0 && len(hits) > k {
+		hits = hits[:k]
 	}
 	out := make([]Claim, 0, len(hits))
 	for _, h := range hits {
