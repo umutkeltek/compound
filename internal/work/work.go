@@ -636,7 +636,10 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			Risk: []string{}, Taste: []string{}, Routing: []string{}, HumanAttention: []string{},
 			Typed: typedProjectionRefs,
 		},
-		SecondOrder: envelope.SecondOrder{FutureBehaviorChanged: in.MoveType != "audit_only"},
+		SecondOrder: envelope.SecondOrder{
+			FutureBehaviorChanged: in.MoveType != "audit_only",
+			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome),
+		},
 	}
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
@@ -1051,6 +1054,18 @@ func orEmpty(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+// shouldHardenOnClose reports whether a close should stamp
+// SecondOrder.ShouldHarden=true. It is true only on an ACCEPTED close (outcome
+// "completed") of an explicit harness-edit envelope — one that declared a
+// TargetSurface (EVOLVE-BLOCK). A rejected/failed/cancelled close of the same
+// envelope stamps false but still emits its Receipt + Transition, so "rejections
+// are logged without changing the active harness." An ordinary work (no
+// TargetSurface) never hardens on close. Derived, not a new CloseInput flag: the
+// close outcome already carries whether the harness edit was accepted.
+func shouldHardenOnClose(targetSurface, outcome string) bool {
+	return strings.TrimSpace(targetSurface) != "" && outcome == "completed"
 }
 
 // failureCause builds the optional causal-failure annotation; nil when both
