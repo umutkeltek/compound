@@ -25,6 +25,13 @@ type AdvancePlanOptions struct {
 	TargetID      string
 	TargetPath    string
 	Record        bool
+	// Steal and StealReason preview the advance-gate lease escape hatch (see AdvanceInput in
+	// work.go): when set with a non-empty reason, the plan reports the advance as
+	// steal-ready (and its AdvanceCommand carries --steal --reason) instead of
+	// held-by-other. AdvancePlan never mutates or records anything for this preview — only
+	// Advance (work.go) does.
+	Steal       bool
+	StealReason string
 }
 
 type AdvancePolicySummary struct {
@@ -112,15 +119,22 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	}
 	heldReleaseErr := heldReleaseOperatorError(w.State, to, actor)
 	directorReleaseErr := directorProposedReleaseOperatorError(w, to, actor)
+	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "advance")
 	switch {
 	case heldReleaseErr != nil:
 		plan.NoAction = heldReleaseErr.Error()
 	case directorReleaseErr != nil:
 		plan.NoAction = directorReleaseErr.Error()
+	case leaseStatus.Blocked:
+		plan.NoAction = leaseStatus.Message
 	case terminalStates[w.State]:
 		plan.NoAction = fmt.Sprintf("work is terminal in state %q", w.State)
 	case to == w.State || canTransition(w.State, to):
 		plan.AdvanceCommand = []string{"compound", "work", "advance", w.ID, "--to", to, "--by", actor}
+		if leaseStatus.Stolen {
+			plan.AdvanceCommand = append(plan.AdvanceCommand, "--steal", "--reason", opts.StealReason)
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("lease held by %q; advance command carries --steal --reason", leaseStatus.Holder))
+		}
 		if policy.Allowed(pd) {
 			plan.Status = "advance_policy_allowed"
 		} else {

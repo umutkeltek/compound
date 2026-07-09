@@ -36,9 +36,13 @@ type leaseHolderStatus struct {
 	Message string // holder-named refusal / requirement message, set when Blocked
 }
 
-// leaseHolderStatusFor reads workID's lease (if any) live and reports how a close attempt
-// by actor compares to it. Pure/read-only: callers decide whether to record anything.
-func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReason string) leaseHolderStatus {
+// leaseHolderStatusFor reads workID's lease (if any) live and reports how an attempt by
+// actor (to perform the mutation verb named by verb, e.g. "close" or "advance") compares to
+// it. Pure/read-only: callers decide whether to record anything. verb only appears in the
+// non-holder remedy message; the --steal-without-reason message never mentions it, so
+// generalizing this from close-only costs close callers nothing (byte-identical when
+// verb == "close").
+func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReason, verb string) leaseHolderStatus {
 	lease, err := s.readLease(workID)
 	holder := strings.TrimSpace(lease.By)
 	if err != nil || holder == "" || holder == actor {
@@ -58,7 +62,7 @@ func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReas
 	return leaseHolderStatus{
 		Holder:  holder,
 		Blocked: true,
-		Message: fmt.Sprintf("work %s is held by %q; close requires --by %s or --steal --reason \"...\"", workID, holder, holder),
+		Message: fmt.Sprintf("work %s is held by %q; %s requires --by %s or --steal --reason \"...\"", workID, holder, verb, holder),
 	}
 }
 
@@ -66,27 +70,31 @@ func (s *Store) leaseHolderStatusFor(workID, actor string, steal bool, stealReas
 // heldReleaseOperatorError. It refuses (recording a deny) a non-holder close, records an
 // explicit steal, and is a no-op for an unclaimed work or a same-actor close.
 func (s *Store) leaseHolderCloseGate(w envelope.WorkEnvelope, actor string, in CloseInput, now time.Time) error {
-	status := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason)
+	status := s.leaseHolderStatusFor(w.ID, actor, in.Steal, in.StealReason, "close")
 	switch {
 	case status.Blocked:
-		if err := s.recordLeaseHolderDeny(w, actor, status.Holder, status.Message, now); err != nil {
+		if err := s.recordLeaseHolderDeny(w, actor, status.Holder, status.Message, "work.close", "close_denied_not_lease_holder", now); err != nil {
 			return err
 		}
 		return fmt.Errorf("cannot close %s: %s", w.ID, status.Message)
 	case status.Stolen:
-		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), now)
+		return s.recordLeaseSteal(w, actor, status.Holder, strings.TrimSpace(in.StealReason), "work.close", "close_lease_stolen", now)
 	default:
 		return nil
 	}
 }
 
-// recordLeaseHolderDeny writes the ActionIntent and a deny PolicyDecision for a close
-// attempted by an actor who is not the current lease holder (including an invalid steal
-// attempt), plus a refusal lifecycle event, so the denial leaves an auditable trail while
-// the work stays in place — a second identical refusal only appends another event line, it
-// never corrupts state (idempotent-safe trail).
-func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, message string, now time.Time) error {
-	ai := s.leaseGateActionIntent(w, actor, "close_denied_not_lease_holder", now)
+// recordLeaseHolderDeny writes the ActionIntent and a deny PolicyDecision for a mutation
+// (capability/action name the caller's verb, e.g. work.close/close_denied_not_lease_holder
+// or work.advance/advance_denied_not_lease_holder) attempted by an actor who is not the
+// current lease holder (including an invalid steal attempt), plus a refusal lifecycle
+// event, so the denial leaves an auditable trail while the work stays in place — a second
+// identical refusal only appends another event line, it never corrupts state
+// (idempotent-safe trail). The event Note prefix is derived from capability ("work.close" ->
+// "close refused: ", "work.advance" -> "advance refused: ") so this stays one write path for
+// every gated verb; close's Note stays byte-identical to before generalization.
+func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, message, capability, action string, now time.Time) error {
+	ai := s.leaseGateActionIntent(w, actor, capability, action, now)
 	if err := ai.Validate(); err != nil {
 		return err
 	}
@@ -106,17 +114,18 @@ func (s *Store) recordLeaseHolderDeny(w envelope.WorkEnvelope, actor, holder, me
 		From:     w.State,
 		To:       w.State,
 		By:       actor,
-		Note:     "close refused: " + message,
+		Note:     refusalNotePrefix(capability) + message,
 		Attached: []string{ai.ID, pd.ID},
 	})
 }
 
 // recordLeaseSteal writes the ActionIntent and a recorded PolicyDecision for an explicit
-// lease steal at close (--steal --reason), plus a lifecycle event carrying the prior
-// holder, the reason, and the stealing actor — the same auditable trail a refusal leaves,
-// so a steal is a loud, recorded override, not a silent bypass.
-func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason string, now time.Time) error {
-	ai := s.leaseGateActionIntent(w, actor, "close_lease_stolen", now)
+// lease steal (--steal --reason) on the mutation named by capability/action, plus a
+// lifecycle event carrying the prior holder, the reason, and the stealing actor — the same
+// auditable trail a refusal leaves, so a steal is a loud, recorded override, not a silent
+// bypass.
+func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason, capability, action string, now time.Time) error {
+	ai := s.leaseGateActionIntent(w, actor, capability, action, now)
 	if err := ai.Validate(); err != nil {
 		return err
 	}
@@ -141,16 +150,26 @@ func (s *Store) recordLeaseSteal(w envelope.WorkEnvelope, actor, holder, reason 
 	})
 }
 
+// refusalNotePrefix keeps the close refusal event Note byte-identical ("close refused: ...")
+// while giving other gated verbs (advance: "advance refused: ...") their own prefix, derived
+// from the capability ("work.<verb>") rather than adding yet another parameter everywhere.
+func refusalNotePrefix(capability string) string {
+	return strings.TrimPrefix(capability, "work.") + " refused: "
+}
+
 // leaseGateActionIntent builds the ActionIntent shared by recordLeaseHolderDeny and
 // recordLeaseSteal — a distinct, non-mutating "audit only" action against the work, kept
-// separate from the actual close ActionIntent (closeActionIntent in close_plan.go) so the
-// lease-gate record never masquerades as the close itself.
-func (s *Store) leaseGateActionIntent(w envelope.WorkEnvelope, actor, action string, now time.Time) envelope.ActionIntent {
+// separate from the actual mutation's own ActionIntent (closeActionIntent in close_plan.go,
+// advanceActionIntent in advance_plan.go) so the lease-gate record never masquerades as the
+// mutation itself. capability/action are supplied by the caller (e.g. "work.close" /
+// "close_denied_not_lease_holder", "work.advance" / "advance_denied_not_lease_holder") so
+// this one builder serves every gated verb.
+func (s *Store) leaseGateActionIntent(w envelope.WorkEnvelope, actor, capability, action string, now time.Time) envelope.ActionIntent {
 	targetPath := s.workPath(w.ID)
 	return envelope.ActionIntent{
 		Header: newHeader(
 			envelope.SVActionIntent,
-			idFor("act_", "work.close", action, "work", w.ID, targetPath, actor, ts(now)),
+			idFor("act_", capability, action, "work", w.ID, targetPath, actor, ts(now)),
 			now,
 			w.ID,
 			w.IDs.ContextPackID,
@@ -158,7 +177,7 @@ func (s *Store) leaseGateActionIntent(w envelope.WorkEnvelope, actor, action str
 			w.Risk,
 		),
 		Actor:         actor,
-		Capability:    "work.close",
+		Capability:    capability,
 		Action:        action,
 		Target:        envelope.ActionTarget{Kind: "work", ID: w.ID, Path: targetPath},
 		MutationClass: "local_reversible",

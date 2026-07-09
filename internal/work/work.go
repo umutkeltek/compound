@@ -354,6 +354,11 @@ type AdvanceInput struct {
 	VerificationID string
 	ContextPackID  string
 	Note           string
+	// Steal and StealReason mirror CloseInput's lease escape hatch (see
+	// leaseHolderAdvanceGate in lease_advance.go): advancing a work held by a different
+	// actor is refused unless Steal is true AND StealReason is non-empty.
+	Steal       bool
+	StealReason string
 }
 
 // Advance moves a work along a legal edge of the state machine, optionally attaching
@@ -395,6 +400,9 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 		return w, err
 	}
 	if err := directorProposedReleaseOperatorError(w, in.To, actor); err != nil {
+		return w, err
+	}
+	if err := s.leaseHolderAdvanceGate(w, actor, in, now); err != nil {
 		return w, err
 	}
 	return s.applyAdvance(w, in, now)

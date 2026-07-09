@@ -210,7 +210,7 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		}
 	}
 	heldReleaseErr := heldReleaseOperatorError(w.State, outcome, actor)
-	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason)
+	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason, "close")
 	switch {
 	case !terminalStates[outcome]:
 		plan.NoAction = fmt.Sprintf("invalid close outcome %q", outcome)
