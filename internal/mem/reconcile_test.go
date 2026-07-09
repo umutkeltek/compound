@@ -108,6 +108,36 @@ func TestSynthesisReconcileReopensDeterministicContradictionOnce(t *testing.T) {
 	}
 }
 
+func TestSynthesisReconcileDecisiveEvidenceDoesNotCreateContestedCard(t *testing.T) {
+	s := newStore(t)
+	base := reconcileClaim("claim_decision_old", 1, "project:api", "runtime", "Go", rfc3339(t0))
+	base.CanonClass = "decision"
+	evidence := reconcileClaim("claim_decision_new", 2, "project:api", "runtime", "Rust", rfc3339(t0.AddDate(0, 0, 1)))
+	evidence.CanonClass = "decision"
+	appendReconcileClaim(t, s, base)
+	appendReconcileClaim(t, s, evidence)
+	writeReconcileTransition(t, s, reconcileTransitionInput{
+		ID:        "tr_decisive_reconcile",
+		CreatedAt: rfc3339(t0.AddDate(0, 0, 1).Add(time.Hour)),
+		Scope:     evidence.Entity,
+		ClaimRefs: []string{evidence.ID},
+	})
+
+	report, err := s.SynthesisSweep([]string{"reconcile"}, t0.AddDate(0, 0, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReconcileReopenedCount != 1 {
+		t.Fatalf("decisive evidence should reopen existing claim, got report=%+v", report)
+	}
+	if report.ReconcileContestedCount != 0 || len(report.ReconcileContestedCards) != 0 {
+		t.Fatalf("decisive evidence must not create contested cards: report=%+v", report)
+	}
+	if files := reconcileContestedReviewFiles(t, s); len(files) != 0 {
+		t.Fatalf("decisive evidence wrote contested review files: %v", files)
+	}
+}
+
 func TestSynthesisReconcileUsageOnlyRoutesToDecayWithoutReopen(t *testing.T) {
 	s := newStore(t)
 	claim := reconcileClaim("claim_used", 1, "project:api", "runtime", "Go", rfc3339(t0))
@@ -385,6 +415,26 @@ func reviewFilesExceptReconcile(t *testing.T, home string) []string {
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Name() == "reconcile" {
+			continue
+		}
+		out = append(out, entry.Name())
+	}
+	return out
+}
+
+func reconcileContestedReviewFiles(t *testing.T, s *Store) []string {
+	t.Helper()
+	root := filepath.Join(s.home, "reviews", reconcileContestedArea)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var out []string
+	for _, entry := range entries {
+		if entry.IsDir() {
 			continue
 		}
 		out = append(out, entry.Name())
