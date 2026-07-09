@@ -34,6 +34,15 @@ func TestResolveAdjudicationDecisionsDown(t *testing.T) {
 			want: DispositionDecayPark,
 		},
 		{
+			name: "cheap lane runtime proof decay parks before auto-file",
+			in: AdjudicationInput{
+				ProvenanceLane: "cheap-lane",
+				PromotionBasis: "runtime_proof",
+				Visibility:     "operational",
+			},
+			want: DispositionDecayPark,
+		},
+		{
 			name: "deterministic import auto-files",
 			in:   AdjudicationInput{PromotionBasis: "trusted_deterministic_import", Visibility: "operational"},
 			want: DispositionAutoFile,

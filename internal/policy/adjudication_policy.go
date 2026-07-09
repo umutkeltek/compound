@@ -68,14 +68,6 @@ func ResolveAdjudication(in AdjudicationInput) AdjudicationDisposition {
 			ReviewRequired: true,
 		}
 	}
-	// Measurement / deterministic import artifacts can auto-file when not private.
-	if isAutoFileBasis(basis) && vis != "private" {
-		return AdjudicationDisposition{
-			Kind:           DispositionAutoFile,
-			Reason:         "deterministic/measurement artifact; auto-filed with receipt, not operator queue",
-			ReviewRequired: false,
-		}
-	}
 	if vis == "private" && isAutoFileBasis(basis) {
 		// Falsifier surface: private + auto_file-eligible basis → operator_required, never auto_file.
 		return AdjudicationDisposition{
@@ -90,6 +82,14 @@ func ResolveAdjudication(in AdjudicationInput) AdjudicationDisposition {
 			Reason:         "cheap-lane output; park with expiry, never raises tier",
 			ReviewRequired: false,
 			ParkDays:       DefaultDecayParkDays,
+		}
+	}
+	// Measurement / deterministic import artifacts can auto-file when not private or cheap-lane.
+	if isAutoFileBasis(basis) {
+		return AdjudicationDisposition{
+			Kind:           DispositionAutoFile,
+			Reason:         "deterministic/measurement artifact; auto-filed with receipt, not operator queue",
+			ReviewRequired: false,
 		}
 	}
 	// Un-evidenced durable memory: park with expiry (decisions-down).
