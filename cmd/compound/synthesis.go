@@ -81,7 +81,7 @@ type synthesisSeedCorroborationArtifact struct {
 
 func cmdSynthesis(args []string) {
 	if len(args) == 0 || args[0] != "sweep" {
-		fmt.Fprintln(os.Stderr, "usage: compound synthesis sweep [--stage cluster,contradict] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound synthesis sweep [--stage cluster,contradict,corroborate,decay] [--json]")
 		os.Exit(2)
 	}
 	var stages []string
@@ -108,8 +108,8 @@ func cmdSynthesis(args []string) {
 		printJSON(out)
 		return
 	}
-	fmt.Printf("synthesis sweep work=%s receipt=%s transition=%s clusters=%d echo_fold=%d contradictions=%d report=%s\n",
-		out.WorkID, out.ReceiptID, out.TransitionID, out.Report.ClusterCount, out.Report.EchoFoldProposalCount, out.Report.ContradictionProposalCount, out.ReportPath)
+	fmt.Printf("synthesis sweep work=%s receipt=%s transition=%s clusters=%d echo_fold=%d contradictions=%d decayed=%d report=%s\n",
+		out.WorkID, out.ReceiptID, out.TransitionID, out.Report.ClusterCount, out.Report.EchoFoldProposalCount, out.Report.ContradictionProposalCount, out.Report.DecayedCount, out.ReportPath)
 }
 
 func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, error) {

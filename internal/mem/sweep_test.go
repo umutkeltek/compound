@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 func TestSynthesisSweepFindsEchoAndContradictionProposals(t *testing.T) {
@@ -265,6 +267,119 @@ func TestCorroborationRaisesSeedWithoutAutoPromoting(t *testing.T) {
 	}
 	if len(afterClaims) != len(beforeClaims) {
 		t.Fatalf("corroboration sweep auto-promoted a seed: claims before=%d after=%d", len(beforeClaims), len(afterClaims))
+	}
+}
+
+func TestDecaySweepFilesExpiredParkedCandidates(t *testing.T) {
+	s := newStore(t)
+	// Un-evidenced capture stamps ExpiresAt = t0+30d; advance clock past it.
+	got, err := s.Capture([]Candidate{{
+		Entity: "project:alpha", Predicate: "note", Object: "ephemeral observation",
+		Confidence: 0.4, Derivation: "extracted",
+		SourceTraceRef: "trace:ephemeral", SnippetHash: "h_ephemeral",
+		Visibility: "operational",
+	}}, t0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("capture: %v %+v", err, got)
+	}
+	if got[0].State != "parked" || got[0].ExpiresAt == "" {
+		t.Fatalf("want decay_parked candidate, got %+v", got[0])
+	}
+	past := t0.AddDate(0, 0, 31)
+	report, err := s.SynthesisSweep([]string{"decay"}, past)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DecayedCount != 1 || len(report.Decayed) != 1 {
+		t.Fatalf("decayed = %d actions=%+v, want 1", report.DecayedCount, report.Decayed)
+	}
+	if report.Decayed[0].CandidateID != got[0].ID || report.Decayed[0].Reason != DecayReasonExpired {
+		t.Fatalf("action = %+v", report.Decayed[0])
+	}
+	c, err := s.getCandidate(got[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State != "no_promote" || c.Reason != DecayReasonExpired {
+		t.Fatalf("candidate after decay = %+v", c)
+	}
+	// Idempotent: second run decays nothing.
+	again, err := s.SynthesisSweep([]string{"decay"}, past)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DecayedCount != 0 {
+		t.Fatalf("second decay should be no-op, got %d", again.DecayedCount)
+	}
+}
+
+func TestDecaySweepNeverExpiresCorroboratedCandidate(t *testing.T) {
+	s := newStore(t)
+	// Park seed while still unexpired so corroborate can raise it.
+	seedID := parkSeed(t, s, CandidateExpectation{
+		Entity:    "project:alpha",
+		Predicate: "runtime_outcome",
+		Object:    "integration risk materialized",
+	})
+	promoteOutcome(t, s, "integration risk materialized", t0.AddDate(0, 0, 1))
+	// Corroborate while unexpired — raises seed, clears ExpiresAt.
+	reportRaise, err := s.SynthesisSweep([]string{"corroborate"}, t0.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reportRaise.RaisedSeeds) != 1 {
+		t.Fatalf("expected one raised seed, got %+v", reportRaise.RaisedSeeds)
+	}
+	seed, err := s.getCandidate(seedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seed.ExpiresAt != "" {
+		t.Fatalf("raise should clear ExpiresAt, got %q", seed.ExpiresAt)
+	}
+	// Re-stamp expired to prove the corroboration mark (not just cleared ExpiresAt) is the guard.
+	seed.ExpiresAt = rfc3339(t0)
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, seed.ID, &seed); err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.SynthesisSweep([]string{"decay"}, t0.AddDate(0, 0, 40))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DecayedCount != 0 {
+		t.Fatalf("corroborated candidate must NEVER decay: %+v", report.Decayed)
+	}
+	c, err := s.getCandidate(seedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.State == "no_promote" {
+		t.Fatalf("corroborated seed was filed: %+v", c)
+	}
+}
+
+func TestDecaySweepSkipsParkedWithoutExpiry(t *testing.T) {
+	s := newStore(t)
+	// knowledge_import parks without ExpiresAt — not landfill fuel.
+	got, err := s.Capture([]Candidate{{
+		Entity: "knowledge:src", Predicate: "title", Object: "Doc",
+		Confidence: 0.8, Derivation: "deterministic",
+		Qualifiers:     map[string]string{"source": "knowledge_import"},
+		SourceTraceRef: "ev_src", SnippetHash: "h_src",
+		Visibility: "candidate",
+	}}, t0)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("capture: %v", err)
+	}
+	if got[0].ExpiresAt != "" {
+		t.Fatalf("knowledge_import should not stamp ExpiresAt: %+v", got[0])
+	}
+	report, err := s.SynthesisSweep([]string{"decay"}, t0.AddDate(1, 0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DecayedCount != 0 {
+		t.Fatalf("source-index parks without expiry must not decay: %+v", report.Decayed)
 	}
 }
 

@@ -6,11 +6,17 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/candidates"
 )
 
 const SynthesisSweepSchemaVersion = "compound.synthesis_sweep.v0.1"
 
-var synthesisSweepStages = []string{"cluster", "contradict", "corroborate"}
+// DecayReasonExpired is stamped on parked candidates that expire without
+// corroboration (decisions-down landfill guard).
+const DecayReasonExpired = "parked_stale_never_reinforced"
+
+var synthesisSweepStages = []string{"cluster", "contradict", "corroborate", "decay"}
 
 type SynthesisSweepReport struct {
 	SchemaVersion              string                           `json:"schema_version"`
@@ -22,6 +28,7 @@ type SynthesisSweepReport struct {
 	EchoFoldProposalCount      int                              `json:"echo_fold_proposal_count"`
 	ContradictionProposalCount int                              `json:"contradiction_proposal_count"`
 	CorroborationProposalCount int                              `json:"corroboration_proposal_count"`
+	DecayedCount               int                              `json:"decayed_count"`
 	ReviewDebtCount            int                              `json:"review_debt_count"`
 	Clusters                   []SynthesisCluster               `json:"clusters,omitempty"`
 	EchoFoldProposals          []SynthesisEchoFoldProposal      `json:"echo_fold_proposals,omitempty"`
@@ -29,6 +36,16 @@ type SynthesisSweepReport struct {
 	CorroborationProposals     []SynthesisCorroborationProposal `json:"corroboration_proposals,omitempty"`
 	ReopenedClaims             []SynthesisClaimReview           `json:"reopened_claims,omitempty"`
 	RaisedSeeds                []SynthesisSeedReview            `json:"raised_seeds,omitempty"`
+	Decayed                    []SynthesisDecayAction           `json:"decayed,omitempty"`
+}
+
+// SynthesisDecayAction records one parked candidate filed to no_promote by the decay stage.
+type SynthesisDecayAction struct {
+	CandidateID   string `json:"candidate_id"`
+	PreviousState string `json:"previous_state"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	Reason        string `json:"reason"`
+	CreatedAt     string `json:"created_at"`
 }
 
 type SynthesisCluster struct {
@@ -145,6 +162,19 @@ func (s *Store) SynthesisSweep(stages []string, now time.Time) (SynthesisSweepRe
 		report.CorroborationProposalCount = len(proposals)
 		report.RaisedSeeds = raised
 		report.ReviewDebtCount += len(raised)
+	}
+	if stageSet["decay"] {
+		candidates, err := s.AllCandidates()
+		if err != nil {
+			return report, err
+		}
+		report.CandidateCount = len(candidates)
+		decayed, err := s.decayExpiredCandidates(candidates, now)
+		if err != nil {
+			return report, err
+		}
+		report.Decayed = decayed
+		report.DecayedCount = len(decayed)
 	}
 	return report, nil
 }
@@ -587,6 +617,17 @@ func (s *Store) raiseSeedsForCorroborations(proposals []SynthesisCorroborationPr
 			if err := appendJSONL(s.edgesLog(), &edge); err != nil {
 				return err
 			}
+			// Corroboration earns immunity from decay: clear expiry so the landfill
+			// sweep can never silently drop a raised seed (decisions-down falsifier).
+			if c, err := s.getCandidate(proposal.SeedCandidateID); err == nil {
+				if strings.TrimSpace(c.ExpiresAt) != "" {
+					c.ExpiresAt = ""
+					if strings.TrimSpace(c.Reason) == "" || strings.Contains(c.Reason, "expiry") || strings.Contains(c.Reason, "park with expiry") {
+						c.Reason = "corroborated; expiry cleared"
+					}
+					_ = candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
+				}
+			}
 			marks[proposal.SeedCandidateID] = candidateReviewMark{Refs: []string{proposal.ID}}
 			raised = append(raised, SynthesisSeedReview{
 				CandidateID:     proposal.SeedCandidateID,
@@ -600,6 +641,48 @@ func (s *Store) raiseSeedsForCorroborations(proposals []SynthesisCorroborationPr
 		return nil
 	})
 	return raised, err
+}
+
+// decayExpiredCandidates files parked candidates past ExpiresAt to no_promote.
+// Corroborated candidates (EdgeKindCorroboration mark) NEVER expire.
+// Idempotent: already no_promote / rejected / promoted are skipped.
+func (s *Store) decayExpiredCandidates(all []Candidate, now time.Time) ([]SynthesisDecayAction, error) {
+	marks, err := s.candidateReviewMarksAsOf(0)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	var decayed []SynthesisDecayAction
+	for _, c := range all {
+		if c.State != "parked" {
+			continue
+		}
+		if !candidateExpired(c, now) {
+			continue
+		}
+		// Corroboration mark = raised/needs_review path — never silently drop.
+		if mark, ok := marks[c.ID]; ok && len(mark.Refs) > 0 {
+			continue
+		}
+		if err := s.fileExpiredCandidate(c, now); err != nil {
+			return decayed, err
+		}
+		decayed = append(decayed, SynthesisDecayAction{
+			CandidateID:   c.ID,
+			PreviousState: c.State,
+			ExpiresAt:     c.ExpiresAt,
+			Reason:        DecayReasonExpired,
+			CreatedAt:     rfc3339(now),
+		})
+	}
+	return decayed, nil
+}
+
+func (s *Store) fileExpiredCandidate(c Candidate, now time.Time) error {
+	c.State = "no_promote"
+	c.Reason = DecayReasonExpired
+	// Keep ExpiresAt for audit; do not re-park.
+	return candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
 }
 
 func uniqueStrings(values []string) []string {

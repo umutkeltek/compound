@@ -302,8 +302,8 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
 	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
 	              spine memory: candidates, claims, positions, patterns, evidence
-  compound synthesis sweep [--stage cluster,contradict] [--json]
-                memory synthesis reports; contradictions append needs_review markers only
+  compound synthesis sweep [--stage cluster,contradict,corroborate,decay] [--json]
+                memory synthesis reports; contradictions append needs_review markers only; decay files expired parks
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation
   compound distiller improvement-plan --candidate C [--target file] method_upgrade/policy_patch -> reviewed distiller improvement draft
