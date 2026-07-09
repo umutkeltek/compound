@@ -31,12 +31,17 @@ const GoldenSchemaVersion = "compound.memory_bakeoff_queries.v0.1"
 
 // IDMap version identifiers for ConvertAcceptance's idMap parameter / the CLI --id-map flag.
 // IDMapNone reproduces the pre-id-map converter byte-for-byte: every id/substring stays the
-// resolver's raw dotted form. IDMapV1 is the default: known legacy-resolver id shapes are
-// translated to their compound-graph-native form (see the id-map doc block below); everything else
-// passes through raw AND is counted — named, never silent.
+// resolver's raw dotted form. IDMapV1 translates the three original known legacy-resolver id shapes
+// (see the id-map doc block below); it remains selectable and byte-stable (a falsifier: v1 output
+// must never change once landed) but is no longer the default. IDMapV2 is the default: v1 plus the
+// verified name-variant mappings from the 2026-07-09 Wave-2 parity adjudication (see the v2 doc
+// block below translateIDV2) — a strict superset, so v2 only ever ADDS matches v1 missed; it never
+// removes or changes a v1 match. Everything neither v1 nor v2 knows passes through raw AND is
+// counted — named, never silent.
 const (
 	IDMapNone = "none"
 	IDMapV1   = "v1"
+	IDMapV2   = "v2"
 )
 
 // --- v1 canonical id map ------------------------------------------------------------------------
@@ -144,6 +149,86 @@ func translateID(s string) (mapped []string, matched bool) {
 	return []string{s}, false
 }
 
+// --- v2 canonical id map ------------------------------------------------------------------------
+//
+// v2 = v1 + verified name-variant mappings from the 2026-07-09 Wave-2 parity backlog adjudication
+// (evidence: ~/.compound/reviews/parity/2026-07-09-wave2-parity-dispositions.{md,json} — a private
+// $COMPOUND_HOME evidence file, not tracked here; this map stays generic-shape-only per repo
+// privacy rules). Two additions:
+//
+//  1. Two more generic family-prefix shapes, verified the same way as the v1 three: the
+//     codex-sourced skill corpus carries its "skill.codex.skills." / "skill.codex.superpowers."
+//     root as pure resolver bookkeeping — the imported compound graph node drops it entirely and
+//     lands as a plain skill:<rest, dots hyphenated>, so both roots collapse straight to skill:
+//     (verified against 23 of 25 live skill.codex.* ids on 2026-07-09; the other 2 are the literal
+//     overrides below).
+//  2. A small literal table for one-off renames neither shape reaches: a duplicate skill name
+//     disambiguated by source (skill-creator exists as both skill:agents:skill-creator and
+//     skill:codex:skill-creator; the legacy skill.agents.shared.skill.creator id names the agents
+//     source explicitly), a skill whose SKILL.md frontmatter name drifted from its directory name
+//     (taste-skill -> skill:design-taste-frontend), two codex-sourced skills whose landed slug
+//     dropped a filler word the generic shape rule keeps (diff.cleanup.and.parking,
+//     finishing.a.development.branch), a known rename (superpowers -> using-superpowers), and one
+//     tool whose live graph node is a different KIND than tool:/mcp: (mcporter landed as
+//     adapter:mcporter — the v1 tool-pair rule's two-id emission is provably wrong for this one id
+//     since NEITHER tool:mcporter nor mcp:mcporter exists, so it is overridden to its single real
+//     target instead of the pair). Every entry here is a real, generic, non-private name verified
+//     against the live compound graph on 2026-07-09.
+const (
+	skillCodexSkillsPrefix      = "skill.codex.skills"
+	skillCodexSuperpowersPrefix = "skill.codex.superpowers"
+)
+
+// isSkillCodexSkills / isSkillCodexSuperpowers mirror isSkillAgentsShared's bare-root-or-rooted
+// shape for the two codex-sourced skill namespaces.
+func isSkillCodexSkills(s string) (rest string, ok bool) {
+	if s == skillCodexSkillsPrefix {
+		return "", true
+	}
+	if strings.HasPrefix(s, skillCodexSkillsPrefix+".") {
+		return strings.TrimPrefix(s, skillCodexSkillsPrefix+"."), true
+	}
+	return "", false
+}
+
+func isSkillCodexSuperpowers(s string) (rest string, ok bool) {
+	if s == skillCodexSuperpowersPrefix {
+		return "", true
+	}
+	if strings.HasPrefix(s, skillCodexSuperpowersPrefix+".") {
+		return strings.TrimPrefix(s, skillCodexSuperpowersPrefix+"."), true
+	}
+	return "", false
+}
+
+// v2LiteralOverrides are exact-match legacy id -> compound id(s) the generic v1/v2 shapes cannot
+// reach (see the v2 doc block above for why each one exists). Checked before any shape rule so a
+// literal override always wins over a shape match for the same id.
+var v2LiteralOverrides = map[string][]string{
+	"skill.agents.shared.superpowers":                        {"skill:using-superpowers"},
+	"skill.agents.shared.skill.creator":                      {"skill:agents:skill-creator"},
+	"skill.agents.shared.taste.skill":                        {"skill:design-taste-frontend"},
+	"skill.codex.skills.diff.cleanup.and.parking":            {"skill:diff-cleanup-parking"},
+	"skill.codex.superpowers.finishing.a.development.branch": {"skill:finishing-development-branch"},
+	"tool.mcporter": {"adapter:mcporter"},
+}
+
+// translateIDV2 applies the v2 canonical id map: literal overrides first (exact match only), then
+// the two codex skill-namespace shapes, then the original v1 shapes. Same matched=false contract as
+// translateID — v2 is a strict superset of v1, so anything v1 matched, v2 matches identically.
+func translateIDV2(s string) (mapped []string, matched bool) {
+	if m, ok := v2LiteralOverrides[s]; ok {
+		return append([]string(nil), m...), true
+	}
+	if rest, ok := isSkillCodexSkills(s); ok {
+		return []string{"skill:" + hyphenate(rest)}, true
+	}
+	if rest, ok := isSkillCodexSuperpowers(s); ok {
+		return []string{"skill:" + hyphenate(rest)}, true
+	}
+	return translateID(s)
+}
+
 // familyOf computes the accounting bucket for a legacy id/pattern that matched none of the v1
 // known-mapped shapes (translateID returned matched=false). route/skill/recipe/capability
 // namespaces use their first TWO dot segments — a single segment would be too coarse (e.g. bare
@@ -185,26 +270,26 @@ func familyRecords(counts map[string]int) []DropRecord {
 	return out
 }
 
-// IDMapReport is convert-time accounting for the v1 canonical id map: which legacy ids/patterns had
-// no known v1 mapping and so passed through raw, named and counted by family. It is intentionally
-// NOT part of Suite (Suite's schema is owned by bench.go and stays spec-faithful to the evaluator);
-// it is a side channel the convert CLI prints as its "unmapped" summary block. Zero value / Version
-// == IDMapNone means mapping did not run (nothing to account for).
+// IDMapReport is convert-time accounting for the applied canonical id map (v1 or v2): which legacy
+// ids/patterns had no known mapping under that version and so passed through raw, named and counted
+// by family. It is intentionally NOT part of Suite (Suite's schema is owned by bench.go and stays
+// spec-faithful to the evaluator); it is a side channel the convert CLI prints as its "unmapped"
+// summary block. Zero value / Version == IDMapNone means mapping did not run (nothing to account for).
 type IDMapReport struct {
 	Version            string
-	UnmappedIDFamilies []DropRecord // ids from expected/must_outrank winners with no v1 mapping, by family
-	UnmappedPatterns   int          // forbidden/loser_contains substrings with no v1 mapping (single total; see doc block above)
+	UnmappedIDFamilies []DropRecord // ids from expected/must_outrank winners with no mapping under the applied version, by family
+	UnmappedPatterns   int          // forbidden/loser_contains substrings with no mapping under the applied version (single total; see doc block above)
 }
 
 // applyIDMapToCase rewrites a raw-converted Case's id-bearing fields (Expected, Forbidden.Contains,
-// MustOutrank) through the v1 canonical id map, in place, and folds every unmapped id/pattern into
-// the running tallies. Every rewritten slice is deduped+resorted after mapping (a tool.<X> id/
-// pattern expands to two entries, and unrelated raw ids can collide post-hyphenation), preserving
-// the suite's overall sorted-slices determinism guarantee.
-func applyIDMapToCase(c *Case, idFamilyCounts map[string]int, unmappedPatterns *int) {
+// MustOutrank) through translate (translateID for v1, translateIDV2 for v2), in place, and folds
+// every unmapped id/pattern into the running tallies. Every rewritten slice is deduped+resorted
+// after mapping (a tool.<X> id/pattern expands to two entries, and unrelated raw ids can collide
+// post-hyphenation), preserving the suite's overall sorted-slices determinism guarantee.
+func applyIDMapToCase(c *Case, idFamilyCounts map[string]int, unmappedPatterns *int, translate func(string) ([]string, bool)) {
 	expected := map[string]bool{}
 	for _, raw := range c.Expected {
-		mapped, ok := translateID(raw)
+		mapped, ok := translate(raw)
 		if !ok {
 			idFamilyCounts[familyOf(raw)]++
 		}
@@ -217,7 +302,7 @@ func applyIDMapToCase(c *Case, idFamilyCounts map[string]int, unmappedPatterns *
 	if c.Forbidden != nil {
 		forbidden := map[string]bool{}
 		for _, raw := range c.Forbidden.Contains {
-			mapped, ok := translateID(raw)
+			mapped, ok := translate(raw)
 			if !ok {
 				*unmappedPatterns++
 			}
@@ -233,7 +318,7 @@ func applyIDMapToCase(c *Case, idFamilyCounts map[string]int, unmappedPatterns *
 		for _, a := range c.MustOutrank {
 			losers := map[string]bool{}
 			for _, raw := range a.LoserContains {
-				mapped, ok := translateID(raw)
+				mapped, ok := translate(raw)
 				if !ok {
 					*unmappedPatterns++
 				}
@@ -242,7 +327,7 @@ func applyIDMapToCase(c *Case, idFamilyCounts map[string]int, unmappedPatterns *
 				}
 			}
 			sortedLosers := sortedKeys(losers)
-			winners, ok := translateID(a.Winner)
+			winners, ok := translate(a.Winner)
 			if !ok {
 				idFamilyCounts[familyOf(a.Winner)]++
 			}
@@ -322,17 +407,18 @@ type acceptanceOutrank struct {
 // the drop-accounting. It is deterministic: cases sorted by id, every id/substring slice sorted.
 //
 // idMap selects the id-mapping pass applied AFTER the raw, spec-faithful conversion below. Empty
-// string defaults to IDMapV1. IDMapNone skips the pass entirely, byte-for-byte preserving the
+// string defaults to IDMapV2. IDMapNone skips the pass entirely, byte-for-byte preserving the
 // pre-id-map converter's raw dotted-id output; IDMapV1 rewrites every id-bearing field through the
-// v1 canonical id map (see the doc block above translateID) and returns the unmapped-id/pattern
-// accounting as the second result.
+// v1 canonical id map (see the doc block above translateID); IDMapV2 does the same through the v2
+// map (v1 + verified name-variant mappings, see the doc block above translateIDV2). Either mapped
+// version returns the unmapped-id/pattern accounting as the second result.
 func ConvertAcceptance(data []byte, suiteName string, idMap string) (Suite, IDMapReport, error) {
 	switch idMap {
 	case "":
-		idMap = IDMapV1
-	case IDMapV1, IDMapNone:
+		idMap = IDMapV2
+	case IDMapV1, IDMapV2, IDMapNone:
 	default:
-		return Suite{}, IDMapReport{}, fmt.Errorf("id-map must be %q or %q, got %q", IDMapV1, IDMapNone, idMap)
+		return Suite{}, IDMapReport{}, fmt.Errorf("id-map must be %q, %q, or %q, got %q", IDMapV2, IDMapV1, IDMapNone, idMap)
 	}
 
 	var f acceptanceFile
@@ -404,13 +490,19 @@ func ConvertAcceptance(data []byte, suiteName string, idMap string) (Suite, IDMa
 
 	// The id map is a POST-processing pass over the raw, spec-faithful cases built above — the raw
 	// build path is untouched by idMap, so IDMapNone is byte-identical to the pre-id-map converter
-	// by construction (same code, no branch), not by a separately maintained parallel path.
+	// by construction (same code, no branch), not by a separately maintained parallel path. v1 is
+	// likewise untouched by the v2 addition below (translateID, the function v1 calls, is unchanged)
+	// so v1 output stays byte-stable across the v2 addition — a falsifier, not an assumption.
 	report := IDMapReport{Version: idMap}
-	if idMap == IDMapV1 {
+	if idMap == IDMapV1 || idMap == IDMapV2 {
+		translate := translateID
+		if idMap == IDMapV2 {
+			translate = translateIDV2
+		}
 		idFamilyCounts := map[string]int{}
 		unmappedPatterns := 0
 		for i := range cases {
-			applyIDMapToCase(&cases[i], idFamilyCounts, &unmappedPatterns)
+			applyIDMapToCase(&cases[i], idFamilyCounts, &unmappedPatterns, translate)
 		}
 		report.UnmappedIDFamilies = familyRecords(idFamilyCounts)
 		report.UnmappedPatterns = unmappedPatterns
