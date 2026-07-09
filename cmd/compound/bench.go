@@ -42,7 +42,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 
 func benchUsage() string {
 	return "usage:\n" +
-		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent]\n" +
+		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent] [--suite-kind <kind>] [--no-actionable]\n" +
 		"  compound bench compare --before <report.json> --after <report.json> [--json] [--allow-suite-mismatch]\n" +
 		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>] [--id-map v2|v1|none]\n" +
 		"  compound bench convert golden --in <recall-golden.yaml> --out <suite.json> [--name <suite>]\n" +
@@ -162,7 +162,7 @@ func printConvertSummary(w io.Writer, mode, outPath string, suite bench.Suite, i
 func runBenchRun(args []string, stdout, stderr io.Writer) int {
 	suitePath := flagValue(args, "--suite")
 	if strings.TrimSpace(suitePath) == "" {
-		fmt.Fprintln(stderr, "usage: compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent]")
+		fmt.Fprintln(stderr, "usage: compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent] [--suite-kind <kind>] [--no-actionable]")
 		return 2
 	}
 	homePath, err := home.Resolve(flagValue(args, "--home"))
@@ -175,12 +175,22 @@ func runBenchRun(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	// --no-actionable marks this run as synthetic/diagnostic: the report still persists and scores,
+	// but the director will not mine it for harness-edit candidates (prevents fixture noise becoming
+	// suggested work). Absent the flag, the report stays actionable (back-compat).
+	var actionable *bool
+	if hasFlag(args, "--no-actionable") {
+		v := false
+		actionable = &v
+	}
 	now := time.Now()
 	report, err := bench.Run(bench.Options{
-		Home:     homePath,
-		Suite:    suite,
-		BuildSHA: buildSHAOrDev(),
-		Now:      now,
+		Home:       homePath,
+		Suite:      suite,
+		BuildSHA:   buildSHAOrDev(),
+		Now:        now,
+		SuiteKind:  flagValue(args, "--suite-kind"),
+		Actionable: actionable,
 	})
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)

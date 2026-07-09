@@ -166,6 +166,43 @@ func TestRunBenchHappyPathExitsZeroAndWritesArtifact(t *testing.T) {
 	}
 }
 
+// TestRunBenchNoActionableStampsReport: --no-actionable marks the report non-actionable so the
+// director will not mine a synthetic/diagnostic run, and --suite-kind propagates to the report
+// label. Without either flag the field stays absent (nil => actionable back-compat).
+func TestRunBenchNoActionableStampsReport(t *testing.T) {
+	home := t.TempDir()
+	seedBenchGraph(t, home)
+	suite := filepath.Join("..", "..", "fixtures", "bench", "capability-suite.json")
+
+	var out, errBuf bytes.Buffer
+	if code := runBench([]string{"run", "--suite", suite, "--home", home, "--json"}, &out, &errBuf); code != 0 {
+		t.Fatalf("default exit=%d stderr=%s", code, errBuf.String())
+	}
+	var def bench.Report
+	if err := json.Unmarshal(out.Bytes(), &def); err != nil {
+		t.Fatalf("parse default report json: %v\n%s", err, out.String())
+	}
+	if !def.IsActionable() || def.SuiteKind != "" {
+		t.Fatalf("default run must be actionable with no suite_kind (back-compat): actionable=%v kind=%q", def.Actionable, def.SuiteKind)
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	if code := runBench([]string{"run", "--suite", suite, "--home", home, "--json", "--no-actionable", "--suite-kind", "synthetic_fixture"}, &out, &errBuf); code != 0 {
+		t.Fatalf("--no-actionable exit=%d stderr=%s", code, errBuf.String())
+	}
+	var na bench.Report
+	if err := json.Unmarshal(out.Bytes(), &na); err != nil {
+		t.Fatalf("parse no-actionable report json: %v\n%s", err, out.String())
+	}
+	if na.IsActionable() {
+		t.Fatalf("--no-actionable must stamp actionable=false, got %v", na.Actionable)
+	}
+	if na.SuiteKind != "synthetic_fixture" {
+		t.Fatalf("--suite-kind must propagate to report, got %q", na.SuiteKind)
+	}
+}
+
 // TestRunBenchAbsentGate is the fail-loud falsifier: an expected id absent from the graph makes
 // `bench run` exit nonzero UNLESS --allow-absent is passed.
 func TestRunBenchAbsentGate(t *testing.T) {

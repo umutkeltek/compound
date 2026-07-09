@@ -156,6 +156,8 @@ type Metrics struct {
 type Report struct {
 	Schema          string             `json:"schema"`
 	Suite           string             `json:"suite"`
+	SuiteKind       string             `json:"suite_kind,omitempty"` // synthetic_fixture | acceptance | golden | dogfood — a label, not authority
+	Actionable      *bool              `json:"actionable,omitempty"` // nil/true => director may mine; false => synthetic/diagnostic, director must ignore
 	Timestamp       string             `json:"timestamp"`
 	BuildSHA        string             `json:"build_sha"`
 	GraphHash       string             `json:"graph_hash"`
@@ -168,14 +170,24 @@ type Report struct {
 	Cases           []CaseResult       `json:"cases"`
 }
 
+// IsActionable reports whether the director may mine this report for harness-edit candidates. An
+// unset (nil) Actionable reads as actionable so reports written before the field existed — and any
+// report produced without an explicit --no-actionable declaration — keep feeding the director; only
+// a deliberate false (synthetic fixture / diagnostic) opts a report out.
+func (r Report) IsActionable() bool {
+	return r.Actionable == nil || *r.Actionable
+}
+
 // Options configure a run. Now is injected so the report timestamp is deterministic in tests
 // (the repo forbids comparing wall-clock against fixed fixtures).
 type Options struct {
-	Home     string
-	Suite    Suite
-	BuildSHA string
-	Now      time.Time
-	Policy   contract.OrientationPolicy
+	Home       string
+	Suite      Suite
+	BuildSHA   string
+	Now        time.Time
+	Policy     contract.OrientationPolicy
+	SuiteKind  string // copied into the report label
+	Actionable *bool  // copied into the report; nil => actionable (back-compat)
 }
 
 // LoadSuite reads and validates a suite JSON file.
@@ -245,13 +257,15 @@ func Run(opts Options) (Report, error) {
 	}
 
 	report := Report{
-		Schema:    SchemaVersion,
-		Suite:     opts.Suite.Suite,
-		Timestamp: opts.Now.UTC().Format(time.RFC3339),
-		BuildSHA:  strings.TrimSpace(opts.BuildSHA),
-		GraphHash: graphHash,
-		CaseCount: len(opts.Suite.Cases),
-		Splits:    map[string]Metrics{},
+		Schema:     SchemaVersion,
+		Suite:      opts.Suite.Suite,
+		SuiteKind:  opts.SuiteKind,
+		Actionable: opts.Actionable,
+		Timestamp:  opts.Now.UTC().Format(time.RFC3339),
+		BuildSHA:   strings.TrimSpace(opts.BuildSHA),
+		GraphHash:  graphHash,
+		CaseCount:  len(opts.Suite.Cases),
+		Splits:     map[string]Metrics{},
 	}
 
 	// Cache the memory ranking per (repo_kind, topic, task) is unnecessary; each memory case

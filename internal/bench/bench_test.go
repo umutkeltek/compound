@@ -357,6 +357,31 @@ func TestCompareRejectsSuiteMismatch(t *testing.T) {
 	}
 }
 
+// TestReportIsActionable pins the back-compat semantics: an unset (nil) Actionable — the shape of
+// every report written before the field existed, and any report produced without --no-actionable —
+// reads as actionable so the director keeps mining it. Only an explicit false opts a report out.
+func TestReportIsActionable(t *testing.T) {
+	no := false
+	yes := true
+	cases := []struct {
+		name string
+		r    *bool
+		want bool
+	}{
+		{"unset (back-compat)", nil, true},
+		{"explicit true", &yes, true},
+		{"explicit false (synthetic)", &no, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := Report{Actionable: c.r}
+			if got := r.IsActionable(); got != c.want {
+				t.Fatalf("IsActionable=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 // TestForbiddenTopNRedGreen is the negative-assertion falsifier: a forbidden substring that
 // surfaces inside the top-n is recorded as a violation (RED); with the offending node removed the
 // same assertion is clean (GREEN). The positive expected id is a DIFFERENT still-present node so
