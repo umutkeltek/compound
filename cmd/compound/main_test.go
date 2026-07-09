@@ -4477,8 +4477,18 @@ func TestReviewsCommandAnnotatesRoutePromotionHold(t *testing.T) {
 		t.Fatalf("route promotion item should be annotated needs_review: %+v", report.Items)
 	}
 	item := report.Items[0]
-	if len(item.Actions) != 0 || !strings.Contains(item.NextAction, "hold lane promotion") {
-		t.Fatalf("route promotion item should expose hold/no-mutation next action: %+v", item)
+	if len(item.Actions) != 1 || !strings.Contains(item.NextAction, "hold lane promotion") {
+		t.Fatalf("route promotion item should expose one clean record action and the hold/no-mutation next action: %+v", item)
+	}
+	record := item.Actions[0]
+	if record.ID != "route_promotion_record" || !record.RequiresReview ||
+		len(record.Argv) == 0 || record.Argv[0] != "compound" {
+		t.Fatalf("route promotion action should be the clean review-required record act: %+v", record)
+	}
+	for _, token := range record.Argv {
+		if token == "--rationale" {
+			t.Fatalf("clean record argv must omit --rationale (renderer appends operator text): %v", record.Argv)
+		}
 	}
 	if len(item.EvidenceRefs) != 2 {
 		t.Fatalf("route promotion item should preserve evidence refs: %+v", item)

@@ -154,6 +154,7 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   const option = typeof body.option === "string" ? body.option : "";
   const actionId = typeof body.actionId === "string" ? body.actionId.trim() : "";
   const confirmed = body.confirmed === true;
+  const rationale = typeof body.rationale === "string" ? body.rationale : "";
 
   const fields: Record<string, string> = {};
   if (body.fields && typeof body.fields === "object") {
@@ -171,7 +172,7 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
     // this is the ONLY way areas without a bespoke spec become executable.
     // A bespoke spec always wins: this branch never runs when `spec` exists.
     if (actionId) {
-      return executeGenericAction(area, itemId, actionId, confirmed);
+      return executeGenericAction(area, itemId, actionId, confirmed, rationale);
     }
     return Response.json({ ok: false, stderr: `unknown decision area: ${area}` }, { status: 400 });
   }
@@ -263,6 +264,7 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   "gate-1-shell-form": 403,
   "gate-2-allowlist": 403,
   "gate-3-global-allowlist": 403,
+  "rationale-required": 422,
 };
 
 /**
@@ -276,12 +278,13 @@ async function executeGenericAction(
   itemId: string,
   actionId: string,
   confirmed: boolean,
+  rationale?: string,
 ): Promise<Response> {
   if (!itemId) {
     return Response.json({ ok: false, stderr: "itemId is required" }, { status: 400 });
   }
 
-  const resolution = await resolveGenericAction(area, itemId, actionId);
+  const resolution = await resolveGenericAction(area, itemId, actionId, rationale);
   if (!resolution.ok) {
     return Response.json(
       { ok: false, stderr: resolution.rejection.message },

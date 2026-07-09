@@ -106,7 +106,7 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 	case "review_required":
 		item.Readiness = "needs_review"
 		item.BlockedReason = ""
-		item.Actions = nil
+		item.Actions = []reviewartifact.Action{promotionRecordCleanAction(item.JSONPath)}
 		band := reviewartifact.BandNeedsYou
 		if review.Recommendation == promotionRecommendationHoldInsufficient {
 			band = reviewartifact.BandWatching
@@ -127,6 +127,23 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 		item.NextAction = "owner review required for route promotion artifact"
 		annotatePromotionOperatorCard(item, review, reviewartifact.BandNeedsYou, "")
 		item.Actions = nil
+	}
+}
+
+// promotionRecordCleanAction emits the one clean-argv (argv[0]=="compound", no shell)
+// action for a promotion review awaiting the owner. The CLI requires --rationale;
+// it is deliberately omitted here — a governed renderer appends
+// ["--rationale", <operator text>] at execution time, after its own review gate.
+// promotion-record only records the reviewed hold; route/model authority never
+// mutates from this action.
+func promotionRecordCleanAction(reviewPath string) reviewartifact.Action {
+	return reviewartifact.Action{
+		ID:             "route_promotion_record",
+		Label:          "Record reviewed hold",
+		Command:        "compound route promotion-record --review '" + reviewPath + "' --rationale '<why>'",
+		Argv:           []string{"compound", "route", "promotion-record", "--review", reviewPath},
+		RequiresReview: true,
+		PolicyNote:     "records the reviewed hold decision only; route/model authority mutation stays a separate explicit act",
 	}
 }
 

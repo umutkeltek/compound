@@ -52,6 +52,7 @@ export type GenericActionGate =
   | "gate-1-shell-form"
   | "gate-2-allowlist"
   | "gate-3-global-allowlist"
+  | "rationale-required"
   | "not-found";
 
 export type ResolvedGenericAction = {
@@ -98,27 +99,39 @@ export type GenericActionResolution =
  *      2026-07-09 (area had 2 items, 0 review_required at seed time) against
  *      the Go source.
  *
- * "route-promotions" is DELIBERATELY EXCLUDED, contrary to the original seed
- * list: internal/routeevidence/review_queue.go sets `item.Actions = nil`
- * unconditionally in every branch of annotatePromotionReviewQueueItem
- * (review_required, recorded, terminal alike) — confirmed live 2026-07-09
- * against 4 real review_required route-promotions groups, every one showing
- * `terminal_reason: "owner has not exposed a safe action for this decision
- * group"` and no `safe_batch_action`. A real, safe CLI verb exists
- * (`compound route promotion-record --review <path> --rationale <text>`,
- * see cmd/compound/route_promotion.go) but nothing in the live projection
- * ever surfaces it as `actions[]`/`safe_batch_action`, so
- * `resolveGenericAction` would 404 here regardless of allowlisting.
- * Allowlisting an area the backend can never actually resolve would
- * misrepresent it as covered — wiring `item.Actions` for route-promotions is
- * a Go-side ticket (out of this console-only phase's scope); add
- * `["route", "promotion-record"]` here once it lands.
+ *  - "route-promotions": internal/routeevidence/review_queue.go emits
+ *    `actions: [{id: "route_promotion_record",
+ *      argv: ["compound","route","promotion-record","--review",<path>]}]` on
+ *    every review_required item (landed same-change with this allowlist
+ *    entry; the earlier Actions=nil gap is closed). --rationale is REQUIRED
+ *    by the CLI and deliberately absent from the projected argv — the
+ *    rationale-append rule below supplies it from operator input.
+ *  - "panel-verdicts": internal/panel/review_queue.go emits one clean
+ *    per-member `panel_verdict_record_member` action
+ *    (argv ["compound","panel","verdict-record","--review",<path>,
+ *    "--reviewed-by",<actor>]) beside its copy-only shell choices (landed
+ *    eeaab41). Same rationale-append rule applies.
  */
 export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "job-health": [["authority", "job-health-review"]],
   "source-control-cleanup": [["authority", "dirty-review"]],
   "observation-candidates": [["panel", "plan"]],
+  "route-promotions": [["route", "promotion-record"]],
+  "panel-verdicts": [["panel", "verdict-record"]],
 };
+
+/**
+ * Areas whose CLI REQUIRES --rationale: the backend deliberately omits it
+ * from the projected argv so no placeholder text can ever run. The operator
+ * supplies the rationale in the confirmation UI; it is appended as its own
+ * argv element (["--rationale", <text>]) — an exec argv array, never a
+ * shell string, so arbitrary rationale text is safe by construction.
+ * Resolution REJECTS ("rationale-required") when the operator supplied none.
+ */
+export const RATIONALE_REQUIRED_AREAS: ReadonlySet<string> = new Set([
+  "route-promotions",
+  "panel-verdicts",
+]);
 
 /**
  * Gate 3 — flat, area-agnostic defense in depth. Reuses the exported
@@ -131,6 +144,8 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
   ["authority", "job-health-review"],
   ["authority", "dirty-review"],
   ["panel", "plan"],
+  ["route", "promotion-record"],
+  ["panel", "verdict-record"],
 ];
 
 function actionFromItem(item: Json, actionId: string): Json | null {
@@ -159,6 +174,7 @@ export function resolveGenericActionFromProjection(
   area: string,
   itemId: string,
   actionId: string,
+  rationale?: string,
 ): GenericActionResolution {
   const { item, group } = findItemOrGroup(projection, itemId);
 
@@ -216,10 +232,38 @@ export function resolveGenericActionFromProjection(
     };
   }
 
+  // Rationale-append rule: runs AFTER the gates (appending flags cannot
+  // change the verb the gates certified). Only for areas whose CLI requires
+  // --rationale; the projected argv never carries one (asserted below so a
+  // future backend placeholder can't sneak past).
+  let finalArgv = bareArgv;
+  if (RATIONALE_REQUIRED_AREAS.has(area)) {
+    if (bareArgv.includes("--rationale")) {
+      return {
+        ok: false,
+        rejection: {
+          gate: "gate-2-allowlist",
+          message: `projected argv for "${actionId}" unexpectedly carries --rationale; refusing to run a placeholder rationale`,
+        },
+      };
+    }
+    const text = (rationale ?? "").trim();
+    if (!text) {
+      return {
+        ok: false,
+        rejection: {
+          gate: "rationale-required",
+          message: `action "${actionId}" requires an operator rationale; it becomes provenance on the recorded review`,
+        },
+      };
+    }
+    finalArgv = [...bareArgv, "--rationale", text];
+  }
+
   return {
     ok: true,
     action: {
-      argv: bareArgv,
+      argv: finalArgv,
       actionId,
       label: str(action.label),
       requiresReview: Boolean(action.requires_review),
@@ -238,7 +282,8 @@ export async function resolveGenericAction(
   area: string,
   itemId: string,
   actionId: string,
+  rationale?: string,
 ): Promise<GenericActionResolution> {
   const projection = await runJson(["reviews", "--json", "--area", area]);
-  return resolveGenericActionFromProjection(projection, area, itemId, actionId);
+  return resolveGenericActionFromProjection(projection, area, itemId, actionId, rationale);
 }

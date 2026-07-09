@@ -184,5 +184,88 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     }
   }
 
+  // Rationale-required areas (route-promotions / panel-verdicts): the CLI
+  // requires --rationale, the projection never carries it, and the operator's
+  // text is appended as its own argv element post-gates.
+  {
+    const projection = {
+      items: [
+        {
+          id: "route_promotion_clean",
+          actions: [
+            {
+              id: "route_promotion_record",
+              argv: ["compound", "route", "promotion-record", "--review", "/tmp/rp.json"],
+              requires_review: true,
+            },
+          ],
+        },
+      ],
+    };
+    const none = resolveGenericActionFromProjection(
+      projection,
+      "route-promotions",
+      "route_promotion_clean",
+      "route_promotion_record",
+    );
+    if (none.ok || none.rejection.gate !== "rationale-required") {
+      fail(`missing rationale should reject at rationale-required, got ${JSON.stringify(none)}`);
+    } else {
+      pass("rationale-required area without rationale rejected at rationale-required");
+    }
+    const quirkyRationale = "held: day-2 bakeoff decides; '; $(echo injected) is just text here";
+    const withText = resolveGenericActionFromProjection(
+      projection,
+      "route-promotions",
+      "route_promotion_clean",
+      "route_promotion_record",
+      quirkyRationale,
+    );
+    if (!withText.ok) {
+      fail(`rationale-supplied resolution should pass, got ${JSON.stringify(withText)}`);
+    } else {
+      const argv = withText.action.argv;
+      const idx = argv.indexOf("--rationale");
+      if (idx === -1 || argv[idx + 1] !== quirkyRationale) {
+        fail(`rationale must be appended verbatim as one argv element, got ${JSON.stringify(argv)}`);
+      } else {
+        pass("operator rationale appended verbatim as a single argv element (no shell)");
+      }
+    }
+    const placeholder = resolveGenericActionFromProjection(
+      {
+        items: [
+          {
+            id: "route_promotion_placeholder",
+            actions: [
+              {
+                id: "route_promotion_record",
+                argv: [
+                  "compound",
+                  "route",
+                  "promotion-record",
+                  "--review",
+                  "/tmp/rp.json",
+                  "--rationale",
+                  "$RATIONALE",
+                ],
+                requires_review: true,
+              },
+            ],
+          },
+        ],
+      },
+      "route-promotions",
+      "route_promotion_placeholder",
+      "route_promotion_record",
+      "real rationale",
+    );
+    if (placeholder.ok) {
+      fail("projected argv already carrying --rationale must be refused (placeholder risk)");
+    } else {
+      pass("projected argv with a pre-baked --rationale refused (placeholder risk)");
+    }
+  }
+
   return { ok, details };
 }
