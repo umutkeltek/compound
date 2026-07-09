@@ -26,6 +26,11 @@ const ManifestName = "manifest.yaml"
 // SchemaVersion of the home manifest.
 const SchemaVersion = "compound.home.v0.1"
 
+const (
+	HomeConfigSchemaVersion = "compound.home_config.v0.1"
+	BackupFreshnessMaxAge   = 48 * time.Hour
+)
+
 // Dirs is the typed habitat — each entry is a subdir compound owns under the home. The candidate
 // inbox dirs are NOT hand-listed here: they are derived from internal/candidates (the single
 // source of truth), so the home can never create a dir the producers don't write to, or miss one
@@ -59,6 +64,37 @@ type Manifest struct {
 	HomeKind      string   `yaml:"home_kind"` // global | local
 	CreatedAt     string   `yaml:"created_at"`
 	ActiveModules []string `yaml:"active_modules"`
+}
+
+// HomeConfig is the optional COMPOUND_HOME/config/home.yaml operator config.
+// Absence is normal for fresh installs; doctor checks that depend on it fail open.
+type HomeConfig struct {
+	SchemaVersion string `yaml:"schema_version,omitempty"`
+	BackupDir     string `yaml:"backup_dir,omitempty"`
+}
+
+func HomeConfigPath(homePath string) string {
+	return filepath.Join(homePath, "config", "home.yaml")
+}
+
+func LoadHomeConfig(homePath string) (HomeConfig, string, error) {
+	path := HomeConfigPath(homePath)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return HomeConfig{}, path, nil
+	}
+	if err != nil {
+		return HomeConfig{}, path, err
+	}
+	var cfg HomeConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return HomeConfig{}, path, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if cfg.SchemaVersion != "" && cfg.SchemaVersion != HomeConfigSchemaVersion {
+		return HomeConfig{}, path, fmt.Errorf("unsupported home config schema %q", cfg.SchemaVersion)
+	}
+	cfg.SchemaVersion = HomeConfigSchemaVersion
+	return cfg, path, nil
 }
 
 // Resolve returns the COMPOUND_HOME path using strict precedence:
@@ -166,17 +202,18 @@ type SetupReport struct {
 
 // Report is the doctor result.
 type Report struct {
-	Home          string
-	ManifestOK    bool
-	Manifest      Manifest
-	Dirs          []CheckItem
-	DirsOK        int
-	InsideGitRepo bool        // a global home inside a git repo is a "generated-state-in-source" smell
-	Hygiene       []CheckItem // operational hygiene: terminal work swept, leases live-only
-	HygieneOK     bool
-	Setup         SetupReport
-	SetupOK       bool
-	OK            bool
+	Home           string
+	ManifestOK     bool
+	Manifest       Manifest
+	Dirs           []CheckItem
+	DirsOK         int
+	InsideGitRepo  bool        // a global home inside a git repo is a "generated-state-in-source" smell
+	Hygiene        []CheckItem // operational hygiene: terminal work swept, leases live-only
+	HygieneOK      bool
+	BackupWarnings []CheckItem
+	Setup          SetupReport
+	SetupOK        bool
+	OK             bool
 }
 
 // Doctor inspects a home: manifest present + parseable, every habitat dir present,
@@ -186,7 +223,19 @@ type Report struct {
 // git and hygiene checks are reported, not fatal (a workspace-local home is
 // legitimately inside a repo but must be gitignored, and the archive sweep must
 // still be allowed to run on a hygiene-dirty home to clean it).
+type DoctorOptions struct {
+	Now time.Time
+}
+
 func Doctor(homePath string) Report {
+	return DoctorWithOptions(homePath, DoctorOptions{})
+}
+
+func DoctorWithOptions(homePath string, opts DoctorOptions) Report {
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
 	r := Report{Home: homePath}
 	if b, err := os.ReadFile(filepath.Join(homePath, ManifestName)); err == nil {
 		if yaml.Unmarshal(b, &r.Manifest) == nil && r.Manifest.SchemaVersion != "" {
@@ -203,10 +252,70 @@ func Doctor(homePath string) Report {
 	}
 	r.InsideGitRepo = underGitRepo(homePath)
 	r.Hygiene, r.HygieneOK = hygieneChecks(homePath)
+	r.BackupWarnings = backupFreshnessWarnings(homePath, now)
 	r.Setup = DoctorSetup(SetupOptions{})
 	r.SetupOK = r.Setup.OK
 	r.OK = r.ManifestOK && r.DirsOK == len(Dirs) && r.SetupOK
 	return r
+}
+
+func backupFreshnessWarnings(homePath string, now time.Time) []CheckItem {
+	cfg, _, err := LoadHomeConfig(homePath)
+	if err != nil {
+		return []CheckItem{{Name: "backup.config", OK: false}}
+	}
+	if strings.TrimSpace(cfg.BackupDir) == "" {
+		return nil
+	}
+	dir, err := resolveConfiguredBackupDir(homePath, cfg.BackupDir)
+	if err != nil {
+		return []CheckItem{{Name: "backup.config", OK: false}}
+	}
+	newest, ok, err := newestBackupArchive(dir)
+	if err != nil || !ok {
+		return []CheckItem{{Name: "backup.missing", OK: false}}
+	}
+	if now.Sub(newest) > BackupFreshnessMaxAge {
+		return []CheckItem{{Name: "backup.stale", OK: false}}
+	}
+	return nil
+}
+
+func resolveConfiguredBackupDir(homePath, dir string) (string, error) {
+	dir = strings.TrimSpace(expandUser(dir))
+	if dir == "" {
+		return "", fmt.Errorf("backup dir required")
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(homePath, dir)
+	}
+	return filepath.Abs(dir)
+}
+
+func newestBackupArchive(dir string) (time.Time, bool, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	var newest time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !isHomeBackupArchiveName(entry.Name()) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if newest.IsZero() || info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	return newest, !newest.IsZero(), nil
+}
+
+func isHomeBackupArchiveName(name string) bool {
+	return strings.HasSuffix(name, ".tar.gz") &&
+		(strings.HasPrefix(name, "home-") || strings.HasPrefix(name, "compound-home-"))
 }
 
 // SetupOptions lets tests inject host/tool state without mutating the process.

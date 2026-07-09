@@ -767,6 +767,63 @@ func TestRestoreHistoryRestoresSweptLeaseByteIdentical(t *testing.T) {
 	}
 }
 
+func TestDoctorBackupFreshnessWarningsFollowHomeConfig(t *testing.T) {
+	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		configure  bool
+		archiveAge time.Duration
+		wantRow    string
+	}{
+		{name: "stale row present", configure: true, archiveAge: 72 * time.Hour, wantRow: "backup.stale"},
+		{name: "fresh row absent", configure: true, archiveAge: time.Hour},
+		{name: "no config row absent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := filepath.Join(t.TempDir(), ".compound")
+			if err := Init(h, "global", now); err != nil {
+				t.Fatal(err)
+			}
+			if tt.configure {
+				backupDir := filepath.Join(t.TempDir(), "backups")
+				if err := os.MkdirAll(backupDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeHomeFile(t, h, "config/home.yaml", "schema_version: "+HomeConfigSchemaVersion+"\nbackup_dir: "+backupDir+"\n")
+				archivePath := filepath.Join(backupDir, "home-fixture.tar.gz")
+				if err := os.WriteFile(archivePath, []byte("fixture"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mod := now.Add(-tt.archiveAge)
+				if err := os.Chtimes(archivePath, mod, mod); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			report := DoctorWithOptions(h, DoctorOptions{Now: now})
+			if tt.wantRow == "" {
+				if len(report.BackupWarnings) != 0 {
+					t.Fatalf("backup warnings = %+v, want none", report.BackupWarnings)
+				}
+				return
+			}
+			if !checkItemNamed(report.BackupWarnings, tt.wantRow) {
+				t.Fatalf("backup warnings = %+v, want %s", report.BackupWarnings, tt.wantRow)
+			}
+		})
+	}
+}
+
+func checkItemNamed(items []CheckItem, name string) bool {
+	for _, item := range items {
+		if item.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func setupCheckNamed(report SetupReport, name string) SetupCheck {
 	for _, check := range report.Checks {
 		if check.Name == name {

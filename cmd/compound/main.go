@@ -4932,6 +4932,7 @@ type homeDoctorJSONReport struct {
 	GeneratedStateInRepoSource bool                       `json:"generated_state_in_repo_source"`
 	OperationalHygiene         homeDoctorHygieneReport    `json:"operational_hygiene"`
 	OperationalHygieneActions  []homeDoctorHygieneAction  `json:"operational_hygiene_actions,omitempty"`
+	BackupWarnings             []home.CheckItem           `json:"backup_warnings,omitempty"`
 	Governance                 homeDoctorGovernanceReport `json:"governance"`
 	Setup                      home.SetupReport           `json:"setup"`
 	SetupOK                    bool                       `json:"setup_ok"`
@@ -4982,6 +4983,7 @@ func buildHomeDoctorReport(r home.Report) homeDoctorJSONReport {
 		GeneratedStateInRepoSource: smell,
 		OperationalHygiene:         operational,
 		OperationalHygieneActions:  buildHomeDoctorHygieneActions(operational),
+		BackupWarnings:             r.BackupWarnings,
 		Governance:                 buildHomeGovernanceReport(r.Home),
 		Setup:                      r.Setup,
 		SetupOK:                    r.SetupOK,
@@ -5048,6 +5050,9 @@ func printHomeDoctor(r home.Report) {
 	fmt.Printf("generated_state_in_repo_source: %v\n", smell)
 	fmt.Printf("operational_hygiene: %s\n", homeCleanStr(r.HygieneOK))
 	for _, item := range r.Hygiene {
+		fmt.Printf("%s: %s\n", item.Name, homeCleanStr(item.OK))
+	}
+	for _, item := range r.BackupWarnings {
 		fmt.Printf("%s: %s\n", item.Name, homeCleanStr(item.OK))
 	}
 	for _, action := range buildHomeDoctorReport(r).OperationalHygieneActions {
