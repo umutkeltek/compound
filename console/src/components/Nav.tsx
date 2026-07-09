@@ -47,9 +47,17 @@ function groupsFor(decideCount: number | null | undefined, workCount: number | n
         { label: "Sources", href: "/sources" },
       ],
     },
-    // CONTROL (Settings, Routing & cost) intentionally omitted — no routes
-    // land in Phase 1 (Part 2 of the redesign plan lists both under Settings'
-    // 7 groups, Phase 4). Add a group here once those pages exist.
+    {
+      // CONTROL (Part 2 of the redesign plan). Routing & cost lands here in
+      // Phase 4; Settings lands alongside from a parallel lane (route exists at
+      // cutover). Neither carries a nav badge yet — routing's needs-you count
+      // would need a new NavContainer prop (out of this lane's narrow Nav scope).
+      label: "Control",
+      links: [
+        { label: "Routing & cost", href: "/routing" },
+        { label: "Settings", href: "/settings" },
+      ],
+    },
   ];
 }
 

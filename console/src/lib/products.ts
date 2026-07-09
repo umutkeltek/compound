@@ -104,11 +104,22 @@ function mapLoop(p: Record<string, unknown>): ProductLoop {
   };
 }
 
-export async function getProductLoops(): Promise<ProductLoop[]> {
+export type ProductLoopsReport = { generatedAt: string; loops: ProductLoop[] };
+
+/** Loops plus the projection's own generated_at, so the page can stamp a
+ *  FreshnessChip against the real read time (not a fabricated one). */
+export async function getProductLoopsReport(): Promise<ProductLoopsReport> {
   const j = await runJson(["product", "loops", "--json"]);
-  return arr(j?.products)
-    .map((p) => mapLoop(p as Record<string, unknown>))
-    .sort((a, b) => b.signalCount - a.signalCount);
+  return {
+    generatedAt: str(j?.generated_at),
+    loops: arr(j?.products)
+      .map((p) => mapLoop(p as Record<string, unknown>))
+      .sort((a, b) => b.signalCount - a.signalCount),
+  };
+}
+
+export async function getProductLoops(): Promise<ProductLoop[]> {
+  return (await getProductLoopsReport()).loops;
 }
 
 export async function getProductPortfolio(): Promise<ProductPortfolioRow[]> {

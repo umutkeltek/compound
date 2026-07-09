@@ -1,5 +1,7 @@
+import Link from "next/link";
+
 import { CopyCmd } from "@/components/CopyCmd";
-import { Chip } from "@/components/ui";
+import { IdRef, StateBadge } from "@/components/kit";
 import { ago } from "@/lib/time";
 import {
   formatMetricValue,
@@ -8,54 +10,88 @@ import {
   metricSurface,
   nextMove,
   productDisplayName,
-  verdictTone,
   type ProductLoop,
   type ProductSignal,
 } from "@/lib/products";
 
 /*
  * One product = one identity, rendered as its loop: signals (evidence) →
- * hypothesis → review → verdict, with freshness and the next move. This is the
- * "product as convergence point" the whole design turns on.
+ * hypothesis → review → verdict, with freshness and the next move. Restyled on
+ * the kit (DESIGN.md): card grammar, the 7-tone StateBadge, a done→now→next
+ * hypothesis chain (the cockpit pattern), token-only color. A loop that is
+ * "blocked on you" (a signal+hypothesis matched, verdict due) carries the amber
+ * admission seam and floats to the top of the page.
  */
 
-function FreshPill({ stale, latestSignalAt }: { stale: boolean; latestSignalAt: string }) {
-  // A loop that never had a signal isn't "stale" — it hasn't started. Only a
-  // once-fed loop that went quiet is stale.
+/** Map a loop onto its lifecycle state + a plain label for the StateBadge. */
+export function loopState(loop: ProductLoop): { state: string; label: string; blockedOnYou: boolean } {
+  if (loop.loopGaps.includes("review_ready")) return { state: "needs_you", label: "verdict due", blockedOnYou: true };
+  if (loop.signalCount === 0) return { state: "candidate", label: "awaiting signal", blockedOnYou: false };
+  const verdict = loop.reviews[0]?.verdict;
+  if (verdict === "supported") return { state: "completed", label: "supported", blockedOnYou: false };
+  if (verdict === "refuted") return { state: "failed", label: "refuted", blockedOnYou: false };
+  if (verdict === "inconclusive") return { state: "held", label: "inconclusive", blockedOnYou: false };
+  if (loop.hypothesisCount > 0) return { state: "running", label: "testing", blockedOnYou: false };
+  return { state: "watching", label: "collecting", blockedOnYou: false };
+}
+
+/** Last-signal freshness — respects the projection's server-computed `stale`
+ *  flag (not a client TTL), so it never disagrees with the backend. */
+function SignalFreshness({ stale, latestSignalAt }: { stale: boolean; latestSignalAt: string }) {
   const hasSignal = Boolean(latestSignalAt);
-  const state = !hasSignal ? "idle" : stale ? "stale" : "fresh";
-  const palette = {
-    idle: { bg: "#f1f5f9", fg: "#64748b", dot: "#9aa4b2" },
-    stale: { bg: "#fef3c7", fg: "#b45309", dot: "#f59e0b" },
-    fresh: { bg: "#ecfdf5", fg: "#047857", dot: "#10b981" },
-  }[state];
-  const text = hasSignal ? `${state} · last signal ${ago(latestSignalAt)}` : "no signal yet";
+  const tone = !hasSignal ? "text-faint" : stale ? "text-seam" : "text-good";
+  const dot = !hasSignal ? "bg-faint" : stale ? "bg-seam" : "bg-good";
+  const text = hasSignal ? `${stale ? "stale" : "live"} · last signal ${ago(latestSignalAt)}` : "no signal yet";
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
-      style={{ background: palette.bg, color: palette.fg }}
+      className={`mono inline-flex items-center gap-1.5 rounded-pill border border-hair bg-soft px-2.5 py-0.5 text-2xs font-semibold tabular-nums ${tone}`}
     >
-      <span className="h-1.5 w-1.5 rounded-full" style={{ background: palette.dot }} />
+      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
       {text}
     </span>
   );
 }
 
-function Stage({ label, value, dim }: { label: string; value: string; dim?: boolean }) {
+/** The hypothesis chain: done → now → next (the cockpit motif). */
+function StepChain({ loop }: { loop: ProductLoop }) {
+  const move = nextMove(loop);
+  const done = loop.signalCount > 0 ? `${loop.signalCount} signals` : "connected";
+  const now =
+    loop.hypothesisCount > 0
+      ? `${loop.hypothesisCount} hypothes${loop.hypothesisCount === 1 ? "is" : "es"}`
+      : loop.signalCount > 0
+        ? "forming hypothesis"
+        : "no signal yet";
+  const steps: { key: string; tone: string; value: string }[] = [
+    { key: "done", tone: "border-good-line bg-good-soft text-good", value: done },
+    { key: "now", tone: "border-work-line bg-work-soft text-work", value: now },
+    { key: "next", tone: "border-hair bg-soft-2 text-muted", value: move.text },
+  ];
   return (
-    <div
-      className={`flex flex-col items-center rounded-lg border px-3 py-1.5 ${
-        dim ? "border-dashed border-line bg-canvas/40 text-ink-3" : "border-line bg-white"
-      }`}
-    >
-      <span className="text-[15px] font-semibold leading-none">{value}</span>
-      <span className="mt-0.5 text-[10px] uppercase tracking-wide text-ink-3">{label}</span>
+    <div className="flex flex-wrap items-stretch gap-1.5">
+      {steps.map((step, i) => (
+        <div key={step.key} className="flex items-center gap-1.5">
+          <div className={`rounded-md border px-2.5 py-1.5 ${step.tone}`}>
+            <div className="text-2xs font-bold uppercase tracking-wide opacity-70">{step.key}</div>
+            <div className="mt-0.5 text-xs font-medium leading-snug">{step.value}</div>
+          </div>
+          {i < steps.length - 1 ? (
+            <span className="text-faint" aria-hidden>
+              →
+            </span>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }
 
-function Arrow() {
-  return <span className="text-ink-3">▸</span>;
+function SurfaceChip({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-semibold text-muted">
+      {label}
+    </span>
+  );
 }
 
 function MetricRow({ s }: { s: ProductSignal }) {
@@ -67,14 +103,14 @@ function MetricRow({ s }: { s: ProductSignal }) {
   return (
     <div className="flex items-center justify-between gap-3 py-1">
       <div className="flex min-w-0 items-center gap-2">
-        <Chip tone={surface.accent}>{surface.label}</Chip>
-        <span className="truncate text-[12.5px] text-ink">{metricLabel(s.metric)}</span>
+        <SurfaceChip label={surface.label} />
+        <span className="truncate text-xs text-ink">{metricLabel(s.metric)}</span>
       </div>
-      <div className="flex shrink-0 items-center gap-1.5 text-[12.5px]">
+      <div className="flex shrink-0 items-center gap-1.5 text-xs tabular-nums">
         {changed ? (
           <>
-            <span className="text-ink-3">{before}</span>
-            <span className={up ? "text-emerald-600" : "text-red-500"}>→ {after}</span>
+            <span className="text-faint">{before}</span>
+            <span className={up ? "text-good" : "text-crit"}>→ {after}</span>
           </>
         ) : (
           <span className="font-medium text-ink" title="before == after (snapshot)">
@@ -90,44 +126,43 @@ export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
   const move = nextMove(loop);
   const latestReview = loop.reviews[0];
   const empty = loop.signalCount === 0;
+  const { state, label, blockedOnYou } = loopState(loop);
+  const transitionRef = loop.signals.find((s) => s.transitionRef)?.transitionRef ?? "";
 
   return (
-    <div className="card flex flex-col gap-4 p-5">
+    <article
+      className={`flex flex-col gap-4 rounded-lg border border-hair bg-panel p-4 shadow-sm ${
+        blockedOnYou ? "admission-seam" : ""
+      }`}
+    >
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-[16px] font-semibold text-ink">{productDisplayName(loop.productId)}</h2>
-          <p className="mt-0.5 text-[11.5px] text-ink-3">
-            {empty ? "connected · awaiting first signal" : `${loop.metricNames.length} metrics tracked`}
+        <div className="min-w-0">
+          <h2 className="text-md font-semibold text-ink">{productDisplayName(loop.productId)}</h2>
+          <p className="mt-0.5 text-2xs text-faint">
+            {empty
+              ? "connected · awaiting first signal"
+              : `${loop.metricNames.length} metric${loop.metricNames.length === 1 ? "" : "s"} tracked`}
           </p>
         </div>
-        <FreshPill stale={loop.freshness.stale} latestSignalAt={loop.freshness.latestSignalAt} />
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <StateBadge state={state} label={label} />
+          <SignalFreshness stale={loop.freshness.stale} latestSignalAt={loop.freshness.latestSignalAt} />
+        </div>
       </div>
 
-      {/* the loop as a flow */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Stage label="signals" value={String(loop.signalCount)} dim={loop.signalCount === 0} />
-        <Arrow />
-        <Stage label="hypotheses" value={String(loop.hypothesisCount)} dim={loop.hypothesisCount === 0} />
-        <Arrow />
-        <Stage label="reviews" value={String(loop.reviews.length)} dim={loop.reviews.length === 0} />
-        {latestReview ? (
-          <>
-            <Arrow />
-            <Chip tone={verdictTone(latestReview.verdict)}>{latestReview.verdict}</Chip>
-          </>
-        ) : null}
-      </div>
+      {/* the loop as a done → now → next chain */}
+      <StepChain loop={loop} />
 
       {/* signals through domain lenses (a view of the same evidence) */}
       {!empty ? (
-        <div className="rounded-lg border border-line bg-canvas/30 px-3 py-2.5">
+        <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
           <div className="section-label mb-2">Lenses · the same signals, read by what matters</div>
           <div className="flex flex-col gap-3">
             {groupSignalsByLens(loop.signals).map(({ lens, meta, signals }) => (
               <div key={lens}>
                 <div className="mb-0.5 flex items-center gap-2">
-                  <Chip tone={meta.accent}>{meta.label}</Chip>
-                  <span className="text-[10.5px] text-ink-3">{meta.question}</span>
+                  <SurfaceChip label={meta.label} />
+                  <span className="text-2xs text-faint">{meta.question}</span>
                 </div>
                 {signals.map((s) => (
                   <MetricRow key={s.signalId} s={s} />
@@ -140,18 +175,34 @@ export function ProductLoopCard({ loop }: { loop: ProductLoop }) {
 
       {/* the verdict's own next-action, if a review exists */}
       {latestReview ? (
-        <p className="text-[11.5px] text-ink-3">
-          Reviewed {ago(latestReview.reviewedAt)} → <span className="font-medium">{latestReview.verdict}</span>. Causality
-          stays unproven until a before/after change event is reviewed.
+        <p className="text-2xs text-faint">
+          Reviewed {ago(latestReview.reviewedAt)} →{" "}
+          <span className="font-medium text-muted">{latestReview.verdict}</span>. Causality stays unproven until a
+          before/after change event is reviewed.
         </p>
       ) : null}
 
       {/* next move (the doctor's answer) */}
-      <div className="rounded-lg border border-line bg-white px-3 py-2.5">
+      <div className="rounded-md border border-hair bg-soft px-3 py-2.5">
         <div className="section-label mb-1.5">Next move</div>
-        <p className="mb-2 text-[12.5px] text-ink">{move.text}</p>
+        <p className="mb-2 text-xs text-ink">{move.text}</p>
         <CopyCmd cmd={move.cmd} />
+        {blockedOnYou ? (
+          <Link
+            href="/reviews"
+            className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-work underline-offset-2 hover:underline"
+          >
+            Record the verdict in Decide →
+          </Link>
+        ) : null}
       </div>
-    </div>
+
+      {transitionRef ? (
+        <div className="flex items-center gap-1.5 text-2xs text-faint">
+          <span>proof</span>
+          <IdRef id={transitionRef} kind="transition" />
+        </div>
+      ) : null}
+    </article>
   );
 }
