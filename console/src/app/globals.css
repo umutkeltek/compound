@@ -52,6 +52,16 @@
   --color-crit: var(--crit-fg);    --color-crit-soft: var(--crit-soft);   --color-crit-line: var(--crit-line);
   --color-live: var(--work-fg);    /* "active" == work blue, signalled by pulse, not a new hue */
 
+  /* overlay scrim — deliberately stays DARK in BOTH themes: a modal dims the
+     page from behind, so it must not invert to a near-white wash under the
+     dark theme (where --strong is near-white). Carries its own alpha; use the
+     bare `bg-scrim` utility, never `bg-scrim/NN`. (DESIGN.md §3/§7 gap.) */
+  --color-scrim: var(--scrim);
+
+  /* the focus hue as a utility so `outline-focus` / `text-focus` resolve to the
+     same var the global :focus-visible ring uses (DESIGN.md §4). */
+  --color-focus: var(--focus);
+
   /* ---------- legacy neutral aliases — retire in Phase 4 ----------
      Pre-redesign utility names (bg-canvas, bg-card, border-line, text-ink-2,
      text-ink-3) used across every unmigrated page. Their OLD literal hex
@@ -103,6 +113,7 @@
   --good-fg:#059669;   --good-soft:#E4F6EF;   --good-line:#B4E6D3;
   --seam-fg:#B26F09;   --seam-soft:#FCF1DC;   --seam-line:#F1D89B;   /* the attention color */
   --crit-fg:#DC2626;   --crit-soft:#FCE9E7;   --crit-line:#F5C4BE;
+  --scrim:rgba(16,26,38,.38);
 
   --shadow-sm:0 1px 2px rgba(16,26,38,.05);
   --shadow:0 1px 2px rgba(16,26,38,.04),0 4px 16px -6px rgba(16,26,38,.10);
@@ -132,6 +143,7 @@
   --good-fg:#33B679;   --good-soft:#10281E;   --good-line:#1E4331;
   --seam-fg:#D69B3C;   --seam-soft:#2A2211;   --seam-line:#48391B;
   --crit-fg:#E06E5C;   --crit-soft:#2C1714;   --crit-line:#4C2620;
+  --scrim:rgba(2,4,8,.62);
 
   --shadow-sm:0 1px 2px rgba(0,0,0,.3);
   --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px -12px rgba(0,0,0,.6);
@@ -148,12 +160,12 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  /* Deliberately NOT var(--text-base) (13px per DESIGN.md §1): kept at the
-     pre-redesign literal 14px so any unmigrated element that inherits body's
-     font-size (no explicit text-[…]/text-* class) does not shift size. New
-     kit/ components set their own text sizing from the scale above; this
-     default retires once every page has migrated (Phase 4). */
-  font-size: 14px;
+  /* Phase-4 flip (Briefing wave): the default body size is now the design
+     token — 13px (DESIGN.md §1). The Briefing migrates the biggest page in
+     this wave, so the global default moves with it; unmigrated pages that
+     inherit body's size shift one step down (13px) and are being migrated in
+     parallel waves. Elements with an explicit text-* class are unaffected. */
+  font-size: var(--text-base);
 }
 
 /* numbers always align */

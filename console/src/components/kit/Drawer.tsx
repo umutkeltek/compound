@@ -24,7 +24,7 @@ export function Drawer({ open, onOpenChange, title, meta, footer, children }: Dr
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay
-          className="fixed inset-0 z-40 bg-strong/30 backdrop-blur-sm
+          className="fixed inset-0 z-40 bg-scrim backdrop-blur-sm
                      data-[state=open]:animate-[scrim-in_var(--dur-base)_var(--ease-standard)]
                      data-[state=closed]:animate-[scrim-out_var(--dur-base)_var(--ease-standard)]
                      motion-reduce:animate-none motion-reduce:backdrop-blur-none"

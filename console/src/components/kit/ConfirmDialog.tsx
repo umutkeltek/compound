@@ -1,6 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
+import type { ReactNode } from "react";
 
 import { Button, type ButtonVariant } from "./Button";
 
@@ -9,6 +10,11 @@ import { Button, type ButtonVariant } from "./Button";
  * a mono argv preview block, confirm/cancel. Confirm uses Button primary;
  * danger variant when the action is destructive. Radix Dialog for correct
  * focus/keyboard/aria — styled entirely with tokens.
+ *
+ * `children` is an optional slot for extra input the act requires before it can
+ * run — e.g. the operator rationale a RATIONALE_REQUIRED_AREAS act appends to
+ * its recorded review. `confirmDisabled` lets the caller block confirm until
+ * that input is valid.
  */
 export type ConfirmDialogProps = {
   open: boolean;
@@ -21,6 +27,8 @@ export type ConfirmDialogProps = {
   confirmLabel?: string;
   cancelLabel?: string;
   pending?: boolean;
+  confirmDisabled?: boolean;
+  children?: ReactNode;
   onConfirm: () => void;
 };
 
@@ -35,13 +43,15 @@ export function ConfirmDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   pending = false,
+  confirmDisabled = false,
+  children,
   onConfirm,
 }: ConfirmDialogProps) {
   const confirmVariant: ButtonVariant = destructive ? "danger" : "primary";
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-strong/35 backdrop-blur-sm motion-reduce:backdrop-blur-none" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-scrim backdrop-blur-sm motion-reduce:backdrop-blur-none" />
         <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
           <Dialog.Title className="text-md font-semibold text-ink">{title}</Dialog.Title>
           {body ? (
@@ -60,11 +70,13 @@ export function ConfirmDialog({
             </pre>
           ) : null}
 
+          {children ? <div className="mt-3">{children}</div> : null}
+
           <div className="mt-4 flex justify-end gap-2">
             <Dialog.Close asChild>
               <Button variant="secondary">{cancelLabel}</Button>
             </Dialog.Close>
-            <Button variant={confirmVariant} disabled={pending} onClick={onConfirm}>
+            <Button variant={confirmVariant} disabled={pending || confirmDisabled} onClick={onConfirm}>
               {pending ? "Working…" : confirmLabel}
             </Button>
           </div>
