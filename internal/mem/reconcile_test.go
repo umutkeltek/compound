@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,61 @@ func TestSynthesisReconcileDecisiveEvidenceDoesNotCreateContestedCard(t *testing
 	}
 	if files := reconcileContestedReviewFiles(t, s); len(files) != 0 {
 		t.Fatalf("decisive evidence wrote contested review files: %v", files)
+	}
+}
+
+func TestSynthesisReconcileCredibleSourceSplitWritesOneContestedCard(t *testing.T) {
+	s := newStore(t)
+	memory := reconcileClaim("claim_decision_memory", 1, "project:api", "runtime", "Go", rfc3339(t0))
+	memory.CanonClass = "decision"
+	memory.EvidenceRefs = []string{"source:trace-a"}
+	evidence := reconcileClaim("claim_decision_evidence", 2, "project:api", "runtime", "Rust", rfc3339(t0))
+	evidence.CanonClass = "decision"
+	evidence.EvidenceRefs = []string{"source:trace-b"}
+	appendReconcileClaim(t, s, memory)
+	appendReconcileClaim(t, s, evidence)
+	writeReconcileTransition(t, s, reconcileTransitionInput{
+		ID:        "tr_split_reconcile",
+		CreatedAt: rfc3339(t0.Add(time.Hour)),
+		Scope:     evidence.Entity,
+		ClaimRefs: []string{evidence.ID},
+	})
+
+	report, err := s.SynthesisSweep([]string{"reconcile"}, t0.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReconcileContestedCount != 1 || len(report.ReconcileContestedCards) != 1 {
+		t.Fatalf("contested cards = count:%d cards:%+v", report.ReconcileContestedCount, report.ReconcileContestedCards)
+	}
+	if report.ReconcileReopenedCount != 0 {
+		t.Fatalf("split tie must not reopen decisively: %+v", report)
+	}
+	files := reconcileContestedReviewFiles(t, s)
+	if len(files) != 2 {
+		t.Fatalf("contested review should write json+md, got %v", files)
+	}
+	artifact := readReconcileContestedArtifact(t, s)
+	if artifact["status"] != "review_required" || artifact["readiness"] != "needs_review" {
+		t.Fatalf("contested artifact should require review: %+v", artifact)
+	}
+	summary, _ := artifact["operator_summary"].(string)
+	if !strings.HasPrefix(summary, "In project api, in runtime, memory holds ") ||
+		!strings.Contains(summary, "Go (") ||
+		!strings.Contains(summary, "Rust (") ||
+		!strings.Contains(summary, "representation correct?") {
+		t.Fatalf("operator summary not in split-card sentence shape: %q", summary)
+	}
+
+	again, err := s.SynthesisSweep([]string{"reconcile"}, t0.Add(3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ReconcileContestedCount != 0 || len(again.ReconcileContestedCards) != 0 {
+		t.Fatalf("second reconcile should not create duplicate contested cards: %+v", again)
+	}
+	if after := reconcileContestedReviewFiles(t, s); strings.Join(after, "\n") != strings.Join(files, "\n") {
+		t.Fatalf("second reconcile changed contested review files: before=%v after=%v", files, after)
 	}
 }
 
@@ -440,6 +496,28 @@ func reconcileContestedReviewFiles(t *testing.T, s *Store) []string {
 		out = append(out, entry.Name())
 	}
 	return out
+}
+
+func readReconcileContestedArtifact(t *testing.T, s *Store) map[string]any {
+	t.Helper()
+	root := filepath.Join(s.home, "reviews", reconcileContestedArea)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data := readFileIfExists(t, filepath.Join(root, entry.Name()))
+		var artifact map[string]any
+		if err := json.Unmarshal(data, &artifact); err != nil {
+			t.Fatal(err)
+		}
+		return artifact
+	}
+	t.Fatalf("no contested review artifact under %s", root)
+	return nil
 }
 
 func hasReconcileParkedReason(reasons []SynthesisReconcileParkedReason, reason string) bool {
