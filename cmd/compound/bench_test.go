@@ -5,11 +5,59 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"compound/internal/bench"
 	"compound/internal/capgraph"
 )
+
+// TestRunBenchConvertWritesDeterministicLoadableSuite exercises the convert CLI end-to-end on
+// SYNTHETIC input: it writes a byte-stable suite that bench.LoadSuite accepts, prints the
+// drop-accounting to stdout, and produces byte-identical output on a rerun.
+func TestRunBenchConvertWritesDeterministicLoadableSuite(t *testing.T) {
+	dir := t.TempDir()
+	inPath := filepath.Join(dir, "acceptance.json")
+	syn := `{"schema_version":1,"class_cases":[{"prompt":"c","expected_class":"x"}],` +
+		`"cases":[{"id":"case-b","prompt":"b prompt","selected_rule":"r","required_top_n":{"n":5,"ids":["node:beta"]},"required_policy_for":["node:beta"],"forbidden_top_n_contains":{"n":3,"contains":["zeta"]}},` +
+		`{"id":"case-a","prompt":"a prompt","selected_rule":"r","required_anywhere":["node:alpha"]}]}`
+	if err := os.WriteFile(inPath, []byte(syn), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(dir, "suite.json")
+
+	var out, errBuf bytes.Buffer
+	if code := runBench([]string{"convert", "acceptance", "--in", inPath, "--out", outPath, "--name", "syn"}, &out, &errBuf); code != 0 {
+		t.Fatalf("convert exit=%d stderr=%s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "required_policy_for") || !strings.Contains(out.String(), "class_cases") {
+		t.Fatalf("convert summary missing drop-accounting:\n%s", out.String())
+	}
+	suite, err := bench.LoadSuite(outPath)
+	if err != nil {
+		t.Fatalf("converted suite does not load: %v", err)
+	}
+	if len(suite.Cases) != 2 {
+		t.Fatalf("converted cases = %d, want 2", len(suite.Cases))
+	}
+
+	first, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errBuf.Reset()
+	if code := runBench([]string{"convert", "acceptance", "--in", inPath, "--out", outPath, "--name", "syn"}, &out, &errBuf); code != 0 {
+		t.Fatalf("convert rerun exit=%d stderr=%s", code, errBuf.String())
+	}
+	second, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("convert output not byte-identical across runs")
+	}
+}
 
 func seedBenchGraph(t *testing.T, home string) {
 	t.Helper()

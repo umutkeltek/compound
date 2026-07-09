@@ -57,10 +57,21 @@ const (
 	SplitHeldOut = "held_out"
 )
 
-// Suite is the on-disk evaluation suite.
+// Suite is the on-disk evaluation suite. Dropped is optional converter provenance (empty for
+// hand-written suites): every assertion the converter could NOT express is named here with a
+// count, so a converted suite is never a silent truncation of its source.
 type Suite struct {
-	Suite string `json:"suite"`
-	Cases []Case `json:"cases"`
+	Suite   string       `json:"suite"`
+	Dropped []DropRecord `json:"dropped,omitempty"`
+	Cases   []Case       `json:"cases"`
+}
+
+// DropRecord names one class of source assertion the converter deliberately did not carry into a
+// case, with how many it dropped and why. It is loud accounting, not a silent omission.
+type DropRecord struct {
+	Field  string `json:"field"`
+	Count  int    `json:"count"`
+	Reason string `json:"reason"`
 }
 
 // Case is one evaluation case. Harness is an additive, optional scoping hint for capability

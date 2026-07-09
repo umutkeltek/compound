@@ -32,6 +32,8 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 		return runBenchRun(args[1:], stdout, stderr)
 	case "compare":
 		return runBenchCompare(args[1:], stdout, stderr)
+	case "convert":
+		return runBenchConvert(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, benchUsage())
 		return 2
@@ -41,7 +43,86 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 func benchUsage() string {
 	return "usage:\n" +
 		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent]\n" +
-		"  compound bench compare --before <report.json> --after <report.json> [--json]"
+		"  compound bench compare --before <report.json> --after <report.json> [--json]\n" +
+		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>]\n" +
+		"  compound bench convert golden --in <recall-golden.yaml> --out <suite.json> [--name <suite>]\n" +
+		"    deterministic: same input bytes -> byte-identical suite.\n" +
+		"    " + bench.SplitRuleDoc + "\n" +
+		"    dropped (acceptance): required_policy_for, selected_rule, class_cases, task_spec routing — named with counts, never silent.\n" +
+		"    output carries private ids: write it only under $COMPOUND_HOME (e.g. ~/.compound/bench-suites/), never the repo tree."
+}
+
+// runBenchConvert turns a real evaluation source into a bench suite deterministically. It is a pure
+// file→file transform (no --home, no ledger read): read --in, convert, write byte-stable --out,
+// and print the drop-accounting so no dropped assertion is silent.
+func runBenchConvert(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, benchUsage())
+		return 2
+	}
+	mode := args[0]
+	inPath := flagValue(args[1:], "--in")
+	outPath := flagValue(args[1:], "--out")
+	if strings.TrimSpace(inPath) == "" || strings.TrimSpace(outPath) == "" {
+		fmt.Fprintln(stderr, benchUsage())
+		return 2
+	}
+	data, err := os.ReadFile(inPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+
+	name := strings.TrimSpace(flagValue(args[1:], "--name"))
+	var suite bench.Suite
+	switch mode {
+	case "acceptance":
+		if name == "" {
+			name = "wave2-acceptance"
+		}
+		suite, err = bench.ConvertAcceptance(data, name)
+	case "golden":
+		if name == "" {
+			name = "recall-golden"
+		}
+		suite, err = bench.ConvertGolden(data, name)
+	default:
+		fmt.Fprintln(stderr, benchUsage())
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+
+	out, err := bench.MarshalSuite(suite)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if err := os.WriteFile(outPath, out, 0o644); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	printConvertSummary(stdout, mode, outPath, suite)
+	return 0
+}
+
+func printConvertSummary(w io.Writer, mode, outPath string, suite bench.Suite) {
+	fmt.Fprintf(w, "# compound bench convert %s -> %s\n", mode, suite.Suite)
+	fmt.Fprintf(w, "cases: %d\n", len(suite.Cases))
+	held := map[string]int{}
+	for _, c := range suite.Cases {
+		held[c.Split]++
+	}
+	fmt.Fprintf(w, "splits: held_in=%d held_out=%d (%s)\n", held[bench.SplitHeldIn], held[bench.SplitHeldOut], bench.SplitRuleDoc)
+	if len(suite.Dropped) > 0 {
+		fmt.Fprintln(w, "dropped (not surfacing-expressible; named + counted, never silent):")
+		for _, d := range suite.Dropped {
+			fmt.Fprintf(w, "  %-32s %4d  %s\n", d.Field, d.Count, d.Reason)
+		}
+	}
+	fmt.Fprintf(w, "suite: %s\n", outPath)
 }
 
 func runBenchRun(args []string, stdout, stderr io.Writer) int {
