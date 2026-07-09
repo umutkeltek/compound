@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/bench"
 	"compound/internal/capgraph"
+	"compound/internal/work"
 )
 
 // TestRunBenchConvertWritesDeterministicLoadableSuite exercises the convert CLI end-to-end on
@@ -200,6 +202,169 @@ func TestRunBenchNoActionableStampsReport(t *testing.T) {
 	}
 	if na.SuiteKind != "synthetic_fixture" {
 		t.Fatalf("--suite-kind must propagate to report, got %q", na.SuiteKind)
+	}
+}
+
+// TestRunBenchNoActionableArtifactRoundTrips is the loader-input half of the loop: the report the
+// director's loader actually reads is the on-disk artifact under reviews/bench (NOT the --json
+// stdout). A real `bench run --no-actionable` must persist actionable=false into that artifact so
+// loadLatestBenchReports skips it; a default run must leave it absent (nil => actionable).
+func TestRunBenchNoActionableArtifactRoundTrips(t *testing.T) {
+	home := t.TempDir()
+	seedBenchGraph(t, home)
+	suite := filepath.Join("..", "..", "fixtures", "bench", "capability-suite.json")
+
+	// Default run: artifact on disk has no actionable field (nil => actionable).
+	var out, errBuf bytes.Buffer
+	if code := runBench([]string{"run", "--suite", suite, "--home", home, "--json"}, &out, &errBuf); code != 0 {
+		t.Fatalf("default exit=%d stderr=%s", code, errBuf.String())
+	}
+	defArtifact := readSingleBenchArtifact(t, home)
+	if !defArtifact.IsActionable() {
+		t.Fatalf("default artifact must be actionable (nil => true), got %v", defArtifact.Actionable)
+	}
+
+	// --no-actionable: the SAME artifact path the director reads carries actionable=false.
+	naHome := t.TempDir()
+	seedBenchGraph(t, naHome)
+	out.Reset()
+	errBuf.Reset()
+	if code := runBench([]string{"run", "--suite", suite, "--home", naHome, "--json", "--no-actionable"}, &out, &errBuf); code != 0 {
+		t.Fatalf("--no-actionable exit=%d stderr=%s", code, errBuf.String())
+	}
+	naArtifact := readSingleBenchArtifact(t, naHome)
+	if naArtifact.IsActionable() {
+		t.Fatalf("non-actionable artifact must round-trip actionable=false through the loader input, got %v", naArtifact.Actionable)
+	}
+}
+
+// readSingleBenchArtifact reads the one reviews/bench/*.json artifact a `bench run` writes, the
+// exact file loadLatestBenchReports scans — proving the field survives the real write→read path.
+func readSingleBenchArtifact(t *testing.T, home string) bench.Report {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(home, "reviews", "bench"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected one bench artifact, err=%v entries=%d", err, len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(home, "reviews", "bench", entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r bench.Report
+	if err := json.Unmarshal(data, &r); err != nil {
+		t.Fatalf("unmarshal artifact: %v", err)
+	}
+	return r
+}
+
+// TestBenchCompareProofTokenFlowsToHarnessEditClose is the end-to-end loop proof: a real
+// `bench compare` ACCEPT emits a proof_ref token, and that EXACT token — fed verbatim into a
+// harness-edit work close — is what stamps SecondOrder.ShouldHarden=true. A rejected compare emits
+// no token, so its close cannot harden. This is the handoff that wires the bench gate to the
+// harness-edit hardening rule, end to end through the real CLI and the real work store.
+func TestBenchCompareProofTokenFlowsToHarnessEditClose(t *testing.T) {
+	dir := t.TempDir()
+	base := bench.Report{
+		Suite:   "capability-suite",
+		Splits:  map[string]bench.Metrics{bench.SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, bench.SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
+		Overall: bench.Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
+	}
+	regressed := base
+	regressed.Splits = map[string]bench.Metrics{
+		bench.SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
+		bench.SplitHeldOut: {Cases: 5, Hit1: 0.6, Hit5: 0.6, MRR: 0.5},
+	}
+	beforePath := filepath.Join(dir, "before.json")
+	afterOK := filepath.Join(dir, "ok.json")   // == before (accept)
+	afterBad := filepath.Join(dir, "bad.json") // regressed (reject)
+	for path, r := range map[string]bench.Report{beforePath: base, afterOK: base, afterBad: regressed} {
+		data, _ := json.MarshalIndent(r, "", "  ")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// ACCEPT: compare exits 0 and emits a non-empty proof_ref token.
+	var out, errBuf bytes.Buffer
+	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterOK, "--json"}, &out, &errBuf); code != 0 {
+		t.Fatalf("accept compare exit=%d stderr=%s", code, errBuf.String())
+	}
+	var acc bench.CompareReport
+	if err := json.Unmarshal(out.Bytes(), &acc); err != nil {
+		t.Fatalf("decode accept compare: %v", err)
+	}
+	if !acc.Accept || acc.ProofRef == "" {
+		t.Fatalf("accept must emit proof_ref, got accept=%v proof_ref=%q", acc.Accept, acc.ProofRef)
+	}
+
+	// REJECT: compare exits nonzero and emits NO proof_ref token — so a reject can never harden.
+	out.Reset()
+	errBuf.Reset()
+	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterBad, "--json"}, &out, &errBuf); code == 0 {
+		t.Fatalf("regressed compare must exit nonzero")
+	}
+	var rej bench.CompareReport
+	if err := json.Unmarshal(out.Bytes(), &rej); err != nil {
+		t.Fatalf("decode reject compare: %v", err)
+	}
+	if rej.ProofRef != "" {
+		t.Fatalf("rejected compare must NOT emit proof_ref, got %q", rej.ProofRef)
+	}
+
+	// The ACCEPT token, fed verbatim into a harness-edit close, hardens the harness.
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	store, err := work.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "director", SuccessPredicate: "apply accepted harness edit", TargetSurface: "capability_edges"}, now)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.Claim(w.ID, "codex", now); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, now); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	res, err := store.Close(w.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "harness edit applied after bench compare accepted",
+		Changed:   true,
+		ProofRefs: []string{"gate:harness-edit-accepted", acc.ProofRef},
+	}, now)
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !res.Transition.SecondOrder.ShouldHarden {
+		t.Fatalf("the verbatim compare accept proof token must stamp should_harden=true")
+	}
+
+	// A completed harness-edit close with NO bench_compare token must NOT harden — the loop refuses
+	// to self-certify even with an otherwise-valid gate ref.
+	w2, err := store.Create(work.CreateInput{Owner: "director", SuccessPredicate: "apply harness edit", TargetSurface: "capability_edges"}, now)
+	if err != nil {
+		t.Fatalf("create 2: %v", err)
+	}
+	if _, err := store.Claim(w2.ID, "codex", now); err != nil {
+		t.Fatalf("claim 2: %v", err)
+	}
+	if _, err := store.Advance(w2.ID, work.AdvanceInput{To: "running"}, now); err != nil {
+		t.Fatalf("advance 2: %v", err)
+	}
+	res2, err := store.Close(w2.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "edit applied",
+		Changed:   true,
+		ProofRefs: []string{"gate:harness-edit-accepted"},
+	}, now)
+	if err != nil {
+		t.Fatalf("close 2: %v", err)
+	}
+	if res2.Transition.SecondOrder.ShouldHarden {
+		t.Fatalf("a close without the bench_compare accept token must NOT harden")
 	}
 }
 
