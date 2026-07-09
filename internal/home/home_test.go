@@ -320,6 +320,66 @@ func TestCompactClearsTransientAndOptionalRebuildableDirs(t *testing.T) {
 	}
 }
 
+func TestOperationalArchiveMemoryCandidateLandfill(t *testing.T) {
+	now := archiveTestNow
+	h := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(h, "global", now); err != nil {
+		t.Fatal(err)
+	}
+	// Terminal landfill fuel.
+	writeHomeFile(t, h, "inbox/memory-candidates/cand_expired.json", `{"id":"cand_expired","state":"no_promote","reason":"parked_stale_never_reinforced"}`)
+	writeHomeFile(t, h, "inbox/memory-candidates/cand_rejected.json", `{"id":"cand_rejected","state":"rejected"}`)
+	writeHomeFile(t, h, "inbox/memory-candidates/cand_promoted.json", `{"id":"cand_promoted","state":"promoted"}`)
+	// Hot — must not landfill.
+	writeHomeFile(t, h, "inbox/memory-candidates/cand_parked.json", `{"id":"cand_parked","state":"parked"}`)
+	writeHomeFile(t, h, "inbox/memory-candidates/cand_proposed.json", `{"id":"cand_proposed","state":"proposed"}`)
+	// Claims ledger must remain untouched (provenance).
+	writeHomeFile(t, h, "ledger/claims.jsonl", `{"id":"claim_1","entity":"e","predicate":"p","object":"o"}`+"\n")
+
+	// Default kinds must NOT sweep memory-candidates.
+	defaultReport, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultReport.Counts["memory-candidate"] != 0 {
+		t.Fatalf("default archive-history must not landfill memory-candidates: %+v", defaultReport)
+	}
+	if got := mustReadHomeFile(t, h, "inbox/memory-candidates/cand_expired.json"); !strings.Contains(got, "no_promote") {
+		t.Fatalf("default sweep touched memory landfill fuel: %q", got)
+	}
+
+	report, err := ArchiveOperationalHistory(h, OperationalArchiveOptions{Kinds: []string{"memory-candidate"}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ArchivedCount != 3 || report.Counts["memory-candidate"] != 3 {
+		t.Fatalf("memory landfill report = %+v, want 3 memory-candidates", report)
+	}
+	assertMissing(t, filepath.Join(h, "inbox/memory-candidates/cand_expired.json"))
+	assertMissing(t, filepath.Join(h, "inbox/memory-candidates/cand_rejected.json"))
+	assertMissing(t, filepath.Join(h, "inbox/memory-candidates/cand_promoted.json"))
+	if got := mustReadHomeFile(t, h, "inbox/memory-candidates/cand_parked.json"); !strings.Contains(got, "parked") {
+		t.Fatalf("parked must stay hot: %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "inbox/memory-candidates/cand_proposed.json"); !strings.Contains(got, "proposed") {
+		t.Fatalf("proposed must stay hot: %q", got)
+	}
+	if got := mustReadHomeFile(t, h, "ledger/claims.jsonl"); !strings.Contains(got, "claim_1") {
+		t.Fatalf("claims ledger must stay: %q", got)
+	}
+
+	restore, err := RestoreOperationalArchive(h, OperationalRestoreOptions{All: true}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restore.RestoredCount != 3 {
+		t.Fatalf("restore count = %d, want 3", restore.RestoredCount)
+	}
+	if got := mustReadHomeFile(t, h, "inbox/memory-candidates/cand_expired.json"); !strings.Contains(got, "no_promote") {
+		t.Fatalf("restored landfill row missing: %q", got)
+	}
+}
+
 func TestOperationalArchiveMovesTerminalHistoryAndRestores(t *testing.T) {
 	now := archiveTestNow
 	h := filepath.Join(t.TempDir(), ".compound")

@@ -540,6 +540,13 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 			out = append(out, candidates...)
 		}
 	}
+	if kinds["memory-candidate"] {
+		candidates, err := terminalMemoryCandidateCandidates(homePath)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, candidates...)
+	}
 	if len(paths) > 0 {
 		filtered := out[:0]
 		for _, candidate := range out {
@@ -556,7 +563,9 @@ func operationalArchiveCandidates(homePath string, opts OperationalArchiveOption
 }
 
 func operationalArchiveKinds(values []string) (map[string]bool, error) {
-	allowed := map[string]bool{"work": true, "lease": true, "review": true, "comparison": true, "create-plan": true}
+	// memory-candidate is opt-in only (landfill compaction); not in the default
+	// archive-history mix so a routine work/lease sweep never sweeps the inbox.
+	allowed := map[string]bool{"work": true, "lease": true, "review": true, "comparison": true, "create-plan": true, "memory-candidate": true}
 	out := map[string]bool{}
 	for _, value := range values {
 		for _, part := range strings.Split(value, ",") {
@@ -577,6 +586,49 @@ func operationalArchiveKinds(values []string) (map[string]bool, error) {
 		out["create-plan"] = true
 	}
 	return out, nil
+}
+
+// terminalMemoryCandidateCandidates selects memory inbox rows that are fully
+// terminal for landfill compaction: no_promote, rejected, promoted.
+// Parked/proposed stay hot (corroboration / operator gate). Claims ledger is
+// never touched — provenance stays in ledger/claims.jsonl.
+func terminalMemoryCandidateCandidates(homePath string) ([]operationalCandidate, error) {
+	dirName := candidates.InboxDir(candidates.Memory)
+	if dirName == "" {
+		return nil, nil
+	}
+	dir := filepath.Join(homePath, dirName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []operationalCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		rel := filepath.ToSlash(filepath.Join(dirName, entry.Name()))
+		status, err := jsonStringField(filepath.Join(homePath, filepath.FromSlash(rel)), "state")
+		if err != nil {
+			return nil, err
+		}
+		if landfillMemoryCandidateStatus(status) {
+			out = append(out, operationalCandidate{Kind: "memory-candidate", Status: status, OriginalPath: rel})
+		}
+	}
+	return out, nil
+}
+
+func landfillMemoryCandidateStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "no_promote", "rejected", "promoted":
+		return true
+	default:
+		return false
+	}
 }
 
 func operationalArchivePathFilter(values []string) (map[string]bool, error) {

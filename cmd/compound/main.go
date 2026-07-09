@@ -270,7 +270,7 @@ func usage() {
 
 usage:
   compound version
-compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; archive-history accepts --kind work|lease|review|comparison|create-plan and --path <rel>
+compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home P] [--local] COMPOUND_HOME runtime body + archive/restore; archive-history accepts --kind work|lease|review|comparison|create-plan|memory-candidate and --path <rel>
   compound envelope <validate <file>...|kinds>                  typed runtime envelopes
   compound schema <list|export|validate>                        JSON Schema export + contract-aware validation
   compound contract <compile|import-hooks|hooks-authority> ...  EffectiveContract and installed hook authority
@@ -4771,7 +4771,7 @@ func cmdHome(args []string) {
 		printHomeRestoreReport(report)
 	case "archive-history":
 		if hasUsageFlag(args) {
-			fmt.Println("usage: compound home archive-history [--kind work|lease|review|comparison|create-plan] [--path rel] [--dry-run]")
+			fmt.Println("usage: compound home archive-history [--kind work|lease|review|comparison|create-plan|memory-candidate] [--path rel] [--dry-run]")
 			return
 		}
 		report, err := home.ArchiveOperationalHistory(resolve(), home.OperationalArchiveOptions{
@@ -4810,7 +4810,7 @@ func cmdHome(args []string) {
 		}
 		printHomeCompactReport(report)
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]; archive-history [--kind work|lease|review|comparison|create-plan] [--path rel] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "usage: compound home <init|doctor|where|backup|export|verify|restore|archive-history|restore-history|compact> [--home <path>] [--local|--global]; archive-history [--kind work|lease|review|comparison|create-plan|memory-candidate] [--path rel] [--dry-run]")
 		os.Exit(2)
 	}
 }
