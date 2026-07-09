@@ -210,7 +210,10 @@ door for renderers/agents: it reports counts and filtered candidate rows without
 `--include-evidence` is the explicit gate. Patterns are computed **structurally** (high-degree claims =
 load-bearing positions; high-betweenness cross-cluster bridges = contradiction/cross-domain candidates),
 no LLM required. Temperature is a **derived** score (`salience·decay + reinforcement-on-access`), not a
-hand-assigned tier, with `salience` driven by evidence-count and position-strength.
+hand-assigned tier, with `salience` driven by evidence-count and position-strength. Built as the
+`compound://projections/memory-temperature` projection (`compound memory temperature --rebuild`): a
+build-time, recency-decayed join of the capability-usage projection's injected/consumed/ignored signal
+against current claims, fed into ambient recall as a bounded (±0.25) additive rank term.
 
 **EFFICIENT — the engine rents, and is cheap.** The `MemoryEngine` advertises a `capabilities` set
 (unsupported ops raise, never silently no-op) and holds only vectors/ids/metadata — zero authoritative
