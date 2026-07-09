@@ -16,7 +16,7 @@ const SynthesisSweepSchemaVersion = "compound.synthesis_sweep.v0.1"
 // corroboration (decisions-down landfill guard).
 const DecayReasonExpired = "parked_stale_never_reinforced"
 
-var synthesisSweepStages = []string{"cluster", "contradict", "corroborate", "decay", "reconcile"}
+var synthesisSweepStages = []string{"cluster", "contradict", "corroborate", "decay", "volatile", "reconcile"}
 
 type SynthesisSweepReport struct {
 	SchemaVersion              string                           `json:"schema_version"`
@@ -29,6 +29,9 @@ type SynthesisSweepReport struct {
 	ContradictionProposalCount int                              `json:"contradiction_proposal_count"`
 	CorroborationProposalCount int                              `json:"corroboration_proposal_count"`
 	DecayedCount               int                              `json:"decayed_count"`
+	VolatileExtendedCount      int                              `json:"volatile_extended_count"`
+	VolatileCooledCount        int                              `json:"volatile_cooled_count"`
+	VolatileCardedCount        int                              `json:"volatile_carded_count"`
 	ReconcileDismissedCount    int                              `json:"dismissed_count"`
 	ReconcileReopenedCount     int                              `json:"reopened_count"`
 	ReconcileRaisedCount       int                              `json:"raised_count"`
@@ -42,6 +45,7 @@ type SynthesisSweepReport struct {
 	ReopenedClaims             []SynthesisClaimReview           `json:"reopened_claims,omitempty"`
 	RaisedSeeds                []SynthesisSeedReview            `json:"raised_seeds,omitempty"`
 	Decayed                    []SynthesisDecayAction           `json:"decayed,omitempty"`
+	VolatileActions            []VolatileSweepAction            `json:"volatile_actions,omitempty"`
 	ReconcileParkedReasons     []SynthesisReconcileParkedReason `json:"parked_reasons,omitempty"`
 }
 
@@ -181,6 +185,26 @@ func (s *Store) SynthesisSweep(stages []string, now time.Time) (SynthesisSweepRe
 		}
 		report.Decayed = decayed
 		report.DecayedCount = len(decayed)
+	}
+	if stageSet["volatile"] {
+		actions, err := s.volatileSweep(now)
+		if err != nil {
+			return report, err
+		}
+		report.VolatileActions = actions
+		for _, a := range actions {
+			switch a.Action {
+			case VolatileActionExtended:
+				report.VolatileExtendedCount++
+			case VolatileActionCooled:
+				report.VolatileCooledCount++
+			case VolatileActionCarded:
+				report.VolatileCardedCount++
+			}
+		}
+		// Carded rows are operator-attention debt: the valve held and a human
+		// must look — same lane as reopened claims and raised seeds.
+		report.ReviewDebtCount += report.VolatileCardedCount
 	}
 	if stageSet["reconcile"] {
 		if err := s.synthesisReconcile(&report, now); err != nil {

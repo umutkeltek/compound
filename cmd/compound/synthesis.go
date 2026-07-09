@@ -108,8 +108,8 @@ func cmdSynthesis(args []string) {
 		printJSON(out)
 		return
 	}
-	fmt.Printf("synthesis sweep work=%s receipt=%s transition=%s clusters=%d echo_fold=%d contradictions=%d decayed=%d report=%s\n",
-		out.WorkID, out.ReceiptID, out.TransitionID, out.Report.ClusterCount, out.Report.EchoFoldProposalCount, out.Report.ContradictionProposalCount, out.Report.DecayedCount, out.ReportPath)
+	fmt.Printf("synthesis sweep work=%s receipt=%s transition=%s clusters=%d echo_fold=%d contradictions=%d decayed=%d volatile_extended=%d volatile_cooled=%d volatile_carded=%d report=%s\n",
+		out.WorkID, out.ReceiptID, out.TransitionID, out.Report.ClusterCount, out.Report.EchoFoldProposalCount, out.Report.ContradictionProposalCount, out.Report.DecayedCount, out.Report.VolatileExtendedCount, out.Report.VolatileCooledCount, out.Report.VolatileCardedCount, out.ReportPath)
 }
 
 func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, error) {
@@ -131,7 +131,7 @@ func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, er
 		Actor:            "compound synthesis",
 		State:            "ready",
 		DesiredOutcome:   "memory synthesis sweep report with claim-review debt markers",
-		SuccessPredicate: "synthesis sweep emits report artifacts; contradiction stage may append needs_review markers without candidate adjudication or claim promotion/supersession",
+		SuccessPredicate: "synthesis sweep emits report artifacts; contradiction stage may append needs_review markers without candidate adjudication or claim promotion; the volatile stage alone may append clocked claim versions (extension/cool via supersession, receipt + one-line undo)",
 		EvidenceRefs:     []string{"compound://synthesis/sweep"},
 	}, now)
 	if err != nil {

@@ -209,6 +209,8 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory temperature [--json] [--rebuild]"
 	case "canon":
 		return "usage: compound memory canon [--json]"
+	case "volatile-restore":
+		return "usage: compound memory volatile-restore <cooled_claim_id>"
 	case "aliases":
 		return "usage: compound memory aliases <show|rebuild|expand <query>> [--json]"
 	case "fold":
@@ -1578,6 +1580,14 @@ func cmdMemory(args []string) {
 		cmdMemoryTemperature(homePath, rest)
 	case "canon":
 		cmdMemoryCanon(store, rest)
+	case "volatile-restore":
+		if len(rest) == 0 || strings.TrimSpace(rest[0]) == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound memory volatile-restore <cooled_claim_id>")
+			os.Exit(2)
+		}
+		claim, err := store.VolatileRestore(rest[0], time.Now())
+		die(err)
+		fmt.Printf("restored %s -> %s visibility=volatile expires_at=%s (undo of %s)\n", rest[0], claim.ID, claim.ExpiresAt, mem.CooledReasonVolatileExpired)
 	case "aliases":
 		cmdMemoryAliases(homePath, store, rest)
 	case "candidates":
@@ -1967,7 +1977,7 @@ func cmdMemory(args []string) {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|import-page|adjudicate|recall|timeline|query|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor> ...")
+		fmt.Fprintln(os.Stderr, "usage: compound memory <candidate|import-page|adjudicate|recall|timeline|query|volatile-restore|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor> ...")
 		os.Exit(2)
 	}
 }

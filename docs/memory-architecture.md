@@ -219,6 +219,18 @@ only from a receipt that *declared* its used-list (`skills.used_declared`); an u
 the ref at its `injected` count (unknown, neutral), so a claim is never cooled for the harness simply
 never reporting what it used.
 
+Temperature RANKS; the **volatile** visibility EXPIRES. A volatile claim is the ladder's "useful now,
+expires unless reinforced" made real: promoted and recallable under matching scope, never ambient, and
+carrying a mandatory `expires_at` clock (a clockless volatile write is refused at every door; doctrine-class
+claims — canon `operator_permanent` — may never be volatile at all). The `volatile` synthesis-sweep stage
+reads the temperature projection as data: net consumption (consumed − ignored > 0) within one half-life
+extends the clock to `last_injected+30d` (deterministic target + strictly-later guard = idempotent re-runs);
+an expired, unreinforced volatile claim supersedes to a cooled version (`visibility: retired`,
+`cooled_reason: volatile_expired_unreinforced`) — decay, never delete — with a receipt row carrying the
+one-line undo, `compound memory volatile-restore <cooled_claim_id>`, which re-arms with a FRESH `now+30d`
+clock so a restore never instantly re-cools. Gated-tier (product_fact/unclassified) expiries are carded for
+the operator, not silently cooled: only low-risk classes are authorized for silent state change.
+
 **EFFICIENT — the engine rents, and is cheap.** The `MemoryEngine` advertises a `capabilities` set
 (unsupported ops raise, never silently no-op) and holds only vectors/ids/metadata — zero authoritative
 state. Vector rows are stamped `<provider:model>:<dims>` + a corpus-generation hash, so a model/prompt/dim

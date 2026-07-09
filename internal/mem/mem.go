@@ -142,6 +142,7 @@ type Claim struct {
 	Supersedes      string            `json:"supersedes,omitempty"`
 	Visibility      string            `json:"visibility"`
 	ExpiresAt       string            `json:"expires_at,omitempty"`       // volatile-only claim clock ("useful now, expires unless reinforced"); empty on every other visibility
+	CooledReason    string            `json:"cooled_reason,omitempty"`    // why a version was cooled (volatile_expired_unreinforced); NOT a Qualifier — that map is identity-bearing (Topic/dup-detection)
 	State           string            `json:"state,omitempty"`            // derived: promoted | needs_review
 	ReviewRefs      []string          `json:"review_refs,omitempty"`      // append-only review marker refs
 	ConfidenceDelta float64           `json:"confidence_delta,omitempty"` // latest contradicting evidence delta
