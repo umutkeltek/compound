@@ -17,12 +17,13 @@ import (
 const SourceManifestSchemaVersion = "compound.source_manifest.v0.1"
 
 type SourceManifest struct {
-	SchemaVersion string               `json:"schema_version"`
-	ID            string               `json:"id"`
-	GeneratedAt   string               `json:"generated_at"`
-	SourceFamily  string               `json:"source_family"`
-	AuthorityRef  string               `json:"authority_ref"`
-	Items         []SourceManifestItem `json:"items"`
+	SchemaVersion string                    `json:"schema_version"`
+	ID            string                    `json:"id"`
+	GeneratedAt   string                    `json:"generated_at"`
+	SourceFamily  string                    `json:"source_family"`
+	AuthorityRef  string                    `json:"authority_ref"`
+	FamilyMeta    *SourceManifestFamilyMeta `json:"family_meta,omitempty"`
+	Items         []SourceManifestItem      `json:"items"`
 }
 
 type SourceManifestItem struct {
@@ -37,6 +38,15 @@ type SourceManifestItem struct {
 	StructureOverlays  []SourceStructureOverlay `json:"structure_overlays,omitempty"`
 	CompoundEntityRefs []string                 `json:"compound_entity_refs,omitempty"`
 	EvidenceRefs       []string                 `json:"evidence_refs,omitempty"`
+	// Gbrain export lossless fields (family gbrain_db_export_manifest).
+	PageSlug         string                   `json:"page_slug,omitempty"`
+	SourcePath       string                   `json:"source_path,omitempty"`
+	DBOnly           bool                     `json:"db_only,omitempty"`
+	PageHash         string                   `json:"page_hash,omitempty"`
+	Chunks           []SourceManifestChunk    `json:"chunks,omitempty"`
+	Embedding        *SourceManifestEmbedding `json:"embedding,omitempty"`
+	CorpusGeneration string                   `json:"corpus_generation,omitempty"`
+	ImportedAt       string                   `json:"imported_at,omitempty"`
 }
 
 type SourceStructureOverlay struct {
@@ -201,12 +211,32 @@ func DoctorSourceManifest(homePath, sourceFamily string) (SourceManifestDoctorRe
 		sourceManifestCheck("required_fields", report.MissingFieldCount == 0, fmt.Sprintf("missing=%d", report.MissingFieldCount)),
 		sourceManifestCheck("source_recovery", report.HashMismatchCount == 0, fmt.Sprintf("hash_mismatch=%d", report.HashMismatchCount)),
 	)
+	if manifest.SourceFamily == GbrainDBExportManifestFamily {
+		doctorGbrainManifestExtras(manifest, &report)
+	}
 	report.Status = "ok"
 	for _, check := range report.Checks {
 		if check.Status != "ok" {
 			report.Status = "fail"
 			break
 		}
+	}
+	// Gbrain required_fields can rise during extras; re-evaluate after.
+	if report.MissingFieldCount > 0 {
+		for i := range report.Checks {
+			if report.Checks[i].Name == "required_fields" {
+				report.Checks[i] = sourceManifestCheck("required_fields", false, fmt.Sprintf("missing=%d", report.MissingFieldCount))
+			}
+		}
+		report.Status = "fail"
+	}
+	if report.HashMismatchCount > 0 {
+		for i := range report.Checks {
+			if report.Checks[i].Name == "source_recovery" {
+				report.Checks[i] = sourceManifestCheck("source_recovery", false, fmt.Sprintf("hash_mismatch=%d", report.HashMismatchCount))
+			}
+		}
+		report.Status = "fail"
 	}
 	return report, nil
 }

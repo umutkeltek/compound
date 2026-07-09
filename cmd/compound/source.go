@@ -54,7 +54,7 @@ func cmdSource(args []string) {
 }
 
 func sourceUsage() string {
-	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> <source>... [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
+	return "usage: compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | observations [--json] | intake [--limit N] [--json] | connections [--json] | intake-work-plan --card <card_id> [--actor A] [--json] | manifest-create --family <id> (<source>... | --from-export <export.json>) [--json] | manifest-show <family> [--json] | manifest-doctor <family> [--json] | manifest-drilldown <family> --item <id> [--json] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml>"
 }
 
 func cmdSourceObserve(args []string) {
@@ -361,29 +361,46 @@ func cmdSourceIntakeWorkPlan(args []string) {
 
 func cmdSourceManifestCreate(args []string) {
 	family := ""
+	fromExport := ""
 	jsonOut := false
 	var paths []string
+	usage := "usage: compound source manifest-create --family <id> (<source>... | --from-export <export.json>) [--json]"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
 		case "--family":
 			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "usage: compound source manifest-create --family <id> <source>... [--json]")
+				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
 			family = args[i+1]
 			i++
+		case "--from-export":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			fromExport = args[i+1]
+			i++
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				fmt.Fprintln(os.Stderr, "usage: compound source manifest-create --family <id> <source>... [--json]")
+				fmt.Fprintln(os.Stderr, usage)
 				os.Exit(2)
 			}
 			paths = append(paths, args[i])
 		}
 	}
-	if strings.TrimSpace(family) == "" || len(paths) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound source manifest-create --family <id> <source>... [--json]")
+	if strings.TrimSpace(family) == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if strings.TrimSpace(fromExport) != "" && len(paths) > 0 {
+		fmt.Fprintln(os.Stderr, "source manifest-create: use either --from-export or positional sources, not both")
+		os.Exit(2)
+	}
+	if strings.TrimSpace(fromExport) == "" && len(paths) == 0 {
+		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")
@@ -391,7 +408,16 @@ func cmdSourceManifestCreate(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	manifest, err := sourceobs.BuildSourceManifest(family, paths, time.Now())
+	var manifest sourceobs.SourceManifest
+	if strings.TrimSpace(fromExport) != "" {
+		if family != sourceobs.GbrainDBExportManifestFamily {
+			fmt.Fprintf(os.Stderr, "source manifest-create: --from-export currently supports family %s only\n", sourceobs.GbrainDBExportManifestFamily)
+			os.Exit(2)
+		}
+		manifest, err = sourceobs.BuildGbrainExportManifest(fromExport, time.Now())
+	} else {
+		manifest, err = sourceobs.BuildSourceManifest(family, paths, time.Now())
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "source manifest-create:", err)
 		os.Exit(1)
@@ -409,6 +435,9 @@ func cmdSourceManifestCreate(args []string) {
 	fmt.Printf("- authority: %s\n", report.AuthorityRef)
 	fmt.Printf("- items: %d\n", report.ItemCount)
 	fmt.Printf("- path: %s\n", report.ManifestPath)
+	if manifest.FamilyMeta != nil && strings.TrimSpace(manifest.FamilyMeta.GenerationLabel) != "" {
+		fmt.Printf("- generation_label: %s\n", manifest.FamilyMeta.GenerationLabel)
+	}
 }
 
 func cmdSourceManifestShow(args []string) {
@@ -445,8 +474,18 @@ func cmdSourceManifestShow(args []string) {
 		return
 	}
 	fmt.Printf("source manifest: %s\n", manifest.AuthorityRef)
+	if manifest.FamilyMeta != nil && strings.TrimSpace(manifest.FamilyMeta.GenerationLabel) != "" {
+		fmt.Printf("generation_label: %s\n", manifest.FamilyMeta.GenerationLabel)
+		if strings.TrimSpace(manifest.FamilyMeta.DumpRef) != "" {
+			fmt.Printf("dump_ref: %s\n", manifest.FamilyMeta.DumpRef)
+		}
+	}
 	fmt.Printf("items: %d\n", len(manifest.Items))
 	for _, item := range manifest.Items {
+		if strings.TrimSpace(item.PageSlug) != "" {
+			fmt.Printf("- %s gen=%s slug=%s %s\n", item.ID, item.CorpusGeneration, item.PageSlug, item.FileHash)
+			continue
+		}
 		fmt.Printf("- %s %s %s\n", item.ID, item.SourceKind, item.FileHash)
 	}
 }
