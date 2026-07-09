@@ -31,9 +31,10 @@ func runToCloseable(t *testing.T, s *Store, targetSurface, predicate string) str
 
 // TestShouldHardenStampedOnlyOnAcceptedHarnessEditClose is falsifier 6: an
 // ACCEPTED (completed) close of an explicit harness-edit envelope (one with a
-// TargetSurface) stamps SecondOrder.ShouldHarden=true; a rejected/failed close of
-// the same envelope stamps false but STILL emits Receipt + Transition; and an
-// ordinary work with no TargetSurface never hardens on close.
+// TargetSurface) stamps SecondOrder.ShouldHarden=true ONLY when it carries a
+// bench-compare accept proof ref — "completed" cannot self-certify a harness edit;
+// a rejected/failed close of the same envelope stamps false but STILL emits Receipt
+// + Transition; and an ordinary work with no TargetSurface never hardens on close.
 func TestShouldHardenStampedOnlyOnAcceptedHarnessEditClose(t *testing.T) {
 	t.Run("accepted harness-edit close hardens", func(t *testing.T) {
 		s := newStore(t)
@@ -43,7 +44,7 @@ func TestShouldHardenStampedOnlyOnAcceptedHarnessEditClose(t *testing.T) {
 			MoveType:  "control_plane_repair",
 			Summary:   "harness edit accepted and applied",
 			Changed:   true,
-			ProofRefs: []string{"gate:harness-edit-accepted"},
+			ProofRefs: []string{"gate:harness-edit-accepted", "bench_compare_accept:capability-suite"},
 		}, fixedNow)
 		if err != nil {
 			t.Fatalf("close: %v", err)
@@ -89,6 +90,26 @@ func TestShouldHardenStampedOnlyOnAcceptedHarnessEditClose(t *testing.T) {
 		}
 		if res.Transition.SecondOrder.ShouldHarden {
 			t.Fatalf("ordinary (no target_surface) close must not harden: %+v", res.Transition.SecondOrder)
+		}
+	})
+
+	// "completed" alone must NOT harden: a bench-report-exists ref is not a bench-compare ACCEPT.
+	// This is the gate that stops a self-certified close from marking the harness as hardened.
+	t.Run("completed harness-edit close without bench-compare accept proof does not harden", func(t *testing.T) {
+		s := newStore(t)
+		id := runToCloseable(t, s, "capability_edges", "apply the harness edit")
+		res, err := s.Close(id, CloseInput{
+			Outcome:   "completed",
+			MoveType:  "control_plane_repair",
+			Summary:   "harness edit applied",
+			Changed:   true,
+			ProofRefs: []string{"gate:harness-edit-accepted", "bench_report:capability-suite"},
+		}, fixedNow)
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+		if res.Transition.SecondOrder.ShouldHarden {
+			t.Fatalf("completed harness-edit close without bench_compare accept proof must NOT harden: %+v", res.Transition.SecondOrder)
 		}
 	})
 }

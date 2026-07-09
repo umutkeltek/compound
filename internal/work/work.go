@@ -638,7 +638,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		},
 		SecondOrder: envelope.SecondOrder{
 			FutureBehaviorChanged: in.MoveType != "audit_only",
-			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome),
+			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome, in.ProofRefs),
 		},
 	}
 	if err := tr.Validate(); err != nil {
@@ -1059,13 +1059,32 @@ func orEmpty(s []string) []string {
 // shouldHardenOnClose reports whether a close should stamp
 // SecondOrder.ShouldHarden=true. It is true only on an ACCEPTED close (outcome
 // "completed") of an explicit harness-edit envelope — one that declared a
-// TargetSurface (EVOLVE-BLOCK). A rejected/failed/cancelled close of the same
-// envelope stamps false but still emits its Receipt + Transition, so "rejections
-// are logged without changing the active harness." An ordinary work (no
-// TargetSurface) never hardens on close. Derived, not a new CloseInput flag: the
-// close outcome already carries whether the harness edit was accepted.
-func shouldHardenOnClose(targetSurface, outcome string) bool {
-	return strings.TrimSpace(targetSurface) != "" && outcome == "completed"
+// TargetSurface (EVOLVE-BLOCK) — AND that close carries a bench-compare ACCEPT
+// proof ref, so "completed" cannot self-certify a harness edit. A rejected/failed/
+// cancelled close of the same envelope stamps false but still emits its Receipt +
+// Transition, so "rejections are logged without changing the active harness." An
+// ordinary work (no TargetSurface) never hardens on close. Derived, not a new
+// CloseInput flag: the close outcome already carries whether the harness edit was
+// accepted; the proof ref carries whether the gate actually accepted it.
+func shouldHardenOnClose(targetSurface, outcome string, proofRefs []string) bool {
+	return strings.TrimSpace(targetSurface) != "" &&
+		outcome == "completed" &&
+		hasBenchCompareAcceptProof(proofRefs)
+}
+
+// hasBenchCompareAcceptProof reports whether the close's proof refs contain a
+// bench-compare accept record. Accepted spellings include bench_compare_accept:<id>
+// and bench_compare:accept:<id>; matched case-insensitively on a ref that contains
+// both "bench_compare" and "accept". A plain bench_report:... ref does not qualify —
+// the harness edit must prove the gate accepted, not merely that a report exists.
+func hasBenchCompareAcceptProof(refs []string) bool {
+	for _, r := range refs {
+		r = strings.ToLower(strings.TrimSpace(r))
+		if strings.Contains(r, "bench_compare") && strings.Contains(r, "accept") {
+			return true
+		}
+	}
+	return false
 }
 
 // failureCause builds the optional causal-failure annotation; nil when both
