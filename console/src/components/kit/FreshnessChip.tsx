@@ -5,6 +5,10 @@ import { ago } from "@/lib/time";
  * `title` = source command. Fresh (<TTL): green "live · HH:MM:SS". Stale:
  * amber "stale · 4m". Unknown: faint. Adapted from src/components/ui.tsx's
  * FreshnessChip, which only had fresh/unknown — this adds the stale tier.
+ *
+ * Client-safe: `ago` comes from the pure `@/lib/time` module (never
+ * `@/lib/compound`, which pulls node builtins) so the kit barrel stays
+ * usable from client components like the Trace drawer.
  */
 export type FreshnessStatus = "fresh" | "stale" | "unknown";
 

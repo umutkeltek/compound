@@ -9,7 +9,7 @@ export default function WorkDetailLoading() {
         <SkeletonLine className="h-3 w-40" />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
+      <div className="work-detail-grid">
         <div className="flex flex-col gap-4">
           <SkeletonCard />
           <SkeletonCard />

@@ -368,3 +368,93 @@ body {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+
+/* ============================================================
+   WORK SCREEN — pipeline board + envelope trace (DESIGN.md §3/§5)
+   Scoped, work-owned classes appended here so the work TSX stays free of
+   arbitrary Tailwind values while the state-encoded seam, the horizontal
+   pipeline rail, the vertical trace spine, its one beating node, and the
+   runbar all read their color/motion from design tokens. Namespaced
+   (`work-*` / `pipe-*` / `trace-*` / `runbar`) to avoid collision with
+   other migrating lanes.
+   ============================================================ */
+
+/* Work card left seam encodes STATE on the board (the one place seam == state,
+   because a board is scanned by state — DESIGN.md §3 work-card). */
+.work-seam { border-left: 3px solid var(--hair); }
+.work-seam[data-tone="live"]    { border-left-color: var(--work-fg); }
+.work-seam[data-tone="seam"]    { border-left-color: var(--seam-fg); }
+.work-seam[data-tone="done"]    { border-left-color: var(--good-fg); }
+.work-seam[data-tone="failed"]  { border-left-color: var(--crit-fg); }
+.work-seam[data-tone="draft"]   { border-left-color: var(--hair-2); }
+.work-seam[data-tone="queued"]  { border-left-color: var(--faint); }
+.work-seam[data-tone="dropped"] { border-left-color: var(--hair); }
+
+/* Horizontal pipeline rail: one 2px line threading the 7 stage nodes
+   (signature moment A — the envelope spine at board scale). */
+.pipe-rail { height: 2px; background: var(--hair); }
+.pipe-node {
+  position: relative;
+  width: 11px; height: 11px; border-radius: 9999px;
+  border: 2px solid var(--hair); background: var(--panel);
+}
+.pipe-node[data-live="filled"] { background: var(--faint); border-color: var(--faint); }
+.pipe-node[data-live="seat"]   { background: var(--seam-fg); border-color: var(--seam-fg); }
+.pipe-node[data-live="done"]   { background: var(--good-fg); border-color: var(--good-fg); }
+.pipe-node[data-live="run"]    { background: var(--work-fg); border-color: var(--work-fg); }
+.pipe-node[data-live="run"]::after {
+  content: ""; position: absolute; inset: -3px; border-radius: 9999px;
+  border: 2px solid var(--work-fg); animation: trace-beat 1.4s var(--ease-out) infinite;
+}
+
+/* Runbar — the executing-work signal on a running board card (DESIGN.md §5). */
+.runbar { position: relative; height: 2px; overflow: hidden; background: var(--work-line); border-radius: 9999px; }
+.runbar::after {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 40%;
+  background: var(--work-fg); border-radius: 9999px;
+  animation: runbar-slide 2.4s var(--ease-standard) infinite;
+}
+@keyframes runbar-slide {
+  0% { left: -40%; } 100% { left: 100%; }
+}
+
+/* Vertical envelope trace spine (DESIGN.md §3 trace-drawer). 2px rail,
+   14px nodes: done = green fill, run = blue fill + beat, pending = hollow. */
+.trace-spine { position: relative; }
+.trace-rail {
+  position: absolute; left: 6px; top: 4px; bottom: 4px; width: 2px;
+  background: var(--hair);
+}
+.trace-node {
+  position: relative; z-index: 1; flex-shrink: 0;
+  width: 14px; height: 14px; border-radius: 9999px;
+  border: 2px solid var(--hair); background: var(--panel);
+}
+.trace-node[data-status="done"]    { background: var(--good-fg); border-color: var(--good-fg); }
+.trace-node[data-status="pending"] { background: var(--panel); border-color: var(--hair); }
+.trace-node[data-status="live"]    { background: var(--work-fg); border-color: var(--work-fg); }
+.trace-node[data-status="live"]::after {
+  content: ""; position: absolute; inset: -4px; border-radius: 9999px;
+  border: 2px solid var(--work-fg); animation: trace-beat 1.4s var(--ease-out) infinite;
+}
+@keyframes trace-beat {
+  0%   { transform: scale(1);   opacity: .9; }
+  70%  { transform: scale(1.9); opacity: 0; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pipe-node[data-live="run"]::after,
+  .trace-node[data-status="live"]::after {
+    animation: none; opacity: .45; transform: scale(1.4);
+  }
+  .runbar::after { animation: none; left: 0; width: 100%; opacity: .5; }
+}
+
+/* /work/[id] two-column layout: main + fixed proof/trace sidebar. Kept in CSS
+   so the class name carries no arbitrary px (the 340px sidebar is a layout
+   constant like --drawer-w). Single column below lg, split at lg+. */
+.work-detail-grid { display: grid; gap: 1rem; }
+@media (min-width: 1024px) {
+  .work-detail-grid { grid-template-columns: 1fr 340px; }
+}

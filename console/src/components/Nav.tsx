@@ -35,7 +35,6 @@ function groupsFor(decideCount: number | null | undefined, workCount: number | n
           href: "/work",
           badge: workCount != null ? { count: workCount, tone: "quiet" } : undefined,
         },
-        { label: "Flow", href: "/flow" }, // stays a route until Phase 4 (Work's Pipeline lens absorbs it)
         { label: "Agents", href: "/executors" },
         { label: "Loops", href: "/loops" },
       ],
