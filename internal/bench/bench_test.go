@@ -47,6 +47,35 @@ func seedGraph(t *testing.T, home string, nodes []fixtureNode) {
 	}
 }
 
+func fixtureNodesExcept(drop string) []fixtureNode {
+	var out []fixtureNode
+	for _, n := range fixtureNodes() {
+		if n.id == drop {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func caseByID(report Report, id string) CaseResult {
+	for _, c := range report.Cases {
+		if c.ID == id {
+			return c
+		}
+	}
+	return CaseResult{}
+}
+
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func fixedNow() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) }
 
 // TestRunSeparatesAbsentFromRankedMiss is the CRITICAL-distinction falsifier: an expected id
@@ -186,6 +215,200 @@ func TestCompareFlagsHeldOutRegression(t *testing.T) {
 	}
 	if cmp := Compare(before, improve); cmp.Regressed || !cmp.Accept {
 		t.Fatalf("no-regression compare rejected: regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
+	}
+}
+
+// TestForbiddenTopNRedGreen is the negative-assertion falsifier: a forbidden substring that
+// surfaces inside the top-n is recorded as a violation (RED); with the offending node removed the
+// same assertion is clean (GREEN). The positive expected id is a DIFFERENT still-present node so
+// removing the forbidden node does not manufacture an absent expected id — isolating the forbidden
+// signal from the hit signal.
+func TestForbiddenTopNRedGreen(t *testing.T) {
+	suite := func() Suite {
+		return Suite{Suite: "forbidden", Cases: []Case{{
+			ID: "f", Kind: KindCapability, Task: "paywall upgrade subscription",
+			Expected: []string{"skill:paywall"}, Split: SplitHeldIn, Lane: "exact",
+			Forbidden: &ForbiddenTopN{N: 10, Contains: []string{"revenuecat"}},
+		}}}
+	}
+
+	// RED: tool:revenuecat present and surfaces on "subscription" within top-10.
+	homeRed := t.TempDir()
+	seedGraph(t, homeRed, fixtureNodes())
+	red, err := Run(Options{Home: homeRed, Suite: suite(), BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run red: %v", err)
+	}
+	rc := caseByID(red, "f")
+	if !contains(rc.ForbiddenViolations, "tool:revenuecat") {
+		t.Fatalf("RED forbidden_violations = %v, want tool:revenuecat recorded", rc.ForbiddenViolations)
+	}
+	if red.Splits[SplitHeldIn].ForbiddenViolations != 1 {
+		t.Fatalf("RED split forbidden total = %d, want 1", red.Splits[SplitHeldIn].ForbiddenViolations)
+	}
+
+	// GREEN: remove tool:revenuecat — no top-n id contains the forbidden substring.
+	homeGreen := t.TempDir()
+	seedGraph(t, homeGreen, fixtureNodesExcept("tool:revenuecat"))
+	green, err := Run(Options{Home: homeGreen, Suite: suite(), BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run green: %v", err)
+	}
+	gc := caseByID(green, "f")
+	if len(gc.ForbiddenViolations) != 0 {
+		t.Fatalf("GREEN forbidden_violations = %v, want none", gc.ForbiddenViolations)
+	}
+	if green.Splits[SplitHeldIn].ForbiddenViolations != 0 {
+		t.Fatalf("GREEN split forbidden total = %d, want 0", green.Splits[SplitHeldIn].ForbiddenViolations)
+	}
+	if len(green.AbsentFromGraph) != 0 {
+		t.Fatalf("GREEN must not report absent (expected id still present): %v", green.AbsentFromGraph)
+	}
+}
+
+// TestMustOutrankRedGreen is the relative-order falsifier: the winner ranked BELOW a
+// loser-substring match is a violation (RED); a task that ranks the winner above the loser is
+// clean (GREEN). Same graph both times; only the task ordering flips.
+func TestMustOutrankRedGreen(t *testing.T) {
+	mk := func(task string) Suite {
+		return Suite{Suite: "outrank", Cases: []Case{{
+			ID: "o", Kind: KindCapability, Task: task,
+			Expected: []string{"skill:pricing"}, Split: SplitHeldOut, Lane: "graph",
+			MustOutrank: []OutrankAssertion{{Winner: "skill:pricing", LoserContains: []string{"paywall"}}},
+		}}}
+	}
+	home := t.TempDir()
+	seedGraph(t, home, fixtureNodes())
+
+	// RED: "paywall upgrade" surfaces skill:paywall (2 triggers) above skill:pricing (1 trigger).
+	red, err := Run(Options{Home: home, Suite: mk("paywall upgrade"), BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run red: %v", err)
+	}
+	rc := caseByID(red, "o")
+	if !contains(rc.OutrankViolations, "skill:pricing !> skill:paywall") {
+		t.Fatalf("RED outrank_violations = %v, want winner-below-loser recorded", rc.OutrankViolations)
+	}
+	if red.Splits[SplitHeldOut].OutrankViolations != 1 {
+		t.Fatalf("RED split outrank total = %d, want 1", red.Splits[SplitHeldOut].OutrankViolations)
+	}
+
+	// GREEN: "pricing monetization paywall" ranks skill:pricing (3 triggers) above skill:paywall (1).
+	green, err := Run(Options{Home: home, Suite: mk("pricing monetization paywall"), BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run green: %v", err)
+	}
+	gc := caseByID(green, "o")
+	if len(gc.OutrankViolations) != 0 {
+		t.Fatalf("GREEN outrank_violations = %v, want none", gc.OutrankViolations)
+	}
+}
+
+// TestMustOutrankWinnerAbsentIsParityGap is the winner-absent falsifier: a must_outrank winner
+// that isn't in the graph must fold into absent_from_graph (the parity-gap mechanic that fails the
+// --allow-absent gate) AND be recorded as a violation — never a silent pass.
+func TestMustOutrankWinnerAbsentIsParityGap(t *testing.T) {
+	home := t.TempDir()
+	seedGraph(t, home, fixtureNodes())
+	suite := Suite{Suite: "absent-winner", Cases: []Case{{
+		ID: "w", Kind: KindCapability, Task: "pricing", Expected: []string{"skill:pricing"},
+		Split: SplitHeldIn, Lane: "exact",
+		MustOutrank: []OutrankAssertion{{Winner: "skill:ghost-winner", LoserContains: []string{"pricing"}}},
+	}}}
+	report, err := Run(Options{Home: home, Suite: suite, BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !contains(report.AbsentFromGraph, "skill:ghost-winner") {
+		t.Fatalf("absent_from_graph = %v, want skill:ghost-winner folded in", report.AbsentFromGraph)
+	}
+	wc := caseByID(report, "w")
+	if !contains(wc.OutrankViolations, "skill:ghost-winner absent_from_graph") {
+		t.Fatalf("outrank_violations = %v, want absent winner recorded (not a silent pass)", wc.OutrankViolations)
+	}
+	if !report.HasAbsent() {
+		t.Fatalf("HasAbsent() = false, want true so the --allow-absent gate fires on the absent winner")
+	}
+}
+
+// TestCompareRegressesOnViolationIncrease falsifies the additive Compare rule: a split whose
+// violation total INCREASES (hit@5/MRR unchanged) must be rejected; a decrease must not.
+func TestCompareRegressesOnViolationIncrease(t *testing.T) {
+	before := Report{
+		Suite:   "s",
+		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
+		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
+	}
+	worse := before
+	worse.Splits = map[string]Metrics{
+		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},                          // unchanged
+		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 2}, // more leaks, same hits
+	}
+	cmp := Compare(before, worse)
+	if !cmp.Regressed || cmp.Accept {
+		t.Fatalf("violation increase should reject: regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
+	}
+	if !reflect.DeepEqual(cmp.RegressedSplit, []string{SplitHeldOut}) {
+		t.Fatalf("regressed splits = %v, want [held_out]", cmp.RegressedSplit)
+	}
+
+	// Outrank-violation increase on held_in also regresses.
+	worse2 := before
+	worse2.Splits = map[string]Metrics{
+		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, OutrankViolations: 1},
+		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
+	}
+	if cmp := Compare(before, worse2); !cmp.Regressed || !reflect.DeepEqual(cmp.RegressedSplit, []string{SplitHeldIn}) {
+		t.Fatalf("outrank increase on held_in should reject with held_in named, got regressed=%v splits=%v", cmp.Regressed, cmp.RegressedSplit)
+	}
+
+	// A violation DECREASE (with hits held) is an improvement — must accept.
+	fewer := Report{
+		Suite:   "s",
+		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 3}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
+		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 3},
+	}
+	better := fewer
+	better.Splits = map[string]Metrics{
+		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 0},
+		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},
+	}
+	if cmp := Compare(fewer, better); cmp.Regressed || !cmp.Accept {
+		t.Fatalf("violation decrease should accept: regressed=%v accept=%v", cmp.Regressed, cmp.Accept)
+	}
+}
+
+// TestBackwardCompatOldFixtureScoresIdentically is the no-schema-break falsifier: the existing
+// 10-case capability fixture (which asserts NEITHER forbidden nor must_outrank) scores exactly as
+// it did before the additive extension — hit@1/hit@5/MRR all 1.0, 5/5 splits, zero violations,
+// nothing absent. If any additive field silently changed the positive scoring, this reds.
+func TestBackwardCompatOldFixtureScoresIdentically(t *testing.T) {
+	home := t.TempDir()
+	seedGraph(t, home, fixtureNodes())
+	suite, err := LoadSuite(filepath.Join("..", "..", "fixtures", "bench", "capability-suite.json"))
+	if err != nil {
+		t.Fatalf("load suite: %v", err)
+	}
+	report, err := Run(Options{Home: home, Suite: suite, BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if report.Overall != (Metrics{Cases: 10, Hit1: 1.0, Hit5: 1.0, MRR: 1.0}) {
+		t.Fatalf("overall = %+v, want {10,1,1,1} with zero violations (additive fields must default to 0)", report.Overall)
+	}
+	if report.Splits[SplitHeldIn] != (Metrics{Cases: 5, Hit1: 1.0, Hit5: 1.0, MRR: 1.0}) {
+		t.Fatalf("held_in = %+v, want {5,1,1,1}", report.Splits[SplitHeldIn])
+	}
+	if report.Splits[SplitHeldOut] != (Metrics{Cases: 5, Hit1: 1.0, Hit5: 1.0, MRR: 1.0}) {
+		t.Fatalf("held_out = %+v, want {5,1,1,1}", report.Splits[SplitHeldOut])
+	}
+	if len(report.AbsentFromGraph) != 0 {
+		t.Fatalf("absent = %v, want none", report.AbsentFromGraph)
+	}
+	for _, c := range report.Cases {
+		if len(c.ForbiddenViolations) != 0 || len(c.OutrankViolations) != 0 {
+			t.Fatalf("case %s carries violations on a no-assertion fixture: %+v", c.ID, c)
+		}
 	}
 }
 

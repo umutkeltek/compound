@@ -11,6 +11,19 @@
 //     ABSENT_FROM_GRAPH ("the id isn't in the graph/ledger to be found at all"). That
 //     parity gap was the real finding of the Wave-2 gate (39/121 ids absent) and is
 //     invisible to a scorer that only measures hit@k.
+//
+// Scoring has three families, all read off the SAME ranked id list from one surfacing call:
+//   - Positive: per-expected-id hit@1/hit@5/MRR (the best-ranked relevant id wins the case).
+//   - Negative (Case.Forbidden): none of the top-N surfaced ids may contain a forbidden
+//     substring — a leakage guard mirroring the acceptance suite's forbidden_top_n_contains.
+//   - Relative (Case.MustOutrank): a winner id must rank strictly above every ranked
+//     loser-substring match — mirroring the acceptance suite's must_outrank. An absent winner
+//     folds into the absent_from_graph parity gap, never a silent pass.
+//
+// The negative/relative families produce VIOLATION lists per case and violation TOTALS per split;
+// Compare regresses when a split's violation total increases, on top of the hit@5/MRR-drop rule.
+// The additions are strictly additive: no positive hit/rank field changed, so a suite that asserts
+// neither scores byte-identically to the pre-extension organ.
 package bench
 
 import (
@@ -54,15 +67,36 @@ type Suite struct {
 // surfacing (empty = generic, surfaces all non-harness-restricted nodes, matching orient's
 // behavior for a generic task); it is not part of the required suite schema.
 type Case struct {
-	ID       string   `json:"id"`
-	Kind     string   `json:"kind"`                // "capability" | "memory"
-	Task     string   `json:"task"`                // free text scored through the real surfacing path
-	Expected []string `json:"expected"`            // node ids (capability) or claim ids (memory)
-	Lane     string   `json:"lane"`                // "exact" | "paraphrase" | "casual" | "graph"
-	Split    string   `json:"split"`               // "held_in" | "held_out"
-	Harness  string   `json:"harness,omitempty"`   // optional capability surfacing scope
-	RepoKind string   `json:"repo_kind,omitempty"` // optional; memory recall rule scope (default control-plane)
-	Topic    string   `json:"topic,omitempty"`     // optional; narrows memory ambient recall
+	ID          string             `json:"id"`
+	Kind        string             `json:"kind"`                   // "capability" | "memory"
+	Task        string             `json:"task"`                   // free text scored through the real surfacing path
+	Expected    []string           `json:"expected"`               // node ids (capability) or claim ids (memory)
+	Lane        string             `json:"lane"`                   // "exact" | "paraphrase" | "casual" | "graph"
+	Split       string             `json:"split"`                  // "held_in" | "held_out"
+	Harness     string             `json:"harness,omitempty"`      // optional capability surfacing scope
+	RepoKind    string             `json:"repo_kind,omitempty"`    // optional; memory recall rule scope (default control-plane)
+	Topic       string             `json:"topic,omitempty"`        // optional; narrows memory ambient recall
+	Forbidden   *ForbiddenTopN     `json:"forbidden,omitempty"`    // optional; none of top-n surfaced ids may contain a listed substring
+	MustOutrank []OutrankAssertion `json:"must_outrank,omitempty"` // optional; winner must rank strictly above every loser-substring match
+}
+
+// ForbiddenTopN is a negative assertion: the case violates it if any of the top-N surfaced ids
+// contains any listed substring. It mirrors the acceptance suite's forbidden_top_n_contains
+// (substring semantics) — a leakage guard, distinct from the positive hit/rank scoring which is
+// left untouched. Nil = not asserted.
+type ForbiddenTopN struct {
+	N        int      `json:"n"`
+	Contains []string `json:"contains"`
+}
+
+// OutrankAssertion is a relative-order assertion: the Winner id's rank must be strictly better
+// (numerically lower) than every RANKED id matching any LoserContains substring. It mirrors the
+// acceptance suite's must_outrank[{winner, loser_contains}] (substring losers, exact winner).
+// A winner that is absent from the graph is folded into the absent_from_graph mechanics (a parity
+// gap), never a silent pass.
+type OutrankAssertion struct {
+	Winner        string   `json:"winner"`
+	LoserContains []string `json:"loser_contains"`
 }
 
 // ExpectedResult is the outcome for one expected id in a case.
@@ -87,14 +121,22 @@ type CaseResult struct {
 	Hit5       bool             `json:"hit_5"`
 	RR         float64          `json:"reciprocal_rank"`
 	BestRank   int              `json:"best_rank"` // best (min) rank across ranked expected ids; 0 = none ranked
+	// Violation outcomes for the additive negative/relative assertions. Empty when the case
+	// asserts none (or asserts them and passes). They never touch the hit/rank fields above.
+	ForbiddenViolations []string `json:"forbidden_violations,omitempty"` // top-n ids that contain a forbidden substring
+	OutrankViolations   []string `json:"outrank_violations,omitempty"`   // "<winner> !> <loser>" or "<winner> absent_from_graph"
 }
 
-// Metrics aggregates ranking quality over a set of scored (non-skipped) cases.
+// Metrics aggregates ranking quality over a set of scored (non-skipped) cases. The violation
+// counters are additive TOTALS (not means): the number of forbidden / outrank violation entries
+// across the split's cases. Compare regresses when either total increases (see splitDelta).
 type Metrics struct {
-	Cases int     `json:"cases"`
-	Hit1  float64 `json:"hit_1"`
-	Hit5  float64 `json:"hit_5"`
-	MRR   float64 `json:"mrr"`
+	Cases               int     `json:"cases"`
+	Hit1                float64 `json:"hit_1"`
+	Hit5                float64 `json:"hit_5"`
+	MRR                 float64 `json:"mrr"`
+	ForbiddenViolations int     `json:"forbidden_violations"`
+	OutrankViolations   int     `json:"outrank_violations"`
 }
 
 // Report is the evaluator's evidence artifact. Identity fields (BuildSHA, GraphHash, Suite,
@@ -222,6 +264,7 @@ func Run(opts Options) (Report, error) {
 			}
 			res.OfferCount = offerCount
 			scoreExpected(&res, c.Expected, ranks, capPresent)
+			scoreAssertions(&res, c, ranks, capPresent)
 		case KindMemory:
 			in := contract.Input{Task: c.Task, Harness: c.Harness, RepoKind: memoryRepoKind(c), Topic: c.Topic}
 			rankedIDs, present, available, err := contract.BenchMemoryRank(opts.Home, in, pol)
@@ -237,6 +280,7 @@ func Run(opts Options) (Report, error) {
 			ranks := ranksFromOrder(rankedIDs)
 			res.OfferCount = len(rankedIDs)
 			scoreExpected(&res, c.Expected, ranks, present)
+			scoreAssertions(&res, c, ranks, present)
 		}
 		finalizeCase(&res)
 		for _, er := range res.Expected {
@@ -337,6 +381,83 @@ func scoreExpected(res *CaseResult, expected []string, ranks map[string]int, pre
 	}
 }
 
+// scoreAssertions fills the additive negative/relative violation outcomes on res from the SAME
+// ranked id list the hit scoring used (no second surfacing pass). Matching is substring/prefix
+// based, matching the acceptance file's semantics. It never touches res.Hit*/RR/BestRank.
+//
+//   - Forbidden: a violation for each of the top-N surfaced ids that contains any forbidden
+//     substring. Present-agnostic — a forbidden id that surfaced is a leak regardless of whether
+//     it is a "real" node.
+//   - MustOutrank: for each assertion, a violation for every RANKED loser-substring match the
+//     winner does not rank strictly above (winner unranked, or winner rank >= loser rank). A
+//     winner ABSENT from the graph is folded into the absent_from_graph mechanics (appended as an
+//     absent ExpectedResult so Run counts it in the parity gap) and recorded as a violation —
+//     never a silent pass.
+func scoreAssertions(res *CaseResult, c Case, ranks map[string]int, present map[string]bool) {
+	if c.Forbidden != nil {
+		var viol []string
+		seen := map[string]bool{}
+		for id, r := range ranks {
+			if r < 1 || r > c.Forbidden.N {
+				continue
+			}
+			if containsAny(id, c.Forbidden.Contains) && !seen[id] {
+				seen[id] = true
+				viol = append(viol, id)
+			}
+		}
+		sort.Strings(viol)
+		res.ForbiddenViolations = viol
+	}
+	if len(c.MustOutrank) == 0 {
+		return
+	}
+	var viol []string
+	for _, a := range c.MustOutrank {
+		winnerRank, winnerRanked := ranks[a.Winner]
+		if !present[a.Winner] {
+			// Absent winner: fold into absent_from_graph (unless already an expected id there) and
+			// record the violation. It is a parity gap, not a pass.
+			if !expectedHasID(res.Expected, a.Winner) {
+				res.Expected = append(res.Expected, ExpectedResult{ID: a.Winner, AbsentFromGraph: true})
+			}
+			viol = append(viol, a.Winner+" absent_from_graph")
+			continue
+		}
+		for id, r := range ranks {
+			if r < 1 || id == a.Winner {
+				continue
+			}
+			if !containsAny(id, a.LoserContains) {
+				continue
+			}
+			if !winnerRanked || winnerRank >= r {
+				viol = append(viol, a.Winner+" !> "+id)
+			}
+		}
+	}
+	sort.Strings(viol)
+	res.OutrankViolations = viol
+}
+
+func containsAny(id string, subs []string) bool {
+	for _, s := range subs {
+		if s != "" && strings.Contains(id, s) {
+			return true
+		}
+	}
+	return false
+}
+
+func expectedHasID(expected []ExpectedResult, id string) bool {
+	for _, er := range expected {
+		if er.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // finalizeCase computes per-case hit@1/hit@5/MRR from the best (min) rank across ranked
 // expected ids. A case with multiple relevant ids is credited by its best-ranked one (the
 // standard IR convention for a query with several relevant documents).
@@ -374,6 +495,8 @@ func aggregate(cases []CaseResult, split string) Metrics {
 			hit5++
 		}
 		rr += c.RR
+		m.ForbiddenViolations += len(c.ForbiddenViolations)
+		m.OutrankViolations += len(c.OutrankViolations)
 	}
 	if m.Cases > 0 {
 		n := float64(m.Cases)
@@ -417,7 +540,13 @@ type SplitDelta struct {
 	BeforeMRR  float64 `json:"before_mrr"`
 	AfterMRR   float64 `json:"after_mrr"`
 	MRRDelta   float64 `json:"mrr_delta"`
-	Regressed  bool    `json:"regressed"` // hit@5 OR MRR lower after
+	// Additive assertion-violation deltas. A split regresses when violations INCREASE, on top of
+	// the existing hit@5/MRR-drop rule.
+	BeforeForbiddenViolations int  `json:"before_forbidden_violations"`
+	AfterForbiddenViolations  int  `json:"after_forbidden_violations"`
+	BeforeOutrankViolations   int  `json:"before_outrank_violations"`
+	AfterOutrankViolations    int  `json:"after_outrank_violations"`
+	Regressed                 bool `json:"regressed"` // hit@5 OR MRR lower, OR a violation count higher, after
 }
 
 // CompareReport is the before→after delta with the held-in/held-out accept verdict.
@@ -466,7 +595,11 @@ func splitDelta(split string, before, after Metrics) SplitDelta {
 		BeforeHit1: before.Hit1, AfterHit1: after.Hit1, Hit1Delta: after.Hit1 - before.Hit1,
 		BeforeHit5: before.Hit5, AfterHit5: after.Hit5, Hit5Delta: after.Hit5 - before.Hit5,
 		BeforeMRR: before.MRR, AfterMRR: after.MRR, MRRDelta: after.MRR - before.MRR,
+		BeforeForbiddenViolations: before.ForbiddenViolations, AfterForbiddenViolations: after.ForbiddenViolations,
+		BeforeOutrankViolations: before.OutrankViolations, AfterOutrankViolations: after.OutrankViolations,
 	}
-	d.Regressed = after.Hit5 < before.Hit5 || after.MRR < before.MRR
+	d.Regressed = after.Hit5 < before.Hit5 || after.MRR < before.MRR ||
+		after.ForbiddenViolations > before.ForbiddenViolations ||
+		after.OutrankViolations > before.OutrankViolations
 	return d
 }
