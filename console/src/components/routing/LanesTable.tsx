@@ -1,4 +1,4 @@
-import { EmptyState, FreshnessChip } from "@/components/kit";
+import { EmptyState, FreshnessChip, SectionHeader, TableIcon } from "@/components/kit";
 import type { ModelLane, ModelLanesReport } from "@/lib/routing";
 import { tierRank } from "@/lib/routing";
 
@@ -73,7 +73,7 @@ export function LanesTable({ report }: { report: ModelLanesReport | null }) {
     <section className="flex flex-col gap-3">
       <SectionHead report={report} />
 
-      <div className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+      <div className="overflow-hidden rounded-xl bg-panel shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left" style={{ minWidth: "36rem" }}>
             <thead>
@@ -89,8 +89,10 @@ export function LanesTable({ report }: { report: ModelLanesReport | null }) {
               const lanes = byTier.get(tier)!.sort((a, b) => a.modelId.localeCompare(b.modelId));
               return (
                 <tbody key={tier}>
+                  {/* Tier tone-band (§9.1): a soft-2 header separates each cost
+                      tier without a hairline; tier/cost stay neutral (§7.2). */}
                   <tr>
-                    <td colSpan={5} className="bg-soft px-4 pt-2.5 pb-1.5">
+                    <td colSpan={5} className="bg-soft-2 px-4 pt-2.5 pb-1.5">
                       <span className="text-2xs font-bold uppercase tracking-wide text-muted">
                         {TIER_LABEL[tier] ?? tier}
                       </span>
@@ -137,19 +139,23 @@ function LaneCells({ lane }: { lane: ModelLane }) {
 
 function SectionHead({ report, note }: { report: ModelLanesReport | null; note?: string }) {
   return (
-    <div className="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 className="text-md font-semibold text-ink">Model lanes</h2>
-        <p className="mt-0.5 text-2xs leading-relaxed text-muted">
-          {note ??
-            `${report?.modelCount ?? 0} lanes across ${report?.capabilityClasses.length ?? 0} capability ${
-              (report?.capabilityClasses.length ?? 0) === 1 ? "class" : "classes"
-            } — the mind routing can pick, by cost class.`}
-        </p>
-      </div>
-      {report?.generatedAt ? (
-        <FreshnessChip generatedAt={report.generatedAt} source="compound route model-capabilities --json" />
-      ) : null}
+    <div className="flex flex-col gap-1">
+      <SectionHeader
+        tone="route"
+        icon={<TableIcon />}
+        label="Model lanes"
+        right={
+          report?.generatedAt ? (
+            <FreshnessChip generatedAt={report.generatedAt} source="compound route model-capabilities --json" />
+          ) : null
+        }
+      />
+      <p className="text-2xs leading-relaxed text-muted">
+        {note ??
+          `${report?.modelCount ?? 0} lanes across ${report?.capabilityClasses.length ?? 0} capability ${
+            (report?.capabilityClasses.length ?? 0) === 1 ? "class" : "classes"
+          } — the mind routing can pick, by cost class.`}
+      </p>
     </div>
   );
 }

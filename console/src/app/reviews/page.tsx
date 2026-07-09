@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { FreshnessChip, PageHeader } from "@/components/kit";
+import { CheckIcon, ClockIcon, FreshnessChip, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { getAttention, type AttentionReport } from "@/lib/attention";
 import { arr, getReviews, num, str, type Json } from "@/lib/compound";
 import { ago, toDate } from "@/lib/time";
@@ -252,14 +252,18 @@ export default async function Decide() {
       />
 
       <section className="flex flex-col gap-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <h2 className="text-md font-semibold text-ink">Needs you</h2>
-          <p className="text-xs tabular-nums text-faint">
-            {empty
-              ? `Nothing waits on you · ${filedTotal} filed`
-              : `${needsYouItemTotal.toLocaleString("en-US")} item${needsYouItemTotal === 1 ? "" : "s"} in ${decideGroups.length} decision${decideGroups.length === 1 ? "" : "s"}`}
-          </p>
-        </div>
+        <SectionHeader
+          tone="seam"
+          icon={<GavelIcon />}
+          label="Needs you"
+          right={
+            <span className="text-xs tabular-nums text-faint">
+              {empty
+                ? `Nothing waits on you · ${filedTotal} filed`
+                : `${needsYouItemTotal.toLocaleString("en-US")} item${needsYouItemTotal === 1 ? "" : "s"} in ${decideGroups.length} decision${decideGroups.length === 1 ? "" : "s"}`}
+            </span>
+          }
+        />
 
         {empty ? (
           <p className="rounded-lg border border-dashed border-hair bg-page px-4 py-8 text-center text-sm text-muted">
@@ -272,12 +276,14 @@ export default async function Decide() {
 
       {watchingEntries.length ? (
         <section className="flex flex-col gap-3">
-          <div className="flex items-baseline justify-between gap-2">
-            <h2 className="text-md font-semibold text-ink">Watching</h2>
-            <span className="mono text-2xs tabular-nums text-faint">{watchingEntries.length}</span>
-          </div>
-          <p className="text-xs text-faint">Informational holds — nothing to decide yet, no buttons on purpose.</p>
-          <div className="overflow-hidden rounded-lg border border-hair bg-panel">
+          <SectionHeader
+            tone="neutral"
+            icon={<ClockIcon />}
+            label="Watching"
+            sub="informational holds — no buttons on purpose"
+            right={<span className="mono text-2xs tabular-nums text-faint">{watchingEntries.length}</span>}
+          />
+          <div className="overflow-hidden rounded-xl bg-panel shadow-sm">
             {watchingEntries.map((entry, index) => (
               <WatchingRow key={str(entry.key) || str(entry.id) || index} entry={entry} itemByID={itemByID} />
             ))}
@@ -286,12 +292,17 @@ export default async function Decide() {
       ) : null}
 
       <section>
-        <div className="mb-2 flex items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold text-muted">Filed</h2>
-          <span className="text-xs tabular-nums text-faint">
-            {filedTotal} record{filedTotal === 1 ? "" : "s"} filed
-          </span>
-        </div>
+        <SectionHeader
+          className="mb-2"
+          tone="good"
+          icon={<CheckIcon />}
+          label="Filed"
+          right={
+            <span className="text-xs tabular-nums text-faint">
+              {filedTotal} record{filedTotal === 1 ? "" : "s"} filed
+            </span>
+          }
+        />
         {filedByArea.length ? (
           <div className="flex flex-wrap gap-2">
             {filedByArea.map(([area, count]) => (

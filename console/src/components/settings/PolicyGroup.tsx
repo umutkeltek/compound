@@ -1,5 +1,7 @@
 import { arr, num, str, type Json } from "@/lib/compound";
 
+import { GavelIcon } from "@/components/kit";
+
 import { Card, CountChip, DoctrineNote, FileOwnedFoot, KV, SettingsSection } from "./primitives";
 
 /**
@@ -49,6 +51,8 @@ export function PolicyGroup({
   return (
     <SettingsSection
       index={2}
+      icon={<GavelIcon />}
+      tone="route"
       title="Policy"
       question="What does effective policy allow, forbid, and hold for your approval?"
       source="compound policy placement-authority --json"

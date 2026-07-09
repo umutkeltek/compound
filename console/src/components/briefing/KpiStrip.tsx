@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { Panel } from "@/components/briefing/primitives";
+import { DeltaPill } from "@/components/kit";
 import type { AutonomyPosture } from "@/lib/briefing";
 
 /**
@@ -32,12 +33,14 @@ function KpiTile({
   label,
   dot,
   value,
+  delta,
   sub,
   children,
 }: {
   label: string;
   dot?: string;
   value: ReactNode;
+  delta?: ReactNode;
   sub: ReactNode;
   children?: ReactNode;
 }) {
@@ -47,7 +50,10 @@ function KpiTile({
         {dot ? <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden /> : null}
         {label}
       </span>
-      <span className="mt-2 text-2xl font-extrabold tracking-tight tabular-nums text-strong">{value}</span>
+      <span className="mt-2 flex items-baseline gap-2">
+        <span className="text-2xl font-extrabold tracking-tight tabular-nums text-strong">{value}</span>
+        {delta ?? null}
+      </span>
       <span className="mt-1 text-xs leading-snug text-muted">{sub}</span>
       {children}
     </Panel>
@@ -58,10 +64,16 @@ export function KpiStrip({
   world,
   mind,
   autonomy,
+  worldDelta,
+  mindDelta,
 }: {
   world: { outward: number; meaning: number; rules: number; upkeep: number; total: number; lowOutward: boolean };
   mind: { promoted: number; parked: number; awaiting: number; promotedThisWeek: number };
   autonomy: AutonomyPosture;
+  /** week-over-week change in outward moves — null when the window can't cover the prior week (§9.6). */
+  worldDelta?: number | null;
+  /** week-over-week change in promotions — null when uncovered. */
+  mindDelta?: number | null;
 }) {
   return (
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
@@ -69,6 +81,11 @@ export function KpiStrip({
         label="World Δ · 7d"
         dot="bg-work"
         value={world.outward.toLocaleString("en-US")}
+        delta={
+          worldDelta != null ? (
+            <DeltaPill value={worldDelta} showZero title="outward moves vs previous 7 days" />
+          ) : null
+        }
         sub={
           world.lowOutward && world.total > 0 ? (
             <span className="text-seam">outward moves — thin week</span>
@@ -95,6 +112,9 @@ export function KpiStrip({
             {mind.promotedThisWeek > 0 ? "+" : ""}
             {mind.promotedThisWeek.toLocaleString("en-US")}
           </>
+        }
+        delta={
+          mindDelta != null ? <DeltaPill value={mindDelta} showZero title="promotions vs previous 7 days" /> : null
         }
         sub={<>promoted · {mind.awaiting.toLocaleString("en-US")} awaiting · {mind.parked.toLocaleString("en-US")} parked</>}
       >

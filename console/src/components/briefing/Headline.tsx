@@ -19,11 +19,14 @@ export function Headline({
   act,
   mutationsEnabled,
   runningAgents,
+  classA = false,
 }: {
   top: AttentionGroup | null;
   act: HeadlineActDescriptor | null;
   mutationsEnabled: boolean;
   runningAgents: number;
+  /** any Class-A gate waiting → the hero glows amber (`--heat-seam`), else work-blue. */
+  classA?: boolean;
 }) {
   const summary = str(top?.operator_summary);
 
@@ -46,13 +49,17 @@ export function Headline({
   }
 
   const unlock = str(top.operator_unlock);
+  // THE one heat glow of the briefing viewport (DESIGN.md §9.2/§9.4): a
+  // bottom-rising domain ambience over the panel — amber when a Class-A gate
+  // waits, work-blue otherwise. The 3px amber left seam (admission signature,
+  // §0) stays as the scannable "needs me" edge; the glow is background-image so
+  // it composes with the bg-panel color without a second competing gradient.
   return (
     <section
-      className="rounded-lg border border-hair px-6 py-6 shadow-sm"
+      className={`${classA ? "heat-seam" : "heat-work"} rounded-lg border border-hair bg-panel px-6 py-6 shadow-sm`}
       style={{
         borderLeftWidth: "3px",
         borderLeftColor: "var(--seam-fg)",
-        background: "linear-gradient(90deg, var(--seam-soft), var(--panel) 58%)",
       }}
     >
       <DomainKicker area={str(top.area)} />

@@ -1,5 +1,5 @@
 import { CopyCmd } from "@/components/CopyCmd";
-import { Bars, FreshnessChip } from "@/components/kit";
+import { BarChartIcon, Bars, CheckIcon, FreshnessChip, RouteIcon, SectionHeader } from "@/components/kit";
 import type { RouteTrafficReport } from "@/lib/routing";
 
 /**
@@ -57,18 +57,18 @@ export function RouteTraffic({ report }: { report: RouteTrafficReport | null }) 
 
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-md font-semibold text-ink">Route traffic &amp; cost</h2>
-          <p className="mt-0.5 text-2xs leading-relaxed text-muted">
-            Route-evidence rows per provider — traffic, not dollar spend.
-          </p>
-        </div>
-        <FreshnessChip
-          generatedAt={report.latestEvidenceAt}
-          source="compound route evidence-authority --json · latest route-evidence row"
-        />
-      </div>
+      <SectionHeader
+        tone="route"
+        icon={<RouteIcon />}
+        label="Route traffic & cost"
+        sub="rows per provider — traffic, not dollar spend"
+        right={
+          <FreshnessChip
+            generatedAt={report.latestEvidenceAt}
+            source="compound route evidence-authority --json · latest route-evidence row"
+          />
+        }
+      />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Route evidence" value={report.routeEvidenceCount.toLocaleString("en-US")} sub="rows recorded" />
@@ -82,21 +82,21 @@ export function RouteTraffic({ report }: { report: RouteTrafficReport | null }) 
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="rounded-lg border border-hair bg-panel p-4 shadow-sm">
-          <h3 className="text-xs font-semibold text-ink">Traffic by provider</h3>
+        <div className="rounded-xl bg-panel p-4 shadow-sm">
+          <SectionHeader tone="route" icon={<BarChartIcon />} label="Traffic by provider" />
           {providerBars.length ? (
             <div className="mt-3">
-              <Bars items={providerBars} />
+              <Bars items={providerBars.map((b) => ({ ...b, unit: "route-evidence rows" }))} withTooltip />
             </div>
           ) : (
             <p className="mt-3 text-sm text-muted">No lane traffic yet.</p>
           )}
         </div>
-        <div className="rounded-lg border border-hair bg-panel p-4 shadow-sm">
-          <h3 className="text-xs font-semibold text-ink">Outcomes</h3>
+        <div className="rounded-xl bg-panel p-4 shadow-sm">
+          <SectionHeader tone="good" icon={<CheckIcon />} label="Outcomes" />
           {statusBars.length ? (
             <div className="mt-3">
-              <Bars items={statusBars} />
+              <Bars items={statusBars.map((b) => ({ ...b, unit: "rows" }))} withTooltip />
             </div>
           ) : (
             <p className="mt-3 text-sm text-muted">No recorded outcomes yet.</p>

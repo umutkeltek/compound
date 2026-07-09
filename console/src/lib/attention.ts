@@ -153,3 +153,16 @@ export async function getAttention(): Promise<AttentionReport | null> {
 export function attentionNeedsYouGroups(report: AttentionReport | null): AttentionGroup[] {
   return arr(report?.groups).filter((g): g is AttentionGroup => (g as AttentionGroup).band === "needs_you");
 }
+
+/**
+ * The high-danger blast radii — a gate carrying one of these (or an irreversible
+ * one) is CLASS-A: the operator's most consequential seat. The briefing hero
+ * wears `--heat-seam` (amber ambience) when any Class-A gate waits, `--heat-work`
+ * otherwise (DESIGN.md §9.2 / §9.4). `external_side_effect` stays mid-tier — a
+ * side effect is not, by itself, irreversible or destructive.
+ */
+const CLASS_A_BLAST = new Set<AttentionBlastRadius>(["destructive", "financial", "security", "public"]);
+
+export function hasClassAGate(groups: AttentionGroup[]): boolean {
+  return groups.some((g) => CLASS_A_BLAST.has(g.blast_radius) || g.reversibility === "irreversible");
+}

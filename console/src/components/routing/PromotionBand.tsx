@@ -2,7 +2,7 @@
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { GovernedAct } from "@/components/decide/GovernedAct";
-import { EmptyState, FreshnessChip, IdRef, StateBadge } from "@/components/kit";
+import { ArrowUpIcon, ClockIcon, EmptyState, FreshnessChip, IdRef, SectionHeader, StateBadge } from "@/components/kit";
 import type { DecideGroup } from "@/lib/decide-model";
 
 /**
@@ -149,14 +149,18 @@ export function PromotionBand({
 }) {
   return (
     <section className="flex flex-col gap-4">
-      <div className="flex items-baseline justify-between gap-2">
-        <h2 className="text-md font-semibold text-ink">Promotion reviews</h2>
-        <p className="text-xs tabular-nums text-faint">
-          {needsYou.length
-            ? `${needsYou.length} need${needsYou.length === 1 ? "s" : ""} your call`
-            : "nothing needs your call"}
-        </p>
-      </div>
+      <SectionHeader
+        tone="route"
+        icon={<ArrowUpIcon />}
+        label="Promotion reviews"
+        right={
+          <span className="text-xs tabular-nums text-faint">
+            {needsYou.length
+              ? `${needsYou.length} need${needsYou.length === 1 ? "s" : ""} your call`
+              : "nothing needs your call"}
+          </span>
+        }
+      />
 
       {classA ? (
         <div className="rounded-lg border border-crit-line bg-crit-soft px-4 py-3">
@@ -180,10 +184,12 @@ export function PromotionBand({
 
       {holdRecord.length ? (
         <div className="flex flex-col gap-3">
-          <div className="flex items-baseline justify-between gap-2">
-            <h3 className="text-sm font-semibold text-muted">Record a hold — evidence still thin</h3>
-            <span className="mono text-2xs tabular-nums text-faint">{holdRecord.length}</span>
-          </div>
+          <SectionHeader
+            tone="neutral"
+            icon={<ClockIcon />}
+            label="Record a hold — evidence still thin"
+            right={<span className="mono text-2xs tabular-nums text-faint">{holdRecord.length}</span>}
+          />
           <p className="text-2xs leading-relaxed text-faint">
             Not enough route evidence to change these lanes yet. Recording a hold marks that you reviewed it — it changes
             no lane and is reversible. Or leave them collecting.

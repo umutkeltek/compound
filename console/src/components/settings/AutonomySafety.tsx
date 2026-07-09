@@ -1,4 +1,4 @@
-import { StatusChip } from "@/components/kit";
+import { ShieldIcon, StatusChip } from "@/components/kit";
 import { arr, num, str, type Json } from "@/lib/compound";
 
 import { HaltDisclosure } from "./HaltDisclosure";
@@ -44,6 +44,8 @@ export function AutonomySafety({
   return (
     <SettingsSection
       index={1}
+      icon={<ShieldIcon />}
+      tone="seam"
       title="Autonomy & safety"
       question="Is autonomous action allowed right now, and inside what ceiling?"
       source="compound policy autonomy-halt --json"
@@ -54,6 +56,7 @@ export function AutonomySafety({
       <Card
         seamTone={globalHalt ? "crit" : armed ? "seam" : "good"}
         title="Kill switch"
+        provenance="governed"
         badge={
           globalHalt ? (
             <StatusChip tone="crit" label="global halt armed" title="compound policy autonomy-halt --json" />

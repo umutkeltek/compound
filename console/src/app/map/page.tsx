@@ -6,7 +6,7 @@ import {
 } from "@/components/capabilities/CapabilityAttentionStrip";
 import { SystemMap } from "@/components/map/SystemMap";
 import { SystemNodeCard } from "@/components/map/SystemNodeCard";
-import { FreshnessChip, PageHeader } from "@/components/kit";
+import { FreshnessChip, IconTile, PageHeader } from "@/components/kit";
 import { getAttention } from "@/lib/attention";
 import { str } from "@/lib/compound";
 import type { LensGraph, LensId } from "@/lib/map/lens";
@@ -121,11 +121,9 @@ export default async function CapabilitiesPage({
               const nodes = byLane(lane);
               return (
                 <section key={lane} className="flex flex-col gap-3">
-                  <div className="rounded-lg border border-hair bg-soft px-3 py-2.5">
+                  <div className="rounded-md bg-soft px-3 py-2.5">
                     <div className="flex items-center gap-2">
-                      <span className="text-md" aria-hidden>
-                        {meta.glyph}
-                      </span>
+                      <IconTile tone="neutral">{meta.glyph}</IconTile>
                       <span className="text-sm font-semibold text-ink">{meta.label}</span>
                     </div>
                     <p className="mt-1 text-2xs leading-snug text-faint">{meta.blurb}</p>

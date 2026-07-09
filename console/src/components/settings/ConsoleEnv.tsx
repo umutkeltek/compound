@@ -1,3 +1,4 @@
+import { DeltaPill, GearIcon } from "@/components/kit";
 import type { AttentionReport } from "@/lib/attention";
 import { num } from "@/lib/compound";
 
@@ -42,13 +43,15 @@ export function ConsoleEnv({
   return (
     <SettingsSection
       index={6}
+      icon={<GearIcon />}
+      tone="neutral"
       title="Console & environment"
       question="Can this console mutate, and which review areas actually have a one-click act?"
       source="compound attention --json"
       generatedAt={generatedAt}
     >
       <div className="grid gap-4 md:grid-cols-2">
-        <Card title="Mutation gates" seamTone={mutationsEnabled ? "seam" : "good"}>
+        <Card title="Mutation gates" provenance="local" seamTone={mutationsEnabled ? "seam" : "good"}>
           <KV k="consoleMutationsEnabled()" v={mutationsEnabled ? "true" : "false"} />
           <KV k="privateFallbacksEnabled()" v={privateFallbacks ? "true" : "false"} />
           <DoctrineNote>
@@ -80,9 +83,16 @@ export function ConsoleEnv({
       <Card
         title="Decision-registry coverage"
         badge={
-          <span className="flex gap-1.5">
+          <span className="flex items-center gap-1.5">
             <CountChip n={coverage.oneClickAreas} label="live one-click" tone="good" />
             <CountChip n={coverage.fallbackAreas} label="live fallback" tone={coverage.fallbackAreas > 0 ? "seam" : "good"} />
+            {/* Burn-down lead: one-click areas minus fallback areas — positive =
+                winning the debt burn-down. Derived from live coverage, not faked. */}
+            <DeltaPill
+              value={coverage.oneClickAreas - coverage.fallbackAreas}
+              showZero
+              title="live one-click areas minus live fallback areas — the coverage lead over copy-only debt"
+            />
           </span>
         }
       >

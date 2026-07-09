@@ -1,5 +1,5 @@
 import { ProductLoopCard, loopState } from "@/components/products/ProductLoopCard";
-import { EmptyState, FreshnessChip, PageHeader } from "@/components/kit";
+import { EmptyState, FreshnessChip, LoopIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { getProductLoopsReport, getProductPortfolio } from "@/lib/products";
 
 export const dynamic = "force-dynamic";
@@ -78,11 +78,20 @@ export default async function LoopsPage() {
           <code className="mono">compound product import &lt;product.yaml&gt;</code> and feed it a metric.
         </EmptyState>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-2">
-          {ordered.map((loop) => (
-            <ProductLoopCard key={loop.productId} loop={loop} />
-          ))}
-        </div>
+        <section className="flex flex-col gap-3">
+          <SectionHeader
+            tone="product"
+            icon={<LoopIcon />}
+            label="Product loops"
+            sub="blocked-on-you first, then by signal volume"
+            right={<span className="mono text-2xs tabular-nums text-faint">{loops.length}</span>}
+          />
+          <div className="grid gap-4 lg:grid-cols-2">
+            {ordered.map((loop) => (
+              <ProductLoopCard key={loop.productId} loop={loop} />
+            ))}
+          </div>
+        </section>
       )}
 
       <p className="mono text-2xs leading-snug text-faint">

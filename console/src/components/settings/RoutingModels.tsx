@@ -2,6 +2,8 @@ import Link from "next/link";
 
 import { num, type Json } from "@/lib/compound";
 
+import { RouteIcon } from "@/components/kit";
+
 import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
 
 /**
@@ -30,6 +32,8 @@ export function RoutingModels({
   return (
     <SettingsSection
       index={3}
+      icon={<RouteIcon />}
+      tone="route"
       title="Routing & models"
       question="Is routing sending the right mind at the right cost, and what wants promoting?"
       source="compound route evidence-authority --json"

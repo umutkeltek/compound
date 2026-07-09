@@ -4,7 +4,7 @@ import { LanesTable } from "@/components/routing/LanesTable";
 import { PromotionBand } from "@/components/routing/PromotionBand";
 import { RouteTraffic } from "@/components/routing/RouteTraffic";
 import { RoutingTabs } from "@/components/routing/RoutingTabs";
-import { FreshnessChip, PageHeader } from "@/components/kit";
+import { FreshnessChip, PageHeader, RouteIcon, SectionHeader } from "@/components/kit";
 import { getAttention } from "@/lib/attention";
 import { getReviews, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
@@ -26,21 +26,23 @@ export const dynamic = "force-dynamic";
 function RoutePlanCard({ classes }: { classes: string[] }) {
   const exampleClass = classes[0] || "<capability-class>";
   return (
-    <section className="rounded-lg border border-hair bg-panel p-4 shadow-sm">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-md font-semibold text-ink">Plan a route</h2>
-          <p className="mt-0.5 max-w-prose text-2xs leading-relaxed text-muted">
-            A route plan is per-request: it needs a capability class or a candidate id the console can&apos;t infer, so
-            it isn&apos;t projected here. Ask for one by class — the plan prefers already-paid lanes first.
-          </p>
-        </div>
-        {classes.length ? (
-          <span className="text-2xs text-faint">
-            classes: <span className="mono text-muted">{classes.join(", ")}</span>
-          </span>
-        ) : null}
-      </div>
+    <section className="rounded-xl bg-panel p-4 shadow-sm">
+      <SectionHeader
+        tone="route"
+        icon={<RouteIcon />}
+        label="Plan a route"
+        right={
+          classes.length ? (
+            <span className="text-2xs text-faint">
+              classes: <span className="mono text-muted">{classes.join(", ")}</span>
+            </span>
+          ) : null
+        }
+      />
+      <p className="mt-1 max-w-prose text-2xs leading-relaxed text-muted">
+        A route plan is per-request: it needs a capability class or a candidate id the console can&apos;t infer, so it
+        isn&apos;t projected here. Ask for one by class — the plan prefers already-paid lanes first.
+      </p>
       <div className="mt-3 flex flex-col gap-3">
         <div>
           <div className="text-2xs font-bold uppercase tracking-wide text-faint">By capability class</div>

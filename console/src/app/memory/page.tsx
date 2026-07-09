@@ -2,7 +2,7 @@ import { AdjudicationCard } from "@/components/memory/AdjudicationCard";
 import { EvidenceCard } from "@/components/memory/EvidenceCard";
 import { MemoryGraphPanel } from "@/components/memory/MemoryGraphPanel";
 import { buildAdjudicationModel, type AdjudicationCardModel } from "@/components/memory/model";
-import { EmptyState, FreshnessChip, PageHeader } from "@/components/kit";
+import { BrainIcon, DatabaseIcon, DocIcon, EmptyState, FreshnessChip, PageHeader, SectionHeader } from "@/components/kit";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { loadMemoryCounts, loadProposedMemorySplit } from "@/lib/memory-data";
 import { loadMemoryEgoGraph, type EgoGraph } from "@/lib/map/memory-graph";
@@ -69,10 +69,12 @@ export default async function Memory({
 
       {/* 1 — adjudication queue (the operator's gate) */}
       <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-md font-semibold text-ink">Adjudication queue</h2>
-          <span className="text-xs text-faint">promote / park / reject / no-promote — each with its basis</span>
-        </div>
+        <SectionHeader
+          tone="memory"
+          icon={<BrainIcon />}
+          label="Adjudication queue"
+          sub="promote / park / reject / no-promote — each with its basis"
+        />
         {models.length ? (
           <div className="flex flex-col gap-3">
             {models.map((model) => (
@@ -92,10 +94,12 @@ export default async function Memory({
 
       {/* 3 — what's already believed: tabular state strip + proposed evidence */}
       <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-md font-semibold text-ink">What&apos;s believed</h2>
-          <span className="text-xs text-faint">candidate lifecycle across the ledger</span>
-        </div>
+        <SectionHeader
+          tone="memory"
+          icon={<DatabaseIcon />}
+          label="What's believed"
+          sub="candidate lifecycle across the ledger"
+        />
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-hair bg-hair sm:grid-cols-5">
           {STAT_STATES.map((s) => (
             <div key={s.key} className="flex flex-col gap-1 bg-panel px-4 py-3">
@@ -107,10 +111,12 @@ export default async function Memory({
       </section>
 
       <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-md font-semibold text-ink">Source evidence</h2>
-          <span className="text-xs text-faint">proposed imports &amp; extractions — evidence, not approval debt</span>
-        </div>
+        <SectionHeader
+          tone="neutral"
+          icon={<DocIcon />}
+          label="Source evidence"
+          sub="proposed imports & extractions — evidence, not approval debt"
+        />
         {sourceEvidence.length ? (
           <div className="grid gap-3 lg:grid-cols-2">
             {sourceEvidence.slice(0, 24).map((candidate) => (

@@ -1,5 +1,5 @@
-import { summarizeMoveTypeMix } from "@/components/ChangedProofStream";
 import { ActivityFeed } from "@/components/briefing/ActivityFeed";
+import { AttentionAgeMatrix } from "@/components/briefing/AttentionAgeMatrix";
 import { BriefingHeader } from "@/components/briefing/BriefingHeader";
 import { ContinueCard } from "@/components/briefing/ContinueCard";
 import { DecideList } from "@/components/briefing/DecideList";
@@ -10,17 +10,20 @@ import { PipelineStrip } from "@/components/briefing/PipelineStrip";
 import { SectionLabel } from "@/components/briefing/primitives";
 import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
 import { FreshnessChip } from "@/components/kit";
-import { attentionNeedsYouGroups, getAttention } from "@/lib/attention";
+import { attentionNeedsYouGroups, getAttention, hasClassAGate } from "@/lib/attention";
 import {
   autonomyPosture,
   deriveContinue,
   headlineAct,
   oldestCreatedAt,
   pipelineStages,
+  rowTsMs,
   selfHealing,
+  weeklyChange,
 } from "@/lib/briefing";
 import { arr, getExecutors, num, runJson, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { toDate } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
@@ -49,6 +52,8 @@ export default async function Briefing() {
   const decideGroups = needsYouGroups.slice(0, 6);
   const act = headlineAct(top);
   const oldest = oldestCreatedAt(needsYouGroups);
+  // Any Class-A gate waiting → the hero glows amber (§9.2/§9.4).
+  const classAWaiting = hasClassAGate(needsYouGroups);
   const runningAgents = arr(executors?.executors).filter((row) => num(row.running_count) > 0).length;
 
   // Continue + pipeline off the workbench projection.
@@ -57,8 +62,14 @@ export default async function Briefing() {
   const stages = pipelineStages(workbench);
   const recent = arr(workbench?.recent);
 
-  // World Δ (7-day move mix).
+  // World Δ (7-day move mix) + an honest week-over-week delta (only shown when
+  // the recent window reaches back far enough to cover the prior week — §9.6).
   const mix = summarizeMoveTypeMix(recent);
+  const worldChange = weeklyChange(
+    recent,
+    rowTsMs,
+    (item) => moveTypeGroup(str(item.move_type) || str(item.move)) === "outward",
+  );
 
   // Mind Δ / Knows off the memory candidates projection.
   const memoryCounts = (memory?.counts?.by_state ?? {}) as Record<string, number>;
@@ -72,6 +83,7 @@ export default async function Briefing() {
   const reopened = memoryItems.filter(
     (candidate) => str(candidate.state) === "needs_review" || str(candidate.review_state) === "needs_review",
   ).length;
+  const mindChange = weeklyChange(memoryItems, rowTsMs, (candidate) => str(candidate.state) === "promoted");
 
   const autonomy = autonomyPosture(policyAuthority);
   const health = selfHealing(homeDoctor);
@@ -87,7 +99,13 @@ export default async function Briefing() {
     <div className="mx-auto flex flex-col gap-9 pb-16" style={{ maxWidth: "1080px" }}>
       <BriefingHeader now={now} needsYouCount={needsYouGroupCount} oldest={oldest} />
 
-      <Headline top={top} act={act} mutationsEnabled={mutationsEnabled} runningAgents={runningAgents} />
+      <Headline
+        top={top}
+        act={act}
+        mutationsEnabled={mutationsEnabled}
+        runningAgents={runningAgents}
+        classA={classAWaiting}
+      />
 
       <ContinueCard model={continueModel} />
 
@@ -112,9 +130,13 @@ export default async function Briefing() {
           promotedThisWeek,
         }}
         autonomy={autonomy}
+        worldDelta={worldChange.covered ? worldChange.delta : null}
+        mindDelta={mindChange.covered ? mindChange.delta : null}
       />
 
       {/* ---------- below the fold ---------- */}
+
+      <AttentionAgeMatrix groups={needsYouGroups} />
 
       <section>
         <SectionLabel>Pipeline</SectionLabel>

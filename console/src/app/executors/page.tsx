@@ -3,6 +3,7 @@ import { summarizeHygiene, type ExecutorProjection } from "@/components/agents/e
 import { normalizeExecutorProjection } from "@/components/agents/executor-normalize";
 import { ExecutorTable } from "@/components/agents/ExecutorTable";
 import { HygieneBand } from "@/components/agents/HygieneBand";
+import { LeasePressure } from "@/components/agents/LeasePressure";
 import { LocalModelsTile } from "@/components/agents/LocalModelsTile";
 import { FreshnessChip, PageHeader } from "@/components/kit";
 import { getExecutors } from "@/lib/compound";
@@ -95,6 +96,8 @@ export default async function AgentsPage() {
               <p className="text-sm text-muted">No executors in the projection yet.</p>
             </div>
           )}
+
+          <LeasePressure executors={projection.executors} staleAfterSeconds={projection.staleAfterSeconds} />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <CostLanes executors={projection.executors} generatedAt={projection.generatedAt} />

@@ -95,24 +95,7 @@ export function StateBadge({ state }: { state: string }) {
   return <Chip tone={m.tone}>{m.label}</Chip>;
 }
 
-const MOVE_TONE: Record<string, Accent> = {
-  outward_delta: "green",
-  memory_delta: "violet",
-  rule_delta: "blue",
-  control_plane_repair: "gray",
-  audit_only: "gray",
-};
-
-export function MoveChip({ move }: { move: string }) {
-  if (!move) return null;
-  return <Chip tone={MOVE_TONE[move] ?? "gray"}>{move}</Chip>;
-}
-
 /* ---------- card + layout primitives ---------- */
-
-export function SectionLabel({ children }: { children: ReactNode }) {
-  return <div className="section-label mb-3">{children}</div>;
-}
 
 export function Card({
   title,

@@ -115,6 +115,13 @@
   --crit-fg:#DC2626;   --crit-soft:#FCE9E7;   --crit-line:#F5C4BE;
   --scrim:rgba(16,26,38,.38);
 
+  /* — §9.2 heat glows (light): bottom-rising domain ambience into transparent.
+     Spec baseline percentages read well over the near-white --page/--panel;
+     no per-theme delta needed in light (see DESIGN.md §9.2). — */
+  --heat-work:   linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--work-fg) 20%, transparent));
+  --heat-seam:   linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--seam-fg) 22%, transparent));
+  --heat-memory: linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--memory-fg) 18%, transparent));
+
   --shadow-sm:0 1px 2px rgba(16,26,38,.05);
   --shadow:0 1px 2px rgba(16,26,38,.04),0 4px 16px -6px rgba(16,26,38,.10);
   --shadow-lg:0 8px 40px -8px rgba(16,26,38,.28);
@@ -144,6 +151,16 @@
   --seam-fg:#D69B3C;   --seam-soft:#2A2211;   --seam-line:#48391B;
   --crit-fg:#E06E5C;   --crit-soft:#2C1714;   --crit-line:#4C2620;
   --scrim:rgba(2,4,8,.62);
+
+  /* — §9.2 heat glows (dark): a translucent hue over the near-black substrate
+     reads as EMISSIVE (adds light), so the deltas vs light are tuned for even
+     glow strength, not glare (DESIGN.md §9.2):
+       work  20% → 24%  (blue sits dim over #12171F; +4 to reach a true glow)
+       memory 18% → 22%  (violet is the least luminant hue on dark; +4)
+       seam  22% → 20%  (amber is high-luminance; −2 to keep it a glow, not glare) — */
+  --heat-work:   linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--work-fg) 24%, transparent));
+  --heat-seam:   linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--seam-fg) 20%, transparent));
+  --heat-memory: linear-gradient(170deg, transparent 38%, color-mix(in srgb, var(--memory-fg) 22%, transparent));
 
   --shadow-sm:0 1px 2px rgba(0,0,0,.3);
   --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px -12px rgba(0,0,0,.6);
@@ -253,7 +270,9 @@ body {
   width: 8px;
 }
 .board-scroll::-webkit-scrollbar-thumb {
-  background: #d8dde5;
+  /* token so the thumb follows the theme (was a light-only hex; dark is now
+     first-class — §6). */
+  background: var(--hair);
   border-radius: 8px;
 }
 
@@ -457,4 +476,46 @@ body {
 .work-detail-grid { display: grid; gap: 1rem; }
 @media (min-width: 1024px) {
   .work-detail-grid { grid-template-columns: 1fr 340px; }
+}
+
+/* ============================================================
+   §9 AMBIENT DEPTH & DATA-VIZ VOCABULARY (DESIGN.md §9)
+   Heat glows are DATA AMBIENCE, never decoration (§9.2). Exposed as classes
+   (not arbitrary utilities) so the one-glow-per-viewport rule is greppable:
+   `heat-work|heat-seam|heat-memory` usages are auditable in the markup.
+   The gradient rides OVER the surface's background-color; the domain vars it
+   mixes flip per theme automatically, so a theme swap re-picks every glow.
+   ============================================================ */
+:root {
+  /* projected / capacity / secondary-series marker (§9.2.3). currentColor-based
+     so it inherits the element's domain/state text color — theme-independent. */
+  --hatch: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, currentColor 22%, transparent) 3px 6px);
+}
+
+.heat-work   { background-image: var(--heat-work); }
+.heat-seam   { background-image: var(--heat-seam); }
+.heat-memory { background-image: var(--heat-memory); }
+.hatch       { background-image: var(--hatch); }
+
+/* SegmentedProgress active segment (§9.3): the ONE running stage breathes.
+   Gentle opacity pulse — inside the §9.4 motion budget (glow + pulses + hover).
+   Reduced-motion flattens it to a steady fill (no animation). */
+@keyframes seg-breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .5; }
+}
+.seg-active { animation: seg-breathe 1.6s var(--ease-standard) infinite; }
+
+/* HoverCard (TooltipCard) enter — a whisper fade+rise, not a bounce (§9.4). */
+@keyframes hovercard-in {
+  from { opacity: 0; transform: translateY(2px) scale(.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.hovercard-in[data-state="open"] {
+  animation: hovercard-in var(--dur-fast) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seg-active { animation: none; }
+  .hovercard-in[data-state="open"] { animation: none; }
 }

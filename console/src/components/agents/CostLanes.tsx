@@ -1,5 +1,5 @@
 import { CopyCmd } from "@/components/CopyCmd";
-import { FreshnessChip } from "@/components/kit";
+import { CoinsIcon, FreshnessChip, SectionHeader, TooltipCard } from "@/components/kit";
 
 import type { ExecutorRow } from "./executor-model";
 
@@ -32,13 +32,27 @@ function Bars({ lanes }: { lanes: Lane[] }) {
             <div className="w-28 shrink-0 truncate text-sm text-muted" title={lane.label}>
               {lane.label}
             </div>
-            <div className="h-2 flex-1 overflow-hidden rounded-pill bg-soft-2">
-              <div
-                className="h-2 rounded-pill bg-route"
-                style={{ width: `${Math.max(pct, lane.value > 0 ? 4 : 0)}%` }}
-                aria-hidden
-              />
-            </div>
+            {/* Hover rewards curiosity (§9.4): the bar answers with its exact
+                traffic + share of the busiest lane. */}
+            <TooltipCard
+              side="top"
+              title={lane.label}
+              rows={[{ label: "route-evidence rows", value: lane.value.toLocaleString(), tone: "route" }]}
+              derived={{ label: "of busiest lane", value: `${pct}%` }}
+              trigger={
+                <button
+                  type="button"
+                  aria-label={`${lane.label}: ${lane.value} route-evidence rows`}
+                  className="h-2 flex-1 cursor-default overflow-hidden rounded-pill bg-soft-2 transition-shadow hover:shadow"
+                >
+                  <span
+                    className="block h-2 rounded-pill bg-route"
+                    style={{ width: `${Math.max(pct, lane.value > 0 ? 4 : 0)}%` }}
+                    aria-hidden
+                  />
+                </button>
+              }
+            />
             <div className="mono w-16 shrink-0 text-right text-2xs tabular-nums text-muted">
               {lane.value.toLocaleString()}
             </div>
@@ -64,14 +78,14 @@ export function CostLanes({
   const hasTraffic = lanes.some((lane) => lane.value > 0);
 
   return (
-    <section className="rounded-lg border border-hair bg-panel p-4 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-md font-semibold text-ink">Cost &amp; lane traffic</h2>
-          <p className="mt-0.5 text-2xs text-muted">Route-evidence rows per lane — traffic, not dollar spend.</p>
-        </div>
-        <FreshnessChip generatedAt={generatedAt} source="compound executors --json" />
-      </div>
+    <section className="rounded-xl bg-panel p-4 shadow-sm">
+      <SectionHeader
+        tone="route"
+        icon={<CoinsIcon />}
+        label="Cost & lane traffic"
+        right={<FreshnessChip generatedAt={generatedAt} source="compound executors --json" />}
+      />
+      <p className="mt-1 text-2xs text-muted">Route-evidence rows per lane — traffic, not dollar spend.</p>
 
       {hasTraffic ? (
         <div className="mt-4">

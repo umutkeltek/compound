@@ -16,6 +16,61 @@ import { shortText, workId } from "@/lib/work-data";
  * the page); returns only serializable shapes so a client lens can render them.
  */
 
+/**
+ * Envelope-stage position for the SegmentedProgress on a card (§9.3): where in
+ * the seven-stage spine (Signal→Propose→Admit→Claim→Execute→Receipt→Learn) the
+ * item sits. `done` = stages complete, `active` = the current stage (null when
+ * terminal/stalled — nothing pulses). Derived from the SAME state buckets
+ * buildPipeline scans, so the strip and the progress can never disagree.
+ */
+export type StageProgress = { total: number; done: number; active: number | null };
+
+const STAGE_TOTAL = 7;
+
+function progressAt(active: number, opts: { complete?: boolean; stalled?: boolean } = {}): StageProgress {
+  if (opts.complete) return { total: STAGE_TOTAL, done: STAGE_TOTAL, active: null };
+  const a = Math.max(0, Math.min(STAGE_TOTAL - 1, active));
+  return { total: STAGE_TOTAL, done: a, active: opts.stalled ? null : a };
+}
+
+/** Map a lifecycle state onto its envelope-stage progress (§9.3). */
+export function stageProgressForState(state: string): StageProgress {
+  switch (state) {
+    case "proposed":
+    case "suggested":
+    case "candidate":
+      return progressAt(2); // completed Signal+Propose, sitting at the Admit gate
+    case "admitted":
+    case "ready":
+      return progressAt(3); // Claim
+    case "claimed":
+      return progressAt(4, { stalled: true }); // in the Execute lane but not yet running
+    case "in_progress":
+    case "running":
+    case "verifying":
+      return progressAt(4); // Execute — the breathing stage
+    case "blocked":
+    case "held":
+    case "needs_review":
+      return progressAt(4, { stalled: true }); // stalled on the operator at Execute
+    case "completed":
+    case "promoted":
+    case "filed":
+    case "allow":
+      return progressAt(6, { complete: true }); // through Receipt + Learn
+    case "failed":
+    case "deny":
+    case "rejected":
+      return progressAt(4, { stalled: true });
+    case "cancelled":
+    case "demoted":
+    case "no_promote":
+      return progressAt(2, { stalled: true });
+    default:
+      return progressAt(2);
+  }
+}
+
 export type BoardCard = {
   key: string;
   workId: string; // "" for a pure suggestion (director proposal, no work yet)
@@ -29,6 +84,8 @@ export type BoardCard = {
   note: string;
   traceable: boolean;
   running: boolean;
+  /** envelope-stage position for the card's SegmentedProgress (§9.3). */
+  progress: StageProgress;
 };
 
 export type RailNode = "empty" | "filled" | "seat" | "done" | "run";
@@ -123,7 +180,7 @@ function cardTitle(item: Json): string {
   return str(item.success_predicate) || str(item.desired_outcome) || str(item.title) || workId(item) || "work item";
 }
 
-function workCard(item: Json, note = ""): BoardCard {
+function workCard(item: Json, note = "", progress?: StageProgress): BoardCard {
   const id = workId(item);
   const state = str(item.state);
   const age = str(item.claimed_at) || str(item.created_at) || str(item.updated_at);
@@ -140,6 +197,7 @@ function workCard(item: Json, note = ""): BoardCard {
     note,
     traceable: Boolean(id),
     running: state === "running",
+    progress: progress ?? stageProgressForState(state),
   };
 }
 
@@ -158,6 +216,7 @@ function proposalCard(p: Json): BoardCard {
     note: shortText(str(p.consequence) || str(p.summary), 120),
     traceable: false,
     running: false,
+    progress: progressAt(1), // a director suggestion sits at Propose
   };
 }
 
@@ -178,6 +237,7 @@ function admissionCard(ap: Json): BoardCard {
     note: stale ? "stale plan — revalidate before admitting" : shortText(str(ap.next_action), 96),
     traceable: Boolean(id),
     running: false,
+    progress: stageProgressForState(state),
   };
 }
 

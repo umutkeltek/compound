@@ -2,9 +2,43 @@
 
 import { useEffect, useState } from "react";
 
-import { Drawer, FreshnessChip, IdRef } from "@/components/kit";
+import { Drawer, FreshnessChip, IdRef, TooltipCard } from "@/components/kit";
+import type { Tone } from "@/components/kit";
 import { WorkActionRow, type WorkActionRowData } from "@/components/work/WorkActionRow";
 import type { TraceModel, TraceStep } from "@/lib/work-trace";
+
+/** Classify an envelope-trace meta ref so its TooltipCard names what it is. */
+function refKind(ref: string): { label: string; tone: Tone } {
+  if (/\$|\bcost\b|tokens?\b/i.test(ref)) return { label: "cost", tone: "good" };
+  if (/^ctx_/.test(ref)) return { label: "context pack", tone: "capability" };
+  if (/^rec_|receipt/i.test(ref)) return { label: "receipt", tone: "good" };
+  if (/^tr_|transition/i.test(ref)) return { label: "transition", tone: "route" };
+  if (/^work_/.test(ref)) return { label: "work id", tone: "work" };
+  if (/lease|lz_/i.test(ref)) return { label: "lease", tone: "seam" };
+  return { label: "reference", tone: "neutral" };
+}
+
+/** A mono meta ref with a HoverCard that reveals the full (often truncated)
+ *  value and names its kind — hover reveals depth, no mystery meat (§9.4). */
+function MetaRef({ value }: { value: string }) {
+  const kind = refKind(value);
+  return (
+    <TooltipCard
+      side="left"
+      align="start"
+      title={kind.label}
+      rows={[{ label: "value", value, tone: kind.tone }]}
+      trigger={
+        <span
+          className="mono w-fit max-w-full cursor-default truncate text-2xs text-faint underline decoration-dotted decoration-hair underline-offset-2 hover:text-muted"
+          title={value}
+        >
+          {value}
+        </span>
+      }
+    />
+  );
+}
 
 /*
  * THE Trace drawer (DESIGN.md §3) — the signature element of the redesign: the
@@ -43,11 +77,9 @@ function StepRow({ step }: { step: TraceStep }) {
           {step.description}
         </p>
         {step.meta.length ? (
-          <div className="mt-1.5 flex flex-col gap-0.5">
+          <div className="mt-1.5 flex flex-col items-start gap-0.5">
             {step.meta.map((ref, index) => (
-              <span key={index} className="mono truncate text-2xs text-faint" title={ref}>
-                {ref}
-              </span>
+              <MetaRef key={index} value={ref} />
             ))}
           </div>
         ) : null}

@@ -1,5 +1,7 @@
 import { str, type Json } from "@/lib/compound";
 
+import { DatabaseIcon } from "@/components/kit";
+
 import { Card, DoctrineNote, FileOwnedFoot, InspectRow, KV, SettingsSection } from "./primitives";
 
 /**
@@ -21,6 +23,8 @@ export function MemoryLenses({ engine, generatedAt }: { engine: Json | null; gen
   return (
     <SettingsSection
       index={4}
+      icon={<DatabaseIcon />}
+      tone="memory"
       title="Memory & lenses"
       question="What does the system believe by default, and how are candidates judged?"
       source="compound memory engine-config --json"

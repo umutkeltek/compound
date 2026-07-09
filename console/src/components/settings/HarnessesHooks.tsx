@@ -1,6 +1,8 @@
 import { arr, num, str, type Json } from "@/lib/compound";
 
 import { parseHarnessList } from "./data";
+import { PlugIcon } from "@/components/kit";
+
 import { Card, CountChip, DoctrineNote, KV, SettingsSection } from "./primitives";
 
 /**
@@ -26,6 +28,8 @@ export function HarnessesHooks({
   return (
     <SettingsSection
       index={5}
+      icon={<PlugIcon />}
+      tone="capability"
       title="Harnesses & hooks"
       question="Which harnesses can compound govern, and where must the adapter enforce the gate?"
       source="compound contract hooks-authority"

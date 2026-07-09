@@ -2,7 +2,7 @@
 
 import type { KeyboardEvent } from "react";
 
-import { IdRef, StateBadge } from "@/components/kit";
+import { IdRef, SegmentedProgress, StateBadge } from "@/components/kit";
 import type { BoardCard } from "@/lib/work-pipeline";
 
 /**
@@ -66,7 +66,17 @@ export function WorkBoardCard({
         <IdRef id={card.displayId} kind={card.traceable ? "work" : "plan"} plain truncate />
       ) : null}
 
-      {card.running ? <div className="runbar mt-0.5" aria-hidden /> : null}
+      {/* Envelope-stage position (§9.3) — where this item sits in the 7-stage
+          spine; the current stage breathes only when genuinely running. */}
+      <SegmentedProgress
+        className="mt-0.5"
+        total={card.progress.total}
+        done={card.progress.done}
+        activeIndex={card.progress.active}
+        pulse={card.running}
+      />
+
+      {card.running ? <div className="runbar" aria-hidden /> : null}
     </div>
   );
 }

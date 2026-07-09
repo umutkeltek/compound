@@ -290,6 +290,15 @@ New tokens (light + dark tuned, in globals.css):
 --hatch: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, currentColor 22%, transparent) 3px 6px);
 ```
 
+**Per-theme tuning (implemented Wave D).** The light values above read as intended over the
+near-white `--page`/`--panel`. On the near-black dark substrate a translucent hue reads as
+*emissive* (adds light), so the dark block re-tunes the percentages for even glow strength, not
+glare: `--heat-work` **20%→24%** (blue sits dim over `#12171F`), `--heat-memory` **18%→22%**
+(violet is the least-luminant hue on dark), `--heat-seam` **22%→20%** (amber is high-luminance —
+trimmed so it glows, not glares). `--hatch` is `currentColor`-based and needs no per-theme delta.
+The glows are exposed as `.heat-work` / `.heat-seam` / `.heat-memory` classes (not arbitrary
+utilities) so the one-glow-per-viewport rule stays greppable.
+
 Placement rules (hard):
 1. A glow appears ONLY where the system is genuinely hot: the briefing attention hero
    (`--heat-seam` when Class-A gates wait, `--heat-work` otherwise), the one running/beating

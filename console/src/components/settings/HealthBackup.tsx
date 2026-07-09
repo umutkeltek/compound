@@ -3,6 +3,8 @@ import { SelfHealingPanel } from "@/components/briefing/SelfHealingPanel";
 import { num, type Json } from "@/lib/compound";
 import { selfHealing } from "@/lib/briefing";
 
+import { HeartPulseIcon } from "@/components/kit";
+
 import { Card, DoctrineNote, KV, SettingsSection } from "./primitives";
 
 /**
@@ -31,6 +33,8 @@ export function HealthBackup({ doctor, generatedAt }: { doctor: Json | null; gen
   return (
     <SettingsSection
       index={7}
+      icon={<HeartPulseIcon />}
+      tone="good"
       title="Health & backup"
       question="Is the runtime home intact, and how do I prove, snapshot, or restore it?"
       source="compound home doctor --json"

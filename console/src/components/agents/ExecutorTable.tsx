@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
 
-import { StateBadge, toneForState, type StateTone } from "@/components/kit";
+import { AvatarTile, StateBadge, toneForState, type StateTone } from "@/components/kit";
 import { ago } from "@/lib/time";
 
 import { durationLabel, truncate, type ExecutorRow, type ExecutorWorkRef } from "./executor-model";
@@ -205,13 +205,15 @@ function ExecutorTableRow({ executor, staleAfterSeconds }: { executor: ExecutorR
         </td>
 
         <td className="px-2 py-3 align-top">
-          <div className="flex items-start gap-2">
-            <span className="mt-1">
-              <StatusDot status={executor.status} />
-            </span>
+          <div className="flex items-start gap-2.5">
+            {/* Deterministic identity tint — survives renames (§9.3). */}
+            <AvatarTile name={executor.label} size="md" className="mt-0.5" />
             <div className="min-w-0">
-              <div className="text-md font-semibold text-ink">{executor.label}</div>
-              {executor.id ? <div className="mono text-2xs text-faint">{executor.id}</div> : null}
+              <div className="flex items-center gap-1.5">
+                <StatusDot status={executor.status} />
+                <span className="text-md font-semibold text-ink">{executor.label}</span>
+              </div>
+              {executor.id ? <div className="mono mt-0.5 text-2xs text-faint">{executor.id}</div> : null}
               <div className="mt-1.5">
                 <Chips items={executor.bestFor} />
               </div>

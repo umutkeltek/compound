@@ -348,6 +348,42 @@ export function deriveContinue(workbench: Json | null, open: Json[]): ContinueMo
   };
 }
 
+/* ---------- week-over-week delta (KPI DeltaPills, §9.6) ----------
+ * An HONEST delta: this-7d count minus prior-7d count, but only `covered` when
+ * the fetched window demonstrably reaches back ≥14 days (else the prior week is
+ * truncated by the row cap and the delta would lie). Consumers render the
+ * DeltaPill only when `covered`.
+ */
+
+export function weeklyChange(
+  items: Json[],
+  tsOf: (item: Json) => number,
+  matches: (item: Json) => boolean,
+  now = Date.now(),
+): { delta: number; covered: boolean } {
+  const week = 7 * 24 * 3600 * 1000;
+  const thisFrom = now - week;
+  const priorFrom = now - 2 * week;
+  let thisCount = 0;
+  let priorCount = 0;
+  let oldest = Number.POSITIVE_INFINITY;
+  for (const item of items) {
+    const ts = tsOf(item);
+    if (ts > 0) oldest = Math.min(oldest, ts);
+    if (!matches(item)) continue;
+    if (ts >= thisFrom) thisCount++;
+    else if (ts >= priorFrom) priorCount++;
+  }
+  const covered = Number.isFinite(oldest) && oldest <= priorFrom;
+  return { delta: thisCount - priorCount, covered };
+}
+
+/** Parse the first present lifecycle timestamp of a projection row to epoch ms. */
+export function rowTsMs(item: Json): number {
+  const d = toDate(item.claimed_at ?? item.created_at ?? item.generated_at ?? item.updated_at);
+  return d ? d.getTime() : 0;
+}
+
 /* ---------- oldest-age helper for the attention pill ---------- */
 
 export function oldestCreatedAt(groups: AttentionGroup[]): Date | undefined {

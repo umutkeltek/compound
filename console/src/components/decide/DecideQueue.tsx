@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
-import { Button, Drawer, FreshnessChip } from "@/components/kit";
+import { Button, DocIcon, Drawer, FreshnessChip, MetaCount, UsersIcon } from "@/components/kit";
 import type { DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import { GovernedAct } from "./GovernedAct";
 
@@ -260,11 +260,17 @@ function DecideCard({
       {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span className={`text-xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
             {group.ageLabel}
             {group.old ? " · stale" : ""}
           </span>
+          {group.members.length > 1 ? (
+            <MetaCount icon={<UsersIcon />} count={group.members.length} title="members grouped into this decision" />
+          ) : null}
+          {group.evidence.length ? (
+            <MetaCount icon={<DocIcon />} count={group.evidence.length} title="evidence refs" />
+          ) : null}
           <FreshnessChip generatedAt={group.freshness.generatedAt} source={group.freshness.source} />
         </div>
         <div className="flex flex-wrap items-center gap-2">
