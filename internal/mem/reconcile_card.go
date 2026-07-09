@@ -291,7 +291,7 @@ func renderReconcileContestedMarkdown(card SynthesisReconcileContestedCard) stri
 	operator, _ := card.ReviewOperatorCard()
 	b.WriteString("# Reconcile contested position\n\n")
 	b.WriteString(operator.Summary)
-	b.WriteString("\n\n")
+	b.WriteString("\n\n## Representations\n\n")
 	for _, claim := range card.Claims {
 		b.WriteString(fmt.Sprintf("- `%s`: %s (%s, %s)\n", claim.ClaimID, claim.Object, claim.Source, claim.Date))
 	}
