@@ -6245,7 +6245,7 @@ func TestImportedSkillOfferCanBecomeValidatedSecondHarnessProductLoop(t *testing
 	if _, err := store.Claim(w.ID, "claude_code", cliTestNow); err != nil {
 		t.Fatalf("claim work: %v", err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, cliTestNow); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "claude_code"}, cliTestNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	if _, err := store.RecordAction(
@@ -6256,7 +6256,7 @@ func TestImportedSkillOfferCanBecomeValidatedSecondHarnessProductLoop(t *testing
 	); err != nil {
 		t.Fatalf("record action: %v", err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, cliTestNow); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "verifying", Actor: "claude_code"}, cliTestNow); err != nil {
 		t.Fatalf("advance verifying: %v", err)
 	}
 

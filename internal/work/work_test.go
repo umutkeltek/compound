@@ -39,10 +39,10 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	if _, err := s.Claim(id, "claude_code", fixedNow); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := s.Advance(id, AdvanceInput{To: "running", RunID: "run_001", Note: "executing"}, fixedNow); err != nil {
+	if _, err := s.Advance(id, AdvanceInput{To: "running", Actor: "claude_code", RunID: "run_001", Note: "executing"}, fixedNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
-	if _, err := s.Advance(id, AdvanceInput{To: "verifying", ArtifactID: "artifact_timeline", VerificationID: "ver_001"}, fixedNow); err != nil {
+	if _, err := s.Advance(id, AdvanceInput{To: "verifying", Actor: "claude_code", ArtifactID: "artifact_timeline", VerificationID: "ver_001"}, fixedNow); err != nil {
 		t.Fatalf("advance verifying: %v", err)
 	}
 	res, err := s.Close(id, CloseInput{Outcome: "completed", MoveType: "memory_delta", Actor: "claude_code", Summary: "timeline capability proven", Changed: true, MemoryPromoted: []string{"claim_timeline"}}, fixedNow)
@@ -416,7 +416,7 @@ func TestRecordActionGate(t *testing.T) {
 	if _, err := s.Claim(w.ID, "claude_code", fixedNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+	if _, err := s.Advance(w.ID, AdvanceInput{To: "running", Actor: "claude_code"}, fixedNow); err != nil {
 		t.Fatal(err)
 	}
 	baseline, err := s.Get(w.ID)
