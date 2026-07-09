@@ -1,20 +1,142 @@
 @import "tailwindcss";
 
+/* ============================================================
+   STATIC SCALES  (theme-independent) — DESIGN.md §1
+   Type / radius / motion / layout live directly in @theme so every
+   named Tailwind utility (text-xs, rounded-lg, rounded-pill, …) reads
+   the design system instead of Tailwind's stock scale.
+   ============================================================ */
 @theme {
-  --color-canvas: #f4f5f7;
-  --color-card: #ffffff;
-  --color-line: #e8eaef;
-  --color-ink: #101828;
-  --color-ink-2: #51606f;
-  --color-ink-3: #98a2b3;
+  /* — type: 13px base, explicit line-heights, tabular for numerics — */
+  --text-2xs: 10.5px;   --text-2xs--line-height: 1.4;    /* inline mono ids, boundary tags */
+  --text-xs:  11px;     --text-xs--line-height: 1.45;    /* meta, section labels, pills */
+  --text-sm:  12px;     --text-sm--line-height: 1.5;     /* secondary body */
+  --text-base:13px;     --text-base--line-height: 1.55;  /* DEFAULT body */
+  --text-md:  14px;     --text-md--line-height: 1.5;     /* card titles emphasis */
+  --text-lg:  16px;     --text-lg--line-height: 1.35;    /* drawer title */
+  --text-xl:  20px;     --text-xl--line-height: 1.2;
+  --text-2xl: 26px;     --text-2xl--line-height: 1.1;    /* KPI value */
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+
+  /* — radii — */
+  --radius-xs: 6px;     --radius-sm: 9px;    --radius-md: 12px;
+  --radius-lg: 14px;    /* the card radius */
+  --radius-xl: 18px;    --radius-pill: 100px;
+
+  /* — semantic layout sizes (the only "spacing" tokens) — */
+  --rail-w: 52px;   --nav-w: 218px;   --drawer-w: 460px;   --read-max: 720px;
+
+  /* — motion — */
+  --dur-fast: 120ms;   --dur-base: 180ms;   --dur-slow: 240ms;   --dur-slower: 400ms;
+  --ease-out: cubic-bezier(.2,.7,.3,1);
+  --ease-drawer: cubic-bezier(.3,.8,.3,1);
+  --ease-standard: cubic-bezier(.4,0,.2,1);
+
+  /* — register runtime color vars as utilities (text-work, bg-seam-soft, border-hair …) — */
+  --color-page: var(--page);       --color-panel: var(--panel);
+  --color-soft: var(--soft);       --color-soft-2: var(--soft-2);
+  --color-ink: var(--ink);         --color-strong: var(--strong);
+  --color-muted: var(--muted);     --color-faint: var(--faint);
+  --color-hair: var(--hair);       --color-hair-2: var(--hair-2);
+
+  --color-work: var(--work-fg);           --color-work-soft: var(--work-soft);       --color-work-line: var(--work-line);
+  --color-memory: var(--memory-fg);       --color-memory-soft: var(--memory-soft);   --color-memory-line: var(--memory-line);
+  --color-capability: var(--cap-fg);      --color-capability-soft: var(--cap-soft);  --color-capability-line: var(--cap-line);
+  --color-route: var(--route-fg);         --color-route-soft: var(--route-soft);     --color-route-line: var(--route-line);
+  --color-product: var(--product-fg);     --color-product-soft: var(--product-soft); --color-product-line: var(--product-line);
+
+  --color-good: var(--good-fg);    --color-good-soft: var(--good-soft);   --color-good-line: var(--good-line);
+  --color-seam: var(--seam-fg);    --color-seam-soft: var(--seam-soft);   --color-seam-line: var(--seam-line);
+  --color-crit: var(--crit-fg);    --color-crit-soft: var(--crit-soft);   --color-crit-line: var(--crit-line);
+  --color-live: var(--work-fg);    /* "active" == work blue, signalled by pulse, not a new hue */
+
+  /* ---------- legacy neutral aliases — retire in Phase 4 ----------
+     Pre-redesign utility names (bg-canvas, bg-card, border-line, text-ink-2,
+     text-ink-3) used across every unmigrated page. Their OLD literal hex
+     values are pixel-identical to the new light-mode runtime vars below
+     (verified: #f4f5f7==#F4F5F7, #ffffff==#FFFFFF, #e8eaef==#E8EAEF,
+     #51606f==#51606F, #98a2b3==#98A2B3) — so aliasing them onto the new
+     runtime vars is a zero-visual-change migration in light mode today,
+     and makes every unmigrated page dark-mode-reactive for free once a
+     theme toggle sets [data-theme="dark"]. `--color-ink` collides by name
+     with the new registration above (also value-identical); the alias
+     above already wins, no separate declaration needed here. */
+  --color-canvas: var(--page);
+  --color-card: var(--panel);
+  --color-line: var(--hair);
+  --color-ink-2: var(--muted);
+  --color-ink-3: var(--faint);
+
+  /* legacy accent palette (Chip/AccentSquare/DecisionForm option dots in
+     src/components/ui.tsx) — kept at its ORIGINAL literal hex, NOT remapped
+     onto the new domain hues (work/memory/capability/route/product), because
+     the values differ (e.g. accent-blue #3b82f6 vs work-fg #2563EB) and
+     remapping would recolor every existing accent dot/tag. Retire alongside
+     ui.tsx's tone vocabulary in Phase 4. */
   --color-accent-blue: #3b82f6;
   --color-accent-green: #10b981;
   --color-accent-orange: #f59e0b;
   --color-accent-pink: #ec4899;
   --color-accent-violet: #8b5cf6;
   --color-accent-red: #ef4444;
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-  --font-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* ============================================================
+   LIGHT  (primary)
+   ============================================================ */
+:root, :root[data-theme="light"] {
+  color-scheme: light;
+  --page:#F4F5F7; --panel:#FFFFFF; --soft:#F8F9FB; --soft-2:#F1F3F6;
+  --ink:#101828; --strong:#0A101E; --muted:#51606F; --faint:#98A2B3;
+  --hair:#E8EAEF; --hair-2:#EEF0F4;
+
+  /* domain (cool) */
+  --work-fg:#2563EB;   --work-soft:#EAF1FE;   --work-line:#C7DBFB;
+  --memory-fg:#7C3AED; --memory-soft:#F1ECFD; --memory-line:#DDCFF8;
+  --cap-fg:#0E93A6;    --cap-soft:#E1F4F7;    --cap-line:#B3E2EA;
+  --route-fg:#4F46E5;  --route-soft:#ECEBFE;  --route-line:#CBC9F7;
+  --product-fg:#DB2777;--product-soft:#FCE9F2;--product-line:#F6C2DA;
+
+  /* severity / state-warm (temperature) */
+  --good-fg:#059669;   --good-soft:#E4F6EF;   --good-line:#B4E6D3;
+  --seam-fg:#B26F09;   --seam-soft:#FCF1DC;   --seam-line:#F1D89B;   /* the attention color */
+  --crit-fg:#DC2626;   --crit-soft:#FCE9E7;   --crit-line:#F5C4BE;
+
+  --shadow-sm:0 1px 2px rgba(16,26,38,.05);
+  --shadow:0 1px 2px rgba(16,26,38,.04),0 4px 16px -6px rgba(16,26,38,.10);
+  --shadow-lg:0 8px 40px -8px rgba(16,26,38,.28);
+  --focus:var(--work-fg);
+}
+
+/* ============================================================
+   DARK  (first-class — hues RE-PICKED for the dark substrate, not inverted)
+   Dormant until something sets [data-theme="dark"] on :root — no theme
+   toggle ships in Phase 1 (foundation only), so the default render is
+   unaffected; this block only proves [data-theme] works without breaking
+   today's (light-only) default.
+   ============================================================ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page:#080B10; --panel:#12171F; --soft:#161C25; --soft-2:#1A212B;
+  --ink:#E4E9F0; --strong:#F4F7FA; --muted:#93A0AF; --faint:#66727F;
+  --hair:#242C37; --hair-2:#1F2630;
+
+  --work-fg:#5AA2FF;   --work-soft:#0E2436;   --work-line:#1D3E5C;
+  --memory-fg:#A78BFA; --memory-soft:#1E1938; --memory-line:#362E5A;
+  --cap-fg:#3FC8DE;    --cap-soft:#0E2C34;    --cap-line:#1D4750;
+  --route-fg:#8A8CF7;  --route-soft:#191A38;  --route-line:#2E2F5C;
+  --product-fg:#F472B6;--product-soft:#331023;--product-line:#571C3A;
+
+  --good-fg:#33B679;   --good-soft:#10281E;   --good-line:#1E4331;
+  --seam-fg:#D69B3C;   --seam-soft:#2A2211;   --seam-line:#48391B;
+  --crit-fg:#E06E5C;   --crit-soft:#2C1714;   --crit-line:#4C2620;
+
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow:0 1px 2px rgba(0,0,0,.35),0 8px 24px -12px rgba(0,0,0,.6);
+  --shadow-lg:0 10px 50px -8px rgba(0,0,0,.7);
+  --focus:var(--work-fg);
 }
 
 html {
@@ -26,8 +148,16 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+  /* Deliberately NOT var(--text-base) (13px per DESIGN.md §1): kept at the
+     pre-redesign literal 14px so any unmigrated element that inherits body's
+     font-size (no explicit text-[…]/text-* class) does not shift size. New
+     kit/ components set their own text sizing from the scale above; this
+     default retires once every page has migrated (Phase 4). */
   font-size: 14px;
 }
+
+/* numbers always align */
+.tnum, .mono, [data-num] { font-variant-numeric: tabular-nums; }
 
 /* Card primitive — white, hairline border, soft radius, quiet shadow */
 .card {
@@ -63,12 +193,12 @@ body {
   font-size: 13.5px;
 }
 .nav-item:hover {
-  background: #f1f3f6;
+  background: var(--soft-2);
   color: var(--color-ink);
 }
 .nav-item[data-active="true"] {
-  background: #eef2ff;
-  color: #3730a3;
+  background: var(--soft-2);
+  color: var(--work-fg);
 }
 .nav-item[data-soon="true"] {
   opacity: 0.45;
@@ -91,12 +221,6 @@ body {
     opacity: 1;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .skeleton {
-    animation: none;
-    opacity: 0.75;
-  }
-}
 
 /* Thin scrollbars for board columns */
 .board-scroll::-webkit-scrollbar {
@@ -106,4 +230,116 @@ body {
 .board-scroll::-webkit-scrollbar-thumb {
   background: #d8dde5;
   border-radius: 8px;
+}
+
+/* ============================================================
+   MOTION VOCABULARY  (DESIGN.md §5) — foundation for kit/StateBadge's
+   live pulse and kit/ActionButton's optimistic-act sequence. Reduced-motion
+   turns every one of these off in one place per DESIGN.md §5's rule:
+   "prefers-reduced-motion: reduce: all keyframes/transitions off; pulses
+   become static rings; optimistic swap is instant."
+   ============================================================ */
+@keyframes live-ping {
+  0% { transform: scale(1); opacity: .85; }
+  75%, 100% { transform: scale(2.4); opacity: 0; }
+}
+@keyframes action-shimmer {
+  0% { background-position: -120% 0; }
+  100% { background-position: 220% 0; }
+}
+@keyframes action-ring-flash {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--focus) 55%, transparent); }
+  60% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--focus) 30%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes action-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-2px); }
+  40% { transform: translateX(2px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+
+/* Trace drawer slide + scrim (DESIGN.md §3/§5) */
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes drawer-out {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes scrim-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* the one animated pill dot (StateBadge tone="live") */
+.live-dot {
+  position: relative;
+  display: inline-flex;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+.live-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: live-ping 2s cubic-bezier(0, 0, .2, 1) infinite;
+}
+
+/* ActionButton's signature optimistic-act sequence (DESIGN.md §5) */
+.action-pending {
+  position: relative;
+  overflow: hidden;
+}
+.action-pending::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--panel) 60%, transparent),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: action-shimmer 1.1s ease-in-out infinite;
+}
+.action-confirmed {
+  animation: action-ring-flash var(--dur-slow) var(--ease-out);
+}
+.action-error {
+  animation: action-shake var(--dur-base) var(--ease-standard);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    opacity: 0.75;
+  }
+  .live-dot::after {
+    animation: none;
+    opacity: .4;
+    transform: scale(1.6);
+  }
+  .action-pending::after,
+  .action-confirmed,
+  .action-error {
+    animation: none !important;
+  }
+}
+
+/* :focus-visible ring on every interactive element (DESIGN.md §4) */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
