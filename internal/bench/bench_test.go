@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/mem"
 )
 
 // fixtureNode is a seed node; ids MUST match fixtures/bench/capability-suite.json so the
@@ -186,6 +188,112 @@ func TestCommittedFixtureScoresRealHits(t *testing.T) {
 	}
 }
 
+// memoryFixtureClaim mirrors one synthetic candidate seeded for the committed memory suite; the
+// resulting claim id (claim_ + sha256(entity|predicate|object|seq)[:12]) is what the fixture's
+// expected ids reference. Fully synthetic content — never a real claim id or private query.
+type memoryFixtureClaim struct {
+	entity, predicate, object string
+}
+
+func memoryFixtureClaims() []memoryFixtureClaim {
+	// Promotion order fixes seq (1, then 2); the fixture ids are derived from these tuples.
+	return []memoryFixtureClaim{
+		{"widget-calibration-doctrine", "records_mechanism", "synthetic widget calibration compensates sensor drift on the bench"},
+		{"fibonacci-cache-doctrine", "records_finding", "memoized fibonacci cache eviction lowers recompute cost"},
+	}
+}
+
+// seedMemoryLedger captures + promotes the synthetic claims (in order, so seq is deterministic) and
+// returns entity->claim id. It uses only the public mem API (Capture/Adjudicate/AllCurrent), the
+// same path a real ingestion runs, so the fixture is proven against a genuinely-built ledger.
+func seedMemoryLedger(t *testing.T, home string) map[string]string {
+	t.Helper()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatalf("open mem: %v", err)
+	}
+	var cands []mem.Candidate
+	for _, c := range memoryFixtureClaims() {
+		cands = append(cands, mem.Candidate{
+			Entity:          c.entity,
+			Predicate:       c.predicate,
+			Object:          c.object,
+			Confidence:      0.9,
+			Derivation:      "deterministic",
+			ClaimType:       "architecture",
+			PromotionBasis:  candidates.BasisRuntimeProof,
+			SourceTraceRef:  "ev_" + c.entity,
+			SnippetHash:     "sha256:" + c.entity,
+			Visibility:      "operational",
+			ObservationDate: "2026-07-02T00:00:00Z",
+		})
+	}
+	captured, err := store.Capture(cands, fixedNow())
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if len(captured) != len(cands) {
+		t.Fatalf("captured %d candidates, want %d (an echo/dedup collapsed one)", len(captured), len(cands))
+	}
+	for i, c := range captured {
+		if _, err := store.Adjudicate(c.ID, "promote", "bench-test", fixedNow().Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("promote %s: %v", c.ID, err)
+		}
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		t.Fatalf("all current: %v", err)
+	}
+	byEntity := map[string]string{}
+	for _, cl := range claims {
+		byEntity[cl.Entity] = cl.ID
+	}
+	return byEntity
+}
+
+// TestCommittedMemoryFixtureScoresRealHits is the memory mirror of TestCommittedFixtureScoresRealHits:
+// over a ledger seeded with the synthetic claims, the committed memory suite hits at rank 1 with
+// nothing absent — proving the fixture is NON-VACUOUS. A guard asserts the fixture's expected ids
+// equal the freshly-seeded claim ids, so a future change to the mem id scheme reds loudly here
+// instead of silently making the fixture score all-absent.
+func TestCommittedMemoryFixtureScoresRealHits(t *testing.T) {
+	home := t.TempDir()
+	byEntity := seedMemoryLedger(t, home)
+
+	suite, err := LoadSuite(filepath.Join("..", "..", "fixtures", "bench", "memory-suite.json"))
+	if err != nil {
+		t.Fatalf("load memory suite: %v", err)
+	}
+
+	// Guard: the committed fixture must reference exactly the ids the seed produces.
+	wantIDs := map[string]string{
+		"widget-calibration-doctrine": suite.Cases[0].Expected[0],
+		"fibonacci-cache-doctrine":    suite.Cases[1].Expected[0],
+	}
+	for entity, fixtureID := range wantIDs {
+		if got := byEntity[entity]; got != fixtureID {
+			t.Fatalf("fixture claim id for %s = %q, seed produced %q — regenerate fixtures/bench/memory-suite.json", entity, fixtureID, got)
+		}
+	}
+
+	report, err := Run(Options{Home: home, Suite: suite, BuildSHA: "test", Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if report.SkippedCount != 0 || report.ScoredCount != 2 {
+		t.Fatalf("scored=%d skipped=%d, want 2/0 (ledger available, both cases scored)", report.ScoredCount, report.SkippedCount)
+	}
+	if len(report.AbsentFromGraph) != 0 {
+		t.Fatalf("absent = %v, want none (fixture ids are seeded)", report.AbsentFromGraph)
+	}
+	if report.Overall.Hit1 != 1.0 || report.Overall.MRR != 1.0 {
+		t.Fatalf("overall = %+v, want hit@1=1.0 mrr=1.0 (non-vacuous)", report.Overall)
+	}
+	if report.Splits[SplitHeldIn].Cases != 1 || report.Splits[SplitHeldOut].Cases != 1 {
+		t.Fatalf("split cases = in:%d out:%d, want 1/1", report.Splits[SplitHeldIn].Cases, report.Splits[SplitHeldOut].Cases)
+	}
+}
+
 // TestCompareFlagsHeldOutRegression falsifies the accept rule: a fabricated regression on
 // held_out ALONE (held_in unchanged) must be rejected with held_out named.
 func TestCompareFlagsHeldOutRegression(t *testing.T) {
@@ -341,7 +449,7 @@ func TestCompareRegressesOnViolationIncrease(t *testing.T) {
 	}
 	worse := before
 	worse.Splits = map[string]Metrics{
-		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},                          // unchanged
+		SplitHeldIn:  {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1},                         // unchanged
 		SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1, ForbiddenViolations: 2}, // more leaks, same hits
 	}
 	cmp := Compare(before, worse)
