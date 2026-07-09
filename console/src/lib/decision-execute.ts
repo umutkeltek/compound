@@ -15,6 +15,7 @@ import {
   runJson,
   str,
 } from "@/lib/compound";
+import { type GenericActionGate, resolveGenericAction } from "@/lib/generic-actions";
 
 type DecisionExecutionRefs = {
   action_refs: string[];
@@ -151,6 +152,8 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   const area = typeof body.area === "string" ? body.area : "";
   const itemId = typeof body.itemId === "string" ? body.itemId.trim() : "";
   const option = typeof body.option === "string" ? body.option : "";
+  const actionId = typeof body.actionId === "string" ? body.actionId.trim() : "";
+  const confirmed = body.confirmed === true;
 
   const fields: Record<string, string> = {};
   if (body.fields && typeof body.fields === "object") {
@@ -162,6 +165,14 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
 
   const spec = specFor(area);
   if (!spec) {
+    // No bespoke REGISTRY spec for this area. If the caller named a backend
+    // action, fall through to the generic governed-action pathway
+    // (generic-actions.ts) instead of the "unknown decision area" 400 below —
+    // this is the ONLY way areas without a bespoke spec become executable.
+    // A bespoke spec always wins: this branch never runs when `spec` exists.
+    if (actionId) {
+      return executeGenericAction(area, itemId, actionId, confirmed);
+    }
     return Response.json({ ok: false, stderr: `unknown decision area: ${area}` }, { status: 400 });
   }
 
@@ -229,6 +240,67 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
     // The mutation succeeded - every cached `compound ... --json` read is now
     // potentially stale. Clear the memo so the client's router.refresh() (see
     // DecisionForm/ReviewDecisionForm/ContinueButton) re-execs and shows truth.
+    invalidateRunJsonCache();
+    return Response.json({
+      ok: true,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      refs: extractDecisionRefs(result.stdout, result.stderr),
+    });
+  } catch (error) {
+    const failure = compoundFailure(error);
+    return Response.json({
+      ok: false,
+      stdout: failure.stdout,
+      stderr: failure.stderr || failure.message,
+      refs: extractDecisionRefs(failure.stdout, failure.stderr || failure.message),
+    });
+  }
+}
+
+const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
+  "not-found": 404,
+  "gate-1-shell-form": 403,
+  "gate-2-allowlist": 403,
+  "gate-3-global-allowlist": 403,
+};
+
+/**
+ * The generic governed-action pathway (Phase 3a): executes an area's
+ * backend-declared action when no bespoke REGISTRY spec exists. Every argv
+ * comes from resolveGenericAction's fresh server-side re-resolution — this
+ * function never sees or trusts client argv, only {area, itemId, actionId}.
+ */
+async function executeGenericAction(
+  area: string,
+  itemId: string,
+  actionId: string,
+  confirmed: boolean,
+): Promise<Response> {
+  if (!itemId) {
+    return Response.json({ ok: false, stderr: "itemId is required" }, { status: 400 });
+  }
+
+  const resolution = await resolveGenericAction(area, itemId, actionId);
+  if (!resolution.ok) {
+    return Response.json(
+      { ok: false, stderr: resolution.rejection.message },
+      { status: GENERIC_GATE_STATUS[resolution.rejection.gate] },
+    );
+  }
+
+  const { action } = resolution;
+  if (action.requiresReview && !confirmed) {
+    return Response.json(
+      { ok: false, stderr: `action "${action.actionId}" requires confirmation before it runs` },
+      { status: 428 },
+    );
+  }
+
+  try {
+    const result = await runCompound(action.argv);
+    // Same reasoning as the bespoke path above: a mutation just ran, so every
+    // cached `compound ... --json` read is potentially stale.
     invalidateRunJsonCache();
     return Response.json({
       ok: true,
