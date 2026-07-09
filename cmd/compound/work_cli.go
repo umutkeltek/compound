@@ -1032,12 +1032,12 @@ func cmdWork(args []string) {
 			os.Exit(2)
 		}
 		res, err := store.Close(pos(), work.CloseInput{
-			Outcome:                    flag("--outcome"),
-			MoveType:                   flag("--move-type"),
-			Actor:                      firstNonEmpty(flag("--by"), flag("--actor")),
-			Summary:                    flag("--summary"),
-			Changed:                    has("--changed"),
-			UsedCapabilities:           splitCSV(flag("--used")),
+			Outcome:          flag("--outcome"),
+			MoveType:         flag("--move-type"),
+			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
+			Summary:          flag("--summary"),
+			Changed:          has("--changed"),
+			UsedCapabilities: splitCSV(flag("--used")),
 			// Declared iff --used was EXPLICITLY passed (even --used "" = declared-none). Omitting
 			// the flag leaves used_declared=false, so injected refs stay unknown, not ignored.
 			UsedDeclared:               has("--used"),
