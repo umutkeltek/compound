@@ -47,6 +47,7 @@ var Classification = map[string]Class{
 	"director":       ObjectFamily,
 	"distiller":      ObjectFamily,
 	"localmodel":     ObjectFamily,
+	"lanebeliefs":    ObjectFamily,
 	"observation":    ObjectFamily,
 	"panel":          ObjectFamily,
 	"product":        ObjectFamily,

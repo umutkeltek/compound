@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"compound/internal/capgraph"
 	"time"
 )
 
@@ -266,4 +268,8 @@ func comparisonCandidatePath(homePath, ref string) string {
 
 func comparisonEvidenceLedgerPath(homePath string) string {
 	return filepath.Join(homePath, "ledger", comparisonLedgerFile)
+}
+
+func canonicalComparisonLaneNodeID(laneID string) (string, bool) {
+	return capgraph.AgentLaneNodeIDFromShortLaneID(laneID)
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/capgraph"
 	"compound/internal/reviewartifact"
 
 	"gopkg.in/yaml.v3"
@@ -512,6 +513,10 @@ type promotionComparisonKey struct {
 type promotionComparisonSignal struct {
 	Wins   int
 	Losses int
+}
+
+func canonicalPromotionLaneNodeID(laneID string) (string, bool) {
+	return capgraph.AgentLaneNodeIDFromShortLaneID(laneID)
 }
 
 type promotionComparisonEvidenceRow struct {

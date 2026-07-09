@@ -16,6 +16,7 @@ const ActionExecutionPlanSchemaVersion = "compound.work_action_execution_plan.v0
 
 type ActionExecutionPlanOptions struct {
 	Actor          string
+	LaneID         string
 	Capability     string
 	Action         string
 	MutationClass  string
@@ -83,6 +84,10 @@ func (s *Store) ActionExecutionPlan(workID string, now time.Time, opts ActionExe
 	if err != nil {
 		return ActionExecutionPlan{}, err
 	}
+	producerLaneID := strings.TrimSpace(opts.LaneID)
+	if producerLaneID == "" {
+		producerLaneID = strings.TrimSpace(opts.Actor)
+	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = "codex"
@@ -143,7 +148,7 @@ func (s *Store) ActionExecutionPlan(workID string, now time.Time, opts ActionExe
 	}
 	moveType := orDefault(opts.MoveType, "outward_delta")
 	outcome := orDefault(opts.ReceiptOutcome, "completed")
-	receipt := s.actionExecutionReceiptDraft(w, actionContext, actor, now, moveType, outcome, plan.ProofRefs)
+	receipt := s.actionExecutionReceiptDraft(w, actionContext, actor, producerLaneID, now, moveType, outcome, plan.ProofRefs)
 	if err := receipt.Validate(); err != nil {
 		return ActionExecutionPlan{}, fmt.Errorf("receipt draft invalid: %w", err)
 	}
@@ -278,12 +283,12 @@ func (s *Store) actionExecutionIntent(w envelope.WorkEnvelope, ctx *WorkActionCo
 	}
 }
 
-func (s *Store) actionExecutionReceiptDraft(w envelope.WorkEnvelope, ctx *WorkActionContext, actor string, now time.Time, moveType, outcome string, proofRefs []string) envelope.Receipt {
+func (s *Store) actionExecutionReceiptDraft(w envelope.WorkEnvelope, ctx *WorkActionContext, actor, producerLaneID string, now time.Time, moveType, outcome string, proofRefs []string) envelope.Receipt {
 	summary := "expected after executing action_context command"
 	if strings.TrimSpace(ctx.Proof) != "" {
 		summary += ": " + strings.TrimSpace(ctx.Proof)
 	}
-	return envelope.Receipt{
+	receipt := envelope.Receipt{
 		Header: newHeader(
 			envelope.SVReceipt,
 			idFor("rec_", w.ID, actor, strings.Join(ctx.Command, " "), moveType, outcome, ts(now)),
@@ -306,6 +311,10 @@ func (s *Store) actionExecutionReceiptDraft(w envelope.WorkEnvelope, ctx *WorkAc
 		Next:      envelope.ReceiptNext{ReviewTrigger: strings.Join(ctx.StopConditions, "; ")},
 		ProofRefs: append([]string{}, proofRefs...),
 	}
+	if strings.TrimSpace(producerLaneID) != "" {
+		receipt.Producer.LaneID = strings.TrimSpace(producerLaneID)
+	}
+	return receipt
 }
 
 func actionContextProofRefs(workID string, ctx *WorkActionContext) []string {

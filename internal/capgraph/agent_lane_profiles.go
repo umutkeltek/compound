@@ -66,12 +66,16 @@ type agentLaneProfileLane struct {
 	ValidatedBy []string `json:"validated_by"`
 }
 
-type agentLaneTuple struct {
+// AgentLaneTuple is the canonical lane identity input. Keep every component
+// faithful: AgentLaneNodeID is the sole owner of agent-lane node IDs.
+type AgentLaneTuple struct {
 	Harness string
 	Route   string
 	Model   string
 	Effort  string
 }
+
+type agentLaneTuple = AgentLaneTuple
 
 // ImportAgentLaneProfiles derives evidence-only agent-lane nodes from the
 // private profiles registry overlay. Missing seed files are a clean no-op so
@@ -292,7 +296,7 @@ func agentLaneHarnessAlias(value string) string {
 	return value
 }
 
-func agentLaneNodeID(tuple agentLaneTuple) string {
+func AgentLaneNodeID(tuple AgentLaneTuple) string {
 	parts := []string{
 		slugSkill(tuple.Harness),
 		slugSkill(tuple.Route),
@@ -300,6 +304,33 @@ func agentLaneNodeID(tuple agentLaneTuple) string {
 		slugSkill(tuple.Effort),
 	}
 	return agentLaneNodeKind + ":" + strings.Join(parts, "--")
+}
+
+func agentLaneNodeID(tuple agentLaneTuple) string {
+	return AgentLaneNodeID(tuple)
+}
+
+func AgentLaneNodeIDFromShortLaneID(laneID string) (string, bool) {
+	tuple, ok := AgentLaneTupleFromShortLaneID(laneID)
+	if !ok {
+		return "", false
+	}
+	return AgentLaneNodeID(tuple), true
+}
+
+func AgentLaneTupleFromShortLaneID(laneID string) (AgentLaneTuple, bool) {
+	laneID = strings.TrimSpace(laneID)
+	if laneID == "" || laneID == "*" {
+		return AgentLaneTuple{}, false
+	}
+	return AgentLaneTuple{Harness: shortLaneHarness(laneID), Route: laneID, Model: laneID, Effort: "unknown"}, true
+}
+
+func shortLaneHarness(laneID string) string {
+	if idx := strings.IndexAny(laneID, "/:"); idx > 0 {
+		return laneID[:idx]
+	}
+	return laneID
 }
 
 func agentLaneName(tuple agentLaneTuple) string {

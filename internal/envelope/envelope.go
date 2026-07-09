@@ -91,6 +91,7 @@ type Producer struct {
 	Kind    string `json:"kind"`
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	LaneID  string `json:"lane_id,omitempty"`
 }
 type IDs struct {
 	WorkID        string `json:"work_id,omitempty"`

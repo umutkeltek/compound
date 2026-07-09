@@ -505,6 +505,7 @@ type CloseInput struct {
 	Outcome  string // completed | failed | cancelled
 	MoveType string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
 	Actor    string
+	LaneID   string
 	Summary  string
 	Changed  bool
 	// Steal and StealReason are the close-gate lease escape hatch: closing a work held by a
@@ -560,6 +561,10 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	}
 	if w.State != in.Outcome && !canTransition(w.State, in.Outcome) {
 		return res, fmt.Errorf("cannot close %s from state %q to %q", workID, w.State, in.Outcome)
+	}
+	producerLaneID := strings.TrimSpace(in.LaneID)
+	if producerLaneID == "" {
+		producerLaneID = strings.TrimSpace(in.Actor)
 	}
 	actor := strings.TrimSpace(in.Actor)
 	if actor == "" {
@@ -632,6 +637,9 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		Next:      envelope.ReceiptNext{SuggestedWork: []string{}},
 		ProofRefs: proofRefs,
 	}
+	if producerLaneID != "" {
+		rec.Producer.LaneID = producerLaneID
+	}
 	if fc := failureCause(in.FailureSurfaceOutcome, in.FailureMechanism); fc != nil {
 		rec.FailureCause = fc
 	}
@@ -669,6 +677,9 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			FutureBehaviorChanged: in.MoveType != "audit_only",
 			ShouldHarden:          shouldHardenOnClose(w.TargetSurface, in.Outcome, in.ProofRefs),
 		},
+	}
+	if producerLaneID != "" {
+		tr.Producer.LaneID = producerLaneID
 	}
 	if err := tr.Validate(); err != nil {
 		return res, fmt.Errorf("emitted transition invalid: %w", err)
