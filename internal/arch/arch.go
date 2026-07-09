@@ -55,6 +55,7 @@ var Classification = map[string]Class{
 	"routeevidence":  ObjectFamily,
 	"runtimebinding": ObjectFamily,
 	// shared leaf
+	"attention":      Leaf, // ranked read-only projection over reviews/workbench/executors; owns no authority objects
 	"bench":          Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
 	"breadth":        Leaf,
 	"candidates":     Leaf,
@@ -558,7 +559,7 @@ func checkRetiredSurfaceReferences(repoRoot string) []Finding {
 func checkPrivateAdaptationSteering(repoRoot string) []Finding {
 	planDir := filepath.Join(repoRoot, "docs_private", "plan")
 	if st, err := os.Stat(planDir); err != nil || !st.IsDir() {
-		return []Finding{{"adaptation-steering", Info, "docs_private/plan absent; public clone uses roadmap fallback"}}
+		return []Finding{{"adaptation-steering", Info, "docs_private/plan absent; public clone uses roadmap fallback for context-aware OS adaptation"}}
 	}
 
 	var failures []string
