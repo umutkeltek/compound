@@ -806,6 +806,8 @@ func cmdWork(args []string) {
 			VerificationID: flag("--verification"),
 			ContextPackID:  flag("--context-pack"),
 			Note:           flag("--note"),
+			Steal:          has("--steal"),
+			StealReason:    flag("--reason"),
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s -> %s policy=%s\n", w.ID, w.State, w.PolicyDecisionID)

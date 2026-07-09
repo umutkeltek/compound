@@ -4411,6 +4411,61 @@ func TestWorkCloseCommandStealOverridesLeaseHolder(t *testing.T) {
 	}
 }
 
+// Steal-success path for the advance-gate lease enforcement: `work advance --steal --reason`
+// on a held work succeeds via the CLI, and the trail carries the prior holder, the reason,
+// and the stealing actor. The non-holder-refusal falsifier itself is proven at the Store
+// level (TestAdvanceRefusesNonLeaseHolder, internal/work/lease_advance_test.go) — the
+// mutating `work advance` calls die()/os.Exit on refusal, same as `work close`, so per the
+// close-gate lane's own precedent CLI tests here cover only the success + steal-success path.
+func TestWorkAdvanceCommandStealOverridesLeaseHolder(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "advance steal cli"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(held.ID, "actor-a", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		cmdWork([]string{
+			"advance", held.ID, "--to", "running",
+			"--actor", "actor-b", "--steal", "--reason", "actor-a executor died mid-build",
+		})
+	})
+	if !strings.Contains(out, "running") {
+		t.Fatalf("stolen advance output missing running state:\n%s", out)
+	}
+	advanced, err := store.Get(held.ID)
+	if err != nil {
+		t.Fatalf("get advanced work: %v", err)
+	}
+	if advanced.State != "running" {
+		t.Fatalf("stolen advance command did not advance the work: %+v", advanced)
+	}
+	_, evs, err := store.Show(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if strings.Contains(e.Note, "stolen") && strings.Contains(e.Note, "actor-a") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trail missing the steal record: %+v", evs)
+	}
+}
+
 func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
 	err := validateKnownFlags(
 		[]string{"work_123", "--outcome", "completed", "--proof-ref", "proof:ok", "--proof-rfe", "proof:typo"},
