@@ -1171,8 +1171,8 @@ func TestSessionEndClosesWork(t *testing.T) {
 	}
 	w, _ := store.Create(work.CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
 	store.Claim(w.ID, "claude_code", fixedNow)
-	store.Advance(w.ID, work.AdvanceInput{To: "running"}, fixedNow)
-	store.Advance(w.ID, work.AdvanceInput{To: "verifying"}, fixedNow)
+	store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "claude_code"}, fixedNow)
+	store.Advance(w.ID, work.AdvanceInput{To: "verifying", Actor: "claude_code"}, fixedNow)
 
 	deps := baseDeps()
 	deps.Store = store
@@ -1217,7 +1217,7 @@ func TestSessionEndWithWorkIDDoesNotCloseWithoutExplicitOutcomeAndMoveType(t *te
 	}
 	w, _ := store.Create(work.CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)
 	store.Claim(w.ID, "claude_code", fixedNow)
-	store.Advance(w.ID, work.AdvanceInput{To: "running"}, fixedNow)
+	store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "claude_code"}, fixedNow)
 
 	deps := baseDeps()
 	deps.Store = store

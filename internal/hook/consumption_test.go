@@ -81,7 +81,7 @@ func closeableWork(t *testing.T, store *work.Store, packID string) string {
 	if _, err := store.Claim(w.ID, "claude_code", fixedNow); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running"}, fixedNow); err != nil {
+	if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "claude_code"}, fixedNow); err != nil {
 		t.Fatalf("advance running: %v", err)
 	}
 	return w.ID
