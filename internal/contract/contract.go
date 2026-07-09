@@ -1263,11 +1263,12 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks ma
 	if err != nil {
 		return nil, nil, err
 	}
+	temps := loadMemoryTemperatures(homePath)
 	out := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	excluded := make([]contextMemoryRef, 0, maxContextMemoryRefs)
 	for _, claim := range claims {
 		sem := semanticRanks[claim.ID]
-		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, sem)
+		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, sem, temps)
 		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
 			// Topic narrowing is a HARD scope gate (mirrors the recall/position topic filter):
 			// a claim outside the subtree never enters ambient recall. Record only the ones that
@@ -1291,7 +1292,7 @@ func loadMemoryRefs(homePath string, in Input, rule MemoryRule, semanticRanks ma
 			})
 			continue
 		}
-		rank := ambientMemoryRank(claim, rule, entities, taskTokens, sem)
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens, sem, temps)
 		if rank <= 0 {
 			continue
 		}
@@ -1386,16 +1387,20 @@ func BenchMemoryRank(homePath string, in Input, pol OrientationPolicy) (ranked [
 		rank float64
 		seq  int64
 	}
+	// Temperature is loaded INSIDE BenchMemoryRank (not added to its exported signature) so the
+	// bench evaluator organ's call site (internal/bench/bench.go) stays call-compatible while the
+	// temperature term is exercised through the same scorer orient uses. Fail-open on absence.
+	temps := loadMemoryTemperatures(homePath)
 	ordered := make([]scoredClaim, 0, len(claims))
 	for _, claim := range claims {
 		if topicSet != nil && !mem.ClaimHasTopicRef(claim, topicSet) {
 			continue
 		}
-		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, 0)
+		relevanceRank := memoryRelevanceRank(claim, entities, taskTokens, 0, temps)
 		if memoryPolicyExclusionReason(claim, rule, relevanceRank) != "" {
 			continue
 		}
-		rank := ambientMemoryRank(claim, rule, entities, taskTokens, 0)
+		rank := ambientMemoryRank(claim, rule, entities, taskTokens, 0, temps)
 		if rank <= 0 {
 			continue
 		}
@@ -1461,7 +1466,10 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 			continue
 		}
 		sem := semanticRanks[activeClaim.ID]
-		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens, sem)
+		// Positions rank by stance stability, not consumption; temperature is scoped to claim
+		// recall this round (nil lookup => no temperature term). Extending it to positions is a
+		// named follow-up.
+		relevanceRank := memoryRelevanceRank(activeClaim, entities, taskTokens, sem, nil)
 		if topicSet != nil && !mem.ClaimHasTopicRef(activeClaim, topicSet) {
 			// Same hard topic gate as claim recall, keyed off the position's active claim.
 			if relevanceRank > 0 {
@@ -1483,7 +1491,7 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 			})
 			continue
 		}
-		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem)
+		rank := ambientMemoryRank(activeClaim, rule, entities, taskTokens, sem, nil)
 		if rank <= 0 {
 			continue
 		}
@@ -1571,7 +1579,10 @@ func memoryLedgerRevision(homePath string) (string, error) {
 	return store.LedgerDigest()
 }
 
-func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, semanticScore float64) float64 {
+// temps is the claim-id → frozen temperature lookup from the memory-temperature projection.
+// A nil/empty map (no projection) is fail-open: every rank is byte-identical to the
+// pre-temperature behavior. See memoryTemperatureTerm.
+func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, semanticScore float64, temps map[string]float64) float64 {
 	// Gates first — the engine RANKS, the ledger GATES. A claim these zero out stays zeroed no
 	// matter how relevant the breadth engine judged it (decisions go through loadDecisionRefs;
 	// volatile repo-state and non-ambient-visible claims never enter ambient memory).
@@ -1596,7 +1607,42 @@ func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, 
 	} else {
 		rank += semanticScore
 	}
+	// Bounded temperature nudge (Weng item 5): reinforcement-on-access from the
+	// memory-temperature projection, clamped to ±mem.MaxTemperatureContribution (< the
+	// entity-match weight, so relevance always dominates). Applied ONLY to claims that are
+	// already relevant (rank>0), so temperature re-ranks the relevant set and never manufactures
+	// relevance for an off-task claim nor resurfaces a gated one. A gated/irrelevant claim keeps
+	// its exact 0. Fail-open: a nil/empty map leaves every rank unchanged.
+	if rank > 0 {
+		rank += memoryTemperatureTerm(temps, claim.ID)
+	}
 	return rank
+}
+
+// loadMemoryTemperatures reads the memory-temperature projection into the rank lookup, fail-open:
+// any read/parse error (or an unbuilt projection) yields a nil map, so ranks stay byte-identical
+// to the pre-temperature behavior. The projection is derived state, never authority.
+func loadMemoryTemperatures(homePath string) map[string]float64 {
+	temps, err := mem.LoadTemperatureLookup(homePath)
+	if err != nil {
+		return nil
+	}
+	return temps
+}
+
+// memoryTemperatureTerm returns the claim's temperature contribution to the rank, clamped to
+// [-mem.MaxTemperatureContribution, +mem.MaxTemperatureContribution]. The clamp is defensive:
+// the builder already bounds stored temperatures, but a hand-fed/corrupt projection can never
+// breach the ceiling and let temperature overwhelm relevance. Absent id (or nil map) => 0.
+func memoryTemperatureTerm(temps map[string]float64, claimID string) float64 {
+	t := temps[claimID]
+	if t > mem.MaxTemperatureContribution {
+		return mem.MaxTemperatureContribution
+	}
+	if t < -mem.MaxTemperatureContribution {
+		return -mem.MaxTemperatureContribution
+	}
+	return t
 }
 
 func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank float64) string {
@@ -1615,8 +1661,8 @@ func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank
 	return ""
 }
 
-func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool, semanticScore float64) float64 {
-	rank := memoryRelevanceRank(claim, entities, taskTokens, semanticScore)
+func ambientMemoryRank(claim mem.Claim, rule MemoryRule, entities, taskTokens map[string]bool, semanticScore float64, temps map[string]float64) float64 {
+	rank := memoryRelevanceRank(claim, entities, taskTokens, semanticScore, temps)
 	if memoryPolicyExclusionReason(claim, rule, rank) != "" {
 		return 0
 	}
