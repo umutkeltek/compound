@@ -2,6 +2,7 @@ package mem
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,6 +192,49 @@ func TestSynthesisReconcileCredibleSourceSplitWritesOneContestedCard(t *testing.
 	}
 	if after := reconcileContestedReviewFiles(t, s); strings.Join(after, "\n") != strings.Join(files, "\n") {
 		t.Fatalf("second reconcile changed contested review files: before=%v after=%v", files, after)
+	}
+}
+func TestSynthesisReconcileThreeSplitTensionsCollapseIntoOneCard(t *testing.T) {
+	s := newStore(t)
+	claims := []Claim{
+		reconcileClaim("claim_split_go", 1, "project:api", "runtime", "Go", rfc3339(t0)),
+		reconcileClaim("claim_split_rust", 2, "project:api", "runtime", "Rust", rfc3339(t0)),
+		reconcileClaim("claim_split_zig", 3, "project:api", "runtime", "Zig", rfc3339(t0)),
+	}
+	for i := range claims {
+		claims[i].CanonClass = "decision"
+		claims[i].EvidenceRefs = []string{fmt.Sprintf("source:trace-%d", i+1)}
+		appendReconcileClaim(t, s, claims[i])
+	}
+	writeReconcileTransition(t, s, reconcileTransitionInput{
+		ID:        "tr_three_way_split",
+		CreatedAt: rfc3339(t0.Add(time.Hour)),
+		Scope:     "project:api",
+		ClaimRefs: []string{"claim_split_rust", "claim_split_zig"},
+	})
+
+	report, err := s.SynthesisSweep([]string{"reconcile"}, t0.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ReconcileContestedCount != 1 || len(report.ReconcileContestedCards) != 1 {
+		t.Fatalf("three-way split should create one card, got %+v", report.ReconcileContestedCards)
+	}
+	card := report.ReconcileContestedCards[0]
+	if len(card.Claims) != 3 {
+		t.Fatalf("one card should list all three representations: %+v", card.Claims)
+	}
+	markdown := readReconcileContestedMarkdown(t, s)
+	if !strings.Contains(markdown, "## Representations") {
+		t.Fatalf("card body should expose a representations section:\n%s", markdown)
+	}
+	for _, want := range []string{"Go (", "Rust (", "Zig ("} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("card body missing %q in:\n%s", want, markdown)
+		}
+	}
+	if files := reconcileContestedReviewFiles(t, s); len(files) != 2 {
+		t.Fatalf("three-way split should still write one json+md pair, got %v", files)
 	}
 }
 
@@ -518,6 +562,23 @@ func readReconcileContestedArtifact(t *testing.T, s *Store) map[string]any {
 	}
 	t.Fatalf("no contested review artifact under %s", root)
 	return nil
+}
+
+func readReconcileContestedMarkdown(t *testing.T, s *Store) string {
+	t.Helper()
+	root := filepath.Join(s.home, "reviews", reconcileContestedArea)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		return string(readFileIfExists(t, filepath.Join(root, entry.Name())))
+	}
+	t.Fatalf("no contested review markdown under %s", root)
+	return ""
 }
 
 func hasReconcileParkedReason(reasons []SynthesisReconcileParkedReason, reason string) bool {
