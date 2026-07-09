@@ -133,10 +133,10 @@ func ApplySkillManifest(homePath string, manifest SkillManifest, now time.Time) 
 			Triggers: skillTriggers(skill),
 			Weight:   skill.Weight,
 			Retired:  skillRetired(skill),
-			When:     cleanInstructionWhen(skill.When),
-			Read:     cleanStrings(skill.Read),
-			Route:    cleanInstructionRoutes(skill.Route),
-			Boundary: cleanStrings(skill.Boundary),
+			When:     cleanOptionalInstructionWhen(skill.When),
+			Read:     cleanOptionalStrings(skill.Read),
+			Route:    cleanOptionalInstructionRoutes(skill.Route),
+			Boundary: cleanOptionalStrings(skill.Boundary),
 			Tier:     skill.Tier,
 		}
 		if err := store.Add(node); err != nil {
@@ -250,6 +250,22 @@ func skillTriggers(skill SkillManifestEntry) []string {
 	return out
 }
 
+func cleanOptionalInstructionWhen(values []InstructionRuleWhen) []InstructionRuleWhen {
+	out := cleanInstructionWhen(values)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cleanOptionalInstructionRoutes(values []InstructionRoute) []InstructionRoute {
+	out := cleanInstructionRoutes(values)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func cleanInstructionWhen(values []InstructionRuleWhen) []InstructionRuleWhen {
 	out := make([]InstructionRuleWhen, 0, len(values))
 	for _, value := range values {
@@ -276,6 +292,14 @@ func cleanInstructionRoutes(values []InstructionRoute) []InstructionRoute {
 		if output != "" && destination != "" {
 			out = append(out, InstructionRoute{Output: output, Destination: destination})
 		}
+	}
+	return out
+}
+
+func cleanOptionalStrings(values []string) []string {
+	out := cleanStrings(values)
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

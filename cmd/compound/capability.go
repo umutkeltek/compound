@@ -214,21 +214,49 @@ func cmdCapability(args []string) {
 		now := time.Now()
 		osSkillPath := flag("--os-skill-json")
 		osPluginBoardPath := flag("--os-plugin-board-json")
-		p := posn(map[string]bool{"--os-skill-json": true, "--os-plugin-board-json": true})
+		brainRecipeDir := flag("--brain-recipe-dir")
+		dryRun := hasFlag(rest, "--dry-run")
+		p := posn(map[string]bool{"--os-skill-json": true, "--os-plugin-board-json": true, "--brain-recipe-dir": true})
 		var manifest capgraph.SkillManifest
 		var err error
 		switch {
-		case osSkillPath != "" && len(p) == 0:
+		case brainRecipeDir != "" && osSkillPath == "" && osPluginBoardPath == "" && len(p) == 0:
+			manifest, err = capgraph.LoadBrainRecipeTree(brainRecipeDir, now)
+		case osSkillPath != "" && brainRecipeDir == "" && osPluginBoardPath == "" && len(p) == 0:
 			manifest, err = capgraph.LoadOSSkillManifest(osSkillPath, now)
-		case osPluginBoardPath != "" && len(p) == 0:
+		case osPluginBoardPath != "" && brainRecipeDir == "" && osSkillPath == "" && len(p) == 0:
 			manifest, err = capgraph.LoadOSPluginBoard(osPluginBoardPath, now)
-		case osSkillPath == "" && osPluginBoardPath == "" && len(p) == 1:
+		case osSkillPath == "" && osPluginBoardPath == "" && brainRecipeDir == "" && len(p) == 1:
 			manifest, err = capgraph.LoadSkillManifest(p[0])
 		default:
-			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml> | --os-skill-json <skill-manifest.json> | --os-plugin-board-json <skills-selection-board.json>")
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-skills <skill-manifest.yaml> | --os-skill-json <skill-manifest.json> | --os-plugin-board-json <skills-selection-board.json> | --brain-recipe-dir <dir> [--dry-run]")
 			os.Exit(2)
 		}
 		die(err)
+		if dryRun {
+			if brainRecipeDir == "" {
+				fmt.Fprintln(os.Stderr, "usage: compound capability import-skills --brain-recipe-dir <dir> --dry-run")
+				os.Exit(2)
+			}
+			records, err := capgraph.LoadSourceAuthority(homePath)
+			die(err)
+			previous, found := latestCapabilitySourceAuthorityForPath(records, manifest.SourceRef.Path)
+			previousRevision := ""
+			previousID := ""
+			if found {
+				previousRevision = previous.SourceRevision
+				previousID = previous.ID
+			}
+			drift := !found || previousRevision != manifest.SourceRef.Revision
+			fmt.Printf("# capability import-skills brain-recipe-tree dry-run %s\n", manifest.ID)
+			fmt.Printf("- source_path: %s\n", manifest.SourceRef.Path)
+			fmt.Printf("- source_revision: %s\n", manifest.SourceRef.Revision)
+			fmt.Printf("- previous_source_authority: %s\n", previousID)
+			fmt.Printf("- previous_revision: %s\n", previousRevision)
+			fmt.Printf("- drift: %t\n", drift)
+			fmt.Printf("- nodes: %d\n", len(manifest.Skills))
+			return
+		}
 		report, err := capgraph.ApplySkillManifest(homePath, manifest, now)
 		die(err)
 		sourceReport, err := sourceobs.Apply(homePath, sourceobs.FromSkillManifest(manifest, now), now)
@@ -1161,6 +1189,28 @@ func cmdCapability(args []string) {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
+}
+
+func latestCapabilitySourceAuthorityForPath(records []capgraph.SourceAuthorityRecord, sourcePath string) (capgraph.SourceAuthorityRecord, bool) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	var latest capgraph.SourceAuthorityRecord
+	var latestCreated time.Time
+	found := false
+	for _, rec := range records {
+		if strings.TrimSpace(rec.SourcePath) != sourcePath {
+			continue
+		}
+		created, err := time.Parse(time.RFC3339, rec.CreatedAt)
+		if err != nil {
+			created = time.Time{}
+		}
+		if !found || created.After(latestCreated) || created.Equal(latestCreated) {
+			latest = rec
+			latestCreated = created
+			found = true
+		}
+	}
+	return latest, found
 }
 
 func printCapabilityConstraints(c capgraph.SurfacingConstraints) {
