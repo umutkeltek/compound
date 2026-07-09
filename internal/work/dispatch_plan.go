@@ -1,6 +1,7 @@
 package work
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -74,6 +75,10 @@ type DispatchPlanItem struct {
 	AdvancePolicy    *AdvancePolicySummary `json:"advance_policy,omitempty"`
 	ClosePolicy      *ClosePolicySummary   `json:"close_policy,omitempty"`
 	ClosePlanReady   bool                  `json:"close_plan_ready,omitempty"`
+	// ClaimedBy is the live lease holder (WorkbenchItem.ClaimedBy, workbench.go:678-681),
+	// carried through so a dispatch surface can skip an item held by a different actor
+	// instead of silently offering it. Additive; empty when unclaimed.
+	ClaimedBy string `json:"claimed_by,omitempty"`
 }
 
 type DispatchCapabilityOffer struct {
@@ -302,8 +307,12 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		plan.Warnings = append(plan.Warnings, "source packet is preview-only; use work import-packet or mutating dispatch command to import")
 	}
 	policyBlocked := false
+	leaseSkipped := 0
 	for _, item := range report.Open {
 		candidate := dispatchCandidate(item, actor)
+		if candidate.Action == "held_by_other" {
+			leaseSkipped++
+		}
 		if candidate.Action == "claim" {
 			claimPlan, err := s.ClaimPlan(item.WorkID, now, ClaimPlanOptions{Actor: actor})
 			if err != nil {
@@ -325,6 +334,12 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 			plan.Status = "ready_to_claim"
 		}
 	}
+	// Skip, never silently offer: items held by a different actor stay visible in
+	// Candidates (marked held_by_other, no silent shrinkage) but are excluded from claim
+	// eligibility above; the skip count is always reported, never dropped quietly.
+	if leaseSkipped > 0 {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("skipped %d held by other actors", leaseSkipped))
+	}
 	if plan.Selected == nil {
 		switch {
 		case len(plan.Candidates) == 0:
@@ -338,6 +353,9 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 		case report.Counts.InProgress > 0:
 			plan.Status = "in_progress_only"
 			plan.NoAction = "open work is already claimed or running"
+		case leaseSkipped > 0:
+			plan.Status = "held_by_other_actor"
+			plan.NoAction = fmt.Sprintf("%d ready item(s) held by other actors; nothing else claimable", leaseSkipped)
 		default:
 			plan.Status = "no_claimable_work"
 			plan.NoAction = "open work is not ready to claim"
@@ -696,9 +714,13 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 	}
 	policyBlocked := false
 	awaitingProof := false
+	leaseSkipped := 0
 	var blocked *DispatchPlanItem
 	for _, item := range report.Open {
 		candidate := dispatchClosePlanCandidate(item, actor, outcome, moveType)
+		if candidate.Action == "held_by_other" {
+			leaseSkipped++
+		}
 		if candidate.Action == "plan_close" {
 			closePlan, err := s.dispatchClosePlan(item.WorkID, now, opts, actor, outcome, moveType, false)
 			if err != nil {
@@ -730,6 +752,12 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 			result.Selected = &selected
 			result.Status = "close_policy_allowed"
 		}
+	}
+	// Skip, never silently offer: a verifying item held by a different actor stays visible
+	// in Candidates (marked held_by_other) but is excluded from close-plan selection above,
+	// and dispatch-close (which selects through this same plan) can never auto-close it.
+	if leaseSkipped > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("skipped %d held by other actors", leaseSkipped))
 	}
 	if result.Selected == nil && blocked != nil {
 		result.Selected = blocked
@@ -765,6 +793,9 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 	case report.Counts.InProgress > 0:
 		result.Status = "in_progress_only"
 		result.NoAction = "open work is not verifying with proof evidence"
+	case leaseSkipped > 0:
+		result.Status = "held_by_other_actor"
+		result.NoAction = fmt.Sprintf("%d verifying item(s) held by other actors; nothing else close-planable", leaseSkipped)
 	default:
 		result.Status = "no_closeable_work"
 		result.NoAction = "open work is not ready for close planning"
@@ -1273,6 +1304,15 @@ func (s *Store) RecordDispatchStepRun(result DispatchStepRunResult) (string, err
 	return path, nil
 }
 
+// dispatchLeaseHeldByOther reports whether item's live lease (ClaimedBy, populated for
+// every state — see workbench.go:678-681, leases are not deleted on release) is held by
+// an actor other than the dispatching actor. A "ready" item can carry lease residue if it
+// cycled claimed -> ready without releasing the lease; a "verifying" item can carry it from
+// its original claim. Empty ClaimedBy or ClaimedBy == actor means no conflict.
+func dispatchLeaseHeldByOther(item WorkbenchItem, actor string) bool {
+	return item.ClaimedBy != "" && item.ClaimedBy != actor
+}
+
 func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 	out := DispatchPlanItem{
 		WorkID:           item.WorkID,
@@ -1284,11 +1324,17 @@ func dispatchCandidate(item WorkbenchItem, actor string) DispatchPlanItem {
 		NextAction:       item.NextAction,
 		EvidenceRefs:     append([]string{}, item.EvidenceRefs...),
 		ActionContext:    cloneWorkActionContext(item.ActionContext),
+		ClaimedBy:        item.ClaimedBy,
 	}
 	switch item.State {
 	case "ready":
-		out.Action = "claim"
-		out.Command = []string{"compound", "work", "claim", item.WorkID, "--by", actor}
+		if dispatchLeaseHeldByOther(item, actor) {
+			out.Action = "held_by_other"
+			out.Reason = "lease held by " + item.ClaimedBy
+		} else {
+			out.Action = "claim"
+			out.Command = []string{"compound", "work", "claim", item.WorkID, "--by", actor}
+		}
 	case "proposed", "admitted":
 		out.Action = "prepare"
 		if item.ActionContext != nil {
@@ -1310,7 +1356,10 @@ func dispatchClosePlanCandidate(item WorkbenchItem, actor, outcome, moveType str
 	out.Command = nil
 	switch item.State {
 	case "verifying":
-		if hasCloseProofEvidence(item) {
+		if dispatchLeaseHeldByOther(item, actor) {
+			out.Action = "held_by_other"
+			out.Reason = "lease held by " + item.ClaimedBy
+		} else if hasCloseProofEvidence(item) {
 			out.Action = "plan_close"
 			out.Command = []string{"compound", "work", "close-plan", item.WorkID, "--outcome", outcome, "--move-type", moveType, "--actor", actor}
 			out.Reason = "verifying with proof evidence"
