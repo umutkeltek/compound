@@ -339,6 +339,77 @@ func TestContextPackOffersAreTypedAsOfferedNotUsed(t *testing.T) {
 	}
 }
 
+// TestCloseStampsUsedDeclaredAndConsumedRefs proves the close-receipt honesty stamp:
+// UsedDeclared flows onto the emitted receipt, and raw ConsumedRefs (a claim:// injected
+// ref, NOT a capability) land verbatim in Skills.Used (so the usage projection can score
+// them consumed) WITHOUT masquerading as a used skill in the typed projections.
+func TestCloseStampsUsedDeclaredAndConsumedRefs(t *testing.T) {
+	const claimRef = "claim://claim_seed01"
+
+	mkClosable := func(s *Store, pred string) envelope.WorkEnvelope {
+		w, err := s.Create(CreateInput{Owner: "o", SuccessPredicate: pred}, fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Advance(w.ID, AdvanceInput{To: "running"}, fixedNow); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+
+	// Declared close carrying a raw consumed claim ref.
+	s := newStore(t)
+	w := mkClosable(s, "declared-consumed")
+	closed, err := s.Close(w.ID, CloseInput{
+		Outcome: "completed", MoveType: "outward_delta", Summary: "shipped", Changed: true,
+		UsedDeclared: true, ConsumedRefs: []string{claimRef},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !closed.Receipt.Skills.UsedDeclared {
+		t.Fatalf("declared close must stamp used_declared=true, got receipt skills %+v", closed.Receipt.Skills)
+	}
+	if !contains(closed.Receipt.Skills.Used, claimRef) {
+		t.Fatalf("consumed claim ref must land verbatim in Skills.Used: %v", closed.Receipt.Skills.Used)
+	}
+	// Purity: the claim ref is a reinforcement signal, not a used SKILL.
+	if containsProjection(closed.Transition.Projections.Typed, "skill", claimRef, "used") {
+		t.Fatalf("consumed claim ref must not be typed as a used skill: %+v", closed.Transition.Projections.Typed)
+	}
+	// Round-trip through persistence: the on-disk receipt carries the flag and the ref.
+	persisted := readReceiptFromEvents(t, s, closed.Receipt.ID)
+	if !persisted.Skills.UsedDeclared || !contains(persisted.Skills.Used, claimRef) {
+		t.Fatalf("persisted receipt lost declared/consumed signal: %+v", persisted.Skills)
+	}
+
+	// Undeclared close (default): no flag, no consumed refs.
+	s2 := newStore(t)
+	w2 := mkClosable(s2, "undeclared")
+	closed2, err := s2.Close(w2.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Summary: "shipped", Changed: true}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closed2.Receipt.Skills.UsedDeclared {
+		t.Fatalf("undeclared close must leave used_declared=false, got %+v", closed2.Receipt.Skills)
+	}
+	if contains(closed2.Receipt.Skills.Used, claimRef) {
+		t.Fatalf("undeclared close must not carry consumed refs: %v", closed2.Receipt.Skills.Used)
+	}
+}
+
+func readReceiptFromEvents(t *testing.T, s *Store, recID string) envelope.Receipt {
+	t.Helper()
+	var rec envelope.Receipt
+	if err := s.readJSON(s.envPath(recID), &rec); err != nil {
+		t.Fatalf("read persisted receipt %s: %v", recID, err)
+	}
+	return rec
+}
+
 func TestRecordActionGate(t *testing.T) {
 	s := newStore(t)
 	w, _ := s.Create(CreateInput{Owner: "o", SuccessPredicate: "p"}, fixedNow)

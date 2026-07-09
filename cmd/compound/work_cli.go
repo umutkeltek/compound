@@ -1006,7 +1006,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)"
 		if err := validateKnownFlags(rest, map[string]bool{
 			"--outcome":           true,
 			"--move-type":         true,
@@ -1038,6 +1038,9 @@ func cmdWork(args []string) {
 			Summary:                    flag("--summary"),
 			Changed:                    has("--changed"),
 			UsedCapabilities:           splitCSV(flag("--used")),
+			// Declared iff --used was EXPLICITLY passed (even --used "" = declared-none). Omitting
+			// the flag leaves used_declared=false, so injected refs stay unknown, not ignored.
+			UsedDeclared:               has("--used"),
 			MissedCapabilities:         splitCSV(flag("--missed")),
 			FalseTriggeredCapabilities: splitCSV(flag("--false-triggered")),
 			ProofRefs:                  flagCSVValues(rest, "--proof", "--proof-ref"),

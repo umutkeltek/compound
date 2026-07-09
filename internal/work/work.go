@@ -517,6 +517,17 @@ type CloseInput struct {
 	MemoryRejected             []string
 	FailureSurfaceOutcome      string
 	FailureMechanism           string
+	// UsedDeclared stamps the emitted receipt's skills.used_declared. It is the honesty
+	// flag the injected-ref reinforcement projection reads: true means this close made an
+	// affirmative statement about what was used (the CLI passed --used, or a session-end
+	// consumption detector ran), so an injected ref absent from Used is honestly ignored;
+	// false (the default) leaves absence as unknown. Additive.
+	UsedDeclared bool
+	// ConsumedRefs are RAW injected-ref consumption signals (e.g. claim://<id>) merged
+	// verbatim into the receipt's Skills.Used so the usage projection's pack.included↔used
+	// join can score them CONSUMED. Unlike UsedCapabilities they are NOT capability-normalized
+	// (a claim ref is not a capability node); they are kept out of the skill typed projections.
+	ConsumedRefs []string
 }
 
 // CloseResult is the connected chain proof: the final work plus the Receipt and the
@@ -600,6 +611,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 			FalseTriggered:      falseTriggeredCapabilities,
 			Candidate:           capabilityRefs,
 			CapabilitiesOffered: capabilityRefs,
+			UsedDeclared:        in.UsedDeclared,
 		},
 		Memory: envelope.ReceiptMemory{
 			Candidates: memoryCandidates,
@@ -625,6 +637,13 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 	}
 	after := append(append([]string{}, orEmpty(w.ArtifactIDs)...), rec.ID)
 	typedProjectionRefs := closeProjectionRefs(rec, w.IDs.ContextPackID)
+	// Raw injected-ref consumption (e.g. session-end claim:// refs) lands in the receipt's
+	// Skills.Used AFTER the skill typed projections are built, so it feeds the usage
+	// projection's consumed join without masquerading as a used SKILL. Not capability-
+	// normalized: a claim ref must match pack.included[].ref verbatim.
+	if len(in.ConsumedRefs) > 0 {
+		rec.Skills.Used = mergeUnique(rec.Skills.Used, in.ConsumedRefs)
+	}
 	tr := envelope.Transition{
 		Header:     newHeader(envelope.SVTransition, idFor("tr_", workID, ts(now)), now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		BeforeRefs: before,
