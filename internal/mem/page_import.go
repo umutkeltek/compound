@@ -152,6 +152,11 @@ func candidateFromKnowledgeClaim(pageID, evidenceID string, fm knowledgePageFron
 	if !oneOf(visibility, Visibilities) {
 		return Candidate{}, fmt.Errorf("knowledge claim %d bad visibility %q", index, visibility)
 	}
+	// Knowledge-page frontmatter has no expires_at field, so a volatile page
+	// claim always refuses here — fail-loud until the frontmatter grows a clock.
+	if err := validateVolatileWrite(fmt.Sprintf("knowledge claim %d", index), visibility, "", claim.ClaimType, ""); err != nil {
+		return Candidate{}, err
+	}
 	q := copyStringMap(claim.Qualifiers)
 	if fm.Owner != "" {
 		q["owner"] = strings.TrimSpace(fm.Owner)

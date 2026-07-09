@@ -37,6 +37,9 @@ func (s *Store) RecordStableCandidate(c Candidate) (bool, error) {
 	if !oneOf(c.Visibility, Visibilities) {
 		return false, fmt.Errorf("candidate %s: bad visibility %q", c.ID, c.Visibility)
 	}
+	if err := validateVolatileWrite("candidate "+c.ID, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
+		return false, err
+	}
 	c, _ = AdmitCandidateAt(c, time.Now().UTC())
 	if !validStableCandidateState(c.State) {
 		return false, fmt.Errorf("candidate %s state must be proposed, parked, or no_promote, got %q", c.ID, c.State)

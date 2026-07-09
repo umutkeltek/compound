@@ -42,8 +42,9 @@ var ClaimTypes = []string{"preference", "decision", "architecture", "status", "c
 // Verdicts are the adjudication outcomes (candidate-first).
 var Verdicts = []string{"reject", "park", "promote", "no_promote"}
 
-// Visibilities are the temperature tiers. retired is hidden from default recall but kept.
-var Visibilities = []string{"ambient", "contextual", "candidate", "private", "operational", "retired"}
+// Visibilities are the temperature tiers. retired is hidden from default recall but kept;
+// volatile is promoted-but-clocked (useful now, expires unless reinforced) and never ambient.
+var Visibilities = []string{"ambient", "contextual", "candidate", "volatile", "private", "operational", "retired"}
 
 const (
 	ClaimStatePromoted    = "promoted"
@@ -140,6 +141,7 @@ type Claim struct {
 	EvidenceRefs    []string          `json:"evidence_refs"`             // provenance: source candidate/trace
 	Supersedes      string            `json:"supersedes,omitempty"`
 	Visibility      string            `json:"visibility"`
+	ExpiresAt       string            `json:"expires_at,omitempty"`       // volatile-only claim clock ("useful now, expires unless reinforced"); empty on every other visibility
 	State           string            `json:"state,omitempty"`            // derived: promoted | needs_review
 	ReviewRefs      []string          `json:"review_refs,omitempty"`      // append-only review marker refs
 	ConfidenceDelta float64           `json:"confidence_delta,omitempty"` // latest contradicting evidence delta
@@ -239,6 +241,9 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		c.TopicRefs = normalizeStringRefs(c.TopicRefs)
 		if c.Visibility == "" {
 			c.Visibility = "operational"
+		}
+		if err := validateVolatileWrite("candidate "+c.Entity, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
+			return out, err
 		}
 		c.ID = idFor("cand_", c.Entity, c.Predicate, c.Object, ts(now))
 		echo, err := s.reinforceIfEcho(c, now)
@@ -377,6 +382,12 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	if !candidates.ValidBasis(c.PromotionBasis) {
 		return res, fmt.Errorf("candidate %s cannot promote without valid promotion_basis (got %q; allowed: %v)", candID, c.PromotionBasis, candidates.PromotionBases)
 	}
+	// Defense-in-depth for the single claim-append door: a clockless or
+	// doctrine-class volatile candidate that predates the Capture guard (or was
+	// hand-written) must still never become a ledger claim.
+	if err := validateVolatileWrite("candidate "+c.ID, c.Visibility, c.ExpiresAt, c.ClaimType, c.CanonClass); err != nil {
+		return res, err
+	}
 
 	// promote: the prior-lookup + seq allocation + claim/edge append run under one lock so
 	// seq stays monotonic-unique and supersession is consistent even across concurrent writers
@@ -502,6 +513,12 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 		EvidenceRefs:   []string{c.ID, c.SourceTraceRef},
 		Visibility:     orDef(c.Visibility, "operational"),
 		CreatedAt:      rfc3339(now),
+	}
+	// The clock crosses onto the durable claim ONLY for volatile: a decay-parked
+	// candidate's ExpiresAt is candidate-lifecycle state and must not leak onto
+	// claims of any other visibility.
+	if isVolatileVisibility(claim.Visibility) {
+		claim.ExpiresAt = strings.TrimSpace(c.ExpiresAt)
 	}
 	if hasPrior {
 		claim.Supersedes = prior.ID
