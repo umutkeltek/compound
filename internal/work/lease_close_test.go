@@ -40,3 +40,157 @@ func TestCloseRefusesNonLeaseHolder(t *testing.T) {
 		t.Fatalf("refused close must not mutate work state: got %q", after.State)
 	}
 }
+
+// Falsifier 2: --steal with a non-empty reason succeeds, and the trail (lifecycle events)
+// carries the prior holder, the reason string, and the stealing actor. --steal with an
+// empty reason refuses exactly like a plain non-holder close.
+func TestCloseStealOverridesLeaseHolder(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "steal path"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	// Empty reason refuses even with --steal set.
+	if _, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Actor: "actor-b", Steal: true}, fixedNow); err == nil {
+		t.Fatal("expected --steal with empty reason to be refused")
+	}
+	if got, err := s.Get(w.ID); err != nil || got.State != "claimed" {
+		t.Fatalf("empty-reason steal attempt must not mutate work: state=%q err=%v", got.State, err)
+	}
+
+	res, err := s.Close(w.ID, CloseInput{
+		Outcome:     "cancelled",
+		MoveType:    "audit_only",
+		Actor:       "actor-b",
+		Steal:       true,
+		StealReason: "actor-a's executor died mid-build",
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("expected steal with non-empty reason to succeed: %v", err)
+	}
+	if res.Work.State != "cancelled" {
+		t.Fatalf("stolen close should land the work terminal, got %q", res.Work.State)
+	}
+
+	_, evs, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stealNote string
+	for _, e := range evs {
+		if strings.Contains(e.Note, "stolen") {
+			stealNote = e.Note
+			if e.By != "actor-b" {
+				t.Fatalf("steal event must be attributed to the stealing actor actor-b, got %q", e.By)
+			}
+		}
+	}
+	if stealNote == "" {
+		t.Fatal("trail missing a steal event")
+	}
+	if !strings.Contains(stealNote, "actor-a") {
+		t.Fatalf("steal event must name the prior holder actor-a: %q", stealNote)
+	}
+	if !strings.Contains(stealNote, "actor-a's executor died mid-build") {
+		t.Fatalf("steal event must carry the reason string: %q", stealNote)
+	}
+}
+
+// Falsifier 3: claimed by A, closed by A — byte-identical behavior to pre-change. No
+// refusal/steal events land on the trail beyond the normal claim+close events.
+func TestCloseSameActorPassesUnchanged(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "same actor"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Actor: "actor-a"}, fixedNow); err != nil {
+		t.Fatalf("same-actor close should succeed: %v", err)
+	}
+	_, evs, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStates := []string{"ready", "claimed", "cancelled"}
+	if len(evs) != len(wantStates) {
+		t.Fatalf("same-actor close must add no gate events beyond the normal chain: got %d events %+v, want %d", len(evs), evs, len(wantStates))
+	}
+	for i, want := range wantStates {
+		if evs[i].To != want {
+			t.Errorf("event[%d].To = %q, want %q", i, evs[i].To, want)
+		}
+		if strings.Contains(evs[i].Note, "refused") || strings.Contains(evs[i].Note, "stolen") {
+			t.Errorf("same-actor close must not add a lease-gate event: %+v", evs[i])
+		}
+	}
+}
+
+// Falsifier 4: an unclaimed (never-claimed) envelope closes exactly as before — fixture
+// parity, no lease means no gate interference at all.
+func TestCloseUnclaimedWorkUnaffected(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "never claimed"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Close by an arbitrary actor that never claimed anything — no lease exists at all.
+	res, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Actor: "whoever"}, fixedNow)
+	if err != nil {
+		t.Fatalf("unclaimed close should succeed unconditionally: %v", err)
+	}
+	if res.Work.State != "cancelled" {
+		t.Fatalf("unclaimed close should land the work terminal, got %q", res.Work.State)
+	}
+	_, evs, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || evs[0].To != "ready" || evs[1].To != "cancelled" {
+		t.Fatalf("unclaimed close must be the plain create+close chain: %+v", evs)
+	}
+}
+
+// Falsifier 7: a refused close appends a refusal record/event; a second identical refusal
+// does not corrupt state — the trail just grows, and Get() stays coherent.
+func TestCloseRefusalAppendsIdempotentTrail(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "lane-w", SuccessPredicate: "idempotent refusal"}, fixedNow)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Actor: "actor-b"}, fixedNow); err == nil {
+			t.Fatalf("refusal %d: expected non-holder close to be refused", i)
+		}
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatalf("get after two refusals: %v", err)
+	}
+	if after.State != "claimed" {
+		t.Fatalf("two refusals must leave work state untouched: got %q", after.State)
+	}
+	_, evs, err := s.Show(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusals := 0
+	for _, e := range evs {
+		if strings.Contains(e.Note, "refused") {
+			refusals++
+		}
+	}
+	if refusals != 2 {
+		t.Fatalf("expected 2 refusal events on the trail (idempotent-safe, not deduped-away or corrupted), got %d: %+v", refusals, evs)
+	}
+}
