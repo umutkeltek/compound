@@ -1,21 +1,22 @@
-import { SkeletonBlock, SkeletonCard, SkeletonHeader, SkeletonLine } from "@/components/Skeleton";
+import { SkeletonBlock, SkeletonHeader, SkeletonLine } from "@/components/Skeleton";
 
-export default function ExecutorsLoading() {
+export default function AgentsLoading() {
   return (
     <div className="flex flex-col gap-6">
       <SkeletonHeader />
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} className="card flex flex-col gap-2 p-5">
-            <SkeletonLine className="h-3 w-16" />
-            <SkeletonBlock className="h-7 w-10 rounded-md" />
+      <SkeletonBlock className="h-16 rounded-lg" />
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="rounded-lg border border-hair bg-panel px-3 py-2.5">
+            <SkeletonLine className="h-2.5 w-14" />
+            <SkeletonBlock className="mt-1 h-5 w-8 rounded-md" />
           </div>
         ))}
       </div>
-      <SkeletonCard />
+      <SkeletonBlock className="h-72 rounded-lg" />
       <div className="grid gap-4 lg:grid-cols-2">
-        <SkeletonBlock className="h-64 rounded-2xl" />
-        <SkeletonBlock className="h-64 rounded-2xl" />
+        <SkeletonBlock className="h-40 rounded-lg" />
+        <SkeletonBlock className="h-40 rounded-lg" />
       </div>
     </div>
   );
