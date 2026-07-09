@@ -31,6 +31,7 @@ const (
 	reconcileDispositionReopen     reconcileDisposition = "reopen"
 	reconcileDispositionRaise      reconcileDisposition = "raise"
 	reconcileDispositionDecayRoute reconcileDisposition = "decay-route"
+	reconcileDispositionContested  reconcileDisposition = "contested"
 	reconcileDispositionPark       reconcileDisposition = "park"
 )
 
@@ -39,6 +40,7 @@ var reconcileDispositions = []reconcileDisposition{
 	reconcileDispositionReopen,
 	reconcileDispositionRaise,
 	reconcileDispositionDecayRoute,
+	reconcileDispositionContested,
 	reconcileDispositionPark,
 }
 
@@ -130,6 +132,7 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 	var proposals []SynthesisContradictionProposal
 	reopenClaims := map[string]Claim{}
 	reopenEvidence := map[string]Candidate{}
+	contested := newReconcileContestedGroups()
 	protectedFromClear := map[string]bool{}
 	for claimID := range reviewMarks {
 		protectedFromClear[claimID] = true
@@ -181,6 +184,8 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 				if synthetic.ID != "" {
 					reopenEvidence[synthetic.ID] = synthetic
 				}
+			case reconcileDispositionContested:
+				contested.add(proposal, claimsByID, evidence.ID)
 			}
 		}
 	}
@@ -193,6 +198,15 @@ func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) 
 		report.ReopenedClaims = append(report.ReopenedClaims, reopened...)
 		report.ReconcileReopenedCount += len(reopened)
 		report.ReviewDebtCount += len(reopened)
+	}
+	if contested.len() > 0 {
+		cards, err := s.writeReconcileContestedCards(contested, reviewMarks, now)
+		if err != nil {
+			return err
+		}
+		report.ReconcileContestedCards = append(report.ReconcileContestedCards, cards...)
+		report.ReconcileContestedCount += len(cards)
+		report.ReviewDebtCount += len(cards)
 	}
 
 	recentClaims := filterClaimsByID(claims, recentClaimIDs)
@@ -288,6 +302,9 @@ func (s *Store) reconcileEvidenceDisposition(event reconcileEvent, evidence Clai
 		eligible = append(eligible, target)
 	}
 	if len(eligible) == 0 {
+		if canOpenContestedReconcileCard(evidence, different, marks) {
+			return reconcileDispositionContested, contestedReconcileProposal(clusterKey, evidence, different, objects), Candidate{}, "", nil
+		}
 		return reconcileDispositionDismiss, SynthesisContradictionProposal{}, Candidate{}, "", nil
 	}
 	sort.Slice(eligible, func(i, j int) bool {
@@ -564,6 +581,7 @@ func (s *Store) writeReconcileCheckpoint(checkpoint reconcileCheckpoint, report 
 		string(reconcileDispositionReopen):     report.ReconcileReopenedCount,
 		string(reconcileDispositionRaise):      report.ReconcileRaisedCount,
 		string(reconcileDispositionDecayRoute): report.ReconcileDecayRoutedCount,
+		string(reconcileDispositionContested):  report.ReconcileContestedCount,
 		string(reconcileDispositionPark):       report.ReconcileParkedCount,
 	}
 	checkpoint.ParkedReasons = map[string][]string{}
