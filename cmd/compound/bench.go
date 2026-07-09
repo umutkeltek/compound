@@ -337,6 +337,9 @@ func printBenchCompareSummary(w io.Writer, cmp bench.CompareReport) {
 		fmt.Fprintf(w, "  %-9s hit@1 %+.3f  hit@5 %+.3f  mrr %+.3f%s\n", d.Split, d.Hit1Delta, d.Hit5Delta, d.MRRDelta, flag)
 	}
 	fmt.Fprintf(w, "  %-9s hit@1 %+.3f  hit@5 %+.3f  mrr %+.3f\n", "overall", cmp.Overall.Hit1Delta, cmp.Overall.Hit5Delta, cmp.Overall.MRRDelta)
+	if cmp.ProofRef != "" {
+		fmt.Fprintf(w, "proof: %s  (cite this in the harness-edit close ProofRefs to stamp should_harden)\n", cmp.ProofRef)
+	}
 }
 
 func slugifyBench(s string) string {

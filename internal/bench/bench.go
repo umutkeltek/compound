@@ -583,10 +583,11 @@ type CompareReport struct {
 	AfterBuildSHA  string       `json:"after_build_sha"`
 	Splits         []SplitDelta `json:"splits"`
 	Overall        SplitDelta   `json:"overall"`
-	Regressed      bool         `json:"regressed"`        // any split regressed => reject
-	RegressedSplit []string     `json:"regressed_splits"` // which splits regressed
-	Accept         bool         `json:"accept"`           // !Regressed && !SuiteMismatch
-	SuiteMismatch  bool         `json:"suite_mismatch"`   // before/after are different suites — comparison is apples-to-oranges; never Accept
+	Regressed      bool         `json:"regressed"`           // any split regressed => reject
+	RegressedSplit []string     `json:"regressed_splits"`    // which splits regressed
+	Accept         bool         `json:"accept"`              // !Regressed && !SuiteMismatch
+	ProofRef       string       `json:"proof_ref,omitempty"` // bench_compare_accept:<suite> on accept — the token a harness-edit close cites to harden
+	SuiteMismatch  bool         `json:"suite_mismatch"`      // before/after are different suites — comparison is apples-to-oranges; never Accept
 }
 
 // Compare produces the per-split delta and the accept verdict. The accept rule is: accept ONLY
@@ -617,6 +618,13 @@ func Compare(before, after Report) CompareReport {
 	// moved the wrong way" apart from "the wrong suite was compared". The CLI may still record the
 	// delta past an explicit --allow-suite-mismatch, but Accept reflects the semantic truth.
 	cr.Accept = !cr.Regressed && !cr.SuiteMismatch
+	// On accept (same suite, no regression) emit the canonical proof token a harness-edit close
+	// cites so shouldHardenOnClose can verify the gate actually accepted — the operator copies this
+	// from a real accept rather than fabricating it. Empty on any reject, so a non-accept can never
+	// supply a hardening token. after.Suite == before.Suite here because a mismatch forces !Accept.
+	if cr.Accept {
+		cr.ProofRef = "bench_compare_accept:" + after.Suite
+	}
 	return cr
 }
 

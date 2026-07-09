@@ -349,11 +349,17 @@ func TestCompareRejectsSuiteMismatch(t *testing.T) {
 	if cmp.Regressed {
 		t.Fatalf("equal metrics must not report regressed=true; Regressed is about metric movement only")
 	}
+	if cmp.ProofRef != "" {
+		t.Fatalf("a non-accept (mismatch) must emit no proof token, got %q", cmp.ProofRef)
+	}
 
-	// Control: same suite, equal metrics accepts.
+	// Control: same suite, equal metrics accepts and emits the canonical proof token.
 	same := Compare(before, before)
 	if same.SuiteMismatch || !same.Accept {
 		t.Fatalf("matching suite with equal metrics must accept: mismatch=%v accept=%v", same.SuiteMismatch, same.Accept)
+	}
+	if want := "bench_compare_accept:" + before.Suite; same.ProofRef != want {
+		t.Fatalf("accept proof token = %q, want %q", same.ProofRef, want)
 	}
 }
 
