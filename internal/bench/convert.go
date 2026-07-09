@@ -208,8 +208,8 @@ var v2LiteralOverrides = map[string][]string{
 	"skill.agents.shared.superpowers":                        {"skill:using-superpowers"},
 	"skill.agents.shared.skill.creator":                      {"skill:agents:skill-creator"},
 	"skill.agents.shared.taste.skill":                        {"skill:design-taste-frontend"},
-	"skill.codex.skills.diff.cleanup.and.parking":            {"skill:diff-cleanup-parking"},
-	"skill.codex.superpowers.finishing.a.development.branch": {"skill:finishing-development-branch"},
+	"skill.codex.skills.diff.cleanup.and.parking":            {"skill:diff-cleanup-and-parking"},
+	"skill.codex.superpowers.finishing.a.development.branch": {"skill:finishing-a-development-branch"},
 	"tool.mcporter": {"adapter:mcporter"},
 }
 

@@ -548,8 +548,8 @@ func TestConvertAcceptanceV2MapsCodexSkillShapesAndLiterals(t *testing.T) {
 		"adapter:mcporter",
 		"skill:agents:skill-creator",
 		"skill:design-taste-frontend",
-		"skill:diff-cleanup-parking",
-		"skill:finishing-development-branch",
+		"skill:diff-cleanup-and-parking",
+		"skill:finishing-a-development-branch",
 		"skill:using-superpowers",
 	}
 	if got := byID["case-literal-overrides"].Expected; !reflect.DeepEqual(got, wantLiterals) {
