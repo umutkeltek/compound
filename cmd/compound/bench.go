@@ -44,11 +44,23 @@ func benchUsage() string {
 	return "usage:\n" +
 		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent]\n" +
 		"  compound bench compare --before <report.json> --after <report.json> [--json]\n" +
-		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>]\n" +
+		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>] [--id-map v1|none]\n" +
 		"  compound bench convert golden --in <recall-golden.yaml> --out <suite.json> [--name <suite>]\n" +
 		"    deterministic: same input bytes -> byte-identical suite.\n" +
 		"    " + bench.SplitRuleDoc + "\n" +
 		"    dropped (acceptance): required_policy_for, selected_rule, class_cases, task_spec routing — named with counts, never silent.\n" +
+		"    --id-map (acceptance only, default v1): translates legacy resolver dotted ids to compound\n" +
+		"      graph ids before scoring — skill.agents.shared.<x> -> skill:<x>, recipe.recipes.canonical.<x>.md\n" +
+		"      -> procedure:<x> (dots hyphenated), tool.<x> -> BOTH tool:<x> AND mcp:<x>. must_outrank tool-pair\n" +
+		"      rule: a tool.<x> WINNER emits TWO OutrankAssertion entries (tool:<x> and mcp:<x>, same losers) —\n" +
+		"      an absent one surfaces honestly via absent_from_graph rather than the converter guessing which\n" +
+		"      is real. Forbidden/loser substring patterns translate under the same 3 shapes when the pattern\n" +
+		"      IS one of them (equal to, or prefixed by, one of the three roots); anything else — unmapped-\n" +
+		"      family-shaped patterns and ordinary free-text substrings alike — stays raw, tallied as a single\n" +
+		"      unmapped_patterns total (not broken out by family: most patterns are free text, not ids).\n" +
+		"      --id-map none reproduces the pre-id-map converter byte-for-byte (today's raw dotted-id suite).\n" +
+		"      Every id/pattern the v1 map does not translate is named + counted by family under \"unmapped\" —\n" +
+		"      never silently dropped or silently mismapped; this is the true W5-J9 parity backlog.\n" +
 		"    output carries private ids: write it only under $COMPOUND_HOME (e.g. ~/.compound/bench-suites/), never the repo tree."
 }
 
@@ -74,13 +86,17 @@ func runBenchConvert(args []string, stdout, stderr io.Writer) int {
 	}
 
 	name := strings.TrimSpace(flagValue(args[1:], "--name"))
-	var suite bench.Suite
+	var (
+		suite       bench.Suite
+		idMapReport bench.IDMapReport
+	)
 	switch mode {
 	case "acceptance":
 		if name == "" {
 			name = "wave2-acceptance"
 		}
-		suite, err = bench.ConvertAcceptance(data, name)
+		idMap := strings.TrimSpace(flagValue(args[1:], "--id-map"))
+		suite, idMapReport, err = bench.ConvertAcceptance(data, name, idMap)
 	case "golden":
 		if name == "" {
 			name = "recall-golden"
@@ -104,11 +120,11 @@ func runBenchConvert(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	printConvertSummary(stdout, mode, outPath, suite)
+	printConvertSummary(stdout, mode, outPath, suite, idMapReport)
 	return 0
 }
 
-func printConvertSummary(w io.Writer, mode, outPath string, suite bench.Suite) {
+func printConvertSummary(w io.Writer, mode, outPath string, suite bench.Suite, idMap bench.IDMapReport) {
 	fmt.Fprintf(w, "# compound bench convert %s -> %s\n", mode, suite.Suite)
 	fmt.Fprintf(w, "cases: %d\n", len(suite.Cases))
 	held := map[string]int{}
@@ -121,6 +137,18 @@ func printConvertSummary(w io.Writer, mode, outPath string, suite bench.Suite) {
 		for _, d := range suite.Dropped {
 			fmt.Fprintf(w, "  %-32s %4d  %s\n", d.Field, d.Count, d.Reason)
 		}
+	}
+	if idMap.Version != "" {
+		fmt.Fprintf(w, "id-map: %s\n", idMap.Version)
+	}
+	if len(idMap.UnmappedIDFamilies) > 0 {
+		fmt.Fprintln(w, "unmapped (no v1 canonical id mapping; raw id passthrough, named + counted, never silent):")
+		for _, d := range idMap.UnmappedIDFamilies {
+			fmt.Fprintf(w, "  %-32s %4d  %s\n", d.Field, d.Count, d.Reason)
+		}
+	}
+	if idMap.UnmappedPatterns > 0 {
+		fmt.Fprintf(w, "unmapped_patterns: %d (forbidden/must_outrank substrings with no known family prefix; single total, not per-family — see usage)\n", idMap.UnmappedPatterns)
 	}
 	fmt.Fprintf(w, "suite: %s\n", outPath)
 }
