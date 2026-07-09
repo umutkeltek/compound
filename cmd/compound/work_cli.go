@@ -939,11 +939,11 @@ func cmdWork(args []string) {
 		die(err)
 		fmt.Printf("%s: action %s recorded (policy %s, decision %s)\n", w.ID, ai.ID, pd.Outcome, pd.ID)
 	case "close-plan":
-		usage := "usage: compound work close-plan <work_id> (--action-plan <action-execution-plan.json> | --outcome completed|failed|cancelled --move-type <type>) [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json] [--dry-run]"
+		usage := "usage: compound work close-plan <work_id> (--action-plan <action-execution-plan.json> | --outcome completed|failed|cancelled --move-type <type>) [--actor A] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--steal --reason R] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
-			case "--json", "--dry-run":
-			case "--outcome", "--move-type", "--actor", "--action-plan", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
+			case "--json", "--dry-run", "--steal":
+			case "--outcome", "--move-type", "--actor", "--action-plan", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path", "--reason":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -974,6 +974,8 @@ func cmdWork(args []string) {
 			TargetID:       flag("--target-id"),
 			TargetPath:     flag("--target-path"),
 			Record:         !has("--dry-run"),
+			Steal:          has("--steal"),
+			StealReason:    flag("--reason"),
 		})
 		die(err)
 		if has("--json") {
@@ -1006,7 +1008,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "close":
-		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)"
+		closeUsage := "usage: compound work close <work_id> --outcome completed|failed|cancelled --move-type <type> [--summary S] [--changed] [--by A|--actor A] [--proof REF[,REF]...] [--proof-ref REF] [--used C] [--missed C] [--false-triggered C] [--failure-surface S] [--failure-mechanism M] [--memory-candidate C] [--memory-promoted C] [--memory-parked C] [--memory-rejected C] [--steal --reason R]\n  (passing --used at all — even --used \"\" for declared-none — stamps skills.used_declared=true, so injected-but-unused refs count as ignored; omitting --used leaves them unknown)\n  (a work held by another actor's lease refuses close unless --by/--actor matches the holder, or --steal --reason \"...\" is given)"
 		if err := validateKnownFlags(rest, map[string]bool{
 			"--outcome":           true,
 			"--move-type":         true,
@@ -1024,8 +1026,10 @@ func cmdWork(args []string) {
 			"--memory-promoted":   true,
 			"--memory-parked":     true,
 			"--memory-rejected":   true,
+			"--reason":            true,
 		}, map[string]bool{
 			"--changed": true,
+			"--steal":   true,
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			fmt.Fprintln(os.Stderr, closeUsage)
@@ -1050,6 +1054,8 @@ func cmdWork(args []string) {
 			MemoryRejected:             splitCSV(flag("--memory-rejected")),
 			FailureSurfaceOutcome:      flag("--failure-surface"),
 			FailureMechanism:           flag("--failure-mechanism"),
+			Steal:                      has("--steal"),
+			StealReason:                flag("--reason"),
 		}, time.Now())
 		die(err)
 		fmt.Printf("%s closed: %s  move_type=%s  policy=%s  receipt=%s  transition=%s\n",

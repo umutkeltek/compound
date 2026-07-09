@@ -4282,6 +4282,135 @@ func TestWorkClosePlanAndCloseCommandRecordPolicy(t *testing.T) {
 	}
 }
 
+// Falsifier 8 (anonymous-close-falsifier), read-only half: `work close-plan` never calls
+// die() on a lease-block (it just reports NoAction), so the CLI's --by-less-on-held-work
+// denial is directly observable here without a subprocess. The mutating `work close`
+// refusal itself is proven at the Store level (TestCloseRefusesNonLeaseHolder,
+// internal/work/lease_close_test.go) — die() would os.Exit the test process, so per the
+// packet CLI tests cover success + steal-success + flag validation only.
+func TestWorkClosePlanCommandReportsLeaseHolderDenial(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "lease holder cli"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(held.ID, "actor-a", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(held.ID, work.AdvanceInput{To: "running", Actor: "actor-a"}, cliTestNow); err != nil {
+		t.Fatalf("advance work: %v", err)
+	}
+
+	// No --actor at all (anonymous close-plan of held work): reports the holder-named
+	// denial, offers no close command, and does not call die() (ClosePlan never errors on
+	// a lease block, only sets NoAction).
+	out := captureStdout(t, func() {
+		cmdWork([]string{"close-plan", held.ID, "--outcome", "completed", "--move-type", "control_plane_repair", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("close-plan output missing JSON:\n%s", out)
+	}
+	var plan work.ClosePlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse close plan: %v\n%s", err, out)
+	}
+	if plan.NoAction == "" || !strings.Contains(plan.NoAction, "actor-a") {
+		t.Fatalf("close-plan without --actor on held work must name the holder actor-a: %+v", plan)
+	}
+	if len(plan.CloseCommand) != 0 {
+		t.Fatalf("close-plan without --actor on held work must not offer a close command: %v", plan.CloseCommand)
+	}
+	after, err := store.Get(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "running" {
+		t.Fatalf("close-plan must not mutate work: %+v", after)
+	}
+}
+
+// Steal-success path: `work close --steal --reason` on a held work succeeds via the CLI
+// and the emitted close command from close-plan carries --steal --reason.
+func TestWorkCloseCommandStealOverridesLeaseHolder(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	held, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "steal cli"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create work: %v", err)
+	}
+	if _, err := store.Claim(held.ID, "actor-a", cliTestNow); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := store.Advance(held.ID, work.AdvanceInput{To: "running", Actor: "actor-a"}, cliTestNow); err != nil {
+		t.Fatalf("advance work: %v", err)
+	}
+
+	planOut := captureStdout(t, func() {
+		cmdWork([]string{
+			"close-plan", held.ID, "--outcome", "completed", "--move-type", "control_plane_repair",
+			"--actor", "actor-b", "--steal", "--reason", "actor-a executor died mid-build", "--json",
+		})
+	})
+	start := strings.Index(planOut, "{")
+	if start < 0 {
+		t.Fatalf("close-plan output missing JSON:\n%s", planOut)
+	}
+	var plan work.ClosePlan
+	if err := json.Unmarshal([]byte(planOut[start:]), &plan); err != nil {
+		t.Fatalf("parse close plan: %v\n%s", err, planOut)
+	}
+	if !stringSliceContains(plan.CloseCommand, "--reason") || !stringSliceContains(plan.CloseCommand, "actor-a executor died mid-build") {
+		t.Fatalf("steal-ready close command must carry --reason <reason>: %v", plan.CloseCommand)
+	}
+
+	closeOut := captureStdout(t, func() {
+		cmdWork([]string{
+			"close", held.ID, "--outcome", "completed", "--move-type", "control_plane_repair",
+			"--summary", "stolen close", "--proof", "proof:steal-close", "--actor", "actor-b",
+			"--steal", "--reason", "actor-a executor died mid-build",
+		})
+	})
+	if !strings.Contains(closeOut, "completed") {
+		t.Fatalf("stolen close output missing completed state:\n%s", closeOut)
+	}
+	closed, err := store.Get(held.ID)
+	if err != nil {
+		t.Fatalf("get closed work: %v", err)
+	}
+	if closed.State != "completed" {
+		t.Fatalf("stolen close command did not close the work: %+v", closed)
+	}
+	_, evs, err := store.Show(held.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range evs {
+		if strings.Contains(e.Note, "stolen") && strings.Contains(e.Note, "actor-a") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("trail missing the steal record: %+v", evs)
+	}
+}
+
 func TestValidateKnownFlagsRejectsUnknownFlag(t *testing.T) {
 	err := validateKnownFlags(
 		[]string{"work_123", "--outcome", "completed", "--proof-ref", "proof:ok", "--proof-rfe", "proof:typo"},
