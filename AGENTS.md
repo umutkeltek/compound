@@ -9,6 +9,14 @@ do not become the source of truth.
 > This file is the **build guide** for agents *building* compound. A *running* compound instance serves OTHER
 > repos a tiny client-contract instead (see `docs/architecture/runtime.md` §4) — do not confuse the two.
 
+## Operating ceremonies (harness-agnostic; read as plain markdown)
+Repo-local ceremony docs live under `.claude/skills/*/SKILL.md` (untracked on public clones; present on the
+operator machine). Claude Code auto-loads them; **every other harness reads them as ordinary files before
+acting in that role**: `compound-execute` (taking a work item end-to-end: resolve → claim → dispatch → land →
+close → route learnings), `compound-land` (getting any change onto main), `compound-verify` (proving a change
+is alive, not merely merged), `extract-approach` (routing learnings to their owners). If you orchestrate or
+land in this repo and cannot read those files, stop and say so instead of improvising the ceremony.
+
 ## Read first
 - `docs/ARCHITECTURE.md`, `docs/LAYERS.md` — the information kernel (monolith, deep modules, cwd-independent).
 - `docs/architecture/substrate.md` — target topology; **one meaning owner**; two planes; the three places.
