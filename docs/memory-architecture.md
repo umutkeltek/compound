@@ -297,6 +297,40 @@ dependencies. A real vector sidecar
 (Rust plus its embedder) is an **external artifact**, never vendored
 into the public core.
 
+## Target doctrine (operator-ratified 2026-07-09): quiet memory, conflict-only questions
+
+The end-state this architecture serves, stated once so every agent aims at the same thing:
+**memory should be so smooth the operator does not notice it, and the system may ask the
+operator a question only when evidence genuinely conflicts.** The operator's decision load
+must trend down over time; per-item "is this memory correct?" review is a design failure,
+not a workflow. Four pillars, each with a deterministic floor so the whole layer works with
+zero models available and gets richer — never merely functional — as models attach:
+
+1. **Embedder-agnostic by structure.** Every embedder (local or hosted) is an identity-stamped
+   adapter behind the engine seam — swappable, never authority, never load-bearing. Named
+   defaults per lane are configuration (private lanes default local; hosted embedders are
+   legitimate for non-private lanes). With no embedder at all, lexical + graph lanes still
+   answer correctly. The identity guard refuses mixed-embedder indexes; an unreachable engine
+   degrades, never breaks.
+2. **Queries are enriched before retrieval.** A deterministic expansion stage (aliases and
+   entity/term bridges mined from the capability graph and the ledger's own vocabulary) maps
+   casual phrasing onto system terms — boost-never-gate, byte-identical when disabled. An
+   optional local-model rewrite lane (vocabulary-constrained to the corpus's real tokens) may
+   sit on top, behind the same fail-open discipline; it is never required for correctness.
+3. **The system reconciles itself in the background.** Maintenance runs compare what memory
+   claims against what receipts and transitions show actually happened; parked, un-corroborated
+   candidates decay on schedule; corroborated ones raise themselves; usage warms what sessions
+   actually consume and cools what they ignore. All of it acts through receipts with one-line
+   undo — propose-only where a surface is governed, silent where evidence is decisive.
+4. **The operator sees exactly two surfaces.** A weekly digest (what promoted, reopened,
+   decayed, and how to undo any of it) and a conflict card that appears only when evidence is
+   genuinely split — "in this project, in this context, memory holds A but evidence shows B;
+   which representation is correct?" Everything else is the system's job.
+
+The standing invariants are unchanged by this doctrine: the ledger gates and the engine ranks;
+adjudication is the only birthplace of a claim; privacy classes never cross silently; and a
+claim promoted by evidence reopens the moment evidence turns.
+
 ## Language And Runtime
 
 The core is Go: CLI, ledger, scope, recall planning, importers, and future local
