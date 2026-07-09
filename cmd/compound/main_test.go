@@ -11456,6 +11456,7 @@ func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) 
 		Object:         "current promoted belief",
 		Confidence:     0.91,
 		Derivation:     "deterministic",
+		ClaimType:      "decision",
 		PromotionBasis: candidates.BasisExplicitConfirmation,
 		SourceTraceRef: ev.ID,
 		SnippetHash:    ev.ContentHash,
@@ -11468,13 +11469,15 @@ func TestMemoryCandidatesJSONCommandListsWithoutEvidenceByDefault(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// ClaimType decision keeps this on the operator_required (proposed) path.
 	captured, err := store.Capture([]mem.Candidate{{
 		Entity:         "entity:cli",
 		Predicate:      "status",
 		Object:         "listed",
 		Confidence:     0.9,
 		Derivation:     "deterministic",
-		PromotionBasis: candidates.BasisTrustedDeterministic,
+		ClaimType:      "decision",
+		PromotionBasis: candidates.BasisExplicitConfirmation,
 		SourceTraceRef: ev.ID,
 		SnippetHash:    ev.ContentHash,
 		Visibility:     "operational",

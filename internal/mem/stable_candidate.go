@@ -3,6 +3,7 @@ package mem
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"compound/internal/candidates"
 )
@@ -36,13 +37,13 @@ func (s *Store) RecordStableCandidate(c Candidate) (bool, error) {
 	if !oneOf(c.Visibility, Visibilities) {
 		return false, fmt.Errorf("candidate %s: bad visibility %q", c.ID, c.Visibility)
 	}
-	c, _ = AdmitCandidate(c)
+	c, _ = AdmitCandidateAt(c, time.Now().UTC())
 	if !validStableCandidateState(c.State) {
-		return false, fmt.Errorf("candidate %s state must be proposed or parked, got %q", c.ID, c.State)
+		return false, fmt.Errorf("candidate %s state must be proposed, parked, or no_promote, got %q", c.ID, c.State)
 	}
 	return s.writeStableCandidate(c)
 }
 
 func validStableCandidateState(state string) bool {
-	return state == "proposed" || state == "parked"
+	return state == "proposed" || state == "parked" || state == "no_promote"
 }

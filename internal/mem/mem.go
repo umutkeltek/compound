@@ -250,6 +250,8 @@ func (s *Store) Capture(cands []Candidate, now time.Time) ([]Candidate, error) {
 		}
 		c.State = "proposed"
 		c.CreatedAt = rfc3339(now)
+		// Decisions-down write seam: knowledge tiers + disposition (decay_park / auto_file / operator).
+		c, _ = AdmitCandidateAt(c, now)
 		if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
 			return out, err
 		}

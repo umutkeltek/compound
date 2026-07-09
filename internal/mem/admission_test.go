@@ -3,6 +3,10 @@ package mem
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"compound/internal/candidates"
+	"compound/internal/policy"
 )
 
 func TestAdmitCandidateParksKnowledgeEvidence(t *testing.T) {
@@ -50,7 +54,7 @@ func TestAdmitCandidateParksKnowledgeEvidence(t *testing.T) {
 	}
 }
 
-func TestAdmitCandidateLeavesDurableMemoryProposed(t *testing.T) {
+func TestAdmitCandidateOperatorPermanentStaysProposed(t *testing.T) {
 	candidate := Candidate{
 		ID:             "cand_durable",
 		Entity:         "project:compound",
@@ -58,6 +62,7 @@ func TestAdmitCandidateLeavesDurableMemoryProposed(t *testing.T) {
 		Object:         "operator decisions remain manually gated",
 		Confidence:     0.9,
 		Derivation:     "deterministic",
+		ClaimType:      "decision",
 		Qualifiers:     map[string]string{"domain": "memory"},
 		SourceTraceRef: "ev_durable",
 		SnippetHash:    "def456",
@@ -69,8 +74,119 @@ func TestAdmitCandidateLeavesDurableMemoryProposed(t *testing.T) {
 	if admitted.State != "proposed" {
 		t.Fatalf("admitted state = %q, want proposed; decision=%+v", admitted.State, decision)
 	}
-	if !decision.ReviewRequired || decision.TargetSurface != "operator_queue" {
-		t.Fatalf("durable memory should remain operator-gated: %+v", decision)
+	if !decision.ReviewRequired || decision.TargetSurface != AdmissionSurfaceOperatorQueue {
+		t.Fatalf("operator-permanent should remain operator-gated: %+v", decision)
+	}
+}
+
+func TestAdmitCandidateUnEvidencedDecayParks(t *testing.T) {
+	// Decisions-down: un-evidenced durable memory does NOT enter the DECIDE queue.
+	candidate := Candidate{
+		ID:             "cand_unevidenced",
+		Entity:         "project:compound",
+		Predicate:      "notes",
+		Object:         "a loose observation",
+		Confidence:     0.5,
+		Derivation:     "extracted",
+		SourceTraceRef: "ev_loose",
+		SnippetHash:    "aaa",
+		Visibility:     "operational",
+		CreatedAt:      rfc3339(t0),
+	}
+	admitted, decision := AdmitCandidateAt(candidate, t0)
+	if admitted.State != "parked" {
+		t.Fatalf("state = %q, want parked; decision=%+v", admitted.State, decision)
+	}
+	if decision.Disposition != policy.DispositionDecayPark {
+		t.Fatalf("disposition = %q", decision.Disposition)
+	}
+	if admitted.ExpiresAt == "" {
+		t.Fatal("decay_park must stamp ExpiresAt")
+	}
+	exp, err := time.Parse(time.RFC3339, admitted.ExpiresAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := t0.AddDate(0, 0, policy.DefaultDecayParkDays)
+	if !exp.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want %v", exp, want)
+	}
+	if decision.ReviewRequired {
+		t.Fatal("decay_park must not require operator review")
+	}
+}
+
+func TestAdmitCandidatePrivateNeverAutoFiles(t *testing.T) {
+	candidate := Candidate{
+		ID:             "cand_private_det",
+		Entity:         "project:compound",
+		Predicate:      "secret_metric",
+		Object:         "42",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		PromotionBasis: candidates.BasisTrustedDeterministic,
+		SourceTraceRef: "ev_priv",
+		SnippetHash:    "bbb",
+		Visibility:     "private",
+		CreatedAt:      rfc3339(t0),
+	}
+	admitted, decision := AdmitCandidate(candidate)
+	if decision.Disposition == policy.DispositionAutoFile || admitted.State == "no_promote" {
+		t.Fatalf("private must never auto_file: admitted=%+v decision=%+v", admitted, decision)
+	}
+	if admitted.State != "proposed" || !decision.ReviewRequired {
+		t.Fatalf("private deterministic should be operator_required: state=%q decision=%+v", admitted.State, decision)
+	}
+}
+
+func TestAdmitCandidateAutoFilesTrustedImport(t *testing.T) {
+	candidate := Candidate{
+		ID:             "cand_auto",
+		Entity:         "project:compound",
+		Predicate:      "imported_fact",
+		Object:         "from curated page",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		PromotionBasis: candidates.BasisTrustedDeterministic,
+		SourceTraceRef: "ev_imp",
+		SnippetHash:    "ccc",
+		Visibility:     "operational",
+		CreatedAt:      rfc3339(t0),
+	}
+	admitted, decision := AdmitCandidate(candidate)
+	if admitted.State != "no_promote" {
+		t.Fatalf("state = %q, want no_promote; decision=%+v", admitted.State, decision)
+	}
+	if decision.Disposition != policy.DispositionAutoFile {
+		t.Fatalf("disposition = %q", decision.Disposition)
+	}
+}
+
+func TestCaptureAppliesDecisionsDownAdmission(t *testing.T) {
+	s := newStore(t)
+	// Un-evidenced capture → parked with expiry (not proposed).
+	got, err := s.Capture([]Candidate{{
+		Entity: "e", Predicate: "p", Object: "o", Confidence: 0.5,
+		Derivation: "extracted", SourceTraceRef: "t", SnippetHash: "h",
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].State != "parked" || got[0].ExpiresAt == "" {
+		t.Fatalf("capture should decay_park un-evidenced: %+v", got)
+	}
+	// Operator-permanent claim type stays proposed.
+	got2, err := s.Capture([]Candidate{{
+		Entity: "e2", Predicate: "decided", Object: "rule", Confidence: 0.9,
+		Derivation: "deterministic", ClaimType: "decision",
+		PromotionBasis: candidates.BasisExplicitConfirmation,
+		SourceTraceRef: "t2", SnippetHash: "h2",
+	}}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got2) != 1 || got2[0].State != "proposed" {
+		t.Fatalf("decision claim type should stay proposed: %+v", got2)
 	}
 }
 

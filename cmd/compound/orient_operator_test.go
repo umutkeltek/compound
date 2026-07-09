@@ -103,11 +103,11 @@ func TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe(t *testing.T) {
 	if err := home.Init(homePath, "test", now.Add(-time.Hour)); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
-	memStore, err := mem.Open(homePath)
-	if err != nil {
-		t.Fatalf("open memory: %v", err)
-	}
-	captured, err := memStore.Capture([]mem.Candidate{{
+	// Write a raw proposed inbox row that LOOKS operator-actionable; list/orient
+	// re-admits via knowledge_import → parked source-index (authority, not raw state).
+	candID := "cand_orient_knowledge_import_fixture"
+	raw := mem.Candidate{
+		ID:              candID,
 		Entity:          "knowledge:chatgpt:fixture",
 		Predicate:       "reference_title",
 		Object:          "Source Metadata Fixture",
@@ -120,11 +120,15 @@ func TestOrientOperatorUsesMemoryCandidateAuthorityForNeedsMe(t *testing.T) {
 			"source":      "knowledge_import",
 			"source_kind": "chatgpt",
 		},
-	}}, now.Add(-30*time.Minute))
-	if err != nil {
-		t.Fatalf("capture memory candidate: %v", err)
+		SourceTraceRef: "ev_orient_fixture",
+		SnippetHash:    "sha256:orient_fixture",
+		State:          "proposed",
+		CreatedAt:      now.Add(-30 * time.Minute).Format(time.RFC3339),
 	}
-	rawPath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), captured[0].ID+".json")
+	if err := candidates.WriteCandidate(homePath, candidates.Memory, candID, &raw); err != nil {
+		t.Fatalf("write raw candidate: %v", err)
+	}
+	rawPath := filepath.Join(homePath, candidates.InboxDir(candidates.Memory), candID+".json")
 	if got := candidateReadinessState(homePath, rawPath); got != "proposed" {
 		t.Fatalf("raw candidate state = %q, want proposed fixture proving raw file alone is misleading", got)
 	}
