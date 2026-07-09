@@ -25,7 +25,7 @@ import (
 )
 
 // NodeKinds — skills are one kind, not the whole graph.
-var NodeKinds = []string{"lens", "procedure", "script", "tool", "mcp", "model_profile", "harness", "eval", "workflow", "adapter", "doctrine", "taste_standard", "skill", "instruction_rule"}
+var NodeKinds = []string{"lens", "procedure", "script", "tool", "mcp", "model_profile", "harness", "eval", "workflow", "adapter", "doctrine", "taste_standard", "skill", "instruction_rule", "agent-lane"}
 
 // Edge kinds: routing + the evolution feedback edges.
 const (
@@ -39,9 +39,11 @@ const (
 	EdFalseTriggeredBy = "false_triggered_by"
 	EdRetiredBy        = "retired_by"
 	EdEvaluatedBy      = "evaluated_by"
+	EdCapableOf        = "capable_of"
+	EdTendsTo          = "tends_to"
 )
 
-var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpecializes, EdFallbackFor, EdValidatedBy, EdMissedWhen, EdFalseTriggeredBy, EdRetiredBy, EdEvaluatedBy}
+var EdgeKinds = []string{EdSurfacesWith, EdRequires, EdConflictsWith, EdSpecializes, EdFallbackFor, EdValidatedBy, EdMissedWhen, EdFalseTriggeredBy, EdRetiredBy, EdEvaluatedBy, EdCapableOf, EdTendsTo}
 
 // FeedbackEdges are the ones a CapabilityObservation can write (context:<token> → node).
 var FeedbackEdges = map[string]bool{EdMissedWhen: true, EdFalseTriggeredBy: true}
