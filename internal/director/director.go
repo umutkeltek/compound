@@ -32,6 +32,12 @@ var proposalClassSeverityOrder = []string{
 	"product_loop",
 	"synthesis_contradiction",
 	"review_debt",
+	// harness_edit ranks just above absorption_debt: the self-harness loop
+	// (proposing bounded edits to editable harness surfaces) is real
+	// improvement work, but self-improvement must never starve an operational
+	// class — every live-operations class above outranks it, so a harness-edit
+	// proposal only takes a slot once the operational classes have theirs.
+	"harness_edit",
 	// absorption_debt ranks last: os-absorption retirement debt is real but
 	// never more urgent than live review debt (W5 J15). The operator can
 	// reorder later; today it just must not starve behind the cap forever.
@@ -73,6 +79,7 @@ type Proposal struct {
 	Title           string                            `json:"title"`
 	Consequence     string                            `json:"consequence"`
 	CapabilityClass string                            `json:"capability_class"`
+	TargetSurface   string                            `json:"target_surface,omitempty"`
 	EvidenceRefs    []string                          `json:"evidence_refs"`
 	WorkID          string                            `json:"work_id"`
 	WorkState       string                            `json:"work_state"`
@@ -100,13 +107,27 @@ type SkippedCandidate struct {
 }
 
 type candidate struct {
-	Kind               string
-	SourceID           string
-	Title              string
-	Consequence        string
-	CapabilityClass    string
-	Owner              string
-	CanonicalSurface   string
+	Kind             string
+	SourceID         string
+	Title            string
+	Consequence      string
+	CapabilityClass  string
+	Owner            string
+	CanonicalSurface string
+	// TargetSurface, when non-empty, marks this candidate as a harness-edit
+	// proposal (EVOLVE-BLOCK): the named editable surface the proposed edit
+	// aims at. It is threaded into the WorkEnvelope so the admission seam gates
+	// it against the operator-owned editable-surfaces whitelist. It is NEVER a
+	// hard-deny-core surface — newHarnessEditCandidate refuses those at
+	// construction, before this candidate ever exists.
+	TargetSurface string
+	// EditAction / EditSignal are the plain-language phrasing a harness-edit
+	// candidate carries for its operator review card ("trim the never-fired
+	// example helper offer" / "12 receipts show it never fired"). Empty for
+	// every non-harness candidate; a harness-edit card writer that finds them
+	// empty fails its card rather than emitting mush (grammar G6).
+	EditAction         string
+	EditSignal         string
 	SuccessPredicate   string
 	DesiredOutcome     string
 	Command            []string
@@ -185,6 +206,7 @@ func Propose(homePath string, opts Options) (Report, error) {
 				Owner:            proposalOwner(cand),
 				Actor:            DirectorActor,
 				CanonicalSurface: cand.CanonicalSurface,
+				TargetSurface:    cand.TargetSurface,
 				SuccessPredicate: cand.SuccessPredicate,
 				DesiredOutcome:   cand.DesiredOutcome,
 				NonGoals:         nonGoalsFor(cand),
@@ -210,6 +232,16 @@ func Propose(homePath string, opts Options) (Report, error) {
 			}
 			proposal.PlanPath = plan.PlanPath
 			proposal.WorkPlan = plan
+			// A harness-edit proposal also emits an operator review card under
+			// reviews/harness-edit-proposals/ — a propose-only artifact that
+			// mutates no owner state and admits nothing; it just makes the
+			// bounded edit legible for the operator gate. Kept apply-only so a
+			// dry run stays read-only.
+			if cand.TargetSurface != "" {
+				if err := recordHarnessEditCard(homePath, cand, proposal, now); err != nil {
+					return report, err
+				}
+			}
 		}
 		report.Proposals = append(report.Proposals, proposal)
 		dupes.addPlan(proposal.TriggerRef, proposal.ID)
@@ -265,6 +297,11 @@ func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
 	}
 	if items, err := absorptionDebtCandidates(homePath, now); err != nil {
 		warnings = append(warnings, "absorption debt scan skipped: "+err.Error())
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := harnessEditCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "harness edit scan skipped: "+err.Error())
 	} else {
 		out = append(out, items...)
 	}
@@ -386,6 +423,7 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 		Owner:            proposalOwner(cand),
 		Actor:            DirectorActor,
 		CanonicalSurface: cand.CanonicalSurface,
+		TargetSurface:    cand.TargetSurface,
 		SuccessPredicate: cand.SuccessPredicate,
 		DesiredOutcome:   cand.DesiredOutcome,
 		NonGoals:         nonGoalsFor(cand),
@@ -408,6 +446,7 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 		Title:           cand.Title,
 		Consequence:     cand.Consequence,
 		CapabilityClass: cand.CapabilityClass,
+		TargetSurface:   cand.TargetSurface,
 		EvidenceRefs:    refs,
 		WorkID:          workID,
 		WorkState:       "proposed",
@@ -900,6 +939,16 @@ func nonGoalsFor(cand candidate) []string {
 		"do not execute this proposal while generating director output",
 		"do not admit, claim, dispatch, advance, close, or mutate owner state without an operator act",
 		"do not exceed director evidence boundary: " + firstNonEmpty(cand.Boundary, "use cited evidence refs only"),
+	}
+	// A harness-edit proposal keeps every propose-only non-goal above, and adds
+	// the two that make the EVOLVE-BLOCK boundary explicit: it may never target a
+	// hard-deny-core surface, and it may never apply the edit itself — the
+	// envelope only proposes it, admission stays operator-gated.
+	if strings.TrimSpace(cand.TargetSurface) != "" {
+		out = append(out,
+			"do not edit any hard-deny-core surface (policy, permissions, ledger, evaluator)",
+			"do not apply the edit itself — this envelope only proposes it; admission stays operator-gated and requires the target surface to be actively whitelisted",
+		)
 	}
 	for _, stop := range cand.StopConditions {
 		if strings.TrimSpace(stop) != "" {
