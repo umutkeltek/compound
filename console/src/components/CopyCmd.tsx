@@ -23,14 +23,12 @@ export function CopyCmd({ cmd, compact = false }: { cmd: string; compact?: boole
     <button
       onClick={copy}
       title={cmd}
-      className="group inline-flex max-w-full items-center gap-2 rounded-lg border border-line bg-slate-50 px-2.5 py-1.5 text-left transition-colors hover:bg-slate-100"
+      className="group inline-flex max-w-full items-center gap-2 rounded-md border border-hair bg-soft px-2.5 py-1.5 text-left transition-colors hover:bg-soft-2"
     >
-      {!compact && (
-        <code className="mono truncate text-[11.5px] text-ink-2">{cmd}</code>
-      )}
+      {!compact && <code className="mono truncate text-xs text-muted">{cmd}</code>}
       <span
-        className={`shrink-0 text-[11px] font-semibold ${
-          copied ? "text-emerald-600" : "text-slate-400 group-hover:text-slate-600"
+        className={`shrink-0 text-xs font-semibold ${
+          copied ? "text-good" : "text-faint group-hover:text-muted"
         }`}
       >
         {copied ? "copied" : "copy"}
@@ -65,10 +63,10 @@ export function CliCaption({ argv }: { argv: string[] | null }) {
       title={`runs: ${cmd}`}
       className="group mt-2 inline-flex max-w-full items-center gap-1.5 text-left"
     >
-      <span className="mono truncate text-[10.5px] text-ink-3">$ {cmd}</span>
+      <span className="mono truncate text-2xs text-faint">$ {cmd}</span>
       <span
-        className={`shrink-0 text-[10px] font-semibold ${
-          copied ? "text-emerald-600" : "text-slate-300 group-hover:text-slate-500"
+        className={`shrink-0 text-2xs font-semibold ${
+          copied ? "text-good" : "text-faint group-hover:text-muted"
         }`}
       >
         {copied ? "copied" : "copy"}

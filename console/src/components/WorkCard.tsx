@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { Chip, MoveChip, StateBadge } from "@/components/ui";
-import { ago, str } from "@/lib/compound";
+import { str } from "@/lib/compound";
+import { ago } from "@/lib/time";
 import { shortText, WorkCardData } from "@/lib/work-data";
 
 const EDGE: Record<string, string> = {

@@ -1,6 +1,7 @@
 import { DecisionCard } from "@/components/DecisionCard";
 import { Card, Chip, EmptyState, FreshnessChip, Stat } from "@/components/ui";
-import { ago, arr, str, type Json } from "@/lib/compound";
+import { arr, str, type Json } from "@/lib/compound";
+import { ago } from "@/lib/time";
 import {
   loadMemoryCounts,
   loadProposedMemorySplit,

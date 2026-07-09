@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { Chip, type Accent } from "@/components/ui";
-import { ago } from "@/lib/compound";
+import { ago } from "@/lib/time";
 import type { LineageStep } from "@/lib/map/lineage";
 
 const KIND_META: Record<LineageStep["kind"], { label: string; tone: Accent }> = {

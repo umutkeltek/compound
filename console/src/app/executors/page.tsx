@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { Card, Chip, EmptyState, FreshnessChip, Stat, StateBadge, type Accent } from "@/components/ui";
-import { ago, arr, getExecutors, num, str, type Json } from "@/lib/compound";
+import { arr, getExecutors, num, str, type Json } from "@/lib/compound";
+import { ago } from "@/lib/time";
 import { shortText } from "@/lib/work-data";
 
 export const dynamic = "force-dynamic";

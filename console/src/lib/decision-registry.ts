@@ -571,7 +571,201 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       "--json",
     ],
   },
+
+  /* ----------------------------------------------------------------------
+   * route-promotions (Phase 3b bespoke). The projection carries NO
+   * actions[] for this area (verified: `reviews --json --area
+   * route-promotions` → actions:null). The ONLY clean-argv mutation the
+   * backend exposes is `route promotion-record --review <json> --rationale
+   * <text> --json`, and `RecordPromotionHoldReview` (internal/routeevidence/
+   * promotion_review_record.go) HARD-REQUIRES the review's recommendation to
+   * be `hold_insufficient_evidence` — a promote/demote/hold_failing review
+   * cannot be recorded here ("separate authority review required"). So this
+   * spec offers exactly ONE honest one-click — "Record hold" — and only for
+   * hold-insufficient reviews (optionsFor returns [] otherwise, so a
+   * promote/demote item honestly falls through to copy-command; we never
+   * fabricate a promote/demote argv). The rationale is a required textarea:
+   * it is written verbatim into the review artifact as provenance. Recording
+   * a hold applies NO authority mutation (no lane promotion/demotion) — it is
+   * reversible (the `.reviewed.json` sidecar can be removed/overwritten).
+   * -------------------------------------------------------------------- */
+  "route-promotions": {
+    area: "route-promotions",
+    title: "Route promotion",
+    glyph: "R",
+    accent: "blue",
+    source: "reviews",
+    argvAllowlist: [["route", "promotion-record"]],
+    idPattern: /^route_promotion_[a-z0-9]+$/,
+    optionsFor: (item) => {
+      // Recommendation is encoded in group_key: `route-promotions|<rec>|<class>`.
+      const rec = routePromotionRecommendation(item);
+      if (rec !== "hold_insufficient_evidence") return [];
+      const path = str(item.json_path);
+      return [
+        {
+          value: "record_hold",
+          label: "Record hold",
+          tone: "orange",
+          description:
+            "Record the operator hold as a review artifact. No lane promotion or demotion is applied.",
+          argv: path
+            ? ["route", "promotion-record", "--review", path, "--rationale", "…", "--json"]
+            : null,
+        },
+      ];
+    },
+    options: [],
+    defaultOption: "record_hold",
+    plainLanguage: (item) => {
+      const rec = routePromotionRecommendation(item);
+      const summary = str(item.operator_summary) || "Route promotion review.";
+      const unlock = str(item.operator_unlock);
+      const lane = str(item.context_label);
+      const consequences =
+        rec === "hold_insufficient_evidence"
+          ? {
+              approve:
+                "your hold is recorded as provenance (a review artifact) — no lane is promoted or demoted; the watcher keeps collecting evidence",
+              hold: "nothing changes; the lane keeps its current role and stays under watch",
+            }
+          : {
+              approve:
+                unlock ||
+                "promoting or demoting a lane changes routing authority — that needs a separate authority review, not a one-click; run the command below",
+              hold: "the router keeps sending work to this lane exactly as it does now",
+            };
+      return {
+        headline: summary,
+        body:
+          rec === "hold_insufficient_evidence"
+            ? "Not enough route evidence yet to change this lane's role. Recording a hold just marks that you reviewed it."
+            : shortText(str(item.next_action), 200) ||
+              "This lane's role change is a routing-authority decision — reviewed here, applied by a separate authority step.",
+        evidence: arr(item.evidence_refs).map(String).slice(0, 8),
+        chips: lane ? [{ label: shortText(lane, 34), tone: "blue" as Accent }] : [],
+        consequences,
+      };
+    },
+    fields: [
+      {
+        name: "rationale",
+        type: "textarea",
+        label: "Rationale",
+        required: true,
+        placeholder:
+          "Why hold this lane? This text is written verbatim into the review artifact as the recorded provenance.",
+      },
+    ],
+    buildArgv: (ctx) => {
+      const path = str(ctx.item.json_path);
+      const rationale = str(ctx.fields.rationale).trim();
+      if (!path || !rationale) return null;
+      return ["route", "promotion-record", "--review", path, "--rationale", rationale, "--json"];
+    },
+    previewArgv: (item) => {
+      const path = str(item.json_path);
+      return path ? ["route", "promotion-record", "--review", path, "--rationale", "…", "--json"] : null;
+    },
+  },
+
+  /* ----------------------------------------------------------------------
+   * synthesis-contradictions (Phase 3b bespoke). The projection carries NO
+   * actions[] (verified), and the backend deliberately exposes NO clean
+   * mutation for a contradiction: the synthesis sweep "may append needs_review
+   * claim markers without candidate adjudication or claim promotion/
+   * supersession" (cmd/compound/synthesis.go) and its group summary states
+   * "each contradiction needs its own read". So this is an honest read-rich
+   * card — plain-language framing of the two disagreeing claims + evidence +
+   * the consequence pair — with NO executable option (options stay []). Acting
+   * means opening the claim group and, only if evidence proves a supersession,
+   * building a focused repair packet by hand; there is no one-click to
+   * fabricate. Rendered with an honest copy-command by the Decide page.
+   * -------------------------------------------------------------------- */
+  "synthesis-contradictions": {
+    area: "synthesis-contradictions",
+    title: "Memory contradiction",
+    glyph: "C",
+    accent: "violet",
+    source: "reviews",
+    argvAllowlist: [],
+    idPattern: /^synthesis_contradiction_[a-z0-9]+$/,
+    options: [],
+    plainLanguage: (item) => ({
+      headline: str(item.operator_summary) || "Memory holds two claims that disagree.",
+      body:
+        shortText(str(item.next_action), 220) ||
+        "Two stored claims disagree. Read the claim group; only build a repair packet if current evidence proves one supersedes the other.",
+      evidence: arr(item.evidence_refs).map(String).slice(0, 12),
+      chips: str(item.context_label)
+        ? [{ label: shortText(str(item.context_label), 34), tone: "violet" as Accent }]
+        : [],
+      consequences: {
+        approve:
+          str(item.operator_unlock) ||
+          "you settle which claim is true and memory stops carrying both versions — done by hand, only when evidence proves supersession",
+        hold: "memory keeps both claims; agents may recall either until you rule",
+      },
+    }),
+    fields: [],
+  },
+
+  /* ----------------------------------------------------------------------
+   * source (Phase 3b bespoke — fixes /sources copy-only). The source verdict
+   * CLIs (`source observation-verdict-review <review.yaml>`,
+   * `observation-verdict-plan --verdict <file>`) all need a prepared file, so
+   * they are not one-click. The one clean-argv, card-scoped act is
+   * `source intake-work-plan --card <sicard_id> --json` (cmd/compound/
+   * source.go): it builds a GOVERNED intake work plan (its own PolicyDecision)
+   * for one source card — reversible (the planned work can be cancelled).
+   * source:"orient" + no requiresResolvedItem means executeDecision skips item
+   * resolution and builds argv from the card id itself (same shape as
+   * panel-apply). Cards whose action is a pure read or is blocked on private
+   * config are rendered as honest copy-command by the /sources page instead.
+   * -------------------------------------------------------------------- */
+  source: {
+    area: "source",
+    title: "Source intake",
+    glyph: "S",
+    accent: "blue",
+    source: "orient",
+    argvAllowlist: [["source", "intake-work-plan"]],
+    idPattern: /^sicard_[a-z0-9]+$/,
+    options: [
+      {
+        value: "intake_plan",
+        label: "Plan intake work",
+        tone: "green",
+        description: "Build a governed intake work plan for this source card.",
+        argv: ["source", "intake-work-plan", "--card", "…", "--json"],
+      },
+    ],
+    defaultOption: "intake_plan",
+    plainLanguage: (item) => ({
+      headline: str(item.title) || str(item.label) || "Plan intake work for this source card",
+      body:
+        shortText(str(item.next_safe_action) || str(item.next_action), 200) ||
+        "Turn this source card into a governed intake work plan. Nothing is collected, authed, or scheduled from this card.",
+      consequences: {
+        approve:
+          "a governed intake work plan is created with its own PolicyDecision — no collector, credential, or scheduler is touched",
+        hold: "the source card stays in the queue untouched",
+      },
+    }),
+    fields: [
+      { name: "actor", type: "text", label: "Actor", placeholder: "codex", defaultValue: "codex" },
+    ],
+    buildArgv: (ctx) => ["source", "intake-work-plan", "--card", ctx.itemId, "--json"],
+  },
 };
+
+/** Recommendation for a route-promotion review, read from its `group_key`
+ * (`route-promotions|<recommendation>|<class>`), falling back to an explicit
+ * field. Drives whether the only clean act ("record hold") is offered. */
+function routePromotionRecommendation(item: Json): string {
+  const fromKey = str(item.group_key).split("|")[1];
+  return (fromKey || str(item.recommendation)).trim();
+}
 
 /** Look up a spec by area. */
 export function specFor(area: string): DecisionAreaSpec | null {

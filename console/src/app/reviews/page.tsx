@@ -1,36 +1,25 @@
 import type { ReactNode } from "react";
 
-import { CopyCmd } from "@/components/CopyCmd";
-import { DecisionCard } from "@/components/DecisionCard";
-import { DecisionDetailsDialog } from "@/components/DecisionDetailsDialog";
-import { FreshnessChip } from "@/components/kit";
-import { PanelApplyButton } from "@/components/PanelApplyButton";
-import { Card, Chip, EmptyState } from "@/components/ui";
+import { DecideQueue } from "@/components/decide/DecideQueue";
+import { FreshnessChip, PageHeader } from "@/components/kit";
 import { getAttention, type AttentionReport } from "@/lib/attention";
-import { ago, arr, getReviews, num, reviewCommand, str, toDate, type Json } from "@/lib/compound";
+import { arr, getReviews, num, str, type Json } from "@/lib/compound";
+import { ago, toDate } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
-import type { DecisionFormSpec, PlainLanguage } from "@/lib/decision-registry";
+import { buildDecideGroups, domainForArea, type DecideGroup } from "@/lib/decide-model";
 import { areaPlain } from "@/lib/glossary";
-import { loadReviewCard, type ReviewCardData } from "@/lib/review-detail";
 import { areaOf, bandOf, externalReviewRows, groupsForBand } from "@/lib/review-data";
 
 export const dynamic = "force-dynamic";
 
 const EXTERNAL_AREA = "external-repo-intake";
-const RUN_ID_RE = /^prun_[A-Za-z0-9_]+$/;
 
-type LoadedGroup = {
-  group: Json;
-  sample: Json;
-  card: ReviewCardData | null;
-};
-
-/* ---------- band + grouping ----------
- * areaOf/bandOf/groupsForBand live in @/lib/review-data. Phase 2 cutover: the
- * needs-you band now renders in the ONE `compound attention --json` projection's
- * leverage order (orderByAttention below), and the client fallback-grouping in
- * groupsForBand only fires for items that projection has NOT grouped — the
- * documented writer-debt safety net (retire when counts.fallback_groups == 0).
+/* ---------- item index + sample resolution (unchanged data contract) ----------
+ * The Decide page renders the SAME needs-you group set the attention smoke
+ * models: backend `compound reviews --json` groups + the client fallback net +
+ * one external card. Ordering follows the ONE `compound attention --json`
+ * projection. Phase 3b only changes how those groups are PRESENTED and ACTED
+ * on (kit cards, honest batch modes, keyboard triage) — not which groups show.
  */
 
 function buildItemIndex(reviews: Json | null): Map<string, Json> {
@@ -40,24 +29,6 @@ function buildItemIndex(reviews: Json | null): Map<string, Json> {
     if (id) map.set(id, item);
   }
   return map;
-}
-
-function groupCreatedAt(group: Json, itemByID: Map<string, Json>): string {
-  const sample = group.sample;
-  const sampleCreated = sample && typeof sample === "object" ? str((sample as Json).created_at) : "";
-  if (sampleCreated) return sampleCreated;
-  let min = "";
-  for (const id of arr(group.item_ids).map(String)) {
-    const created = str(itemByID.get(id)?.created_at);
-    if (created && (!min || created < min)) min = created;
-  }
-  return min || str(group.created_at);
-}
-
-function isOldAge(createdAt: string): boolean {
-  const d = toDate(createdAt);
-  if (!d) return false;
-  return Date.now() - d.getTime() > 48 * 3600 * 1000;
 }
 
 function sampleForGroup(group: Json, itemByID: Map<string, Json>): Json {
@@ -73,49 +44,26 @@ function sampleForGroup(group: Json, itemByID: Map<string, Json>): Json {
     readiness: str(group.readiness),
     status: str(group.status),
     next_action: str(group.operator_summary),
+    operator_summary: str(group.operator_summary),
+    operator_unlock: str(group.operator_unlock),
+    group_key: str(group.key),
     evidence_refs: arr(group.evidence_refs),
   };
 }
 
-async function loadGroups(groups: Json[], itemByID: Map<string, Json>): Promise<LoadedGroup[]> {
-  return Promise.all(
-    groups.map(async (group) => {
-      const sample = sampleForGroup(group, itemByID);
-      return { group, sample, card: sample ? await loadReviewCard(sample) : null };
-    }),
-  );
-}
-
-function sampleClaim(sample: Json): string {
-  const card = sample.decision_card;
-  return card && typeof card === "object" ? str((card as Json).claim) : "";
-}
-
-/** Prefer the backend's evidence_summaries labels (readable) over raw refs;
- * fall back to raw refs when the backend hasn't populated summaries yet. */
-function groupEvidence(group: Json): string[] {
-  const summaries = arr(group.evidence_summaries).filter(
-    (s): s is Json => Boolean(s) && typeof s === "object",
-  );
-  if (summaries.length) {
-    return summaries.map((s) => str(s.label) || str(s.ref)).filter(Boolean).slice(0, 12);
+function groupCreatedAt(group: Json, itemByID: Map<string, Json>): string {
+  const sample = group.sample;
+  const sampleCreated = sample && typeof sample === "object" ? str((sample as Json).created_at) : "";
+  if (sampleCreated) return sampleCreated;
+  let min = "";
+  for (const id of arr(group.item_ids).map(String)) {
+    const created = str(itemByID.get(id)?.created_at);
+    if (created && (!min || created < min)) min = created;
   }
-  return arr(group.evidence_refs).map(String).filter(Boolean).slice(0, 12);
+  return min || str(group.created_at);
 }
 
-function sortByAge(rows: Json[], itemByID: Map<string, Json>): Json[] {
-  return rows
-    .slice()
-    .sort((a, b) => (groupCreatedAt(a, itemByID) || "9999").localeCompare(groupCreatedAt(b, itemByID) || "9999"));
-}
-
-/* ---------- ordering follows the ONE attention projection ----------
- * The needs-you band renders in the `compound attention --json` leverage order
- * (join by group key, then area). Groups the projection has no row for — the
- * client fallback safety net for un-annotated areas — sort last, oldest first,
- * so writer-debt items still surface but never outrank a ranked decision. This
- * is what makes nav / briefing / this page agree on order, not just on count.
- */
+/* ---------- ordering follows the ONE attention projection ---------- */
 function orderByAttention(groups: Json[], attention: AttentionReport | null, itemByID: Map<string, Json>): Json[] {
   const rankByKey = new Map<string, number>();
   const rankByArea = new Map<string, number>();
@@ -143,8 +91,60 @@ function orderByAttention(groups: Json[], attention: AttentionReport | null, ite
     .map((entry) => entry.group);
 }
 
-/** Small mono metric chip for the page header — kit tokens, tabular. */
-function MonoChip({ children, title, tone = "muted" }: { children: ReactNode; title?: string; tone?: "muted" | "seam" }) {
+function sortByAge(rows: Json[], itemByID: Map<string, Json>): Json[] {
+  return rows
+    .slice()
+    .sort((a, b) => (groupCreatedAt(a, itemByID) || "9999").localeCompare(groupCreatedAt(b, itemByID) || "9999"));
+}
+
+function asWatchingEntry(row: Json): Json {
+  return {
+    ...row,
+    count: num(row.count) || 1,
+    item_ids: arr(row.item_ids).length ? row.item_ids : [str(row.id) || str(row.review_id)],
+  };
+}
+
+/* ---------- external needs-you collapses to ONE honest card ----------
+ * Each external repo is decided from its filled review artifact (a prepared-YAML
+ * flow, genuinely not a one-click), so this card is honest copy + a member list.
+ */
+function externalDecideGroup(externalNeedsYou: Json[], attention: AttentionReport | null): DecideGroup | null {
+  if (!externalNeedsYou.length) return null;
+  return {
+    key: "external-repo-intake|needs-you",
+    area: EXTERNAL_AREA,
+    areaLabel: "external repo intake",
+    areaPlain: areaPlain(EXTERNAL_AREA),
+    domain: domainForArea(EXTERNAL_AREA),
+    glyph: "E",
+    title: "Shared repos awaiting your keep / reference / reject call",
+    unlock: "",
+    body: "Each repo is decided from its own review artifact — fill the review, then record it. Nothing is cloned, installed, or run from this card.",
+    consequences: {
+      approve: "your decision + rationale go on the permanent record and steer what happens to the repo",
+      hold: "the repos stay in this queue untouched",
+    },
+    chips: [],
+    count: externalNeedsYou.length,
+    createdAt: "",
+    ageLabel: "",
+    old: false,
+    sampleId: str(externalNeedsYou[0]?.id) || EXTERNAL_AREA,
+    members: externalNeedsYou.map((r) => ({
+      id: str(r.id) || str(r.review_id),
+      label: str(r.target_path) || str(r.operator_summary) || str(r.id),
+      argv: null,
+      actionId: "",
+    })),
+    evidence: [],
+    freshness: { generatedAt: str(attention?.generated_at), source: "compound attention --json" },
+    act: { mode: "copy", command: "compound reviews --area external-repo-intake", reason: "" },
+  };
+}
+
+/* ---------- header metric chip ---------- */
+function MetricChip({ children, title, tone = "muted" }: { children: ReactNode; title?: string; tone?: "muted" | "seam" }) {
   return (
     <span
       title={title}
@@ -157,271 +157,53 @@ function MonoChip({ children, title, tone = "muted" }: { children: ReactNode; ti
   );
 }
 
-/* ---------- change 2: real verb buttons for safe batch acts ---------- */
-
-function safeBatchAction(group: Json): Json | null {
-  const action = group.safe_batch_action;
-  return action && typeof action === "object" ? (action as Json) : null;
-}
-
-function actionArgv(action: Json): string[] {
-  const argv = arr(action.argv).map(String).filter(Boolean);
-  return argv[0] === "compound" ? argv.slice(1) : argv;
-}
-
-function actionFlag(action: Json, flag: string): string {
-  const argv = arr(action.argv).map(String);
-  const index = argv.indexOf(flag);
-  return index >= 0 ? str(argv[index + 1]) : "";
-}
-
-function sampleRunId(sample: Json): string {
-  const card = sample.decision_card;
-  if (!card || typeof card !== "object") return "";
-  const meta = (card as Json).meta;
-  if (!meta || typeof meta !== "object") return "";
-  return str((meta as Json).run_id);
-}
-
-function batchRunId(action: Json, group: Json, sample: Json): string {
-  const argv = arr(action.argv).map(String);
-  const flagIndex = argv.indexOf("--plan");
-  if (flagIndex >= 0 && RUN_ID_RE.test(argv[flagIndex + 1] ?? "")) return argv[flagIndex + 1];
-  const legacyFlagIndex = argv.indexOf("--run");
-  if (legacyFlagIndex >= 0 && RUN_ID_RE.test(argv[legacyFlagIndex + 1] ?? "")) return argv[legacyFlagIndex + 1];
-  const keyed = str(group.key).match(/\|(prun_[A-Za-z0-9_]+)\|/)?.[1];
-  if (keyed) return keyed;
-  const fromSample = sampleRunId(sample);
-  return RUN_ID_RE.test(fromSample) ? fromSample : "";
-}
-
-function batchActionLabel(group: Json, action: Json): string {
-  const label = str(action.label);
-  if (label) return label;
-  const count = num(group.count) || arr(group.item_ids).length || 1;
-  if (areaOf(group) === "panel-verdicts") return `Record ${count} verdict${count === 1 ? "" : "s"}`;
-  return `Apply ${count} item${count === 1 ? "" : "s"}`;
-}
-
-/** What CopyCmd shows when there is no one-click act (or mutations are gated
- * off): the backend's own command string/argv when it supplied one, else the
- * generic area review command. */
-function fallbackCommand(group: Json, sample: Json): string {
-  const action = safeBatchAction(group);
-  if (action) {
-    const command = str(action.command);
-    if (command) return command;
-    const argv = actionArgv(action);
-    if (argv.length) return `compound ${argv.join(" ")}`;
-  }
-  return reviewCommand(sample);
-}
-
-function GroupActionArea({ group, sample }: { group: Json; sample: Json }) {
-  const action = safeBatchAction(group);
-  const cmd = fallbackCommand(group, sample);
-
-  if (!action || arr(action.argv).length === 0) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <CopyCmd cmd={cmd} compact />
-        {str(group.terminal_reason) ? (
-          <span className="text-[10.5px] text-ink-3">{str(group.terminal_reason)}</span>
-        ) : null}
-      </div>
-    );
-  }
-
-  const runId = batchRunId(action, group, sample);
-  if (!runId) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <CopyCmd cmd={cmd} compact />
-        <span className="text-[10.5px] text-ink-3">
-          {str(group.terminal_reason) || "batch command exposed without a recognizable run id"}
-        </span>
-      </div>
-    );
-  }
-
-  if (!consoleMutationsEnabled()) {
-    return (
-      <div className="flex flex-wrap items-center gap-2">
-        <CopyCmd cmd={cmd} compact />
-        <Chip tone="gray">terminal-only for now</Chip>
-      </div>
-    );
-  }
-
-  if (str(action.id) === "panel_verdict_record_group") {
-    return (
-      <PanelApplyButton
-        area="panel-verdict-record-group"
-        itemId={str(group.key)}
-        option="record"
-        fields={{
-          rationale: actionFlag(action, "--rationale"),
-          reviewed_by: actionFlag(action, "--reviewed-by"),
-        }}
-        label={batchActionLabel(group, action)}
-        argv={actionArgv(action)}
-      />
-    );
-  }
-
-  return (
-    <PanelApplyButton itemId={runId} label={batchActionLabel(group, action)} argv={actionArgv(action)} />
-  );
-}
-
-/* ---------- change 1 + 3: the group card ---------- */
-
-function GroupCard({ loaded, itemByID }: { loaded: LoadedGroup; itemByID: Map<string, Json> }) {
-  const { group, sample, card } = loaded;
-  const summary = str(group.operator_summary) || card?.headline || "Review this decision.";
-  const unlock = str(group.operator_unlock);
-  const area = areaOf(group);
-  const context = str(group.context_label);
-  const count = num(group.count) || arr(group.item_ids).length || 1;
-  const createdAt = groupCreatedAt(group, itemByID);
-  const old = isOldAge(createdAt);
-  const itemIds = arr(group.item_ids).map(String);
-  const sampleId = str(sample.id) || str(group.key);
-
-  const pl: PlainLanguage = {
-    headline: summary,
-    body: sampleClaim(sample) || card?.body || "",
-    evidence: groupEvidence(group),
-  };
-  const formSpec: DecisionFormSpec = { area: area || "review", options: [], fields: [] };
-
-  return (
-    <div className="rounded-xl border border-line bg-white px-4 py-3.5">
-      <div className="min-w-0">
-        <div className="text-[15.5px] font-semibold leading-snug text-ink">{summary}</div>
-        {unlock ? <div className="mt-1 text-[13px] font-medium text-emerald-700">&rarr; {unlock}</div> : null}
-      </div>
-
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {area ? (
-          <Chip tone="gray" title={areaPlain(area)}>
-            {area.replace(/-/g, " ")}
-          </Chip>
-        ) : null}
-        {context ? <Chip tone="violet">{context}</Chip> : null}
-        {count > 1 ? <span className="text-[11px] text-ink-3">+{count - 1} more</span> : null}
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <span className={`text-[11px] ${old ? "font-semibold text-amber-700" : "text-ink-3"}`}>
-          {createdAt ? `${ago(createdAt)}${old ? " ⚠" : ""}` : "age unknown"}
-        </span>
-        <div className="flex flex-wrap items-center gap-2">
-          <DecisionDetailsDialog
-            area={area || "review"}
-            itemId={sampleId}
-            item={sample}
-            pl={pl}
-            formSpec={formSpec}
-            buttonLabel="Evidence"
-          />
-          <GroupActionArea group={group} sample={sample} />
-        </div>
-      </div>
-
-      {itemIds.length > 1 ? (
-        <details className="mt-3 rounded-lg border border-line bg-canvas px-2.5 py-2 text-[11px] text-ink-3">
-          <summary className="cursor-pointer font-medium text-ink-2">Review each &middot; {itemIds.length} members</summary>
-          <p className="mt-2 text-[10.5px] leading-relaxed text-ink-3">
-            The act above is run-scoped &mdash; it applies to every member together; members cannot be excluded one by one.
-          </p>
-          <div className="mt-2 flex flex-col gap-1">
-            {itemIds.slice(0, 60).map((id) => {
-              const member = itemByID.get(id);
-              const label = str(member?.context_label) || id;
-              return (
-                <div key={id} className="flex items-center justify-between gap-2 rounded-md bg-white px-2 py-1">
-                  <span className="mono min-w-0 truncate text-[10.5px] text-ink-3" title={id}>
-                    {label}
-                  </span>
-                  <CopyCmd cmd={id} compact />
-                </div>
-              );
-            })}
-          </div>
-          {itemIds.length > 60 ? (
-            <p className="mt-1 text-[10.5px] text-ink-3">+{itemIds.length - 60} more member ids not shown.</p>
-          ) : null}
-          <code className="mono mt-2 block truncate text-[9.5px] text-ink-3">
-            {str(group.key)} &middot; {itemIds.length} members
-          </code>
-        </details>
-      ) : (
-        <code className="mono mt-2 block truncate text-[9.5px] text-ink-3">{sampleId}</code>
-      )}
-    </div>
-  );
-}
-
-/* ---------- change 1: watching + filed bands ---------- */
-
-function asWatchingEntry(row: Json): Json {
-  return {
-    ...row,
-    count: num(row.count) || 1,
-    item_ids: arr(row.item_ids).length ? row.item_ids : [str(row.id) || str(row.review_id)],
-  };
-}
-
+/* ---------- watching band (informational — no buttons, on purpose) ---------- */
 function WatchingRow({ entry, itemByID }: { entry: Json; itemByID: Map<string, Json> }) {
   const summary = str(entry.operator_summary) || "Still watching.";
   const area = areaOf(entry);
   const count = num(entry.count) || arr(entry.item_ids).length || 1;
   const createdAt = groupCreatedAt(entry, itemByID);
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-3 py-2.5 last:border-b-0">
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hair px-3 py-2.5 last:border-b-0">
       <div className="flex min-w-0 items-center gap-2">
         {area ? (
-          <span className="shrink-0 rounded-md bg-canvas px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-3">
+          <span
+            className="shrink-0 rounded-sm bg-soft-2 px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide text-faint"
+            title={areaPlain(area)}
+          >
             {area.replace(/-/g, " ")}
           </span>
         ) : null}
-        <span className="min-w-0 truncate text-[12.5px] text-ink-2">{summary}</span>
+        <span className="min-w-0 truncate text-sm text-muted">{summary}</span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        {count > 1 ? <Chip tone="gray">{count}</Chip> : null}
-        <span className="text-[11px] text-ink-3">{createdAt ? ago(createdAt) : ""}</span>
+        {count > 1 ? <span className="mono text-2xs tabular-nums text-faint">{count}</span> : null}
+        <span className="text-xs tabular-nums text-faint">{createdAt ? ago(createdAt) : ""}</span>
       </div>
     </div>
   );
 }
 
-export default async function Reviews() {
+export default async function Decide() {
   const [reviews, attention] = await Promise.all([getReviews(), getAttention()]);
   const itemByID = buildItemIndex(reviews);
+  const mutationsEnabled = consoleMutationsEnabled();
 
   const externalRows = externalReviewRows(reviews);
   const externalNeedsYou = externalRows.filter((r) => bandOf(r) !== "watching");
   const externalWatching = externalRows.filter((r) => bandOf(r) === "watching");
 
-  // Order + fallback now defer to the ONE attention projection.
-  const needsYouGroups = orderByAttention(
-    groupsForBand(reviews, "needs_you", attention),
-    attention,
-    itemByID,
-  );
+  // The needs-you set (backend groups + client fallback net), ordered by the
+  // ONE attention projection — same set the attention-consistency smoke models.
+  const orderedGroups = orderByAttention(groupsForBand(reviews, "needs_you", attention), attention, itemByID);
+  const modelGroups = buildDecideGroups(orderedGroups, itemByID, attention, (g) => sampleForGroup(g, itemByID));
+  const extGroup = externalDecideGroup(externalNeedsYou, attention);
+  const decideGroups: DecideGroup[] = extGroup ? [extGroup, ...modelGroups] : modelGroups;
+
   const watchingEntries = sortByAge(
     [...groupsForBand(reviews, "watching", attention), ...externalWatching.map(asWatchingEntry)],
     itemByID,
   );
-
-  // The one number nav badge + briefing pill also show, surfaced here so the
-  // operator sees a single consistent "needs you" count across every surface.
-  const attnNeedsYouGroups = num(attention?.counts?.needs_you_groups);
-  const actionableNow = num(attention?.counts?.actionable_now);
-  const fallbackGroups = num(attention?.counts?.fallback_groups);
-
-  const loadedNeedsYouGroups = await loadGroups(needsYouGroups, itemByID);
 
   const allItems = arr(reviews?.items);
   const filedItems = allItems.filter((it) => bandOf(it) === "filed");
@@ -433,91 +215,69 @@ export default async function Reviews() {
   }
   const filedByArea = [...filedByAreaMap.entries()].sort((a, b) => b[1] - a[1]);
 
+  const attnNeedsYouGroups = num(attention?.counts?.needs_you_groups);
+  const actionableNow = num(attention?.counts?.actionable_now);
+  const fallbackGroups = num(attention?.counts?.fallback_groups);
+
   const needsYouItemTotal =
-    loadedNeedsYouGroups.reduce((sum, { group }) => sum + (num(group.count) || arr(group.item_ids).length || 1), 0) +
-    externalNeedsYou.length;
-  const needsYouCardTotal = loadedNeedsYouGroups.length + (externalNeedsYou.length ? 1 : 0);
-  const needsYouEmpty = needsYouCardTotal === 0;
+    modelGroups.reduce((sum, g) => sum + g.count, 0) + externalNeedsYou.length;
+  const empty = decideGroups.length === 0;
 
   return (
     <div className="flex flex-col gap-8">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-tight">Reviews</h1>
-          <p className="mt-0.5 text-[12.5px] text-ink-3">
-            {needsYouEmpty
-              ? `Nothing waits on you. ${filedTotal} record${filedTotal === 1 ? "" : "s"} filed.`
-              : `${needsYouItemTotal} item${needsYouItemTotal === 1 ? "" : "s"} need your decision in ${needsYouCardTotal} card${needsYouCardTotal === 1 ? "" : "s"}.`}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
-          <MonoChip
-            tone="seam"
-            title="compound attention --json · counts.needs_you_groups — the single 'needs you' count the nav badge and briefing pill also show"
-          >
-            {attnNeedsYouGroups.toLocaleString("en-US")} need you
-          </MonoChip>
-          <MonoChip title="compound attention --json · counts.actionable_now — needs-you groups with a wired one-click/batch act">
-            {actionableNow.toLocaleString("en-US")} one-click
-          </MonoChip>
-          <MonoChip
-            tone={fallbackGroups > 0 ? "seam" : "muted"}
-            title="compound attention --json · counts.fallback_groups — groups the projection had to fallback-group (writer debt; the client safety net retires when this hits 0)"
-          >
-            {fallbackGroups.toLocaleString("en-US")} fallback
-          </MonoChip>
-          <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
-          <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
-        </div>
-      </div>
+      <PageHeader
+        breadcrumb="operate / decide"
+        title="Decide"
+        right={
+          <>
+            <MetricChip
+              tone="seam"
+              title="compound attention --json · counts.needs_you_groups — the single 'needs you' count the nav badge and briefing pill also show"
+            >
+              {attnNeedsYouGroups.toLocaleString("en-US")} need you
+            </MetricChip>
+            <MetricChip title="compound attention --json · counts.actionable_now — needs-you groups with a wired one-click/batch act">
+              {actionableNow.toLocaleString("en-US")} one-click
+            </MetricChip>
+            <MetricChip
+              tone={fallbackGroups > 0 ? "seam" : "muted"}
+              title="compound attention --json · counts.fallback_groups — groups the projection had to fallback-group (writer debt; the client safety net retires when this hits 0)"
+            >
+              {fallbackGroups.toLocaleString("en-US")} fallback
+            </MetricChip>
+            <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
+            <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
+          </>
+        }
+      />
 
-      {/* NEEDS YOU — always first: this band renders before anything informational. */}
       <section className="flex flex-col gap-3">
         <div className="flex items-baseline justify-between gap-2">
-          <h2 className="text-[14px] font-semibold text-ink">Needs you</h2>
-          {!needsYouEmpty ? <Chip tone="orange">{needsYouItemTotal}</Chip> : null}
+          <h2 className="text-md font-semibold text-ink">Needs you</h2>
+          <p className="text-xs tabular-nums text-faint">
+            {empty
+              ? `Nothing waits on you · ${filedTotal} filed`
+              : `${needsYouItemTotal.toLocaleString("en-US")} item${needsYouItemTotal === 1 ? "" : "s"} in ${decideGroups.length} decision${decideGroups.length === 1 ? "" : "s"}`}
+          </p>
         </div>
 
-        {needsYouEmpty ? (
-          <EmptyState>Nothing waits on you. {filedTotal} records filed.</EmptyState>
+        {empty ? (
+          <p className="rounded-lg border border-dashed border-hair bg-page px-4 py-8 text-center text-sm text-muted">
+            Clean seam. Nothing waits on you. {filedTotal} record{filedTotal === 1 ? "" : "s"} filed.
+          </p>
         ) : (
-          <>
-            {externalNeedsYou.length ? (
-              <Card
-                title="Shared repos awaiting your call"
-                accent="blue"
-                glyph="E"
-                right={<Chip tone="orange">{externalNeedsYou.length} open</Chip>}
-              >
-                <p className="mb-3 text-[11.5px] text-ink-3">{areaPlain(EXTERNAL_AREA)}</p>
-                <div className="grid gap-3 lg:grid-cols-2">
-                  {externalNeedsYou.map((row) => (
-                    <DecisionCard key={str(row.id)} area={EXTERNAL_AREA} item={row} />
-                  ))}
-                </div>
-              </Card>
-            ) : null}
-
-            {loadedNeedsYouGroups.length ? (
-              <div className="grid gap-3 lg:grid-cols-2">
-                {loadedNeedsYouGroups.map((loaded) => (
-                  <GroupCard key={str(loaded.group.key)} loaded={loaded} itemByID={itemByID} />
-                ))}
-              </div>
-            ) : null}
-          </>
+          <DecideQueue groups={decideGroups} mutationsEnabled={mutationsEnabled} />
         )}
       </section>
 
-      {/* WATCHING — informational holds only: no buttons, no commands. */}
       {watchingEntries.length ? (
         <section className="flex flex-col gap-3">
           <div className="flex items-baseline justify-between gap-2">
-            <h2 className="text-[14px] font-semibold text-ink">Watching</h2>
-            <Chip tone="gray">{watchingEntries.length}</Chip>
+            <h2 className="text-md font-semibold text-ink">Watching</h2>
+            <span className="mono text-2xs tabular-nums text-faint">{watchingEntries.length}</span>
           </div>
-          <p className="text-[11.5px] text-ink-3">Informational holds &mdash; nothing to decide yet, no buttons on purpose.</p>
-          <div className="card overflow-hidden">
+          <p className="text-xs text-faint">Informational holds — nothing to decide yet, no buttons on purpose.</p>
+          <div className="overflow-hidden rounded-lg border border-hair bg-panel">
             {watchingEntries.map((entry, index) => (
               <WatchingRow key={str(entry.key) || str(entry.id) || index} entry={entry} itemByID={itemByID} />
             ))}
@@ -525,11 +285,10 @@ export default async function Reviews() {
         </section>
       ) : null}
 
-      {/* FILED — one calm strip, never actionable. */}
       <section>
         <div className="mb-2 flex items-baseline justify-between gap-2">
-          <h2 className="text-[13px] font-semibold text-ink-2">Filed</h2>
-          <span className="text-[11.5px] text-ink-3">
+          <h2 className="text-sm font-semibold text-muted">Filed</h2>
+          <span className="text-xs tabular-nums text-faint">
             {filedTotal} record{filedTotal === 1 ? "" : "s"} filed
           </span>
         </div>
@@ -539,14 +298,14 @@ export default async function Reviews() {
               <span
                 key={area}
                 title={areaPlain(area)}
-                className="rounded-lg border border-line bg-white px-2.5 py-1 text-[11px] text-ink-3"
+                className="rounded-md border border-hair bg-panel px-2.5 py-1 text-xs text-muted"
               >
-                {area.replace(/-/g, " ")} &middot; {count}
+                {area.replace(/-/g, " ")} <span className="mono tabular-nums text-faint">· {count}</span>
               </span>
             ))}
           </div>
         ) : (
-          <p className="text-[11.5px] text-ink-3">Nothing filed yet.</p>
+          <p className="text-xs text-faint">Nothing filed yet.</p>
         )}
       </section>
     </div>

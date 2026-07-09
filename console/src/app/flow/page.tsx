@@ -1,16 +1,8 @@
 import Link from "next/link";
 
 import { accentColor, Chip, EmptyState, FreshnessChip, StateBadge, type Accent } from "@/components/ui";
-import {
-  ago,
-  arr,
-  getExecutors,
-  getSourceConnections,
-  getWorkbench,
-  runJson,
-  str,
-  type Json,
-} from "@/lib/compound";
+import { arr, getExecutors, getSourceConnections, getWorkbench, runJson, str, type Json } from "@/lib/compound";
+import { ago } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 

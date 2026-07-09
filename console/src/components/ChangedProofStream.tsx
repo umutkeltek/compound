@@ -1,7 +1,8 @@
 import Link from "next/link";
 
 import { Chip, EmptyState, StateBadge } from "@/components/ui";
-import { ago, arr, str, type Json } from "@/lib/compound";
+import { arr, str, type Json } from "@/lib/compound";
+import { ago } from "@/lib/time";
 import { shortText } from "@/lib/work-data";
 import { shortBlockedRefs } from "@/lib/work-labels";
 

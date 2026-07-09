@@ -1,8 +1,13 @@
 import { CopyCmd } from "@/components/CopyCmd";
+import { SourceIntakeButton } from "@/components/SourceIntakeButton";
 import { Card, Chip, EmptyState, FreshnessChip, Stat, type Accent } from "@/components/ui";
-import { ago, arr, getSourceConnections, str, type Json } from "@/lib/compound";
+import { arr, getSourceConnections, str, type Json } from "@/lib/compound";
+import { ago } from "@/lib/time";
+import { consoleMutationsEnabled } from "@/lib/console-mutations";
 
 export const dynamic = "force-dynamic";
+
+const INTAKE_CARD_RE = /^sicard_[a-z0-9]+$/;
 
 function stateTone(value: string): Accent {
   switch (value) {
@@ -71,11 +76,13 @@ function commandText(command: unknown): string {
   return arr(command).map(String).filter(Boolean).map(shellArg).join(" ");
 }
 
-function SourceActionCard({ card }: { card: Json }) {
+function SourceActionCard({ card, mutationsEnabled }: { card: Json; mutationsEnabled: boolean }) {
   const command = commandText(card.command);
   const inputs = arr(card.required_inputs).map(String).filter(Boolean);
   const validation = arr(card.expected_validation).map(String).filter(Boolean);
   const stops = arr(card.stop_conditions).map(String).filter(Boolean);
+  const cardId = str(card.id);
+  const intakeable = INTAKE_CARD_RE.test(cardId);
 
   return (
     <li className="border-t border-line pt-3 first:border-t-0 first:pt-0">
@@ -99,16 +106,15 @@ function SourceActionCard({ card }: { card: Json }) {
       {stops.length ? (
         <p className="mt-1 text-[11.5px] leading-relaxed text-ink-3">Stop if: {stops.slice(0, 2).join("; ")}</p>
       ) : null}
-      {command ? (
-        <div className="mt-2">
-          <CopyCmd cmd={command} compact />
-        </div>
-      ) : null}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {intakeable ? <SourceIntakeButton cardId={cardId} mutationsEnabled={mutationsEnabled} /> : null}
+        {command ? <CopyCmd cmd={command} compact /> : null}
+      </div>
     </li>
   );
 }
 
-function SourceConnectionCard({ connection }: { connection: Json }) {
+function SourceConnectionCard({ connection, mutationsEnabled }: { connection: Json; mutationsEnabled: boolean }) {
   const availability = str(connection.availability) || "unknown";
   const evidenceState = str(connection.evidence_state) || "never_seen";
   const sourceKinds = arr(connection.source_kinds).map(String).filter(Boolean);
@@ -165,7 +171,11 @@ function SourceConnectionCard({ connection }: { connection: Json }) {
             <div className="section-label mb-2">Latest cards</div>
             <ul className="flex flex-col gap-3">
               {cards.map((card) => (
-                <SourceActionCard key={str(card.id) || str(card.kind)} card={card} />
+                <SourceActionCard
+                  key={str(card.id) || str(card.kind)}
+                  card={card}
+                  mutationsEnabled={mutationsEnabled}
+                />
               ))}
             </ul>
           </div>
@@ -179,6 +189,7 @@ export default async function SourcesPage() {
   const projection = await getSourceConnections();
   const connections = arr(projection?.connections);
   const counts = (projection?.counts ?? {}) as Json;
+  const mutationsEnabled = consoleMutationsEnabled();
 
   return (
     <div className="flex flex-col gap-6">
@@ -217,7 +228,11 @@ export default async function SourcesPage() {
       {connections.length ? (
         <div className="grid gap-4 lg:grid-cols-2">
           {connections.map((connection) => (
-            <SourceConnectionCard key={str(connection.id)} connection={connection} />
+            <SourceConnectionCard
+              key={str(connection.id)}
+              connection={connection}
+              mutationsEnabled={mutationsEnabled}
+            />
           ))}
         </div>
       ) : (

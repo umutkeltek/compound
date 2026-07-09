@@ -298,33 +298,10 @@ export const num = (value: any): number =>
 export const str = (value: any): string =>
   typeof value === "string" ? value : "";
 
-/** Timestamps arrive ISO strings, ms, us or ns since epoch. */
-export function toDate(value: any): Date | null {
-  if (typeof value === "string") {
-    if (/^\d+$/.test(value)) return fromEpoch(Number(value));
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? null : d;
-  }
-  if (typeof value === "number") return fromEpoch(value);
-  return null;
-}
-
-function fromEpoch(n: number): Date {
-  if (n > 1e16) return new Date(n / 1e6); // ns
-  if (n > 1e13) return new Date(n / 1e3); // us
-  if (n > 1e11) return new Date(n); // ms
-  return new Date(n * 1000); // s
-}
-
-export function ago(value: any): string {
-  const d = toDate(value);
-  if (!d) return "";
-  const seconds = Math.max(0, (Date.now() - d.getTime()) / 1000);
-  if (seconds < 90) return `${Math.round(seconds)}s ago`;
-  if (seconds < 90 * 60) return `${Math.round(seconds / 60)}m ago`;
-  if (seconds < 36 * 3600) return `${Math.round(seconds / 3600)}h ago`;
-  return `${Math.round(seconds / 86400)}d ago`;
-}
+/** Relative-time helpers live in the client-safe `@/lib/time` module — import
+ * them from there. (No re-export here: this file pulls in node: builtins and the
+ * scripts/*.mjs smokes load it under node --experimental-strip-types, which
+ * cannot resolve extensionless TS imports.) */
 
 /* ---------- fetchers ---------- */
 

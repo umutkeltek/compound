@@ -6,7 +6,8 @@ import { ContinuePanel } from "@/components/ContinuePanel";
 import { EmptyState, FreshnessChip } from "@/components/ui";
 import { attentionNeedsYouGroups, getAttention, type AttentionGroup } from "@/lib/attention";
 import { humanAge } from "@/lib/briefing";
-import { arr, getExecutors, num, runJson, str, toDate, type Json } from "@/lib/compound";
+import { arr, getExecutors, num, runJson, str, type Json } from "@/lib/compound";
+import { toDate } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 

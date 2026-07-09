@@ -1,4 +1,4 @@
-import { ago } from "@/lib/compound";
+import { ago } from "@/lib/time";
 
 /**
  * Every card declares provenance (DESIGN.md §3/§7.8): dot + mono label,

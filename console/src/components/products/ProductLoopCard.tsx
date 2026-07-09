@@ -1,6 +1,6 @@
 import { CopyCmd } from "@/components/CopyCmd";
 import { Chip } from "@/components/ui";
-import { ago } from "@/lib/compound";
+import { ago } from "@/lib/time";
 import {
   formatMetricValue,
   groupSignalsByLens,
