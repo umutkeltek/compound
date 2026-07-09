@@ -59,6 +59,7 @@ var Classification = map[string]Class{
 	"bench":          Leaf, // evaluator organ: read-only scorer over the real surfacing/recall paths; produces evidence reports, owns no object family
 	"breadth":        Leaf,
 	"candidates":     Leaf,
+	"corpus":         Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
 	"release":        Leaf,
 	"reviewartifact": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
