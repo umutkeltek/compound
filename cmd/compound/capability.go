@@ -22,7 +22,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|usage|list|graph|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|usage|list|graph|authority|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -274,6 +274,18 @@ func cmdCapability(args []string) {
 			fmt.Printf("- source_no_promote: %s\n", id)
 		}
 		fmt.Printf("- source_authority: %s\n", auth.ID)
+	case "import-agent-lanes":
+		now := time.Now()
+		registryPath := flag("--registry")
+		overlayPath := flag("--overlay")
+		p := posn(map[string]bool{"--registry": true, "--overlay": true})
+		if registryPath == "" || overlayPath == "" || len(p) != 0 {
+			fmt.Fprintln(os.Stderr, "usage: compound capability import-agent-lanes --registry <registry.ts> --overlay <overlay.json>")
+			os.Exit(2)
+		}
+		report, err := capgraph.ImportAgentLaneProfiles(homePath, registryPath, overlayPath, now)
+		die(err)
+		printJSON(report)
 	case "authority":
 		records, err := capgraph.LoadSourceAuthority(homePath)
 		die(err)
