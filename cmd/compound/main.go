@@ -26,6 +26,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/contract"
+	"compound/internal/corpus"
 	"compound/internal/decisions"
 	"compound/internal/distiller"
 	"compound/internal/envelope"
@@ -146,6 +147,8 @@ func main() {
 		cmdProfiles(os.Args[2:])
 	case "memory":
 		cmdMemory(os.Args[2:])
+	case "corpus":
+		cmdCorpus(os.Args[2:])
 	case "synthesis":
 		cmdSynthesis(os.Args[2:])
 	case "knowledge":
@@ -214,8 +217,10 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory engine-config [--profile generic|memory-cli|gbrain|breadth] [--clear] [--json]"
 	case "bakeoff":
 		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
+	case "search":
+		return "usage: compound memory search --lane L <query> [--k N] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|doctor>"
 	}
 }
 
@@ -300,8 +305,9 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
   compound route plan --capability-class C [--privacy-sensitive] planned lane chain from Compound route authority
-	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
+	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|search --lane L|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
 	              spine memory: candidates, claims, positions, patterns, evidence
+  compound corpus <index --lane L [--rebuild]|doctor --lane L [--json]> rebuildable corpus vector indexes
   compound synthesis sweep [--stage cluster,contradict,corroborate,decay] [--json]
                 memory synthesis reports; contradictions append needs_review markers only; decay files expired parks
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
@@ -1675,6 +1681,12 @@ func cmdMemory(args []string) {
 		cmdMemoryRecall(store, rest)
 	case "bakeoff":
 		cmdMemoryBakeoff(store, rest, memBreadthEngine)
+	case "search":
+		if flag("--lane") == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound memory search --lane L <query> [--k N] [--json]")
+			os.Exit(2)
+		}
+		cmdMemoryCorpusSearch(homePath, rest)
 	case "timeline":
 		claims, err := store.Timeline(pos())
 		die(err)
@@ -1903,6 +1915,7 @@ func cmdMemory(args []string) {
 				ConfigPath:    path,
 				Configured:    cfg.Profile != "",
 				Profile:       cfg.Profile,
+				CorpusLanes:   len(cfg.CorpusLanes),
 			}
 		}
 		die(err)
@@ -1915,6 +1928,9 @@ func cmdMemory(args []string) {
 		fmt.Printf("- configured: %t\n", report.Configured)
 		if report.Profile != "" {
 			fmt.Printf("- profile: %s\n", report.Profile)
+		}
+		if report.CorpusLanes > 0 {
+			fmt.Printf("- corpus_lanes: %d\n", report.CorpusLanes)
 		}
 		if report.Cleared {
 			fmt.Println("- cleared: true")
@@ -1980,6 +1996,9 @@ type memoryEngineConfig struct {
 	// the breadth profile forwards these to the sidecar so semantic recall engages WITHOUT the
 	// operator exporting COMPOUND_BREADTH_EMBED_* in every shell.
 	Embed *memoryEmbedConfig `json:"embed,omitempty" yaml:"embed,omitempty"`
+	// CorpusLanes are class-separated imported-corpus indexes. They are never
+	// ambient memory profiles and never inherit COMPOUND_BREADTH_EMBED_*.
+	CorpusLanes []corpus.LaneConfig `json:"corpus_lanes,omitempty" yaml:"corpus_lanes,omitempty"`
 }
 
 type memoryEmbedConfig struct {
@@ -1994,6 +2013,7 @@ type memoryEngineConfigReport struct {
 	ConfigPath    string `json:"config_path"`
 	Configured    bool   `json:"configured"`
 	Profile       string `json:"profile,omitempty"`
+	CorpusLanes   int    `json:"corpus_lanes,omitempty"`
 	Cleared       bool   `json:"cleared,omitempty"`
 }
 
@@ -2033,7 +2053,32 @@ func loadMemoryEngineConfig(homePath string) (memoryEngineConfig, string, error)
 	}
 	cfg.SchemaVersion = memoryEngineConfigSchemaVersion
 	cfg.Profile = profile
+	if err := validateCorpusLaneConfigs(cfg.CorpusLanes); err != nil {
+		return memoryEngineConfig{}, path, err
+	}
+	for i := range cfg.CorpusLanes {
+		lane, err := corpus.ValidateLaneConfig(cfg.CorpusLanes[i])
+		if err != nil {
+			return memoryEngineConfig{}, path, err
+		}
+		cfg.CorpusLanes[i] = lane
+	}
 	return cfg, path, nil
+}
+
+func validateCorpusLaneConfigs(lanes []corpus.LaneConfig) error {
+	seen := map[string]bool{}
+	for _, lane := range lanes {
+		name := strings.TrimSpace(lane.Lane)
+		if name == "" {
+			return fmt.Errorf("corpus lane name required")
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate corpus lane %q", name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
 
 func writeMemoryEngineConfig(homePath, profile string) (memoryEngineConfigReport, error) {
@@ -2053,6 +2098,9 @@ func writeMemoryEngineConfig(homePath, profile string) (memoryEngineConfigReport
 	// the semantic lane the operator configured.
 	if existing, _, err := loadMemoryEngineConfig(homePath); err == nil && existing.Embed != nil {
 		cfg.Embed = existing.Embed
+	}
+	if existing, _, err := loadMemoryEngineConfig(homePath); err == nil && len(existing.CorpusLanes) > 0 {
+		cfg.CorpusLanes = existing.CorpusLanes
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
