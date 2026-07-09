@@ -59,6 +59,54 @@ func TestRunBenchConvertWritesDeterministicLoadableSuite(t *testing.T) {
 	}
 }
 
+// TestRunBenchConvertIDMapDefaultsToV2 exercises the CLI --id-map surface end-to-end: the default
+// (no --id-map flag) applies v2, an explicit --id-map v1 applies only the original three shapes
+// (no v2 literal overrides), and both print their applied version in the convert summary.
+func TestRunBenchConvertIDMapDefaultsToV2(t *testing.T) {
+	dir := t.TempDir()
+	inPath := filepath.Join(dir, "acceptance.json")
+	syn := `{"schema_version":1,"class_cases":[],` +
+		`"cases":[{"id":"case-mcporter","prompt":"mcporter prompt","required_anywhere":["tool.mcporter"]}]}`
+	if err := os.WriteFile(inPath, []byte(syn), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default (no --id-map): v2 fires, tool.mcporter -> adapter:mcporter (single target, not the pair).
+	defaultOut := filepath.Join(dir, "default.json")
+	var out, errBuf bytes.Buffer
+	if code := runBench([]string{"convert", "acceptance", "--in", inPath, "--out", defaultOut, "--name", "syn"}, &out, &errBuf); code != 0 {
+		t.Fatalf("convert default exit=%d stderr=%s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "id-map: v2") {
+		t.Fatalf("convert summary = %q, want id-map: v2 (default)", out.String())
+	}
+	defaultSuite, err := bench.LoadSuite(defaultOut)
+	if err != nil {
+		t.Fatalf("default suite does not load: %v", err)
+	}
+	if got := defaultSuite.Cases[0].Expected; len(got) != 1 || got[0] != "adapter:mcporter" {
+		t.Fatalf("default (v2) case-mcporter expected = %v, want [adapter:mcporter]", got)
+	}
+
+	// Explicit --id-map v1: only the generic tool-pair rule fires, no v2 override.
+	v1Out := filepath.Join(dir, "v1.json")
+	out.Reset()
+	errBuf.Reset()
+	if code := runBench([]string{"convert", "acceptance", "--in", inPath, "--out", v1Out, "--name", "syn", "--id-map", "v1"}, &out, &errBuf); code != 0 {
+		t.Fatalf("convert v1 exit=%d stderr=%s", code, errBuf.String())
+	}
+	if !strings.Contains(out.String(), "id-map: v1") {
+		t.Fatalf("convert summary = %q, want id-map: v1", out.String())
+	}
+	v1Suite, err := bench.LoadSuite(v1Out)
+	if err != nil {
+		t.Fatalf("v1 suite does not load: %v", err)
+	}
+	if got := v1Suite.Cases[0].Expected; len(got) != 2 || got[0] != "mcp:mcporter" || got[1] != "tool:mcporter" {
+		t.Fatalf("v1 case-mcporter expected = %v, want [mcp:mcporter tool:mcporter] (v2 override must not leak into v1)", got)
+	}
+}
+
 func seedBenchGraph(t *testing.T, home string) {
 	t.Helper()
 	store, err := capgraph.Open(home)

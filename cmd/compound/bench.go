@@ -44,23 +44,29 @@ func benchUsage() string {
 	return "usage:\n" +
 		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent]\n" +
 		"  compound bench compare --before <report.json> --after <report.json> [--json]\n" +
-		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>] [--id-map v1|none]\n" +
+		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>] [--id-map v2|v1|none]\n" +
 		"  compound bench convert golden --in <recall-golden.yaml> --out <suite.json> [--name <suite>]\n" +
 		"    deterministic: same input bytes -> byte-identical suite.\n" +
 		"    " + bench.SplitRuleDoc + "\n" +
 		"    dropped (acceptance): required_policy_for, selected_rule, class_cases, task_spec routing — named with counts, never silent.\n" +
-		"    --id-map (acceptance only, default v1): translates legacy resolver dotted ids to compound\n" +
-		"      graph ids before scoring — skill.agents.shared.<x> -> skill:<x>, recipe.recipes.canonical.<x>.md\n" +
-		"      -> procedure:<x> (dots hyphenated), tool.<x> -> BOTH tool:<x> AND mcp:<x>. must_outrank tool-pair\n" +
-		"      rule: a tool.<x> WINNER emits TWO OutrankAssertion entries (tool:<x> and mcp:<x>, same losers) —\n" +
-		"      an absent one surfaces honestly via absent_from_graph rather than the converter guessing which\n" +
-		"      is real. Forbidden/loser substring patterns translate under the same 3 shapes when the pattern\n" +
-		"      IS one of them (equal to, or prefixed by, one of the three roots); anything else — unmapped-\n" +
-		"      family-shaped patterns and ordinary free-text substrings alike — stays raw, tallied as a single\n" +
-		"      unmapped_patterns total (not broken out by family: most patterns are free text, not ids).\n" +
-		"      --id-map none reproduces the pre-id-map converter byte-for-byte (today's raw dotted-id suite).\n" +
-		"      Every id/pattern the v1 map does not translate is named + counted by family under \"unmapped\" —\n" +
-		"      never silently dropped or silently mismapped; this is the true W5-J9 parity backlog.\n" +
+		"    --id-map (acceptance only, default v2): translates legacy resolver dotted ids to compound\n" +
+		"      graph ids before scoring. v1 shapes: skill.agents.shared.<x> -> skill:<x>, recipe.recipes.\n" +
+		"      canonical.<x>.md -> procedure:<x> (dots hyphenated), tool.<x> -> BOTH tool:<x> AND mcp:<x>.\n" +
+		"      must_outrank tool-pair rule: a tool.<x> WINNER emits TWO OutrankAssertion entries (tool:<x> and\n" +
+		"      mcp:<x>, same losers) — an absent one surfaces honestly via absent_from_graph rather than the\n" +
+		"      converter guessing which is real. Forbidden/loser substring patterns translate under the same\n" +
+		"      shapes when the pattern IS one of them (equal to, or prefixed by, one of the roots); anything\n" +
+		"      else — unmapped-family-shaped patterns and ordinary free-text substrings alike — stays raw,\n" +
+		"      tallied as a single unmapped_patterns total (not broken out by family: most patterns are free\n" +
+		"      text, not ids). v2 = v1 + verified name-variant mappings from the 2026-07-09 Wave-2 parity\n" +
+		"      adjudication: two more generic shapes (skill.codex.skills.<x> / skill.codex.superpowers.<x> ->\n" +
+		"      skill:<x>) plus a small literal table for renames neither shape reaches (duplicate-name\n" +
+		"      disambiguation, frontmatter-name drift, filler-word drift, one tool landed under a different\n" +
+		"      node kind). v2 only ever ADDS matches v1 missed; it never changes a v1 match — v1 stays\n" +
+		"      selectable and byte-stable. --id-map none reproduces the pre-id-map converter byte-for-byte\n" +
+		"      (today's raw dotted-id suite). Every id/pattern the applied version does not translate is named\n" +
+		"      + counted by family under \"unmapped\" — never silently dropped or silently mismapped; this is\n" +
+		"      the true W5-J9 parity backlog.\n" +
 		"    output carries private ids: write it only under $COMPOUND_HOME (e.g. ~/.compound/bench-suites/), never the repo tree."
 }
 
