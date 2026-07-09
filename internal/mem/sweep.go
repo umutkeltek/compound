@@ -668,6 +668,9 @@ func (s *Store) decayExpiredCandidates(all []Candidate, now time.Time) ([]Synthe
 		if c.State != "parked" {
 			continue
 		}
+		if CanonClassOperatorPermanent(EffectiveCanonClass(c.ClaimType, c.CanonClass)) {
+			continue
+		}
 		if !candidateExpired(c, now) {
 			continue
 		}

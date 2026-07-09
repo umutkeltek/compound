@@ -383,6 +383,34 @@ func TestDecaySweepSkipsParkedWithoutExpiry(t *testing.T) {
 	}
 }
 
+func TestDecaySweepSkipsOperatorPermanentCandidateEvenWhenExpired(t *testing.T) {
+	s := newStore(t)
+	c := cand("compound", "operator_decision", "keep human approval for publishing", rfc3339(t0))
+	c.ID = "cand_operator_permanent_expired"
+	c.ClaimType = "decision"
+	c.State = "parked"
+	c.ExpiresAt = rfc3339(t0.AddDate(0, 0, -1))
+	c.CreatedAt = rfc3339(t0.AddDate(0, 0, -2))
+	if err := candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.SynthesisSweep([]string{"decay"}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DecayedCount != 0 {
+		t.Fatalf("operator-permanent candidate must never decay: %+v", report.Decayed)
+	}
+	got, err := s.getCandidate(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "parked" || got.Reason == DecayReasonExpired {
+		t.Fatalf("operator-permanent candidate was filed: %+v", got)
+	}
+}
+
 func parkSeed(t *testing.T, s *Store, expectation CandidateExpectation) string {
 	t.Helper()
 	seed := cand("project:alpha", "operator_stance", "integration risk will matter later", "")
