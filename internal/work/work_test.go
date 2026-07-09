@@ -45,7 +45,7 @@ func TestWorkLifecycleThreadsOneID(t *testing.T) {
 	if _, err := s.Advance(id, AdvanceInput{To: "verifying", ArtifactID: "artifact_timeline", VerificationID: "ver_001"}, fixedNow); err != nil {
 		t.Fatalf("advance verifying: %v", err)
 	}
-	res, err := s.Close(id, CloseInput{Outcome: "completed", MoveType: "memory_delta", Summary: "timeline capability proven", Changed: true, MemoryPromoted: []string{"claim_timeline"}}, fixedNow)
+	res, err := s.Close(id, CloseInput{Outcome: "completed", MoveType: "memory_delta", Actor: "claude_code", Summary: "timeline capability proven", Changed: true, MemoryPromoted: []string{"claim_timeline"}}, fixedNow)
 	if err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestRecordActionGate(t *testing.T) {
 	if _, err := s.RecordAction(w.ID, okAI, mkPD("pol_x", "act_other", "allow", nil), fixedNow); err == nil {
 		t.Error("decision for a different action should be rejected")
 	}
-	closed, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Summary: "wrote file", Changed: true}, fixedNow)
+	closed, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "outward_delta", Actor: "claude_code", Summary: "wrote file", Changed: true}, fixedNow)
 	if err != nil {
 		t.Fatalf("close: %v", err)
 	}

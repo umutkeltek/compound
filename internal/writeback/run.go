@@ -78,6 +78,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 		closeRes, closeErr := workStore.Close(w.ID, work.CloseInput{
 			Outcome:  "failed",
 			MoveType: "audit_only",
+			Actor:    in.Actor,
 			Summary:  in.BlockedSummary(checked.Status, checked.ID),
 			Changed:  true,
 		}, in.Now)
@@ -109,6 +110,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 	closeRes, err := workStore.Close(w.ID, work.CloseInput{
 		Outcome:  "completed",
 		MoveType: in.MoveType,
+		Actor:    in.Actor,
 		Summary:  in.AllowedSummary(checked.Status, checked.ID),
 		Changed:  true,
 	}, in.Now)

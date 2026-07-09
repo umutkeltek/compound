@@ -4124,6 +4124,7 @@ func cmdReviewsRecordFinding(args []string) {
 		if _, err := store.Close(workID, work.CloseInput{
 			Outcome:   "completed",
 			MoveType:  "control_plane_repair",
+			Actor:     "compound reviews",
 			Summary:   "Review finding recorded through StandingGrant",
 			Changed:   true,
 			ProofRefs: []string{target},

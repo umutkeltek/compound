@@ -548,6 +548,7 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	res, err := deps.Store.Close(fx.WorkID, work.CloseInput{
 		Outcome:                    outcome,
 		MoveType:                   moveType,
+		Actor:                      fx.Harness,
 		Summary:                    fx.Summary,
 		Changed:                    strings.TrimSpace(fx.Summary) != "",
 		UsedCapabilities:           fx.Used,

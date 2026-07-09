@@ -502,11 +502,18 @@ func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelop
 // --- close ---
 
 type CloseInput struct {
-	Outcome                    string // completed | failed | cancelled
-	MoveType                   string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
-	Actor                      string
-	Summary                    string
-	Changed                    bool
+	Outcome  string // completed | failed | cancelled
+	MoveType string // outward_delta | memory_delta | rule_delta | control_plane_repair | audit_only
+	Actor    string
+	Summary  string
+	Changed  bool
+	// Steal and StealReason are the close-gate lease escape hatch: closing a work held by a
+	// different actor is refused unless Steal is true AND StealReason is non-empty. A steal
+	// records the prior holder + reason + stealing actor on the envelope trail (see
+	// leaseHolderStatusFor / recordLeaseSteal in lease_close.go). Coordination is
+	// advisory-with-teeth, not a deadlock machine — a dead lane must never brick an envelope.
+	Steal                      bool
+	StealReason                string
 	UsedCapabilities           []string
 	MissedCapabilities         []string
 	FalseTriggeredCapabilities []string
@@ -559,6 +566,9 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 		actor = "codex"
 	}
 	if err := heldReleaseOperatorError(w.State, in.Outcome, actor); err != nil {
+		return res, err
+	}
+	if err := s.leaseHolderCloseGate(w, actor, in, now); err != nil {
 		return res, err
 	}
 	if !oneOf(in.MoveType, envelope.MoveTypes) {
