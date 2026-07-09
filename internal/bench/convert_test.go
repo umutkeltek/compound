@@ -7,7 +7,8 @@ import (
 
 // syntheticAcceptanceJSON is a fully SYNTHETIC acceptance file (no real tool/product ids or prompt
 // text): fields are deliberately out of sorted order so the determinism + sorting invariants are
-// exercised, not merely asserted on already-sorted input.
+// exercised, not merely asserted on already-sorted input. Its ids ("node:X") deliberately match
+// NONE of the v1 id-map shapes, so it doubles as the id-map-inert fixture for backward-compat tests.
 const syntheticAcceptanceJSON = `{
   "schema_version": 1,
   "class_cases": [
@@ -44,15 +45,105 @@ const syntheticAcceptanceJSON = `{
   ]
 }`
 
+// preIDMapSyntheticSuiteJSON is the EXACT byte output the converter produced for
+// syntheticAcceptanceJSON before the id-map feature existed (captured from the unmodified
+// pre-change ConvertAcceptance(data, "syn") via a throwaway harness run, byte for byte). It is the
+// oracle for falsifier 2: `--id-map none` must still produce this, proving true backward compat
+// rather than a reimplementation that merely "looks the same."
+const preIDMapSyntheticSuiteJSON = `{
+  "suite": "syn",
+  "dropped": [
+    {
+      "field": "required_policy_for",
+      "count": 2,
+      "reason": "resolver-internal: only the resolver attaches policy; condition B (SurfaceForContext) does not evaluate it — Wave-2 exclusion kept"
+    },
+    {
+      "field": "selected_rule",
+      "count": 3,
+      "reason": "resolver-internal rule id; not a surfacing assertion"
+    },
+    {
+      "field": "class_cases",
+      "count": 2,
+      "reason": "classifier check (prompt→expected_class); out of the capability-surfacing scope"
+    },
+    {
+      "field": "task_spec_routing_preference",
+      "count": 0,
+      "reason": "task_spec routing preference (capability_route/avoid) is not a surfacing assertion; case converted via its raw prompt"
+    }
+  ],
+  "cases": [
+    {
+      "id": "case-alpha",
+      "kind": "capability",
+      "task": "alpha prompt text",
+      "expected": [
+        "node:alpha"
+      ],
+      "lane": "exact",
+      "split": "held_out"
+    },
+    {
+      "id": "case-beta",
+      "kind": "capability",
+      "task": "beta prompt text",
+      "expected": [
+        "node:alpha",
+        "node:beta"
+      ],
+      "lane": "exact",
+      "split": "held_in",
+      "forbidden": {
+        "n": 3,
+        "contains": [
+          "alpha",
+          "zeta"
+        ]
+      },
+      "must_outrank": [
+        {
+          "winner": "node:alpha",
+          "loser_contains": [
+            "gamma"
+          ]
+        },
+        {
+          "winner": "node:beta",
+          "loser_contains": [
+            "alpha",
+            "zeta"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "case-gamma",
+      "kind": "capability",
+      "task": "gamma prompt text",
+      "expected": [
+        "node:gamma"
+      ],
+      "lane": "exact",
+      "split": "held_in"
+    }
+  ]
+}
+`
+
 // TestConvertAcceptanceDeterministic falsifies nondeterminism: converting the same input bytes
 // twice yields byte-identical suites, and the output is actually SORTED (cases by id, expected +
 // forbidden + outrank slices sorted) — so "deterministic" is not vacuously true on pre-sorted data.
+// Run under --id-map none: these assertions encode the pre-id-map converter's exact shape, so they
+// double as part of the backward-compat proof (see TestConvertAcceptanceNoneByteIdenticalToPreChange
+// for the literal byte comparison).
 func TestConvertAcceptanceDeterministic(t *testing.T) {
-	a, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn")
+	a, _, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn", IDMapNone)
 	if err != nil {
 		t.Fatalf("convert a: %v", err)
 	}
-	b, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn")
+	b, _, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn", IDMapNone)
 	if err != nil {
 		t.Fatalf("convert b: %v", err)
 	}
@@ -91,11 +182,48 @@ func TestConvertAcceptanceDeterministic(t *testing.T) {
 	}
 }
 
+// TestConvertAcceptanceNoneByteIdenticalToPreChange falsifies a regression in backward compat:
+// --id-map none must reproduce the pre-id-map converter's marshaled bytes EXACTLY (see
+// preIDMapSyntheticSuiteJSON's provenance comment), not merely "equivalent" output.
+func TestConvertAcceptanceNoneByteIdenticalToPreChange(t *testing.T) {
+	suite, report, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn", IDMapNone)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got, err := MarshalSuite(suite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != preIDMapSyntheticSuiteJSON {
+		t.Fatalf("id-map none diverged from pre-change converter:\n--got--\n%s\n--want--\n%s", got, preIDMapSyntheticSuiteJSON)
+	}
+	if report.Version != IDMapNone || len(report.UnmappedIDFamilies) != 0 || report.UnmappedPatterns != 0 {
+		t.Fatalf("id-map none report = %+v, want version=none and zero accounting (mapping did not run)", report)
+	}
+
+	// Empty idMap defaults to v1, NOT none — confirm that default changes the ids ("node:*" ids stay
+	// raw either way since they match no v1 shape, so assert via report.Version instead).
+	_, defaultReport, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn", "")
+	if err != nil {
+		t.Fatalf("convert default: %v", err)
+	}
+	if defaultReport.Version != IDMapV1 {
+		t.Fatalf("default id-map version = %q, want %q", defaultReport.Version, IDMapV1)
+	}
+}
+
+// TestConvertAcceptanceRejectsUnknownIDMap falsifies silent acceptance of a typo'd --id-map value.
+func TestConvertAcceptanceRejectsUnknownIDMap(t *testing.T) {
+	if _, _, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn", "v2"); err == nil {
+		t.Fatal("expected unknown id-map version to error")
+	}
+}
+
 // TestConvertAcceptanceDropAccounting falsifies silent truncation: each droppable class is counted
 // exactly, and a case whose only extra assertions are droppable (selected_rule + required_policy_for)
 // still converts, carrying its expected ids with no forbidden/outrank.
 func TestConvertAcceptanceDropAccounting(t *testing.T) {
-	suite, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn")
+	suite, _, err := ConvertAcceptance([]byte(syntheticAcceptanceJSON), "syn", IDMapNone)
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -126,6 +254,219 @@ func TestConvertAcceptanceDropAccounting(t *testing.T) {
 	}
 	if alpha.Forbidden != nil || len(alpha.MustOutrank) != 0 {
 		t.Fatalf("case-alpha should assert nothing beyond expected, got forbidden=%+v outrank=%+v", alpha.Forbidden, alpha.MustOutrank)
+	}
+}
+
+// --- v1 id-map falsifiers -------------------------------------------------------------------
+
+// syntheticV1ShapesJSON exercises all three known v1 shapes plus a tool.<x> that must pair-expand
+// in both a plain expected id and a must_outrank winner. All ids/prompts are synthetic.
+const syntheticV1ShapesJSON = `{
+  "schema_version": 1,
+  "class_cases": [],
+  "cases": [
+    {
+      "id": "case-shapes",
+      "prompt": "shapes prompt",
+      "required_anywhere": [
+        "skill.agents.shared.example.widget",
+        "recipe.recipes.canonical.example.playbook.md",
+        "tool.example.thing"
+      ],
+      "must_outrank": [
+        {"winner": "tool.example.thing", "loser_contains": ["skill.agents.shared.noise", "unrelated_word"]}
+      ]
+    },
+    {
+      "id": "case-bare",
+      "prompt": "bare prompt",
+      "required_anywhere": ["skill.agents.shared", "tool.simple"]
+    }
+  ]
+}`
+
+// TestConvertAcceptanceV1MapsKnownShapes falsifies a neutered map: each of the three documented v1
+// shapes must map to its documented target, dots hyphenated, and a bare-root pattern/id (no leaf)
+// must still map (e.g. "skill.agents.shared" alone -> "skill:").
+func TestConvertAcceptanceV1MapsKnownShapes(t *testing.T) {
+	suite, report, err := ConvertAcceptance([]byte(syntheticV1ShapesJSON), "syn-shapes", IDMapV1)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if report.Version != IDMapV1 {
+		t.Fatalf("report version = %q, want %q", report.Version, IDMapV1)
+	}
+
+	var shapes, bare Case
+	for _, c := range suite.Cases {
+		switch c.ID {
+		case "case-shapes":
+			shapes = c
+		case "case-bare":
+			bare = c
+		}
+	}
+
+	wantShapesExpected := []string{
+		"mcp:example-thing",
+		"procedure:example-playbook",
+		"skill:example-widget",
+		"tool:example-thing",
+	}
+	if !reflect.DeepEqual(shapes.Expected, wantShapesExpected) {
+		t.Fatalf("case-shapes expected = %v, want %v", shapes.Expected, wantShapesExpected)
+	}
+
+	wantBareExpected := []string{"mcp:simple", "skill:", "tool:simple"}
+	if !reflect.DeepEqual(bare.Expected, wantBareExpected) {
+		t.Fatalf("case-bare expected = %v, want %v (bare-root skill.agents.shared -> skill:)", bare.Expected, wantBareExpected)
+	}
+
+	// A tool.<x> winner pair-expands into two OutrankAssertion entries sharing the mapped losers.
+	if len(shapes.MustOutrank) != 2 {
+		t.Fatalf("case-shapes must_outrank = %+v, want 2 entries (tool-pair rule)", shapes.MustOutrank)
+	}
+	wantWinners := []string{"mcp:example-thing", "tool:example-thing"}
+	gotWinners := []string{shapes.MustOutrank[0].Winner, shapes.MustOutrank[1].Winner}
+	if !reflect.DeepEqual(gotWinners, wantWinners) {
+		t.Fatalf("case-shapes must_outrank winners = %v, want %v", gotWinners, wantWinners)
+	}
+	wantLosers := []string{"skill:noise", "unrelated_word"}
+	for _, a := range shapes.MustOutrank {
+		if !reflect.DeepEqual(a.LoserContains, wantLosers) {
+			t.Fatalf("winner %q loser_contains = %v, want %v", a.Winner, a.LoserContains, wantLosers)
+		}
+	}
+	// "unrelated_word" matched no known shape -> tallied as an unmapped pattern.
+	if report.UnmappedPatterns != 1 {
+		t.Fatalf("unmapped patterns = %d, want 1 (unrelated_word)", report.UnmappedPatterns)
+	}
+}
+
+// syntheticUnmappedFamiliesJSON has exactly one id per unmapped family (the ones the Wave-2 doc
+// named literally, plus a genuinely novel namespace to prove "anything else" is also named, not
+// dumped into a black-hole "other" bucket) so the family tally is exactly falsifiable.
+const syntheticUnmappedFamiliesJSON = `{
+  "schema_version": 1,
+  "class_cases": [],
+  "cases": [
+    {"id": "case-route", "prompt": "p", "required_anywhere": ["route.skills_sh.example.route"]},
+    {"id": "case-function", "prompt": "p", "required_anywhere": ["function.example"]},
+    {"id": "case-memory", "prompt": "p", "required_anywhere": ["memory.example"]},
+    {"id": "case-capgroup", "prompt": "p", "required_anywhere": ["capability_group.example"]},
+    {"id": "case-agent", "prompt": "p", "required_anywhere": ["agent.example"]},
+    {"id": "case-external", "prompt": "p", "required_anywhere": ["external.example"]},
+    {"id": "case-skillcodex", "prompt": "p", "required_anywhere": ["skill.codex.skills.example"]},
+    {"id": "case-novel", "prompt": "p", "required_anywhere": ["widget.example"]}
+  ]
+}`
+
+// TestConvertAcceptanceV1UnmappedFamiliesCounted is falsifier 4: a fabricated acceptance file with
+// one id per unmapped family must count each one, by family, and none may be silently dropped
+// (still present raw in Expected) or silently mismapped (raw id unchanged).
+func TestConvertAcceptanceV1UnmappedFamiliesCounted(t *testing.T) {
+	suite, report, err := ConvertAcceptance([]byte(syntheticUnmappedFamiliesJSON), "syn-unmapped", IDMapV1)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	want := map[string]int{
+		"route.skills_sh":  1,
+		"function":         1,
+		"memory":           1,
+		"capability_group": 1,
+		"agent":            1,
+		"external":         1,
+		"skill.codex":      1, // distinct from the mapped skill.agents.shared shape
+		"widget":           1, // novel namespace, still named (not lumped into "other")
+	}
+	got := map[string]int{}
+	for _, d := range report.UnmappedIDFamilies {
+		got[d.Field] = d.Count
+		if d.Reason == "" {
+			t.Fatalf("unmapped family %q has no reason", d.Field)
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unmapped id families = %v, want %v", got, want)
+	}
+
+	// none silently dropped: every raw id is still present, unchanged, in its case's Expected.
+	rawByCaseID := map[string]string{
+		"case-route":      "route.skills_sh.example.route",
+		"case-function":   "function.example",
+		"case-memory":     "memory.example",
+		"case-capgroup":   "capability_group.example",
+		"case-agent":      "agent.example",
+		"case-external":   "external.example",
+		"case-skillcodex": "skill.codex.skills.example",
+		"case-novel":      "widget.example",
+	}
+	for _, c := range suite.Cases {
+		want, ok := rawByCaseID[c.ID]
+		if !ok {
+			t.Fatalf("unexpected case %q", c.ID)
+		}
+		if !reflect.DeepEqual(c.Expected, []string{want}) {
+			t.Fatalf("case %q expected = %v, want raw passthrough [%s]", c.ID, c.Expected, want)
+		}
+	}
+}
+
+// syntheticPatternTranslationJSON exercises the substring-pattern rule: a pattern that IS a known
+// family prefix translates; a known-unmapped-family-shaped pattern and a plain free-text word both
+// stay raw and get tallied under UnmappedPatterns (a single total, not broken out by family).
+const syntheticPatternTranslationJSON = `{
+  "schema_version": 1,
+  "class_cases": [],
+  "cases": [
+    {
+      "id": "case-patterns",
+      "prompt": "p",
+      "required_anywhere": ["skill.agents.shared.anchor"],
+      "forbidden_top_n_contains": {
+        "n": 5,
+        "contains": ["skill.agents.shared.leaf", "route.skills_sh.thing", "genericword"]
+      }
+    }
+  ]
+}`
+
+// TestConvertAcceptanceV1PatternTranslation falsifies both halves of the pattern rule: a
+// known-family-prefix substring translates (dots hyphenated, prefix swapped), and everything else —
+// whether namespace-shaped-but-unmapped or plain free text — is left raw and counted as one total.
+func TestConvertAcceptanceV1PatternTranslation(t *testing.T) {
+	suite, report, err := ConvertAcceptance([]byte(syntheticPatternTranslationJSON), "syn-patterns", IDMapV1)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	c := suite.Cases[0]
+	wantContains := []string{"genericword", "route.skills_sh.thing", "skill:leaf"}
+	if c.Forbidden == nil || !reflect.DeepEqual(c.Forbidden.Contains, wantContains) {
+		t.Fatalf("forbidden.contains = %+v, want %v", c.Forbidden, wantContains)
+	}
+	if report.UnmappedPatterns != 2 {
+		t.Fatalf("unmapped patterns = %d, want 2 (route.skills_sh.thing, genericword)", report.UnmappedPatterns)
+	}
+}
+
+// TestConvertAcceptanceV1Deterministic falsifies v1-mode nondeterminism: two v1 conversions of the
+// same input produce byte-identical suites AND identical accounting.
+func TestConvertAcceptanceV1Deterministic(t *testing.T) {
+	suiteA, reportA, err := ConvertAcceptance([]byte(syntheticUnmappedFamiliesJSON), "syn-unmapped", IDMapV1)
+	if err != nil {
+		t.Fatalf("convert a: %v", err)
+	}
+	suiteB, reportB, err := ConvertAcceptance([]byte(syntheticUnmappedFamiliesJSON), "syn-unmapped", IDMapV1)
+	if err != nil {
+		t.Fatalf("convert b: %v", err)
+	}
+	ab, _ := MarshalSuite(suiteA)
+	bb, _ := MarshalSuite(suiteB)
+	if string(ab) != string(bb) {
+		t.Fatalf("v1 convert not byte-deterministic")
+	}
+	if !reflect.DeepEqual(reportA, reportB) {
+		t.Fatalf("v1 id-map report not deterministic: %+v vs %+v", reportA, reportB)
 	}
 }
 
@@ -188,7 +529,7 @@ func TestConvertRejectsWrongSchema(t *testing.T) {
 	if _, err := ConvertGolden([]byte(syntheticAcceptanceJSON), "x"); err == nil {
 		t.Fatal("expected golden convert of acceptance json to fail on schema_version")
 	}
-	if _, err := ConvertAcceptance([]byte(`{"schema_version":2,"cases":[]}`), "x"); err == nil {
+	if _, _, err := ConvertAcceptance([]byte(`{"schema_version":2,"cases":[]}`), "x", IDMapV1); err == nil {
 		t.Fatal("expected acceptance convert to reject schema_version 2")
 	}
 }

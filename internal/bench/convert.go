@@ -29,6 +29,237 @@ const AcceptanceSchemaVersion = 1
 // GoldenSchemaVersion is the schema_version the recall-golden bakeoff file must carry.
 const GoldenSchemaVersion = "compound.memory_bakeoff_queries.v0.1"
 
+// IDMap version identifiers for ConvertAcceptance's idMap parameter / the CLI --id-map flag.
+// IDMapNone reproduces the pre-id-map converter byte-for-byte: every id/substring stays the
+// resolver's raw dotted form. IDMapV1 is the default: known legacy-resolver id shapes are
+// translated to their compound-graph-native form (see the id-map doc block below); everything else
+// passes through raw AND is counted — named, never silent.
+const (
+	IDMapNone = "none"
+	IDMapV1   = "v1"
+)
+
+// --- v1 canonical id map ------------------------------------------------------------------------
+//
+// Reverse-engineered and verified against the live compound graph (Wave-2 measurement,
+// 2026-07-07; confirmed against real node ids on 2026-07-09 — skill ids are hyphenated slugs
+// under skill:, e.g. skill:web-design-guidelines; recipe filenames become procedure: slugs, e.g.
+// procedure:agent-harness-doctrine; tool ids are bare slugs under tool:/mcp:, e.g. tool:agent-browser).
+// This is CODE, not config: a versioned map + a pure function, no graph access, deterministic.
+//
+// Three known shapes translate; everything else is raw passthrough, counted by family:
+//   - skill.agents.shared[.<rest>]        -> skill:<rest, dots hyphenated>
+//   - recipe.recipes.canonical.<rest>.md  -> procedure:<rest, dots hyphenated>
+//   - tool[.<rest>]                       -> BOTH tool:<rest, dots hyphenated> AND mcp:<same>
+//
+// Tool-pair rule (must_outrank): a tool.<X> WINNER maps to two ids, not one — this converter emits
+// TWO separate OutrankAssertion entries (Winner=tool:<X> and Winner=mcp:<X>, identical mapped
+// LoserContains) rather than picking a single winner. Rationale: OutrankAssertion already folds an
+// absent winner into absent_from_graph as a violation, never a silent pass (bench.go), so if only
+// one of the pair actually exists in the graph the other surfaces honestly as a parity gap instead
+// of the converter guessing which one is "real." Same rule applies to every tool.<X> reference:
+// expected ids, forbidden_top_n_contains.contains, and must_outrank[].loser_contains all expand to
+// the tool:/mcp: pair.
+//
+// Substring patterns (forbidden_top_n_contains.contains, must_outrank[].loser_contains) translate
+// under the SAME three shapes above (a pattern equal to, or prefixed by, one of the three roots) —
+// e.g. "skill.agents.shared" alone (no leaf) is a valid pattern and maps to "skill:" (matches any
+// skill id as a substring, mirroring "starts with skill.agents.shared." pre-mapping). Anything else
+// — including known-unmapped-family-shaped patterns (route.skills_sh., external., ...) and plain
+// free-text substrings that were never id-shaped at all (e.g. "browser", "aso") — is left raw and
+// tallied in IDMapReport.UnmappedPatterns as a single total, NOT broken out by family: unlike
+// expected/must_outrank ids (which are always legacy-resolver ids), most forbidden/loser substrings
+// are deliberately free text matched against surfaced node names, so a per-family breakdown would
+// mostly report singleton buckets of ordinary English words — noise, not signal. The total count
+// still makes every raw pattern visible and auditable (never silent).
+
+const (
+	skillAgentsSharedPrefix = "skill.agents.shared"
+	recipeCanonicalPrefix   = "recipe.recipes.canonical"
+	recipeCanonicalSuffix   = ".md"
+	toolPrefix              = "tool"
+)
+
+// isSkillAgentsShared reports whether s is exactly the skill.agents.shared root or is rooted under
+// it (skill.agents.shared.<rest>), returning the dotted rest (possibly empty).
+func isSkillAgentsShared(s string) (rest string, ok bool) {
+	if s == skillAgentsSharedPrefix {
+		return "", true
+	}
+	if strings.HasPrefix(s, skillAgentsSharedPrefix+".") {
+		return strings.TrimPrefix(s, skillAgentsSharedPrefix+"."), true
+	}
+	return "", false
+}
+
+// isRecipeCanonicalMD reports whether s is a recipe.recipes.canonical.<rest>.md id, returning the
+// dotted rest between the root and the .md suffix. Requires both a non-root prefix and the .md
+// suffix — every real recipe id carries both; a bare root or a missing suffix does not translate.
+func isRecipeCanonicalMD(s string) (rest string, ok bool) {
+	if !strings.HasPrefix(s, recipeCanonicalPrefix+".") || !strings.HasSuffix(s, recipeCanonicalSuffix) {
+		return "", false
+	}
+	rest = strings.TrimSuffix(strings.TrimPrefix(s, recipeCanonicalPrefix+"."), recipeCanonicalSuffix)
+	if rest == "" {
+		return "", false
+	}
+	return rest, true
+}
+
+// isToolPrefix reports whether s is exactly "tool" or is rooted under it (tool.<rest>), returning
+// the dotted rest (possibly empty).
+func isToolPrefix(s string) (rest string, ok bool) {
+	if s == toolPrefix {
+		return "", true
+	}
+	if strings.HasPrefix(s, toolPrefix+".") {
+		return strings.TrimPrefix(s, toolPrefix+"."), true
+	}
+	return "", false
+}
+
+// hyphenate converts a legacy resolver leaf's dot-separated words into the compound graph's
+// hyphenated slug convention (e.g. "app.mechanics.lenses" -> "app-mechanics-lenses").
+func hyphenate(s string) string {
+	return strings.ReplaceAll(s, ".", "-")
+}
+
+// translateID applies the v1 canonical id map to a single legacy dotted id or substring pattern.
+// matched=true means a known shape fired and mapped holds its translation(s) — 1 entry, except a
+// tool.<X> shape which always yields 2 (tool:<X>, mcp:<X> — the tool-pair rule above). matched=false
+// means no known v1 shape applies; mapped holds the ORIGINAL string unchanged (raw passthrough) so
+// every call site can use the return value directly without a separate no-op branch, and the caller
+// tallies the miss via familyOf.
+func translateID(s string) (mapped []string, matched bool) {
+	if rest, ok := isSkillAgentsShared(s); ok {
+		return []string{"skill:" + hyphenate(rest)}, true
+	}
+	if rest, ok := isRecipeCanonicalMD(s); ok {
+		return []string{"procedure:" + hyphenate(rest)}, true
+	}
+	if rest, ok := isToolPrefix(s); ok {
+		h := hyphenate(rest)
+		return []string{"tool:" + h, "mcp:" + h}, true
+	}
+	return []string{s}, false
+}
+
+// familyOf computes the accounting bucket for a legacy id/pattern that matched none of the v1
+// known-mapped shapes (translateID returned matched=false). route/skill/recipe/capability
+// namespaces use their first TWO dot segments — a single segment would be too coarse (e.g. bare
+// "skill" would conflate the codex skill corpus with any other skill.* namespace); every other
+// namespace uses its first segment, matching the family names the Wave-2 measurement doc named
+// literally (route.skills_sh, function, memory, capability_group, agent, external). An id with no
+// dot at all is its own family verbatim.
+func familyOf(id string) string {
+	segs := strings.SplitN(id, ".", 3)
+	if len(segs) == 1 {
+		return segs[0]
+	}
+	switch segs[0] {
+	case "route", "skill", "recipe", "capability":
+		return segs[0] + "." + segs[1]
+	default:
+		return segs[0]
+	}
+}
+
+// unmappedReason is the DropRecord reason attached to every unmapped-id-family tally entry.
+const unmappedReason = "no v1 canonical id mapping; raw legacy id passthrough (named + counted, never silent — W5-J9 backlog)"
+
+// familyRecords turns a family->count tally into sorted DropRecords (by family name), so the
+// printed/returned accounting is deterministic regardless of map iteration order.
+func familyRecords(counts map[string]int) []DropRecord {
+	if len(counts) == 0 {
+		return nil
+	}
+	families := make([]string, 0, len(counts))
+	for f := range counts {
+		families = append(families, f)
+	}
+	sort.Strings(families)
+	out := make([]DropRecord, 0, len(families))
+	for _, fam := range families {
+		out = append(out, DropRecord{Field: fam, Count: counts[fam], Reason: unmappedReason})
+	}
+	return out
+}
+
+// IDMapReport is convert-time accounting for the v1 canonical id map: which legacy ids/patterns had
+// no known v1 mapping and so passed through raw, named and counted by family. It is intentionally
+// NOT part of Suite (Suite's schema is owned by bench.go and stays spec-faithful to the evaluator);
+// it is a side channel the convert CLI prints as its "unmapped" summary block. Zero value / Version
+// == IDMapNone means mapping did not run (nothing to account for).
+type IDMapReport struct {
+	Version            string
+	UnmappedIDFamilies []DropRecord // ids from expected/must_outrank winners with no v1 mapping, by family
+	UnmappedPatterns   int          // forbidden/loser_contains substrings with no v1 mapping (single total; see doc block above)
+}
+
+// applyIDMapToCase rewrites a raw-converted Case's id-bearing fields (Expected, Forbidden.Contains,
+// MustOutrank) through the v1 canonical id map, in place, and folds every unmapped id/pattern into
+// the running tallies. Every rewritten slice is deduped+resorted after mapping (a tool.<X> id/
+// pattern expands to two entries, and unrelated raw ids can collide post-hyphenation), preserving
+// the suite's overall sorted-slices determinism guarantee.
+func applyIDMapToCase(c *Case, idFamilyCounts map[string]int, unmappedPatterns *int) {
+	expected := map[string]bool{}
+	for _, raw := range c.Expected {
+		mapped, ok := translateID(raw)
+		if !ok {
+			idFamilyCounts[familyOf(raw)]++
+		}
+		for _, m := range mapped {
+			expected[m] = true
+		}
+	}
+	c.Expected = sortedKeys(expected)
+
+	if c.Forbidden != nil {
+		forbidden := map[string]bool{}
+		for _, raw := range c.Forbidden.Contains {
+			mapped, ok := translateID(raw)
+			if !ok {
+				*unmappedPatterns++
+			}
+			for _, m := range mapped {
+				forbidden[m] = true
+			}
+		}
+		c.Forbidden.Contains = sortedKeys(forbidden)
+	}
+
+	if len(c.MustOutrank) > 0 {
+		out := make([]OutrankAssertion, 0, len(c.MustOutrank))
+		for _, a := range c.MustOutrank {
+			losers := map[string]bool{}
+			for _, raw := range a.LoserContains {
+				mapped, ok := translateID(raw)
+				if !ok {
+					*unmappedPatterns++
+				}
+				for _, m := range mapped {
+					losers[m] = true
+				}
+			}
+			sortedLosers := sortedKeys(losers)
+			winners, ok := translateID(a.Winner)
+			if !ok {
+				idFamilyCounts[familyOf(a.Winner)]++
+			}
+			for _, w := range winners {
+				out = append(out, OutrankAssertion{Winner: w, LoserContains: append([]string(nil), sortedLosers...)})
+			}
+		}
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Winner != out[j].Winner {
+				return out[i].Winner < out[j].Winner
+			}
+			return strings.Join(out[i].LoserContains, ",") < strings.Join(out[j].LoserContains, ",")
+		})
+		c.MustOutrank = out
+	}
+}
+
 // Drop-accounting field names (stable strings; also the keys a reader greps for).
 const (
 	dropRequiredPolicyFor = "required_policy_for"
@@ -89,16 +320,30 @@ type acceptanceOutrank struct {
 
 // ConvertAcceptance parses the capability-resolver acceptance JSON and returns the bench suite plus
 // the drop-accounting. It is deterministic: cases sorted by id, every id/substring slice sorted.
-func ConvertAcceptance(data []byte, suiteName string) (Suite, error) {
+//
+// idMap selects the id-mapping pass applied AFTER the raw, spec-faithful conversion below. Empty
+// string defaults to IDMapV1. IDMapNone skips the pass entirely, byte-for-byte preserving the
+// pre-id-map converter's raw dotted-id output; IDMapV1 rewrites every id-bearing field through the
+// v1 canonical id map (see the doc block above translateID) and returns the unmapped-id/pattern
+// accounting as the second result.
+func ConvertAcceptance(data []byte, suiteName string, idMap string) (Suite, IDMapReport, error) {
+	switch idMap {
+	case "":
+		idMap = IDMapV1
+	case IDMapV1, IDMapNone:
+	default:
+		return Suite{}, IDMapReport{}, fmt.Errorf("id-map must be %q or %q, got %q", IDMapV1, IDMapNone, idMap)
+	}
+
 	var f acceptanceFile
 	if err := json.Unmarshal(data, &f); err != nil {
-		return Suite{}, fmt.Errorf("parse acceptance json: %w", err)
+		return Suite{}, IDMapReport{}, fmt.Errorf("parse acceptance json: %w", err)
 	}
 	if f.SchemaVersion != AcceptanceSchemaVersion {
-		return Suite{}, fmt.Errorf("acceptance schema_version must be %d, got %d", AcceptanceSchemaVersion, f.SchemaVersion)
+		return Suite{}, IDMapReport{}, fmt.Errorf("acceptance schema_version must be %d, got %d", AcceptanceSchemaVersion, f.SchemaVersion)
 	}
 	if len(f.Cases) == 0 {
-		return Suite{}, fmt.Errorf("acceptance file has no cases")
+		return Suite{}, IDMapReport{}, fmt.Errorf("acceptance file has no cases")
 	}
 
 	var (
@@ -109,7 +354,7 @@ func ConvertAcceptance(data []byte, suiteName string) (Suite, error) {
 	)
 	for i, ac := range f.Cases {
 		if strings.TrimSpace(ac.ID) == "" {
-			return Suite{}, fmt.Errorf("acceptance cases[%d] missing id", i)
+			return Suite{}, IDMapReport{}, fmt.Errorf("acceptance cases[%d] missing id", i)
 		}
 		expected := map[string]bool{}
 		for _, id := range ac.RequiredAnywhere {
@@ -125,7 +370,7 @@ func ConvertAcceptance(data []byte, suiteName string) (Suite, error) {
 			}
 		}
 		if len(expected) == 0 {
-			return Suite{}, fmt.Errorf("acceptance case %q has no required_anywhere/required_top_n ids to convert", ac.ID)
+			return Suite{}, IDMapReport{}, fmt.Errorf("acceptance case %q has no required_anywhere/required_top_n ids to convert", ac.ID)
 		}
 		c := Case{
 			ID:       ac.ID,
@@ -157,6 +402,20 @@ func ConvertAcceptance(data []byte, suiteName string) (Suite, error) {
 	}
 	sort.Slice(cases, func(i, j int) bool { return cases[i].ID < cases[j].ID })
 
+	// The id map is a POST-processing pass over the raw, spec-faithful cases built above — the raw
+	// build path is untouched by idMap, so IDMapNone is byte-identical to the pre-id-map converter
+	// by construction (same code, no branch), not by a separately maintained parallel path.
+	report := IDMapReport{Version: idMap}
+	if idMap == IDMapV1 {
+		idFamilyCounts := map[string]int{}
+		unmappedPatterns := 0
+		for i := range cases {
+			applyIDMapToCase(&cases[i], idFamilyCounts, &unmappedPatterns)
+		}
+		report.UnmappedIDFamilies = familyRecords(idFamilyCounts)
+		report.UnmappedPatterns = unmappedPatterns
+	}
+
 	dropped := []DropRecord{
 		{Field: dropRequiredPolicyFor, Count: droppedPolicyFor, Reason: "resolver-internal: only the resolver attaches policy; condition B (SurfaceForContext) does not evaluate it — Wave-2 exclusion kept"},
 		{Field: dropSelectedRule, Count: droppedSelected, Reason: "resolver-internal rule id; not a surfacing assertion"},
@@ -166,9 +425,9 @@ func ConvertAcceptance(data []byte, suiteName string) (Suite, error) {
 
 	suite := Suite{Suite: suiteName, Dropped: dropped, Cases: cases}
 	if err := suite.validate(); err != nil {
-		return Suite{}, err
+		return Suite{}, IDMapReport{}, err
 	}
-	return suite, nil
+	return suite, report, nil
 }
 
 func convertOutrank(in []acceptanceOutrank) []OutrankAssertion {
