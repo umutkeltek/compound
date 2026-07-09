@@ -1,8 +1,12 @@
+import type { ReactNode } from "react";
+
 import { CopyCmd } from "@/components/CopyCmd";
 import { DecisionCard } from "@/components/DecisionCard";
 import { DecisionDetailsDialog } from "@/components/DecisionDetailsDialog";
+import { FreshnessChip } from "@/components/kit";
 import { PanelApplyButton } from "@/components/PanelApplyButton";
-import { Card, Chip, EmptyState, FreshnessChip } from "@/components/ui";
+import { Card, Chip, EmptyState } from "@/components/ui";
+import { getAttention, type AttentionReport } from "@/lib/attention";
 import { ago, arr, getReviews, num, reviewCommand, str, toDate, type Json } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import type { DecisionFormSpec, PlainLanguage } from "@/lib/decision-registry";
@@ -22,10 +26,11 @@ type LoadedGroup = {
 };
 
 /* ---------- band + grouping ----------
- * areaOf/bandOf/groupsForBand moved to @/lib/review-data so the nav "Decide"
- * badge (needsYouGroupCount) counts the exact same needs_you groups this page
- * renders below, instead of a second drifting heuristic. See that file for
- * the fallback-grouping implementation (§1/§3/§5 of the redesign plan).
+ * areaOf/bandOf/groupsForBand live in @/lib/review-data. Phase 2 cutover: the
+ * needs-you band now renders in the ONE `compound attention --json` projection's
+ * leverage order (orderByAttention below), and the client fallback-grouping in
+ * groupsForBand only fires for items that projection has NOT grouped — the
+ * documented writer-debt safety net (retire when counts.fallback_groups == 0).
  */
 
 function buildItemIndex(reviews: Json | null): Map<string, Json> {
@@ -102,6 +107,54 @@ function sortByAge(rows: Json[], itemByID: Map<string, Json>): Json[] {
   return rows
     .slice()
     .sort((a, b) => (groupCreatedAt(a, itemByID) || "9999").localeCompare(groupCreatedAt(b, itemByID) || "9999"));
+}
+
+/* ---------- ordering follows the ONE attention projection ----------
+ * The needs-you band renders in the `compound attention --json` leverage order
+ * (join by group key, then area). Groups the projection has no row for — the
+ * client fallback safety net for un-annotated areas — sort last, oldest first,
+ * so writer-debt items still surface but never outrank a ranked decision. This
+ * is what makes nav / briefing / this page agree on order, not just on count.
+ */
+function orderByAttention(groups: Json[], attention: AttentionReport | null, itemByID: Map<string, Json>): Json[] {
+  const rankByKey = new Map<string, number>();
+  const rankByArea = new Map<string, number>();
+  arr(attention?.groups).forEach((g: Json, index: number) => {
+    const key = str(g.key);
+    if (key && !rankByKey.has(key)) rankByKey.set(key, index);
+    const area = str(g.area);
+    if (area && !rankByArea.has(area)) rankByArea.set(area, index);
+  });
+  const UNRANKED = Number.MAX_SAFE_INTEGER;
+  const rankOf = (group: Json): number => {
+    const byKey = rankByKey.get(str(group.key));
+    if (byKey != null) return byKey;
+    return rankByArea.get(areaOf(group)) ?? UNRANKED;
+  };
+  return groups
+    .map((group, index) => ({ group, index, rank: rankOf(group) }))
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      const ageA = groupCreatedAt(a.group, itemByID) || "9999";
+      const ageB = groupCreatedAt(b.group, itemByID) || "9999";
+      if (ageA !== ageB) return ageA.localeCompare(ageB);
+      return a.index - b.index;
+    })
+    .map((entry) => entry.group);
+}
+
+/** Small mono metric chip for the page header — kit tokens, tabular. */
+function MonoChip({ children, title, tone = "muted" }: { children: ReactNode; title?: string; tone?: "muted" | "seam" }) {
+  return (
+    <span
+      title={title}
+      className={`mono inline-flex items-center gap-1 rounded-pill border border-hair bg-soft px-2.5 py-0.5 text-2xs font-semibold tabular-nums ${
+        tone === "seam" ? "text-seam" : "text-muted"
+      }`}
+    >
+      {children}
+    </span>
+  );
 }
 
 /* ---------- change 2: real verb buttons for safe batch acts ---------- */
@@ -344,18 +397,29 @@ function WatchingRow({ entry, itemByID }: { entry: Json; itemByID: Map<string, J
 }
 
 export default async function Reviews() {
-  const reviews = await getReviews();
+  const [reviews, attention] = await Promise.all([getReviews(), getAttention()]);
   const itemByID = buildItemIndex(reviews);
 
   const externalRows = externalReviewRows(reviews);
   const externalNeedsYou = externalRows.filter((r) => bandOf(r) !== "watching");
   const externalWatching = externalRows.filter((r) => bandOf(r) === "watching");
 
-  const needsYouGroups = sortByAge(groupsForBand(reviews, "needs_you"), itemByID);
-  const watchingEntries = sortByAge(
-    [...groupsForBand(reviews, "watching"), ...externalWatching.map(asWatchingEntry)],
+  // Order + fallback now defer to the ONE attention projection.
+  const needsYouGroups = orderByAttention(
+    groupsForBand(reviews, "needs_you", attention),
+    attention,
     itemByID,
   );
+  const watchingEntries = sortByAge(
+    [...groupsForBand(reviews, "watching", attention), ...externalWatching.map(asWatchingEntry)],
+    itemByID,
+  );
+
+  // The one number nav badge + briefing pill also show, surfaced here so the
+  // operator sees a single consistent "needs you" count across every surface.
+  const attnNeedsYouGroups = num(attention?.counts?.needs_you_groups);
+  const actionableNow = num(attention?.counts?.actionable_now);
+  const fallbackGroups = num(attention?.counts?.fallback_groups);
 
   const loadedNeedsYouGroups = await loadGroups(needsYouGroups, itemByID);
 
@@ -377,7 +441,7 @@ export default async function Reviews() {
 
   return (
     <div className="flex flex-col gap-8">
-      <div className="flex items-end justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight">Reviews</h1>
           <p className="mt-0.5 text-[12.5px] text-ink-3">
@@ -386,7 +450,25 @@ export default async function Reviews() {
               : `${needsYouItemTotal} item${needsYouItemTotal === 1 ? "" : "s"} need your decision in ${needsYouCardTotal} card${needsYouCardTotal === 1 ? "" : "s"}.`}
           </p>
         </div>
-        <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
+        <div className="flex flex-wrap items-center gap-1.5 sm:justify-end">
+          <MonoChip
+            tone="seam"
+            title="compound attention --json · counts.needs_you_groups — the single 'needs you' count the nav badge and briefing pill also show"
+          >
+            {attnNeedsYouGroups.toLocaleString("en-US")} need you
+          </MonoChip>
+          <MonoChip title="compound attention --json · counts.actionable_now — needs-you groups with a wired one-click/batch act">
+            {actionableNow.toLocaleString("en-US")} one-click
+          </MonoChip>
+          <MonoChip
+            tone={fallbackGroups > 0 ? "seam" : "muted"}
+            title="compound attention --json · counts.fallback_groups — groups the projection had to fallback-group (writer debt; the client safety net retires when this hits 0)"
+          >
+            {fallbackGroups.toLocaleString("en-US")} fallback
+          </MonoChip>
+          <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
+          <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
+        </div>
       </div>
 
       {/* NEEDS YOU — always first: this band renders before anything informational. */}

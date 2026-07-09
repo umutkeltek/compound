@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { AttentionReport } from "@/lib/attention";
 import { arr, COMPOUND_HOME, Json, num, privateFallbacksEnabled, reviewCommand, str } from "@/lib/compound";
 import { parseReviewDraftYaml, ReviewDraftFields } from "@/lib/review-yaml";
 
@@ -87,13 +88,27 @@ function fallbackGroups(rows: Json[]): Json[] {
 
 /**
  * Backend groups for one band, plus a client-side fallback grouping of any
- * band-matching items the Go projection left ungrouped — so nothing that
- * needs a decision silently drops off the page just because its area's
- * grouping isn't wired up on the backend yet.
+ * band-matching items NO projection grouped — so nothing that needs a decision
+ * silently drops off the page just because its area's grouping isn't wired up
+ * on the backend yet.
+ *
+ * writer-debt safety net — retire when attention.counts.fallback_groups == 0.
+ * The fallback only fires for items neither `compound reviews --json` groups
+ * NOR the `compound attention --json` projection groups: every item attention
+ * covers is authoritative and left to the one projection. Pass `attention` so
+ * that as the projection's per-area grouping grows, this client net shrinks in
+ * lockstep instead of double-emitting a group the projection already owns.
  */
-export function groupsForBand(reviews: Json | null, band: "needs_you" | "watching"): Json[] {
+export function groupsForBand(
+  reviews: Json | null,
+  band: "needs_you" | "watching",
+  attention?: AttentionReport | null,
+): Json[] {
   const backend = arr(reviews?.groups).filter((g: Json) => bandOf(g) === band && areaOf(g) !== EXTERNAL_AREA);
-  const covered = new Set(backend.flatMap((g) => arr(g.item_ids).map(String)));
+  const covered = new Set<string>([
+    ...backend.flatMap((g) => arr(g.item_ids).map(String)),
+    ...arr(attention?.groups).flatMap((g) => arr((g as Json).item_ids).map(String)),
+  ]);
   const leftover = arr(reviews?.items).filter((it: Json) => {
     if (bandOf(it) !== band) return false;
     if (areaOf(it) === EXTERNAL_AREA) return false;
@@ -101,19 +116,6 @@ export function groupsForBand(reviews: Json | null, band: "needs_you" | "watchin
     return Boolean(id) && !covered.has(id);
   });
   return [...backend, ...fallbackGroups(leftover)];
-}
-
-/**
- * The number of "needs you" cards the Reviews page's Needs You section would
- * render: backend-declared groups + client fallback-grouped leftovers, plus
- * external-repo-intake rows counted as one card (they render as one Card with
- * a DecisionCard grid, not one card per row). Cheap — no per-item detail
- * fetch — safe for a nav badge computed on every page load.
- */
-export function needsYouGroupCount(reviews: Json | null): number {
-  const nonExternalGroups = groupsForBand(reviews, "needs_you");
-  const externalNeedsYou = externalReviewRows(reviews).filter((r) => bandOf(r) !== "watching");
-  return nonExternalGroups.length + (externalNeedsYou.length ? 1 : 0);
 }
 
 export function externalReviewYamlPath(id: string): string {

@@ -4,8 +4,9 @@ import type { ReactNode } from "react";
 import { summarizeMoveTypeMix, type MoveTypeGroup } from "@/components/ChangedProofStream";
 import { ContinuePanel } from "@/components/ContinuePanel";
 import { EmptyState, FreshnessChip } from "@/components/ui";
+import { attentionNeedsYouGroups, getAttention, type AttentionGroup } from "@/lib/attention";
 import { humanAge } from "@/lib/briefing";
-import { arr, getExecutors, getReviews, num, runJson, str, toDate, type Json } from "@/lib/compound";
+import { arr, getExecutors, num, runJson, str, toDate, type Json } from "@/lib/compound";
 
 export const dynamic = "force-dynamic";
 
@@ -22,11 +23,6 @@ function hoursSince(value: unknown): number | null {
   const date = toDate(value);
   if (!date) return null;
   return (Date.now() - date.getTime()) / 3_600_000;
-}
-
-function ageDays(value: unknown): number {
-  const h = hoursSince(value);
-  return h == null ? 0 : Math.max(0, h / 24);
 }
 
 function isPastWarn(value: unknown): boolean {
@@ -89,7 +85,12 @@ function dateLabel(now: Date): string {
   }).format(now);
 }
 
-/* ---------- decide groups ---------- */
+/* ---------- decide groups ----------
+ * Selection + ranking are gone from the client: the `compound attention --json`
+ * projection already emits needs-you groups in leverage order and names the
+ * single highest-leverage `top`. This just shapes an AttentionGroup for the
+ * Decide list card — WHERE the data comes from changed, the layout did not.
+ */
 
 type DecideGroup = {
   key: string;
@@ -98,38 +99,18 @@ type DecideGroup = {
   verb: string;
   count: number;
   created: unknown;
-  contextLabel: string;
 };
 
-function needsYouGroups(reviews: Json | null): Json[] {
-  return arr(reviews?.groups).filter((group) => str(group.band) === "needs_you");
-}
-
-function toDecideGroup(group: Json): DecideGroup {
-  const summary = str(group.operator_summary);
+function toDecideGroup(group: AttentionGroup): DecideGroup {
+  const summary = group.operator_summary;
   return {
-    key: str(group.key) || str(group.area),
-    headline: trimWords(summary || str(group.context_label) || "A decision is waiting on you.", 60),
-    unlock: str(group.operator_unlock),
+    key: group.key || group.area,
+    headline: trimWords(summary || group.area || "A decision is waiting on you.", 60),
+    unlock: group.operator_unlock,
     verb: askVerb(summary),
-    count: num(group.count),
-    created: group.sample?.created_at,
-    contextLabel: str(group.context_label),
+    count: group.count,
+    created: group.oldest_created_at,
   };
-}
-
-/** Highest-leverage group: max(count × max(age_days, 1)). Deterministic. */
-function selectInsight(groups: Json[]): Json | null {
-  let best: Json | null = null;
-  let bestScore = -1;
-  for (const group of groups) {
-    const score = num(group.count) * Math.max(ageDays(group.sample?.created_at), 1);
-    if (score > bestScore) {
-      bestScore = score;
-      best = group;
-    }
-  }
-  return best;
 }
 
 /* ---------- agents ---------- */
@@ -199,15 +180,22 @@ function AttentionPill({ count, oldest }: { count: number; oldest: unknown }) {
   );
 }
 
-function Insight({ group, runningAgents }: { group: Json | null; runningAgents: number }) {
-  const subject = str(group?.context_label);
-  const unlock = str(group?.operator_unlock);
+/** The headline. Plain-language: the projection's `top.operator_summary` is the
+ * sentence; `top.operator_unlock` is the consequence line. No client ranking. */
+function Insight({ top, runningAgents }: { top: AttentionGroup | null; runningAgents: number }) {
+  const summary = str(top?.operator_summary);
+  const unlock = str(top?.operator_unlock);
   return (
     <p className="my-[52px] max-w-[44ch] text-[24px] font-medium leading-[1.45] tracking-[-0.01em] text-balance text-ink">
-      {group && subject ? (
+      {top && summary ? (
         <>
-          Clearing <strong className="font-[650] text-emerald-700">{subject}</strong>
-          {unlock ? <> — {unlock}.</> : <> clears the highest-leverage decision waiting on you.</>}
+          {summary}
+          {unlock ? (
+            <>
+              {" "}
+              <strong className="font-[650] text-emerald-700">→ {unlock}.</strong>
+            </>
+          ) : null}
         </>
       ) : (
         <>
@@ -427,8 +415,8 @@ export default async function Dashboard() {
   // the exec timeout). The plain projection is instant and already carries
   // `counts.by_state`, per-candidate `created_at`, and `generated_at` — all the
   // briefing needs.
-  const [reviews, executors, workbench, memory] = await Promise.all([
-    getReviews(),
+  const [attention, executors, workbench, memory] = await Promise.all([
+    getAttention(),
     getExecutors(),
     runJson(["workbench", "--json", "--recent", "500"]),
     runJson(["memory", "candidates", "--json"]),
@@ -438,12 +426,15 @@ export default async function Dashboard() {
 
   const now = new Date();
 
-  // Decide + insight from the grouped reviews projection.
-  const needsYou = needsYouGroups(reviews);
-  const insightGroup = selectInsight(needsYou);
-  const decideGroups = needsYou.slice(0, 6).map(toDecideGroup);
-  const oldestNeedsYou = needsYou
-    .map((group) => toDate(group.sample?.created_at))
+  // Decide + headline come from the ONE attention projection — no client ranking.
+  // Groups arrive already leverage-sorted; `top` is the single highest-leverage
+  // gate; `counts.needs_you_groups` is the number every surface must agree on.
+  const needsYouGroups = attentionNeedsYouGroups(attention);
+  const top = attention?.top ?? needsYouGroups[0] ?? null;
+  const needsYouGroupCount = attention?.counts?.needs_you_groups ?? needsYouGroups.length;
+  const decideGroups = needsYouGroups.slice(0, 6).map(toDecideGroup);
+  const oldestNeedsYou = needsYouGroups
+    .map((group) => toDate(group.oldest_created_at))
     .filter((date): date is Date => Boolean(date))
     .sort((a, b) => a.getTime() - b.getTime())[0];
 
@@ -466,7 +457,7 @@ export default async function Dashboard() {
   ).length;
 
   const stamps: { label: string; generatedAt: string; source: string }[] = [
-    { label: "Decide", generatedAt: str(reviews?.generated_at), source: "compound reviews --json" },
+    { label: "Decide", generatedAt: str(attention?.generated_at), source: "compound attention --json" },
     { label: "Agents", generatedAt: str(executors?.generated_at), source: "compound executors --json" },
     { label: "World Δ", generatedAt: str(workbench?.generated_at), source: "compound workbench --json --recent 500" },
     { label: "Knows", generatedAt: str(memory?.generated_at), source: "compound memory candidates --json" },
@@ -479,19 +470,19 @@ export default async function Dashboard() {
           <h1 className="text-[30px] font-[650] tracking-[-0.015em] text-ink">{greeting(now)}</h1>
           <div className="mt-1 text-[13px] text-ink-3">{dateLabel(now)}</div>
         </div>
-        <AttentionPill count={needsYou.length} oldest={oldestNeedsYou} />
+        <AttentionPill count={needsYouGroupCount} oldest={oldestNeedsYou} />
       </header>
 
       <section className="mt-8">
         <ContinuePanel workbench={workbench} open={arr(workbench?.open)} />
       </section>
 
-      <Insight group={insightGroup} runningAgents={runningAgents} />
+      <Insight top={top} runningAgents={runningAgents} />
 
       <div className="grid gap-7 lg:grid-cols-[minmax(0,3fr)_minmax(300px,2fr)] lg:items-start">
         <section>
           <SectionLabel>Decide</SectionLabel>
-          <DecideCard groups={decideGroups} total={needsYou.length} />
+          <DecideCard groups={decideGroups} total={needsYouGroupCount} />
         </section>
 
         <div className="flex flex-col gap-10">
@@ -504,7 +495,7 @@ export default async function Dashboard() {
             <SectionLabel>World Δ · 7 days</SectionLabel>
             <WorldMindCard
               recent={recent}
-              topSubject={str(insightGroup?.context_label)}
+              topSubject={str(top?.area).replace(/-/g, " ")}
               memoryCounts={memoryCounts}
               promotedThisWeek={promotedThisWeek}
             />

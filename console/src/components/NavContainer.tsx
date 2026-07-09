@@ -1,21 +1,26 @@
 import { Nav } from "@/components/Nav";
-import { getReviews, getWorkbench, num } from "@/lib/compound";
-import { needsYouGroupCount } from "@/lib/review-data";
+import { attentionNeedsYouGroups, getAttention } from "@/lib/attention";
 
 /**
- * Server wrapper for Nav: fetches the badge counts through the existing
- * runJson TTL memo (so this doesn't slow every page — same cached
- * `compound reviews --json` / `compound workbench --json` calls other
- * pages already make) and hands plain numbers to the client Nav.
+ * Server wrapper for Nav: reads badge counts from the ONE attention projection
+ * (`compound attention --json`) through the existing runJson TTL memo.
  *
- * Decide badge = needs_you group count (interim source: reviews groups,
- * until Phase 2 cuts every consumer over to `compound attention --json`).
- * Work badge = counts.needs_claim from the workbench projection — already
- * computed server-side there, so this is a free read off an existing fetch.
+ * Phase 2 cutover: the badge — and EVERY other "what needs you" consumer
+ * (briefing headline + Decide list, Reviews band ordering) — MUST read this
+ * same projection. Do not reintroduce a second client-side "needs me"
+ * heuristic; that divergence is the drift this phase deleted.
+ *
+ * - Decide badge = `counts.needs_you_groups` (system-wide, all sources).
+ * - Work badge = sum of counts over needs-you groups sourced from the
+ *   workbench. This is identical today to the old `workbench.counts.needs_claim`
+ *   (both = 3 live), but it is now read off the single projection so there is
+ *   one source of truth instead of two fetches that could drift.
  */
 export async function NavContainer() {
-  const [reviews, workbench] = await Promise.all([getReviews(), getWorkbench()]);
-  const decideCount = needsYouGroupCount(reviews);
-  const workCount = num(workbench?.counts?.needs_claim);
+  const attention = await getAttention();
+  const decideCount = attention?.counts?.needs_you_groups ?? 0;
+  const workCount = attentionNeedsYouGroups(attention)
+    .filter((group) => group.source === "workbench")
+    .reduce((sum, group) => sum + group.count, 0);
   return <Nav decideCount={decideCount} workCount={workCount} />;
 }

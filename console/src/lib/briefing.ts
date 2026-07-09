@@ -1,48 +1,10 @@
-export type BriefingGateCandidate = {
-  id: string;
-  title: string;
-  consequence: string;
-  downstreamWorkCount: number;
-  createdAt?: string | number | Date | null;
-  source?: string;
-};
-
-export type BriefingInsight = BriefingGateCandidate & {
-  ageMs: number | null;
-};
-
-function ageMs(value: BriefingGateCandidate["createdAt"]): number | null {
-  if (value == null || value === "") return null;
-  const date = value instanceof Date ? value : new Date(value);
-  const ms = date.getTime();
-  if (Number.isNaN(ms)) return null;
-  return Date.now() - ms;
-}
-
-/**
- * Select the pending gate whose clearing unblocks the most downstream work.
- * Age is only a deterministic tie-breaker after leverage.
+/*
+ * Client-side leverage ranking lived here (`selectHighestLeverageGate` + its
+ * BriefingGateCandidate/BriefingInsight types + `ageMs`). Phase 2 deleted it:
+ * ranking is now the server-side job of `compound attention --json`, whose
+ * `top` group IS the highest-leverage gate. The briefing consumes that
+ * directly. Only the age-formatting helpers below remain (pure presentation).
  */
-export function selectHighestLeverageGate(
-  candidates: BriefingGateCandidate[],
-): BriefingInsight | null {
-  const ranked = candidates
-    .filter((candidate) => candidate.downstreamWorkCount > 0)
-    .map((candidate) => ({ ...candidate, ageMs: ageMs(candidate.createdAt) }))
-    .sort((a, b) => {
-      if (b.downstreamWorkCount !== a.downstreamWorkCount) {
-        return b.downstreamWorkCount - a.downstreamWorkCount;
-      }
-      if (a.ageMs != null && b.ageMs != null && b.ageMs !== a.ageMs) {
-        return b.ageMs - a.ageMs;
-      }
-      if (a.ageMs != null && b.ageMs == null) return -1;
-      if (a.ageMs == null && b.ageMs != null) return 1;
-      return a.title.localeCompare(b.title);
-    });
-
-  return ranked[0] ?? null;
-}
 
 export function humanAge(value: unknown): string {
   const date = value instanceof Date ? value : value ? new Date(value as string | number) : null;
