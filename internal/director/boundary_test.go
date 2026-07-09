@@ -56,6 +56,12 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		"work/work/",            // enclosing run WorkEnvelope snapshot (closed immediately)
 		"work/leases/",          // run WorkEnvelope lease lifecycle (part of the same store)
 		"events/",               // run ActionIntent/PolicyDecision/Receipt/Transition + work event log
+		// DELIBERATE allowlist extension: a harness-edit proposal (7th class)
+		// additionally emits ONE propose-only operator review card per proposal
+		// here. It is a review artifact that mutates no owner state and admits
+		// nothing; the surface is exercised by
+		// TestHarnessEditProposeApplyWritesCardConfined.
+		"reviews/harness-edit-proposals/",
 	}
 
 	var escaped []string
