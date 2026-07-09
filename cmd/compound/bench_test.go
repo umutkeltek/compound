@@ -232,3 +232,57 @@ func TestRunBenchCompareRegressionGate(t *testing.T) {
 		t.Fatalf("expected exit 0 on no regression, got %d\nstderr=%s", code, errBuf.String())
 	}
 }
+
+// TestRunBenchCompareSuiteMismatchGate is the apples-to-oranges falsifier: comparing two DIFFERENT
+// suites (equal metrics, no regression) must exit nonzero and report accept=false — a gate that can
+// accept a mismatched comparison is not trustworthy. --allow-suite-mismatch records the delta past
+// the gate (exit 0) but Accept still reports the semantic truth (false).
+func TestRunBenchCompareSuiteMismatchGate(t *testing.T) {
+	dir := t.TempDir()
+	before := bench.Report{
+		Suite:   "capability-suite",
+		Splits:  map[string]bench.Metrics{bench.SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, bench.SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
+		Overall: bench.Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
+	}
+	after := before              // identical metrics...
+	after.Suite = "memory-suite" // ...but a DIFFERENT suite
+	beforePath := filepath.Join(dir, "before.json")
+	afterPath := filepath.Join(dir, "after.json")
+	for path, r := range map[string]bench.Report{beforePath: before, afterPath: after} {
+		data, _ := json.MarshalIndent(r, "", "  ")
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out, errBuf bytes.Buffer
+	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterPath, "--json"}, &out, &errBuf); code == 0 {
+		t.Fatalf("expected nonzero exit on suite mismatch with equal metrics, got 0\nstderr=%s", errBuf.String())
+	}
+	var cmp bench.CompareReport
+	if err := json.Unmarshal(out.Bytes(), &cmp); err != nil {
+		t.Fatalf("decode compare json: %v\nraw=%s", err, out.String())
+	}
+	if !cmp.SuiteMismatch {
+		t.Fatalf("expected suite_mismatch=true, got false")
+	}
+	if cmp.Accept {
+		t.Fatalf("suite mismatch must force accept=false, got true")
+	}
+	if cmp.Regressed {
+		t.Fatalf("equal metrics must not report regressed=true: %+v", cmp)
+	}
+
+	// Escape hatch: the operator may record the delta past the gate, but Accept stays false.
+	out.Reset()
+	errBuf.Reset()
+	if code := runBench([]string{"compare", "--before", beforePath, "--after", afterPath, "--json", "--allow-suite-mismatch"}, &out, &errBuf); code != 0 {
+		t.Fatalf("expected exit 0 with --allow-suite-mismatch, got %d\nstderr=%s", code, errBuf.String())
+	}
+	if err := json.Unmarshal(out.Bytes(), &cmp); err != nil {
+		t.Fatalf("decode compare json (allow): %v\nraw=%s", err, out.String())
+	}
+	if !cmp.SuiteMismatch || cmp.Accept {
+		t.Fatalf("--allow-suite-mismatch must keep suite_mismatch=true/accept=false, got mismatch=%v accept=%v", cmp.SuiteMismatch, cmp.Accept)
+	}
+}

@@ -571,13 +571,15 @@ type CompareReport struct {
 	Overall        SplitDelta   `json:"overall"`
 	Regressed      bool         `json:"regressed"`        // any split regressed => reject
 	RegressedSplit []string     `json:"regressed_splits"` // which splits regressed
-	Accept         bool         `json:"accept"`           // !Regressed
-	SuiteMismatch  bool         `json:"suite_mismatch"`   // before/after are different suites — comparison is apples-to-oranges
+	Accept         bool         `json:"accept"`           // !Regressed && !SuiteMismatch
+	SuiteMismatch  bool         `json:"suite_mismatch"`   // before/after are different suites — comparison is apples-to-oranges; never Accept
 }
 
 // Compare produces the per-split delta and the accept verdict. The accept rule is: accept ONLY
-// if NEITHER split regressed on hit@5 or MRR. Overfitting the held-in set at the cost of
-// held-out (or vice versa) is exactly the failure this gate exists to catch.
+// if NEITHER split regressed on hit@5 or MRR AND before/after are the same suite. Overfitting the
+// held-in set at the cost of held-out (or vice versa) is exactly the failure this gate exists to
+// catch; a suite mismatch is a different failure — an apples-to-oranges comparison that must never
+// be accepted even when the metrics happen to hold.
 func Compare(before, after Report) CompareReport {
 	cr := CompareReport{
 		Schema:         CompareSchemaVersion,
@@ -596,7 +598,11 @@ func Compare(before, after Report) CompareReport {
 		cr.Splits = append(cr.Splits, d)
 	}
 	cr.Overall = splitDelta("overall", before.Overall, after.Overall)
-	cr.Accept = !cr.Regressed
+	// A suite mismatch is apples-to-oranges: the gate must not accept it even when no split
+	// regressed. Regressed stays purely about metric movement, so a caller can still tell "a metric
+	// moved the wrong way" apart from "the wrong suite was compared". The CLI may still record the
+	// delta past an explicit --allow-suite-mismatch, but Accept reflects the semantic truth.
+	cr.Accept = !cr.Regressed && !cr.SuiteMismatch
 	return cr
 }
 

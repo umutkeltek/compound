@@ -326,6 +326,37 @@ func TestCompareFlagsHeldOutRegression(t *testing.T) {
 	}
 }
 
+// TestCompareRejectsSuiteMismatch is the apples-to-oranges falsifier: two reports with the SAME
+// metrics but DIFFERENT suites must report suite_mismatch=true and accept=false — without leaking
+// into Regressed, which stays purely about metric movement. The same suite with equal metrics
+// still accepts (control).
+func TestCompareRejectsSuiteMismatch(t *testing.T) {
+	before := Report{
+		Suite:   "capability-suite",
+		Splits:  map[string]Metrics{SplitHeldIn: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}, SplitHeldOut: {Cases: 5, Hit1: 1, Hit5: 1, MRR: 1}},
+		Overall: Metrics{Cases: 10, Hit1: 1, Hit5: 1, MRR: 1},
+	}
+	after := before
+	after.Suite = "memory-suite"
+
+	cmp := Compare(before, after)
+	if !cmp.SuiteMismatch {
+		t.Fatalf("expected suite_mismatch=true for different suites")
+	}
+	if cmp.Accept {
+		t.Fatalf("suite mismatch must force accept=false, got true")
+	}
+	if cmp.Regressed {
+		t.Fatalf("equal metrics must not report regressed=true; Regressed is about metric movement only")
+	}
+
+	// Control: same suite, equal metrics accepts.
+	same := Compare(before, before)
+	if same.SuiteMismatch || !same.Accept {
+		t.Fatalf("matching suite with equal metrics must accept: mismatch=%v accept=%v", same.SuiteMismatch, same.Accept)
+	}
+}
+
 // TestForbiddenTopNRedGreen is the negative-assertion falsifier: a forbidden substring that
 // surfaces inside the top-n is recorded as a violation (RED); with the offending node removed the
 // same assertion is clean (GREEN). The positive expected id is a DIFFERENT still-present node so

@@ -43,7 +43,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 func benchUsage() string {
 	return "usage:\n" +
 		"  compound bench run --suite <file> [--home <dir>] [--json] [--allow-absent]\n" +
-		"  compound bench compare --before <report.json> --after <report.json> [--json]\n" +
+		"  compound bench compare --before <report.json> --after <report.json> [--json] [--allow-suite-mismatch]\n" +
 		"  compound bench convert acceptance --in <acceptance.json> --out <suite.json> [--name <suite>] [--id-map v2|v1|none]\n" +
 		"  compound bench convert golden --in <recall-golden.yaml> --out <suite.json> [--name <suite>]\n" +
 		"    deterministic: same input bytes -> byte-identical suite.\n" +
@@ -218,7 +218,7 @@ func runBenchCompare(args []string, stdout, stderr io.Writer) int {
 	beforePath := flagValue(args, "--before")
 	afterPath := flagValue(args, "--after")
 	if strings.TrimSpace(beforePath) == "" || strings.TrimSpace(afterPath) == "" {
-		fmt.Fprintln(stderr, "usage: compound bench compare --before <report.json> --after <report.json> [--json]")
+		fmt.Fprintln(stderr, "usage: compound bench compare --before <report.json> --after <report.json> [--json] [--allow-suite-mismatch]")
 		return 2
 	}
 	before, err := loadBenchReport(beforePath)
@@ -239,6 +239,14 @@ func runBenchCompare(args []string, stdout, stderr io.Writer) int {
 		}
 	} else {
 		printBenchCompareSummary(stdout, cmp)
+	}
+	// A suite mismatch is an apples-to-oranges comparison and must fail the gate. Accept already
+	// encodes this (it is false on mismatch); the exit code enforces it too unless the operator
+	// explicitly opts in to record the delta without gating on it (--allow-suite-mismatch).
+	if cmp.SuiteMismatch && !hasFlag(args, "--allow-suite-mismatch") {
+		fmt.Fprintf(stderr, "bench compare: before suite %q != after suite %q; comparison is apples-to-oranges and cannot be accepted (pass --allow-suite-mismatch to record the delta without gating on it)\n",
+			cmp.BeforeSuite, cmp.AfterSuite)
+		return 1
 	}
 	if cmp.Regressed {
 		fmt.Fprintf(stderr, "bench compare: regression on %s (hit@5 or MRR lower); accept rule requires no regression on either split\n",
@@ -304,7 +312,7 @@ func printBenchSummary(w io.Writer, report bench.Report, artifactPath string) {
 
 func printBenchCompareSummary(w io.Writer, cmp bench.CompareReport) {
 	verdict := "ACCEPT"
-	if cmp.Regressed {
+	if cmp.Regressed || cmp.SuiteMismatch {
 		verdict = "REJECT"
 	}
 	fmt.Fprintf(w, "# compound bench compare: %s\n", verdict)
