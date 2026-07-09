@@ -3,6 +3,7 @@ package work
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +79,65 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 	}
 	if contains(closed.Receipt.Skills.Used, "work.advance") {
 		t.Fatalf("internal advance capability leaked into used skills: %v", closed.Receipt.Skills.Used)
+	}
+}
+
+// Falsifier 5: AdvancePlan (the non-mutating preview) must report the same lease-holder
+// denial the real advance would hit, without recording or mutating anything — no
+// allowed-preview-then-refused-act divergence. With a valid steal, the preview reports
+// steal-readiness and the emitted advance command carries --steal --reason.
+func TestAdvancePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "advance plan lease preview"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(w.ID, "actor-a", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.AdvancePlan(w.ID, fixedNow, AdvancePlanOptions{Actor: "actor-b", To: "running"})
+	if err != nil {
+		t.Fatalf("advance-plan: %v", err)
+	}
+	if plan.NoAction == "" || !strings.Contains(plan.NoAction, "actor-a") {
+		t.Fatalf("advance-plan must report the lease holder denial, got NoAction=%q", plan.NoAction)
+	}
+	if len(plan.AdvanceCommand) != 0 {
+		t.Fatalf("advance-plan must not offer an advance command when lease-blocked: %v", plan.AdvanceCommand)
+	}
+	after, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) {
+		t.Fatalf("advance-plan must not mutate work: before=%+v after=%+v", before, after)
+	}
+
+	stealPlan, err := s.AdvancePlan(w.ID, fixedNow, AdvancePlanOptions{
+		Actor: "actor-b", To: "running",
+		Steal: true, StealReason: "actor-a executor is dead",
+	})
+	if err != nil {
+		t.Fatalf("advance-plan with steal: %v", err)
+	}
+	if len(stealPlan.AdvanceCommand) == 0 {
+		t.Fatalf("steal-ready advance-plan must offer an advance command: %+v", stealPlan)
+	}
+	if !commandHasFlagValue(stealPlan.AdvanceCommand, "--reason", "actor-a executor is dead") {
+		t.Fatalf("steal-ready advance command must carry --reason: %v", stealPlan.AdvanceCommand)
+	}
+	found := false
+	for _, part := range stealPlan.AdvanceCommand {
+		if part == "--steal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("steal-ready advance command must carry --steal: %v", stealPlan.AdvanceCommand)
 	}
 }
 
