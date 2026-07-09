@@ -138,11 +138,30 @@ func comparisonPlainParts(target TargetInput) (candidate, baseline, surface stri
 	baseline = mapString(payload, "baseline_plain", "baseline", "baseline_name")
 	if candidate == "" || baseline == "" {
 		if m := comparisonRefPattern.FindStringSubmatch(target.Ref); m != nil {
+			first := strings.ReplaceAll(m[1], "_", " ")
+			second := strings.ReplaceAll(m[2], "_", " ")
+			// Refs are conventionally {candidate}_vs_{baseline}, but the name is
+			// human-chosen and live runs violate it (cmp_r3_deepseek_vs_autoextract
+			// is baseline-first — it inverted 28 operator cards on 2026-07-09).
+			// When the payload carries lane objects they decide orientation; the
+			// ref still supplies the plain display names so lane ids never leak
+			// into the sentence. Swap only when both tokens match unambiguously.
+			candLane := compactToken(laneString(payload, "candidate"))
+			baseLane := compactToken(laneString(payload, "baseline"))
+			if candLane != "" && baseLane != "" {
+				n1 := compactToken(first)
+				n2 := compactToken(second)
+				firstIsBaseline := strings.Contains(baseLane, n1) && !strings.Contains(candLane, n1)
+				secondIsCandidate := strings.Contains(candLane, n2) && !strings.Contains(baseLane, n2)
+				if firstIsBaseline && secondIsCandidate {
+					first, second = second, first
+				}
+			}
 			if candidate == "" {
-				candidate = strings.ReplaceAll(m[1], "_", " ")
+				candidate = first
 			}
 			if baseline == "" {
-				baseline = strings.ReplaceAll(m[2], "_", " ")
+				baseline = second
 			}
 		}
 	}
@@ -154,6 +173,30 @@ func comparisonPlainParts(target TargetInput) (candidate, baseline, surface stri
 	baseline = reviewartifact.ShortLabel(reviewartifact.PlainLabel(reviewartifact.FirstNonEmpty(baseline, "baseline")), 34)
 	surface = reviewartifact.ShortLabel(reviewartifact.FirstNonEmpty(surface, "test surface"), 34)
 	return candidate, baseline, surface, private
+}
+
+// laneString pulls a lane identifier out of a comparison payload's candidate/
+// baseline OBJECT (mapString above only reads string values, which is why ref
+// order was ever consulted at all). Display text never uses this directly —
+// orientation checks only.
+func laneString(payload map[string]any, key string) string {
+	obj, ok := payload[key].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return mapString(obj, "lane_id", "name", "id")
+}
+
+// compactToken lowercases and strips non-alphanumerics so ref tokens
+// ("mac qwen") can be matched against lane ids ("mac/qwen3.6-27b").
+func compactToken(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func mapString(payload map[string]any, keys ...string) string {

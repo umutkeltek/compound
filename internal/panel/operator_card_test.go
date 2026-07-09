@@ -46,7 +46,12 @@ func TestOperatorCardForVerdictComparisonPrivateTranscript(t *testing.T) {
 
 // TestOperatorCardForVerdictComparisonFixtureNotPrivate covers the
 // synthetic/fixture comparison shape (no PRIV marker): the sentence must
-// name the surface without the private-transcript qualifier.
+// name the surface without the private-transcript qualifier. NOTE: this
+// payload carries NO lane objects, so the card can only trust the ref's
+// documented {candidate}_vs_{baseline} order — for this ref that order is
+// wrong (baseline-first), and real verdicts DO carry lane objects; see
+// TestOperatorCardForVerdictComparisonOrientsFromPayloadLanes for the
+// oriented (correct) sentence on the same fixture.
 func TestOperatorCardForVerdictComparisonFixtureNotPrivate(t *testing.T) {
 	verdict := verdictArtifactPayload{
 		SchemaVersion: "compound.panel_verdict.v0.1",
@@ -70,5 +75,46 @@ func TestOperatorCardForVerdictComparisonFixtureNotPrivate(t *testing.T) {
 	}
 	if strings.Contains(card.Summary, "private transcript") {
 		t.Fatalf("non-private comparison must not claim a private transcript: %q", card.Summary)
+	}
+}
+
+// TestOperatorCardForVerdictComparisonOrientsFromPayloadLanes pins the
+// direction fix for the 2026-07-09 operator report: the live ref
+// cmp_r3_deepseek_vs_autoextract is named {baseline}_vs_{candidate} —
+// violating the convention comparisonRefPattern documents — so a card built
+// from ref order alone inverted winner and loser ("deepseek lost to
+// autoextract" while the verdicts rejected auto-extract). When the payload
+// carries lane objects, they decide orientation; the ref still supplies the
+// plain display names (lane ids must not leak into the sentence).
+func TestOperatorCardForVerdictComparisonOrientsFromPayloadLanes(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"capability_class": "classify-extract",
+		"baseline":         map[string]any{"lane_id": "switchback/deepseek-v4-pro"},
+		"candidate":        map[string]any{"lane_id": "switchback/auto-extract"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdict := verdictArtifactPayload{
+		SchemaVersion: "compound.panel_verdict.v0.1",
+		ID:            "panel_verdict_orientation",
+		RunID:         "prun_test",
+		Target: TargetInput{
+			Kind:    "comparison",
+			Ref:     "cmp_r3_deepseek_vs_autoextract_fixture-01",
+			Payload: payload,
+		},
+		Synthesis: Synthesis{Decision: "reject"},
+	}
+	card, err := OperatorCardForVerdict(verdict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The judge panel says autoextract lost to deepseek on classify-extract. Record the loss?"
+	if card.Summary != want {
+		t.Fatalf("Summary = %q, want %q (candidate/baseline must orient from payload lanes, not ref order)", card.Summary, want)
+	}
+	if strings.Contains(card.Summary, "switchback/") {
+		t.Fatalf("lane id leaked into card sentence: %q", card.Summary)
 	}
 }
