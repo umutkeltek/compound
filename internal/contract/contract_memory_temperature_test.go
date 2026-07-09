@@ -35,6 +35,33 @@ func TestMemoryRelevanceRankConsumedWarmOutranksIgnoredCool(t *testing.T) {
 	}
 }
 
+func TestMemoryRelevanceRankCheapLaneRanksBelowEqualNonCheap(t *testing.T) {
+	entities := map[string]bool{memoryKey("compound"): true}
+	cheap := contextualClaim("cheap", "compound")
+	cheap.ProvenanceLane = "cheap-lane"
+	normal := contextualClaim("normal", "compound")
+
+	cheapRank := memoryRelevanceRank(cheap, entities, nil, 0, nil)
+	normalRank := memoryRelevanceRank(normal, entities, nil, 0, nil)
+	if !(cheapRank < normalRank) {
+		t.Fatalf("cheap-lane rank = %v, normal rank = %v; want cheap strictly lower", cheapRank, normalRank)
+	}
+}
+
+func TestMemoryRelevanceRankCheapLanePenaltyNeverRaises(t *testing.T) {
+	entities := map[string]bool{memoryKey("compound"): true}
+	base := contextualClaim("base", "compound")
+	cheap := contextualClaim("base", "compound")
+	cheap.ProvenanceLane = "cheap-lane"
+	temps := map[string]float64{"base": 0.2}
+
+	withoutTag := memoryRelevanceRank(base, entities, nil, 0, temps)
+	withTag := memoryRelevanceRank(cheap, entities, nil, 0, temps)
+	if withTag > withoutTag {
+		t.Fatalf("cheap-lane rank = %v, untagged rank = %v; penalty must be monotonic non-increasing", withTag, withoutTag)
+	}
+}
+
 // Falsifier 4 (unit): a hot-but-irrelevant claim NEVER outranks a cold-but-entity-matched one,
 // and temperature never manufactures relevance for an off-task claim (base 0 stays exactly 0).
 func TestMemoryRelevanceRankHotIrrelevantNeverOutranksColdMatched(t *testing.T) {

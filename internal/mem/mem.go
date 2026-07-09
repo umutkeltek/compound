@@ -73,9 +73,10 @@ type Candidate struct {
 	ObservationDate string                `json:"observation_date"` // temporal grounding (when the fact was true)
 	Confidence      float64               `json:"confidence"`
 	Derivation      string                `json:"derivation"`
-	ClaimType       string                `json:"claim_type,omitempty"` // the claim taxonomy (mem.ClaimTypes); empty = untyped
-	Qualifiers      map[string]string     `json:"qualifiers,omitempty"` // e.g. {"domain": "languages"} → sharpens Topic()
-	TopicRefs       []string              `json:"topic_refs,omitempty"` // optional concept taxonomy refs; old rows omit this safely
+	ProvenanceLane  string                `json:"provenance_lane,omitempty"` // provenance: producing model/lane when known
+	ClaimType       string                `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes); empty = untyped
+	Qualifiers      map[string]string     `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → sharpens Topic()
+	TopicRefs       []string              `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; old rows omit this safely
 	Tags            []string              `json:"tags,omitempty"`
 	Salience        string                `json:"salience,omitempty"`
 	Expectation     *CandidateExpectation `json:"expectation,omitempty"`
@@ -129,6 +130,7 @@ type Claim struct {
 	ValidFrom       string            `json:"valid_from"` // observation date (immutable)
 	Confidence      float64           `json:"confidence"`
 	Derivation      string            `json:"derivation"`                // provenance: how derived
+	ProvenanceLane  string            `json:"provenance_lane,omitempty"` // provenance: producing model/lane when known
 	ClaimType       string            `json:"claim_type,omitempty"`      // the claim taxonomy (mem.ClaimTypes)
 	Qualifiers      map[string]string `json:"qualifiers,omitempty"`      // e.g. {"domain": "languages"} → Topic()
 	TopicRefs       []string          `json:"topic_refs,omitempty"`      // optional concept taxonomy refs; additive for older rows
@@ -479,6 +481,7 @@ func promotedClaim(c Candidate, prior Claim, hasPrior bool, seq int64, now time.
 		ValidFrom:      orDef(c.ObservationDate, rfc3339(now)),
 		Confidence:     c.Confidence,
 		Derivation:     c.Derivation,
+		ProvenanceLane: c.ProvenanceLane,
 		ClaimType:      c.ClaimType, // carry the taxonomy + topic qualifiers onto the durable claim
 		Qualifiers:     c.Qualifiers,
 		TopicRefs:      normalizeStringRefs(c.TopicRefs),

@@ -25,6 +25,44 @@ func cand(entity, pred, obj, obs string) Candidate {
 	return Candidate{Entity: entity, Predicate: pred, Object: obj, ObservationDate: obs, Confidence: 0.9, Derivation: "extracted", PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_x", SnippetHash: "deadbeef"}
 }
 
+func TestCheapLaneCandidateRequiresAdjudicationAndPromotionPreservesLane(t *testing.T) {
+	s := newStore(t)
+	captured, err := s.Capture([]Candidate{{
+		Entity:          "operator",
+		Predicate:       "preference.editor",
+		Object:          "prefer reversible edits",
+		ObservationDate: "2026-07-01T00:00:00Z",
+		Confidence:      1,
+		Derivation:      "extracted",
+		ProvenanceLane:  "cheap-lane",
+		PromotionBasis:  candidates.BasisExplicitConfirmation,
+		SourceTraceRef:  "trace_cheap_lane",
+		SnippetHash:     "sha256:cheap_lane",
+		Visibility:      "ambient",
+	}}, t0)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if len(captured) != 1 || captured[0].State != "proposed" {
+		t.Fatalf("captured = %+v, want proposed candidate", captured)
+	}
+	before, err := s.Recall("operator", RecallOpts{})
+	if err != nil {
+		t.Fatalf("recall before adjudication: %v", err)
+	}
+	if len(before.Claims) != 0 {
+		t.Fatalf("cheap-lane candidate surfaced before adjudication: %+v", before.Claims)
+	}
+
+	promoted, err := s.Adjudicate(captured[0].ID, "promote", "work_reviewed_cheap_lane", t0)
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if promoted.Claim == nil || promoted.Claim.ProvenanceLane != "cheap-lane" {
+		t.Fatalf("promoted claim provenance lane = %+v, want cheap-lane", promoted.Claim)
+	}
+}
+
 // The headline P6 proof: a fact changes over time; the ledger keeps BOTH versions; as-of
 // recall returns the right one at each seq; the old claim is superseded by an EDGE, not
 // deleted; promotion emits a Transition. This is delta-aware memory on the owned ledger.

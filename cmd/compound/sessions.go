@@ -718,6 +718,7 @@ func recordSessionPreferenceCandidate(homePath string, finding sessionMiningFind
 		ObservationDate: now.UTC().Format(time.RFC3339),
 		Confidence:      finding.Confidence,
 		Derivation:      "deterministic",
+		ProvenanceLane:  "deterministic",
 		ClaimType:       "preference",
 		Qualifiers: map[string]string{
 			"domain":       "behavioral",

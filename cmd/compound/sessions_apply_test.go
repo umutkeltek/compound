@@ -60,6 +60,9 @@ func TestSessionsMineApplyRoutesSyntheticFindingsProposeOnly(t *testing.T) {
 	if memoryCandidates[0].ClaimType != "preference" || memoryCandidates[0].Visibility != "contextual" || memoryCandidates[0].PromotionBasis != "" {
 		t.Fatalf("preference candidate must be contextual and non-promotable by default: %+v", memoryCandidates[0])
 	}
+	if memoryCandidates[0].ProvenanceLane != "deterministic" {
+		t.Fatalf("preference candidate provenance_lane = %q, want deterministic", memoryCandidates[0].ProvenanceLane)
+	}
 
 	retirePath := filepath.Join(homePath, "reviews", "distiller-improvements", report.Apply.RetireProposalIDs[0]+".json")
 	var retirePlan struct {

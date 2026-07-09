@@ -30,6 +30,7 @@ import (
 
 const (
 	defaultRepoKind                  = "product"
+	cheapLaneRankPenalty             = -0.1
 	universalPrinciplesRef           = "constitution://universal-principles"
 	universalPrinciplesPath          = "docs/architecture/universal-principles.md"
 	memoryRelevanceSourceRef         = "memory://relevance-gated"
@@ -1615,6 +1616,7 @@ func memoryRelevanceRank(claim mem.Claim, entities, taskTokens map[string]bool, 
 	// its exact 0. Fail-open: a nil/empty map leaves every rank unchanged.
 	if rank > 0 {
 		rank += memoryTemperatureTerm(temps, claim.ID)
+		rank += memoryProvenanceLaneTerm(claim.ProvenanceLane)
 	}
 	return rank
 }
@@ -1643,6 +1645,18 @@ func memoryTemperatureTerm(temps map[string]float64, claimID string) float64 {
 		return -mem.MaxTemperatureContribution
 	}
 	return t
+}
+
+func memoryProvenanceLaneTerm(lane string) float64 {
+	if cheapProvenanceLane(lane) {
+		return cheapLaneRankPenalty
+	}
+	return 0
+}
+
+func cheapProvenanceLane(lane string) bool {
+	lane = strings.ToLower(strings.TrimSpace(lane))
+	return strings.Contains(lane, "cheap")
 }
 
 func memoryPolicyExclusionReason(claim mem.Claim, rule MemoryRule, relevanceRank float64) string {
