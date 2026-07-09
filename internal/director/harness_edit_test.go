@@ -46,6 +46,40 @@ func seedBenchReport(t *testing.T, home, suite string, absent []string, splits m
 	}
 }
 
+// seedNonActionableBenchReport writes a bench report explicitly marked actionable=false — the shape
+// `bench run --no-actionable` produces for a synthetic/diagnostic suite — so a test can assert the
+// director refuses to mine it.
+func seedNonActionableBenchReport(t *testing.T, home, suite string, absent []string, splits map[string]bench.Metrics) {
+	t.Helper()
+	actionable := false
+	report := bench.Report{
+		Schema:          bench.SchemaVersion,
+		Suite:           suite,
+		SuiteKind:       "synthetic_fixture",
+		Actionable:      &actionable,
+		Timestamp:       directorTestNow.UTC().Format(time.RFC3339),
+		BuildSHA:        "testsha",
+		GraphHash:       "testgraph",
+		CaseCount:       1,
+		ScoredCount:     1,
+		Splits:          splits,
+		AbsentFromGraph: absent,
+		Cases:           []bench.CaseResult{},
+	}
+	dir := filepath.Join(home, "reviews", "bench")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := directorTestNow.UTC().Format("20060102T150405Z") + "-" + suite + ".json"
+	if err := os.WriteFile(filepath.Join(dir, name), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedRouteRemorseReview(t *testing.T, home, id string) {
 	t.Helper()
 	review := routeevidence.RouteOutcomeReview{
@@ -169,6 +203,53 @@ func TestHarnessEditScannerEmitsTargetedCandidatesFromEverySignal(t *testing.T) 
 	assertHasRef(t, surfaces["capability_edges"].EvidenceRefs, "bench_report:capability-suite")
 	assertHasPrefix(t, surfaces["skill_descriptions"].EvidenceRefs, "capability_usage_never_fired:")
 	assertHasRef(t, surfaces["steering_config"].EvidenceRefs, "route_remorse_review:ror_synthetic_remorse")
+}
+
+// TestHarnessEditIgnoresNonActionableBenchReports is the synthetic-fixture falsifier: a bench
+// report marked actionable=false (synthetic_fixture / diagnostic) must NOT seed harness-edit
+// candidates even when it reports absent graph nodes — fixture noise must not become suggested work.
+// The same gap in an actionable report (the back-compat default) still seeds its candidate.
+func TestHarnessEditIgnoresNonActionableBenchReports(t *testing.T) {
+	home := seededDirectorHome(t)
+	seedNonActionableBenchReport(t, home, "synthetic-fixture", []string{"capability://skill:fixture-gap"}, nil)
+
+	report, err := Propose(home, Options{Now: directorTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range harnessEditProposals(report) {
+		if refsContain(p.EvidenceRefs, "bench_report:synthetic-fixture") {
+			t.Fatalf("director mined a non-actionable (synthetic) bench report into a proposal: %+v", p)
+		}
+	}
+
+	// Control: an actionable report carrying the same gap DOES seed an absent_from_graph candidate.
+	seedBenchReport(t, home, "real-suite", []string{"capability://skill:real-gap"}, nil)
+	report, err = Propose(home, Options{Now: directorTestNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !anyProposalRefsContain(harnessEditProposals(report), "bench_report:real-suite") {
+		t.Fatalf("actionable bench report must seed an absent_from_graph candidate")
+	}
+}
+
+func refsContain(refs []string, needle string) bool {
+	for _, r := range refs {
+		if r == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func anyProposalRefsContain(ps []Proposal, needle string) bool {
+	for _, p := range ps {
+		if refsContain(p.EvidenceRefs, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Falsifier 2: the scanner REFUSES to construct a candidate targeting a

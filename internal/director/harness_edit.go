@@ -432,6 +432,9 @@ func loadLatestBenchReports(homePath string) ([]bench.Report, error) {
 		if report.Schema != bench.SchemaVersion || strings.TrimSpace(report.Suite) == "" {
 			continue
 		}
+		if !report.IsActionable() {
+			continue // synthetic_fixture / diagnostic reports are evidence, not suggested work
+		}
 		latest[report.Suite] = report
 	}
 	suites := make([]string, 0, len(latest))
@@ -530,7 +533,7 @@ func (c harnessEditProposalCard) ReviewOperatorCard() (reviewartifact.OperatorCa
 	if err != nil {
 		return reviewartifact.OperatorCard{}, err
 	}
-	summary := fmt.Sprintf("The director wants to %s because %s. Review the edit?",
+	summary := fmt.Sprintf("Compound suggests to %s because %s. Review the edit?",
 		reviewartifact.ShortLabel(action, 64), reviewartifact.ShortLabel(signal, 40))
 	return reviewartifact.NewOperatorCard(
 		summary,
