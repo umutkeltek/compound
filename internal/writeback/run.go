@@ -63,7 +63,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 	if _, err := workStore.Claim(w.ID, in.Actor, in.Now); err != nil {
 		return result, err
 	}
-	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", Note: in.RunningNote}, in.Now); err != nil {
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", Actor: in.Actor, Note: in.RunningNote}, in.Now); err != nil {
 		return result, err
 	}
 	ai := in.ActionIntentFor(w.ID)
@@ -101,6 +101,7 @@ func RunGatedWriteback(in GatedWriteback) (GatedWritebackResult, error) {
 	}
 	if _, err := workStore.Advance(w.ID, work.AdvanceInput{
 		To:             "running",
+		Actor:          in.Actor,
 		ArtifactID:     checked.ID,
 		VerificationID: verification,
 		Note:           in.CheckedNote,

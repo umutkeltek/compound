@@ -4161,11 +4161,11 @@ func cmdReviewsRecordFinding(args []string) {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
-		if _, err := store.Advance(workID, work.AdvanceInput{To: "running", Note: "review finding recorded"}, now); err != nil {
+		if _, err := store.Advance(workID, work.AdvanceInput{To: "running", Actor: "compound reviews", Note: "review finding recorded"}, now); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
-		if _, err := store.Advance(workID, work.AdvanceInput{To: "verifying", VerificationID: target, Note: "review finding artifact written"}, now); err != nil {
+		if _, err := store.Advance(workID, work.AdvanceInput{To: "verifying", Actor: "compound reviews", VerificationID: target, Note: "review finding artifact written"}, now); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
