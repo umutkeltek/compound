@@ -4586,13 +4586,24 @@ func TestReviewsCommandAnnotatesPanelVerdictReview(t *testing.T) {
 	if item.DecisionCard == nil {
 		t.Fatalf("panel verdict queue should expose a read-only decision card: %+v", item)
 	}
-	if len(item.Actions) != 4 {
-		t.Fatalf("panel verdict queue should expose four review-required command hints: %+v", item)
+	if len(item.Actions) != 5 {
+		t.Fatalf("panel verdict queue should expose four shell command hints plus one clean member action: %+v", item)
 	}
+	cleanActions := 0
 	for _, action := range item.Actions {
-		if !action.RequiresReview || !strings.Contains(action.Command, "compound panel verdict-record") || !strings.Contains(action.Command, "compound memory adjudicate") {
+		if !action.RequiresReview || !strings.Contains(action.Command, "compound panel verdict-record") {
 			t.Fatalf("panel verdict action should stay canonical and review-required: %+v", action)
 		}
+		if len(action.Argv) > 0 && action.Argv[0] == "compound" {
+			cleanActions++
+			continue
+		}
+		if !strings.Contains(action.Command, "compound memory adjudicate") {
+			t.Fatalf("panel shell action should chain the canonical adjudicate command: %+v", action)
+		}
+	}
+	if cleanActions != 1 {
+		t.Fatalf("panel verdict queue should expose exactly one clean-argv member action, got %d: %+v", cleanActions, item.Actions)
 	}
 	if !strings.Contains(item.NextAction, "panel requested human decision") || !strings.Contains(item.NextAction, "memory_candidate/cand_panel_cli") || !strings.Contains(item.NextAction, "failed_lenses=1") {
 		t.Fatalf("panel verdict item should expose owner-review context: %+v", item)

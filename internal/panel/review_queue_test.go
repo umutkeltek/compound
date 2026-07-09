@@ -78,8 +78,29 @@ func TestAnnotateVerdictQueueAddsDecisionCardForNeedsHumanMemoryCandidate(t *tes
 	if !hasReasonQuestion(card.Why, "How well is this supported?") || !hasReasonQuestion(card.Why, "Do we already believe something like this?") {
 		t.Fatalf("decision card reasons missing lens questions: %+v", card.Why)
 	}
-	if len(card.Choices) != 4 || len(item.Actions) != 4 {
-		t.Fatalf("choices/actions = %d/%d, want 4/4", len(card.Choices), len(item.Actions))
+	if len(card.Choices) != 4 || len(item.Actions) != 5 {
+		t.Fatalf("choices/actions = %d/%d, want 4 choices and 5 actions (4 shell choices + 1 clean member action)", len(card.Choices), len(item.Actions))
+	}
+	var clean []reviewartifact.Action
+	for _, action := range item.Actions {
+		if len(action.Argv) > 0 && action.Argv[0] == "compound" {
+			clean = append(clean, action)
+		}
+	}
+	if len(clean) != 1 {
+		t.Fatalf("clean-argv actions = %d, want exactly 1: %+v", len(clean), item.Actions)
+	}
+	member := clean[0]
+	if member.ID != "panel_verdict_record_member" || !member.RequiresReview {
+		t.Fatalf("clean member action = %+v, want id=panel_verdict_record_member requires_review=true", member)
+	}
+	for _, token := range member.Argv {
+		if token == "/bin/sh" || token == "-lc" || strings.Contains(token, "$RATIONALE") || strings.Contains(token, "&&") {
+			t.Fatalf("clean member argv must not contain shell tokens or placeholders: %v", member.Argv)
+		}
+	}
+	if containsReviewCardString(member.Argv, "--rationale") {
+		t.Fatalf("clean member argv must omit --rationale (console appends it): %v", member.Argv)
 	}
 	promote := card.Choices[0]
 	if promote.ID != "promote" || !strings.Contains(promote.Effect, "ambient canon") {

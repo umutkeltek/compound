@@ -341,8 +341,8 @@ func TestPanelVerdictRecordCLIAnnotatesQueue(t *testing.T) {
 	if !strings.Contains(card.Claim, "durable strategy") || strings.Contains(card.Claim, "cand_panel_record_cli") {
 		t.Fatalf("decision card claim = %q", card.Claim)
 	}
-	if len(card.Choices) != 4 || len(pending.Items[0].Actions) != 4 {
-		t.Fatalf("decision card choices/actions = %d/%d, want 4/4", len(card.Choices), len(pending.Items[0].Actions))
+	if len(card.Choices) != 4 || len(pending.Items[0].Actions) != 5 {
+		t.Fatalf("decision card choices/actions = %d/%d, want 4 choices and 5 actions (4 shell choices + 1 clean member action)", len(card.Choices), len(pending.Items[0].Actions))
 	}
 	if !strings.Contains(card.Choices[0].Command, "compound panel verdict-record") ||
 		!strings.Contains(card.Choices[0].Command, "compound memory adjudicate 'cand_panel_record_cli' --verdict 'promote'") {

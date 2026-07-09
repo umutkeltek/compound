@@ -118,6 +118,7 @@ func annotateVerdictQueueItem(item *reviewartifact.QueueItem, applications map[s
 	item.BlockedReason = ""
 	item.DecisionCard = buildPanelDecisionCard(*item, verdict)
 	item.Actions = panelDecisionCardActions(item.DecisionCard)
+	item.Actions = append(item.Actions, panelMemberCleanAction(item.JSONPath))
 	annotateVerdictOperatorCard(item, verdict, reviewartifact.BandNeedsYou, "")
 	target := panelVerdictTarget(verdict.Target)
 	failedLenses := failedLensCount(verdict.LensFindings)
@@ -450,6 +451,22 @@ func panelDecisionChoices(reviewPath string, target TargetInput) []reviewartifac
 		})
 	}
 	return out
+}
+
+// panelMemberCleanAction emits the one clean-argv (argv[0]=="compound", no shell)
+// per-member action so governed renderers can execute it directly. The CLI requires
+// --rationale; it is deliberately omitted here — the console appends
+// ["--rationale", <operator text>] at execution time, after its own review gate.
+func panelMemberCleanAction(reviewPath string) reviewartifact.Action {
+	argv := []string{"compound", "panel", "verdict-record", "--review", reviewPath, "--reviewed-by", defaultPanelReviewedBy()}
+	return reviewartifact.Action{
+		ID:             "panel_verdict_record_member",
+		Label:          "Record this verdict",
+		Command:        "compound panel verdict-record --review " + shellQuote(reviewPath) + " --reviewed-by " + panelShellQuote(defaultPanelReviewedBy()) + " --rationale '<why>'",
+		Argv:           argv,
+		RequiresReview: true,
+		PolicyNote:     "records the human review sidecar only; memory adjudication stays a separate explicit act",
+	}
 }
 
 func panelChoiceCommand(reviewPath, candidateID, verdict string) string {
