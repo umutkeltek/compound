@@ -66,6 +66,72 @@ func TestSessionStartProducesContract(t *testing.T) {
 	}
 }
 
+func TestLiveContextInjectionTimeoutTripsBreaker(t *testing.T) {
+	homePath := t.TempDir()
+	deps := baseDeps()
+	deps.HomePath = homePath
+	timedOut := make(chan time.Time, 1)
+	timedOut <- fixedNow.Add(2 * time.Second)
+	blocked := make(chan struct{})
+	deps.After = func(time.Duration) <-chan time.Time { return timedOut }
+	deps.BeforeContextBuild = func() {
+		close(blocked)
+		select {}
+	}
+
+	res, err := Run(Fixture{Hook: "session-start", Harness: "codex", Cwd: "/repo/x", Task: "audit", RepoKind: "product", Live: true}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	<-blocked
+	if !res.BreakerTripped || res.Event.Status != "fail_open" || res.Summary != "" || len(res.Produced) != 0 || res.Injection != nil {
+		t.Fatalf("timeout breaker result = %+v, want empty fail-open context", res)
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatalf("read hook event stream: %v", err)
+	}
+	if !strings.Contains(string(stream), `"breaker_tripped":true`) {
+		t.Fatalf("hook event stream missing breaker trip:\n%s", string(stream))
+	}
+}
+
+func TestLiveContextInjectionBreakerNeverReturnsPartialPack(t *testing.T) {
+	assertEmptyBreaker := func(t *testing.T, res Result) {
+		t.Helper()
+		if !res.BreakerTripped {
+			t.Fatalf("breaker_tripped = false, want true")
+		}
+		if res.Summary != "" || res.Injection != nil || len(res.Produced) != 0 || res.Event.OutputRef != "" || res.Event.IDs.ContextPackID != "" {
+			t.Fatalf("breaker returned partial context: %+v", res)
+		}
+		body, err := json.Marshal(res)
+		if err != nil {
+			t.Fatalf("marshal result: %v", err)
+		}
+		for _, forbidden := range []string{"context_pack", "effective_contract", "context_request"} {
+			if strings.Contains(string(body), forbidden) {
+				t.Fatalf("breaker response contains partial %s artifact: %s", forbidden, string(body))
+			}
+		}
+	}
+
+	homePath := t.TempDir()
+	deps := baseDeps()
+	deps.HomePath = homePath
+	if err := os.MkdirAll(filepath.Join(homePath, "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "config", "repo-kinds.yaml"), []byte("schema_version: wrong\nrepos: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Run(Fixture{Hook: "session-start", Harness: "claude_code", Cwd: "/repo/x", Task: "audit", Live: true}, deps, fixedNow)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	assertEmptyBreaker(t, res)
+}
+
 func TestHookModeAffectsContextRequestIDs(t *testing.T) {
 	base := Fixture{Hook: "session-start", Harness: "claude_code", Cwd: "/repo/x", Task: "audit", RepoKind: "product"}
 	observe := base

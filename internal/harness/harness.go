@@ -46,6 +46,7 @@ type Harness struct {
 	InstructionMechanism string       `json:"instruction_mechanism"`
 	Capabilities         Capabilities `json:"capabilities"`
 	Limitations          []string     `json:"limitations"`
+	InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
 	Fallback             bool         `json:"fallback,omitempty"` // true when this is the generic stand-in
 }
 
@@ -95,6 +96,7 @@ type ManifestHarness struct {
 	InstructionMechanism string               `json:"instruction_mechanism" yaml:"instruction_mechanism"`
 	Capabilities         ManifestCapabilities `json:"capabilities" yaml:"capabilities"`
 	Limitations          []string             `json:"limitations" yaml:"limitations"`
+	InjectBudgetMS       int                  `json:"inject_budget_ms,omitempty" yaml:"inject_budget_ms,omitempty"`
 	Fallback             bool                 `json:"fallback,omitempty" yaml:"fallback,omitempty"`
 }
 
@@ -122,7 +124,8 @@ func DefaultRegistry() Registry {
 				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: true,
 				NativeSkills: true, MCP: true,
 			},
-			Limitations: []string{"long-session instruction drift", "instruction/context budget cap"},
+			Limitations:    []string{"long-session instruction drift", "instruction/context budget cap"},
+			InjectBudgetMS: 1500,
 		},
 		"codex": {
 			Name:                 "codex",
@@ -138,6 +141,7 @@ func DefaultRegistry() Registry {
 				"initial skill list capped (progressive disclosure)",
 				"cwd-dependent guidance",
 			},
+			InjectBudgetMS: 1500,
 		},
 	}}
 }
@@ -274,8 +278,9 @@ func (m RegistryManifest) Registry() (Registry, error) {
 				NativeSkills:        in.Capabilities.NativeSkills,
 				MCP:                 in.Capabilities.MCP,
 			},
-			Limitations: append([]string(nil), in.Limitations...),
-			Fallback:    in.Fallback,
+			Limitations:    append([]string(nil), in.Limitations...),
+			InjectBudgetMS: firstPositive(in.InjectBudgetMS, defaultInjectBudgetMS(name)),
+			Fallback:       in.Fallback,
 		}
 	}
 	return Registry{Harnesses: byName}, nil
@@ -287,6 +292,7 @@ func RegistryRevision(reg Registry) string {
 		InstructionMechanism string       `json:"instruction_mechanism"`
 		Capabilities         Capabilities `json:"capabilities"`
 		Limitations          []string     `json:"limitations"`
+		InjectBudgetMS       int          `json:"inject_budget_ms,omitempty"`
 		Fallback             bool         `json:"fallback,omitempty"`
 	}
 	names := reg.Names()
@@ -300,6 +306,7 @@ func RegistryRevision(reg Registry) string {
 			InstructionMechanism: h.InstructionMechanism,
 			Capabilities:         h.Capabilities,
 			Limitations:          limitations,
+			InjectBudgetMS:       h.InjectBudgetMS,
 			Fallback:             h.Fallback,
 		})
 	}
@@ -354,8 +361,33 @@ func Generic() Harness {
 		InstructionMechanism: "static instructions file",
 		Capabilities:         Capabilities{PostToolUseEvent: true, SessionEndReceipt: true},
 		Limitations:          []string{"assume fail-open; enforce all gates in the adapter, not the harness"},
+		InjectBudgetMS:       1000,
 		Fallback:             true,
 	}
+}
+
+func defaultInjectBudgetMS(name string) int {
+	switch canonicalHarnessName(name) {
+	case "claude_code", "codex":
+		return 1500
+	default:
+		return 1000
+	}
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+// InjectionBudgetMS returns the fail-open context injection budget for a harness.
+func (r Registry) InjectionBudgetMS(name string) int {
+	h, _ := r.Get(name)
+	return firstPositive(h.InjectBudgetMS, defaultInjectBudgetMS(name))
 }
 
 // Get returns the harness by name, or the generic fallback with found=false.

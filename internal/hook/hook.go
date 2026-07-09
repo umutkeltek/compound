@@ -50,6 +50,7 @@ var hookCapability = map[string]string{
 type Fixture struct {
 	Hook           string                        `json:"hook"`
 	Harness        string                        `json:"harness"`
+	Live           bool                          `json:"live,omitempty"`
 	Cwd            string                        `json:"cwd,omitempty"`
 	Task           string                        `json:"task,omitempty"`
 	Mode           string                        `json:"mode,omitempty"`
@@ -77,6 +78,10 @@ type Deps struct {
 	Policy   policy.Config
 	Store    *work.Store // required only for session-end; may be nil otherwise
 	HomePath string      // optional; when present session-start persists context artifacts
+
+	Now                func() time.Time
+	After              func(time.Duration) <-chan time.Time
+	BeforeContextBuild func()
 }
 
 // InjectionArtifact records the exact harness-facing context text written under
@@ -99,10 +104,11 @@ type InjectionArtifact struct {
 // Result is what a hook produces: the normalized event, the typed objects, and the small
 // harness-facing output line.
 type Result struct {
-	Event     envelope.HookEvent  `json:"event"`
-	Produced  []envelope.Envelope `json:"produced"`
-	Summary   string              `json:"summary"`
-	Injection *InjectionArtifact  `json:"injection,omitempty"`
+	Event          envelope.HookEvent  `json:"event"`
+	Produced       []envelope.Envelope `json:"produced"`
+	Summary        string              `json:"summary"`
+	Injection      *InjectionArtifact  `json:"injection,omitempty"`
+	BreakerTripped bool                `json:"breaker_tripped,omitempty"`
 }
 
 // Run dispatches a hook fixture, validating everything it produces through the spine.
@@ -144,46 +150,47 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 		}
 	}
 	if strings.TrimSpace(deps.HomePath) != "" {
-		if err := writeHookEvent(deps.HomePath, res.Event); err != nil {
+		if err := writeHookEvent(deps.HomePath, res.Event, res.BreakerTripped); err != nil {
 			return res, fmt.Errorf("persist hook event: %w", err)
 		}
 	}
 	return res, nil
 }
 
+type contextBuild struct {
+	Input    contract.Input
+	Contract envelope.EffectiveContract
+	Pack     envelope.ContextPack
+}
+
+type contextBuildResult struct {
+	Build contextBuild
+	Err   error
+}
+
 func sessionStart(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
 	mode := hookRequestedMode(name, fx)
-	in, err := orientationInput(fx, deps, mode)
+	built, breaker, err := buildContextWithBreaker(name, fx, deps, mode, now)
+	if breaker != nil {
+		return *breaker, nil
+	}
 	if err != nil {
 		return Result{}, err
 	}
-	ec := contract.Compile(in, deps.Orient, now)
-	pack := contract.Pack(in, deps.Orient, now)
-	if strings.TrimSpace(deps.HomePath) != "" {
-		var err error
-		ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
-		if err != nil {
-			return Result{}, err
-		}
-		pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
-		if err != nil {
-			return Result{}, err
-		}
-	}
-	req := buildContextRequest(name, fx, ec, pack, mode, now)
+	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
-	ev.IDs.ContextPackID = pack.Header.ID
+	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, ec, pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack)
 		if err != nil {
 			return Result{}, err
 		}
 		ev.SideEffects = append(ev.SideEffects, injection.ContextRequestRef, injection.ContractRef, injection.ContextPackRef, injection.Ref)
 		ev.OutputRef = injection.Ref
 	}
-	return Result{Event: ev, Produced: []envelope.Envelope{&req, &ec, &pack}, Summary: pack.SummaryMD, Injection: injection}, nil
+	return Result{Event: ev, Produced: []envelope.Envelope{&req, &built.Contract, &built.Pack}, Summary: built.Pack.SummaryMD, Injection: injection}, nil
 }
 
 func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
@@ -192,30 +199,20 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		pred = "address: " + fx.Task
 	}
 	mode := hookRequestedMode(name, fx)
-	in, err := orientationInput(fx, deps, mode)
+	built, breaker, err := buildContextWithBreaker(name, fx, deps, mode, now)
+	if breaker != nil {
+		return *breaker, nil
+	}
 	if err != nil {
 		return Result{}, err
 	}
-	ec := contract.Compile(in, deps.Orient, now)
-	pack := contract.Pack(in, deps.Orient, now)
-	if strings.TrimSpace(deps.HomePath) != "" {
-		var err error
-		ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
-		if err != nil {
-			return Result{}, err
-		}
-		pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
-		if err != nil {
-			return Result{}, err
-		}
-	}
-	req := buildContextRequest(name, fx, ec, pack, mode, now)
+	req := buildContextRequest(name, fx, built.Contract, built.Pack, mode, now)
 	ev := newEvent(name, fx, status(deps, fx.Harness, name), contextHookInputHash(name, fx, mode), nil, now)
-	ev.IDs.ContextPackID = pack.Header.ID
+	ev.IDs.ContextPackID = built.Pack.Header.ID
 	var injection *InjectionArtifact
 	if strings.TrimSpace(deps.HomePath) != "" {
 		var err error
-		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, ec, pack)
+		injection, err = writeContextArtifacts(deps.HomePath, ev.Header.ID, req, built.Contract, built.Pack)
 		if err != nil {
 			return Result{}, err
 		}
@@ -224,7 +221,7 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	create := work.CreateInput{Owner: fx.Harness, SuccessPredicate: pred, DesiredOutcome: fx.Task, State: "proposed"}
 	if injection != nil {
-		create.ContextPackID = pack.Header.ID
+		create.ContextPackID = built.Pack.Header.ID
 	}
 	cand := work.BuildWork(create, now)
 	ev.IDs.WorkID = cand.ID
@@ -237,11 +234,88 @@ func userPrompt(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		}
 		ev.IDs.WorkID = cand.ID
 		ev.SideEffects = append(ev.SideEffects, filepath.Join("work", "work", cand.ID+".json"))
-		produced = []envelope.Envelope{&req, &ec, &pack, &cand}
+		produced = []envelope.Envelope{&req, &built.Contract, &built.Pack, &cand}
 	}
 	summary := fmt.Sprintf("candidate work %s (proposed); scope=%q repo=%s; %d ctx in / %d excluded; mutations need ActionIntent+PolicyDecision",
-		cand.ID, orDash(fx.Task), in.RepoKind, len(pack.Included), len(pack.Excluded))
+		cand.ID, orDash(fx.Task), built.Input.RepoKind, len(built.Pack.Included), len(built.Pack.Excluded))
 	return Result{Event: ev, Produced: produced, Summary: summary, Injection: injection}, nil
+}
+
+func buildContextWithBreaker(name string, fx Fixture, deps Deps, mode string, now time.Time) (contextBuild, *Result, error) {
+	budget := time.Duration(deps.Registry.InjectionBudgetMS(fx.Harness)) * time.Millisecond
+	build := func() (contextBuild, error) {
+		if deps.BeforeContextBuild != nil {
+			deps.BeforeContextBuild()
+		}
+		in, err := orientationInput(fx, deps, mode)
+		if err != nil {
+			return contextBuild{}, err
+		}
+		ec := contract.Compile(in, deps.Orient, now)
+		pack := contract.Pack(in, deps.Orient, now)
+		if strings.TrimSpace(deps.HomePath) != "" {
+			var err error
+			ec, err = contract.CompileWithRuntime(in, deps.Orient, deps.HomePath, now)
+			if err != nil {
+				return contextBuild{}, err
+			}
+			pack, err = contract.PackWithCapabilities(in, deps.Orient, deps.HomePath, now)
+			if err != nil {
+				return contextBuild{}, err
+			}
+		}
+		return contextBuild{Input: in, Contract: ec, Pack: pack}, nil
+	}
+	if !fx.Live {
+		built, err := build()
+		return built, nil, err
+	}
+
+	started := hookNow(deps)
+	done := make(chan contextBuildResult, 1)
+	go func() {
+		built, err := build()
+		done <- contextBuildResult{Build: built, Err: err}
+	}()
+	select {
+	case result := <-done:
+		if result.Err != nil {
+			breaker := contextBreakerResult(name, fx, deps, mode, now)
+			return contextBuild{}, &breaker, nil
+		}
+		if budget > 0 && hookNow(deps).Sub(started) > budget {
+			breaker := contextBreakerResult(name, fx, deps, mode, now)
+			return contextBuild{}, &breaker, nil
+		}
+		return result.Build, nil, nil
+	case <-hookAfter(deps, budget):
+		breaker := contextBreakerResult(name, fx, deps, mode, now)
+		return contextBuild{}, &breaker, nil
+	}
+}
+
+func contextBreakerResult(name string, fx Fixture, deps Deps, mode string, now time.Time) Result {
+	ev := newEvent(name, fx, "fail_open", contextHookInputHash(name, fx, mode), nil, now)
+	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "", BreakerTripped: true}
+}
+
+func hookNow(deps Deps) time.Time {
+	if deps.Now != nil {
+		return deps.Now()
+	}
+	return time.Now()
+}
+
+func hookAfter(deps Deps, d time.Duration) <-chan time.Time {
+	if deps.After != nil {
+		return deps.After(d)
+	}
+	if d <= 0 {
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+	return time.After(d)
 }
 
 func orientationInput(fx Fixture, deps Deps, mode string) (contract.Input, error) {
@@ -640,16 +714,22 @@ func writeContextArtifacts(homePath, hookID string, req envelope.ContextRequest,
 	}, nil
 }
 
-func writeHookEvent(homePath string, ev envelope.HookEvent) error {
+type hookEventRecord struct {
+	envelope.HookEvent
+	BreakerTripped bool `json:"breaker_tripped,omitempty"`
+}
+
+func writeHookEvent(homePath string, ev envelope.HookEvent, breakerTripped bool) error {
+	record := hookEventRecord{HookEvent: ev, BreakerTripped: breakerTripped}
 	eventRef := filepath.Join("events", ev.Header.ID+".json")
-	if err := writeJSON(filepath.Join(homePath, eventRef), ev); err != nil {
+	if err := writeJSON(filepath.Join(homePath, eventRef), record); err != nil {
 		return err
 	}
 	streamPath := filepath.Join(homePath, "events", "hook-events.ndjson")
 	if err := os.MkdirAll(filepath.Dir(streamPath), 0o755); err != nil {
 		return err
 	}
-	b, err := json.Marshal(ev)
+	b, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}

@@ -110,6 +110,7 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 	fx := hook.Fixture{
 		Hook:    parsed.HookName,
 		Harness: normalizeLiveHarness(parsed.Harness),
+		Live:    parsed.Live,
 		Cwd:     in.Cwd,
 		Prompt:  in.Prompt,
 		Task:    liveTask(in),

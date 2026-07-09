@@ -36,6 +36,49 @@ func TestHookLiveSessionStartEmitsAdditionalContext(t *testing.T) {
 	}
 }
 
+func TestHookLiveSessionStartOrientErrorTripsBreaker(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	configDir := filepath.Join(homePath, "config")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "repo-kinds.yaml"), []byte("schema_version: definitely-wrong\nrepos: []\n"), 0o644); err != nil {
+		t.Fatalf("write malformed repo-kind registry: %v", err)
+	}
+
+	input := `{"hook_event_name":"SessionStart","session_id":"sess_breaker_error","cwd":"/repo/product","source":"startup"}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"session-start", "--live", "--harness", "claude-code"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("live session-start exit = %d, want fail-open 0\n%s", code, out)
+	}
+	var resp claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse live response: %v\n%s", err, out)
+	}
+	if resp.HookSpecificOutput.HookEventName != "SessionStart" {
+		t.Fatalf("hook event name = %q, want SessionStart", resp.HookSpecificOutput.HookEventName)
+	}
+	if resp.HookSpecificOutput.AdditionalContext != "" {
+		t.Fatalf("additionalContext = %q, want empty on breaker trip", resp.HookSpecificOutput.AdditionalContext)
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatalf("read hook event stream: %v", err)
+	}
+	if !strings.Contains(string(stream), `"breaker_tripped":true`) || !strings.Contains(string(stream), `"status":"fail_open"`) {
+		t.Fatalf("hook event stream missing breaker telemetry:\n%s", string(stream))
+	}
+}
+
 func TestHookLiveCodexSessionStartEmitsCodexContext(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
