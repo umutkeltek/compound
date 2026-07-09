@@ -58,7 +58,8 @@ type Fixture struct {
 	Prompt         string                        `json:"prompt,omitempty"` // user-prompt-submit; only hashed, never stored raw
 	Action         *envelope.ActionIntent        `json:"action,omitempty"` // pre-tool-use
 	SessionID      string                        `json:"session_id,omitempty"`
-	WorkID         string                        `json:"work_id,omitempty"` // session-end
+	WorkID         string                        `json:"work_id,omitempty"`         // session-end
+	TranscriptPath string                        `json:"transcript_path,omitempty"` // session-end/stop: the harness transcript to scan for consumed injected claims
 	MoveType       string                        `json:"move_type,omitempty"`
 	Outcome        string                        `json:"outcome,omitempty"`
 	Summary        string                        `json:"summary,omitempty"`
@@ -466,6 +467,10 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if deps.Store == nil {
 		return Result{}, fmt.Errorf("session-end needs a work store (run `compound home init`)")
 	}
+	// Consumption detection: which injected claims did this session actually reference?
+	// Fail-open — a missing/unreadable transcript yields (nil, declared=false) and NEVER
+	// blocks the close (falsifier). declared=true only when the detector actually ran.
+	consumedRefs, usedDeclared := detectSessionConsumption(deps, fx)
 	res, err := deps.Store.Close(fx.WorkID, work.CloseInput{
 		Outcome:                    outcome,
 		MoveType:                   moveType,
@@ -474,6 +479,8 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		UsedCapabilities:           fx.Used,
 		MissedCapabilities:         fx.Missed,
 		FalseTriggeredCapabilities: fx.FalseTriggered,
+		ConsumedRefs:               consumedRefs,
+		UsedDeclared:               usedDeclared,
 	}, now)
 	if err != nil {
 		return Result{}, err

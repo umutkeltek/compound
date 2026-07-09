@@ -132,6 +132,7 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 	case "session-end", "stop":
 		fx.WorkID = firstNonEmpty(in.WorkID, in.CompoundWorkID)
 		fx.SessionID = strings.TrimSpace(in.SessionID)
+		fx.TranscriptPath = strings.TrimSpace(in.TranscriptPath) // scanned for consumed injected claims (claude-code SessionEnd carries it)
 		if fx.WorkID == "" && fx.SessionID == "" {
 			return hook.Fixture{}, fmt.Errorf("%s live stdin needs work_id, compound_work_id, or session_id", parsed.HookName)
 		}
