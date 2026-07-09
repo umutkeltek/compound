@@ -525,10 +525,22 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if strings.TrimSpace(fx.SessionID) == "" {
 			return Result{}, fmt.Errorf("session-end fixture needs work_id or session_id")
 		}
-		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.Cwd, fx.Summary}, "\x00"))
+		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.Cwd, fx.Summary, fx.TranscriptPath}, "\x00"))
 		ev := newEvent(name, fx, st, inputHash, nil, now)
 		summary := fmt.Sprintf("recorded %s receipt event for session %s%s", name, fx.SessionID, warn)
-		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
+		rec, err := buildWorklessSessionReceipt(name, fx, now)
+		if err != nil || rec == nil {
+			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
+		}
+		ref := receiptEventRef(rec)
+		if strings.TrimSpace(deps.HomePath) != "" {
+			if err := writeJSON(filepath.Join(deps.HomePath, ref), rec); err != nil {
+				return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
+			}
+			ev.SideEffects = append(ev.SideEffects, ref)
+		}
+		summary = fmt.Sprintf("recorded %s content receipt event for session %s, receipt %s%s", name, fx.SessionID, rec.ID, warn)
+		return Result{Event: ev, Produced: []envelope.Envelope{rec}, Summary: summary}, nil
 	}
 	outcome := strings.TrimSpace(fx.Outcome)
 	moveType := strings.TrimSpace(fx.MoveType)

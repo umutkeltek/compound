@@ -48,12 +48,43 @@ func detectSessionConsumption(deps Deps, fx Fixture) (consumed []string, declare
 	if path == "" {
 		return nil, false
 	}
-	data, err := os.ReadFile(path)
+	consumed, declared, err := detectTranscriptConsumption(path, injectedClaimRefs(deps, fx))
 	if err != nil {
 		return nil, false
 	}
-	// The detector ran: the receipt now DECLARES (even if it finds nothing).
-	return matchConsumedClaims(injectedClaimRefs(deps, fx), string(data)), true
+	return consumed, declared
+}
+
+func detectTranscriptConsumption(path string, injectedRefs []string) (consumed []string, declared bool, err error) {
+	refs := dedupeClaimRefs(injectedRefs)
+	if len(refs) == 0 {
+		refs, err = transcriptInjectedClaimRefs(path)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(refs) == 0 {
+			return nil, true, nil
+		}
+	}
+	consumed, err = matchConsumedClaimsFromFile(path, refs)
+	if err != nil {
+		return nil, false, err
+	}
+	return consumed, true, nil
+}
+
+func dedupeClaimRefs(refs []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
 }
 
 // injectedClaimRefs resolves the injected claim:// refs for the closing work via its
