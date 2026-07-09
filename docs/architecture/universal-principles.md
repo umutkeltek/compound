@@ -89,7 +89,7 @@ all sitting on top of one architectural commitment: *own the substrate, rent the
 3. Route to the cheapest sufficient capability.
 4. Store evidence, not truth.
 5. Recall only what is relevant.
-6. Keep humans on irreversible decisions.
+6. Keep humans on irreversible decisions. *(by setting the envelope, not by being paged: standing grants of scope, budget, and blast radius are the mechanism; inside the envelope the agent acts without asking and escalates only to leave it. A nagging agent is violating this law, not enforcing it.)*
 7. Convert repetition into infrastructure.
 8. Learn from failures as aggressively as successes.
 9. Make everything observable.
@@ -115,3 +115,19 @@ all sitting on top of one architectural commitment: *own the substrate, rent the
 ---
 
 *Snapshot v2 — a living set, meant to be versioned forward. When a frontier item gets resolved, move it up into a numbered principle and bump the version. Pairs with the execution layer (OPERATING-MAP / Solo-Builder Execution Layer), which instantiates every law above in a concrete system.*
+
+## Writing principles that route behavior · *the quality bar*
+
+A principle earns injection into agent context only if it:
+1. **names its trigger** — when it applies;
+2. **changes a specific decision** — an agent acts differently because it read it;
+3. **carries the failure it prevents** — its falsifier;
+4. **scales with risk** (Law 16) — it never adds uniform caution;
+5. **contains no moral vocabulary without an operational test** — "be careful / honest / responsible" is noise unless it names the check that satisfies it.
+
+A principle that fails the bar is calibration debt: hosted models arrive with default
+conservatism baked in, and unoperational caution text compounds it — the system asks
+instead of works. The injected surface must state what an agent may do *without* asking
+(the envelope) at least as clearly as what requires approval. Structural minimum enforced
+at import: an instruction rule declares when it fires and at least one boundary naming
+what it prevents.

@@ -1445,3 +1445,53 @@ func TestConsumeFromDistillerInbox(t *testing.T) {
 		t.Errorf("re-consume must be idempotent: score %v -> %v", score1, score2)
 	}
 }
+
+// TestInstructionRuleImportRefusesUnoperationalRule pins the principle quality bar
+// (docs/architecture/universal-principles.md — "Writing principles that route behavior"):
+// an instruction rule that does not declare when it fires and at least one boundary
+// naming what it prevents is refused at the import door, never applied.
+func TestInstructionRuleImportRefusesUnoperationalRule(t *testing.T) {
+	home := t.TempDir()
+	manifest := SkillManifest{
+		SchemaVersion: SkillManifestSchemaVersion,
+		ID:            "instr_quality_bar_test",
+		AdapterID:     "fixture.test",
+		SourceSystem:  "test",
+		ObservedAt:    "2026-07-10T00:00:00Z",
+		SourceRef: SkillSourceRef{
+			Path: "fixtures/test.yaml", Kind: "authority_fixture",
+			Owner: "capability-graph", SourceClass: "source", Revision: "v1",
+		},
+		EvidenceRefs: []string{"test"},
+		Skills: []SkillManifestEntry{{
+			ID: "instruction_rule:unoperational", Kind: "instruction_rule",
+			Name: "Be Careful", Status: "active", Triggers: []string{"careful"},
+			// no when, no boundary, no read, no route, no tier — moral vocabulary without an operational test
+		}},
+	}
+	if _, err := ApplySkillManifest(home, manifest, time.Now()); err == nil {
+		t.Fatalf("unoperational instruction rule must be refused at import")
+	}
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := store.Surface("careful"); err != nil {
+		t.Fatal(err)
+	} else if surfacedByID(hits, "instruction_rule:unoperational") != nil {
+		t.Fatalf("refused rule must not be applied/surfaced")
+	}
+
+	manifest.Skills[0] = SkillManifestEntry{
+		ID: "instruction_rule:operational", Kind: "instruction_rule",
+		Name: "Act Inside the Envelope", Status: "active", Triggers: []string{"permission"},
+		When:     []InstructionRuleWhen{{Kind: "phase", Values: []string{"execute"}}},
+		Read:     []string{"docs/architecture/universal-principles.md"},
+		Route:    []InstructionRoute{{Output: "decision", Destination: "compound://policy"}},
+		Boundary: []string{"reversible action inside an admitted envelope is done, not asked about"},
+		Tier:     1, Weight: 2,
+	}
+	if _, err := ApplySkillManifest(home, manifest, time.Now()); err != nil {
+		t.Fatalf("operational rule must import: %v", err)
+	}
+}
