@@ -194,3 +194,57 @@ func TestCloseRefusalAppendsIdempotentTrail(t *testing.T) {
 		t.Fatalf("expected 2 refusal events on the trail (idempotent-safe, not deduped-away or corrupted), got %d: %+v", refusals, evs)
 	}
 }
+
+// ClosePlan (the non-mutating preview) must report the same lease-holder denial the real
+// close would hit, without recording or mutating anything — the plan surface reports the
+// denial too, per the packet's insertion point at close_plan.go.
+func TestClosePlanReportsLeaseHolderDenialWithoutMutating(t *testing.T) {
+	s := newStore(t)
+	workID := readyRunningWork(t, s) // claimed + advanced to running by "codex"
+	before, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{Actor: "actor-b", Outcome: "completed", MoveType: "control_plane_repair"})
+	if err != nil {
+		t.Fatalf("close-plan: %v", err)
+	}
+	if plan.NoAction == "" || !strings.Contains(plan.NoAction, "codex") {
+		t.Fatalf("close-plan must report the lease holder denial, got NoAction=%q", plan.NoAction)
+	}
+	if len(plan.CloseCommand) != 0 {
+		t.Fatalf("close-plan must not offer a close command when lease-blocked: %v", plan.CloseCommand)
+	}
+	after, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) {
+		t.Fatalf("close-plan must not mutate work: before=%+v after=%+v", before, after)
+	}
+
+	// With a valid steal, the plan reports steal-readiness and the printed close command
+	// carries --steal --reason.
+	stealPlan, err := s.ClosePlan(workID, fixedNow, ClosePlanOptions{
+		Actor: "actor-b", Outcome: "completed", MoveType: "control_plane_repair",
+		Steal: true, StealReason: "codex executor is dead",
+	})
+	if err != nil {
+		t.Fatalf("close-plan with steal: %v", err)
+	}
+	if len(stealPlan.CloseCommand) == 0 {
+		t.Fatalf("steal-ready close-plan must offer a close command: %+v", stealPlan)
+	}
+	if !commandHasFlagValue(stealPlan.CloseCommand, "--reason", "codex executor is dead") {
+		t.Fatalf("steal-ready close command must carry --reason: %v", stealPlan.CloseCommand)
+	}
+	found := false
+	for _, part := range stealPlan.CloseCommand {
+		if part == "--steal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("steal-ready close command must carry --steal: %v", stealPlan.CloseCommand)
+	}
+}

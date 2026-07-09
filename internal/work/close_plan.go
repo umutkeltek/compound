@@ -27,6 +27,12 @@ type ClosePlanOptions struct {
 	TargetID       string
 	TargetPath     string
 	Record         bool
+	// Steal and StealReason preview the close-gate lease escape hatch (see CloseInput in
+	// work.go): when set with a non-empty reason, the plan reports the close as steal-ready
+	// (and its CloseCommand carries --steal --reason) instead of held-by-other. ClosePlan
+	// never mutates or records anything for this preview — only Close (work.go) does.
+	Steal       bool
+	StealReason string
 }
 
 type ClosePolicySummary struct {
@@ -204,6 +210,7 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		}
 	}
 	heldReleaseErr := heldReleaseOperatorError(w.State, outcome, actor)
+	leaseStatus := s.leaseHolderStatusFor(w.ID, actor, opts.Steal, opts.StealReason)
 	switch {
 	case !terminalStates[outcome]:
 		plan.NoAction = fmt.Sprintf("invalid close outcome %q", outcome)
@@ -211,8 +218,14 @@ func (s *Store) ClosePlan(workID string, now time.Time, opts ClosePlanOptions) (
 		plan.NoAction = fmt.Sprintf("invalid move_type %q", moveType)
 	case heldReleaseErr != nil:
 		plan.NoAction = heldReleaseErr.Error()
+	case leaseStatus.Blocked:
+		plan.NoAction = leaseStatus.Message
 	case w.State == outcome || canTransition(w.State, outcome):
 		plan.CloseCommand = []string{"compound", "work", "close", w.ID, "--outcome", outcome, "--move-type", moveType, "--by", actor}
+		if leaseStatus.Stolen {
+			plan.CloseCommand = append(plan.CloseCommand, "--steal", "--reason", opts.StealReason)
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("lease held by %q; close command carries --steal --reason", leaseStatus.Holder))
+		}
 		if len(proofRefs) > 0 {
 			plan.CloseCommand = append(plan.CloseCommand, "--proof", strings.Join(proofRefs, ","))
 		}
