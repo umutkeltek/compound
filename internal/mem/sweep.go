@@ -16,7 +16,7 @@ const SynthesisSweepSchemaVersion = "compound.synthesis_sweep.v0.1"
 // corroboration (decisions-down landfill guard).
 const DecayReasonExpired = "parked_stale_never_reinforced"
 
-var synthesisSweepStages = []string{"cluster", "contradict", "corroborate", "decay"}
+var synthesisSweepStages = []string{"cluster", "contradict", "corroborate", "decay", "reconcile"}
 
 type SynthesisSweepReport struct {
 	SchemaVersion              string                           `json:"schema_version"`
@@ -29,6 +29,11 @@ type SynthesisSweepReport struct {
 	ContradictionProposalCount int                              `json:"contradiction_proposal_count"`
 	CorroborationProposalCount int                              `json:"corroboration_proposal_count"`
 	DecayedCount               int                              `json:"decayed_count"`
+	ReconcileDismissedCount    int                              `json:"dismissed_count"`
+	ReconcileReopenedCount     int                              `json:"reopened_count"`
+	ReconcileRaisedCount       int                              `json:"raised_count"`
+	ReconcileDecayRoutedCount  int                              `json:"decay_routed_count"`
+	ReconcileParkedCount       int                              `json:"parked_count"`
 	ReviewDebtCount            int                              `json:"review_debt_count"`
 	Clusters                   []SynthesisCluster               `json:"clusters,omitempty"`
 	EchoFoldProposals          []SynthesisEchoFoldProposal      `json:"echo_fold_proposals,omitempty"`
@@ -37,6 +42,7 @@ type SynthesisSweepReport struct {
 	ReopenedClaims             []SynthesisClaimReview           `json:"reopened_claims,omitempty"`
 	RaisedSeeds                []SynthesisSeedReview            `json:"raised_seeds,omitempty"`
 	Decayed                    []SynthesisDecayAction           `json:"decayed,omitempty"`
+	ReconcileParkedReasons     []SynthesisReconcileParkedReason `json:"parked_reasons,omitempty"`
 }
 
 // SynthesisDecayAction records one parked candidate filed to no_promote by the decay stage.
@@ -175,6 +181,11 @@ func (s *Store) SynthesisSweep(stages []string, now time.Time) (SynthesisSweepRe
 		}
 		report.Decayed = decayed
 		report.DecayedCount = len(decayed)
+	}
+	if stageSet["reconcile"] {
+		if err := s.synthesisReconcile(&report, now); err != nil {
+			return report, err
+		}
 	}
 	return report, nil
 }

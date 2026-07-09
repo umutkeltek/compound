@@ -81,7 +81,7 @@ type synthesisSeedCorroborationArtifact struct {
 
 func cmdSynthesis(args []string) {
 	if len(args) == 0 || args[0] != "sweep" {
-		fmt.Fprintln(os.Stderr, "usage: compound synthesis sweep [--stage cluster,contradict,corroborate,decay] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound synthesis sweep [--stage cluster,contradict,corroborate,decay,reconcile] [--json]")
 		os.Exit(2)
 	}
 	var stages []string

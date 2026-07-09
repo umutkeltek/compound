@@ -308,7 +308,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
 	compound memory <candidate|candidates|import-page|import-topics|adjudicate|recall|timeline|fold|position|query|search --lane L|engine-doctor|engine-compare [--allow-expansion]|bakeoff <init|run>|doctor>
 	              spine memory: candidates, claims, positions, patterns, evidence
   compound corpus <index --lane L [--rebuild]|doctor --lane L [--json]> rebuildable corpus vector indexes
-  compound synthesis sweep [--stage cluster,contradict,corroborate,decay] [--json]
+  compound synthesis sweep [--stage cluster,contradict,corroborate,decay,reconcile] [--json]
                 memory synthesis reports; contradictions append needs_review markers only; decay files expired parks
   compound distiller eval <case.json|cases-dir> [--record]    Offline request/response/adjudication eval corpus, no model call
   compound distiller eval-plan --candidate C [--corpus dir]   eval_case candidate -> reviewed eval fixture draft, no corpus mutation

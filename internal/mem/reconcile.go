@@ -1,0 +1,610 @@
+package mem
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"compound/internal/envelope"
+)
+
+const (
+	reconcileCheckpointSchema = "compound.synthesis_reconcile_checkpoint.v0.1"
+	reconcileParkSampleLimit  = 5
+	reconcileConfidenceFloor  = 0.5
+
+	reconcileParkMissingDate          = "missing_date"
+	reconcileParkUnlinkedClaim        = "unlinked_claim"
+	reconcileParkAmbiguous            = "ambiguous"
+	reconcileParkLowConfidence        = "low_confidence"
+	reconcileParkIneligibleDerivation = "ineligible_derivation"
+)
+
+type reconcileDisposition string
+
+const (
+	reconcileDispositionDismiss    reconcileDisposition = "dismiss"
+	reconcileDispositionReopen     reconcileDisposition = "reopen"
+	reconcileDispositionRaise      reconcileDisposition = "raise"
+	reconcileDispositionDecayRoute reconcileDisposition = "decay-route"
+	reconcileDispositionPark       reconcileDisposition = "park"
+)
+
+var reconcileDispositions = []reconcileDisposition{
+	reconcileDispositionDismiss,
+	reconcileDispositionReopen,
+	reconcileDispositionRaise,
+	reconcileDispositionDecayRoute,
+	reconcileDispositionPark,
+}
+
+var reconcileActedDispositions = []reconcileDisposition{
+	reconcileDispositionReopen,
+	reconcileDispositionRaise,
+	reconcileDispositionDecayRoute,
+}
+
+type SynthesisReconcileParkedReason struct {
+	Reason   string   `json:"reason"`
+	Count    int      `json:"count"`
+	EventIDs []string `json:"event_ids,omitempty"`
+}
+
+type reconcileCheckpoint struct {
+	SchemaVersion       string                 `json:"schema_version"`
+	UpdatedAt           string                 `json:"updated_at"`
+	Since               string                 `json:"since"`
+	LastEventID         string                 `json:"last_event_id,omitempty"`
+	LastEventTime       string                 `json:"last_event_time,omitempty"`
+	DecayRoutedRefs     []string               `json:"decay_routed_refs,omitempty"`
+	LastProcessedReport SynthesisSweepReport   `json:"last_processed_report"`
+	ParkedReasons       map[string][]string    `json:"parked_reasons,omitempty"`
+	Counts              map[string]int         `json:"counts,omitempty"`
+	Meta                map[string]interface{} `json:"meta,omitempty"`
+}
+
+type reconcileEvent struct {
+	ID          string
+	CreatedAt   time.Time
+	Kind        string
+	ScopeEntity string
+	ClaimRefs   []string
+}
+
+func (s *Store) synthesisReconcile(report *SynthesisSweepReport, now time.Time) error {
+	checkpoint, err := s.loadReconcileCheckpoint(now)
+	if err != nil {
+		return err
+	}
+	events, err := s.loadReconcileEvents(checkpoint, now)
+	if err != nil {
+		return err
+	}
+	claims, err := s.loadClaims()
+	if err != nil {
+		return err
+	}
+	candidates, err := s.AllCandidates()
+	if err != nil {
+		return err
+	}
+	if report.ClaimCount == 0 {
+		report.ClaimCount = len(claims)
+	}
+	if report.CandidateCount == 0 {
+		report.CandidateCount = len(candidates)
+	}
+
+	positions, err := s.Positions()
+	if err != nil {
+		return err
+	}
+	activePositionClaims := map[string]bool{}
+	for _, position := range positions {
+		activePositionClaims[position.ActiveClaimID] = true
+	}
+
+	superseded, err := s.supersededAsOf(s.maxSeq(claims))
+	if err != nil {
+		return err
+	}
+	reviewMarks, err := s.claimReviewMarksAsOf(0)
+	if err != nil {
+		return err
+	}
+	claimsByID := claimsByID(claims)
+	currentByCluster, err := s.currentClaimsByCluster(claims, superseded)
+	if err != nil {
+		return err
+	}
+	parked := newReconcileParkedReasons()
+	routedRefs := map[string]bool{}
+	for _, ref := range checkpoint.DecayRoutedRefs {
+		routedRefs[ref] = true
+	}
+
+	var proposals []SynthesisContradictionProposal
+	reopenClaims := map[string]Claim{}
+	reopenEvidence := map[string]Candidate{}
+	protectedFromClear := map[string]bool{}
+	for claimID := range reviewMarks {
+		protectedFromClear[claimID] = true
+	}
+	recentClaimIDs := map[string]bool{}
+	var lastEvent *reconcileEvent
+	for i := range events {
+		event := events[i]
+		lastEvent = &event
+		if event.Kind == "receipt" {
+			for _, claimID := range event.ClaimRefs {
+				if _, ok := claimsByID[claimID]; !ok {
+					parked.add(reconcileParkUnlinkedClaim, event.ID)
+					continue
+				}
+				ref := "receipt:" + event.ID + ":claim:" + claimID
+				if routedRefs[ref] {
+					continue
+				}
+				routedRefs[ref] = true
+				report.ReconcileDecayRoutedCount++
+			}
+			continue
+		}
+		for _, claimID := range event.ClaimRefs {
+			evidence, ok := claimsByID[claimID]
+			if !ok {
+				parked.add(reconcileParkUnlinkedClaim, event.ID)
+				continue
+			}
+			recentClaimIDs[claimID] = true
+			disposition, proposal, synthetic, reason, err := s.reconcileEvidenceDisposition(event, evidence, currentByCluster, superseded, reviewMarks, activePositionClaims)
+			if err != nil {
+				return err
+			}
+			switch disposition {
+			case reconcileDispositionDismiss:
+				report.ReconcileDismissedCount++
+			case reconcileDispositionPark:
+				parked.add(reason, event.ID)
+			case reconcileDispositionReopen:
+				proposals = append(proposals, proposal)
+				for _, id := range proposal.ClaimIDs {
+					if claim, ok := claimsByID[id]; ok {
+						reopenClaims[id] = claim
+						protectedFromClear[id] = true
+					}
+				}
+				if synthetic.ID != "" {
+					reopenEvidence[synthetic.ID] = synthetic
+				}
+			}
+		}
+	}
+
+	if len(proposals) > 0 {
+		reopened, err := s.reopenClaimsForContradictions(proposals, reopenClaims, reopenEvidence, protectedFromClear, now)
+		if err != nil {
+			return err
+		}
+		report.ReopenedClaims = append(report.ReopenedClaims, reopened...)
+		report.ReconcileReopenedCount += len(reopened)
+		report.ReviewDebtCount += len(reopened)
+	}
+
+	recentClaims := filterClaimsByID(claims, recentClaimIDs)
+	if len(recentClaims) > 0 {
+		_, raised, err := s.synthesisCorroborations(recentClaims, candidates, now)
+		if err != nil {
+			return err
+		}
+		report.RaisedSeeds = append(report.RaisedSeeds, raised...)
+		report.ReconcileRaisedCount += len(raised)
+		report.ReviewDebtCount += len(raised)
+	}
+
+	for _, candidate := range candidates {
+		if candidate.State != "parked" || !candidateExpired(candidate, now) {
+			continue
+		}
+		ref := "candidate:" + candidate.ID
+		if routedRefs[ref] {
+			continue
+		}
+		routedRefs[ref] = true
+		report.ReconcileDecayRoutedCount++
+	}
+
+	report.ReconcileParkedReasons = parked.report()
+	for _, reason := range report.ReconcileParkedReasons {
+		report.ReconcileParkedCount += reason.Count
+	}
+	checkpoint.DecayRoutedRefs = sortedKeysBool(routedRefs)
+	if lastEvent != nil {
+		checkpoint.LastEventID = lastEvent.ID
+		checkpoint.LastEventTime = rfc3339(lastEvent.CreatedAt)
+	}
+	return s.writeReconcileCheckpoint(checkpoint, *report, now)
+}
+
+func (s *Store) reconcileEvidenceDisposition(event reconcileEvent, evidence Claim, currentByCluster map[string][]Claim, superseded map[string]bool, marks map[string]claimReviewMark, activePositionClaims map[string]bool) (reconcileDisposition, SynthesisContradictionProposal, Candidate, string, error) {
+	if !sameEntityScope(event.ScopeEntity, evidence.Entity) {
+		return reconcileDispositionDismiss, SynthesisContradictionProposal{}, Candidate{}, "", nil
+	}
+	if superseded[evidence.ID] || evidence.Visibility == "retired" {
+		return reconcileDispositionDismiss, SynthesisContradictionProposal{}, Candidate{}, "", nil
+	}
+	if evidence.Confidence < reconcileConfidenceFloor {
+		return reconcileDispositionPark, SynthesisContradictionProposal{}, Candidate{}, reconcileParkLowConfidence, nil
+	}
+	if !reconcileLinkableDerivation(evidence.Derivation) {
+		return reconcileDispositionPark, SynthesisContradictionProposal{}, Candidate{}, reconcileParkIneligibleDerivation, nil
+	}
+	clusterKey, err := s.claimClusterKey(evidence)
+	if err != nil {
+		return "", SynthesisContradictionProposal{}, Candidate{}, "", err
+	}
+	if strings.TrimSpace(clusterKey) == "" {
+		return reconcileDispositionPark, SynthesisContradictionProposal{}, Candidate{}, reconcileParkAmbiguous, nil
+	}
+	targets := currentByCluster[clusterKey]
+	var different []Claim
+	objects := map[string]bool{NormalizeClaimValue(evidence.Object): true}
+	for _, target := range targets {
+		if target.ID == evidence.ID {
+			continue
+		}
+		if SameClaimObject(target.Object, evidence.Object) {
+			continue
+		}
+		different = append(different, target)
+		objects[NormalizeClaimValue(target.Object)] = true
+	}
+	if len(different) == 0 {
+		if activePositionClaims[evidence.ID] || len(targets) <= 1 {
+			return reconcileDispositionDismiss, SynthesisContradictionProposal{}, Candidate{}, "", nil
+		}
+		return reconcileDispositionDismiss, SynthesisContradictionProposal{}, Candidate{}, "", nil
+	}
+	evidenceAt, ok := parseReconcileClaimDate(evidence)
+	if !ok {
+		return reconcileDispositionPark, SynthesisContradictionProposal{}, Candidate{}, reconcileParkMissingDate, nil
+	}
+	var eligible []Claim
+	for _, target := range different {
+		targetAt, ok := parseReconcileClaimDate(target)
+		if !ok {
+			return reconcileDispositionPark, SynthesisContradictionProposal{}, Candidate{}, reconcileParkMissingDate, nil
+		}
+		if !evidenceAt.After(targetAt) {
+			continue
+		}
+		if _, marked := marks[target.ID]; marked {
+			continue
+		}
+		eligible = append(eligible, target)
+	}
+	if len(eligible) == 0 {
+		return reconcileDispositionDismiss, SynthesisContradictionProposal{}, Candidate{}, "", nil
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].Seq == eligible[j].Seq {
+			return eligible[i].ID < eligible[j].ID
+		}
+		return eligible[i].Seq < eligible[j].Seq
+	})
+	claimIDs := make([]string, 0, len(eligible))
+	for _, claim := range eligible {
+		claimIDs = append(claimIDs, claim.ID)
+	}
+	objectList := sortedKeysBool(objects)
+	syntheticID := "claim:" + evidence.ID
+	proposal := SynthesisContradictionProposal{
+		ID:           idFor("synth_reconcile_contradiction_", clusterKey, strings.Join(claimIDs, ","), syntheticID, strings.Join(objectList, ",")),
+		ClusterKey:   clusterKey,
+		ClaimIDs:     claimIDs,
+		CandidateIDs: []string{syntheticID},
+		Objects:      objectList,
+	}
+	synthetic := Candidate{ID: syntheticID, Object: evidence.Object, Confidence: evidence.Confidence}
+	return reconcileDispositionReopen, proposal, synthetic, "", nil
+}
+
+func reconcileLinkableDerivation(derivation string) bool {
+	switch strings.TrimSpace(derivation) {
+	case "deterministic", "extracted":
+		return true
+	default:
+		return false
+	}
+}
+
+func sameEntityScope(scopeEntity, entity string) bool {
+	scopeEntity = strings.TrimSpace(scopeEntity)
+	if scopeEntity == "" {
+		return true
+	}
+	return NormalizeClaimValue(scopeEntity) == NormalizeClaimValue(entity)
+}
+
+func parseReconcileClaimDate(claim Claim) (time.Time, bool) {
+	raw := strings.TrimSpace(claim.ValidFrom)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	return t, err == nil
+}
+
+func claimsByID(claims []Claim) map[string]Claim {
+	out := make(map[string]Claim, len(claims))
+	for _, claim := range claims {
+		out[claim.ID] = claim
+	}
+	return out
+}
+
+func filterClaimsByID(claims []Claim, ids map[string]bool) []Claim {
+	out := make([]Claim, 0, len(ids))
+	for _, claim := range claims {
+		if ids[claim.ID] {
+			out = append(out, claim)
+		}
+	}
+	return out
+}
+
+func (s *Store) currentClaimsByCluster(claims []Claim, superseded map[string]bool) (map[string][]Claim, error) {
+	out := map[string][]Claim{}
+	for _, claim := range claims {
+		if superseded[claim.ID] || claim.Visibility == "retired" {
+			continue
+		}
+		key, err := s.claimClusterKey(claim)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = append(out[key], claim)
+	}
+	for key := range out {
+		sort.Slice(out[key], func(i, j int) bool {
+			if out[key][i].Seq == out[key][j].Seq {
+				return out[key][i].ID < out[key][j].ID
+			}
+			return out[key][i].Seq < out[key][j].Seq
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) loadReconcileEvents(checkpoint reconcileCheckpoint, now time.Time) ([]reconcileEvent, error) {
+	dir := filepath.Join(s.home, "events")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	since := now.AddDate(0, 0, -30)
+	if checkpoint.Since != "" {
+		if t, err := time.Parse(time.RFC3339, checkpoint.Since); err == nil {
+			since = t
+		}
+	}
+	lastTime, hasLast := time.Time{}, false
+	if checkpoint.LastEventTime != "" {
+		if t, err := time.Parse(time.RFC3339, checkpoint.LastEventTime); err == nil {
+			lastTime, hasLast = t, true
+		}
+	}
+
+	var out []reconcileEvent
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		event, ok, err := readReconcileEvent(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if event.CreatedAt.Before(since) {
+			continue
+		}
+		if hasLast {
+			if event.CreatedAt.Before(lastTime) || (event.CreatedAt.Equal(lastTime) && event.ID <= checkpoint.LastEventID) {
+				continue
+			}
+		}
+		out = append(out, event)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func readReconcileEvent(path string) (reconcileEvent, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return reconcileEvent{}, false, err
+	}
+	kind, err := envelope.ValidateBytes(data)
+	if err != nil {
+		return reconcileEvent{}, false, fmt.Errorf("load event %s: %w", filepath.Base(path), err)
+	}
+	switch kind {
+	case "transition":
+		var tr envelope.Transition
+		if err := json.Unmarshal(data, &tr); err != nil {
+			return reconcileEvent{}, false, err
+		}
+		refs := transitionMemoryClaimRefs(tr)
+		if len(refs) == 0 {
+			return reconcileEvent{}, false, nil
+		}
+		createdAt, err := time.Parse(time.RFC3339, tr.CreatedAt)
+		if err != nil {
+			return reconcileEvent{}, false, fmt.Errorf("transition %s created_at: %w", tr.ID, err)
+		}
+		return reconcileEvent{ID: tr.ID, CreatedAt: createdAt, Kind: "transition", ScopeEntity: tr.Scope.EntityID, ClaimRefs: refs}, true, nil
+	case "receipt":
+		var rec envelope.Receipt
+		if err := json.Unmarshal(data, &rec); err != nil {
+			return reconcileEvent{}, false, err
+		}
+		if !rec.Skills.UsedDeclared {
+			return reconcileEvent{}, false, nil
+		}
+		refs := claimRefsFromUsed(rec.Skills.Used)
+		if len(refs) == 0 {
+			return reconcileEvent{}, false, nil
+		}
+		createdAt, err := time.Parse(time.RFC3339, rec.CreatedAt)
+		if err != nil {
+			return reconcileEvent{}, false, fmt.Errorf("receipt %s created_at: %w", rec.ID, err)
+		}
+		return reconcileEvent{ID: rec.ID, CreatedAt: createdAt, Kind: "receipt", ScopeEntity: rec.Scope.EntityID, ClaimRefs: refs}, true, nil
+	default:
+		return reconcileEvent{}, false, nil
+	}
+}
+
+func transitionMemoryClaimRefs(tr envelope.Transition) []string {
+	var refs []string
+	refs = append(refs, tr.Projections.Memory...)
+	for _, ref := range tr.AfterRefs {
+		refs = append(refs, normalizeReconcileClaimRef(ref))
+	}
+	for _, ref := range tr.EvidenceRefs {
+		refs = append(refs, normalizeReconcileClaimRef(ref))
+	}
+	return uniqueNonEmptyClaimRefs(refs)
+}
+
+func claimRefsFromUsed(values []string) []string {
+	refs := make([]string, 0, len(values))
+	for _, value := range values {
+		refs = append(refs, normalizeReconcileClaimRef(value))
+	}
+	return uniqueNonEmptyClaimRefs(refs)
+}
+
+func normalizeReconcileClaimRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "claim://")
+	ref = strings.TrimPrefix(ref, "claim:")
+	if !strings.HasPrefix(ref, "claim_") {
+		return ""
+	}
+	return ref
+}
+
+func uniqueNonEmptyClaimRefs(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = normalizeReconcileClaimRef(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Store) reconcileDir() string {
+	return filepath.Join(s.home, "reviews", "reconcile")
+}
+
+func (s *Store) reconcileCheckpointPath() string {
+	return filepath.Join(s.reconcileDir(), "checkpoint.json")
+}
+
+func (s *Store) loadReconcileCheckpoint(now time.Time) (reconcileCheckpoint, error) {
+	checkpoint := reconcileCheckpoint{
+		SchemaVersion: reconcileCheckpointSchema,
+		Since:         rfc3339(now.AddDate(0, 0, -30)),
+	}
+	if err := readJSON(s.reconcileCheckpointPath(), &checkpoint); err != nil {
+		if strings.HasPrefix(err.Error(), "not found:") {
+			return checkpoint, nil
+		}
+		return checkpoint, err
+	}
+	if checkpoint.SchemaVersion == "" {
+		checkpoint.SchemaVersion = reconcileCheckpointSchema
+	}
+	if checkpoint.Since == "" {
+		checkpoint.Since = rfc3339(now.AddDate(0, 0, -30))
+	}
+	return checkpoint, nil
+}
+
+func (s *Store) writeReconcileCheckpoint(checkpoint reconcileCheckpoint, report SynthesisSweepReport, now time.Time) error {
+	if err := os.MkdirAll(s.reconcileDir(), 0o755); err != nil {
+		return err
+	}
+	checkpoint.SchemaVersion = reconcileCheckpointSchema
+	checkpoint.UpdatedAt = rfc3339(now)
+	checkpoint.LastProcessedReport = report
+	checkpoint.Counts = map[string]int{
+		string(reconcileDispositionDismiss):    report.ReconcileDismissedCount,
+		string(reconcileDispositionReopen):     report.ReconcileReopenedCount,
+		string(reconcileDispositionRaise):      report.ReconcileRaisedCount,
+		string(reconcileDispositionDecayRoute): report.ReconcileDecayRoutedCount,
+		string(reconcileDispositionPark):       report.ReconcileParkedCount,
+	}
+	checkpoint.ParkedReasons = map[string][]string{}
+	for _, reason := range report.ReconcileParkedReasons {
+		checkpoint.ParkedReasons[reason.Reason] = append([]string(nil), reason.EventIDs...)
+	}
+	return writeJSON(s.reconcileCheckpointPath(), checkpoint)
+}
+
+type reconcileParkedReasons struct {
+	counts  map[string]int
+	samples map[string][]string
+}
+
+func newReconcileParkedReasons() *reconcileParkedReasons {
+	return &reconcileParkedReasons{
+		counts:  map[string]int{},
+		samples: map[string][]string{},
+	}
+}
+
+func (r *reconcileParkedReasons) add(reason, eventID string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = reconcileParkAmbiguous
+	}
+	r.counts[reason]++
+	if len(r.samples[reason]) < reconcileParkSampleLimit && strings.TrimSpace(eventID) != "" {
+		r.samples[reason] = append(r.samples[reason], eventID)
+	}
+}
+
+func (r *reconcileParkedReasons) report() []SynthesisReconcileParkedReason {
+	reasons := sortedKeys(r.counts)
+	out := make([]SynthesisReconcileParkedReason, 0, len(reasons))
+	for _, reason := range reasons {
+		out = append(out, SynthesisReconcileParkedReason{
+			Reason:   reason,
+			Count:    r.counts[reason],
+			EventIDs: append([]string(nil), r.samples[reason]...),
+		})
+	}
+	return out
+}
