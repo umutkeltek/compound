@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -239,4 +240,84 @@ func firstMemoryPos(args []string, valueFlags map[string]bool) string {
 		return arg
 	}
 	return ""
+}
+
+// cmdMemoryTemperature is the read/rebuild door onto the memory-temperature projection (Weng
+// item 5): the derived reinforcement score (consumed reinforces, ignored cools, decayed by
+// recency) that feeds ambient recall ranking as a bounded additive term. --rebuild joins the
+// capability-usage projection against current claims and writes
+// projections/memory-temperature.json (also the lander's live-artifact step); the default read
+// renders a summary of the last-built projection.
+func cmdMemoryTemperature(homePath string, args []string) {
+	wantJSON := hasFlag(args, "--json")
+	if hasFlag(args, "--rebuild") {
+		proj, err := mem.BuildTemperature(homePath, mem.TemperatureBuildOptions{Now: time.Now()})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		path, err := mem.WriteTemperature(homePath, proj)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		if wantJSON {
+			printJSON(proj)
+			return
+		}
+		fmt.Println("# memory temperature (rebuilt)")
+		fmt.Printf("- wrote: %s\n", path)
+		printTemperatureSummary(proj)
+		return
+	}
+
+	proj, ok, err := mem.ReadTemperature(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if !ok {
+		if wantJSON {
+			printJSON(mem.TemperatureProjection{
+				SchemaVersion: mem.TemperatureSchemaVersion,
+				ProjectionRef: mem.TemperatureProjectionRef,
+				Entries:       []mem.TemperatureEntry{},
+			})
+			return
+		}
+		fmt.Println("# memory temperature")
+		fmt.Println("- projection not built yet; run `compound memory temperature --rebuild`")
+		return
+	}
+	if wantJSON {
+		printJSON(proj)
+		return
+	}
+	fmt.Println("# memory temperature")
+	printTemperatureSummary(proj)
+}
+
+// printTemperatureSummary renders the human view: computed_at, entry count, and the warmest N
+// entries (temperature desc, then claim_id) with their consumed/ignored reinforcement counts.
+func printTemperatureSummary(proj mem.TemperatureProjection) {
+	fmt.Printf("- computed_at: %s\n", proj.ComputedAt)
+	fmt.Printf("- entries: %d\n", len(proj.Entries))
+	if len(proj.Entries) == 0 {
+		return
+	}
+	warmest := append([]mem.TemperatureEntry(nil), proj.Entries...)
+	sort.Slice(warmest, func(i, j int) bool {
+		if warmest[i].Temperature != warmest[j].Temperature {
+			return warmest[i].Temperature > warmest[j].Temperature
+		}
+		return warmest[i].ClaimID < warmest[j].ClaimID
+	})
+	const topN = 10
+	if len(warmest) > topN {
+		warmest = warmest[:topN]
+	}
+	fmt.Printf("- warmest %d:\n", len(warmest))
+	for _, e := range warmest {
+		fmt.Printf("  %+.4f  %s  (consumed %d / ignored %d)\n", e.Temperature, e.ClaimID, e.Consumed, e.Ignored)
+	}
 }

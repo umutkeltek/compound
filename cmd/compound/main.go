@@ -198,6 +198,8 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory graph <seed> [--depth N] [--budget N] [--min-conf F] [--direction up|down] [--kind KIND[,KIND]...]"
 	case "import-topics":
 		return "usage: compound memory import-topics <topics.json> [--json]"
+	case "temperature":
+		return "usage: compound memory temperature [--json] [--rebuild]"
 	case "fold":
 		return "usage: compound memory fold [--entity E] [--json]"
 	case "position":
@@ -1557,6 +1559,8 @@ func cmdMemory(args []string) {
 		}
 	case "import-topics":
 		cmdMemoryImportTopics(store, rest)
+	case "temperature":
+		cmdMemoryTemperature(homePath, rest)
 	case "candidates":
 		limit := 0
 		if v := flag("--limit"); v != "" {
