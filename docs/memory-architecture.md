@@ -31,8 +31,11 @@ smallest promotable durable memory object.
   candidate, promoted, superseded, retired, or rejected.
 - **Position**: current stance for one fact slot (`entity + topic/domain +
   predicate + claim_type`), derived from promoted claims and
-  supersession/review edges. Topic remains the broader aggregation axis used by
-  Patterns and exact-object echo detection; it is not version identity.
+  supersession/review edges. For a decision carrying an explicit `decision_id`,
+  that named identity is stronger than predicate: predicate aliases inside the
+  same topic/domain intentionally share one slot. Topic remains the broader
+  aggregation axis used by Patterns and exact-object echo detection; it is not
+  version identity.
   Position rows are rebuildable materialized folds; claims and edges remain
   authority. Current truth is a position, not the newest note or highest-ranked
   search hit. Fold schema v0.2 stamps each row and ignores an older checkpoint
