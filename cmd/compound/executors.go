@@ -70,18 +70,114 @@ func cmdExecutors(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+	output := buildExecutorsProjectionOutput(projection)
 
 	if jsonOut {
-		if err := json.NewEncoder(os.Stdout).Encode(projection); err != nil {
+		if err := json.NewEncoder(os.Stdout).Encode(output); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
 		return
 	}
-	printExecutorsProjection(projection)
+	printExecutorsProjection(output)
 }
 
-func printExecutorsProjection(projection work.ExecutorsProjection) {
+type executorsProjectionOutput struct {
+	work.ExecutorsProjection
+	Executors []executorProjectionRow `json:"executors"`
+}
+
+type executorProjectionRow struct {
+	work.ExecutorRow
+	ReadyForAnyCount int                    `json:"ready_for_any_count"`
+	ReadyForAny      []work.ExecutorWorkRef `json:"ready_for_any,omitempty"`
+}
+
+func buildExecutorsProjectionOutput(projection work.ExecutorsProjection) executorsProjectionOutput {
+	sourceRows := projection.Executors
+	leasedWork := make(map[string]struct{})
+	for _, row := range sourceRows {
+		for _, lease := range row.Leases {
+			leasedWork[lease.WorkID] = struct{}{}
+		}
+	}
+
+	readyForAny := make([]work.ExecutorWorkRef, 0)
+	readyIDs := make(map[string]struct{})
+	for _, row := range sourceRows {
+		for _, item := range row.CurrentWork {
+			if !isReadyForAnyExecutor(item, leasedWork) {
+				continue
+			}
+			if _, seen := readyIDs[item.WorkID]; seen {
+				continue
+			}
+			readyIDs[item.WorkID] = struct{}{}
+			readyForAny = append(readyForAny, item)
+		}
+	}
+
+	projection.Executors = nil
+	projection.Counts.Assigned -= len(readyForAny)
+	output := executorsProjectionOutput{
+		ExecutorsProjection: projection,
+		Executors:           make([]executorProjectionRow, 0, len(sourceRows)),
+	}
+	for _, sourceRow := range sourceRows {
+		row := sourceRow
+		row.CurrentWork = make([]work.ExecutorWorkRef, 0, len(sourceRow.CurrentWork))
+		removed := 0
+		for _, item := range sourceRow.CurrentWork {
+			if _, available := readyIDs[item.WorkID]; available {
+				removed++
+				continue
+			}
+			row.CurrentWork = append(row.CurrentWork, item)
+		}
+		row.AssignedCount -= removed
+		row.ReadyCount -= removed
+		row.NextAssigned = nextReadyExecutorWork(row.CurrentWork)
+		if row.ID == "unassigned" && row.NextAssigned == nil && row.WaitReason == "ready_work" {
+			row.WaitReason = ""
+		}
+
+		projectedRow := executorProjectionRow{ExecutorRow: row}
+		if row.ID != "unassigned" {
+			projectedRow.ReadyForAnyCount = len(readyForAny)
+			projectedRow.ReadyForAny = append([]work.ExecutorWorkRef(nil), readyForAny...)
+		}
+		output.Executors = append(output.Executors, projectedRow)
+	}
+	return output
+}
+
+func isReadyForAnyExecutor(item work.ExecutorWorkRef, leasedWork map[string]struct{}) bool {
+	if item.ClaimedBy != "" {
+		return false
+	}
+	if _, leased := leasedWork[item.WorkID]; leased {
+		return false
+	}
+	switch item.State {
+	case "ready", "admitted", "proposed":
+		return true
+	default:
+		return false
+	}
+}
+
+func nextReadyExecutorWork(items []work.ExecutorWorkRef) *work.ExecutorWorkRef {
+	for _, item := range items {
+		switch item.State {
+		case "ready", "admitted", "proposed":
+			next := item
+			return &next
+		}
+	}
+	return nil
+}
+
+func printExecutorsProjection(projection executorsProjectionOutput) {
 	fmt.Println("# compound executors")
 	fmt.Printf("- status: %s\n", projection.Status)
 	fmt.Printf("- generated_at: %s\n", projection.GeneratedAt)
@@ -136,6 +232,13 @@ func printExecutorsProjection(projection work.ExecutorsProjection) {
 		}
 		if executor.NextAssigned != nil {
 			fmt.Printf("- next_assigned: %s %s\n", executor.NextAssigned.WorkID, executor.NextAssigned.Title)
+		}
+		if executor.ReadyForAnyCount > 0 {
+			fmt.Printf("- ready_for_any_count: %d\n", executor.ReadyForAnyCount)
+			fmt.Println("- ready_for_any:")
+			for _, item := range executor.ReadyForAny {
+				fmt.Printf("  - %s state=%s title=%q\n", item.WorkID, item.State, item.Title)
+			}
 		}
 		if len(executor.CurrentWork) > 0 {
 			fmt.Println("- current_work:")
