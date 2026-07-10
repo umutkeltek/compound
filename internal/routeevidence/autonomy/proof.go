@@ -828,14 +828,13 @@ func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]
 			continue
 		}
 		recent := false
+		terminalTimes := make([]time.Time, 0, len(evidence.Terminals))
 		for _, terminal := range evidence.Terminals {
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(terminal.At))
 			if err != nil {
 				return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
 			}
-			if parsed.After(lookbackEnd) {
-				return fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, terminal.At, lookbackEnd.UTC().Format(time.RFC3339))
-			}
+			terminalTimes = append(terminalTimes, parsed)
 			if !parsed.Before(lookbackStart) {
 				recent = true
 			}
@@ -862,6 +861,12 @@ func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]
 		}
 		if evidence.Terminals[0].WorkSHA256 != "sha256:"+shaHex(data) {
 			return fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
+		}
+		if autonomyClassOf(snapshots[0].Work) != cohortClass {
+			continue
+		}
+		if terminalTimes[0].After(lookbackEnd) {
+			return fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
 		}
 	}
 	return nil
