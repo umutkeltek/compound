@@ -112,9 +112,12 @@ func seedTypedAutonomySample(t *testing.T, s *Store, plan autonomyproof.RoutePla
 			"route_plan:" + plan.ID,
 		},
 		RouteDecisionID: plan.ID,
-		State:           "ready",
-	}, closedAt.Add(-4*time.Minute))
+		State:           "proposed",
+	}, closedAt.Add(-5*time.Minute))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(w.ID, AdvanceInput{Actor: "operator-test", To: "ready"}, closedAt.Add(-4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Claim(w.ID, "sample-executor", closedAt.Add(-3*time.Minute)); err != nil {

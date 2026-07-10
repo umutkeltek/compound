@@ -418,6 +418,31 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 	plan := ensureJobHealthAutonomyPlan(t, s)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	workID := makeProposedDirectorWork(t, s, "job_health", "work_terminal_create_race", fixedNow)
+	terminalWork, err := s.Create(CreateInput{
+		WorkID:           "work_concurrent_terminal_sample",
+		Owner:            "compound-authority",
+		Actor:            "operator-test",
+		SuccessPredicate: "terminal sample created during admission",
+		State:            "proposed",
+		RouteDecisionID:  plan.ID,
+		EvidenceRefs: []string{
+			"proposed_by:director",
+			"director_trigger:job_health:concurrent-terminal",
+			"route_plan:" + plan.ID,
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(terminalWork.ID, AdvanceInput{Actor: "operator-test", To: "ready"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(terminalWork.ID, "sample-executor", fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Advance(terminalWork.ID, AdvanceInput{Actor: "sample-executor", To: "running"}, fixedNow); err != nil {
+		t.Fatal(err)
+	}
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -443,18 +468,11 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 	createDone := make(chan error, 1)
 	go func() {
 		close(createStarted)
-		_, err := s.Create(CreateInput{
-			WorkID:           "work_concurrent_terminal_sample",
-			Owner:            "compound-authority",
-			Actor:            "operator-test",
-			SuccessPredicate: "terminal sample created during admission",
-			State:            "failed",
-			RouteDecisionID:  plan.ID,
-			EvidenceRefs: []string{
-				"proposed_by:director",
-				"director_trigger:job_health:concurrent-terminal",
-				"route_plan:" + plan.ID,
-			},
+		_, err := s.Close(terminalWork.ID, CloseInput{
+			Outcome:  "failed",
+			MoveType: "control_plane_repair",
+			Actor:    "sample-executor",
+			Summary:  "terminal sample failed during admission",
 		}, fixedNow.Add(24*time.Hour))
 		createDone <- err
 	}()

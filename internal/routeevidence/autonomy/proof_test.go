@@ -779,9 +779,12 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 			"route_plan:" + plan.ID,
 		},
 		RouteDecisionID: plan.ID,
-		State:           "ready",
+		State:           "proposed",
 	}, createdAt)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(w.ID, work.AdvanceInput{Actor: "operator-test", To: "ready"}, closedAt.Add(-4*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Claim(w.ID, "sample-executor", closedAt.Add(-3*time.Minute)); err != nil {
