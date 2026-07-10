@@ -81,6 +81,10 @@ loop compound provides:
   ranker and never called it, so live sessions got worse recall than the bench claimed.) And a fix can land
   *correct but dormant* if its env/config gate never engages on the operator's live config — verify the gate is
   live where the consumer actually runs, not just where your test shell exports it.
+- Console tests are `.selftest.ts` files (exporting `run…SelfTest(): {ok, details}`) executed by a
+  `console/scripts/<name>-smoke.mjs` runner wired into `proof-check`'s gate list — never `bun:test`
+  files: the console-tsc gate cannot resolve `bun:test` types, and an unwired test file is a check
+  that never runs. (Lived: decision-brief falsifiers, 2026-07.)
 - Generated runtime state goes under `COMPOUND_HOME`, never the repo source tree. No `cwd` as authority.
 
 ## Public / private boundary (this repo is destined to be public)
