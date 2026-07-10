@@ -399,6 +399,25 @@ func TestOSAbsorptionWorkPacketAuthorityProofRequiresReceiptTransitionChain(t *t
 	}
 }
 
+func TestOSAbsorptionWorkPacketAuthorityProofRequiresCanonicalGovernedChain(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	sourceDir := filepath.Join(t.TempDir(), "packets")
+	sourcePacket := writePacketAuthorityFixture(t, sourceDir, "source-packet.md", "Source packet")
+	closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
+	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed packet")
+	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
+	mutatePacketAuthorityWork(t, homePath, listedClosed.Work.ID, func(w *envelope.WorkEnvelope) {
+		w.RunIDs = nil
+		w.PolicyDecisionID = ""
+	})
+
+	got := doctorPacketAuthorityRow(t, homePath, packetAuthorityRow(sourceDir, listedClosed.Work.ID), now.Add(2*time.Minute))
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "canonical proof chain incomplete") {
+		t.Fatalf("receipt/transition files without governed action/policy proof must fail: %+v", got)
+	}
+}
+
 func TestOSAbsorptionWorkPacketAuthorityProofRejectsUnboundSourceDirectory(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
@@ -424,6 +443,50 @@ func TestOSAbsorptionWorkPacketAuthorityProofModeSelection(t *testing.T) {
 	auto.ProofMode = osAbsorptionProofModeCapability
 	if osAbsorptionNeedsWorkPacketProof(auto) {
 		t.Fatal("an explicit different proof mode must suppress tuple auto-detection")
+	}
+}
+
+func TestOSAbsorptionPacketEvidenceRequiresCanonicalDigestShape(t *testing.T) {
+	validRevision := "sha256:" + strings.Repeat("a", 64)
+	validEvidence := "packet_sha256:" + strings.Repeat("a", 16)
+	valid := envelope.WorkEnvelope{Header: envelope.Header{
+		Authority:    envelope.Authority{SourceRevision: validRevision},
+		EvidenceRefs: []string{validEvidence},
+	}}
+	if got, err := osAbsorptionPacketEvidence(valid); err != nil || got != validEvidence {
+		t.Fatalf("canonical packet evidence should pass: got=%q err=%v", got, err)
+	}
+
+	tests := []struct {
+		name     string
+		revision string
+		evidence string
+	}{
+		{name: "bare digest", revision: strings.Repeat("a", 64), evidence: validEvidence},
+		{name: "short revision", revision: "sha256:" + strings.Repeat("a", 16), evidence: validEvidence},
+		{name: "short evidence", revision: validRevision, evidence: "packet_sha256:" + strings.Repeat("a", 12)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := valid
+			w.Authority.SourceRevision = tt.revision
+			w.EvidenceRefs = []string{tt.evidence}
+			if _, err := osAbsorptionPacketEvidence(w); err == nil {
+				t.Fatalf("non-canonical digest shape should fail: revision=%q evidence=%q", tt.revision, tt.evidence)
+			}
+		})
+	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityRejectsRelativeSourceDirectory(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	_, err = osAbsorptionSourcePacketWork(homePath, store, OSAbsorptionMatrixRow{SourceKind: "packet_dir", SourceRef: "relative/packets"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("relative packet directory must fail cwd-independent proof, got %v", err)
 	}
 }
 
