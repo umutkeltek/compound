@@ -181,13 +181,17 @@ func TestProposeDedupesOpenWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(work.CreateInput{
+	existing, err := store.Create(work.CreateInput{
 		Owner:            "compound-tests",
 		Actor:            "operator-test",
 		SuccessPredicate: "existing open work blocks duplicate director proposal",
 		EvidenceRefs:     []string{dryRun.Proposals[0].TriggerRef},
-		State:            "ready",
-	}, directorTestNow.Add(time.Minute)); err != nil {
+		State:            "proposed",
+	}, directorTestNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Advance(existing.ID, work.AdvanceInput{Actor: "operator-test", To: "ready"}, directorTestNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 
