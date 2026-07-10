@@ -257,19 +257,24 @@ func DecodeModelCapabilitiesYAML(data []byte) (ModelCapabilitiesManifest, error)
 }
 
 func LoadModelCapabilitiesFromHome(homePath string) (ModelCapabilitiesManifest, string, error) {
+	manifest, path, _, err := loadModelCapabilitiesSnapshot(homePath)
+	return manifest, path, err
+}
+
+func loadModelCapabilitiesSnapshot(homePath string) (ModelCapabilitiesManifest, string, string, error) {
 	path := ModelCapabilitiesPath(homePath)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ModelCapabilitiesManifest{}, path, err
+		return ModelCapabilitiesManifest{}, path, "", err
 	}
 	manifest, err := DecodeModelCapabilitiesYAML(data)
 	if err != nil {
-		return ModelCapabilitiesManifest{}, path, err
+		return ModelCapabilitiesManifest{}, path, "", err
 	}
 	if err := validateModelCapabilities(manifest); err != nil {
-		return ModelCapabilitiesManifest{}, path, err
+		return ModelCapabilitiesManifest{}, path, "", err
 	}
-	return manifest, path, nil
+	return manifest, path, "sha256:" + digestHex(data), nil
 }
 
 func LoadModelCapabilitiesSourceAuthority(homePath string) ([]ModelCapabilitiesSourceAuthority, error) {
@@ -296,11 +301,11 @@ func LoadModelCapabilitiesSourceAuthority(homePath string) ([]ModelCapabilitiesS
 }
 
 func ProjectModelCapabilities(homePath string, now time.Time) (ModelCapabilitiesProjection, error) {
-	manifest, authorityPath, err := LoadModelCapabilitiesFromHome(homePath)
+	manifest, authorityPath, authorityRevision, err := loadModelCapabilitiesSnapshot(homePath)
 	if err != nil {
 		return ModelCapabilitiesProjection{}, fmt.Errorf("load model capabilities authority: %w", err)
 	}
-	sourceAuthorityID, sourceRevision, err := latestModelCapabilitiesSource(homePath)
+	sourceAuthorityID, sourceRevision, err := latestModelCapabilitiesSource(homePath, authorityRevision)
 	if err != nil {
 		return ModelCapabilitiesProjection{}, err
 	}
@@ -357,7 +362,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	if capabilityClass == "" {
 		return CapabilityRoutePlan{}, fmt.Errorf("capability class required")
 	}
-	manifest, authorityPath, err := LoadModelCapabilitiesFromHome(homePath)
+	manifest, authorityPath, authorityRevision, err := loadModelCapabilitiesSnapshot(homePath)
 	if err != nil {
 		return CapabilityRoutePlan{}, fmt.Errorf("load model capabilities authority: %w", err)
 	}
@@ -365,7 +370,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	if !ok || len(defaults) == 0 {
 		return CapabilityRoutePlan{}, fmt.Errorf("capability class %q has no routing_defaults entry", capabilityClass)
 	}
-	sourceAuthorityID, sourceRevision, err := latestModelCapabilitiesSource(homePath)
+	sourceAuthorityID, sourceRevision, err := latestModelCapabilitiesSource(homePath, authorityRevision)
 	if err != nil {
 		return CapabilityRoutePlan{}, err
 	}
@@ -493,7 +498,7 @@ func appendModelCapabilitiesSourceAuthority(homePath string, rec ModelCapabiliti
 	return err
 }
 
-func latestModelCapabilitiesSource(homePath string) (id, revision string, err error) {
+func latestModelCapabilitiesSource(homePath, authorityRevision string) (id, revision string, err error) {
 	records, err := LoadModelCapabilitiesSourceAuthority(homePath)
 	if err != nil {
 		return "", "", err
@@ -502,13 +507,8 @@ func latestModelCapabilitiesSource(homePath string) (id, revision string, err er
 		return "", "", nil
 	}
 	latest := records[len(records)-1]
-	data, err := os.ReadFile(ModelCapabilitiesPath(homePath))
-	if err != nil {
-		return "", "", err
-	}
-	currentRevision := "sha256:" + digestHex(data)
-	if latest.SourceRevision != currentRevision {
-		return "", "", fmt.Errorf("model-router source authority revision %q does not match current authority %q", latest.SourceRevision, currentRevision)
+	if latest.SourceRevision != authorityRevision {
+		return "", "", fmt.Errorf("model-router source authority revision %q does not match parsed authority %q", latest.SourceRevision, authorityRevision)
 	}
 	return latest.ID, latest.SourceRevision, nil
 }

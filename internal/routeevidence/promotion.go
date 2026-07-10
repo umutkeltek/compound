@@ -248,7 +248,7 @@ func EvaluateLanePromotions(homePath string, now time.Time) ([]PromotionReview, 
 	if strings.TrimSpace(homePath) == "" {
 		return nil, fmt.Errorf("COMPOUND_HOME required")
 	}
-	models, modelPath, err := LoadModelCapabilitiesFromHome(homePath)
+	models, modelPath, modelAuthorityRevision, err := loadModelCapabilitiesSnapshot(homePath)
 	if err != nil {
 		return nil, fmt.Errorf("load model capabilities authority: %w", err)
 	}
@@ -256,7 +256,7 @@ func EvaluateLanePromotions(homePath string, now time.Time) ([]PromotionReview, 
 	if err != nil {
 		return nil, fmt.Errorf("load promotion criteria authority: %w", err)
 	}
-	modelSourceID, modelRevision, err := latestModelCapabilitiesSource(homePath)
+	modelSourceID, modelRevision, err := latestModelCapabilitiesSource(homePath, modelAuthorityRevision)
 	if err != nil {
 		return nil, err
 	}
