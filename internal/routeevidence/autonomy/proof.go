@@ -283,6 +283,14 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 		if terminalAt, err := time.Parse(time.RFC3339, strings.TrimSpace(sample.ReceiptCreatedAt)); err == nil && terminalAt.After(evaluatedAt) {
 			return Artifact{}, fmt.Errorf("terminal work %s has receipt timestamp after eligibility evaluation: %q is after lookback end %q", ws.Work.ID, sample.ReceiptCreatedAt, evaluatedAt.Format(time.RFC3339))
 		}
+		terminalEvidence := receipts[ws.Work.ID].Terminals
+		if sample.ReceiptID != "" && len(terminalEvidence) == 1 {
+			terminalAt, terminalErr := time.Parse(time.RFC3339, strings.TrimSpace(terminalEvidence[0].At))
+			receiptAt, receiptErr := time.Parse(time.RFC3339, strings.TrimSpace(sample.ReceiptCreatedAt))
+			if terminalErr != nil || receiptErr != nil || !receiptAt.Equal(terminalAt) {
+				return Artifact{}, fmt.Errorf("terminal work %s receipt timestamp does not match terminal event: receipt %q event %q", ws.Work.ID, sample.ReceiptCreatedAt, terminalEvidence[0].At)
+			}
+		}
 		if terminalSamplePredates(sample, lookbackStart) {
 			artifact.ExcludedStaleTerminalCount++
 			continue
