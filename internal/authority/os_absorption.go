@@ -3,6 +3,7 @@ package authority
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,7 +12,10 @@ import (
 
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
+	"compound/internal/envelope"
+	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/work"
 )
 
 const (
@@ -30,6 +34,10 @@ const (
 	osAbsorptionProofModeCapability    = "capability_source_authority"
 	osAbsorptionProofModeDecisions     = "decisions_source_authority"
 	osAbsorptionProofModeOperatorState = "operator_state_registry"
+	osAbsorptionProofModeWorkPacket    = "work_packet_authority"
+
+	osAbsorptionWorkAuthorityRef  = "compound://work"
+	osAbsorptionPacketEvidenceRef = "packet_sha256:"
 )
 
 type OSAbsorptionSourceMatrix struct {
@@ -217,6 +225,8 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			report.PendingWithGateCount++
 		}
 		switch {
+		case osAbsorptionNeedsWorkPacketProof(row):
+			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionWorkPacketProof(homePath, row))
 		case osAbsorptionNeedsCapabilityProof(row):
 			if rec, ok := capabilityAuthorityProofRecord(row, capRecords); ok {
 				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{ok: true, proofRef: rec.ID})
@@ -373,6 +383,16 @@ func osAbsorptionNeedsCapabilityProof(row OSAbsorptionMatrixRow) bool {
 	return row.CompoundOwner == capgraph.CapabilityGraphAuthorityRef && row.Status == "absorbed"
 }
 
+// osAbsorptionNeedsWorkPacketProof matches the OS packet directory wrapper.
+// An explicit proof_mode wins over tuple inference so a row cannot silently
+// receive a different proof mechanism than the source matrix requested.
+func osAbsorptionNeedsWorkPacketProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode != "" {
+		return row.ProofMode == osAbsorptionProofModeWorkPacket
+	}
+	return row.CompoundOwner == osAbsorptionWorkAuthorityRef && row.SourceKind == "packet_dir" && row.Status == "wrapper"
+}
+
 // osAbsorptionNeedsDecisionsProof matches the os_source_decisions_repo row (and
 // any row that opts in via proof_mode): it is proven by the decisions
 // source-authority ledger having at least one record, not by the row's status
@@ -436,6 +456,261 @@ func osAbsorptionOperatorStateProof(homePath string) osAbsorptionProofResult {
 		return osAbsorptionProofResult{reason: "operator-state registry at " + path + " is empty"}
 	}
 	return osAbsorptionProofResult{ok: true, proofRef: policy.OperatorStateAuthorityRef}
+}
+
+// osAbsorptionWorkPacketProof proves both halves of packet absorption:
+// every explicitly cited WorkEnvelope is a completed packet-backed chain, and
+// at least one current packet beneath source_ref is content-bound to the full
+// WorkEnvelope -> ContextPack -> Receipt -> Transition consumer path. The
+// second condition prevents unrelated packet imports from proving a directory.
+func osAbsorptionWorkPacketProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	var result osAbsorptionProofResult
+	err := home.WithAutonomyAdmissionLock(homePath, func() error {
+		result = osAbsorptionWorkPacketProofLocked(homePath, row)
+		return nil
+	})
+	if err != nil {
+		return osAbsorptionProofResult{reason: "work packet authority snapshot: " + err.Error()}
+	}
+	return result
+}
+
+func osAbsorptionWorkPacketProofLocked(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	workIDs, err := osAbsorptionWorkEvidenceIDs(row.EvidenceRefs)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	if len(workIDs) == 0 {
+		return osAbsorptionProofResult{reason: "work packet authority requires at least one work_* evidence_ref"}
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "work packet authority: " + err.Error()}
+	}
+	chainReport, err := store.ProofChainDoctor(time.Now(), work.ProofChainDoctorOptions{IncludeArchived: true})
+	if err != nil {
+		return osAbsorptionProofResult{reason: "work packet authority proof chain: " + err.Error()}
+	}
+	proofItems := make(map[string]work.ProofChainDoctorItem, len(chainReport.Items))
+	for _, item := range chainReport.Items {
+		proofItems[item.WorkID] = item
+	}
+	proven := make([]string, 0, len(workIDs)+1)
+	for _, workID := range workIDs {
+		w, err := store.Get(workID)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("work packet authority %s: %v", workID, err)}
+		}
+		if err := validateOSAbsorptionPacketWork(homePath, w, workID, proofItems); err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("work packet authority %s: %v", workID, err)}
+		}
+		proven = append(proven, workID)
+	}
+
+	sourceWorkID, err := osAbsorptionSourcePacketWork(homePath, store, row, proofItems)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	proven = cleanStrings(append(proven, sourceWorkID))
+	sort.Strings(proven)
+	return osAbsorptionProofResult{ok: true, proofRef: osAbsorptionProofModeWorkPacket + ":" + strings.Join(proven, ",")}
+}
+
+func osAbsorptionWorkEvidenceIDs(refs []string) ([]string, error) {
+	seen := map[string]bool{}
+	var ids []string
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		workID := ""
+		switch {
+		case strings.HasPrefix(ref, "work_"):
+			workID = ref
+		case strings.HasPrefix(ref, "work:work_"):
+			workID = strings.TrimPrefix(ref, "work:")
+		default:
+			continue
+		}
+		if !safeOSAbsorptionRuntimeID(workID, "work_") {
+			return nil, fmt.Errorf("invalid work evidence_ref %q", ref)
+		}
+		if !seen[workID] {
+			seen[workID] = true
+			ids = append(ids, workID)
+		}
+	}
+	return ids, nil
+}
+
+func validateOSAbsorptionPacketWork(homePath string, w envelope.WorkEnvelope, workID string, proofItems map[string]work.ProofChainDoctorItem) error {
+	if w.ID != workID {
+		return fmt.Errorf("resolved work id %q does not match requested id", w.ID)
+	}
+	if err := w.Validate(); err != nil {
+		return fmt.Errorf("invalid WorkEnvelope: %w", err)
+	}
+	if w.Authority.SourceClass != "source" {
+		return fmt.Errorf("authority.source_class=%q, want source", w.Authority.SourceClass)
+	}
+	if !strings.HasPrefix(w.CanonicalSurface, "packet:") || strings.TrimSpace(strings.TrimPrefix(w.CanonicalSurface, "packet:")) == "" {
+		return fmt.Errorf("canonical_surface=%q, want non-empty packet:*", w.CanonicalSurface)
+	}
+	if _, err := osAbsorptionPacketEvidence(w); err != nil {
+		return err
+	}
+	if w.State != "completed" {
+		return fmt.Errorf("state=%q, want completed", w.State)
+	}
+	item, ok := proofItems[workID]
+	if !ok {
+		return fmt.Errorf("canonical proof chain has no terminal item")
+	}
+	if !item.ProofComplete {
+		return fmt.Errorf("canonical proof chain incomplete: %v", item.Problems)
+	}
+	if !safeOSAbsorptionRuntimeID(item.ReceiptID, "rec_") {
+		return fmt.Errorf("canonical proof chain receipt_id=%q is missing or invalid", item.ReceiptID)
+	}
+	data, err := os.ReadFile(filepath.Join(homePath, "events", item.ReceiptID+".json"))
+	if err != nil {
+		return fmt.Errorf("read canonical receipt %s: %w", item.ReceiptID, err)
+	}
+	var receipt envelope.Receipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return fmt.Errorf("decode canonical receipt %s: %w", item.ReceiptID, err)
+	}
+	if err := receipt.Validate(); err != nil {
+		return fmt.Errorf("canonical receipt %s invalid: %w", item.ReceiptID, err)
+	}
+	if receipt.ID != item.ReceiptID || receipt.IDs.WorkID != workID {
+		return fmt.Errorf("canonical receipt %s does not match work %s", item.ReceiptID, workID)
+	}
+	if receipt.Outcome != "completed" {
+		return fmt.Errorf("canonical receipt %s outcome=%q, want completed", receipt.ID, receipt.Outcome)
+	}
+	return nil
+}
+
+func osAbsorptionPacketEvidence(w envelope.WorkEnvelope) (string, error) {
+	rawRevision := strings.TrimSpace(w.Authority.SourceRevision)
+	if !strings.HasPrefix(rawRevision, "sha256:") {
+		return "", fmt.Errorf("authority.source_revision=%q, want sha256 packet digest", w.Authority.SourceRevision)
+	}
+	revision := strings.TrimPrefix(rawRevision, "sha256:")
+	if len(revision) != 64 || !isOSAbsorptionHex(revision) {
+		return "", fmt.Errorf("authority.source_revision=%q, want sha256 plus 64 lowercase hex characters", w.Authority.SourceRevision)
+	}
+	for _, ref := range w.EvidenceRefs {
+		if !strings.HasPrefix(ref, osAbsorptionPacketEvidenceRef) {
+			continue
+		}
+		digest := strings.TrimPrefix(ref, osAbsorptionPacketEvidenceRef)
+		if len(digest) == 16 && isOSAbsorptionHex(digest) && strings.HasPrefix(revision, digest) {
+			return ref, nil
+		}
+	}
+	return "", fmt.Errorf("evidence_refs lack canonical 16-character packet_sha256 digest matching authority.source_revision")
+}
+
+func osAbsorptionSourcePacketWork(homePath string, store *work.Store, row OSAbsorptionMatrixRow, proofItems map[string]work.ProofChainDoctorItem) (string, error) {
+	if row.SourceKind != "packet_dir" {
+		return "", fmt.Errorf("work packet authority source_kind=%q, want packet_dir", row.SourceKind)
+	}
+	rawSourceDir := strings.TrimSpace(row.SourceRef)
+	if rawSourceDir == "" || !filepath.IsAbs(rawSourceDir) {
+		return "", fmt.Errorf("work packet authority source directory %q must be absolute", row.SourceRef)
+	}
+	sourceDir := filepath.Clean(rawSourceDir)
+	info, err := os.Stat(sourceDir)
+	if err != nil {
+		return "", fmt.Errorf("work packet authority source directory %s: %v", sourceDir, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("work packet authority source directory %s is not a directory", sourceDir)
+	}
+
+	works, err := store.ListWithArchived()
+	if err != nil {
+		return "", fmt.Errorf("work packet authority list: %w", err)
+	}
+	knownSurfaces := map[string]bool{}
+	for _, w := range works {
+		if strings.HasPrefix(w.CanonicalSurface, "packet:") {
+			knownSurfaces[w.CanonicalSurface] = true
+		}
+	}
+	type sourceCandidate struct {
+		path  string
+		proof work.PacketSourceProof
+	}
+	var candidates []sourceCandidate
+	packetFiles := 0
+	parseFailures := 0
+	err = filepath.WalkDir(sourceDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || strings.ToLower(filepath.Ext(entry.Name())) != ".md" {
+			return nil
+		}
+		packetFiles++
+		proof, err := work.PacketSourceProofForPath(path)
+		if err != nil {
+			parseFailures++
+			return nil
+		}
+		if knownSurfaces[proof.CanonicalSurface] {
+			candidates = append(candidates, sourceCandidate{path: path, proof: proof})
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("work packet authority source directory %s: %w", sourceDir, err)
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].path < candidates[j].path })
+	for _, candidate := range candidates {
+		report, err := store.ActivePacketProof(time.Now(), candidate.proof.CanonicalSurface, candidate.proof.EvidenceRef)
+		if err != nil {
+			return "", fmt.Errorf("work packet authority source directory proof %s: %w", candidate.path, err)
+		}
+		if report.Status != "ok" {
+			continue
+		}
+		w, err := store.Get(report.WorkID)
+		if err != nil {
+			return "", fmt.Errorf("work packet authority source work %s: %w", report.WorkID, err)
+		}
+		if err := validateOSAbsorptionPacketWork(homePath, w, report.WorkID, proofItems); err != nil {
+			return "", fmt.Errorf("work packet authority source work %s: %w", report.WorkID, err)
+		}
+		return report.WorkID, nil
+	}
+	return "", fmt.Errorf("work packet authority source directory %s has no content-bound completed packet proof (packet_files=%d candidate_surfaces=%d parse_failures=%d)", sourceDir, packetFiles, len(candidates), parseFailures)
+}
+
+func safeOSAbsorptionRuntimeID(id, prefix string) bool {
+	if !strings.HasPrefix(id, prefix) || len(id) <= len(prefix) {
+		return false
+	}
+	for _, r := range id[len(prefix):] {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isOSAbsorptionHex(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // applyOSAbsorptionAutoProof records one row's auto-proof outcome onto the
