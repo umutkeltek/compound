@@ -3777,7 +3777,7 @@ func TestWorkCreateCommandsRejectUndocumentedInitialStates(t *testing.T) {
 		cmdWork([]string{"create-plan", "--owner", "compound-core", "--predicate", "direct admitted create plan", "--state", "admitted", "--dry-run"})
 		return
 	case "import-packet-admitted":
-		cmdWork([]string{"import-packet", "fixtures/work/goal-packet.md", "--state", "admitted"})
+		cmdWork([]string{"import-packet", filepath.Join("..", "..", "fixtures", "work", "goal-packet.md"), "--state", "admitted"})
 		return
 	}
 
