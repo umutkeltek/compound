@@ -486,12 +486,8 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 	if err := json.Unmarshal(artifactBody, &sealed); err != nil {
 		t.Fatal(err)
 	}
-	rebuilt, err := autonomyproof.Compile(s.home, sealed.Grant, sealed.RoutePlan, fixedNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rebuilt.Status == "eligible" {
-		t.Fatalf("terminal sample without a Receipt did not invalidate the evidence set: terminal=%+v samples=%+v", terminal, rebuilt.Samples)
+	if _, err := autonomyproof.Compile(s.home, sealed.Grant, sealed.RoutePlan, fixedNow); err == nil || !strings.Contains(err.Error(), "terminal timestamp after eligibility evaluation") {
+		t.Fatalf("post-generation terminal sample did not invalidate the frozen evidence set: terminal=%+v err=%v", terminal, err)
 	}
 
 	autoAdmitBeforeCommit = previousHook
