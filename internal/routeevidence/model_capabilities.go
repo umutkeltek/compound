@@ -502,6 +502,14 @@ func latestModelCapabilitiesSource(homePath string) (id, revision string, err er
 		return "", "", nil
 	}
 	latest := records[len(records)-1]
+	data, err := os.ReadFile(ModelCapabilitiesPath(homePath))
+	if err != nil {
+		return "", "", err
+	}
+	currentRevision := "sha256:" + digestHex(data)
+	if latest.SourceRevision != currentRevision {
+		return "", "", fmt.Errorf("model-router source authority revision %q does not match current authority %q", latest.SourceRevision, currentRevision)
+	}
 	return latest.ID, latest.SourceRevision, nil
 }
 

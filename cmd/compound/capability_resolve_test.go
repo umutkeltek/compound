@@ -158,6 +158,29 @@ func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
 	}
 }
 
+func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	store := addCapabilityGraphFixture(t, homePath)
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, source, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	authorityPath := routeevidence.ModelCapabilitiesPath(homePath)
+	data, err := os.ReadFile(authorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authorityPath, append(data, []byte("\n# changed after source binding\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "does not match current authority") {
+		t.Fatalf("stale router provenance error = %v", err)
+	}
+}
+
 func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
