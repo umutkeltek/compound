@@ -443,9 +443,9 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 	return plan, nil
 }
 
-func validateDirectorOriginInitialState(w envelope.WorkEnvelope) error {
+func validateDirectorProposalInitialState(w envelope.WorkEnvelope) error {
 	if directorProposedWork(w) && strings.TrimSpace(w.State) != "proposed" {
-		return fmt.Errorf("director-origin work must start in proposed state; got %q", w.State)
+		return fmt.Errorf("director-proposed work must start in proposed state; got %q", w.State)
 	}
 	return nil
 }
