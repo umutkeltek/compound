@@ -292,6 +292,64 @@ func TestOSAbsorptionCountsSplitProvenVsAsserted(t *testing.T) {
 	}
 }
 
+func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "ok" || got.Status != "wrapper" {
+		t.Fatalf("Compound-only os capability projection should be machine-proven: %+v", got)
+	}
+	for _, want := range []string{
+		"compound://registries/capability-graph",
+		"compound://registries/model-router",
+		"shim_sha256:",
+		"entrypoint_sha256:",
+		"projection_sha256:",
+		"classifier_sha256:",
+		"mrcsrc_fixture",
+	} {
+		if !strings.Contains(got.ProofRef, want) {
+			t.Fatalf("proof ref %q missing %q", got.ProofRef, want)
+		}
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsIndependentFallback(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{disabledExitZero: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "disabled Compound") {
+		t.Fatalf("os capability must fail closed when Compound is disabled: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsRetiredSourceRead(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{projectionPoison: `const legacy = "skill-manifest.json"`})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "retired source") {
+		t.Fatalf("projection source must not read retired OS authorities: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRequiresExactOutputParity(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{wrapperOfferID: "skill:forged-offer"})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "capability surface parity") {
+		t.Fatalf("self-reported authority refs without exact output parity must fail: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRequiresProductionDispatch(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{legacyDispatch: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "production dispatch") {
+		t.Fatalf("dead projection module must not prove the production CLI: %+v", got)
+	}
+}
+
 func TestOSAbsorptionWorkPacketAuthorityProofBindsArchivedSourcePacket(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
