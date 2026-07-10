@@ -48,8 +48,8 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		plan.AuthorityRef != ModelCapabilitiesAuthorityRef ||
 		plan.SourceAuthorityID != report.SourceAuthorityID ||
 		plan.RoutingRule != "routing_defaults[judge-critique]" ||
-		len(plan.Chain) != 3 ||
-		len(plan.LaneJustification) != 3 {
+		len(plan.Chain) != 4 ||
+		len(plan.LaneJustification) != 4 {
 		t.Fatalf("bad route plan: %+v", plan)
 	}
 	if plan.Chain[0].ModelID != "auto/judge" ||
@@ -57,13 +57,22 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		plan.Chain[0].CostClass != "api-marginal" ||
 		plan.Chain[0].Harness != "switchback" ||
 		plan.Chain[0].ProviderRoute != "auto/judge" ||
+		plan.Chain[0].Resolution.Mode != "adaptive" ||
 		plan.Chain[0].EffortDefault != "high" ||
 		plan.Chain[1].ModelID != "deepseek/deepseek-v4-pro" ||
 		plan.Chain[1].GateRole != "eligible" ||
 		plan.Chain[1].ProviderRoute != "deepseek/deepseek-v4-pro" ||
+		plan.Chain[1].Resolution.Mode != "direct" ||
+		len(plan.Chain[1].Resolution.Targets) != 1 ||
+		plan.Chain[1].Resolution.Targets[0].Provider != "deepseek" ||
 		plan.Chain[2].ModelID != "scout/chat" ||
 		plan.Chain[2].GateRole != "tripwire_only" ||
-		plan.Chain[2].CostClass != "free" {
+		plan.Chain[2].CostClass != "free" ||
+		plan.Chain[3].ModelID != "mac/qwen-fixture" ||
+		plan.Chain[3].ProviderRoute != "direct" ||
+		plan.Chain[3].Resolution.Mode != "direct" ||
+		plan.Chain[3].Resolution.Targets[0].Provider != "lmstudio" ||
+		plan.Chain[3].GateRole != "eligible" {
 		t.Fatalf("bad chain: %+v", plan.Chain)
 	}
 	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "free judge/critique lane scout/chat may object but must not gate verdicts") {
@@ -84,6 +93,8 @@ func TestImportModelCapabilitiesRejectsUnknownGateVocabulary(t *testing.T) {
 	}{
 		{name: "claim-level", old: "level: primary", bad: "level: primray", wantErr: "unknown claim level"},
 		{name: "tier", old: "tier: cheap", bad: "tier: experimental", wantErr: "unknown tier"},
+		{name: "resolution-mode", old: "mode: adaptive", bad: "mode: guessed", wantErr: "unknown resolution mode"},
+		{name: "resolution-target", old: "provider: deepseek", bad: "provider: ''", wantErr: "requires provider and model"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()

@@ -31,7 +31,9 @@ type LiveExtractionReport struct {
 	SchemaVersion    string                `json:"schema_version"`
 	Provider         string                `json:"provider"`
 	Model            string                `json:"model"`
+	ResolvedProvider string                `json:"resolved_provider,omitempty"`
 	ResolvedModel    string                `json:"resolved_model,omitempty"`
+	ResolutionSource string                `json:"resolution_source,omitempty"`
 	GatewayRequestID string                `json:"gateway_request_id,omitempty"`
 	Called           bool                  `json:"called"`
 	Eval             EvalCorpusReport      `json:"eval"`
@@ -54,6 +56,7 @@ type openAIChatMessage struct {
 }
 
 type openAIChatResponse struct {
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Message openAIChatMessage `json:"message"`
 	} `json:"choices"`
@@ -61,7 +64,9 @@ type openAIChatResponse struct {
 }
 
 type OpenAICompatibleResponseMeta struct {
+	ResolvedProvider string `json:"resolved_provider,omitempty"`
 	ResolvedModel    string `json:"resolved_model,omitempty"`
+	ResolutionSource string `json:"resolution_source,omitempty"`
 	GatewayRequestID string `json:"gateway_request_id,omitempty"`
 }
 
@@ -107,7 +112,9 @@ func ExtractWithOpenAICompatible(ctx context.Context, req LLMExtractionRequest, 
 	report.Usage = usage
 	report.LatencyMS = time.Since(started).Milliseconds()
 	report.Response = response
+	report.ResolvedProvider = meta.ResolvedProvider
 	report.ResolvedModel = meta.ResolvedModel
+	report.ResolutionSource = meta.ResolutionSource
 	report.GatewayRequestID = meta.GatewayRequestID
 	if err != nil {
 		return report, err
@@ -214,12 +221,27 @@ func chatCompletionOnce(ctx context.Context, client *http.Client, baseURL, apiKe
 	if len(chat.Choices) == 0 || strings.TrimSpace(chat.Choices[0].Message.Content) == "" {
 		return nil, chat.Usage, latencyMS, meta, fmt.Errorf("openai-compatible response missing choice content")
 	}
+	if meta.ResolvedModel == "" && strings.TrimSpace(chat.Model) != "" {
+		meta.ResolvedModel = strings.TrimSpace(chat.Model)
+		meta.ResolutionSource = "response_body"
+	}
 	return []byte(chat.Choices[0].Message.Content), chat.Usage, latencyMS, meta, nil
 }
 
 func openAICompatibleResponseMeta(header http.Header) OpenAICompatibleResponseMeta {
+	model := parseSwitchbackSelectedModel(header.Get("x-switchback-route"))
+	provider := ""
+	if prefix, _, ok := strings.Cut(model, "/"); ok {
+		provider = strings.TrimSpace(prefix)
+	}
+	source := ""
+	if model != "" {
+		source = "gateway_route"
+	}
 	return OpenAICompatibleResponseMeta{
-		ResolvedModel:    parseSwitchbackSelectedModel(header.Get("x-switchback-route")),
+		ResolvedProvider: provider,
+		ResolvedModel:    model,
+		ResolutionSource: source,
 		GatewayRequestID: strings.TrimSpace(header.Get("x-switchback-request-id")),
 	}
 }

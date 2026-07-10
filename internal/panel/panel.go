@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"compound/internal/routeevidence"
 )
 
 const RunSchemaVersion = "compound.panel_run.v0.1"
@@ -73,9 +75,10 @@ type RoutePlan struct {
 }
 
 type LaneRef struct {
-	ModelID  string `json:"model_id"`
-	Tier     string `json:"tier"`
-	GateRole string `json:"gate_role"`
+	ModelID    string                       `json:"model_id"`
+	Resolution routeevidence.LaneResolution `json:"resolution"`
+	Tier       string                       `json:"tier"`
+	GateRole   string                       `json:"gate_role"`
 }
 
 type OmittedLane struct {

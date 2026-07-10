@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/localmodel"
+	"compound/internal/routeevidence"
 )
 
 func TestGatewayCallerSuccess(t *testing.T) {
@@ -55,8 +56,26 @@ func TestGatewayCallerSuccess(t *testing.T) {
 	if gotModel != "served-model" || got.TotalTokens != 33 || !strings.Contains(string(got.Content), `"confidence"`) || got.LatencyMS < 0 {
 		t.Fatalf("result model=%q got=%+v", gotModel, got)
 	}
-	if got.ResolvedModel != "nvidia/minimaxai/minimax-m3" || got.GatewayRequestID != "req_panel_gateway" {
+	if got.ResolvedProvider != "nvidia" || got.ResolvedModel != "nvidia/minimaxai/minimax-m3" || got.ResolutionSource != "gateway_route" || got.GatewayRequestID != "req_panel_gateway" {
 		t.Fatalf("gateway metadata = %+v", got)
+	}
+}
+
+func TestGatewayCallerMapsDirectResponseModelToDeclaredProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model":   "qwen-fixture-served",
+			"choices": []map[string]any{{"message": map[string]string{"content": `{"confidence":0.8,"findings":[]}`}}},
+		})
+	}))
+	defer server.Close()
+	lane := LaneRef{ModelID: "mac/qwen-fixture", Resolution: routeevidence.LaneResolution{Mode: "direct", Targets: []routeevidence.ResolvedTarget{{Provider: "lmstudio", Model: "qwen-fixture-served"}}}}
+	got, err := (GatewayCaller{BaseURL: server.URL, HTTPClient: server.Client()}).Call(context.Background(), CallRequest{Lane: lane})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResolvedProvider != "lmstudio" || got.ResolvedModel != "qwen-fixture-served" || got.ResolutionSource != "response_body" || got.GatewayRequestID != "" {
+		t.Fatalf("direct metadata = %+v", got)
 	}
 }
 

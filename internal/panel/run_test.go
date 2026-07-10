@@ -307,7 +307,9 @@ func TestRecordPanelRouteEvidenceIncludesGatewayMetadata(t *testing.T) {
 	_, err := recordPanelRouteEvidence(home, fixedPanelNow(), "work_1", "panel:req_1", "compound.panel.judge", LaneRef{ModelID: "auto/judge", Tier: "cheap"}, CallResult{
 		TotalTokens:      7,
 		LatencyMS:        12,
+		ResolvedProvider: "nvidia",
 		ResolvedModel:    "nvidia/minimaxai/minimax-m3",
+		ResolutionSource: "gateway_route",
 		GatewayRequestID: "req_switchback_1",
 	}, "completed")
 	if err != nil {
@@ -324,8 +326,8 @@ func TestRecordPanelRouteEvidenceIncludesGatewayMetadata(t *testing.T) {
 	if row.SelectedTarget.Model != "auto/judge" {
 		t.Fatalf("selected target model = %q, want requested alias", row.SelectedTarget.Model)
 	}
-	if row.ResolvedModel != "nvidia/minimaxai/minimax-m3" || row.GatewayRequestID != "req_switchback_1" {
-		t.Fatalf("gateway metadata = resolved:%q request:%q", row.ResolvedModel, row.GatewayRequestID)
+	if row.ResolvedProvider != "nvidia" || row.ResolvedModel != "nvidia/minimaxai/minimax-m3" || row.ResolutionSource != "gateway_route" || row.GatewayRequestID != "req_switchback_1" {
+		t.Fatalf("gateway metadata = provider:%q resolved:%q source:%q request:%q", row.ResolvedProvider, row.ResolvedModel, row.ResolutionSource, row.GatewayRequestID)
 	}
 }
 

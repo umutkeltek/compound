@@ -372,7 +372,27 @@ func TestChatCompletionJSONCapturesSwitchbackHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chat completion: %v", err)
 	}
-	if meta.ResolvedModel != "nvidia/minimaxai/minimax-m3" || meta.GatewayRequestID != "req_abcdef123456" {
+	if meta.ResolvedProvider != "nvidia" || meta.ResolvedModel != "nvidia/minimaxai/minimax-m3" || meta.ResolutionSource != "gateway_route" || meta.GatewayRequestID != "req_abcdef123456" {
+		t.Fatalf("metadata = %+v", meta)
+	}
+}
+
+func TestChatCompletionJSONCapturesDirectResponseModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "qwen-fixture-served",
+			"choices": []map[string]any{{
+				"message": map[string]string{"role": "assistant", "content": `{"ok":true}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	_, _, _, meta, err := ChatCompletionJSONWithMeta(context.Background(), server.Client(), server.URL, "", "direct", "system", "user")
+	if err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	if meta.ResolvedProvider != "" || meta.ResolvedModel != "qwen-fixture-served" || meta.ResolutionSource != "response_body" || meta.GatewayRequestID != "" {
 		t.Fatalf("metadata = %+v", meta)
 	}
 }

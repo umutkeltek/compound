@@ -456,6 +456,12 @@ capability_classes:
 models:
   %q:
     lane: %q
+	provider_route: direct
+	resolution:
+	  mode: direct
+	  targets:
+	    - provider: fixture
+	      model: %q
     tier: cheap
     packet_ceiling: panel-target
     capabilities:
@@ -465,7 +471,7 @@ models:
 routing_defaults:
   judge-critique:
     - %q
-`, laneID, laneID+" (fixture)", claimLevel, laneID)
+`, laneID, laneID+" (fixture)", laneID, claimLevel, laneID)
 	if err := os.WriteFile(source, []byte(content), 0o644); err != nil {
 		t.Fatalf("write model capabilities: %v", err)
 	}

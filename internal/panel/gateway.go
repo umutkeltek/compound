@@ -66,10 +66,31 @@ func (g GatewayCaller) Call(ctx context.Context, req CallRequest) (CallResult, e
 	callCtx, cancel := context.WithTimeout(ctx, defaultGatewayCallTimeout)
 	defer cancel()
 	content, usage, latencyMS, meta, err := distiller.ChatCompletionJSONWithMeta(callCtx, g.HTTPClient, baseURL, g.APIKey, model, req.System, req.User)
-	if err != nil {
-		return CallResult{TotalTokens: usage.TotalTokens, LatencyMS: latencyMS, ResolvedModel: meta.ResolvedModel, GatewayRequestID: meta.GatewayRequestID}, err
+	resolvedProvider := strings.TrimSpace(meta.ResolvedProvider)
+	if resolvedProvider == "" && meta.ResolutionSource == "response_body" {
+		resolvedProvider = providerForResolvedModel(req.Lane, meta.ResolvedModel)
 	}
-	return CallResult{Content: content, TotalTokens: usage.TotalTokens, LatencyMS: latencyMS, ResolvedModel: meta.ResolvedModel, GatewayRequestID: meta.GatewayRequestID}, nil
+	result := CallResult{Content: content, TotalTokens: usage.TotalTokens, LatencyMS: latencyMS, ResolvedProvider: resolvedProvider, ResolvedModel: meta.ResolvedModel, ResolutionSource: meta.ResolutionSource, GatewayRequestID: meta.GatewayRequestID}
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func providerForResolvedModel(lane LaneRef, model string) string {
+	model = strings.TrimSpace(model)
+	provider := ""
+	for _, target := range lane.Resolution.Targets {
+		if strings.TrimSpace(target.Model) != model {
+			continue
+		}
+		candidate := strings.TrimSpace(target.Provider)
+		if candidate == "" || (provider != "" && provider != candidate) {
+			return ""
+		}
+		provider = candidate
+	}
+	return provider
 }
 
 func (g GatewayCaller) resolveModel(lane LaneRef) string {

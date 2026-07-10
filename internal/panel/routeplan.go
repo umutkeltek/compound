@@ -101,7 +101,7 @@ func SelectLanes(homePath string, privacySensitive bool, supervised bool, now ti
 }
 
 func laneRef(lane routeevidence.CapabilityRouteLane) LaneRef {
-	return LaneRef{ModelID: lane.ModelID, Tier: lane.Tier, GateRole: lane.GateRole}
+	return LaneRef{ModelID: lane.ModelID, Resolution: lane.Resolution, Tier: lane.Tier, GateRole: lane.GateRole}
 }
 
 func appendOmittedLane(omitted []OmittedLane, modelID, reason string) []OmittedLane {

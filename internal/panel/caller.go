@@ -23,7 +23,9 @@ type CallResult struct {
 	Content          []byte `json:"content"`
 	TotalTokens      int    `json:"total_tokens"`
 	LatencyMS        int64  `json:"latency_ms"`
+	ResolvedProvider string `json:"resolved_provider,omitempty"`
 	ResolvedModel    string `json:"resolved_model,omitempty"`
+	ResolutionSource string `json:"resolution_source,omitempty"`
 	GatewayRequestID string `json:"gateway_request_id,omitempty"`
 }
 

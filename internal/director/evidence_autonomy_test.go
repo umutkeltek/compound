@@ -79,20 +79,25 @@ func seedJobHealthAutonomySample(t *testing.T, home, id string, closedAt time.Ti
 		t.Fatal(err)
 	}
 	resolvedModel := model
+	resolvedProvider := "scout"
 	if model == "auto/judge" {
 		resolvedModel = "deepseek/deepseek-v4-pro"
+		resolvedProvider = "deepseek"
 	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
-		CreatedAt:     closedAt.Add(-time.Minute),
-		RequestID:     "request-" + id,
-		WorkID:        w.ID,
-		ClientProfile: "compound.panel.judge",
-		Protocol:      "panel-lane",
-		Provider:      "compound-route-plan",
-		Model:         model,
-		ResolvedModel: resolvedModel,
-		Status:        "completed",
-		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+		CreatedAt:        closedAt.Add(-time.Minute),
+		RequestID:        "request-" + id,
+		WorkID:           w.ID,
+		ClientProfile:    "compound.panel.judge",
+		Protocol:         "panel-lane",
+		Provider:         "compound-route-plan",
+		Model:            model,
+		ResolvedProvider: resolvedProvider,
+		ResolvedModel:    resolvedModel,
+		ResolutionSource: "gateway_route",
+		GatewayRequestID: "gateway-" + id,
+		Status:           "completed",
+		EvidenceRefs:     []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
 	if err != nil {
 		t.Fatal(err)
