@@ -118,22 +118,31 @@ type OperationalArchiveEntry struct {
 	SHA256        string `json:"sha256,omitempty"`
 }
 
+type OperationalArchiveKeptEntry struct {
+	Kind         string `json:"kind"`
+	Status       string `json:"status,omitempty"`
+	OriginalPath string `json:"original_path"`
+	KeptReason   string `json:"kept_reason"`
+}
+
 type OperationalArchiveReport struct {
-	SchemaVersion string                    `json:"schema_version"`
-	Home          string                    `json:"home"`
-	DryRun        bool                      `json:"dry_run"`
-	ArchivedAt    string                    `json:"archived_at,omitempty"`
-	RestoredAt    string                    `json:"restored_at,omitempty"`
-	ArchivedCount int                       `json:"archived_count,omitempty"`
-	RestoredCount int                       `json:"restored_count,omitempty"`
-	Counts        map[string]int            `json:"counts,omitempty"`
-	Entries       []OperationalArchiveEntry `json:"entries"`
+	SchemaVersion string                        `json:"schema_version"`
+	Home          string                        `json:"home"`
+	DryRun        bool                          `json:"dry_run"`
+	ArchivedAt    string                        `json:"archived_at,omitempty"`
+	RestoredAt    string                        `json:"restored_at,omitempty"`
+	ArchivedCount int                           `json:"archived_count,omitempty"`
+	RestoredCount int                           `json:"restored_count,omitempty"`
+	Counts        map[string]int                `json:"counts,omitempty"`
+	Entries       []OperationalArchiveEntry     `json:"entries"`
+	Kept          []OperationalArchiveKeptEntry `json:"kept,omitempty"`
 }
 
 type operationalCandidate struct {
 	Kind         string
 	Status       string
 	OriginalPath string
+	KeptReason   string
 }
 
 // Backup writes a durable COMPOUND_HOME archive. Transient and rebuildable roots
@@ -439,6 +448,15 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 		return OperationalArchiveReport{}, err
 	}
 	for _, cand := range candidates {
+		if cand.KeptReason != "" {
+			report.Kept = append(report.Kept, OperationalArchiveKeptEntry{
+				Kind:         cand.Kind,
+				Status:       cand.Status,
+				OriginalPath: cand.OriginalPath,
+				KeptReason:   cand.KeptReason,
+			})
+			continue
+		}
 		if alreadyArchived[cand.OriginalPath] {
 			continue
 		}
@@ -975,6 +993,12 @@ func terminalReviewCandidates(homePath string) ([]operationalCandidate, error) {
 			return err
 		}
 		if operatorPending && !hasOperatorDispositionSidecar(path) {
+			out = append(out, operationalCandidate{
+				Kind:         "review",
+				Status:       firstNonEmptyString(status, "operator_pending"),
+				OriginalPath: rel,
+				KeptReason:   "operator_pending_without_reviewed_by",
+			})
 			return nil
 		}
 		derivedStatus, derivedTerminal, err := derivedTerminalReviewStatus(homePath, path)
