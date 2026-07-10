@@ -1885,22 +1885,22 @@ func adjacentNonPacketActions(report WorkbenchReport, heldWorkIDs []string) []Wo
 		RequiresOperator: true,
 	})
 	add(WorkbenchAdjacentAction{
-		ID:      "codex-pretooluse-wrapper-proof",
-		Kind:    "hook_shim",
-		Title:   "Prove Codex PreToolUse wrapper path without registration flip",
-		Command: []string{"sh", "-c", `tmp_home=$(mktemp -d); tmp_repo=$(mktemp -d); printf '{"hook_event_name":"PreToolUse","session_id":"sess_codex_wrapper_probe","cwd":"%s","tool_name":"Write","tool_input":{"file_path":"%s/README.md"}}' "$tmp_repo" "$tmp_repo" | COMPOUND_HOME="$tmp_home" compound hook pre-tool-use --live --harness codex`},
+		ID:      "codex-pretooluse-native-gate-proof",
+		Kind:    "hook_gate",
+		Title:   "Prove the Codex native PreToolUse placement gate",
+		Command: []string{"compound", "proof-check", "--json"},
 		ExpectedValidation: []string{
-			"compound.codex_live_hook_response.v0.1 emitted with status ok",
-			"policy decision is exercised through live PreToolUse adapter",
-			"no hook registration, wrapper install, or harness config mutation",
+			"valid apply_patch receives no deny decision",
+			"mixed valid and misplaced-canon apply_patch receives permissionDecision deny",
+			"every patch target is evaluated through Compound placement policy",
 		},
 		StopConditions: []string{
-			"synthetic live input fails",
-			"command requires existing live hook registration",
-			"requested action would install wrapper or change hook config",
+			"valid apply_patch is denied",
+			"misplaced canon apply_patch is allowed",
+			"proof requires live hook installation or harness config mutation",
 		},
-		Boundary: "synthetic live PreToolUse wrapper proof with temp COMPOUND_HOME only; no registration flip, hook install, harness config mutation, or held-valve clearing",
-		Proof:    "proof-check and Workbench artifact verify Codex live PreToolUse adapter emits status ok from synthetic write input",
+		Boundary: "synthetic native-protocol proof with temporary Compound home and repo only; no hook install, trust write, harness config mutation, or held-valve clearing",
+		Proof:    "proof-check verifies native allow and deny responses, including a deny when any apply_patch target violates Compound placement policy",
 	})
 	cmd := []string{"compound", "workbench", "--json"}
 	if report.OfferedPackets != nil && strings.TrimSpace(report.OfferedPackets.SourceDir) != "" {

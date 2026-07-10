@@ -99,8 +99,8 @@ func TestLoadRegistryManifest(t *testing.T) {
 	if !reg.Supports("claude_code", "PreToolUse") {
 		t.Fatal("claude_code should support pre-tool block from manifest")
 	}
-	if reg.Supports("codex", "PreToolUse") {
-		t.Fatal("codex fixture should not claim pre-tool block")
+	if !reg.Supports("codex", "PreToolUse") {
+		t.Fatal("codex fixture should expose the stable native pre-tool block")
 	}
 	if got := RegistryRevision(reg); !strings.HasPrefix(got, "sha256:") {
 		t.Fatalf("registry revision = %q", got)

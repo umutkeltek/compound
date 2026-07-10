@@ -784,7 +784,7 @@ func TestOrientOperatorSurfacesHeldValveAdjacentProgress(t *testing.T) {
 	if !stringSliceContains(adjacent.HeldWorkIDs, asc.ID) || !stringSliceContains(adjacent.HeldWorkIDs, conversation.ID) {
 		t.Fatalf("held work ids not carried into orient adjacent progress: %+v", adjacent)
 	}
-	for _, id := range []string{"operator-gate-" + asc.ID + "-app-store-connect-private-config", "asc-sales-series-bridge-proof", "conversation-preflight-private-export", "conversation-memory-review-gate", "second-opinion-evidence-recovery", "codex-pretooluse-wrapper-proof"} {
+	for _, id := range []string{"operator-gate-" + asc.ID + "-app-store-connect-private-config", "asc-sales-series-bridge-proof", "conversation-preflight-private-export", "conversation-memory-review-gate", "second-opinion-evidence-recovery", "codex-pretooluse-native-gate-proof"} {
 		if !stringSliceContains(adjacent.NonPacketActionIDs, id) {
 			t.Fatalf("adjacent action %s missing from orient operator: %+v", id, adjacent)
 		}

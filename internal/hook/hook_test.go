@@ -290,8 +290,8 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	if !containsString(pack.ActiveHooks, "hook://codex/SessionStart") {
 		t.Fatalf("context pack active hooks = %v, want hook://codex/SessionStart", pack.ActiveHooks)
 	}
-	if readiness := findContextHookReadiness(pack.HookReadiness, "codex", "PreToolUse"); readiness == nil || readiness.Status != "missing_gate" || !readiness.AdapterRequired {
-		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
+	if readiness := findContextHookReadiness(pack.HookReadiness, "codex", "PreToolUse"); readiness == nil || readiness.Status != "native_blocking" || readiness.AdapterRequired {
+		t.Fatalf("context pack hook readiness = %+v, want codex native_blocking", pack.HookReadiness)
 	}
 	if pack.IDs.ContractID == "" {
 		t.Fatal("context pack missing contract_id")

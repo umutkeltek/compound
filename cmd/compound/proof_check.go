@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"compound/internal/home"
+	"compound/internal/policy"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -132,8 +134,8 @@ func recordProofCheckRuntimeArtifact(homePath string, report proofCheckReport) (
 	fmt.Fprintf(&b, "`proof-check-installed-runtime` adjacent Workbench action verified installed runtime proof.\n")
 	fmt.Fprintf(&b, "`architecture-doctor-strict` adjacent Workbench action verified through the proof-check architecture-doctor step.\n")
 	fmt.Fprintf(&b, "`workbench-projection-refresh` adjacent Workbench action verified through proof-check workbench projection step.\n")
-	fmt.Fprintf(&b, "`codex-pretooluse-wrapper-proof` adjacent Workbench action verified through proof-check synthetic live PreToolUse wrapper step.\n")
-	fmt.Fprintf(&b, "Do not rerun these adjacent Workbench actions as the next move unless proof-check, strict architecture doctor, Workbench projection, Codex PreToolUse wrapper proof, or source state regresses.\n\n")
+	fmt.Fprintf(&b, "`codex-pretooluse-native-gate-proof` adjacent Workbench action verified through proof-check's native allow-and-deny PreToolUse step.\n")
+	fmt.Fprintf(&b, "Do not rerun these adjacent Workbench actions as the next move unless proof-check, strict architecture doctor, Workbench projection, the Codex native PreToolUse gate, or source state regresses.\n\n")
 	fmt.Fprintf(&b, "- schema: %s\n", report.SchemaVersion)
 	fmt.Fprintf(&b, "- status: %s\n", report.Status)
 	fmt.Fprintf(&b, "- generated_at: %s\n", report.GeneratedAt)
@@ -203,7 +205,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
 		{Name: "workbench-projection", Command: []string{exe, "workbench", "--json"}, ProofRef: "workbench-projection-refresh"},
-		{Name: "codex-pretooluse-wrapper", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-wrapper-proof"},
+		{Name: "codex-pretooluse-native-gate", Command: []string{exe, "hook", "pre-tool-use", "--live", "--harness", "codex"}, ProofRef: "codex-pretooluse-native-gate-proof"},
 		{Name: "memory-doctor", Command: []string{exe, "memory", "doctor"}, ProofRef: "memory-doctor"},
 		{Name: "redact-public", Command: redactCommand, ProofRef: "redact-public-clean"},
 	}, nil
@@ -235,8 +237,8 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 		output, err = runProofCheckRedact(repo, baseRef)
 	} else if step.Name == "gofmt" {
 		output, err = runProofCheckGofmt(repo)
-	} else if step.Name == "codex-pretooluse-wrapper" {
-		output, err = runProofCheckCodexPreToolUseWrapper(repo, step)
+	} else if step.Name == "codex-pretooluse-native-gate" {
+		output, err = runProofCheckCodexPreToolUseNativeGate(repo, step)
 	} else if step.Name == "bun-tools-test" {
 		output, err = runProofCheckBunTools(repo)
 	} else {
@@ -260,7 +262,7 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 	return result
 }
 
-func runProofCheckCodexPreToolUseWrapper(repo string, step proofCheckStep) ([]byte, error) {
+func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([]byte, error) {
 	tmpHome, err := os.MkdirTemp("", "compound-proofcheck-home-*")
 	if err != nil {
 		return nil, err
@@ -271,12 +273,52 @@ func runProofCheckCodexPreToolUseWrapper(repo string, step proofCheckStep) ([]by
 		return nil, err
 	}
 	defer os.RemoveAll(tmpRepo)
-	input := fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":"sess_codex_wrapper_probe","cwd":%q,"tool_name":"Write","tool_input":{"file_path":%q}}`, tmpRepo, filepath.Join(tmpRepo, "README.md"))
-	cmd := exec.Command(step.Command[0], step.Command[1:]...)
-	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "COMPOUND_HOME="+tmpHome)
-	cmd.Stdin = strings.NewReader(input)
-	return cmd.CombinedOutput()
+	if err := home.Init(tmpHome, "proof-check", time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("initialize proof-check home: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpHome, "config", "policy.yaml"), []byte("placement_guard_mode: block\n"), 0o644); err != nil {
+		return nil, fmt.Errorf("enable placement block mode: %w", err)
+	}
+	if _, err := policy.ImportPlacementRules(tmpHome, filepath.Join(repo, "fixtures", "policy", "placement-rules.json"), time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("import synthetic placement rules: %w", err)
+	}
+
+	runPatch := func(sessionID, patch string) (claudeLiveHookResponse, []byte, error) {
+		input := fmt.Sprintf(`{"hook_event_name":"PreToolUse","session_id":%q,"cwd":%q,"tool_name":"apply_patch","tool_input":{"command":%q}}`, sessionID, tmpRepo, patch)
+		cmd := exec.Command(step.Command[0], step.Command[1:]...)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "COMPOUND_HOME="+tmpHome, "HOME="+tmpRepo, "PLACEMENT_GUARD_MODE=block")
+		cmd.Stdin = strings.NewReader(input)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return claudeLiveHookResponse{}, out, fmt.Errorf("Codex native PreToolUse command: %w", err)
+		}
+		var response claudeLiveHookResponse
+		if err := json.Unmarshal(out, &response); err != nil {
+			return claudeLiveHookResponse{}, out, fmt.Errorf("parse Codex native PreToolUse response: %w", err)
+		}
+		return response, out, nil
+	}
+
+	allowedPatch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"
+	allowed, allowedOut, err := runPatch("sess_codex_native_allow", allowedPatch)
+	if err != nil {
+		return allowedOut, err
+	}
+	if decision := allowed.HookSpecificOutput.PermissionDecision; decision != "" && decision != "allow" {
+		return allowedOut, fmt.Errorf("valid Codex apply_patch decision = %q, want allow", decision)
+	}
+
+	blockedPatch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** Add File: DOC-0001.md\n+misplaced canon\n*** End Patch"
+	blocked, blockedOut, err := runPatch("sess_codex_native_block", blockedPatch)
+	combined := bytes.Join([][]byte{[]byte("allow:\n"), allowedOut, []byte("\nblock:\n"), blockedOut}, nil)
+	if err != nil {
+		return combined, err
+	}
+	if blocked.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(strings.ToLower(blocked.HookSpecificOutput.PermissionDecisionReason), "placement") {
+		return combined, fmt.Errorf("misplaced multi-target Codex apply_patch did not return native placement deny")
+	}
+	return combined, nil
 }
 
 func runProofCheckBunTools(repo string) ([]byte, error) {

@@ -674,7 +674,7 @@ Success: should not count as Codex adjacent work.
 		"conversation-preflight-private-export",
 		"conversation-memory-review-gate",
 		"second-opinion-evidence-recovery",
-		"codex-pretooluse-wrapper-proof",
+		"codex-pretooluse-native-gate-proof",
 		"workbench-projection-refresh",
 		"architecture-doctor-strict",
 		"proof-check-installed-runtime",
@@ -756,14 +756,14 @@ Success: should not count as Codex adjacent work.
 	if !contains(oracleAction.StopConditions, "source observation would promote truth") || !contains(oracleAction.ExpectedValidation, "no source observe import during preflight") {
 		t.Fatalf("second-opinion action should name stop/validation gates: %+v", oracleAction)
 	}
-	hookAction, _ := adjacentActionByID(adjacent.NonPacketActions, "codex-pretooluse-wrapper-proof")
+	hookAction, _ := adjacentActionByID(adjacent.NonPacketActions, "codex-pretooluse-native-gate-proof")
 	if hookAction.RequiresOperator ||
-		!strings.Contains(strings.Join(hookAction.Command, " "), "compound hook pre-tool-use --live --harness codex") ||
-		!strings.Contains(hookAction.Boundary, "temp COMPOUND_HOME") ||
-		!strings.Contains(hookAction.Boundary, "no registration flip") ||
-		!contains(hookAction.ExpectedValidation, "compound.codex_live_hook_response.v0.1 emitted with status ok") ||
-		!contains(hookAction.StopConditions, "requested action would install wrapper or change hook config") {
-		t.Fatalf("hook shim proof should be synthetic, live-wrapper only, and registration-safe: %+v", hookAction)
+		!strings.Contains(strings.Join(hookAction.Command, " "), "compound proof-check --json") ||
+		!strings.Contains(hookAction.Boundary, "temporary Compound home") ||
+		!strings.Contains(hookAction.Boundary, "no hook install") ||
+		!contains(hookAction.ExpectedValidation, "mixed valid and misplaced-canon apply_patch receives permissionDecision deny") ||
+		!contains(hookAction.StopConditions, "proof requires live hook installation or harness config mutation") {
+		t.Fatalf("hook gate proof should exercise native allow/deny without registration mutation: %+v", hookAction)
 	}
 	if !strings.Contains(adjacent.NextAction, "listed non-packet proof action") {
 		t.Fatalf("adjacent next action should point to action cards: %q", adjacent.NextAction)
