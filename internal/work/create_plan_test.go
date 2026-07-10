@@ -104,6 +104,34 @@ func TestCreateRequiresDirectorOriginToStartProposed(t *testing.T) {
 	}
 }
 
+func TestAdmitCreatePlanRejectsDirectorOriginOutsideProposed(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_legacy_director_ready_plan",
+		Owner:            "compound-authority",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "legacy director plan cannot skip admission",
+		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:legacy-ready"},
+	}, fixedNow, CreatePlanOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.Work.State = "ready"
+	plan.WorkState = "ready"
+	plan.ID, err = createPlanContentID(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.AdmitCreatePlan(plan, "", fixedNow.Add(time.Minute), AdmitCreatePlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), "director-origin work must start in proposed state") {
+		t.Fatalf("legacy ready director create-plan admission error = %v", err)
+	}
+	if _, err := s.Get(plan.WorkID); err == nil {
+		t.Fatalf("rejected legacy director create-plan persisted work %s", plan.WorkID)
+	}
+}
+
 func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
