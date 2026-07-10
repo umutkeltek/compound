@@ -55,9 +55,10 @@ type Fixture struct {
 	Task           string                        `json:"task,omitempty"`
 	Mode           string                        `json:"mode,omitempty"`
 	RepoKind       string                        `json:"repo_kind,omitempty"`
-	Topic          string                        `json:"topic,omitempty"`  // optional; narrows ambient recall to this topic's subtree
-	Prompt         string                        `json:"prompt,omitempty"` // user-prompt-submit; only hashed, never stored raw
-	Action         *envelope.ActionIntent        `json:"action,omitempty"` // pre-tool-use
+	Topic          string                        `json:"topic,omitempty"`   // optional; narrows ambient recall to this topic's subtree
+	Prompt         string                        `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
+	Action         *envelope.ActionIntent        `json:"action,omitempty"`  // pre-tool-use
+	Actions        []envelope.ActionIntent       `json:"actions,omitempty"` // pre-tool-use tool calls that target several paths
 	SessionID      string                        `json:"session_id,omitempty"`
 	WorkID         string                        `json:"work_id,omitempty"`         // session-end
 	TranscriptPath string                        `json:"transcript_path,omitempty"` // session-end/stop: the harness transcript to scan for consumed injected claims
@@ -327,6 +328,9 @@ func orientationInput(fx Fixture, deps Deps, mode string) (contract.Input, error
 }
 
 func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
+	if len(fx.Actions) > 0 {
+		return preToolUseBatch(name, fx, deps, now)
+	}
 	if fx.Action == nil {
 		return Result{}, fmt.Errorf("pre-tool-use fixture needs an action")
 	}
@@ -396,6 +400,70 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		summary += "; held review work " + reviewWorkID
 	}
 	return Result{Event: ev, Produced: []envelope.Envelope{&ai, &pd}, Summary: summary}, nil
+}
+
+func preToolUseBatch(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
+	produced := make([]envelope.Envelope, 0, len(fx.Actions)*2)
+	sideEffects := []string(nil)
+	actionIDs := make([]string, 0, len(fx.Actions))
+	status := "ok"
+	summary := ""
+	workID := fx.WorkID
+
+	for i := range fx.Actions {
+		action := fx.Actions[i]
+		child := fx
+		child.Actions = nil
+		child.Action = &action
+		res, err := preToolUse(name, child, deps, now)
+		if err != nil {
+			return Result{}, err
+		}
+		produced = append(produced, res.Produced...)
+		sideEffects = append(sideEffects, res.Event.SideEffects...)
+		actionIDs = append(actionIDs, action.ID)
+		if workID == "" {
+			workID = action.IDs.WorkID
+		}
+		if hookStatusRank(res.Event.Status) > hookStatusRank(status) {
+			status = res.Event.Status
+			summary = res.Summary
+		} else if summary == "" {
+			summary = res.Summary
+		}
+	}
+
+	ev := newEvent(name, fx, status, hashStr(strings.Join(actionIDs, "\x00")), uniqueStrings(sideEffects), now)
+	ev.IDs.WorkID = workID
+	return Result{
+		Event:    ev,
+		Produced: produced,
+		Summary:  fmt.Sprintf("%s; evaluated %d target(s)", summary, len(fx.Actions)),
+	}, nil
+}
+
+func hookStatusRank(status string) int {
+	switch status {
+	case "blocked":
+		return 2
+	case "fail_open":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func normalizeActionTarget(fx Fixture, ai envelope.ActionIntent) envelope.ActionIntent {

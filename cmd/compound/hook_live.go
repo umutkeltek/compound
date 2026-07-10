@@ -121,11 +121,15 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 	}
 	switch parsed.HookName {
 	case "pre-tool-use":
-		ai, err := liveActionIntent(fx.Harness, in, now)
+		actions, err := liveActionIntents(fx.Harness, in, now)
 		if err != nil {
 			return hook.Fixture{}, err
 		}
-		fx.Action = &ai
+		if len(actions) == 1 {
+			fx.Action = &actions[0]
+		} else {
+			fx.Actions = actions
+		}
 	case "post-tool-use":
 		if fx.Tool == "" {
 			fx.Tool = "unknown"
@@ -152,14 +156,14 @@ func liveTask(in claudeLiveHookInput) string {
 	return strings.TrimSpace(in.SessionID)
 }
 
-func liveActionIntent(harnessName string, in claudeLiveHookInput, now time.Time) (envelope.ActionIntent, error) {
+func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time) ([]envelope.ActionIntent, error) {
 	toolName := strings.TrimSpace(in.ToolName)
-	targetPath := liveToolPath(in.ToolInput)
 	if toolName == "" {
-		return envelope.ActionIntent{}, fmt.Errorf("pre-tool-use live stdin needs tool_name")
+		return nil, fmt.Errorf("pre-tool-use live stdin needs tool_name")
 	}
-	if targetPath == "" {
-		return envelope.ActionIntent{}, fmt.Errorf("pre-tool-use live stdin needs tool_input.file_path or tool_input.path")
+	targetPaths := liveToolPaths(toolName, in.ToolInput)
+	if len(targetPaths) == 0 {
+		return nil, fmt.Errorf("pre-tool-use live stdin needs a file target or parseable apply_patch command")
 	}
 	action := "use_tool"
 	capability := "tool." + strings.ToLower(toolName)
@@ -178,43 +182,84 @@ func liveActionIntent(harnessName string, in claudeLiveHookInput, now time.Time)
 	if workID == "" {
 		workID = "work_live_" + shortHash(in.SessionID, in.Cwd)
 	}
-	id := "act_live_" + shortHash(toolName, targetPath, in.SessionID, now.UTC().Format(time.RFC3339Nano))
-	return envelope.ActionIntent{
-		Header: envelope.Header{
-			SchemaVersion: envelope.SVActionIntent,
-			ID:            id,
-			CreatedAt:     now.UTC().Format(time.RFC3339),
-			Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
-			IDs:           envelope.IDs{WorkID: workID},
-			Authority:     envelope.Authority{SourceClass: "runtime"},
-			Privacy:       "private",
-			Risk:          "tier2",
-			EvidenceRefs:  []string{},
-			Uncertainty:   envelope.Uncertainty{Level: "known"},
-		},
-		Actor:         normalizeLiveHarness(harnessName),
-		Capability:    capability,
-		Action:        action,
-		Target:        envelope.ActionTarget{Kind: "file", Path: targetPath},
-		MutationClass: "local_reversible",
-		Reversibility: "easy",
-		BlastRadius:   "repo",
-	}, nil
+	actions := make([]envelope.ActionIntent, 0, len(targetPaths))
+	for _, targetPath := range targetPaths {
+		id := "act_live_" + shortHash(toolName, targetPath, in.SessionID, now.UTC().Format(time.RFC3339Nano))
+		actions = append(actions, envelope.ActionIntent{
+			Header: envelope.Header{
+				SchemaVersion: envelope.SVActionIntent,
+				ID:            id,
+				CreatedAt:     now.UTC().Format(time.RFC3339),
+				Producer:      envelope.Producer{Kind: "hook", Name: "compound"},
+				IDs:           envelope.IDs{WorkID: workID},
+				Authority:     envelope.Authority{SourceClass: "runtime"},
+				Privacy:       "private",
+				Risk:          "tier2",
+				EvidenceRefs:  []string{},
+				Uncertainty:   envelope.Uncertainty{Level: "known"},
+			},
+			Actor:         normalizeLiveHarness(harnessName),
+			Capability:    capability,
+			Action:        action,
+			Target:        envelope.ActionTarget{Kind: "file", Path: targetPath},
+			MutationClass: "local_reversible",
+			Reversibility: "easy",
+			BlastRadius:   "repo",
+		})
+	}
+	return actions, nil
 }
 
-func liveToolPath(input map[string]any) string {
+func liveToolPaths(toolName string, input map[string]any) []string {
 	for _, key := range []string{"file_path", "path"} {
 		if raw, ok := input[key]; ok {
 			if s := strings.TrimSpace(fmt.Sprint(raw)); s != "" && s != "<nil>" {
-				return s
+				return []string{s}
 			}
 		}
 	}
-	return ""
+	if toolName != "apply_patch" {
+		return nil
+	}
+	command, _ := input["command"].(string)
+	return applyPatchTargetPaths(command)
+}
+
+func applyPatchTargetPaths(command string) []string {
+	prefixes := []string{"*** Add File:", "*** Update File:", "*** Delete File:", "*** Move to:"}
+	paths := []string(nil)
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(command, "\n") {
+		for _, prefix := range prefixes {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			path := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if path == "" {
+				break
+			}
+			if _, ok := seen[path]; !ok {
+				seen[path] = struct{}{}
+				paths = append(paths, path)
+			}
+			break
+		}
+	}
+	return paths
 }
 
 func liveHookResponse(harnessName, hookName string, res hook.Result) any {
 	if normalizeLiveHarness(harnessName) == "codex" {
+		if hookName == "pre-tool-use" {
+			out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
+			if decision, reason := livePermissionDecision(res); decision != "" {
+				// Codex PreToolUse supports allow/deny; a Compound hold denies this
+				// attempt until its separate review/approval changes the policy state.
+				out.PermissionDecision = "deny"
+				out.PermissionDecisionReason = reason
+			}
+			return claudeLiveHookResponse{HookSpecificOutput: out}
+		}
 		out := codexLiveHookResponse{
 			SchemaVersion: "compound.codex_live_hook_response.v0.1",
 			HookName:      hookEnumName(hookName),

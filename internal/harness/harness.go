@@ -129,14 +129,14 @@ func DefaultRegistry() Registry {
 		},
 		"codex": {
 			Name:                 "codex",
-			InstructionMechanism: "AGENTS.md + skills (progressive disclosure)",
+			InstructionMechanism: "AGENTS.md + hooks + skills (progressive disclosure)",
 			Capabilities: Capabilities{
-				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: false,
+				SessionStartContext: true, UserPromptContext: true, PreToolUseBlock: true,
 				PostToolUseEvent: true, StopFeedback: true, SessionEndReceipt: false,
 				NativeSkills: true, MCP: true,
 			},
 			Limitations: []string{
-				"no verified native pre-tool-use block — enforce via wrapper/adapter",
+				"native PreToolUse requires the stable hooks feature and an installed trusted hook",
 				"no SessionEnd event — Stop (JSON block/continuation) is the only end-of-turn hook",
 				"initial skill list capped (progressive disclosure)",
 				"cwd-dependent guidance",
