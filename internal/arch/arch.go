@@ -1955,6 +1955,8 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 	hasDocs := strings.Contains(status, "hook-readiness-action-contract") &&
 		strings.Contains(status, "codex sessionstart/userpromptsubmit") &&
 		strings.Contains(status, "ready") &&
+		strings.Contains(status, "registered") &&
+		strings.Contains(status, "handler-content") &&
 		strings.Contains(status, "contextpack") &&
 		strings.Contains(status, "effectivecontract") &&
 		strings.Contains(status, "native_blocking") &&
@@ -1981,6 +1983,7 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(envelopeText, "Actions         []HookReadinessAction") &&
 		strings.Contains(contractText, "envelopeHookReadinessActions") &&
 		strings.Contains(contractText, "hookReadinessAction") &&
+		strings.Contains(contractText, "InvocationRevision string") &&
 		strings.Contains(contractText, "prove_fixture_hook") &&
 		strings.Contains(contractText, "ExpectedExitCode") &&
 		strings.Contains(contractText, `row.Status = "native_blocking"`) &&
@@ -1999,8 +2002,8 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(contractTest, "prove_fixture_hook") &&
 		strings.Contains(contractTest, "ExpectedExitCode") &&
 		strings.Contains(contractTest, "native_blocking") &&
-		strings.Contains(contractTest, "privacy-safe Compound command identity") &&
-		strings.Contains(contractTest, "handler:sha256:") &&
+		strings.Contains(contractTest, "privacy-safe invocation identity") &&
+		strings.Contains(contractTest, "InvocationRevision") &&
 		strings.Contains(contractTest, "findEnvelopeHookAction") &&
 		strings.Contains(contractTest, "operator_live_adapter_required") &&
 		strings.Contains(contractTest, "compound hook session-start --live --harness codex")
@@ -2038,9 +2041,9 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(cliTest, `"status": "blocked"`)
 
 	if !hasDocs || !hasSource || !hasContractTest || !hasWorkbenchAction || !hasProofCheck || !hasCLITest {
-		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must prove Codex context hooks ready, Codex PreToolUse native_blocking, codex-pretooluse-native-gate-proof allow/deny coverage, and keep missing-live-adapter rows exposing prove_fixture_hook, expected_exit_code, and operator_live_adapter_required with verification/rollback text"}}
+		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must distinguish registered invocation from content-verified ready, prove Codex context adapters ready and PreToolUse native_blocking, keep codex-pretooluse-native-gate-proof allow/deny coverage, and retain prove_fixture_hook, expected_exit_code, and operator_live_adapter_required actions for missing live adapters"}}
 	}
-	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness proves Codex native blocking while missing-live-adapter rows retain fixture and operator-only activation actions"}}
+	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness separates registration from content proof, proves Codex native blocking, and retains fixture/operator actions for missing adapters"}}
 }
 
 // checkStandingGrantContract keeps autonomy grants from drifting back to
