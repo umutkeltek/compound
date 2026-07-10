@@ -7081,6 +7081,39 @@ func cmdDecisions(args []string) {
 		if len(report.Eligible) > 0 && len(report.Missing) > 0 {
 			os.Exit(1)
 		}
+	case "record":
+		jsonOut := hasFlag(args[1:], "--json")
+		in := decisions.RecordInput{
+			Kind:          value("--kind"),
+			ID:            value("--id"),
+			Title:         value("--title"),
+			ReviewedBy:    value("--reviewed-by"),
+			Scope:         value("--scope"),
+			OwnerGlobs:    values("--owner-glob"),
+			Keywords:      values("--keyword"),
+			Domains:       values("--domain"),
+			Falsifier:     value("--falsifier"),
+			ReviewTrigger: value("--review-trigger"),
+			UndoOf:        value("--undo-of"),
+			Now:           time.Now(),
+		}
+		report, err := decisions.Record(store, homePath, in)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions record:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# decisions record %s\n\n", report.Import.Lifecycle.ID)
+		fmt.Printf("- path: %s\n", report.Path)
+		fmt.Printf("- kind: %s\n", report.Import.Lifecycle.Kind)
+		fmt.Printf("- status: %s\n", report.Import.Lifecycle.Status)
+		fmt.Printf("- scope: %s\n", report.Import.Lifecycle.Scope)
+		fmt.Printf("- reviewed_by: %s\n", report.Import.Lifecycle.ReviewedBy)
+		fmt.Printf("- verdict: %s\n", report.Import.Verdict)
+		fmt.Printf("- claim: %s\n", report.Import.ClaimID)
 	case "doctor":
 		writebackEnabled := hasFlag(args[1:], "--writeback")
 		claims, err := store.AllCurrent()
