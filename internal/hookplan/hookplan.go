@@ -22,6 +22,7 @@ const (
 )
 
 const (
+	StateRegistered         = "registered"
 	StateReady              = "ready"
 	StateMissing            = "missing"
 	StateExtraUnowned       = "extra_unowned"
@@ -42,14 +43,15 @@ type HookPlan struct {
 
 // Binding is one desired harness event binding.
 type Binding struct {
-	ID              string `json:"id" yaml:"id"`
-	Harness         string `json:"harness" yaml:"harness"`
-	Event           string `json:"event" yaml:"event"`
-	Matcher         string `json:"matcher,omitempty" yaml:"matcher,omitempty"`
-	HandlerRef      string `json:"handler_ref" yaml:"handler_ref"`
-	HandlerRevision string `json:"handler_revision,omitempty" yaml:"handler_revision,omitempty"`
-	Activation      string `json:"activation,omitempty" yaml:"activation,omitempty"`
-	Blocking        bool   `json:"blocking,omitempty" yaml:"blocking,omitempty"`
+	ID                 string `json:"id" yaml:"id"`
+	Harness            string `json:"harness" yaml:"harness"`
+	Event              string `json:"event" yaml:"event"`
+	Matcher            string `json:"matcher,omitempty" yaml:"matcher,omitempty"`
+	HandlerRef         string `json:"handler_ref" yaml:"handler_ref"`
+	InvocationRevision string `json:"invocation_revision,omitempty" yaml:"invocation_revision,omitempty"`
+	HandlerRevision    string `json:"handler_revision,omitempty" yaml:"handler_revision,omitempty"`
+	Activation         string `json:"activation,omitempty" yaml:"activation,omitempty"`
+	Blocking           bool   `json:"blocking,omitempty" yaml:"blocking,omitempty"`
 }
 
 // InstallationSnapshot is observed evidence from harness-owned config files.
@@ -63,26 +65,29 @@ type InstallationSnapshot struct {
 // ObservedBinding describes what a harness config currently registers. It is
 // evidence only and carries no desired-state fields.
 type ObservedBinding struct {
-	BindingID       string `json:"binding_id,omitempty"`
-	Harness         string `json:"harness"`
-	Event           string `json:"event"`
-	Matcher         string `json:"matcher,omitempty"`
-	HandlerRef      string `json:"handler_ref"`
-	HandlerRevision string `json:"handler_revision,omitempty"`
-	Active          bool   `json:"active"`
-	SourceRef       string `json:"source_ref,omitempty"`
-}
-
-type Delta struct {
 	BindingID          string `json:"binding_id,omitempty"`
 	Harness            string `json:"harness"`
 	Event              string `json:"event"`
 	Matcher            string `json:"matcher,omitempty"`
-	State              string `json:"state"`
-	DesiredHandlerRef  string `json:"desired_handler_ref,omitempty"`
-	ObservedHandlerRef string `json:"observed_handler_ref,omitempty"`
-	ObservedSourceRef  string `json:"observed_source_ref,omitempty"`
-	Reason             string `json:"reason,omitempty"`
+	HandlerRef         string `json:"handler_ref"`
+	InvocationRevision string `json:"invocation_revision,omitempty"`
+	HandlerRevision    string `json:"handler_revision,omitempty"`
+	Active             bool   `json:"active"`
+	SourceRef          string `json:"source_ref,omitempty"`
+}
+
+type Delta struct {
+	BindingID                  string `json:"binding_id,omitempty"`
+	Harness                    string `json:"harness"`
+	Event                      string `json:"event"`
+	Matcher                    string `json:"matcher,omitempty"`
+	State                      string `json:"state"`
+	DesiredHandlerRef          string `json:"desired_handler_ref,omitempty"`
+	ObservedHandlerRef         string `json:"observed_handler_ref,omitempty"`
+	DesiredInvocationRevision  string `json:"desired_invocation_revision,omitempty"`
+	ObservedInvocationRevision string `json:"observed_invocation_revision,omitempty"`
+	ObservedSourceRef          string `json:"observed_source_ref,omitempty"`
+	Reason                     string `json:"reason,omitempty"`
 }
 
 type Reconciliation struct {
@@ -120,6 +125,7 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 	for _, desired := range desiredBindings {
 		matched := -1
 		var slotCandidates []int
+		var identityMatches []int
 		for i, actual := range observedBindings {
 			if consumed[i] || !sameSlot(desired, actual) {
 				continue
@@ -128,10 +134,15 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 				continue
 			}
 			slotCandidates = append(slotCandidates, i)
-			if actual.BindingID == desired.ID || desired.HandlerRef == actual.HandlerRef {
-				matched = i
-				break
+			if actual.BindingID == desired.ID || handlerInvocationMatches(desired, actual) {
+				identityMatches = append(identityMatches, i)
 			}
+		}
+		if len(identityMatches) == 1 {
+			matched = identityMatches[0]
+		}
+		if len(identityMatches) > 1 {
+			return Reconciliation{}, fmt.Errorf("hook plan binding %q has %d ambiguous identity matches for %s/%s matcher %q", desired.ID, len(identityMatches), desired.Harness, desired.Event, desired.Matcher)
 		}
 		if matched < 0 && len(slotCandidates) == 1 {
 			matched = slotCandidates[0]
@@ -140,12 +151,13 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			return Reconciliation{}, fmt.Errorf("hook plan binding %q has %d ambiguous observed registrations for %s/%s matcher %q", desired.ID, len(slotCandidates), desired.Harness, desired.Event, desired.Matcher)
 		}
 		delta := Delta{
-			BindingID:         desired.ID,
-			Harness:           desired.Harness,
-			Event:             desired.Event,
-			Matcher:           desired.Matcher,
-			DesiredHandlerRef: desired.HandlerRef,
-			State:             StateMissing,
+			BindingID:                 desired.ID,
+			Harness:                   desired.Harness,
+			Event:                     desired.Event,
+			Matcher:                   desired.Matcher,
+			DesiredHandlerRef:         desired.HandlerRef,
+			DesiredInvocationRevision: desired.InvocationRevision,
+			State:                     StateMissing,
 		}
 		if !bindingSupported(desired, registry) {
 			delta.State = StateUnsupported
@@ -155,17 +167,21 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			actual := observedBindings[matched]
 			consumed[matched] = true
 			delta.ObservedHandlerRef = actual.HandlerRef
+			delta.ObservedInvocationRevision = actual.InvocationRevision
 			delta.ObservedSourceRef = actual.SourceRef
 			switch {
 			case delta.State == StateUnsupported:
 			case !actual.Active:
 				delta.State = StateActivationRequired
 				delta.Reason = "desired binding is installed but inactive"
-			case desired.HandlerRef != actual.HandlerRef || handlerRevisionDrifted(desired, actual):
+			case desired.HandlerRef != actual.HandlerRef || invocationRevisionDrifted(desired, actual) || handlerRevisionDrifted(desired, actual):
 				delta.State = StateDrifted
-				delta.Reason = "observed handler does not match desired binding"
-			default:
+				delta.Reason = "observed handler or invocation does not match desired binding"
+			case handlerRevisionVerified(desired, actual):
 				delta.State = StateReady
+			default:
+				delta.State = StateRegistered
+				delta.Reason = "handler invocation matches; content revision is unverified"
 			}
 		} else if delta.State != StateUnsupported && desired.Activation == ActivationOperator {
 			delta.State = StateActivationRequired
@@ -178,13 +194,14 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			continue
 		}
 		out.Deltas = append(out.Deltas, Delta{
-			BindingID:          actual.BindingID,
-			Harness:            actual.Harness,
-			Event:              actual.Event,
-			Matcher:            actual.Matcher,
-			State:              StateExtraUnowned,
-			ObservedHandlerRef: actual.HandlerRef,
-			ObservedSourceRef:  actual.SourceRef,
+			BindingID:                  actual.BindingID,
+			Harness:                    actual.Harness,
+			Event:                      actual.Event,
+			Matcher:                    actual.Matcher,
+			State:                      StateExtraUnowned,
+			ObservedHandlerRef:         actual.HandlerRef,
+			ObservedInvocationRevision: actual.InvocationRevision,
+			ObservedSourceRef:          actual.SourceRef,
 		})
 	}
 	return out, nil
@@ -203,11 +220,11 @@ func validateDesiredBindings(bindings []Binding) error {
 }
 
 func bindingSortKey(binding Binding) string {
-	return bindingSlotKey(binding.Harness, binding.Event, binding.Matcher) + "\x00" + binding.ID + "\x00" + binding.HandlerRef
+	return bindingSlotKey(binding.Harness, binding.Event, binding.Matcher) + "\x00" + binding.ID + "\x00" + binding.HandlerRef + "\x00" + binding.InvocationRevision
 }
 
 func observedBindingSortKey(binding ObservedBinding) string {
-	return bindingSlotKey(binding.Harness, binding.Event, binding.Matcher) + "\x00" + binding.BindingID + "\x00" + binding.HandlerRef + "\x00" + binding.SourceRef
+	return bindingSlotKey(binding.Harness, binding.Event, binding.Matcher) + "\x00" + binding.BindingID + "\x00" + binding.HandlerRef + "\x00" + binding.InvocationRevision + "\x00" + binding.SourceRef
 }
 
 func bindingSlotKey(harnessName, event, matcher string) string {
@@ -230,4 +247,22 @@ func bindingSupported(binding Binding, registry harness.Registry) bool {
 
 func handlerRevisionDrifted(desired Binding, actual ObservedBinding) bool {
 	return desired.HandlerRevision != "" && actual.HandlerRevision != "" && desired.HandlerRevision != actual.HandlerRevision
+}
+
+func handlerRevisionVerified(desired Binding, actual ObservedBinding) bool {
+	return desired.HandlerRevision != "" && desired.HandlerRevision == actual.HandlerRevision
+}
+
+func invocationRevisionDrifted(desired Binding, actual ObservedBinding) bool {
+	return desired.InvocationRevision != "" && actual.InvocationRevision != "" && desired.InvocationRevision != actual.InvocationRevision
+}
+
+func handlerInvocationMatches(desired Binding, actual ObservedBinding) bool {
+	if desired.HandlerRef != actual.HandlerRef {
+		return false
+	}
+	if desired.InvocationRevision == "" {
+		return true
+	}
+	return desired.InvocationRevision == actual.InvocationRevision
 }

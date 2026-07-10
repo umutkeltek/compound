@@ -28,7 +28,10 @@ type InstalledHooksReconciliation struct {
 func ReconcileInstalledHooks(compoundHome, harnessHome string, registry harness.Registry) (InstalledHooksReconciliation, error) {
 	manifest, err := LoadInstalledHooksManifest(compoundHome)
 	if err != nil {
-		return InstalledHooksReconciliation{}, err
+		if !os.IsNotExist(err) {
+			return InstalledHooksReconciliation{}, err
+		}
+		manifest = InstalledHooksManifest{SchemaVersion: installedHooksSchemaVersion}
 	}
 	plan, err := hookPlanFromInstalledManifest(manifest, harnessHome)
 	if err != nil {
@@ -56,18 +59,22 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 		AuthorityRef:  InstalledHooksAuthorityRef,
 	}
 	for _, hook := range manifest.Hooks {
+		if !desiredHookStatus(hook.Status) {
+			continue
+		}
 		event := strings.TrimSpace(hook.Event)
 		if event == "" {
 			event = strings.TrimSpace(hook.Name)
 		}
 		binding := hookplan.Binding{
-			Harness:         strings.TrimSpace(hook.Harness),
-			Event:           event,
-			Matcher:         strings.TrimSpace(hook.Matcher),
-			HandlerRef:      canonicalHookHandlerRef(hook.Ref, harnessHome),
-			HandlerRevision: strings.TrimSpace(hook.Revision),
-			Activation:      hookActivation(hook.Status),
-			Blocking:        event == "PreToolUse",
+			Harness:            strings.TrimSpace(hook.Harness),
+			Event:              event,
+			Matcher:            strings.TrimSpace(hook.Matcher),
+			HandlerRef:         canonicalHookHandlerRef(hook.Ref, harnessHome),
+			InvocationRevision: strings.TrimSpace(hook.InvocationRevision),
+			HandlerRevision:    strings.TrimSpace(hook.Revision),
+			Activation:         hookActivation(hook.Status),
+			Blocking:           event == "PreToolUse",
 		}
 		binding.ID = desiredHookBindingID(binding)
 		plan.Bindings = append(plan.Bindings, binding)
@@ -81,6 +88,15 @@ func hookPlanFromInstalledManifest(manifest InstalledHooksManifest, harnessHome 
 	}
 	plan.Revision = "sha256:" + hashBytes(encoded)
 	return plan, nil
+}
+
+func desiredHookStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "", "current", "active", "pending", "pending_activation", "activation_required":
+		return true
+	default:
+		return false
+	}
 }
 
 func hookActivation(status string) string {
@@ -151,7 +167,7 @@ func observeHarnessHookInstallation(harnessHome string) (hookplan.InstallationSn
 			return hookplan.InstallationSnapshot{}, err
 		}
 		for _, binding := range bindings {
-			key := strings.Join([]string{binding.Harness, binding.Event, binding.Matcher, binding.HandlerRef, binding.SourceRef}, "\x00")
+			key := strings.Join([]string{binding.Harness, binding.Event, binding.Matcher, binding.HandlerRef, binding.InvocationRevision, binding.SourceRef}, "\x00")
 			if seen[key] {
 				continue
 			}
@@ -195,12 +211,13 @@ func parseObservedHarnessHooks(data []byte, source hookInstallationSource, harne
 					continue
 				}
 				bindings = append(bindings, hookplan.ObservedBinding{
-					Harness:    source.Harness,
-					Event:      event,
-					Matcher:    strings.TrimSpace(group.Matcher),
-					HandlerRef: handlerRef,
-					Active:     !group.Disabled && !command.Disabled,
-					SourceRef:  source.Ref,
+					Harness:            source.Harness,
+					Event:              event,
+					Matcher:            strings.TrimSpace(group.Matcher),
+					HandlerRef:         handlerRef,
+					InvocationRevision: canonicalHookInvocationRevision(command.Command, harnessHome),
+					Active:             !group.Disabled && !command.Disabled,
+					SourceRef:          source.Ref,
 				})
 			}
 		}
@@ -209,7 +226,7 @@ func parseObservedHarnessHooks(data []byte, source hookInstallationSource, harne
 }
 
 func observedHookBindingSortKey(binding hookplan.ObservedBinding) string {
-	return strings.Join([]string{binding.Harness, binding.Event, binding.Matcher, binding.BindingID, binding.HandlerRef, binding.SourceRef}, "\x00")
+	return strings.Join([]string{binding.Harness, binding.Event, binding.Matcher, binding.BindingID, binding.HandlerRef, binding.InvocationRevision, binding.SourceRef}, "\x00")
 }
 
 func canonicalHookHandlerRef(value, harnessHome string) string {
@@ -228,25 +245,20 @@ func canonicalHookHandlerRef(value, harnessHome string) string {
 	if strings.HasPrefix(normalized, "~/") {
 		normalized = "$HOME/" + strings.TrimPrefix(normalized, "~/")
 	}
-	fields := strings.Fields(normalized)
+	fields := canonicalHookCommandFields(normalized)
 	for _, field := range fields {
-		field = strings.Trim(field, "\"'`")
 		if strings.HasPrefix(field, "handler:") {
 			return field
 		}
 	}
 	for _, field := range fields {
-		field = strings.Trim(field, "\"'`")
 		if field != "compound" && !strings.HasSuffix(field, "/.local/bin/compound") {
 			continue
 		}
-		for i := range fields {
-			fields[i] = strings.Trim(fields[i], "\"'`")
-		}
-		return "handler:sha256:" + hashBytes([]byte(strings.Join(fields, " ")))
+		return field
 	}
 	for i := len(fields) - 1; i >= 0; i-- {
-		field := strings.Trim(fields[i], "\"'`")
+		field := fields[i]
 		for _, marker := range []string{"$HOME/.claude/hooks/", "$HOME/.codex/hooks/"} {
 			if index := strings.Index(field, marker); index >= 0 {
 				return strings.TrimRight(field[index:], `"'`)
@@ -256,5 +268,32 @@ func canonicalHookHandlerRef(value, harnessHome string) string {
 			return field
 		}
 	}
-	return "handler:sha256:" + hashBytes([]byte(normalized))
+	return "handler:" + canonicalHookInvocationRevision(normalized, "")
+}
+
+func canonicalHookInvocationRevision(value, harnessHome string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(value, "${HOME}", "$HOME")
+	normalizationHome := strings.TrimSpace(harnessHome)
+	if normalizationHome == "" {
+		normalizationHome, _ = os.UserHomeDir()
+	}
+	if normalizationHome != "" {
+		normalized = strings.ReplaceAll(normalized, filepath.Clean(normalizationHome), "$HOME")
+	}
+	if strings.HasPrefix(normalized, "~/") {
+		normalized = "$HOME/" + strings.TrimPrefix(normalized, "~/")
+	}
+	return "sha256:" + hashBytes([]byte(strings.Join(canonicalHookCommandFields(normalized), " ")))
+}
+
+func canonicalHookCommandFields(command string) []string {
+	fields := strings.Fields(command)
+	for i := range fields {
+		fields[i] = strings.Trim(fields[i], "\"'`")
+	}
+	return fields
 }

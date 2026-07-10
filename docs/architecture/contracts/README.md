@@ -49,7 +49,10 @@ exposing installed file paths. `compound contract
 hooks-authority` reports `pre_tool_use_readiness[]`: native blocking, not installed, missing gate, or
 wrapper-required status plus the enforced adapter command for fail-open harnesses. With `--observe-live`,
 desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` are separate;
-observed extras never promote themselves into desired authority. Hook selection is
+observed extras never promote themselves into desired authority. Reconciliation separates the privacy-safe
+command invocation revision from handler-content revision: an active matching command is `registered`;
+`ready` requires matching desired/observed handler-content revisions, while argument or content mismatch is
+`drifted`. Hook selection is
 task-conditioned where the imported roster provides event/matcher metadata: clearly read-only tasks exclude
 write-scoped `PreToolUse` hooks from active refs and record the excluded hook in `ContextPack.excluded`; this does
 not uninstall the hook or mutate harness settings.

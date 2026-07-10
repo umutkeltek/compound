@@ -9,6 +9,7 @@ import (
 )
 
 type hooksAuthorityReport struct {
+	Privacy                     string                                   `json:"privacy"`
 	AuthorityRef                string                                   `json:"authority_ref"`
 	AuthorityPath               string                                   `json:"authority_path"`
 	Installed                   bool                                     `json:"installed"`

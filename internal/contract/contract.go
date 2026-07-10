@@ -259,13 +259,14 @@ type InstalledHooksManifest struct {
 }
 
 type InstalledHook struct {
-	Harness  string `yaml:"harness" json:"harness"`
-	Name     string `yaml:"name" json:"name"`
-	Event    string `yaml:"event,omitempty" json:"event,omitempty"`
-	Matcher  string `yaml:"matcher,omitempty" json:"matcher,omitempty"`
-	Ref      string `yaml:"ref" json:"ref"`
-	Revision string `yaml:"revision" json:"revision"`
-	Status   string `yaml:"status" json:"status"`
+	Harness            string `yaml:"harness" json:"harness"`
+	Name               string `yaml:"name" json:"name"`
+	Event              string `yaml:"event,omitempty" json:"event,omitempty"`
+	Matcher            string `yaml:"matcher,omitempty" json:"matcher,omitempty"`
+	Ref                string `yaml:"ref" json:"ref"`
+	InvocationRevision string `yaml:"invocation_revision,omitempty" json:"invocation_revision,omitempty"`
+	Revision           string `yaml:"revision" json:"revision"`
+	Status             string `yaml:"status" json:"status"`
 }
 
 type InstalledHooksImportReport struct {
@@ -2190,12 +2191,13 @@ func parseHookRegistrationTS(data []byte) (InstalledHooksManifest, error) {
 		}
 		seen[key] = true
 		manifest.Hooks = append(manifest.Hooks, InstalledHook{
-			Harness: harness,
-			Name:    event,
-			Event:   event,
-			Matcher: matcher,
-			Ref:     ref,
-			Status:  "current",
+			Harness:            harness,
+			Name:               event,
+			Event:              event,
+			Matcher:            matcher,
+			Ref:                ref,
+			InvocationRevision: canonicalHookInvocationRevision(command, ""),
+			Status:             "current",
 		})
 	}
 	if len(manifest.Hooks) == 0 {
@@ -2368,12 +2370,13 @@ func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
 				}
 				seen[key] = true
 				manifest.Hooks = append(manifest.Hooks, InstalledHook{
-					Harness: "codex",
-					Name:    event,
-					Event:   event,
-					Matcher: matcher,
-					Ref:     ref,
-					Status:  "current",
+					Harness:            "codex",
+					Name:               event,
+					Event:              event,
+					Matcher:            matcher,
+					Ref:                ref,
+					InvocationRevision: canonicalHookInvocationRevision(hook.Command, ""),
+					Status:             "current",
 				})
 			}
 		}

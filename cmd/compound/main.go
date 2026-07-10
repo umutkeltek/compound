@@ -4748,6 +4748,7 @@ func cmdContract(args []string) {
 		homePath, err := home.Resolve("")
 		die(err)
 		report := hooksAuthorityReport{
+			Privacy:          "private",
 			AuthorityRef:     contract.InstalledHooksAuthorityRef,
 			AuthorityPath:    contract.InstalledHooksPath(homePath),
 			SourceRecordPath: contract.InstalledHooksSourceAuthorityPath(homePath),
