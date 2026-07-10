@@ -162,8 +162,17 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 		return nil, fmt.Errorf("pre-tool-use live stdin needs tool_name")
 	}
 	targetPaths := liveToolPaths(toolName, in.ToolInput)
+	mutationClass := "local_reversible"
+	unparsedPatch := false
 	if len(targetPaths) == 0 {
-		return nil, fmt.Errorf("pre-tool-use live stdin needs a file target or parseable apply_patch command")
+		if toolName != "apply_patch" {
+			return nil, fmt.Errorf("pre-tool-use live stdin needs a file target or parseable apply_patch command")
+		}
+		// Unknown patch grammar is still a mutation attempt. Carry it through the
+		// normal policy seam as an input-integrity risk, which fails closed to hold.
+		targetPaths = []string{firstNonEmpty(strings.TrimSpace(in.Cwd), ".")}
+		mutationClass = "security"
+		unparsedPatch = true
 	}
 	action := "use_tool"
 	capability := "tool." + strings.ToLower(toolName)
@@ -177,6 +186,15 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 	case "MultiEdit":
 		action = "multi_edit_file"
 		capability = "filesystem.write"
+	case "apply_patch":
+		action = "edit_file"
+		capability = "filesystem.write"
+		if len(targetPaths) > 1 {
+			action = "multi_edit_file"
+		}
+		if unparsedPatch {
+			action = "unparsed_apply_patch"
+		}
 	}
 	workID := firstNonEmpty(in.WorkID, in.CompoundWorkID)
 	if workID == "" {
@@ -202,7 +220,7 @@ func liveActionIntents(harnessName string, in claudeLiveHookInput, now time.Time
 			Capability:    capability,
 			Action:        action,
 			Target:        envelope.ActionTarget{Kind: "file", Path: targetPath},
-			MutationClass: "local_reversible",
+			MutationClass: mutationClass,
 			Reversibility: "easy",
 			BlastRadius:   "repo",
 		})
