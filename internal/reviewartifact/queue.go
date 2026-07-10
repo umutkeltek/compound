@@ -82,41 +82,42 @@ type EvidenceSummary struct {
 
 // QueueItem describes one review artifact JSON payload and nearby review files.
 type QueueItem struct {
-	Area                    string        `json:"area"`
-	ID                      string        `json:"id"`
-	Status                  string        `json:"status"`
-	OperatorSummary         string        `json:"operator_summary,omitempty"`
-	ContextLabel            string        `json:"context_label,omitempty"`
-	GroupKey                string        `json:"group_key,omitempty"`
-	OperatorUnlock          string        `json:"operator_unlock,omitempty"`
-	Band                    string        `json:"band,omitempty"`
-	SummarySource           string        `json:"summary_source,omitempty"`
-	CreatedAt               string        `json:"created_at,omitempty"`
-	JSONPath                string        `json:"json_path"`
-	MarkdownPath            string        `json:"markdown_path,omitempty"`
-	ExtraPaths              []string      `json:"extra_paths,omitempty"`
-	SourceKind              string        `json:"source_kind,omitempty"`
-	SourceRoot              string        `json:"source_root,omitempty"`
-	SourcePath              string        `json:"source_path,omitempty"`
-	TargetPath              string        `json:"target_path,omitempty"`
-	TargetHash              string        `json:"target_hash,omitempty"`
-	CandidateID             string        `json:"candidate_id,omitempty"`
-	Owner                   string        `json:"owner,omitempty"`
-	NotToDo                 string        `json:"not_to_do,omitempty"`
-	Boundaries              []string      `json:"boundaries,omitempty"`
-	RepairCount             int           `json:"repair_count,omitempty"`
-	EvidenceRefs            []string      `json:"evidence_refs,omitempty"`
-	GraphDecisionHint       string        `json:"graph_decision_hint,omitempty"`
-	GraphDecisionConfidence float64       `json:"graph_decision_confidence,omitempty"`
-	GraphDuplicateRisk      float64       `json:"graph_duplicate_risk,omitempty"`
-	GraphEvidenceStrength   float64       `json:"graph_evidence_strength,omitempty"`
-	GraphAuditRisk          string        `json:"graph_audit_risk,omitempty"`
-	GraphTopOverlapScore    int           `json:"graph_top_overlap_score,omitempty"`
-	Readiness               string        `json:"readiness,omitempty"`
-	BlockedReason           string        `json:"blocked_reason,omitempty"`
-	NextAction              string        `json:"next_action,omitempty"`
-	Actions                 []Action      `json:"actions,omitempty"`
-	DecisionCard            *DecisionCard `json:"decision_card,omitempty"`
+	Area                    string            `json:"area"`
+	ID                      string            `json:"id"`
+	Status                  string            `json:"status"`
+	OperatorSummary         string            `json:"operator_summary,omitempty"`
+	ContextLabel            string            `json:"context_label,omitempty"`
+	GroupKey                string            `json:"group_key,omitempty"`
+	OperatorUnlock          string            `json:"operator_unlock,omitempty"`
+	Band                    string            `json:"band,omitempty"`
+	SummarySource           string            `json:"summary_source,omitempty"`
+	CreatedAt               string            `json:"created_at,omitempty"`
+	JSONPath                string            `json:"json_path"`
+	MarkdownPath            string            `json:"markdown_path,omitempty"`
+	ExtraPaths              []string          `json:"extra_paths,omitempty"`
+	SourceKind              string            `json:"source_kind,omitempty"`
+	SourceRoot              string            `json:"source_root,omitempty"`
+	SourcePath              string            `json:"source_path,omitempty"`
+	TargetPath              string            `json:"target_path,omitempty"`
+	TargetHash              string            `json:"target_hash,omitempty"`
+	CandidateID             string            `json:"candidate_id,omitempty"`
+	Owner                   string            `json:"owner,omitempty"`
+	NotToDo                 string            `json:"not_to_do,omitempty"`
+	Boundaries              []string          `json:"boundaries,omitempty"`
+	RepairCount             int               `json:"repair_count,omitempty"`
+	EvidenceRefs            []string          `json:"evidence_refs,omitempty"`
+	GraphDecisionHint       string            `json:"graph_decision_hint,omitempty"`
+	GraphDecisionConfidence float64           `json:"graph_decision_confidence,omitempty"`
+	GraphDuplicateRisk      float64           `json:"graph_duplicate_risk,omitempty"`
+	GraphEvidenceStrength   float64           `json:"graph_evidence_strength,omitempty"`
+	GraphAuditRisk          string            `json:"graph_audit_risk,omitempty"`
+	GraphTopOverlapScore    int               `json:"graph_top_overlap_score,omitempty"`
+	Readiness               string            `json:"readiness,omitempty"`
+	BlockedReason           string            `json:"blocked_reason,omitempty"`
+	NextAction              string            `json:"next_action,omitempty"`
+	Actions                 []Action          `json:"actions,omitempty"`
+	DecisionCard            *DecisionCard     `json:"decision_card,omitempty"`
+	Resolution              *ReviewResolution `json:"resolution,omitempty"`
 
 	// Brief is the generic, propose-only decision-brief translation attached
 	// from the `<id>.brief.json` sidecar, if one exists and is valid — for
@@ -246,6 +247,7 @@ func Recount(report *QueueReport) {
 	if report == nil {
 		return
 	}
+	ApplyGenericResolutions(report)
 	report.Groups = buildQueueGroups(report.Items)
 	report.Counts = QueueCounts{
 		ByArea:          map[string]int{},
@@ -722,12 +724,17 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 		return QueueItem{}, err
 	}
 	item.ExtraPaths = extras
+	if resolution, warning := reviewResolutionForCore(path); resolution != nil {
+		item.Resolution = resolution
+	} else if warning != "" {
+		item.Warnings = append(item.Warnings, warning)
+	}
 	brief, warnings, err := loadDecisionBriefSidecar(filepath.Dir(path), stem)
 	if err != nil {
 		return QueueItem{}, err
 	}
 	item.Brief = brief
-	item.Warnings = warnings
+	item.Warnings = append(item.Warnings, warnings...)
 	return item, nil
 }
 
