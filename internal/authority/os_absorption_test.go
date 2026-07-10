@@ -318,6 +318,9 @@ func TestOSAbsorptionWorkPacketAuthorityProofBindsArchivedSourcePacket(t *testin
 			t.Fatalf("proof ref %q missing %s", got.ProofRef, workID)
 		}
 	}
+	if !strings.Contains(got.ProofRef, "prerequisite="+listedClosed.Work.ID) || !strings.Contains(got.ProofRef, "source_consumer="+sourceClosed.Work.ID) {
+		t.Fatalf("proof ref must distinguish prerequisite and source-consumer roles: %q", got.ProofRef)
+	}
 }
 
 func TestOSAbsorptionWorkPacketAuthorityProofRequiresEveryListedWork(t *testing.T) {
