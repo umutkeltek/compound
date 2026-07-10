@@ -280,6 +280,9 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 			continue
 		}
 		sample := buildSample(homePath, ws, receipts[ws.Work.ID], routes, artifact.Class, plan)
+		if terminalAt, err := time.Parse(time.RFC3339, strings.TrimSpace(sample.ReceiptCreatedAt)); err == nil && terminalAt.After(evaluatedAt) {
+			return Artifact{}, fmt.Errorf("terminal work %s has receipt timestamp after eligibility evaluation: %q is after lookback end %q", ws.Work.ID, sample.ReceiptCreatedAt, evaluatedAt.Format(time.RFC3339))
+		}
 		if terminalSamplePredates(sample, lookbackStart) {
 			artifact.ExcludedStaleTerminalCount++
 			continue
