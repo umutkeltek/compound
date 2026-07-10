@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/envelope"
 	homepkg "compound/internal/home"
 	"compound/internal/routeevidence"
 	autonomy "compound/internal/routeevidence/autonomy"
@@ -362,6 +363,85 @@ func TestCompileFailsClosedOnRecentTerminalEventWithoutWorkSnapshot(t *testing.T
 
 	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "recent terminal work "+missing.WorkID+" has 0 snapshots") {
 		t.Fatalf("missing recent terminal snapshot did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
+	for _, mode := range []string{"hot", "restored"} {
+		t.Run(mode, func(t *testing.T) {
+			home := t.TempDir()
+			if err := homepkg.Init(home, "local", proofNow.Add(-96*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			plan := installPlan(t, home, false)
+			seedSample(t, home, plan, mode+"-old-clean", proofNow.Add(-72*time.Hour), sampleOptions{})
+			seedSample(t, home, plan, mode+"-new-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+			victim := seedSample(t, home, plan, mode+"-recent-failure", proofNow.Add(-24*time.Hour), sampleOptions{routeOnly: true})
+			baseline := compile(t, home, plan, 2)
+			if baseline.Status != "ineligible" {
+				t.Fatalf("fixture failure was not in the latest cohort: %+v", baseline)
+			}
+			if mode == "restored" {
+				entry := archiveAutonomyWork(t, home, victim.WorkID)
+				if _, err := homepkg.RestoreOperationalArchive(home, homepkg.OperationalRestoreOptions{IDs: []string{entry.ID}}, proofNow.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mutateWorkClassRef(t, filepath.Join(home, "work", "work", victim.WorkID+".json"))
+
+			if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "snapshot hash") {
+				t.Fatalf("%s work class mutation did not fail closed: %v", mode, err)
+			}
+		})
+	}
+}
+
+func TestCompileFailsClosedWhenStaleDuplicateTerminalEventHidesRecentEvent(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "terminal-history-old-clean", proofNow.Add(-72*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "terminal-history-new-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "terminal-history-recent-failure", proofNow.Add(-24*time.Hour), sampleOptions{routeOnly: true})
+	if err := os.Remove(filepath.Join(home, "work", "work", victim.WorkID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	appendWorkEvent(t, home, map[string]any{
+		"ts":          proofNow.Add(-31 * 24 * time.Hour).Format(time.RFC3339),
+		"work_id":     victim.WorkID,
+		"from":        "running",
+		"to":          "failed",
+		"work_sha256": "sha256:stale-duplicate",
+	})
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "multiple terminal events") {
+		t.Fatalf("stale duplicate terminal event hid recent evidence: %v", err)
+	}
+}
+
+func TestCompileFailsClosedWhenArchiveIndexReanchorsMutatedWork(t *testing.T) {
+	home := t.TempDir()
+	if err := homepkg.Init(home, "local", proofNow.Add(-96*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "archive-reanchor-old-clean", proofNow.Add(-72*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "archive-reanchor-new-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "archive-reanchor-recent-failure", proofNow.Add(-24*time.Hour), sampleOptions{routeOnly: true})
+	entry := archiveAutonomyWork(t, home, victim.WorkID)
+	archivePath := filepath.Join(home, filepath.FromSlash(entry.ArchivePath))
+	mutateWorkClassRef(t, archivePath)
+	mutated, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(mutated)
+	entry.CreatedAt = proofNow.Add(time.Minute).Format(time.RFC3339)
+	entry.SHA256 = hex.EncodeToString(sum[:])
+	entry.Size = int64(len(mutated))
+	appendArchiveEntry(t, home, entry)
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "repeated active archived operation") {
+		t.Fatalf("archive index re-anchored mutated work: %v", err)
 	}
 }
 
@@ -747,6 +827,51 @@ func rewriteArchiveEntry(t *testing.T, home, entryID string, mutate func(*homepk
 		lines = append(lines, string(encoded))
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mutateWorkClassRef(t *testing.T, path string) {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var work envelope.WorkEnvelope
+	if err := json.Unmarshal(raw, &work); err != nil {
+		t.Fatal(err)
+	}
+	var refs []string
+	for _, ref := range work.EvidenceRefs {
+		if !strings.HasPrefix(ref, "director_trigger:job_health:") {
+			refs = append(refs, ref)
+		}
+	}
+	work.EvidenceRefs = refs
+	mutated, err := json.MarshalIndent(work, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(mutated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendArchiveEntry(t *testing.T, home string, entry homepkg.OperationalArchiveEntry) {
+	t.Helper()
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(homepkg.OperationalArchiveIndexPath(home), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -104,6 +104,24 @@ func TestGenericMemoryCannotRevokeRecordedFreeze(t *testing.T) {
 	}
 }
 
+func TestActiveFreezeRecordsRejectsPersistedNonOperatorAuthority(t *testing.T) {
+	claim := mem.Claim{
+		ID:        "claim_non_operator_freeze",
+		ClaimType: "decision",
+		Qualifiers: map[string]string{
+			"kind":             "freeze",
+			"decision_id":      "non-operator-freeze",
+			"lifecycle_status": "accepted",
+			"reviewed_by":      "codex",
+			"freeze_keywords":  "job_health",
+			mem.OperationalDecisionAuthorityQualifier: mem.OperationalDecisionAuthorityValue,
+		},
+	}
+	if got := activeFreezeRecords([]mem.Claim{claim}); len(got) != 0 {
+		t.Fatalf("persisted non-operator freeze retained authority: %+v", got)
+	}
+}
+
 // TestFreezeGatesAutoAdmitByKeyword is the headline falsifier b proof: a
 // new-organ/absorption-shaped director proposal (its director_trigger
 // evidence ref matches an active freeze keyword) is denied and stays
