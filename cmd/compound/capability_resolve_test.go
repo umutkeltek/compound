@@ -57,7 +57,7 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 	if report.CapabilitySurface.AuthorityRef != capgraph.CapabilityGraphAuthorityRef || report.CapabilitySurface.Harness != "codex" {
 		t.Fatalf("capability authority/harness missing: %+v", report.CapabilitySurface)
 	}
-	if !validSHA256Revision(report.CapabilitySurface.AuthorityRevision) {
+	if !validGraphAuthorityRevision(report.CapabilitySurface.AuthorityRevision) {
 		t.Fatalf("capability authority revision missing: %+v", report.CapabilitySurface)
 	}
 	if report.CapabilitySurface.OfferCount < 1 || report.CapabilitySurface.Offers[0].Node.ID != "tool:fixture-extractor" {
@@ -141,7 +141,7 @@ func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.CapabilitySurface.SourceRecordCount != 0 || !validSHA256Revision(report.CapabilitySurface.AuthorityRevision) {
+	if report.CapabilitySurface.SourceRecordCount != 0 || !validGraphAuthorityRevision(report.CapabilitySurface.AuthorityRevision) {
 		t.Fatalf("native graph authority should bind serving state without requiring source handoff evidence: %+v", report.CapabilitySurface)
 	}
 }

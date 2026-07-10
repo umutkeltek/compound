@@ -61,7 +61,7 @@ func buildCapabilityResolutionReport(store *capgraph.Store, homePath, task, harn
 	if surface.NodeCount == 0 {
 		return capabilityResolutionReport{}, fmt.Errorf("capability graph authority has no nodes")
 	}
-	if !validSHA256Revision(surface.AuthorityRevision) {
+	if !validGraphAuthorityRevision(surface.AuthorityRevision) {
 		return capabilityResolutionReport{}, fmt.Errorf("capability graph authority has no bound revision")
 	}
 	surface = surface.LimitOffers(capabilityResolutionOfferLimit)
@@ -150,6 +150,19 @@ func validSHA256Revision(revision string) bool {
 		return false
 	}
 	for _, c := range revision[len("sha256:"):] {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			return false
+		}
+	}
+	return true
+}
+
+func validGraphAuthorityRevision(revision string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(revision, prefix) || len(revision) != len(prefix)+12 {
+		return false
+	}
+	for _, c := range revision[len(prefix):] {
 		if !strings.ContainsRune("0123456789abcdef", c) {
 			return false
 		}
