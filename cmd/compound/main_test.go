@@ -4729,6 +4729,98 @@ func TestReviewsCommandShowsReviewQueue(t *testing.T) {
 	}
 }
 
+func TestReviewsBriefPlanCommandEmitsBoundedInstructionPacket(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	const area = "decision-brief-fixtures"
+	if _, err := reviewartifact.Write(homePath, area, "brief_member_a", map[string]any{
+		"id":               "brief_member_a",
+		"status":           "review_required",
+		"created_at":       "2026-07-10T03:00:00Z",
+		"evidence_refs":    []string{"compound://evidence/a"},
+		"operator_summary": "Review brief_member_a.",
+		"context_label":    "Decision brief plan fixture",
+		"group_key":        area + "|shared",
+	}, "  ", "# Review\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reviewartifact.Write(homePath, area, "brief_member_b", map[string]any{
+		"id":               "brief_member_b",
+		"status":           "review_required",
+		"created_at":       "2026-07-10T03:01:00Z",
+		"evidence_refs":    []string{"compound://evidence/b"},
+		"operator_summary": "Review brief_member_b.",
+		"context_label":    "Decision brief plan fixture",
+		"group_key":        area + "|shared",
+	}, "  ", "# Review\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() { cmdReviews([]string{"brief-plan", "--item", "brief_member_a", "--json"}) })
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("brief-plan output missing JSON:\n%s", out)
+	}
+	var plan reviewsBriefPlan
+	if err := json.Unmarshal([]byte(out[start:]), &plan); err != nil {
+		t.Fatalf("parse brief-plan: %v\n%s", err, out)
+	}
+	if plan.ItemID != "brief_member_a" || plan.Area != area {
+		t.Fatalf("plan item/area = %+v", plan)
+	}
+	wantArtifact := filepath.Join(homePath, "reviews", area, "brief_member_a.json")
+	if plan.ArtifactPath != wantArtifact {
+		t.Fatalf("artifact_path = %q, want %q", plan.ArtifactPath, wantArtifact)
+	}
+	wantWrite := filepath.Join(homePath, "reviews", area, "brief_member_a.brief.json")
+	if plan.WritePath != wantWrite {
+		t.Fatalf("write_path = %q, want %q", plan.WritePath, wantWrite)
+	}
+	if !sameStringSlice(plan.MemberIDs, []string{"brief_member_a", "brief_member_b"}) {
+		t.Fatalf("member_ids = %v, want both group members", plan.MemberIDs)
+	}
+	if !sameStringSlice(plan.EvidenceRefs, []string{"compound://evidence/a", "compound://evidence/b"}) {
+		t.Fatalf("evidence_refs = %v, want both members' refs", plan.EvidenceRefs)
+	}
+	if plan.BriefSchema["$id"] != reviewartifact.DecisionBriefSchemaVersion {
+		t.Fatalf("brief_schema $id = %v, want %v", plan.BriefSchema["$id"], reviewartifact.DecisionBriefSchemaVersion)
+	}
+	if len(plan.ProposeOnlyWarnings) == 0 {
+		t.Fatal("propose_only_warnings must not be empty")
+	}
+
+	// A solo item (no shared group_key) plans with only itself as a member.
+	if _, err := reviewartifact.Write(homePath, area, "brief_solo", map[string]any{
+		"id":               "brief_solo",
+		"status":           "review_required",
+		"created_at":       "2026-07-10T03:02:00Z",
+		"evidence_refs":    []string{"compound://evidence/solo"},
+		"operator_summary": "Review brief_solo.",
+		"context_label":    "Decision brief plan fixture",
+		"group_key":        area + "|solo",
+	}, "  ", "# Review\n"); err != nil {
+		t.Fatal(err)
+	}
+	soloOut := captureStdout(t, func() { cmdReviews([]string{"brief-plan", "--item", "brief_solo", "--json"}) })
+	soloStart := strings.Index(soloOut, "{")
+	var soloPlan reviewsBriefPlan
+	if err := json.Unmarshal([]byte(soloOut[soloStart:]), &soloPlan); err != nil {
+		t.Fatalf("parse solo brief-plan: %v\n%s", err, soloOut)
+	}
+	if !sameStringSlice(soloPlan.MemberIDs, []string{"brief_solo"}) {
+		t.Fatalf("solo member_ids = %v, want just itself", soloPlan.MemberIDs)
+	}
+
+	wantSoloWrite := filepath.Join(homePath, "reviews", area, "brief_solo.brief.json")
+	textOut := captureStdout(t, func() { cmdReviews([]string{"brief-plan", "--item", "brief_solo"}) })
+	if !strings.Contains(textOut, "brief-plan item=brief_solo") || !strings.Contains(textOut, wantSoloWrite) {
+		t.Fatalf("brief-plan text output =\n%s", textOut)
+	}
+}
+
 func TestReviewsCommandAnnotatesRoutePromotionHold(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
