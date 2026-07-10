@@ -67,6 +67,43 @@ func TestCreatePlanRejectsRunningState(t *testing.T) {
 	}
 }
 
+func TestCreateRequiresDirectorOriginToStartProposed(t *testing.T) {
+	s := newStore(t)
+	for _, state := range []string{"", "ready", "admitted"} {
+		name := state
+		if name == "" {
+			name = "default"
+		}
+		workID := "work_director_initial_" + name
+		_, err := s.Create(CreateInput{
+			WorkID:           workID,
+			Owner:            "compound-authority",
+			Actor:            "codex",
+			State:            state,
+			SuccessPredicate: "director-origin work cannot skip admission",
+			EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:" + name},
+		}, fixedNow)
+		if err == nil || !strings.Contains(err.Error(), "director-origin work must start in proposed state") {
+			t.Fatalf("Create director-origin state %q error = %v", state, err)
+		}
+		if _, err := s.Get(workID); err == nil {
+			t.Fatalf("rejected director-origin state %q persisted work %s", state, workID)
+		}
+	}
+
+	allowed, err := s.Create(CreateInput{
+		WorkID:           "work_director_initial_proposed",
+		Owner:            "compound-authority",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "director-origin work starts before admission",
+		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:proposed"},
+	}, fixedNow)
+	if err != nil || allowed.State != "proposed" {
+		t.Fatalf("proposed director-origin create failed: work=%+v err=%v", allowed, err)
+	}
+}
+
 func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{
