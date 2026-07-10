@@ -152,6 +152,52 @@ func TestRecordSourceAuthorityDedupesSameRevisionAcrossSnapshotPaths(t *testing.
 	}
 }
 
+func TestAuthorityRevisionTracksGraphStateOnly(t *testing.T) {
+	home, store := newStore(t)
+	initial, err := AuthorityRevision(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := Node{ID: "tool:revision-fixture", Kind: "tool", Name: "Revision fixture", Triggers: []string{"revision"}}
+	if err := store.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	afterNode, err := AuthorityRevision(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterNode == initial {
+		t.Fatalf("node mutation did not change authority revision: %s", initial)
+	}
+	if _, err := RecordSourceAuthority(home, SourceAuthorityInput{
+		SourcePath:     "fixtures/revision-source.yaml",
+		SourceKind:     "synthetic_fixture",
+		SourceClass:    "capability",
+		SourceRevision: "sha256:source-evidence-only",
+		ImportedVia:    "authority revision test",
+		NodeIDs:        []string{node.ID},
+	}, t0); err != nil {
+		t.Fatal(err)
+	}
+	afterSource, err := AuthorityRevision(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSource != afterNode {
+		t.Fatalf("source handoff evidence changed serving revision: before=%s after=%s", afterNode, afterSource)
+	}
+	if err := store.AddEdge(Edge{Kind: EdRequires, From: node.ID, To: "tool:dependency"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	afterEdge, err := AuthorityRevision(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterEdge == afterNode {
+		t.Fatalf("edge mutation did not change authority revision: %s", afterNode)
+	}
+}
+
 func TestLoadSourceAuthorityBackfillsLegacyObservedAt(t *testing.T) {
 	home, _ := newStore(t)
 	logPath := sourceAuthorityLog(home)

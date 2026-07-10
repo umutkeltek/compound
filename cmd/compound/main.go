@@ -363,8 +363,11 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 		return capgraph.SurfaceReport{}, fmt.Errorf("capability task must be non-empty")
 	}
 	harness = strings.TrimSpace(harness)
+	revisionBefore, err := capgraph.AuthorityRevision(homePath)
+	if err != nil {
+		return capgraph.SurfaceReport{}, err
+	}
 	var offers []capgraph.Surfaced
-	var err error
 	if harness != "" {
 		offers, err = store.SurfaceForHarness(task, harness)
 	} else {
@@ -382,10 +385,14 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 		return capgraph.SurfaceReport{}, err
 	}
 	report := capgraph.NewSurfaceReport(task, harness, offers, stats, len(records))
-	report.AuthorityRevision, err = capgraph.AuthorityRevision(homePath)
+	revisionAfter, err := capgraph.AuthorityRevision(homePath)
 	if err != nil {
 		return capgraph.SurfaceReport{}, err
 	}
+	if revisionBefore != revisionAfter {
+		return capgraph.SurfaceReport{}, fmt.Errorf("capability graph authority changed during resolution: before=%s after=%s", revisionBefore, revisionAfter)
+	}
+	report.AuthorityRevision = revisionBefore
 	matchedEvidence, err := capgraph.ExternalRepoMatchedEvidenceForTask(homePath, task, 5)
 	if err != nil {
 		return capgraph.SurfaceReport{}, err

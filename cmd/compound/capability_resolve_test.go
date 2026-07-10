@@ -183,7 +183,7 @@ func TestCapabilityResolveRejectsStaleModelRouterProvenance(t *testing.T) {
 	if err := os.WriteFile(authorityPath, append(data, []byte("\n# changed after source binding\n")...), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "does not match current authority") {
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "does not match parsed authority") {
 		t.Fatalf("stale router provenance error = %v", err)
 	}
 }
