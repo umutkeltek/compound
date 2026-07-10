@@ -195,13 +195,12 @@ func parseObservedHarnessHooks(data []byte, source hookInstallationSource, harne
 					continue
 				}
 				bindings = append(bindings, hookplan.ObservedBinding{
-					Harness:         source.Harness,
-					Event:           event,
-					Matcher:         strings.TrimSpace(group.Matcher),
-					HandlerRef:      handlerRef,
-					HandlerRevision: "sha256:" + hashBytes([]byte(strings.TrimSpace(command.Command))),
-					Active:          !group.Disabled && !command.Disabled,
-					SourceRef:       source.Ref,
+					Harness:    source.Harness,
+					Event:      event,
+					Matcher:    strings.TrimSpace(group.Matcher),
+					HandlerRef: handlerRef,
+					Active:     !group.Disabled && !command.Disabled,
+					SourceRef:  source.Ref,
 				})
 			}
 		}

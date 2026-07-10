@@ -229,5 +229,5 @@ func bindingSupported(binding Binding, registry harness.Registry) bool {
 }
 
 func handlerRevisionDrifted(desired Binding, actual ObservedBinding) bool {
-	return desired.HandlerRevision != "" && desired.HandlerRevision != actual.HandlerRevision
+	return desired.HandlerRevision != "" && actual.HandlerRevision != "" && desired.HandlerRevision != actual.HandlerRevision
 }
