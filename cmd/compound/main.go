@@ -4740,26 +4740,13 @@ func cmdContract(args []string) {
 		die(err)
 		printJSON(report)
 	case "hooks-authority":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "usage: compound contract hooks-authority")
+		observeLive := len(args) == 2 && args[1] == "--observe-live"
+		if len(args) != 1 && !observeLive {
+			fmt.Fprintln(os.Stderr, "usage: compound contract hooks-authority [--observe-live]")
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
 		die(err)
-		type hooksAuthorityReport struct {
-			AuthorityRef                string                                   `json:"authority_ref"`
-			AuthorityPath               string                                   `json:"authority_path"`
-			Installed                   bool                                     `json:"installed"`
-			HookCount                   int                                      `json:"hook_count,omitempty"`
-			Harnesses                   []string                                 `json:"harnesses,omitempty"`
-			PreToolUseReadiness         []contract.HookGateReadiness             `json:"pre_tool_use_readiness,omitempty"`
-			HookReadiness               []contract.InstalledHookRuntimeReadiness `json:"hook_readiness,omitempty"`
-			SourceRoleCounts            map[string]int                           `json:"source_role_counts,omitempty"`
-			RetiredSourceAuthorityCount int                                      `json:"retired_source_authority_count"`
-			RetiredSourceAuthorityRefs  []string                                 `json:"retired_source_authority_refs,omitempty"`
-			SourceAuthority             []contract.InstalledHooksSourceAuthority `json:"source_authority,omitempty"`
-			SourceRecordPath            string                                   `json:"source_record_path"`
-		}
 		report := hooksAuthorityReport{
 			AuthorityRef:     contract.InstalledHooksAuthorityRef,
 			AuthorityPath:    contract.InstalledHooksPath(homePath),
@@ -4784,6 +4771,9 @@ func cmdContract(args []string) {
 		report.RetiredSourceAuthorityCount = sourceSummary.RetiredSourceAuthorityCount
 		report.RetiredSourceAuthorityRefs = sourceSummary.RetiredSourceAuthorityRefs
 		report.SourceAuthority = records
+		if observeLive {
+			die(populateLiveHookReconciliation(&report, homePath))
+		}
 		printJSON(report)
 	default:
 		fmt.Fprintln(os.Stderr, "usage: compound contract <compile|import-hooks|hooks-authority> ...")

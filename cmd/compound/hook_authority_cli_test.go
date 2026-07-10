@@ -16,7 +16,7 @@ import (
 func TestHooksAuthorityObserveLiveCLI(t *testing.T) {
 	if os.Getenv("COMPOUND_HOOK_AUTHORITY_CLI_HELPER") == "1" {
 		cmdContract([]string{"hooks-authority", "--observe-live"})
-		return
+		os.Exit(0)
 	}
 
 	compoundHome := t.TempDir()
