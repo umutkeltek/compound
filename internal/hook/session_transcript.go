@@ -391,8 +391,12 @@ func transcriptInjectedClaimRefs(path string) ([]string, error) {
 	return refs, nil
 }
 
-func matchConsumedClaimsFromFile(path string, injectedRefs []string) ([]string, error) {
-	if len(injectedRefs) == 0 {
+// matchConsumedClaimsFromFile is the production streaming path (bounded memory regardless of
+// transcript size — matches scanSessionTranscript's own streaming discipline). It shares
+// buildClaimMatchTargets/matchTargetHitsLine with matchConsumedClaims (consumption.go) so the
+// streamed and whole-string entry points can never drift: v1 exact-id OR v2 content-key, per line.
+func matchConsumedClaimsFromFile(path string, injected []injectedClaim) ([]string, error) {
+	if len(injected) == 0 {
 		return nil, nil
 	}
 	f, err := os.Open(path)
@@ -400,15 +404,15 @@ func matchConsumedClaimsFromFile(path string, injectedRefs []string) ([]string, 
 		return nil, err
 	}
 	defer f.Close()
+	targets := buildClaimMatchTargets(injected)
 	consumedSet := map[string]bool{}
 	reader := bufio.NewReaderSize(f, 64*1024)
 	for {
 		line, err := reader.ReadString('\n')
 		if line != "" {
-			for _, ref := range injectedRefs {
-				id := strings.TrimPrefix(ref, claimScheme)
-				if id != "" && !consumedSet[ref] && bareClaimReference(line, id) {
-					consumedSet[ref] = true
+			for i := range targets {
+				if !consumedSet[targets[i].Ref] && matchTargetHitsLine(targets[i], line) {
+					consumedSet[targets[i].Ref] = true
 				}
 			}
 		}
@@ -421,9 +425,9 @@ func matchConsumedClaimsFromFile(path string, injectedRefs []string) ([]string, 
 		return nil, err
 	}
 	consumed := make([]string, 0, len(consumedSet))
-	for _, ref := range injectedRefs {
-		if consumedSet[ref] {
-			consumed = append(consumed, ref)
+	for _, t := range targets {
+		if consumedSet[t.Ref] {
+			consumed = append(consumed, t.Ref)
 		}
 	}
 	return consumed, nil
