@@ -495,7 +495,6 @@ func osAbsorptionWorkPacketProofLocked(homePath string, row OSAbsorptionMatrixRo
 	for _, item := range chainReport.Items {
 		proofItems[item.WorkID] = item
 	}
-	proven := make([]string, 0, len(workIDs)+1)
 	for _, workID := range workIDs {
 		w, err := store.Get(workID)
 		if err != nil {
@@ -504,16 +503,16 @@ func osAbsorptionWorkPacketProofLocked(homePath string, row OSAbsorptionMatrixRo
 		if err := validateOSAbsorptionPacketWork(homePath, w, workID, proofItems); err != nil {
 			return osAbsorptionProofResult{reason: fmt.Sprintf("work packet authority %s: %v", workID, err)}
 		}
-		proven = append(proven, workID)
 	}
 
 	sourceWorkID, err := osAbsorptionSourcePacketWork(homePath, store, row, proofItems)
 	if err != nil {
 		return osAbsorptionProofResult{reason: err.Error()}
 	}
-	proven = cleanStrings(append(proven, sourceWorkID))
-	sort.Strings(proven)
-	return osAbsorptionProofResult{ok: true, proofRef: osAbsorptionProofModeWorkPacket + ":" + strings.Join(proven, ",")}
+	prerequisiteIDs := append([]string(nil), workIDs...)
+	sort.Strings(prerequisiteIDs)
+	proofRef := osAbsorptionProofModeWorkPacket + ":prerequisite=" + strings.Join(prerequisiteIDs, ",") + ";source_consumer=" + sourceWorkID
+	return osAbsorptionProofResult{ok: true, proofRef: proofRef}
 }
 
 func osAbsorptionWorkEvidenceIDs(refs []string) ([]string, error) {
