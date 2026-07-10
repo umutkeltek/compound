@@ -57,6 +57,9 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 	if report.CapabilitySurface.AuthorityRef != capgraph.CapabilityGraphAuthorityRef || report.CapabilitySurface.Harness != "codex" {
 		t.Fatalf("capability authority/harness missing: %+v", report.CapabilitySurface)
 	}
+	if !validSHA256Revision(report.CapabilitySurface.AuthorityRevision) {
+		t.Fatalf("capability authority revision missing: %+v", report.CapabilitySurface)
+	}
 	if report.CapabilitySurface.OfferCount < 1 || report.CapabilitySurface.Offers[0].Node.ID != "tool:fixture-extractor" {
 		t.Fatalf("expected fixture offer: %+v", report.CapabilitySurface)
 	}
@@ -119,7 +122,7 @@ func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
 	}
 }
 
-func TestCapabilityResolveRejectsMissingCapabilityGraphProvenance(t *testing.T) {
+func TestCapabilityResolveAcceptsNativeGraphWithoutSourceHandoff(t *testing.T) {
 	homePath := t.TempDir()
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
@@ -134,8 +137,12 @@ func TestCapabilityResolveRejectsMissingCapabilityGraphProvenance(t *testing.T) 
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "capability graph authority has no source provenance") {
-		t.Fatalf("missing graph provenance error = %v", err)
+	report, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CapabilitySurface.SourceRecordCount != 0 || !validSHA256Revision(report.CapabilitySurface.AuthorityRevision) {
+		t.Fatalf("native graph authority should bind serving state without requiring source handoff evidence: %+v", report.CapabilitySurface)
 	}
 }
 
