@@ -513,6 +513,363 @@ func cmdWorkbench(args []string) {
 	}
 }
 
+type operatorWorkbenchRow struct {
+	Item        work.WorkbenchItem
+	Status      string
+	Authority   string
+	Opportunity string
+	Mission     string
+	Assignee    string
+	Proof       string
+	Decision    string
+	Learning    string
+}
+
+func printWorkbenchOperator(output workbenchCLIOutput) {
+	rows := operatorWorkbenchRows(output.WorkbenchReport)
+	fmt.Println("Operator workbench")
+	fmt.Println("Flow stages: Explore → Build → Prove → Integrate")
+	fmt.Println("Narrative: Opportunity → Mission → Run → Proof → Decision → Learning")
+	fmt.Println("Summary: " + operatorFlowSummary(output, rows))
+	fmt.Println()
+	if len(rows) == 0 {
+		fmt.Println("Explore")
+		fmt.Println("Opportunity")
+		fmt.Println("- [Parked] no visible work; Authority: Free to act")
+		fmt.Println()
+		fmt.Println("Build")
+		fmt.Println("Mission")
+		fmt.Println("- unknown/not yet proven")
+		fmt.Println()
+		fmt.Println("Prove")
+		fmt.Println("Proof")
+		fmt.Println("- unknown/not yet proven")
+		fmt.Println()
+		fmt.Println("Integrate")
+		fmt.Println("Decision")
+		fmt.Println("- no action available from workbench")
+		fmt.Println("Learning")
+		fmt.Println("- unknown/not yet proven")
+		fmt.Println()
+		fmt.Println("Advanced")
+		fmt.Printf("- generated_at=%s counts_open=%d counts_terminal=%d dispatch_wait=%s\n",
+			operatorValue(output.GeneratedAt),
+			output.Counts.Open,
+			output.Counts.Terminal,
+			operatorValue(output.DispatchNext.WaitReason),
+		)
+		return
+	}
+
+	fmt.Println("Explore")
+	fmt.Println("Opportunity")
+	for _, row := range rows {
+		fmt.Printf("- [%s] %s | Authority: %s\n", row.Status, row.Opportunity, row.Authority)
+	}
+	fmt.Println()
+	fmt.Println("Build")
+	fmt.Println("Mission")
+	for _, row := range rows {
+		fmt.Printf("- %s: %s\n", row.Item.WorkID, row.Mission)
+	}
+	fmt.Println("Run")
+	for _, row := range rows {
+		fmt.Printf("- %s: assigned %s; state=%s; next=%s\n",
+			row.Item.WorkID,
+			row.Assignee,
+			operatorValue(row.Item.State),
+			operatorValue(row.Item.NextAction),
+		)
+	}
+	fmt.Println()
+	fmt.Println("Prove")
+	fmt.Println("Proof")
+	for _, row := range rows {
+		fmt.Printf("- %s: %s\n", row.Item.WorkID, row.Proof)
+	}
+	fmt.Println()
+	fmt.Println("Integrate")
+	fmt.Println("Decision")
+	for _, row := range rows {
+		fmt.Printf("- %s: Authority: %s; %s\n", row.Item.WorkID, row.Authority, row.Decision)
+	}
+	fmt.Println("Learning")
+	for _, row := range rows {
+		fmt.Printf("- %s: %s\n", row.Item.WorkID, row.Learning)
+	}
+	fmt.Println()
+	fmt.Println("Advanced")
+	for _, row := range rows {
+		fmt.Printf("- work_id=%s state=%s status=%s authority=%s owner=%s claimed_by=%s policy=%s receipt=%s transition=%s move=%s changed=%t evidence=%s artifacts=%s verifications=%s\n",
+			row.Item.WorkID,
+			operatorValue(row.Item.State),
+			row.Status,
+			row.Authority,
+			operatorValue(row.Item.Owner),
+			operatorValue(row.Item.ClaimedBy),
+			operatorValue(row.Item.PolicyDecisionID),
+			operatorValue(row.Item.ReceiptID),
+			operatorValue(row.Item.TransitionID),
+			operatorValue(row.Item.MoveType),
+			row.Item.Changed,
+			operatorList(row.Item.EvidenceRefs),
+			operatorList(row.Item.ArtifactIDs),
+			operatorList(row.Item.VerificationIDs),
+		)
+	}
+}
+
+func operatorWorkbenchRows(report work.WorkbenchReport) []operatorWorkbenchRow {
+	items := append([]work.WorkbenchItem{}, report.Open...)
+	items = append(items, report.Recent...)
+	rows := make([]operatorWorkbenchRow, 0, len(items))
+	for _, item := range items {
+		status := operatorStatusForItem(item)
+		authority := operatorAuthorityForItem(item)
+		rows = append(rows, operatorWorkbenchRow{
+			Item:        item,
+			Status:      status,
+			Authority:   authority,
+			Opportunity: operatorOpportunityForItem(item),
+			Mission:     firstNonEmpty(item.DesiredOutcome, item.SuccessPredicate, "unknown/not yet proven"),
+			Assignee:    operatorAssigneeForItem(item),
+			Proof:       operatorProofForItem(item),
+			Decision:    operatorDecisionForItem(item),
+			Learning:    operatorLearningForItem(item),
+		})
+	}
+	return rows
+}
+
+// operatorStatusForItem is a deterministic translation of existing
+// WorkEnvelope/proof/review state. It does not add a second lifecycle.
+func operatorStatusForItem(item work.WorkbenchItem) string {
+	switch strings.TrimSpace(item.State) {
+	case "proposed", "admitted", "ready":
+		return "Ready"
+	case "claimed", "running":
+		return "Working"
+	case "verifying":
+		return "Proving"
+	case "held":
+		return "Needs you"
+	case "blocked":
+		return "Blocked"
+	case "completed":
+		if item.ReceiptID == "" || item.TransitionID == "" {
+			return "Blocked"
+		}
+		if item.Changed {
+			return "Integrated"
+		}
+		return "Verified"
+	case "cancelled":
+		return "Parked"
+	case "failed":
+		return "Discarded"
+	default:
+		return "Parked"
+	}
+}
+
+func operatorAuthorityForItem(item work.WorkbenchItem) string {
+	if operatorItemNeedsUmut(item) {
+		return "Needs Umut"
+	}
+	if strings.TrimSpace(item.State) == "verifying" ||
+		strings.TrimSpace(item.ReviewTrigger) != "" ||
+		(item.ActionContext != nil && len(item.ActionContext.ExpectedValidation) > 0) {
+		return "Review before landing"
+	}
+	return "Free to act"
+}
+
+func operatorItemNeedsUmut(item work.WorkbenchItem) bool {
+	if item.State == "held" || item.State == "blocked" {
+		return true
+	}
+	if item.ActionContext != nil && item.ActionContext.RequiresOperator {
+		return true
+	}
+	for _, card := range item.ReviewCards {
+		if card.RequiresOperator {
+			return true
+		}
+	}
+	return false
+}
+
+func operatorOpportunityForItem(item work.WorkbenchItem) string {
+	return firstNonEmpty(item.SuccessPredicate, item.CanonicalSurface, item.WorkID, "unknown/not yet proven")
+}
+
+func operatorAssigneeForItem(item work.WorkbenchItem) string {
+	return firstNonEmpty(item.ClaimedBy, item.Owner, "unknown")
+}
+
+func operatorProofForItem(item work.WorkbenchItem) string {
+	if proof := firstNonEmpty(item.EvidenceRefs...); proof != "" {
+		return proof
+	}
+	if proof := firstNonEmpty(item.VerificationIDs...); proof != "" {
+		return proof
+	}
+	if proof := firstNonEmpty(item.ArtifactIDs...); proof != "" {
+		return proof
+	}
+	for _, obs := range item.RunObservations {
+		if obs.TraceID != "" {
+			return obs.TraceID
+		}
+	}
+	if item.ReceiptID != "" && item.TransitionID != "" {
+		return item.ReceiptID + " + " + item.TransitionID
+	}
+	return "unknown/not yet proven"
+}
+
+func operatorDecisionForItem(item work.WorkbenchItem) string {
+	if item.NextAction != "" {
+		return "next: " + item.NextAction
+	}
+	if item.ReceiptID != "" && item.TransitionID != "" {
+		return "receipt and transition recorded"
+	}
+	return "unknown/not yet proven"
+}
+
+func operatorLearningForItem(item work.WorkbenchItem) string {
+	if item.TransitionID != "" {
+		return "transition " + item.TransitionID + "; move=" + operatorValue(item.MoveType)
+	}
+	if len(item.MemoryCandidateIDs) > 0 {
+		return "memory candidates " + operatorList(item.MemoryCandidateIDs)
+	}
+	return "unknown/not yet proven"
+}
+
+func operatorFlowSummary(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
+	return fmt.Sprintf("We noticed %s, chose %s, assigned %s, proved it with %s, and now need %s.",
+		operatorSummaryOpportunity(output),
+		operatorSummaryChoice(output),
+		operatorSummaryAssignee(output, rows),
+		operatorSummaryProof(rows),
+		operatorSummaryNeed(output),
+	)
+}
+
+func operatorSummaryOpportunity(output workbenchCLIOutput) string {
+	if output.Counts.Open > 0 {
+		return operatorCount(output.Counts.Open, "open work item", "open work items")
+	}
+	if output.Counts.Terminal > 0 {
+		return operatorCount(output.Counts.Terminal, "terminal work item", "terminal work items")
+	}
+	return "no active work"
+}
+
+func operatorSummaryChoice(output workbenchCLIOutput) string {
+	if output.DispatchNext.CanRun {
+		return "the next governed dispatch step"
+	}
+	if output.DispatchNext.WaitReason != "" {
+		return "to wait on " + operatorWords(output.DispatchNext.WaitReason)
+	}
+	return "to inspect current work"
+}
+
+func operatorSummaryAssignee(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
+	if output.DispatchNext.Actor != "" {
+		return output.DispatchNext.Actor
+	}
+	for _, row := range rows {
+		if row.Assignee != "" && row.Assignee != "unknown" {
+			return row.Assignee
+		}
+	}
+	return "unknown"
+}
+
+func operatorSummaryProof(rows []operatorWorkbenchRow) string {
+	for _, row := range rows {
+		if (row.Status == "Integrated" || row.Status == "Verified") && row.Proof != "unknown/not yet proven" {
+			return row.Proof
+		}
+	}
+	for _, row := range rows {
+		if row.Proof != "unknown/not yet proven" {
+			return row.Proof
+		}
+	}
+	return "unknown/not yet proven"
+}
+
+func operatorSummaryNeed(output workbenchCLIOutput) string {
+	if output.ReviewQueue != nil {
+		if output.ReviewQueue.BlockedOnYou > 0 {
+			return "Umut to clear " + operatorCount(output.ReviewQueue.BlockedOnYou, "blocked item", "blocked items")
+		}
+		if output.ReviewQueue.Counts.ReviewRequired > 0 {
+			return "review for " + operatorCount(output.ReviewQueue.Counts.ReviewRequired, "item", "items")
+		}
+	}
+	if output.Counts.NeedsReview > 0 {
+		return "review for " + operatorCount(output.Counts.NeedsReview, "work item", "work items")
+	}
+	if output.Counts.NeedsClaim > 0 {
+		return "a claim or dispatch for " + operatorCount(output.Counts.NeedsClaim, "work item", "work items")
+	}
+	if output.Counts.InProgress > 0 {
+		return "proof for " + operatorCount(output.Counts.InProgress, "work item", "work items")
+	}
+	if output.Counts.MissingReceipt > 0 || output.Counts.MissingTransition > 0 {
+		return "receipt/transition proof"
+	}
+	if output.DispatchNext.WaitReason != "" {
+		return operatorWords(output.DispatchNext.WaitReason)
+	}
+	return "nothing; visible work is integrated"
+}
+
+func operatorCount(n int, singular, plural string) string {
+	if n == 1 {
+		return "1 " + singular
+	}
+	return strconv.Itoa(n) + " " + plural
+}
+
+func operatorValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func operatorWords(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	value = strings.ReplaceAll(value, "_", " ")
+	value = strings.ReplaceAll(value, "-", " ")
+	return value
+}
+
+func operatorList(values []string) string {
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	if len(cleaned) == 0 {
+		return "unknown"
+	}
+	return strings.Join(cleaned, ",")
+}
+
 func buildReviewQueueReport(homePath, area string, includeArchived bool) (reviewartifact.QueueReport, error) {
 	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: area, IncludeArchived: includeArchived}, time.Now())
 	if err != nil {
