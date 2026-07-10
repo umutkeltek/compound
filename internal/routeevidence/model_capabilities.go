@@ -475,7 +475,9 @@ func validateModelCapabilities(manifest ModelCapabilitiesManifest) error {
 		} else if !autonomyproof.ValidTier(model.Tier) {
 			errs = append(errs, "model "+id+" has unknown tier "+model.Tier)
 		}
-		errs = append(errs, validateLaneResolution(id, model.Resolution)...)
+		if strings.TrimSpace(model.Resolution.Mode) != "" || len(model.Resolution.Targets) > 0 {
+			errs = append(errs, validateLaneResolution(id, model.Resolution)...)
+		}
 		for class, claim := range model.Capabilities {
 			if strings.TrimSpace(claim.Level) == "" {
 				errs = append(errs, "model "+id+" capability "+class+" level required")

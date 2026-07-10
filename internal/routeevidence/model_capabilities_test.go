@@ -113,6 +113,39 @@ func TestImportModelCapabilitiesRejectsUnknownGateVocabulary(t *testing.T) {
 	}
 }
 
+func TestLegacyModelCapabilitiesWithoutResolutionStillRoutesButCannotClaimResolvedIdentity(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "legacy.yaml")
+	legacy := `version: 1
+purpose: legacy route authority
+rules: []
+capability_classes: [judge-critique]
+models:
+  legacy/judge:
+    lane: legacy judge
+    provider_route: direct
+    tier: cheap
+    packet_ceiling: single-target
+    capabilities:
+      judge-critique: {level: primary, evidence: legacy fixture}
+routing_defaults:
+  judge-critique: [legacy/judge]
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportModelCapabilitiesYAML(home, path, t0); err != nil {
+		t.Fatalf("legacy route authority should remain routable: %v", err)
+	}
+	plan, err := PlanCapabilityRoute(home, "judge-critique", CapabilityRoutePlanOptions{}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Chain) != 1 || plan.Chain[0].ModelID != "legacy/judge" || plan.Chain[0].Resolution.Mode != "" || len(plan.Chain[0].Resolution.Targets) != 0 {
+		t.Fatalf("legacy lane gained invented resolution identity: %+v", plan.Chain)
+	}
+}
+
 func TestPrivacySensitiveCapabilityRouteKeepsOnlyLocalBatch(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
