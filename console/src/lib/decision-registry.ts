@@ -194,7 +194,9 @@ export function workArgvFor(
   target: string,
   summary: string,
   moveType: string,
-): string[] {
+): string[] | null {
+  // Claim requires an executor identity; the operator-facing console cannot synthesize one.
+  if (target === "claimed") return null;
   if (WORK_TERMINAL.has(target)) {
     const argv = ["work", "close", workId, "--outcome", target, "--by", "operator-console"];
     argv.push("--move-type", target === "cancelled" ? "audit_only" : moveType || "control_plane_repair");
@@ -208,19 +210,21 @@ export function workArgvFor(
 export function workOptionsFor(item: Json): DecisionOption[] {
   const state = str(item.state);
   const id = str(item.work_id) || str(item.id);
-  return (WORK_TRANSITIONS[state] ?? []).map((target) => {
+  return (WORK_TRANSITIONS[state] ?? []).flatMap((target) => {
     const meta = WORK_OPTION_META[target] ?? {
       label: target,
       tone: "gray" as Accent,
       description: target,
     };
-    return {
+    const argv = workArgvFor(id, target, "", "control_plane_repair");
+    if (!argv) return [];
+    return [{
       value: target,
       label: meta.label,
       tone: meta.tone,
       description: meta.description,
-      argv: workArgvFor(id, target, "", "control_plane_repair"),
-    };
+      argv,
+    }];
   });
 }
 
