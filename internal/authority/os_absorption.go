@@ -397,14 +397,15 @@ func osAbsorptionNeedsWorkPacketProof(row OSAbsorptionMatrixRow) bool {
 }
 
 func osAbsorptionNeedsOSCapabilityProof(row OSAbsorptionMatrixRow) bool {
-	if row.ProofMode != "" {
-		return row.ProofMode == osAbsorptionProofModeOSCapability
-	}
-	return row.ID == "os_source_os_capability_cli" &&
+	tupleMatches := row.ID == "os_source_os_capability_cli" &&
 		row.SourceRef == "cli:os capability" &&
 		row.SourceKind == "compatibility_cli" &&
 		row.CompoundOwner == capgraph.CapabilityGraphAuthorityRef &&
 		row.Status == "wrapper"
+	if row.ProofMode != "" {
+		return row.ProofMode == osAbsorptionProofModeOSCapability && tupleMatches
+	}
+	return tupleMatches
 }
 
 // osAbsorptionNeedsDecisionsProof matches the os_source_decisions_repo row (and

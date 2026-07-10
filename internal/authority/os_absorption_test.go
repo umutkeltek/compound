@@ -350,6 +350,29 @@ func TestOSAbsorptionOSCapabilityProofRequiresProductionDispatch(t *testing.T) {
 	}
 }
 
+func TestOSAbsorptionOSCapabilityProofModeRequiresExactTuple(t *testing.T) {
+	valid := OSAbsorptionMatrixRow{
+		ID:            "os_source_os_capability_cli",
+		SourceRef:     "cli:os capability",
+		SourceKind:    "compatibility_cli",
+		CompoundOwner: capgraph.CapabilityGraphAuthorityRef,
+		Status:        "wrapper",
+		ProofMode:     osAbsorptionProofModeOSCapability,
+	}
+	if !osAbsorptionNeedsOSCapabilityProof(valid) {
+		t.Fatal("exact os capability tuple should opt into wrapper proof")
+	}
+	invalid := valid
+	invalid.SourceRef = "cli:not-os-capability"
+	if osAbsorptionNeedsOSCapabilityProof(invalid) {
+		t.Fatal("explicit proof mode must not certify a different CLI tuple")
+	}
+	valid.ProofMode = osAbsorptionProofModeCapability
+	if osAbsorptionNeedsOSCapabilityProof(valid) {
+		t.Fatal("an explicit different proof mode must suppress wrapper proof")
+	}
+}
+
 func TestOSAbsorptionWorkPacketAuthorityProofBindsArchivedSourcePacket(t *testing.T) {
 	homePath := t.TempDir()
 	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
