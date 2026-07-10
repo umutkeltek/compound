@@ -61,6 +61,13 @@ the generated source view as rollback/evidence input. `compound route plan --cap
 models, rank live providers, mutate gateway config, or certify task success. Privacy-sensitive plans
 filter to `local-batch` lanes; free judge/critique lanes are tripwires, not verdict gates.
 
+Lane resolution is typed independently of its execution address. `provider_route` says how to call
+the lane; `resolution.mode=adaptive` means the requested alias must be resolved by gateway evidence,
+while `resolution.mode=direct` declares one or more exact provider/model response identities. A
+legacy lane with no resolution block may still be planned and called, but it cannot contribute a
+deciding autonomy sample. This permits an incremental registry migration without inventing local
+model identities or silently disabling existing route consumers.
+
 ## Second-order effects (design against these)
 
 - **Cheap-mediocre drift.** If the router optimizes cost/latency without *outcome* feedback, the

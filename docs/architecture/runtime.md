@@ -48,7 +48,7 @@ $COMPOUND_HOME/
   tmp/
 ```
 
-A RouteDecision through a gateway alias records both the requested lane and the gateway-resolved model (`resolved_model`); measurements MUST attribute to the resolved model, never the alias.
+`ExecutionRouteEvidence` records the requested route separately from the observed identity: `selected_target` is the requested lane/alias, while `resolved_provider`, `resolved_model`, `resolution_source`, and (for gateway resolution) `gateway_request_id` identify what actually served the call. Gateway aliases use `resolution_source=gateway_route`; direct OpenAI-compatible lanes may use the response body's exact `model` with `resolution_source=response_body`. Measurements and autonomy evidence MUST attribute to the observed provider/model, never the alias or provider route string.
 
 Typed semantics (the layout *is* the guardrail): `ledger/` durable append-only · `inbox/` untrusted
 candidates · `projections/` rebuildable views · `indexes/` rented · `artifacts/` content-addressed ·
