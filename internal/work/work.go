@@ -396,6 +396,15 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 	if err := s.editableSurfaceGuard(w, in.To, actor, now); err != nil {
 		return w, err
 	}
+	// Freeze (grants-as-gates, 2026-07-10), defense-in-depth: a system-originated
+	// admission matching an active freeze decision record is denied through this
+	// generic seam too, mirroring the halt/editable-surface guards above.
+	// Operator-provenance advances are excluded by isAutonomousAdmission the same
+	// way (Law 6: the operator can always act; the system cannot ignore its own
+	// freeze).
+	if err := s.freezeGuard(w, in.To, actor, now); err != nil {
+		return w, err
+	}
 	if err := heldReleaseOperatorError(w.State, in.To, actor); err != nil {
 		return w, err
 	}

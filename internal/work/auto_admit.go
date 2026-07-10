@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/mem"
 	"compound/internal/policy"
 )
 
@@ -74,6 +75,14 @@ func (s *Store) AdmitAuto(workID string, in AutoAdmitInput, now time.Time) (Auto
 	// AFTER the kill-switch (so a halt wins) and BEFORE eligibility. A proposal with no
 	// target_surface is ordinary work and passes untouched.
 	if err := s.editableSurfaceGuard(w, "admitted", actor, now); err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: err.Error()}, err
+	}
+
+	// 1.6 Freeze (grants-as-gates, 2026-07-10): a director-proposed admission
+	// matching an active freeze decision record is denied, naming the freeze.
+	// Runs AFTER the kill-switch and editable-surfaces guard, BEFORE
+	// eligibility. An envelope matching no active freeze passes untouched.
+	if err := s.freezeGuard(w, "admitted", actor, now); err != nil {
 		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: err.Error()}, err
 	}
 
@@ -247,4 +256,142 @@ func autoAdmitActor(by string) string {
 func hasAutoAdmitProvenance(actor string) bool {
 	actor = strings.ToLower(strings.TrimSpace(actor))
 	return actor == "auto-admit" || strings.HasPrefix(actor, "auto-admit:") || strings.HasPrefix(actor, "auto-admit-")
+}
+
+// --- Freeze admission guard (grants-as-gates, 2026-07-10) ---
+//
+// The sibling of autonomyHaltGuard/editableSurfaceGuard at the same
+// admission seam. Its source of truth is a decision RECORD (an accepted
+// kind=freeze claim in the decisions store), never markdown/worklog/brain
+// prose (falsifier e). Matching is literal (policy.FreezeMatch): an owner
+// glob or a keyword substring against the canonical surface/evidence refs,
+// never inferred.
+//
+// This reads mem.Claim qualifiers directly instead of going through
+// internal/decisions' ActiveDecisions/LifecycleFromClaim helpers: decisions
+// imports internal/writeback, which imports internal/work, so internal/work
+// importing internal/decisions would be an import cycle. The qualifier keys
+// (kind, lifecycle_status, decision_id, freeze_owner_globs, freeze_keywords,
+// supersedes, reviewed_by) mirror internal/decisions' schema exactly —
+// `compound decisions record --kind freeze` is the only writer of these
+// qualifiers, so the two stay in lockstep by construction.
+const (
+	freezeDecisionKind            = "freeze"
+	freezeDecisionStatusAccepted  = "accepted"
+	freezeDecisionSupersedesField = "supersedes"
+)
+
+// freezeGuard is the enforcement seam AdmitAuto and Advance both call: a
+// no-op for operator admits, non-proposed work, and when nothing active
+// matches. A matching freeze refuses the admission, recording a deny.
+func (s *Store) freezeGuard(w envelope.WorkEnvelope, to, actor string, now time.Time) error {
+	if !isAutonomousAdmission(w, to, actor) {
+		return nil
+	}
+	matched, rec, err := s.matchingFreeze(w)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return nil
+	}
+	if err := s.recordFreezeDeny(w, actor, to, rec, now); err != nil {
+		return err
+	}
+	return fmt.Errorf("freeze active (%s): envelope matches an active freeze scope", rec.ID)
+}
+
+// matchingFreeze loads active freeze decision records from the decisions
+// store (mem claims) — never markdown/brain paths — and reports whether the
+// envelope matches one.
+func (s *Store) matchingFreeze(w envelope.WorkEnvelope) (bool, policy.FreezeRecord, error) {
+	memStore, err := mem.Open(s.home)
+	if err != nil {
+		return false, policy.FreezeRecord{}, err
+	}
+	claims, err := memStore.AllCurrent()
+	if err != nil {
+		return false, policy.FreezeRecord{}, err
+	}
+	records := activeFreezeRecords(claims)
+	matched, rec := policy.FreezeMatch(w.Owner, w.CanonicalSurface, w.EvidenceRefs, records)
+	return matched, rec, nil
+}
+
+// activeFreezeRecords projects current decision claims into policy.FreezeRecord
+// values: accepted kind=freeze claims not named in any other current
+// record's supersedes qualifier (undo = supersede, falsifier c).
+func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
+	superseded := map[string]bool{}
+	for _, c := range claims {
+		if c.ClaimType != "decision" {
+			continue
+		}
+		for _, id := range splitFreezeCSV(c.Qualifiers[freezeDecisionSupersedesField]) {
+			superseded[id] = true
+		}
+	}
+	var out []policy.FreezeRecord
+	for _, c := range claims {
+		if c.ClaimType != "decision" {
+			continue
+		}
+		q := c.Qualifiers
+		if q["kind"] != freezeDecisionKind || q["lifecycle_status"] != freezeDecisionStatusAccepted {
+			continue
+		}
+		id := q["decision_id"]
+		if id != "" && superseded[id] {
+			continue
+		}
+		out = append(out, policy.FreezeRecord{
+			ID:         id,
+			Title:      c.Object,
+			ReviewedBy: q["reviewed_by"],
+			OwnerGlobs: splitFreezeCSV(q["freeze_owner_globs"]),
+			Keywords:   splitFreezeCSV(q["freeze_keywords"]),
+		})
+	}
+	return out
+}
+
+func splitFreezeCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if v := strings.TrimSpace(part); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// recordFreezeDeny writes the ActionIntent and a deny PolicyDecision for an
+// autonomous admission blocked by an active freeze, plus a lifecycle event
+// naming the freeze record, so the deny leaves an auditable trail while the
+// work stays in place.
+func (s *Store) recordFreezeDeny(w envelope.WorkEnvelope, actor, to string, rec policy.FreezeRecord, now time.Time) error {
+	reason := fmt.Sprintf("freeze active (%s): %s matches an active freeze scope; operator must record a superseding decision to unfreeze", rec.ID, w.ID)
+	ai := s.advanceActionIntent(w, actor, to, now, AdvancePlanOptions{Actor: actor, To: to})
+	if err := ai.Validate(); err != nil {
+		return err
+	}
+	pd := policy.FreezeDenyDecision(ai, reason, now)
+	if err := pd.Validate(); err != nil {
+		return err
+	}
+	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+		return err
+	}
+	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+		return err
+	}
+	return s.appendEvent(Event{
+		TS:       ts(now),
+		WorkID:   w.ID,
+		From:     w.State,
+		To:       w.State,
+		By:       actor,
+		Note:     "freeze deny: " + reason,
+		Attached: []string{ai.ID, pd.ID},
+	})
 }
