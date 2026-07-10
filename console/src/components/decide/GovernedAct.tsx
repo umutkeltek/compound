@@ -27,7 +27,19 @@ type SingleAct = Extract<DecideAct, { mode: "bespoke" | "batch-atomic" | "generi
 type OutcomeKind = Exclude<DecideCapability["kind"], "unavailable">;
 
 function actFields(act: SingleAct): FieldSpec[] {
-  return act.mode === "bespoke" ? act.fields : [];
+  if (act.mode === "bespoke") return act.fields;
+  if (act.mode === "generic" && act.reasonRequired) {
+    return [
+      {
+        name: "reason",
+        type: "textarea",
+        label: "Reason",
+        required: true,
+        placeholder: "Why should this review item move out of the active queue?",
+      },
+    ];
+  }
+  return [];
 }
 
 function fieldsForOption(fields: FieldSpec[], option: string): FieldSpec[] {

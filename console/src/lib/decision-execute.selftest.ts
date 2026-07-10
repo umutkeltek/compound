@@ -20,6 +20,7 @@ import {
   genericActionAllowedForOwner,
   missingBespokeConfirmation,
   renderedRevisionMatches,
+  resolveReviewResolutionAction,
 } from "./decision-execute";
 import { headlineAct, type HeadlineActDescriptor } from "./briefing";
 import type { AttentionGroup } from "./attention";
@@ -495,6 +496,59 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
       "briefing-generic-action-preserves-owner-scope",
       oneClick?.itemId === "jhp_fixture" && batch?.itemId === base.key,
       `oneClick=${oneClick?.itemId ?? "null"} batch=${batch?.itemId ?? "null"}`,
+    );
+  }
+
+  // 5. Generic review resolution is a fixed adapter: blank reason is rejected
+  //    before any subprocess can run.
+  {
+    const resolution = resolveReviewResolutionAction(
+      "review_resolution_park",
+      "parity_unknown_fixture",
+      "   ",
+    );
+    push(
+      "generic-resolution-requires-reason",
+      resolution != null && !resolution.ok && resolution.rejection.gate === "rationale-required",
+      `resolution=${JSON.stringify(resolution)}`,
+    );
+  }
+
+  // 6. Reason text stays one argv element; no shell or client-supplied argv is
+  //    involved in the adapter.
+  {
+    const reason = "hold: day-2 evidence decides; '; $(echo text) stays text";
+    const resolution = resolveReviewResolutionAction(
+      "review_resolution_dismiss",
+      "skill_surfacing_unknown_fixture",
+      reason,
+    );
+    const argv = resolution?.ok ? resolution.action.argv : [];
+    const reasonIndex = argv.indexOf("--reason");
+    push(
+      "reason-stays-one-argv-element",
+      resolution?.ok === true &&
+        argv.join("\u0000") ===
+          ["reviews", "resolve", "--item", "skill_surfacing_unknown_fixture", "--decision", "dismissed", "--reason", reason, "--json"].join("\u0000") &&
+        reasonIndex >= 0 &&
+        argv[reasonIndex + 1] === reason,
+      `resolution=${JSON.stringify(resolution)}`,
+    );
+  }
+
+  // 7. The adapter is deliberately narrow. Every other action id must return
+  //    null so executeGenericAction continues through the existing projection
+  //    resolver byte-for-byte.
+  {
+    const resolution = resolveReviewResolutionAction(
+      "route_promotion_record",
+      "route_promotion_selftest01",
+      "record the hold",
+    );
+    push(
+      "non-resolution-action-still-uses-existing-generic-resolver",
+      resolution === null,
+      `resolution=${JSON.stringify(resolution)}`,
     );
   }
 

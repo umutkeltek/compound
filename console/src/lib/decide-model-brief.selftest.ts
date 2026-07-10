@@ -12,7 +12,7 @@
  */
 
 import { remainingDecideMembers } from "./decide-members";
-import { buildDecideGroups } from "./decide-model";
+import { buildDecideGroups, genericReviewResolutionActs } from "./decide-model";
 import type { Json } from "./compound";
 
 type Check = { name: string; ok: boolean; detail: string };
@@ -483,6 +483,75 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       "uncertified-clean-action-stays-unavailable",
       decided.act.mode === "copy" && decided.capability.kind === "unavailable",
       `act=${decided.act.mode} capability=${decided.capability.kind}`,
+    );
+  }
+
+  // Generic review resolution derives at render time. A zero-wired
+  // unknown-status card keeps its serialized model untouched while the
+  // adapter exposes exactly Park and Dismiss (reason mandatory on both).
+  {
+    const item: Json = { id: "parity_unknown_fixture", area: "parity", context_label: "Parity unknown" };
+    const group: Json = {
+      key: "parity|unknown",
+      area: "parity",
+      count: 1,
+      status: "unknown",
+      operator_summary: "Review parity unknown.",
+      context_label: "parity",
+      item_ids: [item.id],
+      evidence_refs: ["evidence:parity-unknown"],
+      sample: item,
+    };
+    const [decided] = buildDecideGroups([group], new Map([[String(item.id), item]]), null, () => item);
+    const before = JSON.stringify(decided);
+    const acts = genericReviewResolutionActs(decided);
+    const after = JSON.stringify(decided);
+    push(
+      "copy-card-gains-park-dismiss",
+      decided.act.mode === "copy" &&
+        acts.map((act) => act.label).join(",") === "Park,Dismiss" &&
+        acts.map((act) => act.actionId).join(",") === "review_resolution_park,review_resolution_dismiss" &&
+        acts.every((act) => act.reasonRequired === true && act.effectKind === "record") &&
+        before === after,
+      `model_unchanged=${before === after} acts=${JSON.stringify(acts.map((act) => act.actionId))}`,
+    );
+    push(
+      "unknown-status-card-resolvable",
+      acts.length === 2 && acts.every((act) => act.itemId === "parity_unknown_fixture"),
+      `acts=${JSON.stringify(acts.map((act) => act.itemId))}`,
+    );
+  }
+
+  // Deriving resolution acts against a briefed card never mutates the
+  // serialized model (frozen-rendering law), and a card whose act is already
+  // executable gets no derived resolution acts at all.
+  {
+    const brief = validBriefPayload();
+    const item: Json = { id: "unknown_freeze", area: "parity", context_label: "Parity unknown", brief };
+    const group: Json = {
+      key: "parity|unknown",
+      area: "parity",
+      count: 1,
+      status: "unknown",
+      operator_summary: "Review parity unknown.",
+      context_label: "parity",
+      item_ids: [item.id],
+      evidence_refs: ["evidence:parity-freeze"],
+      sample: item,
+    };
+    const [decided] = buildDecideGroups([group], new Map([[String(item.id), item]]), null, () => item);
+    const before = JSON.stringify(decided);
+    genericReviewResolutionActs(decided);
+    push(
+      "briefed-card-derivation-never-mutates-model",
+      JSON.stringify(decided) === before,
+      `after_match=${JSON.stringify(decided) === before}`,
+    );
+    const actionable = { ...decided, act: { ...decided.act, mode: "generic" } } as typeof decided;
+    push(
+      "actionable-card-gets-no-derived-acts",
+      genericReviewResolutionActs(actionable).length === 0,
+      `acts=${genericReviewResolutionActs(actionable).length}`,
     );
   }
 

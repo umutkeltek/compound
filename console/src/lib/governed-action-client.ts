@@ -40,7 +40,11 @@ export function buildDecideActionRequest(
 ): Record<string, unknown> {
   const confirmed = confirmedFor(kind);
   if (act.mode === "generic") {
-    return { area: act.area, itemId: act.itemId, actionId: act.actionId, expectedRevision: act.expectedRevision, confirmed };
+    const request: Record<string, unknown> = { area: act.area, itemId: act.itemId, actionId: act.actionId, expectedRevision: act.expectedRevision, confirmed };
+    // The fixed review-resolution adapter is the only generic consumer of a
+    // reason; it validates presence server-side, so send it only when asked.
+    if (act.reasonRequired) request.reason = String(fields.reason ?? "");
+    return request;
   }
   return {
     area: act.area,

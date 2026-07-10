@@ -15,7 +15,12 @@ import {
   runJson,
   str,
 } from "@/lib/compound";
-import { type GenericActionGate, resolveGenericAction } from "@/lib/generic-actions";
+import {
+  type GenericActionGate,
+  type GenericActionResolution,
+  type ResolvedGenericAction,
+  resolveGenericAction,
+} from "@/lib/generic-actions";
 
 export type DecisionExecutionRefs = {
   action_refs: string[];
@@ -308,6 +313,7 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   const preview = body.preview === true;
   const rationale = typeof body.rationale === "string" ? body.rationale : "";
   const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision.trim() : "";
+  const reason = typeof body.reason === "string" ? body.reason : rationale;
 
   const fields: Record<string, string> = {};
   if (body.fields && typeof body.fields === "object") {
@@ -334,7 +340,7 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
     // this is the ONLY way areas without a bespoke spec become executable.
     // A bespoke spec always wins: this branch never runs when `spec` exists.
     if (genericActionAllowedForOwner(false, actionId)) {
-      return executeGenericAction(area, itemId, actionId, expectedRevision, confirmed, rationale);
+      return executeGenericAction(area, itemId, actionId, expectedRevision, confirmed, reason);
     }
     return Response.json({ ok: false, stderr: `unknown decision area: ${area}` }, { status: 400 });
   }
@@ -440,6 +446,56 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
   "rationale-required": 422,
 };
 
+const REVIEW_RESOLUTION_DECISIONS = {
+  review_resolution_park: { decision: "parked", label: "Park" },
+  review_resolution_dismiss: { decision: "dismissed", label: "Dismiss" },
+} as const;
+
+// Fixed adapter for cards whose owner exposes no executable action. It accepts
+// only a named resolution id + item id + operator reason, then constructs the
+// canonical CLI argv server-side. Returning null preserves the existing generic
+// projection resolver for every non-resolution action.
+export function resolveReviewResolutionAction(
+  actionId: string,
+  itemId: string,
+  reason?: string,
+): GenericActionResolution | null {
+  const config = REVIEW_RESOLUTION_DECISIONS[actionId as keyof typeof REVIEW_RESOLUTION_DECISIONS];
+  if (!config) return null;
+  const cleanReason = (reason ?? "").trim();
+  if (!cleanReason) {
+    return {
+      ok: false,
+      rejection: {
+        gate: "rationale-required",
+        message: `action "${actionId}" requires a reason; it becomes provenance on the review resolution`,
+      },
+    };
+  }
+  const action: ResolvedGenericAction = {
+    argv: [
+      "reviews",
+      "resolve",
+      "--item",
+      itemId,
+      "--decision",
+      config.decision,
+      "--reason",
+      cleanReason,
+      "--json",
+    ],
+    actionId,
+    label: config.label,
+    requiresReview: true,
+    policyNote: "records a reversible review disposition only; underlying authority is unchanged",
+    // Fixed adapter, not projection-derived: there is no owner action revision
+    // to go stale, so the stale-revision gate applies only to resolver actions.
+    revision: "",
+  };
+  return { ok: true, action };
+}
+
+
 /**
  * The generic governed-action pathway (Phase 3a): executes an area's
  * backend-declared action when no bespoke REGISTRY spec exists. Every argv
@@ -459,24 +515,35 @@ async function executeGenericAction(
     return Response.json({ ok: false, stderr: "itemId is required" }, { status: 400 });
   }
 
-  const resolution = await resolveGenericAction(area, itemId, actionId, rationale);
-  if (!resolution.ok) {
-    return Response.json(
-      { ok: false, stderr: resolution.rejection.message },
-      { status: GENERIC_GATE_STATUS[resolution.rejection.gate] },
-    );
-  }
-
-  const { action } = resolution;
-  if (!genericActionRevisionMatches(action.revision, expectedRevision)) {
-    return Response.json(
-      {
-        ok: false,
-        error_code: "stale_action_revision",
-        stderr: "owner action changed since it was rendered; refresh and review the current command",
-      },
-      { status: 409 },
-    );
+  const reviewResolution = resolveReviewResolutionAction(actionId, itemId, rationale);
+  let action: ResolvedGenericAction;
+  if (reviewResolution) {
+    if (!reviewResolution.ok) {
+      return Response.json(
+        { ok: false, stderr: reviewResolution.rejection.message },
+        { status: GENERIC_GATE_STATUS[reviewResolution.rejection.gate] },
+      );
+    }
+    action = reviewResolution.action;
+  } else {
+    const resolution = await resolveGenericAction(area, itemId, actionId, rationale);
+    if (!resolution.ok) {
+      return Response.json(
+        { ok: false, stderr: resolution.rejection.message },
+        { status: GENERIC_GATE_STATUS[resolution.rejection.gate] },
+      );
+    }
+    if (!genericActionRevisionMatches(resolution.action.revision, expectedRevision)) {
+      return Response.json(
+        {
+          ok: false,
+          error_code: "stale_action_revision",
+          stderr: "owner action changed since it was rendered; refresh and review the current command",
+        },
+        { status: 409 },
+      );
+    }
+    action = resolution.action;
   }
   if (action.requiresReview && !confirmed) {
     return Response.json(

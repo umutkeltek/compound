@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, FreshnessChip } from "@/components/kit";
 import { remainingDecideMembers } from "@/lib/decide-members";
+import { genericReviewResolutionActs } from "@/lib/decide-model";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import { decideActIdentity } from "@/lib/governed-action-client";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
@@ -516,6 +517,7 @@ function DecisionDetail({
 }) {
   const { act } = group;
   const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
+  const reviewResolutionActs = genericReviewResolutionActs(group);
   return (
     <article className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
       <header className="px-4 py-4">
@@ -559,7 +561,17 @@ function DecisionDetail({
             <div className="grid gap-2 border-l-2 border-seam-line pl-3">
               <p className="text-sm font-semibold text-seam">Unavailable: owner workflow missing</p>
               <p className="text-xs leading-relaxed text-muted">{act.reason || "This review remains inspectable, but the owner has not exposed a safe state-changing action."}</p>
-              <div><CopyCmd cmd={act.command} compact /></div>
+              <div className="flex flex-wrap items-center gap-2">
+                <CopyCmd cmd={act.command} compact />
+                {reviewResolutionActs.map((resolutionAct) => (
+                  <GovernedAct
+                    key={resolutionAct.actionId}
+                    act={resolutionAct}
+                    mutationsEnabled={mutationsEnabled}
+                    effectKind="record"
+                  />
+                ))}
+              </div>
             </div>
           ) : act.mode === "batch-enumerable" ? (
             <EnumerableApply
