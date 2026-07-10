@@ -261,6 +261,9 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 	if err != nil {
 		return Artifact{}, err
 	}
+	if err := reconcileRecentTerminalSnapshots(works, receipts, lookbackStart); err != nil {
+		return Artifact{}, err
+	}
 	routes, err := loadRouteRows(homePath)
 	if err != nil {
 		return Artifact{}, err
@@ -693,14 +696,20 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 }
 
 func loadWorks(homePath string) ([]workSnapshot, error) {
-	paths := []string{}
+	type workLocation struct {
+		Path         string
+		OriginalPath string
+		Archive      *homepkg.OperationalArchiveEntry
+	}
+	locations := []workLocation{}
 	entries, err := os.ReadDir(filepath.Join(homePath, "work", "work"))
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-			paths = append(paths, filepath.Join(homePath, "work", "work", entry.Name()))
+			originalPath := filepath.ToSlash(filepath.Join("work", "work", entry.Name()))
+			locations = append(locations, workLocation{Path: filepath.Join(homePath, filepath.FromSlash(originalPath)), OriginalPath: originalPath})
 		}
 	}
 	archive, err := homepkg.LoadOperationalArchiveIndex(homePath)
@@ -710,8 +719,26 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	indexedArchivePaths := map[string]bool{}
 	for _, entry := range archive {
 		if entry.Kind == "work" && strings.HasPrefix(entry.OriginalPath, "work/work/") && strings.HasSuffix(entry.OriginalPath, ".json") {
+			expectedArchivePath := filepath.ToSlash(filepath.Join(homepkg.OperationalArchiveFilesRel, filepath.FromSlash(entry.OriginalPath)))
+			if filepath.ToSlash(filepath.Clean(entry.ArchivePath)) != filepath.ToSlash(filepath.Clean(expectedArchivePath)) {
+				return nil, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
+			}
+			if !terminalWorkState(strings.TrimSpace(entry.Status)) {
+				return nil, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
+			}
+			if strings.TrimSpace(entry.SHA256) == "" {
+				return nil, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
+			}
+			wantID := "oparch_" + shaHex([]byte(filepath.ToSlash(entry.OriginalPath)))[:12]
+			if entry.ID != wantID {
+				return nil, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
+			}
 			archivePath := filepath.Clean(filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)))
-			paths = append(paths, archivePath)
+			if indexedArchivePaths[archivePath] {
+				return nil, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
+			}
+			entryCopy := entry
+			locations = append(locations, workLocation{Path: archivePath, OriginalPath: entry.OriginalPath, Archive: &entryCopy})
 			indexedArchivePaths[archivePath] = true
 		}
 	}
@@ -729,28 +756,70 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 			return nil, fmt.Errorf("operational archive contains unindexed work file %s", filepath.ToSlash(entry.Name()))
 		}
 	}
-	sort.Strings(paths)
+	sort.Slice(locations, func(i, j int) bool { return locations[i].Path < locations[j].Path })
 	var out []workSnapshot
-	seen := map[string]bool{}
-	for _, path := range paths {
-		raw, err := os.ReadFile(path)
+	seen := map[string]string{}
+	for _, location := range locations {
+		raw, err := os.ReadFile(location.Path)
 		if err != nil {
 			return nil, err
 		}
+		if location.Archive != nil {
+			if got := shaHex(raw); got != strings.TrimSpace(location.Archive.SHA256) {
+				return nil, fmt.Errorf("operational archive work %s sha256 mismatch", location.Archive.ID)
+			}
+			if location.Archive.Size > 0 && int64(len(raw)) != location.Archive.Size {
+				return nil, fmt.Errorf("operational archive work %s size mismatch", location.Archive.ID)
+			}
+		}
 		var work envelope.WorkEnvelope
 		if err := json.Unmarshal(raw, &work); err != nil {
-			return nil, fmt.Errorf("decode work %s: %w", path, err)
+			return nil, fmt.Errorf("decode work %s: %w", location.Path, err)
 		}
 		if err := work.Validate(); err != nil {
 			return nil, err
 		}
-		if seen[work.ID] {
-			continue
+		if filepath.Base(filepath.FromSlash(location.OriginalPath)) != work.ID+".json" {
+			return nil, fmt.Errorf("work snapshot %s path does not match work identity %s", location.OriginalPath, work.ID)
 		}
-		seen[work.ID] = true
+		if location.Archive != nil && strings.TrimSpace(location.Archive.Status) != strings.TrimSpace(work.State) {
+			return nil, fmt.Errorf("operational archive work %s status %q does not match work state %q", location.Archive.ID, location.Archive.Status, work.State)
+		}
+		if prior, ok := seen[work.ID]; ok {
+			return nil, fmt.Errorf("duplicate work identity %s at %s and %s", work.ID, prior, location.Path)
+		}
+		seen[work.ID] = location.Path
 		out = append(out, workSnapshot{Work: work, Raw: bytes.TrimSpace(raw)})
 	}
 	return out, nil
+}
+
+func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]receiptEvidence, lookbackStart time.Time) error {
+	byID := map[string][]workSnapshot{}
+	for _, work := range works {
+		byID[work.Work.ID] = append(byID[work.Work.ID], work)
+	}
+	for workID, evidence := range receipts {
+		terminalAt := strings.TrimSpace(evidence.TerminalAt)
+		if terminalAt == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.RFC3339, terminalAt)
+		if err != nil {
+			return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminalAt)
+		}
+		if parsed.Before(lookbackStart) {
+			continue
+		}
+		snapshots := byID[workID]
+		if len(snapshots) != 1 {
+			return fmt.Errorf("recent terminal work %s has %d snapshots; exactly one required", workID, len(snapshots))
+		}
+		if !terminalWorkState(snapshots[0].Work.State) {
+			return fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
+		}
+	}
+	return nil
 }
 
 func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) {

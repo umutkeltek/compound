@@ -277,6 +277,9 @@ func TestCompileFailsClosedOnUnindexedArchivedWork(t *testing.T) {
 
 func TestCompileFailsClosedOnDuplicateHotAndArchivedWorkIdentity(t *testing.T) {
 	home := t.TempDir()
+	if err := homepkg.Init(home, "local", proofNow.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	plan := installPlan(t, home, false)
 	seedSample(t, home, plan, "duplicate-location-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
 	latest := seedSample(t, home, plan, "duplicate-location", proofNow.Add(-24*time.Hour), sampleOptions{})
@@ -300,6 +303,9 @@ func TestCompileFailsClosedOnDuplicateHotAndArchivedWorkIdentity(t *testing.T) {
 
 func TestCompileFailsClosedOnMutatedIndexedArchiveWork(t *testing.T) {
 	home := t.TempDir()
+	if err := homepkg.Init(home, "local", proofNow.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	plan := installPlan(t, home, false)
 	seedSample(t, home, plan, "archive-hash-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
 	latest := seedSample(t, home, plan, "archive-hash-mutated", proofNow.Add(-24*time.Hour), sampleOptions{})
@@ -329,6 +335,9 @@ func TestCompileFailsClosedOnArchiveWorkStatusOrPathMismatch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
+			if err := homepkg.Init(home, "local", proofNow.Add(-72*time.Hour)); err != nil {
+				t.Fatal(err)
+			}
 			plan := installPlan(t, home, false)
 			seedSample(t, home, plan, tc.name+"-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
 			latest := seedSample(t, home, plan, tc.name+"-mismatch", proofNow.Add(-24*time.Hour), sampleOptions{})
