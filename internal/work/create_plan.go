@@ -109,6 +109,9 @@ type AdmitCreatePlanReport struct {
 
 func (s *Store) CreatePlan(in CreateInput, now time.Time, opts CreatePlanOptions) (CreatePlan, error) {
 	w := BuildWork(in, now)
+	if strings.TrimSpace(w.State) == "running" {
+		return CreatePlan{}, fmt.Errorf("create at ready, then claim and advance to preserve lease proof")
+	}
 	if strings.TrimSpace(opts.Actor) == "" {
 		opts.Actor = in.Actor
 	}

@@ -52,6 +52,12 @@ Archived runtime proof journal through 2026-07-02: [status-journal-through-2026-
 
 This file is the current package/command map. `compound architecture doctor --strict` enforces the mechanical side: package classification, candidate-map integrity, public-doc leak checks, status hot-path line budget, and the memory convergence ratchet.
 
+Work smoothness note: direct mutating dispatch selector commands require an explicit target boundary: pass either `<work_id>` or `--next` to `work dispatch-claim`, `work dispatch-advance`, `work dispatch-close-plan`, and `work dispatch-close`. The lower-level `dispatch-step`/`continue` loop remains the explicit lifecycle automation surface.
+
+Work lease note: `work create` and `work create-plan` reject `--state running`; create at `ready`, then claim and advance so the lease and policy/action proof chain exists. Director apply-run receipts follow that same ready -> claim -> running -> close path.
+
+Proof-check console note: `proof-check` now includes `ai-boundary`, `work-trace`, `generic-actions`, `view-registry`, and `attention-consistency` console smokes. Bun-backed smokes skip explicitly when `bun` is missing; attention consistency skips explicitly when the installed `compound` binary is missing.
+
 ## Current Verdict
 
 Gen-1 memory stack migrated into the spine memory family and retired.

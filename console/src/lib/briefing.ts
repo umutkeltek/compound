@@ -139,13 +139,13 @@ export function pipelineStages(workbench: Json | null): PipelineStage[] {
   const terminal = num(counts.terminal) || st("completed") + st("failed") + st("cancelled");
 
   return [
-    { key: "signal", label: "Signal", count: num(counts.admission_previews), tone: "draft", hint: "Suggested work offered, not yet proposed" },
-    { key: "propose", label: "Propose", count: st("proposed"), tone: "draft", hint: "Proposed — awaiting admission" },
-    { key: "admit", label: "Admit", count: st("admitted"), tone: "seam", hint: "The operator's amber seat — admit into work" },
-    { key: "claim", label: "Claim", count: st("ready") + st("claimed"), tone: "queued", hint: "Ready or claimed by an executor" },
+    { key: "signal", label: "Signal", count: num(counts.admission_previews), tone: "draft", hint: "Suggested work offered, not yet prepared" },
+    { key: "propose", label: "Suggest", count: st("proposed"), tone: "draft", hint: "Suggested work waiting to be added" },
+    { key: "admit", label: "Add to work", count: st("admitted"), tone: "seam", hint: "Add a job to the work queue" },
+    { key: "claim", label: "Start", count: st("ready") + st("claimed"), tone: "queued", hint: "Ready or started by an executor" },
     { key: "execute", label: "Execute", count: execute, tone: "live", live: execute > 0, hint: "Running or verifying" },
-    { key: "receipt", label: "Receipt", count: st("completed"), tone: "done", hint: "Completed with a receipt" },
-    { key: "learn", label: "Learn", count: terminal, tone: "done", hint: "Reached a Transition — fed learning" },
+    { key: "receipt", label: "Proof", count: st("completed"), tone: "done", hint: "Completed with proof" },
+    { key: "learn", label: "Learn", count: terminal, tone: "done", hint: "Learning updated from completed changes" },
   ];
 }
 

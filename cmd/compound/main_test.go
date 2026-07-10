@@ -43,6 +43,8 @@ import (
 
 var cliTestNow = time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
 
+const workCLIBoundarySubEnv = "COMPOUND_WORK_CLI_BOUNDARY_SUB"
+
 func writeCLITrace(t *testing.T, homePath, id, workID string) envelope.TraceEnvelope {
 	t.Helper()
 	trace := envelope.TraceEnvelope{
@@ -290,6 +292,11 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-private-fallback-smoke",
 		"console-private-runtime-guard-smoke",
 		"console-move-type-drift-smoke",
+		"console-ai-boundary-smoke",
+		"console-work-trace-smoke",
+		"console-generic-actions-smoke",
+		"console-view-registry-smoke",
+		"console-attention-consistency-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
 		"profiles-check-installed-only",
@@ -305,7 +312,8 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
-		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
+		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke"
+		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
 		if !stringSliceContains(report.ProofRefs, want) {
@@ -3634,7 +3642,7 @@ func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
 		t.Fatalf("create work: %v", err)
 	}
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-claim", "--actor", "codex", "--json"})
+		cmdWork([]string{"dispatch-claim", "--next", "--actor", "codex", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -3665,6 +3673,95 @@ func TestWorkDispatchClaimCommandClaimsSelectedWork(t *testing.T) {
 	}
 }
 
+func TestWorkDispatchClaimCommandClaimsExplicitWork(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work: %v", err)
+	}
+	first, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch claim skips non-target"}, cliTestNow)
+	if err != nil {
+		t.Fatalf("create first work: %v", err)
+	}
+	second, err := store.Create(work.CreateInput{Owner: "compound-core", SuccessPredicate: "dispatch claim exact target"}, cliTestNow.Add(time.Second))
+	if err != nil {
+		t.Fatalf("create second work: %v", err)
+	}
+	out := captureStdout(t, func() {
+		cmdWork([]string{"dispatch-claim", second.ID, "--actor", "codex", "--json"})
+	})
+	start := strings.Index(out, "{")
+	if start < 0 {
+		t.Fatalf("dispatch-claim output missing JSON:\n%s", out)
+	}
+	var result work.DispatchClaimResult
+	if err := json.Unmarshal([]byte(out[start:]), &result); err != nil {
+		t.Fatalf("parse dispatch claim: %v\n%s", err, out)
+	}
+	if result.Status != "claimed" || result.ClaimedWorkID != second.ID {
+		t.Fatalf("dispatch claim result = %+v, target=%s", result, second.ID)
+	}
+	firstAfter, err := store.Get(first.ID)
+	if err != nil {
+		t.Fatalf("get first work: %v", err)
+	}
+	if firstAfter.State != "ready" {
+		t.Fatalf("dispatch claim should not select non-target work: %+v", firstAfter)
+	}
+}
+
+func TestWorkDispatchClaimCommandRequiresExplicitNextOrWorkID(t *testing.T) {
+	if os.Getenv(workCLIBoundarySubEnv) == "dispatch-claim" {
+		cmdWork([]string{"dispatch-claim", "--actor", "codex", "--json"})
+		return
+	}
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkDispatchClaimCommandRequiresExplicitNextOrWorkID$")
+	cmd.Env = append(os.Environ(), workCLIBoundarySubEnv+"=dispatch-claim", "COMPOUND_HOME="+homePath)
+	output, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("dispatch-claim should exit non-zero, got err=%v output=%s", err, output)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("dispatch-claim should exit 2, got %d output=%s", exitErr.ExitCode(), output)
+	}
+	if !strings.Contains(string(output), "requires --next or <work_id>") {
+		t.Fatalf("dispatch-claim usage did not explain explicit target requirement:\n%s", output)
+	}
+}
+
+func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
+	if os.Getenv(workCLIBoundarySubEnv) == "create-running" {
+		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "direct running create", "--state", "running"})
+		return
+	}
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateRejectsRunningStateAsUsage$")
+	cmd.Env = append(os.Environ(), workCLIBoundarySubEnv+"=create-running", "COMPOUND_HOME="+homePath)
+	output, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("work create should exit non-zero, got err=%v output=%s", err, output)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("work create should exit 2, got %d output=%s", exitErr.ExitCode(), output)
+	}
+	if !strings.Contains(string(output), "create at ready, then claim and advance") {
+		t.Fatalf("work create usage did not explain lease-preserving path:\n%s", output)
+	}
+}
+
 func TestWorkDispatchAdvanceCommandStartsClaimedWork(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
@@ -3683,7 +3780,7 @@ func TestWorkDispatchAdvanceCommandStartsClaimedWork(t *testing.T) {
 		t.Fatalf("claim work: %v", err)
 	}
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-advance", "--actor", "codex", "--json"})
+		cmdWork([]string{"dispatch-advance", "--next", "--actor", "codex", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -3737,7 +3834,7 @@ func TestWorkDispatchClosePlanCommandRecordsClosePlanWithoutClosing(t *testing.T
 		t.Fatalf("observe run: %v", err)
 	}
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-close-plan", "--actor", "codex", "--json"})
+		cmdWork([]string{"dispatch-close-plan", "--next", "--actor", "codex", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {
@@ -3788,7 +3885,7 @@ func TestWorkDispatchCloseCommandClosesProofReadyWork(t *testing.T) {
 		t.Fatalf("observe run: %v", err)
 	}
 	out := captureStdout(t, func() {
-		cmdWork([]string{"dispatch-close", "--actor", "codex", "--json"})
+		cmdWork([]string{"dispatch-close", "--next", "--actor", "codex", "--json"})
 	})
 	start := strings.Index(out, "{")
 	if start < 0 {

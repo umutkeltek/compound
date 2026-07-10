@@ -46,6 +46,27 @@ func TestCreatePlanRecordsPolicyWithoutCreatingWork(t *testing.T) {
 	}
 }
 
+func TestCreatePlanRejectsRunningState(t *testing.T) {
+	s := newStore(t)
+	_, err := s.CreatePlan(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "running",
+		SuccessPredicate: "direct running create is rejected",
+	}, fixedNow, CreatePlanOptions{Record: true})
+	if err == nil || !strings.Contains(err.Error(), "create at ready, then claim and advance") {
+		t.Fatalf("CreatePlan running error = %v", err)
+	}
+	if _, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "running",
+		SuccessPredicate: "direct running create is rejected",
+	}, fixedNow); err == nil || !strings.Contains(err.Error(), "create at ready, then claim and advance") {
+		t.Fatalf("Create running error = %v", err)
+	}
+}
+
 func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 	s := newStore(t)
 	plan, err := s.CreatePlan(CreateInput{

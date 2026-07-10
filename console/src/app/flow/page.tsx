@@ -105,7 +105,7 @@ export default async function FlowPage() {
     {
       key: "admit",
       label: "Add to work",
-      plain: "Your seat. Adding a job makes it claimable; it does not run anything yet.",
+      plain: "Your seat. Adding a job makes it ready for an executor; it does not run anything yet.",
       accent: "orange",
       liveness: "live",
       items: byStates(["admitted", "held"]).map((w) =>
@@ -115,7 +115,7 @@ export default async function FlowPage() {
     {
       key: "claim",
       label: "Assign",
-      plain: "An executor takes the job under a lease, so two agents never collide.",
+      plain: "An executor starts the job under a lease, so two agents never collide.",
       accent: "blue",
       liveness: "live",
       items: byStates(["ready", "claimed"]).map((w) => workItem(w)),

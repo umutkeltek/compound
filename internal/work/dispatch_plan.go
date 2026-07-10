@@ -23,6 +23,7 @@ type DispatchPlanOptions struct {
 	Actor                 string
 	Record                bool
 	RecentLimit           int
+	WorkID                string
 	SourcePacketPath      string
 	SourcePacketState     string
 	SourcePacketOwner     string
@@ -136,6 +137,7 @@ type DispatchAdvanceResult struct {
 type DispatchClosePlanOptions struct {
 	Actor         string
 	RecentLimit   int
+	WorkID        string
 	Outcome       string
 	MoveType      string
 	Capability    string
@@ -172,6 +174,7 @@ type DispatchClosePlanResult struct {
 type DispatchCloseOptions struct {
 	Actor       string
 	RecentLimit int
+	WorkID      string
 	Outcome     string
 	MoveType    string
 	Summary     string
@@ -285,6 +288,7 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 	if err != nil {
 		return DispatchPlan{}, err
 	}
+	targetWorkID := strings.TrimSpace(opts.WorkID)
 	plan := DispatchPlan{
 		SchemaVersion: DispatchPlanSchemaVersion,
 		ID:            idFor("wdp_", actor, ts(now)),
@@ -309,6 +313,9 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 	policyBlocked := false
 	leaseSkipped := 0
 	for _, item := range report.Open {
+		if targetWorkID != "" && item.WorkID != targetWorkID {
+			continue
+		}
 		candidate := dispatchCandidate(item, actor)
 		if candidate.Action == "held_by_other" {
 			leaseSkipped++
@@ -342,6 +349,15 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 	}
 	if plan.Selected == nil {
 		switch {
+		case targetWorkID != "" && policyBlocked:
+			plan.Status = "claim_policy_blocked"
+			plan.NoAction = "target work exists but claim policy does not allow dispatch"
+		case targetWorkID != "" && leaseSkipped > 0:
+			plan.Status = "held_by_other_actor"
+			plan.NoAction = fmt.Sprintf("target work %s is held by another actor", targetWorkID)
+		case targetWorkID != "":
+			plan.Status = "target_not_claimable"
+			plan.NoAction = fmt.Sprintf("target work %s is not ready to claim", targetWorkID)
 		case len(plan.Candidates) == 0:
 			plan.NoAction = "workbench has no open work"
 		case policyBlocked:
@@ -558,6 +574,7 @@ func (s *Store) DispatchAdvance(now time.Time, opts DispatchPlanOptions) (Dispat
 	if err != nil {
 		return DispatchAdvanceResult{}, err
 	}
+	targetWorkID := strings.TrimSpace(opts.WorkID)
 	result := DispatchAdvanceResult{
 		SchemaVersion: DispatchAdvanceSchemaVersion,
 		ID:            idFor("wda_", actor, ts(now)),
@@ -576,6 +593,9 @@ func (s *Store) DispatchAdvance(now time.Time, opts DispatchPlanOptions) (Dispat
 	policyBlocked := false
 	claimedByOther := false
 	for _, item := range report.Open {
+		if targetWorkID != "" && item.WorkID != targetWorkID {
+			continue
+		}
 		candidate := dispatchAdvanceCandidate(item, actor)
 		if candidate.Action == "advance_running" {
 			advancePlan, err := s.AdvancePlan(item.WorkID, now, AdvancePlanOptions{Actor: actor, To: "running"})
@@ -603,6 +623,15 @@ func (s *Store) DispatchAdvance(now time.Time, opts DispatchPlanOptions) (Dispat
 	}
 	if result.Selected == nil {
 		switch {
+		case targetWorkID != "" && policyBlocked:
+			result.Status = "advance_policy_blocked"
+			result.NoAction = "target work exists but advance policy does not allow dispatch"
+		case targetWorkID != "" && claimedByOther:
+			result.Status = "claimed_by_other"
+			result.NoAction = fmt.Sprintf("target work %s is claimed by another actor", targetWorkID)
+		case targetWorkID != "":
+			result.Status = "target_not_advanceable"
+			result.NoAction = fmt.Sprintf("target work %s is not claimed by actor", targetWorkID)
 		case len(result.Candidates) == 0:
 			result.NoAction = "workbench has no open work"
 		case policyBlocked:
@@ -693,6 +722,7 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 	if err != nil {
 		return DispatchClosePlanResult{}, err
 	}
+	targetWorkID := strings.TrimSpace(opts.WorkID)
 	result := DispatchClosePlanResult{
 		SchemaVersion: DispatchClosePlanSchemaVersion,
 		ID:            idFor("wdcp_", actor, outcome, moveType, ts(now)),
@@ -717,6 +747,9 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 	leaseSkipped := 0
 	var blocked *DispatchPlanItem
 	for _, item := range report.Open {
+		if targetWorkID != "" && item.WorkID != targetWorkID {
+			continue
+		}
 		candidate := dispatchClosePlanCandidate(item, actor, outcome, moveType)
 		if candidate.Action == "held_by_other" {
 			leaseSkipped++
@@ -782,6 +815,18 @@ func (s *Store) DispatchClosePlan(now time.Time, opts DispatchClosePlanOptions) 
 		return result, nil
 	}
 	switch {
+	case targetWorkID != "" && policyBlocked:
+		result.Status = "close_policy_blocked"
+		result.NoAction = "target work exists but close policy does not allow dispatch"
+	case targetWorkID != "" && awaitingProof:
+		result.Status = "awaiting_proof"
+		result.NoAction = fmt.Sprintf("target work %s is verifying without proof evidence", targetWorkID)
+	case targetWorkID != "" && leaseSkipped > 0:
+		result.Status = "held_by_other_actor"
+		result.NoAction = fmt.Sprintf("target work %s is held by another actor", targetWorkID)
+	case targetWorkID != "":
+		result.Status = "target_not_closeable"
+		result.NoAction = fmt.Sprintf("target work %s is not ready for close planning", targetWorkID)
 	case len(result.Candidates) == 0:
 		result.NoAction = "workbench has no open work"
 	case policyBlocked:
@@ -856,6 +901,7 @@ func (s *Store) DispatchClose(now time.Time, opts DispatchCloseOptions) (Dispatc
 	plan, err := s.DispatchClosePlan(now, DispatchClosePlanOptions{
 		Actor:       actor,
 		RecentLimit: opts.RecentLimit,
+		WorkID:      opts.WorkID,
 		Outcome:     outcome,
 		MoveType:    moveType,
 	})

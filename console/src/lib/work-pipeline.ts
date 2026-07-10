@@ -5,12 +5,12 @@ import { WORK_TRANSITIONS, workOptionsFor } from "@/lib/decision-registry";
 import { shortText, workId } from "@/lib/work-data";
 
 /*
- * Pipeline lens data model — maps the live workbench / director / source
- * projections onto the seven envelope stages the operator scans left to right:
+ * Pipeline lens data model — maps the live workbench / suggestion / source
+ * projections onto the seven visible stages the operator scans left to right:
  *
- *   Signal → Propose → Admit → Claim → Execute → Receipt → Learn
+ *   Signal → Suggest → Add to work → Start → Run → Proof → Learn
  *
- * Admit is the operator's amber seat (the ONE amber-as-fill, DESIGN.md §0).
+ *
  * Every card that carries a real work_id is `traceable` — clicking it opens the
  * Trace drawer. Pure-ish server module (reads projections already fetched by
  * the page); returns only serializable shapes so a client lens can render them.
@@ -18,7 +18,7 @@ import { shortText, workId } from "@/lib/work-data";
 
 /**
  * Envelope-stage position for the SegmentedProgress on a card (§9.3): where in
- * the seven-stage spine (Signal→Propose→Admit→Claim→Execute→Receipt→Learn) the
+ * the seven-stage spine (Signal→Suggest→Add to work→Start→Run→Proof→Learn) the
  * item sits. `done` = stages complete, `active` = the current stage (null when
  * terminal/stalled — nothing pulses). Derived from the SAME state buckets
  * buildPipeline scans, so the strip and the progress can never disagree.
@@ -39,10 +39,10 @@ export function stageProgressForState(state: string): StageProgress {
     case "proposed":
     case "suggested":
     case "candidate":
-      return progressAt(2); // completed Signal+Propose, sitting at the Admit gate
+      return progressAt(2); // completed Signal+Suggest, waiting to be added
     case "admitted":
     case "ready":
-      return progressAt(3); // Claim
+      return progressAt(3); // Start
     case "claimed":
       return progressAt(4, { stalled: true }); // in the Execute lane but not yet running
     case "in_progress":
@@ -57,7 +57,7 @@ export function stageProgressForState(state: string): StageProgress {
     case "promoted":
     case "filed":
     case "allow":
-      return progressAt(6, { complete: true }); // through Receipt + Learn
+      return progressAt(6, { complete: true }); // through Proof + Learn
     case "failed":
     case "deny":
     case "rejected":
@@ -73,7 +73,7 @@ export function stageProgressForState(state: string): StageProgress {
 
 export type BoardCard = {
   key: string;
-  workId: string; // "" for a pure suggestion (director proposal, no work yet)
+  workId: string; // "" for a pure suggestion with no work yet
   displayId: string;
   title: string;
   subtitle: string;
@@ -207,8 +207,8 @@ function proposalCard(p: Json): BoardCard {
     key: id || str(p.title),
     workId: "",
     displayId: id,
-    title: str(p.title) || str(p.predicate) || str(p.kind) || "director proposal",
-    subtitle: str(p.capability_class) || "director",
+    title: str(p.title) || str(p.predicate) || str(p.kind) || "suggested work",
+    subtitle: str(p.capability_class) || "suggestion",
     state: "proposed",
     tone: "draft",
     ageLabel: "",
@@ -216,7 +216,7 @@ function proposalCard(p: Json): BoardCard {
     note: shortText(str(p.consequence) || str(p.summary), 120),
     traceable: false,
     running: false,
-    progress: progressAt(1), // a director suggestion sits at Propose
+    progress: progressAt(1), // a suggestion sits at Suggest
   };
 }
 
@@ -228,13 +228,13 @@ function admissionCard(ap: Json): BoardCard {
     key: id || str(ap.plan_id),
     workId: id,
     displayId: id || str(ap.plan_id),
-    title: str(ap.success_predicate) || str(ap.desired_outcome) || "admission plan",
-    subtitle: str(ap.work_owner) || str(ap.actor) || "director",
+    title: str(ap.success_predicate) || str(ap.desired_outcome) || "work plan",
+    subtitle: str(ap.work_owner) || str(ap.actor) || "suggestion",
     state,
     tone: toneForState(state),
     ageLabel: str(ap.age) || (ap.generated_at ? ago(ap.generated_at) : ""),
     moveType: "",
-    note: stale ? "stale plan — revalidate before admitting" : shortText(str(ap.next_action), 96),
+    note: stale ? "stale plan - revalidate before adding" : shortText(str(ap.next_action), 96),
     traceable: Boolean(id),
     running: false,
     progress: stageProgressForState(state),
@@ -248,29 +248,29 @@ const STAGE_COPY: Record<string, { label: string; tooltip: string; empty: string
     empty: "No sources wired yet.",
   },
   propose: {
-    label: "Propose",
-    tooltip: "Bounded jobs the director suggests from live evidence. Nothing advances without you.",
-    empty: "No open proposals. The director is quiet.",
+    label: "Suggest",
+    tooltip: "Bounded jobs suggested from live evidence. Nothing advances without you.",
+    empty: "No open suggestions.",
   },
   admit: {
-    label: "Admit",
-    tooltip: "Your seat. Admitting a job makes it claimable; it does not run anything yet.",
-    empty: "Clean seam. Nothing waits on you to admit.",
+    label: "Add to work",
+    tooltip: "Add a job to the work queue; it does not run anything yet.",
+    empty: "Nothing waits on you to add.",
   },
   claim: {
-    label: "Claim",
-    tooltip: "An executor takes the job under a lease, so two agents never collide.",
+    label: "Start",
+    tooltip: "An executor starts under a lease, so two agents never collide.",
     empty: "Nothing waiting for an executor.",
   },
   execute: {
-    label: "Execute",
+    label: "Run",
     tooltip: "Rented executors do the work inside policy. Every mutation needs a PolicyDecision.",
     empty: "Nothing running right now.",
   },
   receipt: {
-    label: "Receipt",
+    label: "Proof",
     tooltip: "Proof a job ran — what was touched, what it cost, what came out.",
-    empty: "No fresh receipts.",
+    empty: "No fresh proof.",
   },
   learn: {
     label: "Learn",
@@ -327,7 +327,7 @@ export function buildPipeline(
       .map(admissionCard),
   ];
 
-  const admitCards = proposedOpen.map((w) => workCard(w, "proposed → admit to make it claimable"));
+  const admitCards = proposedOpen.map((w) => workCard(w, "suggested -> add to work"));
   const claimCards = byStates(["admitted", "ready"]).map((w) => workCard(w));
   const executeCards = byStates(["claimed", "in_progress", "running", "verifying"]).map((w) => workCard(w));
   const receiptCards = recent
@@ -362,9 +362,9 @@ export function buildPipeline(
 export function buildBoard(open: Json[], recent: Json[]): BoardColumnModel[] {
   const byStates = (states: string[]) => open.filter((w) => states.includes(str(w.state)));
   const columns: { key: string; label: string; description: string; tone: StateTone; states: string[]; empty: string }[] = [
-    { key: "inbox", label: "Inbox", description: "Suggested tasks awaiting admission.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
-    { key: "ready", label: "Ready", description: "Waiting for an executor to claim.", tone: "queued", states: ["ready"], empty: "Nothing ready to start." },
-    { key: "running", label: "Running", description: "Claimed, in progress, or being checked.", tone: "live", states: ["claimed", "in_progress", "running", "verifying"], empty: "Nothing running." },
+    { key: "inbox", label: "Inbox", description: "Suggested tasks waiting to be added.", tone: "draft", states: ["proposed", "admitted"], empty: "Nothing suggested." },
+    { key: "ready", label: "Ready", description: "Waiting for an executor to start.", tone: "queued", states: ["ready"], empty: "Nothing ready to start." },
+    { key: "running", label: "Running", description: "Started, in progress, or being checked.", tone: "live", states: ["claimed", "in_progress", "running", "verifying"], empty: "Nothing running." },
     { key: "needs-me", label: "Needs me", description: "Blocked or held on your decision.", tone: "seam", states: ["blocked", "held"], empty: "Clean seam. Nothing waits on you." },
   ];
   return columns.map((col) => ({

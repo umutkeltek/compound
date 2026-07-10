@@ -20,7 +20,7 @@ func workUsage(sub string) string {
 	case "review-card-plan":
 		return "usage: compound work review-card-plan --card <workbench_review_card_id> [--actor A] [--json]"
 	case "create":
-		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready|running] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private]"
+		return "usage: compound work create [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private]"
 	case "import-packet":
 		return "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]"
 	case "leases":
@@ -74,6 +74,52 @@ func cmdWork(args []string) {
 		}
 		return ""
 	}
+	parseExplicitDispatchTarget := func(usage string, valueFlags, boolFlags map[string]bool) string {
+		targetWorkID := ""
+		next := false
+		for i := 0; i < len(rest); i++ {
+			arg := rest[i]
+			switch {
+			case arg == "--next":
+				next = true
+			case boolFlags[arg]:
+			case valueFlags[arg]:
+				if i+1 >= len(rest) {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				i++
+			default:
+				if strings.HasPrefix(arg, "-") {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				if targetWorkID != "" {
+					fmt.Fprintln(os.Stderr, usage)
+					os.Exit(2)
+				}
+				targetWorkID = arg
+			}
+		}
+		if targetWorkID == "" && !next {
+			fmt.Fprintln(os.Stderr, "error: mutating dispatch requires --next or <work_id>")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		if targetWorkID != "" && next {
+			fmt.Fprintln(os.Stderr, "error: pass either --next or <work_id>, not both")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+		return targetWorkID
+	}
+	rejectRunningCreateState := func(usage string) {
+		if strings.TrimSpace(flag("--state")) == "running" {
+			fmt.Fprintln(os.Stderr, "error: create at ready, then claim and advance to preserve lease proof")
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+	}
 	die := func(e error) {
 		if e != nil {
 			fmt.Fprintln(os.Stderr, "error:", e)
@@ -83,6 +129,7 @@ func cmdWork(args []string) {
 
 	switch sub {
 	case "create-plan":
+		rejectRunningCreateState("usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--json] [--dry-run]")
 		plan, err := store.CreatePlan(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
@@ -177,6 +224,7 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", report.WorkPlan.PlanPath)
 		}
 	case "create":
+		rejectRunningCreateState(workUsage("create"))
 		w, err := store.Create(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
@@ -457,23 +505,15 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
 		}
 	case "dispatch-claim":
-		usage := "usage: compound work dispatch-claim [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json]"
-		for i := 0; i < len(rest); i++ {
-			switch rest[i] {
-			case "--json":
-			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy":
-				if i+1 >= len(rest) {
-					fmt.Fprintln(os.Stderr, usage)
-					os.Exit(2)
-				}
-				i++
-			default:
-				fmt.Fprintln(os.Stderr, usage)
-				os.Exit(2)
-			}
-		}
+		usage := "usage: compound work dispatch-claim (--next|<work_id>) [--actor A] [--source-packet packet.md] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json]"
+		targetWorkID := parseExplicitDispatchTarget(
+			usage,
+			map[string]bool{"--actor": true, "--source-packet": true, "--source-state": true, "--source-owner": true, "--source-context-pack": true, "--source-risk": true, "--source-privacy": true},
+			map[string]bool{"--json": true},
+		)
 		result, err := store.DispatchClaim(time.Now(), work.DispatchPlanOptions{
 			Actor:                 flag("--actor"),
+			WorkID:                targetWorkID,
 			SourcePacketPath:      flag("--source-packet"),
 			SourcePacketState:     flag("--source-state"),
 			SourcePacketOwner:     flag("--source-owner"),
@@ -498,22 +538,13 @@ func cmdWork(args []string) {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "dispatch-advance":
-		usage := "usage: compound work dispatch-advance [--actor A] [--json]"
-		for i := 0; i < len(rest); i++ {
-			switch rest[i] {
-			case "--json":
-			case "--actor":
-				if i+1 >= len(rest) {
-					fmt.Fprintln(os.Stderr, usage)
-					os.Exit(2)
-				}
-				i++
-			default:
-				fmt.Fprintln(os.Stderr, usage)
-				os.Exit(2)
-			}
-		}
-		result, err := store.DispatchAdvance(time.Now(), work.DispatchPlanOptions{Actor: flag("--actor")})
+		usage := "usage: compound work dispatch-advance (--next|<work_id>) [--actor A] [--json]"
+		targetWorkID := parseExplicitDispatchTarget(
+			usage,
+			map[string]bool{"--actor": true},
+			map[string]bool{"--json": true},
+		)
+		result, err := store.DispatchAdvance(time.Now(), work.DispatchPlanOptions{Actor: flag("--actor"), WorkID: targetWorkID})
 		die(err)
 		if has("--json") {
 			printJSON(result)
@@ -528,23 +559,15 @@ func cmdWork(args []string) {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "dispatch-close-plan":
-		usage := "usage: compound work dispatch-close-plan [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json]"
-		for i := 0; i < len(rest); i++ {
-			switch rest[i] {
-			case "--json":
-			case "--actor", "--outcome", "--move-type", "--capability", "--action", "--mutation-class", "--reversibility", "--blast-radius", "--target-kind", "--target-id", "--target-path":
-				if i+1 >= len(rest) {
-					fmt.Fprintln(os.Stderr, usage)
-					os.Exit(2)
-				}
-				i++
-			default:
-				fmt.Fprintln(os.Stderr, usage)
-				os.Exit(2)
-			}
-		}
+		usage := "usage: compound work dispatch-close-plan (--next|<work_id>) [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--capability C] [--action A] [--mutation-class C] [--reversibility R] [--blast-radius B] [--target-kind K] [--target-id ID] [--target-path P] [--json]"
+		targetWorkID := parseExplicitDispatchTarget(
+			usage,
+			map[string]bool{"--actor": true, "--outcome": true, "--move-type": true, "--capability": true, "--action": true, "--mutation-class": true, "--reversibility": true, "--blast-radius": true, "--target-kind": true, "--target-id": true, "--target-path": true},
+			map[string]bool{"--json": true},
+		)
 		result, err := store.DispatchClosePlan(time.Now(), work.DispatchClosePlanOptions{
 			Actor:         flag("--actor"),
+			WorkID:        targetWorkID,
 			Outcome:       flag("--outcome"),
 			MoveType:      flag("--move-type"),
 			Capability:    flag("--capability"),
@@ -573,23 +596,15 @@ func cmdWork(args []string) {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "dispatch-close":
-		usage := "usage: compound work dispatch-close [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--json]"
-		for i := 0; i < len(rest); i++ {
-			switch rest[i] {
-			case "--json":
-			case "--actor", "--outcome", "--move-type", "--summary":
-				if i+1 >= len(rest) {
-					fmt.Fprintln(os.Stderr, usage)
-					os.Exit(2)
-				}
-				i++
-			default:
-				fmt.Fprintln(os.Stderr, usage)
-				os.Exit(2)
-			}
-		}
+		usage := "usage: compound work dispatch-close (--next|<work_id>) [--actor A] [--outcome completed|failed|cancelled] [--move-type type] [--summary S] [--json]"
+		targetWorkID := parseExplicitDispatchTarget(
+			usage,
+			map[string]bool{"--actor": true, "--outcome": true, "--move-type": true, "--summary": true},
+			map[string]bool{"--json": true},
+		)
 		result, err := store.DispatchClose(time.Now(), work.DispatchCloseOptions{
 			Actor:    flag("--actor"),
+			WorkID:   targetWorkID,
 			Outcome:  flag("--outcome"),
 			MoveType: flag("--move-type"),
 			Summary:  flag("--summary"),

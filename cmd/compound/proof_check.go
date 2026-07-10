@@ -192,6 +192,11 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-private-fallback-smoke", Command: consoleSmokeCommand("scripts/private-fallback-smoke.mjs"), Dir: "console", ProofRef: "console-private-fallback-smoke"},
 		{Name: "console-private-runtime-guard-smoke", Command: consoleSmokeCommand("scripts/private-runtime-guard-smoke.mjs"), Dir: "console", ProofRef: "console-private-runtime-guard-smoke"},
 		{Name: "console-move-type-drift-smoke", Command: consoleSmokeCommand("scripts/move-type-drift-smoke.mjs"), Dir: "console", ProofRef: "console-move-type-drift-smoke"},
+		{Name: "console-ai-boundary-smoke", Command: consoleSmokeCommand("scripts/ai-boundary-smoke.mjs"), Dir: "console", ProofRef: "console-ai-boundary-smoke"},
+		{Name: "console-work-trace-smoke", Command: consoleBunSmokeCommand("scripts/work-trace-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-trace-smoke"},
+		{Name: "console-generic-actions-smoke", Command: consoleBunSmokeCommand("scripts/generic-actions-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-generic-actions-smoke"},
+		{Name: "console-view-registry-smoke", Command: consoleBunSmokeCommand("scripts/view-registry-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-view-registry-smoke"},
+		{Name: "console-attention-consistency-smoke", Command: consoleSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-attention-consistency-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
@@ -204,6 +209,10 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 
 func consoleSmokeCommand(script string) []string {
 	return []string{"node", "--experimental-strip-types", script}
+}
+
+func consoleBunSmokeCommand(script string) []string {
+	return []string{"bun", script}
 }
 
 func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCheckStep {

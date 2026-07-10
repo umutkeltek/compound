@@ -1057,14 +1057,25 @@ func recordApplyRunEnvelope(store *work.Store, report *Report, now time.Time) er
 			"do not mutate scheduler, source, product, review, or memory owner state",
 		},
 		EvidenceRefs: directorRunEvidenceRefs(*report),
-		State:        "running",
+		State:        "ready",
 		Risk:         "tier1",
 		Privacy:      "private",
 	}, now)
 	if err != nil {
 		return err
 	}
-	closed, err := store.Close(created.ID, work.CloseInput{
+	if _, err := store.Claim(created.ID, DirectorActor, now); err != nil {
+		return err
+	}
+	running, err := store.Advance(created.ID, work.AdvanceInput{
+		To:    "running",
+		Actor: DirectorActor,
+		Note:  "director apply run",
+	}, now)
+	if err != nil {
+		return err
+	}
+	closed, err := store.Close(running.ID, work.CloseInput{
 		Outcome:   "completed",
 		MoveType:  report.RunMoveType,
 		Actor:     DirectorActor,
