@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, FreshnessChip } from "@/components/kit";
 import { remainingDecideMembers } from "@/lib/decide-members";
-import { genericReviewResolutionActs } from "@/lib/decide-model";
+import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import { decideActIdentity } from "@/lib/governed-action-client";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
@@ -436,7 +436,6 @@ function DecisionRow({
         <span className="mt-2 flex flex-wrap items-center gap-2">
           <CapabilityStatus group={group} compact />
           {group.count > 1 ? <span className="mono text-2xs text-faint">{group.count} items</span> : null}
-          {group.evidence.length ? <span className="mono text-2xs text-faint">{group.evidence.length} evidence</span> : null}
         </span>
       </span>
     </button>
@@ -444,8 +443,6 @@ function DecisionRow({
 }
 
 function EvidenceSection({ group }: { group: DecideGroup }) {
-  if (!group.evidence.length) return null;
-
   const rows = (
     <div className="divide-y divide-hair border-y border-hair">
       {group.evidence.map((evidence, index) => (
@@ -462,28 +459,24 @@ function EvidenceSection({ group }: { group: DecideGroup }) {
     </div>
   );
 
-  if (group.evidence.length > 4) {
-    return (
-      <details className="group border-t border-hair px-4 py-4">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-2xs font-bold uppercase text-faint marker:hidden">
-          <span>Evidence</span>
-          <span className="inline-flex items-center gap-1.5">
-            <span className="mono rounded-pill border border-hair bg-soft px-2 py-0.5 font-semibold normal-case text-muted">
-              {group.evidence.length} sources
-            </span>
-            <span aria-hidden className="text-sm transition-transform group-open:rotate-90">›</span>
-          </span>
-        </summary>
-        <div className="mt-3">{rows}</div>
-      </details>
-    );
-  }
-
   return (
-    <section className="border-t border-hair px-4 py-4">
-      <div className="text-2xs font-bold uppercase text-faint">Evidence · {group.evidence.length}</div>
-      <div className="mt-2">{rows}</div>
-    </section>
+    <details className="group border-t border-hair px-4 py-4">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
+        <span>Evidence and record details</span>
+        <span className="inline-flex items-center gap-2">
+          {group.evidence.length ? <span className="mono text-2xs font-normal text-faint">{group.evidence.length} sources</span> : null}
+          <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
+        </span>
+      </summary>
+      <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-soft px-3 py-2">
+        <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
+        <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
+          {group.ageLabel}{group.old ? " · stale" : ""}
+        </span>
+        <FreshnessChip generatedAt={group.freshness.generatedAt} source={group.freshness.source} />
+      </div>
+      {group.evidence.length ? <div className="mt-3">{rows}</div> : null}
+    </details>
   );
 }
 
@@ -531,32 +524,17 @@ function DecisionDetail({
           </div>
           <CapabilityStatus group={group} />
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
-          <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>{group.ageLabel}{group.old ? " · stale" : ""}</span>
-          <FreshnessChip generatedAt={group.freshness.generatedAt} source={group.freshness.source} />
-        </div>
       </header>
 
       <section className="border-t border-hair px-4 py-4">
-        <div className="text-2xs font-bold uppercase text-faint">Decision context</div>
-        {group.body ? <p className="mt-2 max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : null}
-        {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
+        {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : null}
+        {group.consequences && !(act.mode === "bespoke" && act.options.length > 1) ? (
+          <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} />
+        ) : null}
       </section>
 
       <section className="border-t border-hair bg-soft/60 px-4 py-4">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <div className="text-2xs font-bold uppercase text-faint">Governed action</div>
-            <p className="mt-1 text-xs leading-relaxed text-muted">{group.capability.detail}</p>
-          </div>
-          <span className={`rounded-pill border px-2 py-0.5 text-2xs font-semibold ${
-            mutationsEnabled ? "border-good-line bg-good-soft text-good" : "border-hair bg-panel text-muted"
-          }`}>
-            {mutationsEnabled ? "Operator actions enabled" : "Read-only console"}
-          </span>
-        </div>
-        <div className="mt-3">
+        <div>
           {act.mode === "copy" ? (
             <div className="grid gap-2 border-l-2 border-seam-line pl-3">
               <p className="text-sm font-semibold text-seam">Unavailable: owner workflow missing</p>
@@ -599,10 +577,13 @@ function DecisionDetail({
       </section>
 
       {group.brief ? (
-        <section className="border-t border-hair px-4 py-4">
-          <div className="text-2xs font-bold uppercase text-faint">Prepared analysis · advisory</div>
-          <BriefPanel brief={group.brief} />
-        </section>
+        <details className="group border-t border-hair px-4 py-4">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
+            <span>Prepared analysis</span>
+            <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
+          </summary>
+          <div className="mt-3"><BriefPanel brief={group.brief} /></div>
+        </details>
       ) : null}
 
       <EvidenceSection group={group} />
