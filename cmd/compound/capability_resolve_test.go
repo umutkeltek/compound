@@ -196,6 +196,23 @@ func TestCapabilityResolutionBoundsRouteAndEncodedBytes(t *testing.T) {
 	if err := ensureCapabilityResolutionBound(oversize); err == nil {
 		t.Fatal("oversize capability resolution should fail closed")
 	}
+	empty := capabilityResolutionReport{}
+	base, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exact := empty
+	exact.Task = strings.Repeat("x", capabilityResolutionMaxJSONBytes-len(base))
+	encoded, err := json.Marshal(exact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) != capabilityResolutionMaxJSONBytes {
+		t.Fatalf("exact boundary fixture bytes = %d", len(encoded))
+	}
+	if err := ensureCapabilityResolutionBound(exact); err == nil {
+		t.Fatal("exact JSON limit must reject because CLI encoding adds a newline")
+	}
 }
 
 const capabilityResolveMissingHomeHelper = "COMPOUND_CAPABILITY_RESOLVE_MISSING_HOME_HELPER"

@@ -138,7 +138,8 @@ func ensureCapabilityResolutionBound(report capabilityResolutionReport) error {
 	if err != nil {
 		return fmt.Errorf("encode capability resolution: %w", err)
 	}
-	if len(data) > capabilityResolutionMaxJSONBytes {
+	// json.Encoder.Encode appends one newline to the validated payload.
+	if len(data)+1 > capabilityResolutionMaxJSONBytes {
 		return fmt.Errorf("capability resolution exceeds %d-byte response limit", capabilityResolutionMaxJSONBytes)
 	}
 	return nil
