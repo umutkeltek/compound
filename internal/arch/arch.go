@@ -61,6 +61,7 @@ var Classification = map[string]Class{
 	"breadth":        Leaf,
 	"candidates":     Leaf,
 	"corpus":         Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
+	"negatives":      Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"release":        Leaf,
 	"reviewartifact": Leaf,
 	// memory object family — canonical after Gen-1 package retirement
