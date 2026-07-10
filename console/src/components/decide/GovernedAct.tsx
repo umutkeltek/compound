@@ -9,7 +9,7 @@ import { CopyCmd } from "@/components/CopyCmd";
 import { Button, Field } from "@/components/kit";
 import type { DecideAct, DecideCapability } from "@/lib/decide-model";
 import type { DecisionExecutionEffect, DecisionExecutionRefs } from "@/lib/decision-execute";
-import type { FieldSpec } from "@/lib/decision-registry";
+import type { DecisionOption, FieldSpec } from "@/lib/decision-registry";
 import { buildDecideActionRequest, decideActIdentity, type GovernedSubmitKind } from "@/lib/governed-action-client";
 
 export type ExecuteResult = {
@@ -47,8 +47,24 @@ function fieldsForOption(fields: FieldSpec[], option: string): FieldSpec[] {
 }
 
 function initialOption(act: SingleAct): string {
-  if (act.mode !== "bespoke") return "option" in act ? act.option : "";
-  return act.defaultOption || (act.options.length === 1 ? act.options[0].value : "");
+  if (act.mode === "bespoke") return act.defaultOption || (act.options.length === 1 ? act.options[0].value : "");
+  if (act.mode === "generic" && act.decisionOptions?.length) {
+    return act.defaultOption || (act.decisionOptions.length === 1 ? act.decisionOptions[0].value : "");
+  }
+  return "option" in act ? act.option : "";
+}
+
+function decisionOptions(act: SingleAct): DecisionOption[] {
+  if (act.mode === "bespoke") return act.options;
+  if (act.mode === "generic") return act.decisionOptions ?? [];
+  return [];
+}
+
+function confirmationDescription(act: SingleAct, chosen: DecisionOption | null): string {
+  if (chosen?.description) return chosen.description;
+  if (act.mode === "generic" && act.effectDescription) return act.effectDescription;
+  if (act.mode === "batch-atomic") return `Applies this decision to all ${act.memberCount} items together after confirmation.`;
+  return "Review what will change before confirming this decision.";
 }
 
 function idRows(refs?: DecisionExecutionRefs): Array<{ label: string; values: string[] }> {
@@ -115,33 +131,34 @@ export function DecisionOutcome({
         </div>
       ) : null}
 
-      {rows.length ? (
-        <dl className="mt-3 grid gap-1.5 border-t border-hair pt-2">
-          {rows.map((row) => (
-            <div key={row.label} className="grid grid-cols-4 gap-2 text-2xs">
-              <dt className="font-semibold text-faint">{row.label}</dt>
-              <dd className="col-span-3 flex flex-wrap gap-x-2 gap-y-1">
-                {row.values.map((value) =>
-                  row.label === "Work" && !preview ? (
-                    <Link key={value} href={`/work/${value}`} className="mono text-work hover:underline" title={value}>
-                      {value}
-                    </Link>
-                  ) : (
-                    <code key={value} className="mono text-muted" title={value}>{value}</code>
-                  ),
-                )}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
-
-      {refs?.proof_refs.length ? (
+      {rows.length || refs?.proof_refs.length ? (
         <details className="mt-2 border-t border-hair pt-2">
-          <summary className="cursor-pointer text-2xs font-semibold text-muted">Proof refs · {refs.proof_refs.length}</summary>
-          <ul className="mt-1 grid gap-1">
-            {refs.proof_refs.map((ref) => <li key={ref} className="mono break-all text-2xs text-faint">{ref}</li>)}
-          </ul>
+          <summary className="cursor-pointer text-2xs font-semibold text-muted">Receipt details</summary>
+          {rows.length ? (
+            <dl className="mt-2 grid gap-1.5">
+              {rows.map((row) => (
+                <div key={row.label} className="grid grid-cols-4 gap-2 text-2xs">
+                  <dt className="font-semibold text-faint">{row.label}</dt>
+                  <dd className="col-span-3 flex flex-wrap gap-x-2 gap-y-1">
+                    {row.values.map((value) =>
+                      row.label === "Work" && !preview ? (
+                        <Link key={value} href={`/work/${value}`} className="mono text-work hover:underline" title={value}>
+                          {value}
+                        </Link>
+                      ) : (
+                        <code key={value} className="mono text-muted" title={value}>{value}</code>
+                      ),
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
+          {refs?.proof_refs.length ? (
+            <ul className="mt-2 grid gap-1 border-t border-hair pt-2">
+              {refs.proof_refs.map((ref) => <li key={ref} className="mono break-all text-2xs text-faint">{ref}</li>)}
+            </ul>
+          ) : null}
         </details>
       ) : null}
 
@@ -182,6 +199,7 @@ export function GovernedAct({
   const validationMessageId = useId();
 
   const fields = actFields(act);
+  const options = decisionOptions(act);
   const visibleFields = fieldsForOption(fields, selectedOption);
   const outcome = retainedOutcome ?? localOutcome;
   const actIdentity = decideActIdentity(act);
@@ -214,10 +232,10 @@ export function GovernedAct({
   }
 
   function validateDraft(): boolean {
-    if (act.mode === "bespoke" && !selectedOption) {
+    if (options.length > 1 && !selectedOption) {
       setState("error");
       setInvalidField("decision_option");
-      setMessage("Choose one disposition before previewing.");
+      setMessage("Choose one decision before continuing.");
       formRef.current?.querySelector<HTMLInputElement>('input[name="decision_option"]')?.focus();
       return false;
     }
@@ -322,12 +340,14 @@ export function GovernedAct({
   }
 
   const stateClass = state === "pending" ? "action-pending" : state === "confirmed" ? "action-confirmed" : state === "error" ? "action-error" : "";
-  const chosen = act.mode === "bespoke" ? act.options.find((option) => option.value === selectedOption) : null;
+  const chosen = options.find((option) => option.value === selectedOption) ?? null;
   const buttonLabel = state === "pending"
     ? (act.mode === "bespoke" && act.supportsPreview ? "Preparing preview…" : "Working…")
     : act.mode === "bespoke" && act.supportsPreview
-      ? selectedOption ? `Preview ${chosen?.label ?? "decision"}` : "Choose a disposition"
-      : chosen?.label ?? act.label;
+      ? selectedOption ? "Review decision" : "Choose a decision"
+      : options.length > 1
+        ? selectedOption ? "Review decision" : "Choose a decision"
+        : chosen?.label ?? act.label;
 
   return (
     <div className="flex flex-col gap-3">
@@ -338,19 +358,19 @@ export function GovernedAct({
         onSubmit={(event) => event.preventDefault()}
         onInput={() => { setInvalidField(null); if (state === "error") { setState("idle"); setMessage(null); } }}
       >
-        {act.mode === "bespoke" && act.options.length > 1 ? (
+        {options.length > 1 ? (
           <fieldset
             aria-invalid={invalidField === "decision_option" || undefined}
             aria-describedby={invalidField === "decision_option" ? validationMessageId : undefined}
           >
             <legend className="mb-1 text-2xs font-bold uppercase text-faint">Your decision</legend>
-            <div className="grid gap-2 lg:grid-cols-3">
-              {act.options.map((option) => {
+            <div className="grid gap-1.5">
+              {options.map((option) => {
                 const selected = selectedOption === option.value;
                 return (
                   <label
                     key={option.value}
-                    className={`grid cursor-pointer grid-cols-[auto_1fr] gap-3 rounded-md border px-3 py-2.5 transition-colors ${
+                    className={`grid cursor-pointer grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border px-3 py-2 transition-colors ${
                       selected ? "border-work-line bg-work-soft" : "border-hair bg-panel hover:bg-soft"
                     }`}
                   >
@@ -363,10 +383,10 @@ export function GovernedAct({
                       onChange={() => { setSelectedOption(option.value); setPreviewResult(null); setInvalidField(null); setMessage(null); }}
                       className="mt-0.5 h-4 w-4 accent-current"
                     />
-                    <span>
-                      <span className="block text-sm font-semibold text-ink">{option.label}</span>
-                      <span className="mt-0.5 block text-xs leading-relaxed text-muted">{option.description}</span>
-                    </span>
+                    <span className="text-sm font-semibold text-ink">{option.label}</span>
+                    {selected && option.description ? (
+                      <span className="col-start-2 text-xs leading-relaxed text-muted">{option.description}</span>
+                    ) : null}
                   </label>
                 );
               })}
@@ -392,16 +412,13 @@ export function GovernedAct({
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
-          disabled={!mutationsEnabled || state === "pending" || (act.mode === "bespoke" && !selectedOption)}
+          disabled={!mutationsEnabled || state === "pending" || (options.length > 1 && !selectedOption)}
           onClick={() => void trigger()}
           className={stateClass}
           title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act from the console."}
         >
           {buttonLabel}
         </Button>
-        {act.mode === "bespoke" && act.supportsPreview ? (
-          <span className="text-2xs text-faint">Preview writes nothing. Confirm rechecks the proposal revision.</span>
-        ) : null}
       </div>
       {!open && state === "error" && message ? <span id={validationMessageId} role="alert" className="text-xs leading-snug text-crit">{message}</span> : null}
       {outcome ? <DecisionOutcome result={outcome} effectKind={effectKind} /> : null}
@@ -412,7 +429,7 @@ export function GovernedAct({
           <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
             <Dialog.Title className="text-md font-semibold text-ink">Confirm {chosen?.label ?? act.label}</Dialog.Title>
             <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted">
-              The owner re-resolves current state before writing. A policy allow grants this action; it is not proof that follow-on work succeeded.
+              {confirmationDescription(act, chosen)}
             </Dialog.Description>
 
             {previewResult ? <div className="mt-3"><DecisionOutcome result={previewResult} preview effectKind={effectKind} /></div> : null}
@@ -423,14 +440,18 @@ export function GovernedAct({
               </div>
             ) : null}
 
-            {act.mode !== "generic" && act.policyNote ? (
-              <div className="mt-3 rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">{act.policyNote}</div>
-            ) : null}
-
-            {act.argv?.length ? (
-              <pre className="mono mt-3 overflow-x-auto rounded-md border border-hair bg-soft px-3 py-2 text-2xs leading-relaxed text-muted">
-                compound {act.argv.join(" ")}
-              </pre>
+            {(act.mode !== "generic" && act.policyNote) || act.argv?.length ? (
+              <details className="mt-3 rounded-md border border-hair bg-soft px-3 py-2">
+                <summary className="cursor-pointer text-xs font-semibold text-muted">Technical details</summary>
+                {act.mode !== "generic" && act.policyNote ? (
+                  <p className="mt-2 text-xs leading-relaxed text-muted">{act.policyNote}</p>
+                ) : null}
+                {act.argv?.length ? (
+                  <pre className="mono mt-2 overflow-x-auto border-t border-hair pt-2 text-2xs leading-relaxed text-muted">
+                    compound {act.argv.join(" ")}
+                  </pre>
+                ) : null}
+              </details>
             ) : null}
 
             {state === "error" && message ? (

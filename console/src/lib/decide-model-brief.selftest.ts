@@ -11,7 +11,7 @@
  * (same reason as generic-actions.selftest.ts).
  */
 
-import { remainingDecideMembers } from "./decide-members";
+import { partitionDecideGroupsByOwnerWorkflow, remainingDecideMembers } from "./decide-members";
 import { buildDecideGroups, genericReviewResolutionActs } from "./decide-model";
 import type { Json } from "./compound";
 
@@ -63,6 +63,28 @@ function build(group: Json, itemByID: Map<string, Json>) {
 export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] } {
   const checks: Check[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+
+  // The operator's default queue is full owner workflows, not diagnostics.
+  // Groups with only generic review dispositions stay available as limited
+  // actions, but cannot bury decisions that can complete their requested move.
+  {
+    const actionable = { key: "ready", capability: { kind: "track" } };
+    const unavailableA = { key: "gap-a", capability: { kind: "unavailable" } };
+    const recordable = { key: "record", capability: { kind: "record" } };
+    const unavailableB = { key: "gap-b", capability: { kind: "unavailable" } };
+    const partition = partitionDecideGroupsByOwnerWorkflow([
+      actionable,
+      unavailableA,
+      recordable,
+      unavailableB,
+    ]);
+    push(
+      "owner-workflow-default-queue",
+      partition.ready.map((group) => group.key).join(",") === "ready,record" &&
+        partition.limited.map((group) => group.key).join(",") === "gap-a,gap-b",
+      `ready=${partition.ready.map((group) => group.key).join(",")} limited=${partition.limited.map((group) => group.key).join(",")}`,
+    );
+  }
 
   // 1. The seam-audit falsifier: group.sample points at member_a (no brief);
   //    the brief lives on member_b, the SECOND member — exactly the shape the
@@ -487,8 +509,8 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
   }
 
   // Generic review resolution derives at render time. A zero-wired
-  // unknown-status card keeps its serialized model untouched while the
-  // adapter exposes exactly Park and Dismiss (reason mandatory on both).
+  // unknown-status card keeps its serialized model untouched while one
+  // governed control shares a reason across Park and Dismiss.
   {
     const item: Json = { id: "parity_unknown_fixture", area: "parity", context_label: "Parity unknown" };
     const group: Json = {
@@ -505,20 +527,25 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
     const [decided] = buildDecideGroups([group], new Map([[String(item.id), item]]), null, () => item);
     const before = JSON.stringify(decided);
     const acts = genericReviewResolutionActs(decided);
+    const resolutionAct = acts[0];
     const after = JSON.stringify(decided);
     push(
-      "copy-card-gains-park-dismiss",
+      "copy-card-gains-one-park-dismiss-control",
       decided.act.mode === "copy" &&
-        acts.map((act) => act.label).join(",") === "Park,Dismiss" &&
-        acts.map((act) => act.actionId).join(",") === "review_resolution_park,review_resolution_dismiss" &&
-        acts.every((act) => act.reasonRequired === true && act.effectKind === "record") &&
+        acts.length === 1 &&
+        resolutionAct?.reasonRequired === true &&
+        resolutionAct.effectKind === "record" &&
+        resolutionAct.decisionOptions?.map((option) => option.value).join(",") === "review_resolution_park,review_resolution_dismiss" &&
         before === after,
-      `model_unchanged=${before === after} acts=${JSON.stringify(acts.map((act) => act.actionId))}`,
+      `model_unchanged=${before === after} controls=${acts.length} options=${JSON.stringify(resolutionAct?.decisionOptions?.map((option) => option.value))}`,
     );
+    const partition = partitionDecideGroupsByOwnerWorkflow([decided]);
     push(
-      "unknown-status-card-resolvable",
-      acts.length === 2 && acts.every((act) => act.itemId === "parity_unknown_fixture"),
-      `acts=${JSON.stringify(acts.map((act) => act.itemId))}`,
+      "limited-card-preserves-review-disposition",
+      partition.ready.length === 0 &&
+        partition.limited[0]?.key === decided.key &&
+        resolutionAct?.itemId === "parity_unknown_fixture",
+      `ready=${partition.ready.length} limited=${partition.limited.map((entry) => entry.key).join(",")} control_item=${resolutionAct?.itemId ?? ""}`,
     );
   }
 

@@ -123,6 +123,11 @@ export type DecideAct =
       requiresConfirmation: boolean;
       copyCommand: string;
       effectKind: DecisionEffectKind;
+      /** Optional client-only choices that select one of several fixed adapter action ids. */
+      decisionOptions?: DecisionOption[];
+      defaultOption?: string;
+      /** Plain-language state delta for confirmation when there is no selected option. */
+      effectDescription?: string;
       /** Opt-in only for the fixed generic review-resolution adapter. */
       reasonRequired?: boolean;
     }
@@ -544,6 +549,11 @@ function resolveAct(
         requiresConfirmation: Boolean(attnAction.requires_confirmation),
         copyCommand: fallbackCommand(group, sample),
         effectKind: genericEffect,
+        effectDescription: genericEffect === "record"
+          ? "Records this reviewed decision without claiming the underlying repair or authority change succeeded."
+          : genericEffect === "track"
+            ? "Creates or advances a tracked step without claiming the work is complete."
+            : "Applies the owner-projected change after rechecking current state.",
       };
     }
   }

@@ -442,7 +442,7 @@ function DecisionRow({
   );
 }
 
-function EvidenceSection({ group }: { group: DecideGroup }) {
+function EvidenceSection({ group, includeBackground }: { group: DecideGroup; includeBackground: boolean }) {
   const rows = (
     <div className="divide-y divide-hair border-y border-hair">
       {group.evidence.map((evidence, index) => (
@@ -462,12 +462,18 @@ function EvidenceSection({ group }: { group: DecideGroup }) {
   return (
     <details className="group border-t border-hair px-4 py-4">
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-xs font-semibold text-muted marker:hidden">
-        <span>Evidence and record details</span>
-        <span className="inline-flex items-center gap-2">
-          {group.evidence.length ? <span className="mono text-2xs font-normal text-faint">{group.evidence.length} sources</span> : null}
-          <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
-        </span>
+        <span>Background and records</span>
+        <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
       </summary>
+      {includeBackground && (group.body || group.consequences) ? (
+        <div className="mt-3 rounded-md bg-soft px-3 py-2.5">
+          <div className="text-2xs font-bold uppercase text-faint">Decision background</div>
+          {group.body ? <p className="mt-1 text-xs leading-relaxed text-muted">{group.body}</p> : null}
+          {group.consequences ? (
+            <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} />
+          ) : null}
+        </div>
+      ) : null}
       <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md bg-soft px-3 py-2">
         <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
         <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
@@ -511,6 +517,9 @@ function DecisionDetail({
   const { act } = group;
   const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
   const reviewResolutionActs = genericReviewResolutionActs(group);
+  const contextInBackground = act.mode === "copy" || (act.mode === "bespoke" && act.options.length > 1);
+  const showConsequencePair = Boolean(group.consequences && !contextInBackground);
+  const showPrimaryContext = Boolean(group.body && !contextInBackground) || showConsequencePair;
   return (
     <article className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
       <header className="px-4 py-4">
@@ -526,30 +535,34 @@ function DecisionDetail({
         </div>
       </header>
 
-      <section className="border-t border-hair px-4 py-4">
-        {group.body ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : null}
-        {group.consequences && !(act.mode === "bespoke" && act.options.length > 1) ? (
-          <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} />
-        ) : null}
-      </section>
+      {showPrimaryContext ? (
+        <section className="border-t border-hair px-4 py-4">
+          {group.body && !contextInBackground ? <p className="max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : null}
+          {group.consequences && showConsequencePair ? (
+            <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} />
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="border-t border-hair bg-soft/60 px-4 py-4">
         <div>
           {act.mode === "copy" ? (
             <div className="grid gap-2 border-l-2 border-seam-line pl-3">
-              <p className="text-sm font-semibold text-seam">Unavailable: owner workflow missing</p>
-              <p className="text-xs leading-relaxed text-muted">{act.reason || "This review remains inspectable, but the owner has not exposed a safe state-changing action."}</p>
-              <div className="flex flex-wrap items-center gap-2">
-                <CopyCmd cmd={act.command} compact />
-                {reviewResolutionActs.map((resolutionAct) => (
-                  <GovernedAct
-                    key={resolutionAct.actionId}
-                    act={resolutionAct}
-                    mutationsEnabled={mutationsEnabled}
-                    effectKind="record"
-                  />
-                ))}
-              </div>
+              <p className="text-sm font-semibold text-seam">Primary action unavailable</p>
+              <p className="text-xs leading-relaxed text-muted">The requested change cannot be completed here yet. You can park or dismiss the review without changing its underlying authority.</p>
+              {reviewResolutionActs.map((resolutionAct) => (
+                <GovernedAct
+                  key={resolutionAct.actionId}
+                  act={resolutionAct}
+                  mutationsEnabled={mutationsEnabled}
+                  effectKind="record"
+                />
+              ))}
+              <details className="text-xs text-muted">
+                <summary className="cursor-pointer font-semibold">Manual owner command</summary>
+                <div className="mt-2"><CopyCmd cmd={act.command} compact /></div>
+                {act.reason ? <p className="mt-2 leading-relaxed text-faint">{act.reason}</p> : null}
+              </details>
             </div>
           ) : act.mode === "batch-enumerable" ? (
             <EnumerableApply
@@ -586,7 +599,7 @@ function DecisionDetail({
         </details>
       ) : null}
 
-      <EvidenceSection group={group} />
+      <EvidenceSection group={group} includeBackground={contextInBackground} />
 
       {group.members.length > 1 ? (
         <section className="border-t border-hair px-4 py-4">
@@ -599,7 +612,15 @@ function DecisionDetail({
 
 type RetainedDecision = { group: DecideGroup; result: ExecuteResult; identity: string };
 
-export function DecideQueue({ groups, mutationsEnabled }: { groups: DecideGroup[]; mutationsEnabled: boolean }) {
+export function DecideQueue({
+  groups,
+  mutationsEnabled,
+  keyboardShortcuts = true,
+}: {
+  groups: DecideGroup[];
+  mutationsEnabled: boolean;
+  keyboardShortcuts?: boolean;
+}) {
   const [filter, setFilter] = useState("");
   const [focused, setFocused] = useState(0);
   const [selectedKey, setSelectedKey] = useState(groups[0]?.key ?? "");
@@ -631,6 +652,7 @@ export function DecideQueue({ groups, mutationsEnabled }: { groups: DecideGroup[
   }, [focused, groups, retained, selectedKey, visible]);
 
   useEffect(() => {
+    if (!keyboardShortcuts) return;
     function onKey(event: KeyboardEvent) {
       const element = event.target as HTMLElement | null;
       const typing = Boolean(element?.closest("input, textarea, select, [contenteditable=true]"));
@@ -641,7 +663,7 @@ export function DecideQueue({ groups, mutationsEnabled }: { groups: DecideGroup[
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [keyboardShortcuts]);
 
   const focusRow = useCallback((index: number) => {
     const clamped = Math.max(0, Math.min(index, rowRefs.current.length - 1));

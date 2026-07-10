@@ -1,10 +1,9 @@
-import type { ReactNode } from "react";
-
 import { DecideQueue } from "@/components/decide/DecideQueue";
-import { CheckIcon, ClockIcon, FreshnessChip, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
+import { CheckIcon, ClockIcon, GavelIcon, PageHeader, SectionHeader } from "@/components/kit";
 import { getAttention, type AttentionReport } from "@/lib/attention";
 import { arr, getReviews, num, str, type Json } from "@/lib/compound";
-import { ago, toDate } from "@/lib/time";
+import { partitionDecideGroupsByOwnerWorkflow } from "@/lib/decide-members";
+import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
 import { buildDecideGroups, domainForArea, type DecideGroup } from "@/lib/decide-model";
 import { areaPlain } from "@/lib/glossary";
@@ -149,20 +148,6 @@ function externalDecideGroup(externalNeedsYou: Json[], attention: AttentionRepor
   };
 }
 
-/* ---------- header metric chip ---------- */
-function MetricChip({ children, title, tone = "muted" }: { children: ReactNode; title?: string; tone?: "muted" | "seam" }) {
-  return (
-    <span
-      title={title}
-      className={`mono inline-flex items-center gap-1 rounded-pill border border-hair bg-soft px-2.5 py-0.5 text-2xs font-semibold tabular-nums ${
-        tone === "seam" ? "text-seam" : "text-muted"
-      }`}
-    >
-      {children}
-    </span>
-  );
-}
-
 /* ---------- watching band (informational — no buttons, on purpose) ---------- */
 function WatchingRow({ entry, itemByID }: { entry: Json; itemByID: Map<string, Json> }) {
   const summary = str(entry.operator_summary) || "Still watching.";
@@ -221,114 +206,87 @@ export default async function Decide() {
   }
   const filedByArea = [...filedByAreaMap.entries()].sort((a, b) => b[1] - a[1]);
 
-  const attnNeedsYouGroups = num(attention?.counts?.needs_you_groups);
-  const actionableNow = num(attention?.counts?.actionable_now);
-  const fallbackGroups = num(attention?.counts?.fallback_groups);
-
-  const needsYouItemTotal =
-    modelGroups.reduce((sum, g) => sum + g.count, 0) + externalNeedsYou.length;
-  const empty = decideGroups.length === 0;
-  const readyDecisions = decideGroups.filter((group) => group.capability.kind !== "unavailable").length;
-  const ownerGaps = decideGroups.length - readyDecisions;
+  const { ready: readyGroups, limited: limitedGroups } = partitionDecideGroupsByOwnerWorkflow(decideGroups);
+  const empty = readyGroups.length === 0;
 
   return (
-    <div className="flex flex-col gap-8">
-      <PageHeader
-        breadcrumb="operate / decide"
-        title="Decide"
-        right={
-          <>
-            <MetricChip
-              tone="seam"
-              title="compound attention --json · counts.needs_you_groups — the single 'needs you' count the nav badge and briefing pill also show"
-            >
-              {attnNeedsYouGroups.toLocaleString("en-US")} system gates
-            </MetricChip>
-            <MetricChip title={`Decision workspace capability model · includes ${actionableNow.toLocaleString("en-US")} projection-declared one-click/batch actions plus owner choice workflows`}>
-              {readyDecisions.toLocaleString("en-US")} actionable here
-            </MetricChip>
-            <MetricChip
-              tone={ownerGaps > 0 ? "seam" : "muted"}
-              title="Decision groups whose owner has not exposed a safe governed workflow"
-            >
-              {ownerGaps.toLocaleString("en-US")} owner gaps
-            </MetricChip>
-            <span className="hidden sm:contents">
-              {fallbackGroups > 0 ? <MetricChip title="compound attention --json · fallback grouping writer debt">{fallbackGroups} fallback</MetricChip> : null}
-              <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
-              <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
-            </span>
-          </>
-        }
-      />
+    <div className="flex flex-col gap-6">
+      <PageHeader breadcrumb="operate / decide" title="Decide" />
 
       <section className="flex flex-col gap-3">
         <SectionHeader
           tone="seam"
           icon={<GavelIcon />}
-          label="Needs you"
-          right={
-            <span className="text-xs tabular-nums text-faint">
-              {empty
-                ? `Nothing waits on you · ${filedTotal} filed`
-                : `${needsYouItemTotal.toLocaleString("en-US")} item${needsYouItemTotal === 1 ? "" : "s"} in ${decideGroups.length} decision${decideGroups.length === 1 ? "" : "s"}`}
-            </span>
-          }
+          label="Ready to decide"
         />
 
         {empty ? (
           <p className="rounded-lg border border-dashed border-hair bg-page px-4 py-8 text-center text-sm text-muted">
-            Clean seam. Nothing waits on you. {filedTotal} record{filedTotal === 1 ? "" : "s"} filed.
+            Nothing is ready for a decision right now.
           </p>
         ) : (
-          <DecideQueue groups={decideGroups} mutationsEnabled={mutationsEnabled} />
+          <DecideQueue groups={readyGroups} mutationsEnabled={mutationsEnabled} />
         )}
       </section>
 
+      {limitedGroups.length ? (
+        <details className="group overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 marker:hidden">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-soft-2 text-sm text-muted" aria-hidden>!</span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-bold uppercase text-muted">Limited actions</span>
+              <span className="mt-0.5 block text-xs text-faint">You can park or dismiss these reviews, but not complete their requested change here.</span>
+            </span>
+            <span className="mono text-2xs tabular-nums text-faint">{limitedGroups.length}</span>
+            <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
+          </summary>
+          <div className="border-t border-hair p-3">
+            <DecideQueue groups={limitedGroups} mutationsEnabled={mutationsEnabled} keyboardShortcuts={false} />
+          </div>
+        </details>
+      ) : null}
+
       {watchingEntries.length ? (
-        <section className="flex flex-col gap-3">
-          <SectionHeader
-            tone="neutral"
-            icon={<ClockIcon />}
-            label="Watching"
-            right={<span className="mono text-2xs tabular-nums text-faint">{watchingEntries.length}</span>}
-          />
-          <div className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+        <details className="group overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 marker:hidden">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-soft-2 text-sm text-muted"><ClockIcon /></span>
+            <span className="flex-1 text-xs font-bold uppercase text-muted">Watching</span>
+            <span className="mono text-2xs tabular-nums text-faint">{watchingEntries.length}</span>
+            <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
+          </summary>
+          <div className="border-t border-hair">
             {watchingEntries.map((entry, index) => (
               <WatchingRow key={str(entry.key) || str(entry.id) || index} entry={entry} itemByID={itemByID} />
             ))}
           </div>
-        </section>
+        </details>
       ) : null}
 
-      <section>
-        <SectionHeader
-          className="mb-2"
-          tone="good"
-          icon={<CheckIcon />}
-          label="Filed"
-          right={
-            <span className="text-xs tabular-nums text-faint">
-              {filedTotal} record{filedTotal === 1 ? "" : "s"} filed
-            </span>
-          }
-        />
-        {filedByArea.length ? (
-          <div className="flex flex-wrap gap-2">
-            {filedByArea.map(([area, count]) => (
-              <span
-                key={area}
-                title={areaPlain(area)}
-                className="rounded-md border border-hair bg-panel px-2.5 py-1 text-xs text-muted"
-              >
-                {area.replace(/-/g, " ")} <span className="mono tabular-nums text-faint">· {count}</span>
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-faint">Nothing filed yet.</p>
-        )}
-      </section>
+      <details className="group overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+        <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 marker:hidden">
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-good-soft text-sm text-good"><CheckIcon /></span>
+          <span className="flex-1 text-xs font-bold uppercase text-muted">Filed</span>
+          <span className="mono text-2xs tabular-nums text-faint">{filedTotal}</span>
+          <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
+        </summary>
+        <div className="border-t border-hair px-4 py-3">
+          {filedByArea.length ? (
+            <div className="flex flex-wrap gap-2">
+              {filedByArea.map(([area, count]) => (
+                <span
+                  key={area}
+                  title={areaPlain(area)}
+                  className="rounded-md border border-hair bg-soft px-2.5 py-1 text-xs text-muted"
+                >
+                  {area.replace(/-/g, " ")} <span className="mono tabular-nums text-faint">· {count}</span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-faint">Nothing filed yet.</p>
+          )}
+        </div>
+      </details>
     </div>
   );
 }

@@ -536,6 +536,42 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     );
   }
 
+  // The combined Park/Dismiss control selects one fixed adapter action while
+  // preserving the single shared reason and explicit confirmation marker.
+  {
+    const act: ClientDecideAct = {
+      mode: "generic",
+      area: "parity",
+      itemId: "parity_unknown_fixture",
+      actionId: "review_resolution_park",
+      expectedRevision: "",
+      label: "Review disposition",
+      argv: null,
+      requiresConfirmation: true,
+      copyCommand: "compound reviews --area parity",
+      effectKind: "record",
+      reasonRequired: true,
+      defaultOption: "review_resolution_park",
+      decisionOptions: [
+        { value: "review_resolution_park", label: "Park", tone: "orange", description: "Park this review." },
+        { value: "review_resolution_dismiss", label: "Dismiss", tone: "gray", description: "Dismiss this review." },
+      ],
+    };
+    const request = buildDecideActionRequest(
+      act,
+      "review_resolution_dismiss",
+      { reason: "duplicate evidence" },
+      "confirm",
+    );
+    push(
+      "combined-resolution-selects-one-action",
+      request.actionId === "review_resolution_dismiss" &&
+        request.reason === "duplicate evidence" &&
+        request.confirmed === true,
+      `request=${JSON.stringify(request)}`,
+    );
+  }
+
   // 7. The adapter is deliberately narrow. Every other action id must return
   //    null so executeGenericAction continues through the existing projection
   //    resolver byte-for-byte.

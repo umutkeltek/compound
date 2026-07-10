@@ -14,31 +14,32 @@ type GenericDecideAct = Extract<DecideAct, { mode: "generic" }>;
 export function genericReviewResolutionActs(group: DecideGroup): GenericDecideAct[] {
   if (group.act.mode !== "copy") return [];
   const copyCommand = group.act.command;
-  const make = (decision: "parked" | "dismissed", actionId: string, label: string): GenericDecideAct => ({
+  return [{
     mode: "generic",
     area: group.area,
     itemId: group.sampleId,
-    actionId,
+    actionId: "review_resolution_park",
     expectedRevision: "",
-    label,
-    argv: [
-      "reviews",
-      "resolve",
-      "--item",
-      group.sampleId,
-      "--decision",
-      decision,
-      "--reason",
-      "…",
-      "--json",
+    label: "Review disposition",
+    argv: null,
+    decisionOptions: [
+      {
+        value: "review_resolution_park",
+        label: "Park",
+        tone: "orange",
+        description: "Files this review as parked with your reason. The underlying authority stays unchanged, and the disposition can be undone.",
+      },
+      {
+        value: "review_resolution_dismiss",
+        label: "Dismiss",
+        tone: "gray",
+        description: "Files this review as dismissed with your reason. The underlying authority stays unchanged, and the disposition can be undone.",
+      },
     ],
+    defaultOption: "review_resolution_park",
     requiresConfirmation: true,
     copyCommand,
     effectKind: "record",
     reasonRequired: true,
-  });
-  return [
-    make("parked", "review_resolution_park", "Park"),
-    make("dismissed", "review_resolution_dismiss", "Dismiss"),
-  ];
+  }];
 }
