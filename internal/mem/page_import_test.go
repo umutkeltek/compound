@@ -73,6 +73,99 @@ Screenshots should show the actual review workflow, not generic device art.
 	}
 }
 
+func TestKnowledgePageDistinctPredicatesDoNotSupersedeWithinSharedDomain(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pagePath := filepath.Join(t.TempDir(), "compound-rulings.md")
+	writeKnowledgePage(t, pagePath, `---
+schema_version: compound.knowledge_page.v0.1
+id: compound-rulings
+entity: system:compound
+claims:
+  - predicate: os_absorption_end_state
+    object: compound owns the absorbed control-plane meaning
+    claim_type: decision
+    qualifiers:
+      domain: os-absorption
+  - predicate: os_absorption_stance
+    object: preserve source evidence while retiring parallel authority
+    claim_type: decision
+    qualifiers:
+      domain: os-absorption
+  - predicate: os_absorption_method
+    object: absorb one proven vertical slice at a time
+    claim_type: decision
+    qualifiers:
+      domain: os-absorption
+---
+# Compound rulings
+`)
+
+	report, err := store.ImportKnowledgePage(pagePath, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.CandidateIDs) != 3 {
+		t.Fatalf("candidate ids = %v, want three explicit page claims", report.CandidateIDs)
+	}
+	promotedClaims := map[string]string{}
+	for _, candidateID := range report.CandidateIDs {
+		promoted, err := store.Adjudicate(candidateID, "promote", "work_cluster_collapse", t0)
+		if err != nil {
+			t.Fatalf("promote %s: %v", candidateID, err)
+		}
+		if promoted.Superseded != "" {
+			t.Fatalf("distinct predicate %q superseded claim %s", promoted.Claim.Predicate, promoted.Superseded)
+		}
+		promotedClaims[promoted.Claim.Predicate] = promoted.Claim.ID
+	}
+	edges, err := store.loadEdges()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range edges {
+		if edge.Kind == EdgeKindSupersedes {
+			t.Fatalf("distinct page predicates created supersession edge %+v", edge)
+		}
+	}
+	sweep, err := store.SynthesisSweep([]string{"contradict"}, t0.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sweep.ContradictionProposalCount != 0 || len(sweep.ReopenedClaims) != 0 {
+		t.Fatalf("distinct page predicates reopened as contradictions: %+v", sweep)
+	}
+
+	current, err := store.Recall("system:compound", RecallOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, claim := range current.Claims {
+		got[claim.Predicate] = true
+	}
+	for _, predicate := range []string{"os_absorption_end_state", "os_absorption_stance", "os_absorption_method"} {
+		if !got[predicate] {
+			t.Fatalf("current predicates = %v, missing %q", got, predicate)
+		}
+	}
+	positions, err := store.Positions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(positions) != 3 {
+		t.Fatalf("positions = %+v, want one independent position per predicate", positions)
+	}
+	for _, position := range positions {
+		claimID := promotedClaims[position.Predicate]
+		if claimID == "" || position.ActiveClaimID != claimID {
+			t.Fatalf("position predicate/active claim mismatch: %+v promoted=%v", position, promotedClaims)
+		}
+	}
+}
+
 func TestImportKnowledgePageIsIdempotentAcrossPathMove(t *testing.T) {
 	homePath := t.TempDir()
 	store, err := Open(homePath)

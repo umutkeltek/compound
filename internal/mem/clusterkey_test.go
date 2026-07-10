@@ -95,6 +95,53 @@ func TestCaptureEchoReinforcesCurrentClaimWithoutNewCandidate(t *testing.T) {
 	}
 }
 
+func TestCaptureChangedExactSlotWinsOverBroadEcho(t *testing.T) {
+	s := newStore(t)
+	qualifiers := map[string]string{"domain": "language"}
+
+	runtime := cand("project:api", "runtime", "node", "")
+	runtime.Qualifiers = qualifiers
+	runtimeCandidates, err := s.Capture([]Candidate{runtime}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimePrior, err := s.Adjudicate(runtimeCandidates[0].ID, "promote", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	alias := cand("project:api", "implementation_language", "go", "")
+	alias.Qualifiers = qualifiers
+	aliasCandidates, err := s.Capture([]Candidate{alias}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasCurrent, err := s.Adjudicate(aliasCandidates[0].ID, "promote", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changed := cand("project:api", "runtime", "go", "")
+	changed.Qualifiers = qualifiers
+	changedCandidates, err := s.Capture([]Candidate{changed}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changedCandidates) != 1 {
+		t.Fatalf("changed exact slot returned %d candidate(s), want 1", len(changedCandidates))
+	}
+	promoted, err := s.Adjudicate(changedCandidates[0].ID, "promote", "", t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promoted.Superseded != runtimePrior.Claim.ID {
+		t.Fatalf("changed runtime superseded %q, want exact prior %q", promoted.Superseded, runtimePrior.Claim.ID)
+	}
+	if promoted.Superseded == aliasCurrent.Claim.ID {
+		t.Fatalf("changed runtime superseded broad alias %+v", aliasCurrent.Claim)
+	}
+}
+
 func memoryCandidateFileCount(t *testing.T, s *Store) int {
 	t.Helper()
 	entries, err := os.ReadDir(s.candDir())
