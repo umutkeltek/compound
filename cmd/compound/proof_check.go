@@ -289,15 +289,18 @@ func runProofCheckCodexPreToolUseNativeGate(repo string, step proofCheckStep) ([
 		cmd.Dir = repo
 		cmd.Env = append(os.Environ(), "COMPOUND_HOME="+tmpHome, "HOME="+tmpRepo, "PLACEMENT_GUARD_MODE=block")
 		cmd.Stdin = strings.NewReader(input)
-		out, err := cmd.CombinedOutput()
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		stdout, err := cmd.Output()
+		evidence := bytes.Join([][]byte{stdout, stderr.Bytes()}, nil)
 		if err != nil {
-			return claudeLiveHookResponse{}, out, fmt.Errorf("Codex native PreToolUse command: %w", err)
+			return claudeLiveHookResponse{}, evidence, fmt.Errorf("Codex native PreToolUse command: %w", err)
 		}
 		var response claudeLiveHookResponse
-		if err := json.Unmarshal(out, &response); err != nil {
-			return claudeLiveHookResponse{}, out, fmt.Errorf("parse Codex native PreToolUse response: %w", err)
+		if err := json.Unmarshal(stdout, &response); err != nil {
+			return claudeLiveHookResponse{}, evidence, fmt.Errorf("parse Codex native PreToolUse response: %w", err)
 		}
-		return response, out, nil
+		return response, evidence, nil
 	}
 
 	allowedPatch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"
