@@ -233,6 +233,35 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     );
   }
 
+  // A console operator is not an executor. Until the owner can select and
+  // atomically lease to a real executor, ready work must stay dispatchable.
+  {
+    const workId = "work_ready_fixture";
+    const work = specFor("work-advance");
+    const item = { id: workId, state: "ready" } as Json;
+    const options = work?.optionsFor?.(item) ?? [];
+    const startArgv = work?.buildArgv?.({
+      itemId: workId,
+      item,
+      option: "claimed",
+      fields: {},
+    });
+    const heldArgv = work?.buildArgv?.({
+      itemId: workId,
+      item,
+      option: "held",
+      fields: {},
+    });
+    push(
+      "ready-work-has-no-nonexecutor-claim-action",
+      !options.some((option) => option.value === "claimed") &&
+        startArgv == null &&
+        heldArgv?.join("\u0000") ===
+          ["work", "advance", workId, "--to", "held", "--by", "operator-console"].join("\u0000"),
+      `options=${options.map((option) => option.value).join(",")} start=${startArgv?.join(" ") ?? "none"} held=${heldArgv?.join(" ") ?? "none"}`,
+    );
+  }
+
   // 11. Preview is a bespoke owner contract. A generic-shaped preview request
   //     must be rejected before action resolution can reach a mutation.
   {
