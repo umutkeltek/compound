@@ -35,6 +35,7 @@ const (
 	osAbsorptionProofModeDecisions     = "decisions_source_authority"
 	osAbsorptionProofModeOperatorState = "operator_state_registry"
 	osAbsorptionProofModeWorkPacket    = "work_packet_authority"
+	osAbsorptionProofModeOSCapability  = "os_capability_wrapper_authority"
 
 	osAbsorptionWorkAuthorityRef  = "compound://work"
 	osAbsorptionPacketEvidenceRef = "packet_sha256:"
@@ -227,6 +228,8 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		switch {
 		case osAbsorptionNeedsWorkPacketProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionWorkPacketProof(homePath, row))
+		case osAbsorptionNeedsOSCapabilityProof(row):
+			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionOSCapabilityProof(homePath, row))
 		case osAbsorptionNeedsCapabilityProof(row):
 			if rec, ok := capabilityAuthorityProofRecord(row, capRecords); ok {
 				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{ok: true, proofRef: rec.ID})
@@ -391,6 +394,17 @@ func osAbsorptionNeedsWorkPacketProof(row OSAbsorptionMatrixRow) bool {
 		return row.ProofMode == osAbsorptionProofModeWorkPacket
 	}
 	return row.CompoundOwner == osAbsorptionWorkAuthorityRef && row.SourceKind == "packet_dir" && row.Status == "wrapper"
+}
+
+func osAbsorptionNeedsOSCapabilityProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode != "" {
+		return row.ProofMode == osAbsorptionProofModeOSCapability
+	}
+	return row.ID == "os_source_os_capability_cli" &&
+		row.SourceRef == "cli:os capability" &&
+		row.SourceKind == "compatibility_cli" &&
+		row.CompoundOwner == capgraph.CapabilityGraphAuthorityRef &&
+		row.Status == "wrapper"
 }
 
 // osAbsorptionNeedsDecisionsProof matches the os_source_decisions_repo row (and
