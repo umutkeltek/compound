@@ -20,6 +20,9 @@ func validateOperationalAuthorityFrontmatter(f decFrontmatter) error {
 	if !isOperationalAuthorityKind(f.Kind) {
 		return nil
 	}
+	if !isCanonicalOperationalStatus(f.Status) {
+		return fmt.Errorf("operational decision kind %q requires explicit canonical status", f.Kind)
+	}
 	if !policy.HasOperatorProvenance(f.ReviewedBy) {
 		return fmt.Errorf("operational decision kind %q requires operator provenance in reviewed_by", f.Kind)
 	}
@@ -50,4 +53,13 @@ func validateOperationalAuthorityFrontmatter(f decFrontmatter) error {
 		return fmt.Errorf("autonomy max_failures must be >= 0 and less than min_terminal_samples")
 	}
 	return nil
+}
+
+func isCanonicalOperationalStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case StatusProposed, StatusAccepted, StatusSuperseded, StatusDeprecated, StatusRejected:
+		return true
+	default:
+		return false
+	}
 }

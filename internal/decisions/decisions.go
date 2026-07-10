@@ -227,7 +227,9 @@ func importPolicyDecisionLocked(store *mem.Store, path string, now time.Time) (D
 	}
 	fm, body := splitFrontmatter(string(b))
 	var f decFrontmatter
-	_ = yaml.Unmarshal([]byte(fm), &f)
+	if err := yaml.Unmarshal([]byte(fm), &f); err != nil {
+		return report, fmt.Errorf("policy decision %s: parse frontmatter: %w", path, err)
+	}
 	if f.ID == "" {
 		f.ID = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	}

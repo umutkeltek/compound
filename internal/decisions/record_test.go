@@ -318,6 +318,66 @@ func TestPolicyImportCannotMintOperationalAuthorityWithoutOperatorProvenance(t *
 	}
 }
 
+func TestPolicyImportCannotMintOperationalAuthorityFromMalformedOrUnknownStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		frontmatter string
+		want        string
+	}{
+		{
+			name: "malformed-yaml",
+			frontmatter: "id: malformed-operator-grant\n" +
+				"title: Malformed operator grant\n" +
+				"kind: grant\n" +
+				"status: accepted\n" +
+				"reviewed_by: operator:test\n" +
+				"domains: [unterminated\n",
+			want: "parse frontmatter",
+		},
+		{
+			name: "unknown-status",
+			frontmatter: "id: typo-status-operator-grant\n" +
+				"title: Typo status operator grant\n" +
+				"kind: grant\n" +
+				"status: acceptedd\n" +
+				"reviewed_by: operator:test\n",
+			want: "explicit canonical status",
+		},
+		{
+			name: "missing-status",
+			frontmatter: "id: missing-status-operator-grant\n" +
+				"title: Missing status operator grant\n" +
+				"kind: grant\n" +
+				"reviewed_by: operator:test\n",
+			want: "explicit canonical status",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			store, err := mem.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(home, tc.name+".md")
+			body := "---\n" + tc.frontmatter + "---\n\n# Operator decision\n"
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ImportPolicyDecision(store, path, time.Now()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unsafe operational import was accepted: %v", err)
+			}
+			claims, err := store.AllCurrentOperationalDecisions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(claims) != 0 {
+				t.Fatalf("unsafe import minted operational authority: %+v", claims)
+			}
+		})
+	}
+}
+
 func TestPolicyImportCannotRevokeAutonomyGrantWithoutOperatorProvenance(t *testing.T) {
 	home := t.TempDir()
 	store, err := mem.Open(home)
