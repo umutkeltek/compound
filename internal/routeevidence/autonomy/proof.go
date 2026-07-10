@@ -266,7 +266,7 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := reconcileRecentTerminalSnapshots(works, receipts, lookbackStart); err != nil {
+	if err := reconcileRecentTerminalSnapshots(works, receipts, artifact.Class, lookbackStart); err != nil {
 		return Artifact{}, err
 	}
 	routes, err := loadRouteRows(homePath)
@@ -799,10 +799,18 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	return out, nil
 }
 
-func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]receiptEvidence, lookbackStart time.Time) error {
+func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart time.Time) error {
 	byID := map[string][]workSnapshot{}
 	for _, work := range works {
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
+	}
+	for _, work := range works {
+		if autonomyClassOf(work.Work) != cohortClass || !terminalWorkState(work.Work.State) {
+			continue
+		}
+		if len(receipts[work.Work.ID].Terminals) == 0 {
+			return fmt.Errorf("terminal work %s has 0 terminal events; exactly one required", work.Work.ID)
+		}
 	}
 	for workID, evidence := range receipts {
 		if len(evidence.Terminals) == 0 {
