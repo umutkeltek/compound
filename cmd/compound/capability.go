@@ -22,7 +22,7 @@ import (
 // cmdCapability is the P8 capability graph: surface relevant capabilities for a task (never
 // execute them), and learn which capability fits which context from the distiller's observations.
 func cmdCapability(args []string) {
-	usage := "usage: compound capability <add|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
+	usage := "usage: compound capability <add|resolve|surface|observe|consume|consume-receipts|usage|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-agent-lanes|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> ..."
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
@@ -1019,6 +1019,21 @@ func cmdCapability(args []string) {
 		}
 		die(store.Add(capgraph.Node{ID: p[0], Kind: p[1], Name: p[2], Triggers: trig}))
 		fmt.Printf("added node %s (%s)\n", p[0], p[1])
+	case "resolve":
+		jsonOut := hasFlag(rest, "--json")
+		harness := flag("--harness")
+		p := posn(map[string]bool{"--harness": true})
+		if len(p) == 0 {
+			fmt.Fprintln(os.Stderr, `usage: compound capability resolve [--harness codex|claude_code] [--privacy-sensitive] [--json] "<task>"`)
+			os.Exit(2)
+		}
+		report, err := buildCapabilityResolutionReport(store, homePath, strings.Join(p, " "), harness, hasFlag(rest, "--privacy-sensitive"), time.Now())
+		die(err)
+		if jsonOut {
+			die(json.NewEncoder(os.Stdout).Encode(report))
+			return
+		}
+		printCapabilityResolution(report)
 	case "surface":
 		jsonOut := hasFlag(rest, "--json")
 		harness := flag("--harness")
