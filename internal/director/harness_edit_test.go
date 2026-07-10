@@ -294,6 +294,7 @@ func TestHarnessEditRefusesHardDenyCoreSurfaceAtConstruction(t *testing.T) {
 // reviews/harness-edit-proposals/ and NOTHING escapes the extended allowlist. ---
 func TestHarnessEditProposeApplyWritesCardConfined(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedBenchReport(t, home, "capability-suite", []string{"capability://skill:missing-node"}, nil)
 
 	before := snapshotHomeTree(t, home)
@@ -508,6 +509,7 @@ func TestHarnessEditProposalsAreDeterministic(t *testing.T) {
 // provenance), and returns the store, work id, and target surface.
 func applyAndAdmitHarnessEditProposal(t *testing.T, home string) (*work.Store, string, string) {
 	t.Helper()
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
 	if err != nil {
 		t.Fatal(err)

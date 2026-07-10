@@ -50,26 +50,30 @@ type Options struct {
 }
 
 type Report struct {
-	SchemaVersion            string                `json:"schema_version"`
-	ID                       string                `json:"id"`
-	GeneratedAt              string                `json:"generated_at"`
-	Status                   string                `json:"status"`
-	Mode                     string                `json:"mode"`
-	ProposedBy               string                `json:"proposed_by"`
-	ProposalCount            int                   `json:"proposal_count"`
-	SuppressedDuplicateCount int                   `json:"suppressed_duplicate_count"`
-	SkippedCount             int                   `json:"skipped_count"`
-	SkipHistogram            map[string]int        `json:"skip_histogram,omitempty"`
-	RunWorkID                string                `json:"run_work_id,omitempty"`
-	RunReceiptID             string                `json:"run_receipt_id,omitempty"`
-	RunTransitionID          string                `json:"run_transition_id,omitempty"`
-	RunMoveType              string                `json:"run_move_type,omitempty"`
-	NoDelta                  bool                  `json:"no_delta,omitempty"`
-	ResultPath               string                `json:"result_path,omitempty"`
-	Proposals                []Proposal            `json:"proposals,omitempty"`
-	SuppressedDuplicates     []SuppressedDuplicate `json:"suppressed_duplicates,omitempty"`
-	Skipped                  []SkippedCandidate    `json:"skipped,omitempty"`
-	Warnings                 []string              `json:"warnings,omitempty"`
+	SchemaVersion            string         `json:"schema_version"`
+	ID                       string         `json:"id"`
+	GeneratedAt              string         `json:"generated_at"`
+	Status                   string         `json:"status"`
+	Mode                     string         `json:"mode"`
+	ProposedBy               string         `json:"proposed_by"`
+	ProposalCount            int            `json:"proposal_count"`
+	SuppressedDuplicateCount int            `json:"suppressed_duplicate_count"`
+	SkippedCount             int            `json:"skipped_count"`
+	SkipHistogram            map[string]int `json:"skip_histogram,omitempty"`
+	RunWorkID                string         `json:"run_work_id,omitempty"`
+	RunReceiptID             string         `json:"run_receipt_id,omitempty"`
+	RunTransitionID          string         `json:"run_transition_id,omitempty"`
+	RunMoveType              string         `json:"run_move_type,omitempty"`
+	NoDelta                  bool           `json:"no_delta,omitempty"`
+	ResultPath               string         `json:"result_path,omitempty"`
+	// GrantRef cites the active director-apply grant decision record this run
+	// resolved (grants-as-gates, 2026-07-10). Set only in --apply mode; empty
+	// in a dry run, which never requires a grant.
+	GrantRef             string                `json:"grant_ref,omitempty"`
+	Proposals            []Proposal            `json:"proposals,omitempty"`
+	SuppressedDuplicates []SuppressedDuplicate `json:"suppressed_duplicates,omitempty"`
+	Skipped              []SkippedCandidate    `json:"skipped,omitempty"`
+	Warnings             []string              `json:"warnings,omitempty"`
 }
 
 type Proposal struct {
@@ -86,6 +90,13 @@ type Proposal struct {
 	PlanPath        string                            `json:"plan_path,omitempty"`
 	RoutePlan       routeevidence.CapabilityRoutePlan `json:"route_plan"`
 	WorkPlan        work.CreatePlan                   `json:"work_plan,omitempty"`
+	// AutoAdmit is the trust-dial eligibility this apply run computed for this
+	// proposal from the active director-apply grant (grants-as-gates,
+	// 2026-07-10; W9-J6 first increment). Set only in --apply mode when a
+	// grant was resolved; nil in a dry run. This packet constructs and cites
+	// it — it does NOT itself call AdmitAuto (see director/grant.go doc and
+	// the executor handoff for why that's a deliberate, separate increment).
+	AutoAdmit *work.AutoAdmitInput `json:"auto_admit,omitempty"`
 }
 
 type SuppressedDuplicate struct {
@@ -166,6 +177,19 @@ func Propose(homePath string, opts Options) (Report, error) {
 		Mode:          mode,
 		ProposedBy:    DirectorActor,
 	}
+	// Grant consumption (grants-as-gates, 2026-07-10): --apply refuses BEFORE
+	// filing anything without an active director-apply grant record. Dry run
+	// never requires one. The kill-switch inside AdmitAuto still wins wherever
+	// a caller later admits through the AutoAdmitInput this run constructs.
+	var grant resolvedApplyGrant
+	if opts.Apply {
+		var grantErr error
+		grant, grantErr = resolveApplyGrant(homePath, now)
+		if grantErr != nil {
+			return report, grantErr
+		}
+		report.GrantRef = grant.GrantRef
+	}
 	store, err := work.Open(homePath)
 	if err != nil {
 		return report, err
@@ -242,6 +266,18 @@ func Propose(homePath string, opts Options) (Report, error) {
 					return report, err
 				}
 			}
+			// Construct the trust-dial eligibility this run resolved from the
+			// active director-apply grant, citing it on the proposal itself
+			// (grants-as-gates, 2026-07-10). This packet stops at constructing
+			// and citing AutoAdmitInput — a follow-up increment threads it
+			// through AdmitCreatePlan + AdmitAuto to actually admit (see
+			// director/grant.go doc + the executor handoff).
+			admitInput := work.AutoAdmitInput{
+				By:                DirectorActor,
+				EligibilityReason: "director-apply-grant:" + grant.DecisionID,
+				GrantRef:          grant.GrantRef,
+			}
+			proposal.AutoAdmit = &admitInput
 		}
 		report.Proposals = append(report.Proposals, proposal)
 		dupes.addPlan(proposal.TriggerRef, proposal.ID)
@@ -1115,6 +1151,9 @@ func directorRunEvidenceRefs(report Report) []string {
 	}
 	if report.ResultPath != "" {
 		refs = append(refs, "director_run_report:"+filepath.ToSlash(report.ResultPath))
+	}
+	if report.GrantRef != "" {
+		refs = append(refs, "grant_ref:"+report.GrantRef)
 	}
 	if report.NoDelta {
 		refs = append(refs, "no_delta:director_apply_empty")

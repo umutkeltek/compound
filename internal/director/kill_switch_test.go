@@ -14,6 +14,7 @@ import (
 // materialization of the create-plan (proposed) is unaffected either way.
 func TestKillSwitchHaltsDirectorAutoAdmit(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
 
 	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})

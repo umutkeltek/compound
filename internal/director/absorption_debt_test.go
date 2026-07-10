@@ -108,6 +108,7 @@ func TestAbsorptionDebtDoesNotStarveHigherSeverityClasses(t *testing.T) {
 // duplicate instead of a fresh envelope.
 func TestAbsorptionDebtDedupesAcrossRuns(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedOSAbsorptionMatrix(t, home, directorTestNow, []authority.OSAbsorptionMatrixRow{
 		absorptionRow("os_source_test_wrapper", "cli:test wrapper", "wrapper",
 			"compound://registries/test-owner", "test consumer", "asserted", "gate text"),
@@ -139,6 +140,7 @@ func TestAbsorptionDebtDedupesAcrossRuns(t *testing.T) {
 // context never instructs running the gated (ssh/DB) step itself.
 func TestAbsorptionDebtNamesOperatorGateWithoutInstructingExecution(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	const gate = "blocked on operator: read-only gbrain DB export (J14 packet)"
 	seedOSAbsorptionMatrix(t, home, directorTestNow, []authority.OSAbsorptionMatrixRow{
 		absorptionRow("os_source_test_gbrain", "gbrain://synthetic-store", "pending",

@@ -19,6 +19,7 @@ import (
 // escapes the allowlist and this test FAILS.
 func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
 
 	before := snapshotHomeTree(t, home)

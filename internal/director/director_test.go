@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/mem"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 	"compound/internal/work"
@@ -44,6 +46,7 @@ func TestBuildProposalRequiresEvidenceRefs(t *testing.T) {
 
 func TestProposeDedupesPriorDirectorProposal(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
 
 	first, err := Propose(home, Options{Apply: true, Now: directorTestNow})
@@ -86,6 +89,7 @@ func TestProposeDedupesPriorDirectorProposal(t *testing.T) {
 
 func TestProposeApplyCreatesRunLevelReceiptTransition(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
 
 	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
@@ -133,6 +137,7 @@ func TestProposeApplyCreatesRunLevelReceiptTransition(t *testing.T) {
 
 func TestProposeApplyEmptyRunUsesAuditOnlyNoDeltaReceipt(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 
 	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
 	if err != nil {
@@ -241,6 +246,7 @@ func TestProposeCapsRunAtFive(t *testing.T) {
 
 func TestDirectorProposalsCannotAdvancePastProposedWithoutOperator(t *testing.T) {
 	home := seededDirectorHome(t)
+	seedDirectorApplyGrant(t, home, directorTestNow)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
 
 	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
@@ -293,6 +299,28 @@ func seededDirectorHome(t *testing.T) string {
 		t.Fatalf("import route fixture: %v", err)
 	}
 	return home
+}
+
+// seedDirectorApplyGrant records an active director-apply grant decision
+// record (grants-as-gates, 2026-07-10) so `Propose(home, Options{Apply:
+// true})` — which now refuses without one — can run in tests exercising
+// apply-mode behavior other than the grant gate itself.
+func seedDirectorApplyGrant(t *testing.T, home string, now time.Time) {
+	t.Helper()
+	memStore, err := mem.Open(home)
+	if err != nil {
+		t.Fatalf("open mem store for grant seed: %v", err)
+	}
+	if _, err := decisions.Record(memStore, home, decisions.RecordInput{
+		Kind:       decisions.KindGrant,
+		ID:         "director-apply-grant-test",
+		Title:      "Grant director --apply (test fixture)",
+		ReviewedBy: "test-operator",
+		Scope:      "director-apply",
+		Now:        now,
+	}); err != nil {
+		t.Fatalf("seed director-apply grant: %v", err)
+	}
 }
 
 func seedReviewDebt(t *testing.T, home, area, id string) {
