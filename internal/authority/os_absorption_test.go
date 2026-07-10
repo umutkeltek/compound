@@ -305,7 +305,7 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 		"shim_sha256:",
 		"entrypoint_sha256:",
 		"projection_sha256:",
-		"classifier_sha256:",
+		"compound_build:",
 		"mrcsrc_fixture",
 	} {
 		if !strings.Contains(got.ProofRef, want) {
