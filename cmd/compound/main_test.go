@@ -2455,6 +2455,7 @@ func TestWorkCreatePlanCLIRecordsPolicyWithoutCreating(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
+	writeCLIContextPackArtifact(t, homePath, "ctx_cli_create_plan")
 
 	out := captureStdout(t, func() {
 		cmdWork([]string{

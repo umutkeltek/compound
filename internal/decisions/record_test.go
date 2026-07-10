@@ -291,6 +291,30 @@ func TestActiveDecisionsFiltersKindStatusAndSupersession(t *testing.T) {
 	if len(freezes) != 1 || LifecycleFromClaim(freezes[0]).ID != "freeze-active" {
 		t.Fatalf("active freezes = %+v", freezes)
 	}
+
+	for _, status := range []string{StatusProposed, StatusRejected, StatusDeprecated, StatusSuperseded} {
+		t.Run("non-accepted superseder "+status, func(t *testing.T) {
+			withInactiveSuperseder := []mem.Claim{
+				{
+					ID:         "claim_prior_" + status,
+					ClaimType:  "decision",
+					Qualifiers: lifecycleQualifiers(KindGrant, "decisions-repo", "grant-prior-"+status, StatusAccepted),
+				},
+				{
+					ID:        "claim_inactive_superseder_" + status,
+					ClaimType: "decision",
+					Qualifiers: mapWithSupersedes(
+						lifecycleQualifiers(KindGrant, "decisions-repo", "grant-inactive-"+status, status),
+						"grant-prior-"+status,
+					),
+				},
+			}
+			got := ActiveDecisions(withInactiveSuperseder, KindGrant)
+			if len(got) != 1 || LifecycleFromClaim(got[0]).ID != "grant-prior-"+status {
+				t.Fatalf("%s superseder deactivated accepted predecessor: %+v", status, got)
+			}
+		})
+	}
 }
 
 func mapWithSupersedes(q map[string]string, ids ...string) map[string]string {

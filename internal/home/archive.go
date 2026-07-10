@@ -725,6 +725,10 @@ func staleLeaseCandidates(homePath string) ([]operationalCandidate, error) {
 
 const staleCreatePlanAfter = 24 * time.Hour
 
+func operationalCreatePlanSchema(schemaVersion string) bool {
+	return schemaVersion == "compound.work_create_plan.v0.1" || schemaVersion == "compound.work_create_plan.v0.2"
+}
+
 func explicitCreatePlanCandidates(homePath string, paths map[string]bool, now time.Time) ([]operationalCandidate, error) {
 	if now.IsZero() {
 		now = time.Now()
@@ -767,7 +771,7 @@ func explicitCreatePlanCandidate(homePath, rel string, now time.Time) (operation
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return operationalCandidate{}, false, fmt.Errorf("parse create-plan %s: %w", path, err)
 	}
-	if plan.SchemaVersion != "compound.work_create_plan.v0.1" ||
+	if !operationalCreatePlanSchema(plan.SchemaVersion) ||
 		strings.TrimSpace(plan.Status) != "create_policy_allowed" ||
 		!plan.Policy.Allowed ||
 		strings.TrimSpace(plan.ID) == "" ||
@@ -824,7 +828,7 @@ func staleCreatePlanCandidates(homePath string, now time.Time) ([]operationalCan
 		if err := json.Unmarshal(data, &plan); err != nil {
 			return nil, fmt.Errorf("parse create-plan %s: %w", path, err)
 		}
-		if plan.SchemaVersion != "compound.work_create_plan.v0.1" ||
+		if !operationalCreatePlanSchema(plan.SchemaVersion) ||
 			strings.TrimSpace(plan.Status) != "create_policy_allowed" ||
 			!plan.Policy.Allowed ||
 			strings.TrimSpace(plan.ID) == "" ||

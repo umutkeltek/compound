@@ -467,7 +467,7 @@ func TestOperationalArchiveMovesStaleCreatePlansAndRestores(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleBody := `{"schema_version":"compound.work_create_plan.v0.1","id":"wcrp_stale","generated_at":"2026-06-29T10:00:00Z","status":"create_policy_allowed","work_id":"work_stale_plan","policy":{"allowed":true}}` + "\n"
-	freshBody := `{"schema_version":"compound.work_create_plan.v0.1","id":"wcrp_fresh","generated_at":"2026-06-30T11:30:00Z","status":"create_policy_allowed","work_id":"work_fresh_plan","policy":{"allowed":true}}` + "\n"
+	freshBody := `{"schema_version":"compound.work_create_plan.v0.2","id":"wcrp_fresh","generated_at":"2026-06-30T11:30:00Z","status":"create_policy_allowed","work_id":"work_fresh_plan","policy":{"allowed":true}}` + "\n"
 	admittedBody := `{"schema_version":"compound.work_create_plan.v0.1","id":"wcrp_admitted","generated_at":"2026-06-29T10:00:00Z","status":"create_policy_allowed","work_id":"work_admitted_plan","policy":{"allowed":true}}` + "\n"
 	writeHomeFile(t, h, "create-plans/wcrp_stale.json", staleBody)
 	writeHomeFile(t, h, "create-plans/wcrp_fresh.json", freshBody)

@@ -22,6 +22,7 @@ import (
 
 	"compound/internal/breadth"
 	"compound/internal/capgraph"
+	decisionstate "compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/mem"
@@ -1897,6 +1898,7 @@ func loadDecisionRefs(homePath string, in Input) ([]string, []envelope.SourceRev
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	claims = decisionstate.AllActiveDecisions(claims)
 	byRef := map[string]mem.Claim{}
 	for _, c := range claims {
 		if c.ClaimType != "decision" || c.Qualifiers == nil || canonicalDecisionStatus(c.Qualifiers["lifecycle_status"]) != "accepted" {

@@ -56,6 +56,7 @@ func TestProposeApplyWritesConfinedToProposalSurfaces(t *testing.T) {
 		"projections/director/", // director run report under projections/director/runs/
 		"work/work/",            // enclosing run WorkEnvelope snapshot (closed immediately)
 		"work/leases/",          // run WorkEnvelope lease lifecycle (part of the same store)
+		"work/action-contexts/", // immutable nil/action-context admission snapshot for the run WorkEnvelope
 		"events/",               // run ActionIntent/PolicyDecision/Receipt/Transition + work event log
 		// DELIBERATE allowlist extension: a harness-edit proposal (7th class)
 		// additionally emits ONE propose-only operator review card per proposal

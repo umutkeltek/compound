@@ -1628,6 +1628,46 @@ func TestWorkbenchMarksOldAdmissionPreviewsStale(t *testing.T) {
 	}
 }
 
+func TestWorkbenchBlocksLegacyAdmissionPreviewUntilReplanned(t *testing.T) {
+	s := newStore(t)
+	plan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_legacy_admission_preview",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "ready",
+		SuccessPredicate: "legacy preview stays visible but cannot admit",
+	}, fixedNow, CreatePlanOptions{Record: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := plan
+	legacy.SchemaVersion = LegacyCreatePlanSchemaVersion
+	if err := s.writeJSON(plan.PlanPath, &legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := s.Workbench(fixedNow.Add(time.Minute), WorkbenchOptions{RecentLimit: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.AdmissionPreviews) != 1 {
+		t.Fatalf("legacy preview should remain visible as debt: %+v", report.AdmissionPreviews)
+	}
+	preview := report.AdmissionPreviews[0]
+	if preview.PlanSchemaVersion != LegacyCreatePlanSchemaVersion ||
+		preview.Staleness != "legacy" ||
+		!strings.Contains(preview.StaleReason, "not content-bound") ||
+		!strings.Contains(preview.NextAction, "fresh content-bound plan") ||
+		!strings.Contains(preview.AdmissionBlockedReason, "requires re-plan") ||
+		len(preview.AdmitCommand) != 0 ||
+		len(preview.RetireCommand) == 0 {
+		t.Fatalf("legacy preview must be blocked with re-plan/retire actions: %+v", preview)
+	}
+	if _, err := s.AdmitCreatePlanPath(plan.PlanPath, fixedNow.Add(2*time.Minute), AdmitCreatePlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), CreatePlanSchemaVersion) {
+		t.Fatalf("legacy preview admission must be rejected, got %v", err)
+	}
+}
+
 func writeWorkbenchRouteOutcomeReview(t *testing.T, homePath string, review map[string]any) {
 	t.Helper()
 	dir := filepath.Join(homePath, "reviews", "route-remorse")

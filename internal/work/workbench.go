@@ -130,6 +130,7 @@ type WorkbenchAdjacentAction struct {
 
 type WorkbenchAdmissionPreview struct {
 	PlanID                 string             `json:"plan_id"`
+	PlanSchemaVersion      string             `json:"plan_schema_version,omitempty"`
 	GeneratedAt            string             `json:"generated_at,omitempty"`
 	AgeSeconds             int64              `json:"age_seconds,omitempty"`
 	Age                    string             `json:"age,omitempty"`
@@ -464,13 +465,21 @@ func (s *Store) workbenchAdmissionPreviews(now time.Time, limit int) ([]Workbenc
 		}
 		admissionBlockedReason := ""
 		admitCommand := []string{"compound", "work", "admit-plan", "--plan", planPath}
-		if requiresOperator {
+		if plan.SchemaVersion == LegacyCreatePlanSchemaVersion {
+			staleness = "legacy"
+			staleReason = "legacy create-plan id is not content-bound"
+			nextAction = "legacy admission preview; create a fresh content-bound plan, then retire this preview through operational archive"
+			admissionBlockedReason = "legacy create-plan requires re-plan before admission"
+			admitCommand = nil
+		}
+		if requiresOperator && admissionBlockedReason == "" {
 			admissionBlockedReason = "operator required inputs must be supplied before admission"
 			nextAction = "operator-only admission preview; do not admit until required private/operator inputs are supplied, otherwise retire through operational archive"
 			admitCommand = nil
 		}
 		previews = append(previews, WorkbenchAdmissionPreview{
 			PlanID:                 plan.ID,
+			PlanSchemaVersion:      plan.SchemaVersion,
 			GeneratedAt:            plan.GeneratedAt,
 			AgeSeconds:             ageSeconds,
 			Age:                    ageLabel,
@@ -513,7 +522,7 @@ func (s *Store) workbenchAdmissionPreviews(now time.Time, limit int) ([]Workbenc
 }
 
 func workbenchCreatePlanIsAdmissionPreview(plan CreatePlan) bool {
-	return plan.SchemaVersion == CreatePlanSchemaVersion &&
+	return (plan.SchemaVersion == CreatePlanSchemaVersion || plan.SchemaVersion == LegacyCreatePlanSchemaVersion) &&
 		plan.Status == "create_policy_allowed" &&
 		plan.Policy.Allowed &&
 		strings.TrimSpace(plan.ID) != "" &&
@@ -590,6 +599,11 @@ func (s *Store) actionContextForWork(w envelope.WorkEnvelope) (*WorkActionContex
 }
 
 func (s *Store) actionContextFromCreatePlan(w envelope.WorkEnvelope, events []Event) (*WorkActionContext, []string) {
+	if snapshotContext, found, warnings := s.actionContextSnapshotForWork(w, events); found {
+		return snapshotContext, warnings
+	}
+	// Backward compatibility for work admitted before immutable snapshots were
+	// introduced. New admissions always attach a content-addressed snapshot.
 	planID := lastCreatePlanID(events)
 	if planID == "" {
 		return nil, nil

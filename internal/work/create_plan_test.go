@@ -159,6 +159,7 @@ func TestAdmitCreatePlanCreatesWorkAndRetiresPreview(t *testing.T) {
 
 func TestCreatePlanCommandCarriesPlannedWorkID(t *testing.T) {
 	s := newStore(t)
+	writeContextPack(t, s, "ctx_planned")
 	plan, err := s.CreatePlan(CreateInput{
 		Owner:            "compound-core",
 		Actor:            "codex",

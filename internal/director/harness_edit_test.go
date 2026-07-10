@@ -312,6 +312,7 @@ func TestHarnessEditProposeApplyWritesCardConfined(t *testing.T) {
 		"projections/director/",
 		"work/work/",
 		"work/leases/",
+		"work/action-contexts/",
 		"events/",
 		"reviews/harness-edit-proposals/", // the harness-edit operator card
 	}

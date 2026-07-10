@@ -13,7 +13,8 @@ import (
 	"compound/internal/policy"
 )
 
-const CreatePlanSchemaVersion = "compound.work_create_plan.v0.1"
+const LegacyCreatePlanSchemaVersion = "compound.work_create_plan.v0.1"
+const CreatePlanSchemaVersion = "compound.work_create_plan.v0.2"
 const AdmitCreatePlanReportSchemaVersion = "compound.work_create_plan_admission.v0.1"
 
 type CreatePlanOptions struct {
@@ -142,6 +143,9 @@ func (s *Store) AdmitCreatePlanPath(path string, now time.Time, opts AdmitCreate
 	if err != nil {
 		return AdmitCreatePlanReport{}, err
 	}
+	if filepath.Base(path) != plan.ID+".json" {
+		return AdmitCreatePlanReport{}, fmt.Errorf("create-plan path identity mismatch: %s does not contain %s", filepath.Base(path), plan.ID)
+	}
 	return s.AdmitCreatePlan(plan, path, now, opts)
 }
 
@@ -163,11 +167,19 @@ func (s *Store) AdmitCreatePlan(plan CreatePlan, planPath string, now time.Time,
 		if !sameCreatePlanWork(existing, plan.Work) {
 			return report, fmt.Errorf("work %s already exists but does not match create-plan %s", plan.WorkID, plan.ID)
 		}
+		existingContext, warnings := s.actionContextForWork(existing)
+		if len(warnings) > 0 {
+			return report, fmt.Errorf("work %s admitted action context unreadable: %s", plan.WorkID, strings.Join(warnings, "; "))
+		}
+		if !sameWorkActionContext(existingContext, plan.ActionContext) {
+			return report, fmt.Errorf("work %s already exists but action context does not match admitted snapshot", plan.WorkID)
+		}
 		report.Status = "already_admitted"
 		report.NoAction = "work already exists; create-plan admission left lifecycle unchanged"
 		report.Work = existing
 		report.WorkState = existing.State
 		report.WorkOwner = existing.Owner
+		report.ActionContext = cloneWorkActionContext(existingContext)
 		return report, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return report, err
@@ -189,6 +201,13 @@ func validateCreatePlanForAdmission(plan CreatePlan) error {
 	}
 	if strings.TrimSpace(plan.ID) == "" || strings.TrimSpace(plan.WorkID) == "" {
 		return fmt.Errorf("create-plan id and work_id required")
+	}
+	expectedID, err := createPlanContentID(plan)
+	if err != nil {
+		return fmt.Errorf("create-plan %s content digest: %w", plan.ID, err)
+	}
+	if plan.ID != expectedID {
+		return fmt.Errorf("create-plan %s content digest mismatch (expected %s)", plan.ID, expectedID)
 	}
 	if plan.Status != "create_policy_allowed" {
 		return fmt.Errorf("create-plan %s status must be create_policy_allowed, got %q", plan.ID, plan.Status)
@@ -276,6 +295,13 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 	if err := w.Validate(); err != nil {
 		return CreatePlan{}, err
 	}
+	if opts.ActionContext == nil {
+		meaningContext, err := s.promotedMeaningActionContext(w.IDs.ContextPackID)
+		if err != nil {
+			return CreatePlan{}, fmt.Errorf("context_pack_id %q meaning authority: %w", w.IDs.ContextPackID, err)
+		}
+		opts.ActionContext = meaningContext
+	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = firstNonEmpty(w.Owner, "compound")
@@ -294,7 +320,6 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 	}
 	plan := CreatePlan{
 		SchemaVersion: CreatePlanSchemaVersion,
-		ID:            idFor("wcrp_", w.ID, actor, ts(now)),
 		GeneratedAt:   now.UTC().Format(time.RFC3339),
 		Status:        "create_policy_blocked",
 		Mode:          "proposal_only",
@@ -320,6 +345,10 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 		plan.Status = "create_policy_allowed"
 		plan.NoAction = ""
 	}
+	plan.ID, err = createPlanContentID(plan)
+	if err != nil {
+		return CreatePlan{}, err
+	}
 	if opts.Record {
 		path, err := s.RecordCreatePlan(plan)
 		if err != nil {
@@ -337,6 +366,13 @@ func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAtta
 	}
 	if err := s.validateContextPackRef(w.IDs.ContextPackID); err != nil {
 		return w, err
+	}
+	actionContextRef, err := s.recordActionContextSnapshot(plan)
+	if err != nil {
+		return w, err
+	}
+	if actionContextRef != "" {
+		extraAttached = append(extraAttached, actionContextRef)
 	}
 	state := w.State
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
@@ -439,6 +475,13 @@ func (s *Store) RecordCreatePlan(plan CreatePlan) (string, error) {
 	if strings.TrimSpace(plan.ID) == "" {
 		return "", os.ErrInvalid
 	}
+	expectedID, err := createPlanContentID(plan)
+	if err != nil {
+		return "", err
+	}
+	if plan.ID != expectedID {
+		return "", fmt.Errorf("create-plan %s content digest mismatch (expected %s)", plan.ID, expectedID)
+	}
 	dir := filepath.Join(s.home, "create-plans")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -448,6 +491,17 @@ func (s *Store) RecordCreatePlan(plan CreatePlan) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func createPlanContentID(plan CreatePlan) (string, error) {
+	canonical := plan
+	canonical.ID = ""
+	canonical.PlanPath = ""
+	b, err := json.Marshal(canonical)
+	if err != nil {
+		return "", err
+	}
+	return idFor("wcrp_", string(b)), nil
 }
 
 func (s *Store) createActionIntent(w envelope.WorkEnvelope, actor string, now time.Time, opts CreatePlanOptions) envelope.ActionIntent {
