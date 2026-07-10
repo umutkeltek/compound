@@ -228,6 +228,7 @@ func (s *Store) validateActiveAutonomyGrant(artifact autonomyproof.Artifact) err
 	for _, claim := range claims {
 		if claim.ClaimType != "decision" ||
 			!mem.HasOperationalDecisionAuthority(claim.Qualifiers) ||
+			!policy.HasOperatorProvenance(claim.Qualifiers["reviewed_by"]) ||
 			claim.Qualifiers["lifecycle_status"] != "accepted" {
 			continue
 		}
@@ -240,10 +241,11 @@ func (s *Store) validateActiveAutonomyGrant(artifact autonomyproof.Artifact) err
 		q := claim.Qualifiers
 		if claim.ClaimType != "decision" ||
 			!mem.HasOperationalDecisionAuthority(q) ||
+			!policy.HasOperatorProvenance(q["reviewed_by"]) ||
 			q["kind"] != "grant" || q["lifecycle_status"] != "accepted" || q["scope"] != "autonomy-evidence-threshold" {
 			continue
 		}
-		if superseded[q["decision_id"]] || strings.TrimSpace(q["reviewed_by"]) == "" || q["auto_admit_class"] != artifact.Class {
+		if superseded[q["decision_id"]] || q["auto_admit_class"] != artifact.Class {
 			continue
 		}
 		classClaims = append(classClaims, claim)
@@ -519,7 +521,7 @@ func (s *Store) matchingFreeze(w envelope.WorkEnvelope) (bool, policy.FreezeReco
 func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
 	superseded := map[string]bool{}
 	for _, c := range claims {
-		if c.ClaimType != "decision" || !mem.HasOperationalDecisionAuthority(c.Qualifiers) {
+		if c.ClaimType != "decision" || !mem.HasOperationalDecisionAuthority(c.Qualifiers) || !policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"]) {
 			continue
 		}
 		for _, id := range splitFreezeCSV(c.Qualifiers[freezeDecisionSupersedesField]) {
@@ -532,7 +534,7 @@ func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
 			continue
 		}
 		q := c.Qualifiers
-		if q["kind"] != freezeDecisionKind || q["lifecycle_status"] != freezeDecisionStatusAccepted {
+		if q["kind"] != freezeDecisionKind || q["lifecycle_status"] != freezeDecisionStatusAccepted || !policy.HasOperatorProvenance(q["reviewed_by"]) {
 			continue
 		}
 		id := q["decision_id"]

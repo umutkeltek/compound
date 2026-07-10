@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/policy"
 
 	"compound/internal/envelope"
 )
@@ -549,15 +550,16 @@ func protectedOperationalDecisionClaim(claim Claim) bool {
 	if claim.ClaimType != "decision" {
 		return false
 	}
-	if HasOperationalDecisionAuthority(claim.Qualifiers) {
+	q := claim.Qualifiers
+	if q == nil || !policy.HasOperatorProvenance(q["reviewed_by"]) || !isOperationalDecisionKind(q["kind"]) {
+		return false
+	}
+	if HasOperationalDecisionAuthority(q) {
 		return true
 	}
-	q := claim.Qualifiers
-	return q != nil &&
+	return q["source"] == "decisions-repo" &&
 		q["source"] == "decisions-repo" &&
-		q["lifecycle_status"] == "accepted" &&
-		strings.TrimSpace(q["reviewed_by"]) != "" &&
-		isOperationalDecisionKind(q["kind"])
+		q["lifecycle_status"] == "accepted"
 }
 
 func (s *Store) protectedOperationalDecisionInSlot(candidate Candidate) (Claim, error) {

@@ -224,7 +224,7 @@ func TestOperationalDecisionFoldIgnoresGenericSameSlotShadow(t *testing.T) {
 			"source":           "decisions-repo",
 			"decision_id":      "legacy-freeze",
 			"lifecycle_status": "accepted",
-			"reviewed_by":      "test-operator",
+			"reviewed_by":      "operator:test",
 		},
 	}
 	shadow := Claim{
@@ -284,7 +284,7 @@ func TestOperationalDecisionFoldIgnoresGenericReviewMark(t *testing.T) {
 			"source":                              "decisions-repo",
 			"decision_id":                         "stamped-freeze",
 			"lifecycle_status":                    "accepted",
-			"reviewed_by":                         "test-operator",
+			"reviewed_by":                         "operator:test",
 		},
 	}
 	if err := appendJSONL(s.claimsLog(), &protected); err != nil {

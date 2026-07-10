@@ -82,6 +82,7 @@ func TestGenericMemoryCannotRevokeRecordedFreeze(t *testing.T) {
 			"kind":             "freeze",
 			"decision_id":      "legacy-freeze",
 			"lifecycle_status": "accepted",
+			"reviewed_by":      "operator:test",
 			"freeze_keywords":  "absorption_debt",
 		},
 	}
@@ -99,6 +100,7 @@ func TestGenericMemoryCannotRevokeRecordedFreeze(t *testing.T) {
 		t.Fatalf("generic memory revoked recorded freeze: %+v", got)
 	}
 	forgedRevocation.Qualifiers[mem.OperationalDecisionAuthorityQualifier] = mem.OperationalDecisionAuthorityValue
+	forgedRevocation.Qualifiers["reviewed_by"] = "operator:test"
 	if got := activeFreezeRecords([]mem.Claim{legacyFreeze, forgedRevocation}); len(got) != 0 {
 		t.Fatalf("authoritative superseder did not revoke recorded freeze: %+v", got)
 	}

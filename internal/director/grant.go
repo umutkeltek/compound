@@ -20,6 +20,7 @@ import (
 
 	"compound/internal/decisions"
 	"compound/internal/mem"
+	"compound/internal/policy"
 	autonomyproof "compound/internal/routeevidence/autonomy"
 )
 
@@ -103,14 +104,14 @@ func resolveApplyGrant(homePath string, now time.Time) (resolvedApplyGrant, erro
 	if err != nil {
 		return resolvedApplyGrant{}, err
 	}
-	active := decisions.ActiveDecisions(claims, decisions.KindGrant)
+	active := decisions.AuthoritativeActiveDecisions(claims, decisions.KindGrant)
 	var candidates []mem.Claim
 	for _, c := range active {
 		l := decisions.LifecycleFromClaim(c)
 		if l.Scope != directorApplyGrantScope {
 			continue
 		}
-		if strings.TrimSpace(l.ReviewedBy) == "" {
+		if !policy.HasOperatorProvenance(l.ReviewedBy) {
 			continue
 		}
 		candidates = append(candidates, c)

@@ -1,6 +1,9 @@
 package decisions
 
-import "compound/internal/mem"
+import (
+	"compound/internal/mem"
+	"compound/internal/policy"
+)
 
 // AllActiveDecisions returns accepted decision claims that are NOT superseded
 // by any other current decision record's supersedes qualifier.
@@ -66,7 +69,7 @@ func ActiveDecisions(claims []mem.Claim, kind string) []mem.Claim {
 func AuthoritativeActiveDecisions(claims []mem.Claim, kind string) []mem.Claim {
 	var authoritative []mem.Claim
 	for _, c := range claims {
-		if c.ClaimType == "decision" && mem.HasOperationalDecisionAuthority(c.Qualifiers) {
+		if c.ClaimType == "decision" && mem.HasOperationalDecisionAuthority(c.Qualifiers) && policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"]) {
 			authoritative = append(authoritative, c)
 		}
 	}

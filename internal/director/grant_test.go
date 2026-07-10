@@ -27,7 +27,7 @@ func TestResolveApplyGrantPreservesLegacyRecordedGrant(t *testing.T) {
 			"source":           "decisions-repo",
 			"decision_id":      "legacy-director-apply",
 			"lifecycle_status": decisions.StatusAccepted,
-			"reviewed_by":      "legacy-operator",
+			"reviewed_by":      "operator:legacy",
 			"scope":            directorApplyGrantScope,
 		},
 	}
@@ -45,7 +45,7 @@ func TestResolveApplyGrantPreservesLegacyRecordedGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant.DecisionID != "legacy-director-apply" || grant.ReviewedBy != "legacy-operator" {
+	if grant.DecisionID != "legacy-director-apply" || grant.ReviewedBy != "operator:legacy" {
 		t.Fatalf("legacy recorded grant did not survive authority-stamp migration: %+v", grant)
 	}
 }
