@@ -298,7 +298,8 @@ type CapabilityOffer struct {
 
 // ActivePosition is the folded current stance digest rendered into ContextPack
 // active memory. Line is the canonical compact shape hooks display:
-// entity::topic → stance (since-seq N, chain-length L) [contested].
+// position-id → stance (since-seq N, chain-length L) [contested]. Ref carries
+// narrow fact-slot identity while Topic remains the broad aggregation axis.
 type ActivePosition struct {
 	Ref         string `json:"ref"`
 	Entity      string `json:"entity"`

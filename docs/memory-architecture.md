@@ -29,10 +29,14 @@ smallest promotable durable memory object.
   concept, topic, doctrine, or tool.
 - **Claim**: smallest durable statement Compound can reason about. A claim can be
   candidate, promoted, superseded, retired, or rejected.
-- **Position**: current stance for an entity/topic, derived from promoted
-  claims and supersession/review edges. Position rows are rebuildable
-  materialized folds; claims and edges remain authority. Current truth is a
-  position, not the newest note or highest-ranked search hit.
+- **Position**: current stance for one fact slot (`entity + topic/domain +
+  predicate + claim_type`), derived from promoted claims and
+  supersession/review edges. Topic remains the broader aggregation axis used by
+  Patterns and exact-object echo detection; it is not version identity.
+  Position rows are rebuildable materialized folds; claims and edges remain
+  authority. Current truth is a position, not the newest note or highest-ranked
+  search hit. Fold schema v0.2 stamps each row and ignores an older checkpoint
+  until a global `compound memory fold` rebuilds it.
 - **Pattern**: repeated through-line across claims or positions.
 - **Edge**: relation such as supersedes, contradicts, refines, supports,
   mentions, owns, part_of, or narrows_to. Relation hints are structural ledger
