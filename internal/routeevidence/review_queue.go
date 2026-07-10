@@ -106,7 +106,11 @@ func annotatePromotionReviewQueueItem(item *reviewartifact.QueueItem) {
 	case "review_required":
 		item.Readiness = "needs_review"
 		item.BlockedReason = ""
-		item.Actions = []reviewartifact.Action{promotionRecordCleanAction(item.JSONPath)}
+		action := promotionAuthorityReviewCleanAction(review.ID)
+		if review.Recommendation == promotionRecommendationHoldInsufficient {
+			action = promotionRecordCleanAction(item.JSONPath)
+		}
+		item.Actions = []reviewartifact.Action{action}
 		band := reviewartifact.BandNeedsYou
 		if review.Recommendation == promotionRecommendationHoldInsufficient {
 			band = reviewartifact.BandWatching
@@ -144,6 +148,17 @@ func promotionRecordCleanAction(reviewPath string) reviewartifact.Action {
 		Argv:           []string{"compound", "route", "promotion-record", "--review", reviewPath},
 		RequiresReview: true,
 		PolicyNote:     "records the reviewed hold decision only; route/model authority mutation stays a separate explicit act",
+	}
+}
+
+func promotionAuthorityReviewCleanAction(reviewID string) reviewartifact.Action {
+	return reviewartifact.Action{
+		ID:             "route_promotion_authority_review",
+		Label:          "Prepare authority review",
+		Command:        "compound reviews brief-plan --item '" + reviewID + "' --json",
+		Argv:           []string{"compound", "reviews", "brief-plan", "--item", reviewID, "--json"},
+		RequiresReview: true,
+		PolicyNote:     "prepares an evidence-linked decision brief only; route/model authority mutation stays a separate explicit act",
 	}
 }
 

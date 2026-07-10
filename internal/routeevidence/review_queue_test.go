@@ -1,6 +1,7 @@
 package routeevidence
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -96,56 +97,62 @@ func TestPromotionReviewQueueRejectsArchivedMismatchedHoldSidecar(t *testing.T) 
 	}
 }
 
-func TestPromotionReviewQueueEmitsCleanRecordAction(t *testing.T) {
-	homePath := t.TempDir()
-	now := time.Date(2026, 7, 9, 16, 0, 0, 0, time.UTC)
-	if err := home.Init(homePath, "test", now); err != nil {
-		t.Fatalf("init home: %v", err)
-	}
-	review := PromotionReview{
-		SchemaVersion:   PromotionReviewSchemaVersion,
-		ID:              "route_promotion_clean_action",
-		CreatedAt:       now.Format(time.RFC3339),
-		Status:          "review_required",
-		Recommendation:  promotionRecommendationHoldFailing,
-		Reason:          "18.2% failed_status above 5% floor",
-		LaneID:          "lane/extract",
-		CapabilityClass: "classify-extract",
-		EvidenceRefs:    []string{"route_b"},
-	}
-	if _, err := reviewartifact.Write(homePath, routePromotionReviewArea, review.ID, review, " ", "# Route promotion\n"); err != nil {
-		t.Fatal(err)
+func TestPromotionReviewQueueRoutesAuthorityRecommendationsToBriefPlan(t *testing.T) {
+	tests := []struct {
+		name           string
+		reviewID       string
+		recommendation string
+	}{
+		{name: "demote", reviewID: "route_promotion_demote", recommendation: "demote"},
+		{name: "hold failing", reviewID: "route_promotion_hold_failing", recommendation: promotionRecommendationHoldFailing},
 	}
 
-	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: routePromotionReviewArea}, now.Add(time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	AnnotatePromotionReviewQueue(&report)
-	reviewartifact.Recount(&report)
-	if len(report.Items) != 1 {
-		t.Fatalf("items = %d, want 1", len(report.Items))
-	}
-	item := report.Items[0]
-	if item.Readiness != "needs_review" {
-		t.Fatalf("readiness = %q, want needs_review", item.Readiness)
-	}
-	if len(item.Actions) != 1 {
-		t.Fatalf("review_required promotion review should carry exactly one clean action: %+v", item.Actions)
-	}
-	action := item.Actions[0]
-	if action.ID != "route_promotion_record" || !action.RequiresReview {
-		t.Fatalf("action = %+v, want id=route_promotion_record requires_review=true", action)
-	}
-	if len(action.Argv) == 0 || action.Argv[0] != "compound" {
-		t.Fatalf("action argv must start with compound: %v", action.Argv)
-	}
-	for _, token := range action.Argv {
-		if token == "/bin/sh" || token == "-lc" || token == "--rationale" {
-			t.Fatalf("clean argv must omit shell tokens and --rationale (renderer appends it): %v", action.Argv)
-		}
-	}
-	if action.Argv[len(action.Argv)-1] != item.JSONPath {
-		t.Fatalf("action --review path %q should reference the item artifact %q", action.Argv[len(action.Argv)-1], item.JSONPath)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			now := time.Date(2026, 7, 9, 16, 0, 0, 0, time.UTC)
+			if err := home.Init(homePath, "test", now); err != nil {
+				t.Fatalf("init home: %v", err)
+			}
+			review := PromotionReview{
+				SchemaVersion:   PromotionReviewSchemaVersion,
+				ID:              tt.reviewID,
+				CreatedAt:       now.Format(time.RFC3339),
+				Status:          "review_required",
+				Recommendation:  tt.recommendation,
+				Reason:          "authority recommendation needs a decision brief",
+				LaneID:          "lane/extract",
+				CapabilityClass: "classify-extract",
+				EvidenceRefs:    []string{"route_b"},
+			}
+			if _, err := reviewartifact.Write(homePath, routePromotionReviewArea, review.ID, review, " ", "# Route promotion\n"); err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: routePromotionReviewArea}, now.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			AnnotatePromotionReviewQueue(&report)
+			reviewartifact.Recount(&report)
+			if len(report.Items) != 1 {
+				t.Fatalf("items = %d, want 1", len(report.Items))
+			}
+			item := report.Items[0]
+			if item.Readiness != "needs_review" {
+				t.Fatalf("readiness = %q, want needs_review", item.Readiness)
+			}
+			if len(item.Actions) != 1 {
+				t.Fatalf("review_required promotion review should carry exactly one clean action: %+v", item.Actions)
+			}
+			action := item.Actions[0]
+			if action.ID != "route_promotion_authority_review" || !action.RequiresReview {
+				t.Fatalf("action = %+v, want id=route_promotion_authority_review requires_review=true", action)
+			}
+			wantArgv := []string{"compound", "reviews", "brief-plan", "--item", tt.reviewID, "--json"}
+			if !reflect.DeepEqual(action.Argv, wantArgv) {
+				t.Fatalf("action argv = %v, want clean proposal-only argv %v", action.Argv, wantArgv)
+			}
+		})
 	}
 }
