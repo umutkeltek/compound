@@ -61,8 +61,8 @@ func buildCapabilityResolutionReport(store *capgraph.Store, homePath, task, harn
 	if surface.NodeCount == 0 {
 		return capabilityResolutionReport{}, fmt.Errorf("capability graph authority has no nodes")
 	}
-	if surface.SourceRecordCount == 0 {
-		return capabilityResolutionReport{}, fmt.Errorf("capability graph authority has no source provenance")
+	if !validSHA256Revision(surface.AuthorityRevision) {
+		return capabilityResolutionReport{}, fmt.Errorf("capability graph authority has no bound revision")
 	}
 	surface = surface.LimitOffers(capabilityResolutionOfferLimit)
 	plan, err := routeevidence.PlanCapabilityRoute(homePath, classification.CapabilityClass, routeevidence.CapabilityRoutePlanOptions{

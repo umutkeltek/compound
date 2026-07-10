@@ -382,6 +382,10 @@ func buildCapabilitySurfaceReport(store *capgraph.Store, homePath, task, harness
 		return capgraph.SurfaceReport{}, err
 	}
 	report := capgraph.NewSurfaceReport(task, harness, offers, stats, len(records))
+	report.AuthorityRevision, err = capgraph.AuthorityRevision(homePath)
+	if err != nil {
+		return capgraph.SurfaceReport{}, err
+	}
 	matchedEvidence, err := capgraph.ExternalRepoMatchedEvidenceForTask(homePath, task, 5)
 	if err != nil {
 		return capgraph.SurfaceReport{}, err

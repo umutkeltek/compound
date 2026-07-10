@@ -260,6 +260,7 @@ type Surfaced struct {
 type SurfaceReport struct {
 	SchemaVersion      string                `json:"schema_version"`
 	AuthorityRef       string                `json:"authority_ref"`
+	AuthorityRevision  string                `json:"authority_revision,omitempty"`
 	Status             string                `json:"status"`
 	Task               string                `json:"task"`
 	Harness            string                `json:"harness,omitempty"`
