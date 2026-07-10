@@ -595,7 +595,7 @@ func TestRenderInjectionEmitsActivePositionLine(t *testing.T) {
 	pack := envelope.ContextPack{
 		SummaryMD:       "summary",
 		ActiveMemory:    refs,
-		ActivePositions: []envelope.ActivePosition{{Ref: "position://project:compound::memory_default_organ", Entity: "project:compound", Topic: "memory_default_organ", Predicate: "runtime_stance", ClaimType: "architecture", Stance: "ContextPack uses folded positions digest", SinceSeq: 2, ChainLength: 2, Contested: true, Line: line}},
+		ActivePositions: []envelope.ActivePosition{{Ref: "position://project:compound::memory_default_organ", Entity: "project:compound", Topic: "memory_default_organ", Stance: "ContextPack uses folded positions digest", SinceSeq: 2, ChainLength: 2, Contested: true, Line: line}},
 		Included: []envelope.IncludedRef{{
 			Ref:    "position://project:compound::memory_default_organ",
 			Reason: "Compound memory folded position; source stores and indexes are evidence, not authority: " + line,

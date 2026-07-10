@@ -1612,8 +1612,6 @@ func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelo
 		Ref:         "position://" + positionID,
 		Entity:      entity,
 		Topic:       topic,
-		Predicate:   predicate,
-		ClaimType:   claimType,
 		Stance:      stance,
 		SinceSeq:    activeClaim.Seq,
 		ChainLength: chainLength,

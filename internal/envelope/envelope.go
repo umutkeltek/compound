@@ -305,8 +305,6 @@ type ActivePosition struct {
 	Ref         string `json:"ref"`
 	Entity      string `json:"entity"`
 	Topic       string `json:"topic"`
-	Predicate   string `json:"predicate"`
-	ClaimType   string `json:"claim_type"`
 	Stance      string `json:"stance"`
 	SinceSeq    int64  `json:"since_seq"`
 	ChainLength int    `json:"chain_length"`

@@ -1962,10 +1962,16 @@ func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
 	pos := pack.ActivePositions[0]
 	wantLine := fmt.Sprintf("%s [predicate=runtime_stance, claim_type=architecture] → ContextPack uses folded positions digest (since-seq %d, chain-length 2)", fold.Positions[0].ID, latest.Claim.Seq)
 	if pos.Ref != positionRef || pos.Entity != "project:compound" || pos.Topic != "memory_default_organ" ||
-		pos.Predicate != "runtime_stance" || pos.ClaimType != "architecture" ||
 		pos.Stance != "ContextPack uses folded positions digest" || pos.SinceSeq != latest.Claim.Seq ||
 		pos.ChainLength != 2 || pos.Line != wantLine {
 		t.Fatalf("active position = %+v, want line %q", pos, wantLine)
+	}
+	encodedPosition, err := json.Marshal(pos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedPosition), `"predicate":`) || strings.Contains(string(encodedPosition), `"claim_type":`) {
+		t.Fatalf("context-pack v0.1 ActivePosition gained unversioned fields: %s", encodedPosition)
 	}
 	if !strings.Contains(pack.SummaryMD, wantLine) {
 		t.Fatalf("summary should carry folded positions line %q, got %q", wantLine, pack.SummaryMD)
@@ -2020,18 +2026,17 @@ func TestPackWithCapabilitiesKeepsDistinctFactSlotsUnderOneDomain(t *testing.T) 
 		t.Fatalf("active positions = %+v, want two fact slots", pack.ActivePositions)
 	}
 	refs := map[string]bool{}
-	wantObjects := map[string]string{
-		"os_absorption_end_state": "compound owns the meaning layer",
-		"os_absorption_stance":    "adapt sources instead of copying them",
+	wantPredicates := map[string]string{
+		"compound owns the meaning layer":       "os_absorption_end_state",
+		"adapt sources instead of copying them": "os_absorption_stance",
 	}
 	for _, position := range pack.ActivePositions {
 		refs[position.Ref] = true
-		wantObject, ok := wantObjects[position.Predicate]
+		wantPredicate, ok := wantPredicates[position.Stance]
 		if !ok {
 			t.Fatalf("unexpected active position: %+v", position)
 		}
-		if position.ClaimType != "architecture" || position.Stance != wantObject ||
-			!strings.Contains(position.Line, "[predicate="+position.Predicate+", claim_type=architecture]") {
+		if !strings.Contains(position.Line, "[predicate="+wantPredicate+", claim_type=architecture]") {
 			t.Fatalf("active position lost slot meaning: %+v", position)
 		}
 		if !contains(pack.ActiveMemory, position.Ref) || !strings.Contains(pack.SummaryMD, position.Line) {
