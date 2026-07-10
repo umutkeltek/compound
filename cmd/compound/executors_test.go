@@ -94,7 +94,7 @@ func TestExecutorsCLIProjectsWorkbenchAndLeases(t *testing.T) {
 		t.Fatalf("switchback route evidence mismatch: %+v", switchback)
 	}
 	unassigned := requireExecutorRow(t, projection, "unassigned")
-	if unassigned.StatusSource != "workbench" || unassigned.ReadyCount != 0 || unassigned.NextAssigned != nil || executorRefsContain(unassigned.CurrentWork, readyWork.ID) {
+	if unassigned.StatusSource != "workbench" || unassigned.WaitReason != "" || unassigned.ReadyCount != 0 || unassigned.NextAssigned != nil || executorRefsContain(unassigned.CurrentWork, readyWork.ID) {
 		t.Fatalf("unassigned row should not retain ready work available to executors: %+v", unassigned)
 	}
 	for _, row := range projection.Executors {
