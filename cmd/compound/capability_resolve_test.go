@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"compound/internal/capgraph"
@@ -20,14 +23,15 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	store, err := capgraph.Open(homePath)
+	store := addCapabilityGraphFixture(t, homePath)
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	costReport, err := routeevidence.DoctorProviderLedgerCosts(filepath.Join("..", "..", "fixtures", "route", "provider-calls-cost-gaps.ndjson"), routeevidence.ProviderLedgerImportOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Add(capgraph.Node{ID: "tool:fixture-extractor", Kind: "tool", Name: "fixture extractor", Triggers: []string{"extract", "metrics"}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
+	if _, err := routeevidence.RecordCostDoctorObservation(homePath, costReport, cliTestNow); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,6 +66,9 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 	if len(report.RoutePlan.Chain) != 3 {
 		t.Fatalf("unexpected route chain: %+v", report.RoutePlan.Chain)
 	}
+	if len(report.RoutePlan.PendingObservations) != 0 {
+		t.Fatalf("bounded capability resolution must not embed pending route observation bodies: %+v", report.RoutePlan.PendingObservations)
+	}
 	if report.AuthorityRefs[0] != capgraph.CapabilityGraphAuthorityRef || report.AuthorityRefs[1] != routeevidence.ModelCapabilitiesAuthorityRef {
 		t.Fatalf("authority refs = %v", report.AuthorityRefs)
 	}
@@ -72,13 +79,7 @@ func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	store, err := capgraph.Open(homePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Add(capgraph.Node{ID: "tool:fixture-extractor", Kind: "tool", Name: "fixture extractor", Triggers: []string{"extract"}}); err != nil {
-		t.Fatal(err)
-	}
+	store := addCapabilityGraphFixture(t, homePath)
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +96,121 @@ func TestCapabilityResolveAppliesPrivacyAtCompoundRouteOwner(t *testing.T) {
 	}
 }
 
+func TestCapabilityResolveRejectsMissingCapabilityGraphAuthority(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	store, err := capgraph.OpenReadOnly(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "capability graph authority has no nodes") {
+		t.Fatalf("missing graph authority error = %v", err)
+	}
+}
+
+func TestCapabilityResolveRejectsMissingCapabilityGraphProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(capgraph.Node{ID: "tool:fixture-extractor", Kind: "tool", Name: "fixture extractor", Triggers: []string{"extract"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "capability graph authority has no source provenance") {
+		t.Fatalf("missing graph provenance error = %v", err)
+	}
+}
+
+func TestCapabilityResolveRejectsMissingModelRouterProvenance(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	store := addCapabilityGraphFixture(t, homePath)
+	source := filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml")
+	data, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(routeevidence.ModelCapabilitiesPath(homePath), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildCapabilityResolutionReport(store, homePath, "extract metrics", "", false, cliTestNow); err == nil || !strings.Contains(err.Error(), "model-router authority has no source provenance") {
+		t.Fatalf("missing router provenance error = %v", err)
+	}
+}
+
+func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
+	homePath := t.TempDir()
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	store := addCapabilityGraphFixture(t, homePath)
+	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildCapabilityResolutionReport(store, homePath, "audit private records", "", true, cliTestNow); err == nil || !strings.Contains(err.Error(), "no eligible lane") {
+		t.Fatalf("empty privacy route error = %v", err)
+	}
+}
+
+const capabilityResolveMissingHomeHelper = "COMPOUND_CAPABILITY_RESOLVE_MISSING_HOME_HELPER"
+
+func TestCapabilityResolveMissingHomeFailsWithoutMutation(t *testing.T) {
+	if os.Getenv(capabilityResolveMissingHomeHelper) == "1" {
+		cmdCapability([]string{"resolve", "--json", "extract metrics"})
+		return
+	}
+
+	homePath := filepath.Join(t.TempDir(), "missing-home")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCapabilityResolveMissingHomeFailsWithoutMutation$")
+	cmd.Env = append(os.Environ(), capabilityResolveMissingHomeHelper+"=1", "COMPOUND_HOME="+homePath)
+	output, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Fatalf("missing home should exit 1, err=%v output=%s", err, output)
+	}
+	if _, err := os.Stat(homePath); !os.IsNotExist(err) {
+		t.Fatalf("read-only resolve created missing home %s: %v", homePath, err)
+	}
+}
+
+func addCapabilityGraphFixture(t *testing.T, homePath string) *capgraph.Store {
+	t.Helper()
+	store, err := capgraph.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := capgraph.Node{ID: "tool:fixture-extractor", Kind: "tool", Name: "fixture extractor", Triggers: []string{"extract", "metrics", "audit"}}
+	if err := store.Add(node); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capgraph.RecordSourceAuthority(homePath, capgraph.SourceAuthorityInput{
+		SourcePath:     "fixtures/capability-test.yaml",
+		SourceKind:     "synthetic_fixture",
+		SourceClass:    "capability",
+		SourceRevision: "sha256:" + strings.Repeat("b", 64),
+		ImportedVia:    "capability resolver test fixture",
+		NodeIDs:        []string{node.ID},
+		EvidenceRefs:   []string{"fixture:capability-resolver"},
+	}, cliTestNow); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func snapshotCapabilityResolveHome(t *testing.T, root string) string {
 	t.Helper()
 	h := sha256.New()
@@ -102,17 +218,26 @@ func snapshotCapabilityResolveHome(t *testing.T, root string) string {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() {
-			return nil
-		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		if entry.IsDir() {
+			_, _ = h.Write([]byte("dir"))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(rel))
+			_, _ = h.Write([]byte{0})
+			return nil
 		}
 		body, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
+		_, _ = h.Write([]byte("file"))
+		_, _ = h.Write([]byte{0})
 		_, _ = h.Write([]byte(rel))
 		_, _ = h.Write([]byte{0})
 		_, _ = h.Write(body)
