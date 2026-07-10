@@ -271,17 +271,22 @@ func critique(c Candidate, prior PriorState) Critique {
 	if c.Kind != KindMemory {
 		return Critique{IsNew: true}
 	}
+	var exact *mem.Claim
+	candidateSlot := mem.ClaimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, "")
+	for i := range prior.Current {
+		cl := &prior.Current[i]
+		claimSlot := mem.ClaimSlotKey(cl.Entity, cl.Predicate, cl.ClaimType, cl.Qualifiers, cl.ID)
+		if claimSlot == candidateSlot && (exact == nil || cl.Seq > exact.Seq) {
+			exact = cl
+		}
+	}
+	if exact != nil {
+		return critiqueMemorySlot(c, *exact)
+	}
 	for _, cl := range prior.Current {
-		if mem.ClusterKey(cl.Entity, cl.Topic(), cl.ClaimType) == mem.ClusterKey(c.Entity, memoryTopic(c), c.ClaimType) {
-			if mem.SameClaimObject(cl.Object, c.Object) && mem.SameClaimQualifiers(cl.Qualifiers, c.Qualifiers) {
-				return Critique{Duplicate: true, DuplicateClaimID: cl.ID, Notes: "matches current claim " + cl.ID}
-			}
-			if c.Confidence < cl.Confidence {
-				// a weaker candidate conflicting with stronger canon is a CONTRADICTION, not a
-				// supersession — it must not silently overwrite higher-confidence current truth.
-				return Critique{Contradicts: cl.ID, Notes: fmt.Sprintf("conflicts with higher-confidence %s (%.2f < %.2f)", cl.ID, c.Confidence, cl.Confidence)}
-			}
-			return Critique{Supersedes: cl.ID, Notes: "changes " + cl.Object + " → " + c.Object}
+		if mem.ClusterKey(cl.Entity, cl.Topic(), cl.ClaimType) == mem.ClusterKey(c.Entity, memoryTopic(c), c.ClaimType) &&
+			mem.SameClaimObject(cl.Object, c.Object) && mem.SameClaimQualifiers(cl.Qualifiers, c.Qualifiers) {
+			return Critique{Duplicate: true, DuplicateClaimID: cl.ID, Notes: "matches current claim " + cl.ID}
 		}
 	}
 	if dup, ok := duplicatePriorCandidate(c, prior.CandidatesByKind[KindMemory]); ok {
@@ -292,6 +297,18 @@ func critique(c Candidate, prior PriorState) Critique {
 		}
 	}
 	return Critique{IsNew: true}
+}
+
+func critiqueMemorySlot(c Candidate, current mem.Claim) Critique {
+	if mem.SameClaimObject(current.Object, c.Object) && mem.SameClaimQualifiers(current.Qualifiers, c.Qualifiers) {
+		return Critique{Duplicate: true, DuplicateClaimID: current.ID, Notes: "matches current claim " + current.ID}
+	}
+	if c.Confidence < current.Confidence {
+		// A weaker candidate conflicting with stronger canon is a contradiction,
+		// not a supersession; it must not silently overwrite current truth.
+		return Critique{Contradicts: current.ID, Notes: fmt.Sprintf("conflicts with higher-confidence %s (%.2f < %.2f)", current.ID, c.Confidence, current.Confidence)}
+	}
+	return Critique{Supersedes: current.ID, Notes: "changes " + current.Object + " → " + c.Object}
 }
 
 func normalizeSeedCandidate(c *Candidate) {

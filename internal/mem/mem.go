@@ -168,14 +168,12 @@ type Edge struct {
 	CreatedAt       string   `json:"created_at"`
 }
 
-// Position is the CURRENT durable stance per (entity, topic) — the topic-grouped view of the
-// ledger the audit named as missing in mem. The active claim is the current (non-superseded)
-// version; the chain is the FULL supersession history (MVCC-by-fold), so a Position carries
-// old→new, not just the latest value. This is the spine-native convergence of internal/position
-// (Gen-1 grouped by (entity, topic) over a candidate/promoted status model; here topic = predicate
-// and "current" is derived by folding supersession, never by mutation).
+// Position is the CURRENT durable stance per fact slot. Topic remains the broad domain axis, while
+// predicate and claim type keep independent facts in that domain from sharing a version chain. The
+// active claim is the current (non-superseded) version; the chain is the FULL supersession history
+// (MVCC-by-fold), so a Position carries old→new, not just the latest value.
 type Position struct {
-	ID                    string   `json:"id"` // entity::topic
+	ID                    string   `json:"id"` // stable entity::topic[::predicate][::claim_type] slot id
 	Entity                string   `json:"entity"`
 	Topic                 string   `json:"topic"` // mem's topic axis = domain qualifier, else predicate
 	Predicate             string   `json:"predicate,omitempty"`
@@ -483,7 +481,9 @@ func isDuplicatePromotion(c Candidate, prior Claim, hasPrior bool) bool {
 		return false
 	}
 	if c.Entity != "" || c.Predicate != "" || c.ClaimType != "" {
-		if !sameClusterKey(ClusterKey(c.Entity, c.Topic(), c.ClaimType), ClusterKey(prior.Entity, prior.Topic(), prior.ClaimType)) {
+		candidateKey := ClaimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, "")
+		priorKey := ClaimSlotKey(prior.Entity, prior.Predicate, prior.ClaimType, prior.Qualifiers, prior.ID)
+		if !sameClusterKey(candidateKey, priorKey) {
 			return false
 		}
 	}
@@ -543,8 +543,20 @@ func (s *Store) reinforceIfEcho(c Candidate, now time.Time) (bool, error) {
 		if err != nil {
 			return err
 		}
-		if !isDuplicatePromotion(c, prior, hasPrior) {
-			return nil
+		if hasPrior {
+			// An exact fact slot wins over a broad domain echo. A changed value
+			// must proceed to adjudication and supersede its own prior version.
+			if !isDuplicatePromotion(c, prior, true) {
+				return nil
+			}
+		} else {
+			prior, hasPrior, err = s.currentEchoClaim(c, 0)
+			if err != nil {
+				return err
+			}
+			if !hasPrior {
+				return nil
+			}
 		}
 		evidence, err := s.RecordEvidence(EvidenceItem{
 			SourceKind: "memory-candidate",
@@ -893,6 +905,39 @@ func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, er
 			continue
 		}
 		got, err := s.claimClusterKey(claim)
+		if err != nil {
+			return Claim{}, false, err
+		}
+		if sameClusterKey(got, want) && (!found || claim.Seq > best.Seq) {
+			best, found = claim, true
+		}
+	}
+	return best, found, nil
+}
+
+func (s *Store) currentEchoClaim(cand Candidate, asOf int64) (Claim, bool, error) {
+	claims, err := s.loadClaimsAsOf(asOf)
+	if err != nil {
+		return Claim{}, false, err
+	}
+	if asOf == 0 {
+		asOf = s.maxSeq(claims)
+	}
+	want, err := s.candidateEchoKey(cand)
+	if err != nil {
+		return Claim{}, false, err
+	}
+	superseded, err := s.supersededAsOf(asOf)
+	if err != nil {
+		return Claim{}, false, err
+	}
+	var best Claim
+	found := false
+	for _, claim := range claims {
+		if claim.Seq > asOf || superseded[claim.ID] || !SameClaimObject(claim.Object, cand.Object) || !sameQualifiers(claim.Qualifiers, cand.Qualifiers) {
+			continue
+		}
+		got, err := s.claimEchoKey(claim)
 		if err != nil {
 			return Claim{}, false, err
 		}

@@ -4,11 +4,29 @@ import "strings"
 
 const clusterSep = "\x1f"
 
-// ClusterKey is the pure topic identity used by memory anti-echo logic.
+// ClusterKey is the broad topic identity used by memory anti-echo logic.
 func ClusterKey(entity, topic, claimType string) string {
 	return strings.Join([]string{
 		NormalizeClaimValue(entity),
 		NormalizeClaimValue(topic),
+		NormalizeClaimValue(claimType),
+	}, clusterSep)
+}
+
+// ClaimSlotKey is the narrow identity for versioning one fact. Domain remains a
+// broad topic axis, while predicate keeps independent facts in that domain from
+// superseding or contradicting each other. An explicit decision_id is already
+// the stronger identity, so predicate aliases for that named decision share a
+// slot intentionally.
+func ClaimSlotKey(entity, predicate, claimType string, qualifiers map[string]string, fallbackID string) string {
+	slotPredicate := predicate
+	if NormalizeClaimValue(claimType) == "decision" && strings.TrimSpace(qualifiers["decision_id"]) != "" {
+		slotPredicate = ""
+	}
+	return strings.Join([]string{
+		NormalizeClaimValue(decisionClusterEntity(entity, claimType, qualifiers, fallbackID)),
+		NormalizeClaimValue(topicFromQualifiers(predicate, qualifiers)),
+		NormalizeClaimValue(slotPredicate),
 		NormalizeClaimValue(claimType),
 	}, clusterSep)
 }
@@ -30,11 +48,29 @@ func (s *Store) ClusterKey(entity, topic, claimType string) (string, error) {
 }
 
 func (s *Store) candidateClusterKey(c Candidate) (string, error) {
-	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, ""), c.Topic(), c.ClaimType)
+	return s.claimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, "")
 }
 
 func (s *Store) claimClusterKey(c Claim) (string, error) {
+	return s.claimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, c.ID)
+}
+
+func (s *Store) candidateEchoKey(c Candidate) (string, error) {
+	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, ""), c.Topic(), c.ClaimType)
+}
+
+func (s *Store) claimEchoKey(c Claim) (string, error) {
 	return s.ClusterKey(decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, c.ID), c.Topic(), c.ClaimType)
+}
+
+func (s *Store) claimSlotKey(entity, predicate, claimType string, qualifiers map[string]string, fallbackID string) (string, error) {
+	resolved := entity
+	if r, err := s.ResolveEntity(entity); err != nil {
+		return "", err
+	} else if r.Status == "resolved" {
+		resolved = r.Slug
+	}
+	return ClaimSlotKey(resolved, predicate, claimType, qualifiers, fallbackID), nil
 }
 
 func sameClusterKey(a, b string) bool {

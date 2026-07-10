@@ -181,9 +181,10 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 	if !now.IsZero() {
 		foldedAt = rfc3339(now)
 	}
-	type key struct{ entity, topic string }
-	groups := map[key][]Claim{}
-	var order []key
+	type key struct{ slot, entity, topic, id string }
+	groups := map[string][]Claim{}
+	keys := map[string]key{}
+	var order []string
 	entity := strings.TrimSpace(opts.Entity)
 	if entity != "" {
 		entity, err = s.canonicalRecallEntity(entity, claims, false)
@@ -201,28 +202,34 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 		if len(topicSet) > 0 && !claimHasTopicRef(c, topicSet) {
 			continue
 		}
-		k := key{c.Entity, c.Topic()}
-		if _, ok := groups[k]; !ok {
-			order = append(order, k)
+		slot := ClaimSlotKey(c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, c.ID)
+		if _, ok := groups[slot]; !ok {
+			order = append(order, slot)
+			keys[slot] = key{slot: slot, entity: c.Entity, topic: c.Topic(), id: positionIDForClaim(c)}
 		}
-		groups[k] = append(groups[k], c)
+		groups[slot] = append(groups[slot], c)
 	}
 	sort.Slice(order, func(i, j int) bool {
-		if order[i].entity != order[j].entity {
-			return order[i].entity < order[j].entity
+		a, b := keys[order[i]], keys[order[j]]
+		if a.entity != b.entity {
+			return a.entity < b.entity
 		}
-		return order[i].topic < order[j].topic
+		if a.topic != b.topic {
+			return a.topic < b.topic
+		}
+		return a.slot < b.slot
 	})
 	out := make([]Position, 0, len(order))
-	for _, k := range order {
-		cs := groups[k]
+	for _, slot := range order {
+		k := keys[slot]
+		cs := groups[slot]
 		sort.Slice(cs, func(i, j int) bool {
 			if cs[i].Seq == cs[j].Seq {
 				return cs[i].ID < cs[j].ID
 			}
 			return cs[i].Seq < cs[j].Seq
 		})
-		position, ok := buildPosition(k.entity, k.topic, cs, superseded, asOf, foldedAt)
+		position, ok := buildPosition(k.id, k.entity, k.topic, cs, superseded, asOf, foldedAt)
 		if ok {
 			out = append(out, position)
 		}
@@ -230,7 +237,7 @@ func (s *Store) derivePositions(opts PositionFoldOptions, now time.Time) ([]Posi
 	return out, asOf, subtree, nil
 }
 
-func buildPosition(entity, topic string, claims []Claim, superseded map[string]bool, asOf int64, foldedAt string) (Position, bool) {
+func buildPosition(id, entity, topic string, claims []Claim, superseded map[string]bool, asOf int64, foldedAt string) (Position, bool) {
 	chain := make([]string, 0, len(claims))
 	supporting := []string{}
 	history := []string{}
@@ -240,12 +247,8 @@ func buildPosition(entity, topic string, claims []Claim, superseded map[string]b
 	var active Claim
 	found := false
 	contested := false
-	predicate := ""
 	for _, claim := range claims {
 		chain = append(chain, claim.ID)
-		if predicate == "" {
-			predicate = claim.Predicate
-		}
 		evidenceRefs = append(evidenceRefs, claim.EvidenceRefs...)
 		topicRefs = append(topicRefs, claim.TopicRefs...)
 		if claim.State == ClaimStateNeedsReview {
@@ -270,10 +273,10 @@ func buildPosition(entity, topic string, claims []Claim, superseded map[string]b
 		status = "contested"
 	}
 	return Position{
-		ID:                    entity + "::" + topic,
+		ID:                    id,
 		Entity:                entity,
 		Topic:                 topic,
-		Predicate:             predicate,
+		Predicate:             active.Predicate,
 		ActiveClaimID:         active.ID,
 		ActiveObject:          active.Object,
 		Status:                status,
@@ -286,6 +289,21 @@ func buildPosition(entity, topic string, claims []Claim, superseded map[string]b
 		FoldedAt:              foldedAt,
 		AsOfSeq:               asOf,
 	}, true
+}
+
+func positionIDForClaim(claim Claim) string {
+	parts := []string{strings.TrimSpace(claim.Entity), strings.TrimSpace(claim.Topic())}
+	clusterEntity := decisionClusterEntity(claim.Entity, claim.ClaimType, claim.Qualifiers, claim.ID)
+	switch {
+	case NormalizeClaimValue(clusterEntity) != NormalizeClaimValue(claim.Entity):
+		parts = append(parts, strings.TrimSpace(clusterEntity))
+	case NormalizeClaimValue(claim.Predicate) != NormalizeClaimValue(claim.Topic()):
+		parts = append(parts, strings.TrimSpace(claim.Predicate))
+	}
+	if strings.TrimSpace(claim.ClaimType) != "" {
+		parts = append(parts, strings.TrimSpace(claim.ClaimType))
+	}
+	return strings.Join(parts, "::")
 }
 
 func (s *Store) topicScopeSet(topic string) (map[string]bool, []string, error) {
