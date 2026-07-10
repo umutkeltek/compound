@@ -266,7 +266,7 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := reconcileRecentTerminalSnapshots(works, receipts, artifact.Class, lookbackStart); err != nil {
+	if err := reconcileRecentTerminalSnapshots(works, receipts, artifact.Class, lookbackStart, evaluatedAt); err != nil {
 		return Artifact{}, err
 	}
 	routes, err := loadRouteRows(homePath)
@@ -799,7 +799,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	return out, nil
 }
 
-func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart time.Time) error {
+func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) error {
 	byID := map[string][]workSnapshot{}
 	for _, work := range works {
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
@@ -821,6 +821,9 @@ func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]
 			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(terminal.At))
 			if err != nil {
 				return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
+			}
+			if parsed.After(lookbackEnd) {
+				return fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, terminal.At, lookbackEnd.UTC().Format(time.RFC3339))
 			}
 			if !parsed.Before(lookbackStart) {
 				recent = true
