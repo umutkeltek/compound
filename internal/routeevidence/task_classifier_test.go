@@ -42,11 +42,16 @@ func TestClassifyCapabilityTaskUsesOwnedOrderedRules(t *testing.T) {
 }
 
 func TestCapabilityTaskClassifierRevisionChangesWithRules(t *testing.T) {
-	baseline := taskClassifierRevision(taskClassificationRules)
+	baseline := taskClassifierRevision(taskClassificationRules, defaultTaskClassificationRule)
 	changed := append([]taskClassificationRule{}, taskClassificationRules...)
 	changed[0].evaluationMethod += " plus changed proof"
-	if got := taskClassifierRevision(changed); got == baseline {
+	if got := taskClassifierRevision(changed, defaultTaskClassificationRule); got == baseline {
 		t.Fatal("classifier authority revision did not change with rule contract")
+	}
+	changedDefault := defaultTaskClassificationRule
+	changedDefault.evaluationMethod += " plus changed default proof"
+	if got := taskClassifierRevision(taskClassificationRules, changedDefault); got == baseline {
+		t.Fatal("classifier authority revision did not change with default rule contract")
 	}
 }
 

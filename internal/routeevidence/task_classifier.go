@@ -47,7 +47,14 @@ var taskClassificationRules = []taskClassificationRule{
 	taskRule("build-implement", "build-implement", `\b(build|implement|fix|debug|feature|refactor|code|patch)\b`, "reproduce/run tests before LLM code work", "tests + diff + runtime verification"),
 }
 
-var capabilityTaskClassifierRevision = taskClassifierRevision(taskClassificationRules)
+var defaultTaskClassificationRule = taskClassificationRule{
+	id:                 "default-classify-extract",
+	capabilityClass:    "classify-extract",
+	deterministicFirst: "deterministic tool/script first",
+	evaluationMethod:   "schema/sample validation",
+}
+
+var capabilityTaskClassifierRevision = taskClassifierRevision(taskClassificationRules, defaultTaskClassificationRule)
 
 func taskRule(id, capabilityClass, pattern, deterministicFirst, evaluationMethod string) taskClassificationRule {
 	return taskClassificationRule{
@@ -76,24 +83,26 @@ func ClassifyCapabilityTask(task string) TaskClassification {
 			}
 		}
 	}
+	fallback := defaultTaskClassificationRule
 	return TaskClassification{
 		SchemaVersion:      CapabilityTaskClassifierSchemaVersion,
 		AuthorityRef:       CapabilityTaskClassifierAuthorityRef,
 		AuthorityRevision:  capabilityTaskClassifierRevision,
-		RuleID:             "default-classify-extract",
-		CapabilityClass:    "classify-extract",
-		DeterministicFirst: "deterministic tool/script first",
-		EvaluationMethod:   "schema/sample validation",
+		RuleID:             fallback.id,
+		CapabilityClass:    fallback.capabilityClass,
+		DeterministicFirst: fallback.deterministicFirst,
+		EvaluationMethod:   fallback.evaluationMethod,
 	}
 }
 
-func taskClassifierRevision(rules []taskClassificationRule) string {
+func taskClassifierRevision(rules []taskClassificationRule, fallback taskClassificationRule) string {
 	var contract strings.Builder
 	contract.WriteString(CapabilityTaskClassifierSchemaVersion)
 	contract.WriteByte('\n')
 	for _, rule := range rules {
 		fmt.Fprintf(&contract, "%s\x00%s\x00%s\x00%s\x00%s\n", rule.id, rule.capabilityClass, rule.pattern.String(), rule.deterministicFirst, rule.evaluationMethod)
 	}
+	fmt.Fprintf(&contract, "default\x00%s\x00%s\x00%s\x00%s\n", fallback.id, fallback.capabilityClass, fallback.deterministicFirst, fallback.evaluationMethod)
 	sum := sha256.Sum256([]byte(contract.String()))
 	return fmt.Sprintf("sha256:%x", sum)
 }
