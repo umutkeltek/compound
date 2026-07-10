@@ -488,7 +488,14 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 	if strings.TrimSpace(note) == "" {
 		note = "created"
 	}
-	if err := s.appendEvent(Event{TS: ts(now), WorkID: w.ID, From: "", To: state, Note: note, Attached: attached}); err != nil {
+	event := Event{TS: ts(now), WorkID: w.ID, From: "", To: state, Note: note, Attached: attached}
+	if terminalStates[state] {
+		event.WorkSHA256, err = workEnvelopeSHA256(w)
+		if err != nil {
+			return w, err
+		}
+	}
+	if err := s.appendEvent(event); err != nil {
 		return w, err
 	}
 	return w, nil
