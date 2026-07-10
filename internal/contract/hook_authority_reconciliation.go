@@ -218,8 +218,12 @@ func canonicalHookHandlerRef(value, harnessHome string) string {
 		return ""
 	}
 	normalized := strings.ReplaceAll(value, "${HOME}", "$HOME")
-	if harnessHome != "" {
-		normalized = strings.ReplaceAll(normalized, filepath.Clean(harnessHome), "$HOME")
+	normalizationHome := strings.TrimSpace(harnessHome)
+	if normalizationHome == "" {
+		normalizationHome, _ = os.UserHomeDir()
+	}
+	if normalizationHome != "" {
+		normalized = strings.ReplaceAll(normalized, filepath.Clean(normalizationHome), "$HOME")
 	}
 	if strings.HasPrefix(normalized, "~/") {
 		normalized = "$HOME/" + strings.TrimPrefix(normalized, "~/")
