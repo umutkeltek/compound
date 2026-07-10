@@ -424,6 +424,23 @@ func TestCompileFailsClosedOnFutureReceiptTimestamp(t *testing.T) {
 	}
 }
 
+func TestCompileFailsClosedWhenRecentTerminalReceiptIsBackdated(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "backdated-receipt-old-clean", proofNow.Add(-72*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "backdated-receipt-new-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	recent := seedSample(t, home, plan, "backdated-receipt-recent-failure", proofNow, sampleOptions{routeOnly: true})
+	baseline := compile(t, home, plan, 2)
+	if baseline.Status != "ineligible" {
+		t.Fatalf("fixture failure was not in the latest cohort: %+v", baseline)
+	}
+	rewriteReceiptCreatedAt(t, home, recent.ReceiptID, proofNow.Add(-31*24*time.Hour))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+recent.WorkID+" receipt timestamp does not match terminal event") {
+		t.Fatalf("backdated receipt hid recent terminal failure: %v", err)
+	}
+}
+
 func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
 	for _, mode := range []string{"hot", "restored"} {
 		t.Run(mode, func(t *testing.T) {
