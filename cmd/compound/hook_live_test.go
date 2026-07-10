@@ -342,6 +342,34 @@ func TestHookLiveCodexPreToolUseDeniesWhenAnyApplyPatchTargetIsMisplacedCanon(t 
 	}
 }
 
+func TestHookLiveCodexPreToolUseDeniesUnparseableApplyPatch(t *testing.T) {
+	homePath := t.TempDir()
+	repo := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	input := `{"hook_event_name":"PreToolUse","session_id":"sess_codex_unparsed","cwd":` +
+		quoteJSON(repo) + `,"tool_name":"apply_patch","tool_input":{"command":"new-wire-format"}}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("unparseable Codex hook exit = %d, want native JSON deny\n%s", code, out)
+	}
+	var resp claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse native response: %v\n%s", err, out)
+	}
+	got := resp.HookSpecificOutput
+	if got.PermissionDecision != "deny" || !strings.Contains(got.PermissionDecisionReason, "security") {
+		t.Fatalf("unparseable patch response = %+v, want fail-closed deny", got)
+	}
+}
+
 func TestHookLiveSessionEndRecordsEventAndParity(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
