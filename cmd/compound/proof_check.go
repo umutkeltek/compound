@@ -197,6 +197,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-generic-actions-smoke", Command: consoleBunSmokeCommand("scripts/generic-actions-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-generic-actions-smoke"},
 		{Name: "console-view-registry-smoke", Command: consoleBunSmokeCommand("scripts/view-registry-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-view-registry-smoke"},
 		{Name: "console-decide-brief-smoke", Command: consoleBunSmokeCommand("scripts/decide-model-brief-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decide-brief-smoke"},
+		{Name: "console-decision-execute-smoke", Command: consoleBunSmokeCommand("scripts/decision-execute-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decision-execute-smoke"},
 		{Name: "console-attention-consistency-smoke", Command: consoleSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-attention-consistency-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},

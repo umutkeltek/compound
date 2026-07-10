@@ -3,6 +3,7 @@ import {
   argvMatchesAllowlist,
   clamp01,
   type DecisionAreaSpec,
+  type DecisionOption,
   specFor,
 } from "@/lib/decision-registry";
 import {
@@ -148,6 +149,20 @@ async function currentDispatchTarget(): Promise<Json | null> {
   return next;
 }
 
+/**
+ * A bespoke spec wins only when it can actually act on THIS item. When its
+ * option set for the item is empty and the caller named a projection action,
+ * the governed generic pathway (generic-actions.ts — three gates + confirm)
+ * takes over: decide-model offers exactly that pathway (batch-enumerable)
+ * for spec'd areas with no executable option, so refusing it here strands
+ * every such card (lived 2026-07-10: route-promotions demote/hold_failing
+ * "Apply 1 of 1" returned `decision "" is not valid for this item's current
+ * state` — the model and the endpoint disagreed about who may act).
+ */
+export function genericFallbackAllowed(allowedOptions: DecisionOption[], actionId: string): boolean {
+  return allowedOptions.length === 0 && actionId.trim() !== "";
+}
+
 export async function executeDecision(body: Record<string, unknown>): Promise<Response> {
   const area = typeof body.area === "string" ? body.area : "";
   const itemId = typeof body.itemId === "string" ? body.itemId.trim() : "";
@@ -211,6 +226,9 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   }
 
   const allowedOptions = spec.optionsFor ? spec.optionsFor(item ?? {}) : spec.options;
+  if (genericFallbackAllowed(allowedOptions, actionId)) {
+    return executeGenericAction(area, itemId, actionId, confirmed, rationale);
+  }
   if (!allowedOptions.some((o) => o.value === option)) {
     return Response.json(
       { ok: false, stderr: `decision "${option}" is not valid for this item's current state` },
