@@ -11469,7 +11469,7 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 	})
 	if !strings.Contains(importOut, "# route import-model-capabilities") ||
 		!strings.Contains(importOut, "- authority: compound://registries/model-router") ||
-		!strings.Contains(importOut, "- models: 4") ||
+		!strings.Contains(importOut, "- models: 5") ||
 		!strings.Contains(importOut, "- verdict: compound_primary") {
 		t.Fatalf("bad import output:\n%s", importOut)
 	}
@@ -11483,8 +11483,8 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 	}
 	if modelProjection.SchemaVersion != routeevidence.ModelCapabilitiesProjectionSchema ||
 		modelProjection.AuthorityRef != routeevidence.ModelCapabilitiesAuthorityRef ||
-		modelProjection.ModelCount != 4 ||
-		len(modelProjection.Lanes) != 4 ||
+		modelProjection.ModelCount != 5 ||
+		len(modelProjection.Lanes) != 5 ||
 		modelProjection.Lanes[0].ModelID != "auto/extract" ||
 		len(modelProjection.Lanes[0].Capabilities) == 0 {
 		t.Fatalf("bad model capabilities projection: %+v", modelProjection)
@@ -11496,7 +11496,8 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 	if !strings.Contains(planOut, "# route capability-plan crp_") ||
 		!strings.Contains(planOut, "- routing_rule: routing_defaults[judge-critique]") ||
 		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][0] -> auto/judge") ||
-		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][1] -> scout/chat") ||
+		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][1] -> deepseek/deepseek-v4-pro") ||
+		!strings.Contains(planOut, "lane_justification: routing_defaults[judge-critique][2] -> scout/chat") ||
 		!strings.Contains(planOut, "cost_class=api-marginal") ||
 		!strings.Contains(planOut, "harness=switchback provider_route=auto/judge effort=high") ||
 		!strings.Contains(planOut, "role=tripwire_only") ||
@@ -11514,7 +11515,7 @@ func TestRouteImportModelCapabilitiesFeedsCapabilityPlan(t *testing.T) {
 		plan.AuthorityRef != routeevidence.ModelCapabilitiesAuthorityRef ||
 		plan.CapabilityClass != "judge-critique" ||
 		plan.RoutingRule != "routing_defaults[judge-critique]" ||
-		len(plan.Chain) != 2 {
+		len(plan.Chain) != 3 {
 		t.Fatalf("bad route plan JSON: %+v", plan)
 	}
 	costFixture := filepath.Join("..", "..", "fixtures", "route", "provider-calls-cost-gaps.ndjson")
