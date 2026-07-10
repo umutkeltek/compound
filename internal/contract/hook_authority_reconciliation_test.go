@@ -83,6 +83,16 @@ func TestCanonicalHookHandlerRefKeepsCompoundArgumentsInIdentity(t *testing.T) {
 	}
 }
 
+func TestCanonicalHookHandlerRefNormalizesCurrentHomeWithoutExplicitHarnessHome(t *testing.T) {
+	harnessHome := t.TempDir()
+	t.Setenv("HOME", harnessHome)
+	absolute := canonicalHookHandlerRef(filepath.Join(harnessHome, ".local", "bin", "compound")+` hook pre-tool-use --live --harness codex`, "")
+	portable := canonicalHookHandlerRef(`$HOME/.local/bin/compound hook pre-tool-use --live --harness codex`, harnessHome)
+	if absolute != portable {
+		t.Fatalf("implicit current-home normalization drifted: absolute=%q portable=%q", absolute, portable)
+	}
+}
+
 func writeHarnessHookConfig(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
