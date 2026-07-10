@@ -319,14 +319,14 @@ func TestSessionStartWritesHarnessFilteredInjection(t *testing.T) {
 	text := string(b)
 	for _, want := range []string{
 		"## Active Hooks",
+		"hook://codex/PreToolUse",
 		"hook://codex/SessionStart",
 		"## Hook Gate Readiness",
-		"`codex/PreToolUse` status=missing_gate",
-		"adapter_required=true",
-		"command=`compound hook pre-tool-use --enforce FIXTURE_JSON`",
+		"`codex/PreToolUse` status=native_blocking",
+		"installed=true",
+		"native_block=true",
 		"## Hook Roster",
 		"## Required Checks",
-		"pre_write_gate codex/PreToolUse status=missing_gate",
 		"capability://skill:codex-pricing",
 		"capability://skill:generic-pricing",
 		"[offer, not execution]",

@@ -1296,8 +1296,8 @@ func TestHookReadinessActionContractFailsOnProseOnlyActions(t *testing.T) {
 		t.Fatalf("findings = %+v, want one failure", findings)
 	}
 	if !strings.Contains(findings[0].Message, "prove_fixture_hook") ||
-		!strings.Contains(findings[0].Message, "prove_live_wrapper_gate") ||
-		!strings.Contains(findings[0].Message, "codex-pretooluse-wrapper-proof") ||
+		!strings.Contains(findings[0].Message, "native_blocking") ||
+		!strings.Contains(findings[0].Message, "codex-pretooluse-native-gate-proof") ||
 		!strings.Contains(findings[0].Message, "expected_exit_code") ||
 		!strings.Contains(findings[0].Message, "operator_live_adapter_required") {
 		t.Fatalf("failure should name missing action cards: %+v", findings)

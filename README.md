@@ -120,8 +120,9 @@ Execution and policy:
 - `compound writeback ...` gates owner writeback and no-promote decisions
   through policy and receipts.
 - `compound hook ...` and `compound harness ...` normalize harness events into
-  spine objects; `compound hook pre-tool-use --enforce ...` returns policy gate
-  exit codes for wrapper enforcement.
+  spine objects; native blocking hooks return deny decisions, while `compound
+  hook pre-tool-use --enforce ...` returns policy gate exit codes for
+  non-blocking adapter fallbacks.
 
 Meaning and evidence:
 

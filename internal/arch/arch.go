@@ -61,6 +61,7 @@ var Classification = map[string]Class{
 	"breadth":        Leaf,
 	"candidates":     Leaf,
 	"corpus":         Leaf, // lane-scoped corpus indexes: disposable derivatives over imported evidence; ledger stays authority, hits never ambient
+	"hookplan":       Leaf, // desired/observed hook reconciliation model; installed-hooks ledger and harness configs retain authority
 	"negatives":      Leaf, // rebuildable read-only projection over inbox/failure-patterns + reviews/route-remorse; owns no authority objects, surfaces scope-matched negatives at orient (Weng item 6)
 	"release":        Leaf,
 	"reviewartifact": Leaf,
@@ -1017,7 +1018,7 @@ func checkOperatorOrientAdjacentProgressContract(repoRoot string) []Finding {
 			"conversation-preflight-private-export",
 			"conversation-memory-review-gate",
 			"second-opinion-evidence-recovery",
-			"codex-pretooluse-wrapper-proof",
+			"codex-pretooluse-native-gate-proof",
 			"resolve policy/source-control hold",
 			"workbench.adjacent_progress",
 			"TestOrientOperatorSurfacesAdmissionPreviewReviewCardContext",
@@ -1032,8 +1033,8 @@ func checkOperatorOrientAdjacentProgressContract(repoRoot string) []Finding {
 			"proof-check-installed-runtime",
 			"architecture-doctor-strict",
 			"workbench-projection-refresh",
-			"codex-pretooluse-wrapper-proof",
-			"runProofCheckCodexPreToolUseWrapper",
+			"codex-pretooluse-native-gate-proof",
+			"runProofCheckCodexPreToolUseNativeGate",
 			"workbench\", \"--json\"",
 			"adjacent Workbench action",
 			"Do not rerun",
@@ -1044,7 +1045,7 @@ func checkOperatorOrientAdjacentProgressContract(repoRoot string) []Finding {
 			"proof-check-installed-runtime",
 			"architecture-doctor-strict",
 			"workbench-projection-refresh",
-			"codex-pretooluse-wrapper-proof",
+			"codex-pretooluse-native-gate-proof",
 			"ConsumedNonPacketActions",
 			"ConsumedEvidenceRefs",
 		},
@@ -1943,8 +1944,8 @@ func checkHookLiveParityContextSpineContract(repoRoot string) []Finding {
 }
 
 // checkHookReadinessActionContract keeps hook readiness rows actionable without
-// letting agents flip hook registration. Missing live-adapter rows must carry
-// fixture proof and operator-only shim actions with verification/rollback text.
+// letting agents flip registration. Current Codex must prove its native write
+// gate, while genuinely missing live adapters retain fixture/operator actions.
 func checkHookReadinessActionContract(repoRoot string) []Finding {
 	statusBytes, err := os.ReadFile(filepath.Join(repoRoot, "docs", "architecture", "status.md"))
 	if err != nil {
@@ -1956,8 +1957,10 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(status, "ready") &&
 		strings.Contains(status, "contextpack") &&
 		strings.Contains(status, "effectivecontract") &&
+		strings.Contains(status, "native_blocking") &&
+		strings.Contains(status, "codex-pretooluse-native-gate-proof") &&
+		strings.Contains(status, "permissiondecision") &&
 		strings.Contains(status, "prove_fixture_hook") &&
-		strings.Contains(status, "prove_live_wrapper_gate") &&
 		strings.Contains(status, "expected_exit_code") &&
 		strings.Contains(status, "operator_live_adapter_required") &&
 		strings.Contains(status, "compound contract hooks-authority") &&
@@ -1980,8 +1983,8 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		strings.Contains(contractText, "hookReadinessAction") &&
 		strings.Contains(contractText, "prove_fixture_hook") &&
 		strings.Contains(contractText, "ExpectedExitCode") &&
-		strings.Contains(contractText, "prove_live_wrapper_gate") &&
-		strings.Contains(contractText, "codexPreToolUseLiveWrapperProofCommand") &&
+		strings.Contains(contractText, `row.Status = "native_blocking"`) &&
+		strings.Contains(contractText, "operator_install_required") &&
 		strings.Contains(contractText, "operator_live_adapter_required") &&
 		strings.Contains(contractText, "compound contract hooks-authority") &&
 		strings.Contains(contractText, "must not flip registration")
@@ -1992,11 +1995,13 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 	}
 	contractTest := string(contractTestBytes)
 	hasContractTest := strings.Contains(contractTest, "TestInstalledHookRuntimeReadinessAddsMissingAdapterActions") &&
+		strings.Contains(contractTest, "TestImportCodexHooksJSONFeedsRuntimeContract") &&
 		strings.Contains(contractTest, "prove_fixture_hook") &&
 		strings.Contains(contractTest, "ExpectedExitCode") &&
-		strings.Contains(contractTest, "prove_live_wrapper_gate") &&
+		strings.Contains(contractTest, "native_blocking") &&
+		strings.Contains(contractTest, "privacy-safe Compound command identity") &&
+		strings.Contains(contractTest, "handler:sha256:") &&
 		strings.Contains(contractTest, "findEnvelopeHookAction") &&
-		strings.Contains(contractTest, "context pack hook readiness missing live wrapper action") &&
 		strings.Contains(contractTest, "operator_live_adapter_required") &&
 		strings.Contains(contractTest, "compound hook session-start --live --harness codex")
 	workbenchBytes, err := os.ReadFile(filepath.Join(repoRoot, "internal", "work", "workbench.go"))
@@ -2004,16 +2009,18 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 		return []Finding{{"hook-readiness-action-contract", Warn, "could not read internal/work/workbench.go: " + err.Error()}}
 	}
 	workbenchText := string(workbenchBytes)
-	hasWorkbenchAction := strings.Contains(workbenchText, "codex-pretooluse-wrapper-proof") &&
-		strings.Contains(workbenchText, "compound hook pre-tool-use --live --harness codex") &&
-		strings.Contains(workbenchText, "no registration flip")
+	hasWorkbenchAction := strings.Contains(workbenchText, "codex-pretooluse-native-gate-proof") &&
+		strings.Contains(workbenchText, "mixed valid and misplaced-canon apply_patch receives permissionDecision deny") &&
+		strings.Contains(workbenchText, "no hook install")
 	proofCheckBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "proof_check.go"))
 	if err != nil {
 		return []Finding{{"hook-readiness-action-contract", Warn, "could not read cmd/compound/proof_check.go: " + err.Error()}}
 	}
 	proofCheckText := string(proofCheckBytes)
-	hasProofCheck := strings.Contains(proofCheckText, "codex-pretooluse-wrapper-proof") &&
-		strings.Contains(proofCheckText, "runProofCheckCodexPreToolUseWrapper") &&
+	hasProofCheck := strings.Contains(proofCheckText, "codex-pretooluse-native-gate-proof") &&
+		strings.Contains(proofCheckText, "runProofCheckCodexPreToolUseNativeGate") &&
+		strings.Contains(proofCheckText, `"tool_name":"apply_patch"`) &&
+		strings.Contains(proofCheckText, `PermissionDecision != "deny"`) &&
 		strings.Contains(proofCheckText, "COMPOUND_HOME=")
 
 	cliTestBytes, err := os.ReadFile(filepath.Join(repoRoot, "cmd", "compound", "main_test.go"))
@@ -2023,17 +2030,17 @@ func checkHookReadinessActionContract(repoRoot string) []Finding {
 	cliTest := string(cliTestBytes)
 	hasCLITest := strings.Contains(cliTest, `findHookReadiness(authorityReport.HookReadiness, "codex", "SessionStart")`) &&
 		strings.Contains(cliTest, `findHookReadiness(authorityReport.HookReadiness, "codex", "UserPromptSubmit")`) &&
+		strings.Contains(cliTest, `findHookReadiness(authorityReport.HookReadiness, "codex", "PreToolUse")`) &&
 		strings.Contains(cliTest, `got.Status != "ready"`) &&
 		strings.Contains(cliTest, `findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex")`) &&
-		strings.Contains(cliTest, `"missing_gate"`) &&
-		strings.Contains(cliTest, `"prove_live_wrapper_gate"`) &&
-		strings.Contains(cliTest, "codex-pretooluse-wrapper-proof") &&
-		strings.Contains(cliTest, "ExpectedExitCode")
+		strings.Contains(cliTest, `got.Status != "native_blocking"`) &&
+		strings.Contains(cliTest, "codex-pretooluse-native-gate-proof") &&
+		strings.Contains(cliTest, `"status": "blocked"`)
 
 	if !hasDocs || !hasSource || !hasContractTest || !hasWorkbenchAction || !hasProofCheck || !hasCLITest {
-		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must prove Codex context hooks ready/quiet and keep missing-live-adapter rows exposing prove_fixture_hook, prove_live_wrapper_gate, codex-pretooluse-wrapper-proof, expected_exit_code, and operator_live_adapter_required action cards with exact commands, proof-check consumption, hooks-authority verification, rollback text, source tests, CLI tests, and public status guard"}}
+		return []Finding{{"hook-readiness-action-contract", Fail, "hook readiness must prove Codex context hooks ready, Codex PreToolUse native_blocking, codex-pretooluse-native-gate-proof allow/deny coverage, and keep missing-live-adapter rows exposing prove_fixture_hook, expected_exit_code, and operator_live_adapter_required with verification/rollback text"}}
 	}
-	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness proves Codex context hooks ready while missing-live-adapter rows expose fixture, live wrapper, and operator-only shim actions"}}
+	return []Finding{{"hook-readiness-action-contract", Info, "hook readiness proves Codex native blocking while missing-live-adapter rows retain fixture and operator-only activation actions"}}
 }
 
 // checkStandingGrantContract keeps autonomy grants from drifting back to

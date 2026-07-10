@@ -4806,7 +4806,7 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 		hookRuntimeSupport("claude_code", "SessionEnd", "", true),
 		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", true),
 		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
-		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", false),
+		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", true),
 	}
 }
 

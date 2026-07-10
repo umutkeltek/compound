@@ -109,7 +109,8 @@ to `hold`/blocked through the same policy gate.
 `PlacementGuard` is policy context, not a second hook path: PreToolUse may pass owner-placement evidence into
 `PolicyDecision` with staged `observe -> warn -> block` behavior. Only `confidence:block` can hard-hold;
 `OPEN_WRITE` and `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
-`compound hook pre-tool-use --enforce <fixture.json>` returns the resulting gate exit code for wrapper adapters.
+the native Codex adapter returns `permissionDecision=deny` for a hold. `compound hook pre-tool-use --enforce
+<fixture.json>` returns the same gate exit code for harnesses or adapters that cannot block natively.
 `compound policy import-placement-rules <placement-rules.json>` installs generated owner placement rules
 as `compound://registries/placement-rules` under `COMPOUND_HOME`; the source view is evidence/rollback
 input after import, while PreToolUse reads the Compound-owned registry.
@@ -127,7 +128,7 @@ arbitration. (Hooks sit at high-gravity points — a tiny SessionStart nudge ben
 them thin.)
 
 Commands: `compound hook {session-start, user-prompt-submit, pre-tool-use, post-tool-use, session-end, stop}`.
-`compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate`, so wrapper adapters can fail closed even when a harness only reports `fail_open`.
+`compound contract hooks-authority` reports `hook_readiness[]` from installed-hook authority, checked fixture coverage, and live-adapter support, plus `pre_tool_use_readiness[]` from installed hooks and harness native-block facts. With `--observe-live`, it exposes desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` separately; observed extras remain evidence and never enter desired authority. `compound hook pre-tool-use --enforce <fixture.json>` returns the same gate exit codes as `policy evaluate` for non-blocking adapter fallbacks.
 Each: `stdin JSON → normalized HookEvent persisted under events/ → compound service → typed object written under .compound → small
 harness-compatible output`. The lessons from a mature hook system map cleanly:
 
@@ -143,13 +144,13 @@ SessionEnd     → same receipt family, telemetry-only — SessionEnd can never 
                                                                   and some harnesses have no SessionEnd at all (capability: SessionEndReceipt)
 ```
 
-**Capability-aware by harness — not fantasy-uniform.** Claude Code supports rich lifecycle hooks (incl.
-PreToolUse blocking); Codex's verifiable surfaces are layered `AGENTS.md` + skills (progressive disclosure:
-it sees skill name/desc/path and loads full SKILL.md on demand; the initial list is capped). So a
+**Capability-aware by harness — not fantasy-uniform.** Current Claude Code and Codex releases support blocking
+PreToolUse hooks; Codex also layers `AGENTS.md` + skills through progressive disclosure (it sees skill
+name/desc/path and loads full SKILL.md on demand; the initial list is capped). So a
 `HarnessRegistry` records what each harness actually supports (`session_start_context`,
 `pre_tool_use_block`, `session_end_receipt`, `native_skills`, `mcp`, …) and its `limitations[]` (long-session
-drift, fail-open risk, instruction cap, skill truncation, cwd-dependent guidance). Do not assume Codex can
-block a tool call unless locally verified — enforce via wrapper/adapter + the compound CLI. External maps enter as normalized `compound.harness_registry.v0.1` manifests, while OS-style entrypoint registries enter through `compound harness observe --os-entrypoints <file>` with only session-start context inferred; observation is evidence/no-promote, not hook installation. **No live hook install before the fixture loop passes.**
+drift, fail-open risk, instruction cap, skill truncation, cwd-dependent guidance). Native blocking is claimed
+only when both the harness capability and an installed trusted write-scoped hook are proven. External maps enter as normalized `compound.harness_registry.v0.1` manifests, while OS-style entrypoint registries enter through `compound harness observe --os-entrypoints <file>` with only session-start context inferred; observation is evidence/no-promote, not hook installation. **No live hook install before the fixture loop passes.**
 
 ---
 

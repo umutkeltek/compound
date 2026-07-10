@@ -46,15 +46,18 @@ imports generated hook rosters into `COMPOUND_HOME/config/installed-hooks.yaml` 
 and task-conditioned `hook_readiness[]` come from Compound. `hook_roster[]` is the structured hook-selection read
 model: active hooks and task-excluded hooks carry harness, hook, event, matcher, status, and reason without
 exposing installed file paths. `compound contract
-hooks-authority` reports `pre_tool_use_readiness[]`: native blocking, missing gate, or wrapper-required status
-plus the enforced adapter command for fail-open harnesses. Hook selection is
+hooks-authority` reports `pre_tool_use_readiness[]`: native blocking, not installed, missing gate, or
+wrapper-required status plus the enforced adapter command for fail-open harnesses. With `--observe-live`,
+desired `hook_plan`, read-only `installation_observation`, and deterministic `reconciliation` are separate;
+observed extras never promote themselves into desired authority. Hook selection is
 task-conditioned where the imported roster provides event/matcher metadata: clearly read-only tasks exclude
 write-scoped `PreToolUse` hooks from active refs and record the excluded hook in `ContextPack.excluded`; this does
 not uninstall the hook or mutate harness settings.
 Placement guard evidence is also runtime policy context, not a second guard path: PreToolUse can pass
 `PlacementGuard` context into `PolicyDecision`, staged `observe -> warn -> block`; only `confidence:block`
 can hard-hold, `OPEN_WRITE` / `PLACEMENT_OVERRIDE=1` fail open, unknown modes fail open as observe, and
-`hook pre-tool-use --enforce` carries the resulting Gate exit code for wrappers.
+the native Codex adapter emits `permissionDecision=deny` for a hold, while `hook pre-tool-use --enforce`
+carries the resulting Gate exit code for non-blocking adapter fallbacks.
 `compound policy import-placement-rules <placement-rules.json>` imports generated owner placement rules
 into `COMPOUND_HOME/registries/placement-rules.json` as `compound://registries/placement-rules`; after
 that handoff the generated source view is evidence/rollback input, and PreToolUse reads the Compound copy.
@@ -256,7 +259,7 @@ the same gated owner-review path.
 | **ProjectionRegenerationPlan** | reviewable generated-view regeneration artifact, never owner mutation | projection_id, view_ref, failed_checks[], writeback_gate_id, source_observation_id, candidate_ids[], no_promote_ids[], proposed_actions[], evidence_refs[]. First slice: `compound projection repair-plan <freshness.yaml>` routes stale/drifted freshness through gate + source observation, then writes JSON/Markdown artifacts plus a `.review.yaml` draft under `COMPOUND_HOME/reviews/projection-regeneration/`; `compound projection repair-review <review.yaml>` records the edited owner disposition as `.reviewed.json` without regenerating or mutating the view |
 | **SourceAuthority / PathAuthority** | which source owns a fact, and identity that survives path/host moves | entity_ref, authoritative_source, path_bindings[], host_bindings[], precedence_rank, evidence_refs[]. `compound authority path <path-authority.yaml>` merges normalized source/path bindings into the canonical entity registry; `compound authority path-registry <os-path-authority.yaml>` adapts OS-style canonical/stale root registries into the same contract; both emit deterministic authority claims. `compound authority resolve <token>` proves active and compatibility paths resolve to one entity without treating stale/retired paths as current authority. |
 
-`compound authority git <repo-path>` is the source-control snapshot adapter for this contract. It runs read-only git commands, records branch/head/ahead/behind/dirty counts as status claims, and registers both the requested path and canonical git root as repo identifiers; it never stages, cleans, fetches, pushes, or edits the inspected repository. `hook pre-tool-use` can consume the same adapter for target paths, resolving relative `ActionIntent.target.path` values against the hook `cwd` before snapshotting, persist the ActionIntent/PolicyDecision gate artifacts, escalate dirty-repo mutations to `hold`, and create a held review `WorkEnvelope` without treating the Git index as authority over meaning. `hook pre-tool-use --enforce` keeps that evidence path while returning policy gate exit codes for shell/wrapper adapters, including `fail_open` harnesses.
+`compound authority git <repo-path>` is the source-control snapshot adapter for this contract. It runs read-only git commands, records branch/head/ahead/behind/dirty counts as status claims, and registers both the requested path and canonical git root as repo identifiers; it never stages, cleans, fetches, pushes, or edits the inspected repository. `hook pre-tool-use` can consume the same adapter for target paths, resolving relative `ActionIntent.target.path` values against the hook `cwd` before snapshotting, persist the ActionIntent/PolicyDecision gate artifacts, escalate dirty-repo mutations to `hold`, and create a held review `WorkEnvelope` without treating the Git index as authority over meaning. Native blocking adapters return a deny decision; `hook pre-tool-use --enforce` keeps the evidence path while returning policy gate exit codes for non-blocking shell/adapter fallbacks.
 
 | **SourceControlReviewPlan** | reviewable dirty-repo cleanup decision, not cleanup execution | `compound authority dirty-plan <repo-path> [--work-id <id>]` reads the same source-control snapshot adapter and writes JSON/Markdown artifacts under `COMPOUND_HOME/reviews/source-control-cleanup/`, preserving staged/unstaged/untracked counts, evidence refs, optional held work id, required evidence, and cleanup guardrails. It does not stage, reset, clean, stash, commit, pull, push, mutate the repo, resolve policy holds, or promote source-control claims. |
 

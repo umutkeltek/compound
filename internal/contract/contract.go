@@ -1990,7 +1990,8 @@ type codexHooksFile struct {
 }
 
 type codexHookGroup struct {
-	Hooks []codexHookCommand `json:"hooks"`
+	Matcher string             `json:"matcher"`
+	Hooks   []codexHookCommand `json:"hooks"`
 }
 
 type codexHookCommand struct {
@@ -2356,11 +2357,12 @@ func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
 	for _, event := range events {
 		for _, group := range src.Hooks[event] {
 			for _, hook := range group.Hooks {
-				ref := hookRefFromCommand(hook.Command)
+				ref := expandHomeRef(hookRefFromCommand(hook.Command))
 				if ref == "" {
 					continue
 				}
-				key := event + "\x00" + ref
+				matcher := strings.TrimSpace(group.Matcher)
+				key := strings.Join([]string{event, matcher, ref}, "\x00")
 				if seen[key] {
 					continue
 				}
@@ -2369,6 +2371,7 @@ func parseCodexHooksJSON(data []byte) (InstalledHooksManifest, error) {
 					Harness: "codex",
 					Name:    event,
 					Event:   event,
+					Matcher: matcher,
 					Ref:     ref,
 					Status:  "current",
 				})
@@ -2386,6 +2389,12 @@ func hookRefFromCommand(command string) string {
 		field = strings.Trim(field, `"'`)
 		if strings.Contains(field, ".hook.") || strings.HasSuffix(field, ".hook.ts") {
 			return field
+		}
+	}
+	for _, field := range strings.Fields(command) {
+		field = strings.Trim(field, `"'`)
+		if field == "compound" || strings.HasSuffix(field, "/.local/bin/compound") {
+			return canonicalHookHandlerRef(command, "")
 		}
 	}
 	return ""

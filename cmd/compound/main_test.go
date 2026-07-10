@@ -303,7 +303,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"architecture-doctor-strict",
 		"profiles-check-installed-only",
 		"workbench-projection-refresh",
-		"codex-pretooluse-wrapper-proof",
+		"codex-pretooluse-native-gate-proof",
 		"memory-doctor",
 		"redact-public-clean",
 	}
@@ -359,11 +359,11 @@ func TestProofCheckArtifactConsumesVerificationAdjacentActions(t *testing.T) {
 		Status:        "ok",
 		GeneratedAt:   cliTestNow.Format(time.RFC3339),
 		Repo:          "/tmp/compound-test",
-		ProofRefs:     []string{"architecture-doctor-strict", "workbench-projection-refresh", "codex-pretooluse-wrapper-proof", "go-test-count-1-all"},
+		ProofRefs:     []string{"architecture-doctor-strict", "workbench-projection-refresh", "codex-pretooluse-native-gate-proof", "go-test-count-1-all"},
 		Steps: []proofCheckStep{
 			{Name: "architecture-doctor", ProofRef: "architecture-doctor-strict", Status: "ok"},
 			{Name: "workbench-projection", ProofRef: "workbench-projection-refresh", Status: "ok"},
-			{Name: "codex-pretooluse-wrapper", ProofRef: "codex-pretooluse-wrapper-proof", Status: "ok"},
+			{Name: "codex-pretooluse-native-gate", ProofRef: "codex-pretooluse-native-gate-proof", Status: "ok"},
 			{Name: "go-test", ProofRef: "go-test-count-1-all", Status: "ok"},
 		},
 	}
@@ -379,7 +379,7 @@ func TestProofCheckArtifactConsumesVerificationAdjacentActions(t *testing.T) {
 		"proof-check-installed-runtime",
 		"architecture-doctor-strict",
 		"workbench-projection-refresh",
-		"codex-pretooluse-wrapper-proof",
+		"codex-pretooluse-native-gate-proof",
 		"adjacent Workbench action",
 		"verified",
 		"Do not rerun",
@@ -403,7 +403,7 @@ func TestProofCheckArtifactConsumesVerificationAdjacentActions(t *testing.T) {
 	if adjacent == nil {
 		t.Fatalf("missing adjacent progress: %+v", workbench.DispatchNext)
 	}
-	for _, id := range []string{"proof-check-installed-runtime", "architecture-doctor-strict", "workbench-projection-refresh", "codex-pretooluse-wrapper-proof"} {
+	for _, id := range []string{"proof-check-installed-runtime", "architecture-doctor-strict", "workbench-projection-refresh", "codex-pretooluse-native-gate-proof"} {
 		action, ok := workbenchAdjacentActionByID(adjacent.ConsumedNonPacketActions, id)
 		if !ok {
 			t.Fatalf("%s not consumed by proof-check artifact: %+v", id, adjacent)
@@ -2157,7 +2157,7 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	})
 	for _, want := range []string{
 		`"authority_ref": "compound://config/installed-hooks"`,
-		`"hook_count": 2`,
+		`"hook_count": 3`,
 		`"authority_status": "compound_primary"`,
 	} {
 		if !strings.Contains(importOut, want) {
@@ -2170,11 +2170,10 @@ func TestContractImportHooksFeedsCompile(t *testing.T) {
 	})
 	for _, want := range []string{
 		`"installed": true`,
-		`"hook_count": 2`,
+		`"hook_count": 3`,
 		`"pre_tool_use_readiness": [`,
 		`"harness": "codex"`,
-		`"status": "missing_gate"`,
-		`"adapter_command": "compound hook pre-tool-use --enforce FIXTURE_JSON"`,
+		`"status": "native_blocking"`,
 		`"source_role": "evidence_only_input_after_import"`,
 	} {
 		if !strings.Contains(authorityOut, want) {
@@ -2281,7 +2280,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 	})
 	for _, want := range []string{
 		`"authority_ref": "compound://config/installed-hooks"`,
-		`"hook_count": 5`,
+		`"hook_count": 6`,
 		`"imported_via": "contract import-hooks --hook-registration-ts"`,
 	} {
 		if !strings.Contains(importOut, want) {
@@ -2295,7 +2294,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		`"harnesses": [`,
 		`"claude_code"`,
 		`"codex"`,
-		`"hook_count": 5`,
+		`"hook_count": 6`,
 		`"hook_readiness": [`,
 		`"fixture_present": true`,
 		`"live_adapter": true`,
@@ -2338,14 +2337,13 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter || len(got.Actions) != 0 {
 		t.Fatalf("codex user-prompt-submit readiness not ready: %+v", got)
 	}
+	if got := findHookReadiness(authorityReport.HookReadiness, "codex", "PreToolUse"); got == nil ||
+		got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter || len(got.Actions) != 0 {
+		t.Fatalf("codex pre-tool-use runtime readiness not ready: %+v", got)
+	}
 	if got := findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex"); got == nil ||
-		got.Status != "missing_gate" || len(got.Actions) != 3 ||
-		findHookAction(got.Actions, "prove_fixture_gate") == nil ||
-		findHookAction(got.Actions, "prove_fixture_gate").ExpectedExitCode != 3 ||
-		findHookAction(got.Actions, "prove_live_wrapper_gate") == nil ||
-		!strings.Contains(findHookAction(got.Actions, "prove_live_wrapper_gate").Command, "compound hook pre-tool-use --live --harness codex") ||
-		findHookAction(got.Actions, "operator_wrapper_required") == nil {
-		t.Fatalf("codex pre-tool-use gate should expose bounded action cards: %+v", got)
+		got.Status != "native_blocking" || !got.NativeBlock || !got.Installed || got.AdapterRequired || len(got.Actions) != 0 {
+		t.Fatalf("codex pre-tool-use gate should report installed native enforcement: %+v", got)
 	}
 	out := captureStdout(t, func() {
 		cmdContract([]string{"compile", "--harness", "claude_code", "--cwd", t.TempDir(), "--task", "use hooks", "--repo-kind", "control-plane"})
@@ -5915,19 +5913,19 @@ func TestHookPreToolUseEnforceReturnsGateExit(t *testing.T) {
 	}
 }
 
-func TestHookPreToolUseEnforceBlocksFailOpenHarness(t *testing.T) {
+func TestHookPreToolUseEnforceBlocksNativeHarness(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	fixture := writeHookFixture(t, hook.Fixture{
 		Harness: "codex",
-		WorkID:  "work_fail_open",
+		WorkID:  "work_native_block",
 		Action: &envelope.ActionIntent{
 			Header: envelope.Header{
 				SchemaVersion: envelope.SVActionIntent,
-				ID:            "act_fail_open",
+				ID:            "act_native_block",
 				CreatedAt:     cliTestNow.Format(time.RFC3339),
 				Producer:      envelope.Producer{Kind: "hook", Name: "compound-test"},
-				IDs:           envelope.IDs{WorkID: "work_fail_open"},
+				IDs:           envelope.IDs{WorkID: "work_native_block"},
 				Authority:     envelope.Authority{SourceClass: "runtime"},
 				Privacy:       "private",
 				Risk:          "tier2",
@@ -5948,10 +5946,10 @@ func TestHookPreToolUseEnforceBlocksFailOpenHarness(t *testing.T) {
 		enforced = runHookCommand([]string{"pre-tool-use", "--enforce", fixture})
 	})
 	if enforced != 3 {
-		t.Fatalf("enforced fail-open hook exit = %d, want 3\n%s", enforced, enforcedOut)
+		t.Fatalf("enforced native hook exit = %d, want 3\n%s", enforced, enforcedOut)
 	}
-	if !strings.Contains(enforcedOut, `"status": "fail_open"`) {
-		t.Fatalf("enforced hook should preserve fail_open evidence:\n%s", enforcedOut)
+	if !strings.Contains(enforcedOut, `"status": "blocked"`) {
+		t.Fatalf("enforced native hook should preserve blocked evidence:\n%s", enforcedOut)
 	}
 
 	var observed int
@@ -6007,7 +6005,7 @@ func TestHookPreToolUseEnforceBlocksPlacementGuard(t *testing.T) {
 		t.Fatalf("enforced placement hook exit = %d, want 3\n%s", code, out)
 	}
 	for _, want := range []string{
-		`"status": "fail_open"`,
+		`"status": "blocked"`,
 		`"outcome": "hold"`,
 		"placement_guard mode=block confidence=block",
 		"placement:rule:abc123",
@@ -6137,7 +6135,7 @@ func TestPolicyPlacementRulesAuthorityFeedsPreToolUse(t *testing.T) {
 		t.Fatalf("enforced hook exit = %d, want 3\n%s", code, out)
 	}
 	for _, want := range []string{
-		`"status": "fail_open"`,
+		`"status": "blocked"`,
 		`"outcome": "hold"`,
 		"compound://registries/placement-rules",
 		"placement-owner:docs",
@@ -12112,7 +12110,7 @@ Success: operator-only work should not be Codex adjacent packet.
 	if adjacent == nil || !adjacent.Available || adjacent.PacketCandidateCount != 0 {
 		t.Fatalf("workbench should expose non-packet adjacent actions: %+v", report.DispatchNext)
 	}
-	for _, id := range []string{conversationItem.ReviewCards[0].ID, "operator-gate-" + asc.ID + "-app-store-connect-private-config", "asc-sales-series-bridge-proof", "conversation-preflight-private-export", "second-opinion-evidence-recovery", "codex-pretooluse-wrapper-proof", "architecture-doctor-strict"} {
+	for _, id := range []string{conversationItem.ReviewCards[0].ID, "operator-gate-" + asc.ID + "-app-store-connect-private-config", "asc-sales-series-bridge-proof", "conversation-preflight-private-export", "second-opinion-evidence-recovery", "codex-pretooluse-native-gate-proof", "architecture-doctor-strict"} {
 		if _, ok := workbenchAdjacentActionByID(adjacent.NonPacketActions, id); !ok {
 			t.Fatalf("missing adjacent non-packet action %s: %+v", id, adjacent.NonPacketActions)
 		}

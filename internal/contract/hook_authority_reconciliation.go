@@ -225,6 +225,22 @@ func canonicalHookHandlerRef(value, harnessHome string) string {
 		normalized = "$HOME/" + strings.TrimPrefix(normalized, "~/")
 	}
 	fields := strings.Fields(normalized)
+	for _, field := range fields {
+		field = strings.Trim(field, "\"'`")
+		if strings.HasPrefix(field, "handler:") {
+			return field
+		}
+	}
+	for _, field := range fields {
+		field = strings.Trim(field, "\"'`")
+		if field != "compound" && !strings.HasSuffix(field, "/.local/bin/compound") {
+			continue
+		}
+		for i := range fields {
+			fields[i] = strings.Trim(fields[i], "\"'`")
+		}
+		return "handler:sha256:" + hashBytes([]byte(strings.Join(fields, " ")))
+	}
 	for i := len(fields) - 1; i >= 0; i-- {
 		field := strings.Trim(fields[i], "\"'`")
 		for _, marker := range []string{"$HOME/.claude/hooks/", "$HOME/.codex/hooks/"} {
@@ -232,7 +248,7 @@ func canonicalHookHandlerRef(value, harnessHome string) string {
 				return strings.TrimRight(field[index:], `"'`)
 			}
 		}
-		if strings.HasPrefix(field, "hook://") || strings.HasPrefix(field, "handler://") {
+		if strings.HasPrefix(field, "hook://") || strings.HasPrefix(field, "handler:") {
 			return field
 		}
 	}
