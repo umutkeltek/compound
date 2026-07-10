@@ -346,10 +346,11 @@ func autonomyRoutePlanSnapshot(plan routeevidence.CapabilityRoutePlan) autonomyp
 	}
 	for _, lane := range plan.Chain {
 		out.Chain = append(out.Chain, autonomyproof.LaneSnapshot{
-			ModelID:    lane.ModelID,
-			Tier:       lane.Tier,
-			ClaimLevel: lane.ClaimLevel,
-			GateRole:   lane.GateRole,
+			ModelID:       lane.ModelID,
+			ProviderRoute: lane.ProviderRoute,
+			Tier:          lane.Tier,
+			ClaimLevel:    lane.ClaimLevel,
+			GateRole:      lane.GateRole,
 		})
 	}
 	return out

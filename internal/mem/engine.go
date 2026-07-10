@@ -235,11 +235,11 @@ func (s *Store) LedgerClaims() ([]Claim, error) { return s.loadClaimsRaw() }
 
 // AllCurrentOperationalDecisions returns the runtime decision-control subset
 // with its own protected supersession fold. Only another stamped/legacy
-// operator decision may hide one of these claims; an ordinary memory edge or
-// same-slot shadow cannot erase grant/freeze/revocation authority before its
-// consumer validates it.
+// operator decision may hide one of these claims; an ordinary memory edge,
+// review mark, or same-slot shadow cannot erase grant/freeze/revocation
+// authority before its consumer validates it.
 func (s *Store) AllCurrentOperationalDecisions() ([]Claim, error) {
-	claims, err := s.loadClaims()
+	claims, err := s.loadClaimsRaw()
 	if err != nil {
 		return nil, err
 	}
@@ -270,9 +270,12 @@ func (s *Store) AllCurrentOperationalDecisions() ([]Claim, error) {
 	}
 	var out []Claim
 	for _, claim := range claims {
-		if !protected[claim.ID] || claim.Visibility == "retired" || claim.State == ClaimStateNeedsReview || superseded[claim.ID] {
+		if !protected[claim.ID] || claim.Visibility == "retired" || superseded[claim.ID] {
 			continue
 		}
+		claim.State = ClaimStatePromoted
+		claim.ReviewRefs = nil
+		claim.ConfidenceDelta = 0
 		out = append(out, claim)
 	}
 	return out, nil

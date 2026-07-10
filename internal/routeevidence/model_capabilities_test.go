@@ -20,7 +20,7 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		t.Fatalf("import model capabilities: %v", err)
 	}
 	if report.AuthorityRef != ModelCapabilitiesAuthorityRef ||
-		report.ModelCount != 4 ||
+		report.ModelCount != 5 ||
 		report.CapabilityClassCount != 2 ||
 		report.RoutingDefaultCount != 2 ||
 		report.SourceAuthorityID == "" {
@@ -48,8 +48,8 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		plan.AuthorityRef != ModelCapabilitiesAuthorityRef ||
 		plan.SourceAuthorityID != report.SourceAuthorityID ||
 		plan.RoutingRule != "routing_defaults[judge-critique]" ||
-		len(plan.Chain) != 2 ||
-		len(plan.LaneJustification) != 2 {
+		len(plan.Chain) != 3 ||
+		len(plan.LaneJustification) != 3 {
 		t.Fatalf("bad route plan: %+v", plan)
 	}
 	if plan.Chain[0].ModelID != "auto/judge" ||
@@ -58,13 +58,47 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		plan.Chain[0].Harness != "switchback" ||
 		plan.Chain[0].ProviderRoute != "auto/judge" ||
 		plan.Chain[0].EffortDefault != "high" ||
-		plan.Chain[1].ModelID != "scout/chat" ||
-		plan.Chain[1].GateRole != "tripwire_only" ||
-		plan.Chain[1].CostClass != "free" {
+		plan.Chain[1].ModelID != "deepseek/deepseek-v4-pro" ||
+		plan.Chain[1].GateRole != "eligible" ||
+		plan.Chain[1].ProviderRoute != "deepseek/deepseek-v4-pro" ||
+		plan.Chain[2].ModelID != "scout/chat" ||
+		plan.Chain[2].GateRole != "tripwire_only" ||
+		plan.Chain[2].CostClass != "free" {
 		t.Fatalf("bad chain: %+v", plan.Chain)
 	}
 	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "free judge/critique lane scout/chat may object but must not gate verdicts") {
 		t.Fatalf("missing free-lane warning: %+v", plan.Warnings)
+	}
+}
+
+func TestImportModelCapabilitiesRejectsUnknownGateVocabulary(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		old     string
+		bad     string
+		wantErr string
+	}{
+		{name: "claim-level", old: "level: primary", bad: "level: primray", wantErr: "unknown claim level"},
+		{name: "tier", old: "tier: cheap", bad: "tier: experimental", wantErr: "unknown tier"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, "source.yaml")
+			data := []byte(strings.Replace(string(fixture), tc.old, tc.bad, 1))
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ImportModelCapabilitiesYAML(home, path, t0); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("unknown gate vocabulary was imported: %v", err)
+			}
+			if _, err := os.Stat(ModelCapabilitiesPath(home)); !os.IsNotExist(err) {
+				t.Fatalf("invalid authority was written: %v", err)
+			}
+		})
 	}
 }
 

@@ -36,8 +36,9 @@ func ensureJobHealthAutonomyPlan(t *testing.T, s *Store) autonomyproof.RoutePlan
 		CapabilityClass:  "judge-critique",
 		PrivacySensitive: false,
 		Chain: []autonomyproof.LaneSnapshot{
-			{ModelID: "auto/judge", Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
-			{ModelID: "scout/chat", Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
+			{ModelID: "auto/judge", ProviderRoute: "auto/judge", Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
+			{ModelID: "deepseek/deepseek-v4-pro", ProviderRoute: "deepseek/deepseek-v4-pro", Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
+			{ModelID: "scout/chat", ProviderRoute: "scout/chat", Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
 		},
 	}
 }
@@ -135,8 +136,9 @@ func seedTypedAutonomySample(t *testing.T, s *Store, plan autonomyproof.RoutePla
 			"model":    "auto/judge",
 			"protocol": "panel-lane",
 		},
-		"status":        "completed",
-		"evidence_refs": []string{"compound://registries/model-router"},
+		"resolved_model": "deepseek/deepseek-v4-pro",
+		"status":         "completed",
+		"evidence_refs":  []string{"compound://registries/model-router"},
 	}
 	data, err := json.Marshal(row)
 	if err != nil {

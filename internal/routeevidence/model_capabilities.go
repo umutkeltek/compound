@@ -458,6 +458,15 @@ func validateModelCapabilities(manifest ModelCapabilitiesManifest) error {
 		}
 		if strings.TrimSpace(model.Tier) == "" {
 			errs = append(errs, "model "+id+" tier required")
+		} else if !autonomyproof.ValidTier(model.Tier) {
+			errs = append(errs, "model "+id+" has unknown tier "+model.Tier)
+		}
+		for class, claim := range model.Capabilities {
+			if strings.TrimSpace(claim.Level) == "" {
+				errs = append(errs, "model "+id+" capability "+class+" level required")
+			} else if !autonomyproof.ValidClaimLevel(claim.Level) {
+				errs = append(errs, "model "+id+" capability "+class+" has unknown claim level "+claim.Level)
+			}
 		}
 	}
 	for class, chain := range manifest.RoutingDefaults {

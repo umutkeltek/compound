@@ -42,7 +42,7 @@ func TestBackfillGrantsAsGatesTonightsTwoRecords(t *testing.T) {
 		Kind:       decisions.KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Scope:      "director-apply",
 		Now:        directorTestNow,
 	}); err != nil {
@@ -52,7 +52,7 @@ func TestBackfillGrantsAsGatesTonightsTwoRecords(t *testing.T) {
 		Kind:       decisions.KindFreeze,
 		ID:         "direction-freeze-2026-07-10",
 		Title:      "Freeze new-organ/absorption imports",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Keywords:   []string{"absorption_debt", "harness_edit"},
 		Now:        directorTestNow,
 	}); err != nil {

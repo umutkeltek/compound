@@ -105,7 +105,7 @@ func TestDirectorApplyWithGrantRunsAndCitesIt(t *testing.T) {
 		Kind:       decisions.KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Scope:      "director-apply",
 		Now:        directorTestNow,
 	})
@@ -167,7 +167,7 @@ func TestDirectorApplyGrantMustNotBeSuperseded(t *testing.T) {
 		Kind:       decisions.KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Scope:      "director-apply",
 		Now:        directorTestNow,
 	}); err != nil {
@@ -177,7 +177,7 @@ func TestDirectorApplyGrantMustNotBeSuperseded(t *testing.T) {
 		Kind:       decisions.KindGrant,
 		ID:         "director-apply-grant-2026-07-10-revoke",
 		Title:      "Revoke director --apply grant",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		UndoOf:     "director-apply-grant-2026-07-10",
 		Now:        directorTestNow.Add(1),
 	}); err != nil {

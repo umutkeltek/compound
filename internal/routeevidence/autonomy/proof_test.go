@@ -23,6 +23,7 @@ type sampleOptions struct {
 	clientProfile string
 	protocol      string
 	requestID     string
+	resolvedModel *string
 }
 
 type seededSample struct {
@@ -80,6 +81,56 @@ func TestCompileRequiresExactDecidingRouteBinding(t *testing.T) {
 	}
 }
 
+func TestCompileRequiresEligibleResolvedModelIdentity(t *testing.T) {
+	tests := []struct {
+		name          string
+		resolvedModel string
+		wantReason    string
+	}{
+		{name: "missing", resolvedModel: "", wantReason: "resolved model is required"},
+		{name: "route-alias", resolvedModel: "auto/judge", wantReason: "resolved model is still the requested route alias"},
+		{name: "free-fallback", resolvedModel: "scout/chat", wantReason: "resolved model gate role is tripwire_only"},
+		{name: "unknown-override", resolvedModel: "provider/unlisted-model", wantReason: "resolved model is not present in current route plan"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			plan := installPlan(t, home, false)
+			seedSample(t, home, plan, tc.name+"-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+			seedSample(t, home, plan, tc.name+"-bad", proofNow.Add(-24*time.Hour), sampleOptions{resolvedModel: stringPointer(tc.resolvedModel)})
+
+			artifact := compile(t, home, plan, 2)
+			if artifact.Status != "ineligible" {
+				t.Fatalf("untrusted resolved model identity escaped: %+v", artifact)
+			}
+			assertReason(t, artifact, tc.wantReason)
+		})
+	}
+}
+
+func TestCompileBindsResolvedProviderAndModelIdentity(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "resolved-first", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "resolved-second", proofNow.Add(-24*time.Hour), sampleOptions{})
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "eligible" {
+		t.Fatalf("resolved paid judge evidence was rejected: %+v", artifact)
+	}
+	for _, sample := range artifact.Samples {
+		if sample.RouteModelID != "auto/judge" || sample.ProviderID != "deepseek" || sample.ModelID != "deepseek/deepseek-v4-pro" || sample.GateRole != "eligible" {
+			t.Fatalf("resolved provider/model identity was not sealed: %+v", sample)
+		}
+	}
+}
+
+func TestGateRoleFailsClosedForUnknownClaimLevel(t *testing.T) {
+	if got := autonomy.GateRole("judge-critique", "cheap", "primray"); got == "eligible" {
+		t.Fatalf("unknown claim level became authority: %q", got)
+	}
+}
+
 func TestCompileRejectsReusedRouteRequestIdentity(t *testing.T) {
 	home := t.TempDir()
 	plan := installPlan(t, home, false)
@@ -119,6 +170,25 @@ func TestLoadAndRevalidateRejectsRouterRevisionDrift(t *testing.T) {
 	}
 	if _, err := autonomy.LoadAndRevalidate(home, artifact.Ref(), "job_health", plan.ID); err == nil || !strings.Contains(err.Error(), "stale or source evidence changed") {
 		t.Fatalf("router revision drift did not invalidate sealed eligibility: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnUnindexedArchivedWork(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "indexed-live", proofNow.Add(-48*time.Hour), sampleOptions{})
+	orphan := seedSample(t, home, plan, "archive-gap", proofNow.Add(-24*time.Hour), sampleOptions{})
+	source := filepath.Join(home, "work", "work", orphan.WorkID+".json")
+	target := filepath.Join(home, "archives", "operational", "files", "work", "work", orphan.WorkID+".json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(source, target); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "unindexed work file") {
+		t.Fatalf("archive move/index crash gap did not fail closed: %v", err)
 	}
 }
 
@@ -287,15 +357,24 @@ func installPlan(t *testing.T, home string, assumed bool) autonomy.RoutePlanSnap
 		SourceRevision:  revision,
 		CapabilityClass: "judge-critique",
 		Chain: []autonomy.LaneSnapshot{
-			{ModelID: "auto/judge", Tier: "cheap", ClaimLevel: claimLevel, GateRole: gateRole},
-			{ModelID: "scout/chat", Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
+			{ModelID: "auto/judge", ProviderRoute: "auto/judge", Tier: "cheap", ClaimLevel: claimLevel, GateRole: gateRole},
+			{ModelID: "deepseek/deepseek-v4-pro", ProviderRoute: "deepseek/deepseek-v4-pro", Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
+			{ModelID: "scout/chat", ProviderRoute: "scout/chat", Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
 		},
 	}
 }
 
 func compile(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, samples int) autonomy.Artifact {
 	t.Helper()
-	artifact, err := autonomy.Compile(home, autonomy.GrantSnapshot{
+	artifact, err := compileArtifact(home, plan, samples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return artifact
+}
+
+func compileArtifact(home string, plan autonomy.RoutePlanSnapshot, samples int) (autonomy.Artifact, error) {
+	return autonomy.Compile(home, autonomy.GrantSnapshot{
 		DecisionID:         "job-health-autonomy-test",
 		ClaimID:            "claim_job_health_autonomy_test",
 		GrantRef:           "grant:job-health-autonomy-test",
@@ -306,10 +385,6 @@ func compile(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, samples
 		MinWindowDays:      1,
 		MaxFailures:        0,
 	}, plan, proofNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return artifact
 }
 
 func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id string, closedAt time.Time, opts sampleOptions) seededSample {
@@ -357,6 +432,10 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 	if requestID == "" {
 		requestID = "request-" + id
 	}
+	resolvedModel := "deepseek/deepseek-v4-pro"
+	if opts.resolvedModel != nil {
+		resolvedModel = *opts.resolvedModel
+	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
 		CreatedAt:     closedAt.Add(-time.Minute),
 		RequestID:     requestID,
@@ -365,7 +444,7 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 		Protocol:      protocol,
 		Provider:      "compound-route-plan",
 		Model:         "auto/judge",
-		ResolvedModel: "auto/judge",
+		ResolvedModel: resolvedModel,
 		Status:        "completed",
 		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
@@ -404,7 +483,7 @@ func duplicateRouteRequest(t *testing.T, home string, sample seededSample, creat
 		Protocol:      "panel-lane",
 		Provider:      "compound-route-plan",
 		Model:         "auto/judge",
-		ResolvedModel: "auto/judge",
+		ResolvedModel: "deepseek/deepseek-v4-pro",
 		Status:        "completed",
 		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})

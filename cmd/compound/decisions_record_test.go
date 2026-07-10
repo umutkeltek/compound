@@ -19,14 +19,14 @@ func TestCmdDecisionsRecordWritesGrantAndCitesIt(t *testing.T) {
 			"--kind", "grant",
 			"--id", "director-apply-grant-2026-07-10",
 			"--title", "Grant director --apply",
-			"--reviewed-by", "umut",
+			"--reviewed-by", "operator:umut",
 			"--scope", "director-apply",
 		})
 	})
 	for _, want := range []string{
 		"director-apply-grant-2026-07-10",
 		"- scope: director-apply",
-		"- reviewed_by: umut",
+		"- reviewed_by: operator:umut",
 		"- verdict: promote",
 	} {
 		if !strings.Contains(out, want) {
@@ -48,7 +48,7 @@ func TestCmdDecisionsRecordFreezeWritesScopeQualifiers(t *testing.T) {
 			"--kind", "freeze",
 			"--id", "direction-freeze-2026-07-10",
 			"--title", "Freeze new-organ/absorption imports",
-			"--reviewed-by", "umut",
+			"--reviewed-by", "operator:umut",
 			"--keyword", "absorption_debt",
 			"--keyword", "harness_edit",
 			"--owner-glob", "compound-authority",

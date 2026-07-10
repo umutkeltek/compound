@@ -45,10 +45,11 @@ type GrantSnapshot struct {
 }
 
 type LaneSnapshot struct {
-	ModelID    string `json:"model_id"`
-	Tier       string `json:"tier"`
-	ClaimLevel string `json:"claim_level,omitempty"`
-	GateRole   string `json:"gate_role"`
+	ModelID       string `json:"model_id"`
+	ProviderRoute string `json:"provider_route,omitempty"`
+	Tier          string `json:"tier"`
+	ClaimLevel    string `json:"claim_level,omitempty"`
+	GateRole      string `json:"gate_role"`
 }
 
 type RoutePlanSnapshot struct {
@@ -73,6 +74,8 @@ type Sample struct {
 	RouteEvidenceID     string `json:"route_evidence_id,omitempty"`
 	RouteEvidenceSHA256 string `json:"route_evidence_sha256,omitempty"`
 	RouteStatus         string `json:"route_status,omitempty"`
+	RouteModelID        string `json:"route_model_id,omitempty"`
+	ProviderID          string `json:"provider_id,omitempty"`
 	ModelID             string `json:"model_id,omitempty"`
 	GateRole            string `json:"gate_role,omitempty"`
 	Valid               bool   `json:"valid"`
@@ -122,7 +125,8 @@ type routeRow struct {
 		Model    string `json:"model"`
 		Protocol string `json:"protocol"`
 	} `json:"selected_target"`
-	EvidenceRefs []string `json:"evidence_refs,omitempty"`
+	ResolvedModel string   `json:"resolved_model,omitempty"`
+	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
 }
 
 type routeRaw struct {
@@ -143,8 +147,9 @@ type decidingRouteBinding struct {
 
 type modelManifest struct {
 	Models map[string]struct {
-		Tier         string `yaml:"tier"`
-		Capabilities map[string]struct {
+		ProviderRoute string `yaml:"provider_route"`
+		Tier          string `yaml:"tier"`
+		Capabilities  map[string]struct {
 			Level string `yaml:"level"`
 		} `yaml:"capabilities"`
 	} `yaml:"models"`
@@ -152,17 +157,44 @@ type modelManifest struct {
 }
 
 func GateRole(class, tier, level string) string {
+	class = strings.TrimSpace(strings.ToLower(class))
+	tier = strings.TrimSpace(strings.ToLower(tier))
+	level = strings.TrimSpace(strings.ToLower(level))
 	switch {
 	case level == "avoid":
 		return "avoid"
 	case level == "assumed":
 		return "supervised_only"
-	case tier == "free" && (class == "judge-critique" || class == "certify"):
-		return "tripwire_only"
 	case level == "":
 		return "review_missing_claim"
+	case !ValidClaimLevel(level):
+		return "review_unknown_claim"
+	case tier == "":
+		return "review_missing_tier"
+	case !ValidTier(tier):
+		return "review_unknown_tier"
+	case tier == "free" && (class == "judge-critique" || class == "certify"):
+		return "tripwire_only"
 	default:
 		return "eligible"
+	}
+}
+
+func ValidClaimLevel(level string) bool {
+	switch strings.TrimSpace(strings.ToLower(level)) {
+	case "primary", "capable", "assumed", "avoid":
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidTier(tier string) bool {
+	switch strings.TrimSpace(strings.ToLower(tier)) {
+	case "free", "cheap", "premium", "local-batch", "browser":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -443,7 +475,7 @@ func validateRoutePlanSnapshot(homePath string, plan RoutePlanSnapshot) (string,
 			continue
 		}
 		level := strings.TrimSpace(model.Capabilities[plan.CapabilityClass].Level)
-		expected = append(expected, LaneSnapshot{ModelID: modelID, Tier: strings.TrimSpace(model.Tier), ClaimLevel: level, GateRole: GateRole(plan.CapabilityClass, strings.TrimSpace(model.Tier), level)})
+		expected = append(expected, LaneSnapshot{ModelID: modelID, ProviderRoute: strings.TrimSpace(model.ProviderRoute), Tier: strings.TrimSpace(model.Tier), ClaimLevel: level, GateRole: GateRole(plan.CapabilityClass, strings.TrimSpace(model.Tier), level)})
 	}
 	if !sameLanes(plan.Chain, expected) {
 		return "route plan chain does not match current model-router authority", nil
@@ -497,8 +529,9 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	}
 
 	var matching []struct {
-		row  routeRaw
-		lane LaneSnapshot
+		row          routeRaw
+		lane         LaneSnapshot
+		resolvedLane LaneSnapshot
 	}
 	var nonEligibleRoles []string
 	for _, ref := range receipt.ProofRefs {
@@ -523,10 +556,32 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 			nonEligibleRoles = append(nonEligibleRoles, lanes[0].GateRole)
 			continue
 		}
+		resolvedModel := strings.TrimSpace(rows[0].Row.ResolvedModel)
+		if resolvedModel == "" {
+			return invalid("resolved model is required for deciding route evidence")
+		}
+		if resolvedModel == strings.TrimSpace(rows[0].Row.SelectedTarget.Model) || strings.HasPrefix(resolvedModel, "auto/") {
+			return invalid("resolved model is still the requested route alias")
+		}
+		resolvedLanes := lanesForModel(plan.Chain, resolvedModel)
+		if len(resolvedLanes) > 1 {
+			return invalid("resolved model is ambiguous in current route plan")
+		}
+		if len(resolvedLanes) == 0 {
+			return invalid("resolved model is not present in current route plan")
+		}
+		if resolvedLanes[0].GateRole != "eligible" {
+			nonEligibleRoles = append(nonEligibleRoles, "resolved model gate role is "+resolvedLanes[0].GateRole)
+			continue
+		}
+		if strings.TrimSpace(resolvedLanes[0].ProviderRoute) == "" || strings.TrimSpace(resolvedLanes[0].ProviderRoute) != resolvedModel {
+			return invalid("resolved model does not match its current provider route")
+		}
 		matching = append(matching, struct {
-			row  routeRaw
-			lane LaneSnapshot
-		}{row: rows[0], lane: lanes[0]})
+			row          routeRaw
+			lane         LaneSnapshot
+			resolvedLane LaneSnapshot
+		}{row: rows[0], lane: lanes[0], resolvedLane: resolvedLanes[0]})
 	}
 	if len(matching) != 1 {
 		if len(matching) == 0 && len(nonEligibleRoles) > 0 {
@@ -538,8 +593,13 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	sample.RouteEvidenceID = chosen.row.Row.ID
 	sample.RouteEvidenceSHA256 = "sha256:" + shaHex(chosen.row.Raw)
 	sample.RouteStatus = chosen.row.Row.Status
-	sample.ModelID = chosen.row.Row.SelectedTarget.Model
-	sample.GateRole = chosen.lane.GateRole
+	sample.RouteModelID = chosen.row.Row.SelectedTarget.Model
+	sample.ModelID = strings.TrimSpace(chosen.row.Row.ResolvedModel)
+	sample.ProviderID = resolvedProviderID(sample.ModelID)
+	sample.GateRole = chosen.resolvedLane.GateRole
+	if sample.ProviderID == "" {
+		return invalid("resolved model provider identity is required")
+	}
 	if strings.TrimSpace(chosen.row.Row.WorkID) == "" {
 		return invalid("route evidence work_id is required")
 	}
@@ -595,9 +655,26 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	indexedArchivePaths := map[string]bool{}
 	for _, entry := range archive {
 		if entry.Kind == "work" && strings.HasPrefix(entry.OriginalPath, "work/work/") && strings.HasSuffix(entry.OriginalPath, ".json") {
-			paths = append(paths, filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)))
+			archivePath := filepath.Clean(filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)))
+			paths = append(paths, archivePath)
+			indexedArchivePaths[archivePath] = true
+		}
+	}
+	physicalArchiveWorkDir := filepath.Join(homepkg.OperationalArchiveFilesRoot(homePath), "work", "work")
+	archivedFiles, err := os.ReadDir(physicalArchiveWorkDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, entry := range archivedFiles {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Clean(filepath.Join(physicalArchiveWorkDir, entry.Name()))
+		if !indexedArchivePaths[path] {
+			return nil, fmt.Errorf("operational archive contains unindexed work file %s", filepath.ToSlash(entry.Name()))
 		}
 	}
 	sort.Strings(paths)
@@ -894,6 +971,14 @@ func lanesForModel(lanes []LaneSnapshot, modelID string) []LaneSnapshot {
 		}
 	}
 	return out
+}
+
+func resolvedProviderID(modelID string) string {
+	provider, _, ok := strings.Cut(strings.TrimSpace(modelID), "/")
+	if !ok || strings.TrimSpace(provider) == "" {
+		return ""
+	}
+	return strings.TrimSpace(provider)
 }
 
 func autonomyClassOf(work envelope.WorkEnvelope) string {

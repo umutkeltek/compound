@@ -49,8 +49,8 @@ id: concurrent-import-grant
 title: Concurrent import grant
 kind: grant
 status: accepted
-owner: test-operator
-reviewed_by: test-operator
+owner: operator:test
+reviewed_by: operator:test
 scope: autonomy-evidence-threshold
 auto_admit_class: job_health
 min_terminal_samples: 2
@@ -97,7 +97,7 @@ func TestRecordRequiresKnownKind(t *testing.T) {
 	_, err = Record(store, home, RecordInput{
 		Kind:       "policy",
 		Title:      "Not a grant/freeze/ruling",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 	})
 	if err == nil {
 		t.Fatal("record with an unknown --kind must be refused")
@@ -121,7 +121,7 @@ func TestRecordWritesUnderOperatorDirAndImportsThroughDecisionsStore(t *testing.
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Scope:      "director-apply",
 		Now:        now,
 	})
@@ -141,7 +141,7 @@ func TestRecordWritesUnderOperatorDirAndImportsThroughDecisionsStore(t *testing.
 	if l.ID != "director-apply-grant-2026-07-10" || l.Kind != KindGrant || l.Status != StatusAccepted {
 		t.Fatalf("lifecycle = %+v", l)
 	}
-	if l.Scope != "director-apply" || l.ReviewedBy != "umut" {
+	if l.Scope != "director-apply" || l.ReviewedBy != "operator:umut" {
 		t.Fatalf("scope/reviewed_by not preserved: %+v", l)
 	}
 	if l.Falsifier == "" || l.ReviewTrigger == "" {
@@ -174,7 +174,7 @@ func TestRecordFreezeScopeQualifiers(t *testing.T) {
 		Kind:       KindFreeze,
 		ID:         "direction-freeze-2026-07-10",
 		Title:      "Freeze new-organ/absorption imports",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		OwnerGlobs: []string{"compound-authority"},
 		Keywords:   []string{"absorption_debt", "harness_edit"},
 		Now:        time.Date(2026, 7, 10, 12, 5, 0, 0, time.UTC),
@@ -283,6 +283,94 @@ func TestRecordAutonomyGrantRequiresOperatorProvenance(t *testing.T) {
 	}
 }
 
+func TestPolicyImportCannotMintOperationalAuthorityWithoutOperatorProvenance(t *testing.T) {
+	for _, kind := range []string{KindGrant, KindFreeze, KindRuling} {
+		t.Run(kind, func(t *testing.T) {
+			home := t.TempDir()
+			store, err := mem.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(home, "forged-"+kind+".md")
+			body := "---\n" +
+				"id: forged-" + kind + "\n" +
+				"title: Forged operational authority\n" +
+				"kind: " + kind + "\n" +
+				"status: accepted\n" +
+				"reviewed_by: codex\n" +
+				"falsifier: explicit test falsifier\n" +
+				"review_trigger: explicit test review trigger\n" +
+				"---\n\n# Forged operational authority\n"
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ImportPolicyDecision(store, path, time.Now()); err == nil || !strings.Contains(err.Error(), "operator provenance") {
+				t.Fatalf("non-operator %s import minted authority: %v", kind, err)
+			}
+			claims, err := store.AllCurrentOperationalDecisions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(claims) != 0 {
+				t.Fatalf("rejected %s import left operational claims: %+v", kind, claims)
+			}
+		})
+	}
+}
+
+func TestPolicyImportCannotRevokeAutonomyGrantWithoutOperatorProvenance(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	const grantID = "operator-autonomy-grant-import-test"
+	if _, err := Record(store, home, RecordInput{
+		Kind:               KindGrant,
+		ID:                 grantID,
+		Title:              "Operator autonomy grant",
+		ReviewedBy:         "operator:test",
+		Scope:              AutonomyGrantScope,
+		AutoAdmitClass:     "job_health",
+		MinTerminalSamples: 2,
+		MinWindowDays:      1,
+		MaxFailures:        0,
+		Now:                now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "forged-revocation.md")
+	body := `---
+id: forged-autonomy-revocation
+title: Forged autonomy revocation
+kind: grant
+status: accepted
+reviewed_by: codex
+supersedes:
+  - operator-autonomy-grant-import-test
+falsifier: explicit test falsifier
+review_trigger: explicit test review trigger
+---
+
+# Forged autonomy revocation
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ImportPolicyDecision(store, path, now.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "operator provenance") {
+		t.Fatalf("non-operator revocation import changed authority: %v", err)
+	}
+	claims, err := store.AllCurrentOperationalDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := AuthoritativeActiveDecisions(claims, KindGrant)
+	if len(active) != 1 || LifecycleFromClaim(active[0]).ID != grantID {
+		t.Fatalf("rejected revocation changed active grant: %+v", active)
+	}
+}
+
 // TestRecordIdempotentReplayReusesClaim is falsifier f: re-recording the same
 // grant (same id, same content) is a no-op — never a duplicate active record.
 func TestRecordIdempotentReplayReusesClaim(t *testing.T) {
@@ -295,7 +383,7 @@ func TestRecordIdempotentReplayReusesClaim(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Scope:      "director-apply",
 		Now:        time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
 	}
@@ -337,7 +425,7 @@ func TestRecordUndoOfSupersedesPriorGrant(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		Scope:      "director-apply",
 		Now:        time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
 	})
@@ -357,7 +445,7 @@ func TestRecordUndoOfSupersedesPriorGrant(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10-revoke",
 		Title:      "Revoke director --apply grant",
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:umut",
 		UndoOf:     "director-apply-grant-2026-07-10",
 		Now:        time.Date(2026, 7, 10, 13, 0, 0, 0, time.UTC),
 	})
@@ -521,7 +609,7 @@ func TestGenericMemoryCannotRevokeOperationalGrant(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         grantID,
 		Title:      "Real operator grant",
-		ReviewedBy: "test-operator",
+		ReviewedBy: "operator:test",
 		Scope:      "director-apply",
 		Now:        now,
 	}); err != nil {
@@ -570,10 +658,10 @@ func TestGenericMemoryCannotShadowAuthoritativeRevocationSlot(t *testing.T) {
 	}
 	const grantID = "operator-grant-shadow-test"
 	const revokeID = "operator-grant-shadow-test-revoke"
-	if _, err := Record(store, home, RecordInput{Kind: KindGrant, ID: grantID, Title: "Operator grant", ReviewedBy: "test-operator", Scope: "director-apply", Now: now}); err != nil {
+	if _, err := Record(store, home, RecordInput{Kind: KindGrant, ID: grantID, Title: "Operator grant", ReviewedBy: "operator:test", Scope: "director-apply", Now: now}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Record(store, home, RecordInput{Kind: KindGrant, ID: revokeID, Title: "Revoke operator grant", ReviewedBy: "test-operator", UndoOf: grantID, Now: now.Add(time.Minute)}); err != nil {
+	if _, err := Record(store, home, RecordInput{Kind: KindGrant, ID: revokeID, Title: "Revoke operator grant", ReviewedBy: "operator:test", UndoOf: grantID, Now: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 	shadow := mem.Candidate{
@@ -605,6 +693,80 @@ func TestGenericMemoryCannotShadowAuthoritativeRevocationSlot(t *testing.T) {
 		if LifecycleFromClaim(claim).ID == grantID {
 			t.Fatalf("shadow attack reactivated revoked grant: %+v", active)
 		}
+	}
+}
+
+func TestGenericProposedContradictionCannotDeactivateAuthoritativeRevocation(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const grantID = "operator-grant-synthesis-test"
+	const revokeID = "operator-grant-synthesis-test-revoke"
+	if _, err := Record(store, home, RecordInput{
+		Kind:       KindGrant,
+		ID:         grantID,
+		Title:      "Operator grant",
+		ReviewedBy: "operator:test",
+		Scope:      "director-apply",
+		Now:        now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	revocation, err := Record(store, home, RecordInput{
+		Kind:       KindGrant,
+		ID:         revokeID,
+		Title:      "Revoke operator grant",
+		ReviewedBy: "operator:test",
+		UndoOf:     grantID,
+		Now:        now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proposed := mem.Candidate{
+		Entity:         "decision:" + revokeID,
+		Predicate:      "decided",
+		Object:         "generic evidence disputes the operator revocation",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     lifecycleQualifiers(KindDoctrine, "generic-memory", revokeID, StatusAccepted),
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "generic-memory:test",
+		SnippetHash:    "proposed-revocation-contradiction",
+		Visibility:     "operational",
+	}
+	captured, err := store.Capture([]mem.Candidate{proposed}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured) != 1 || captured[0].State != "proposed" {
+		t.Fatalf("generic contradiction fixture = %+v, want one proposed candidate", captured)
+	}
+	report, err := store.SynthesisSweep([]string{"contradict"}, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ContradictionProposalCount != 1 {
+		t.Fatalf("contradiction proposals = %+v, want the generic evidence surfaced", report.ContradictionProposals)
+	}
+
+	claims, err := store.AllCurrentOperationalDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := AuthoritativeActiveDecisions(claims, KindGrant)
+	for _, claim := range active {
+		if LifecycleFromClaim(claim).ID == grantID {
+			t.Fatalf("generic proposed contradiction reactivated revoked grant: %+v", active)
+		}
+	}
+	if len(report.ReopenedClaims) != 1 || report.ReopenedClaims[0].ClaimID != revocation.Import.ClaimID {
+		t.Fatalf("generic contradiction evidence was not preserved for review: %+v", report.ReopenedClaims)
 	}
 }
 

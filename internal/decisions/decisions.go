@@ -250,6 +250,9 @@ func importPolicyDecisionLocked(store *mem.Store, path string, now time.Time) (D
 			f.ReviewTrigger = strings.TrimSpace(mm[1])
 		}
 	}
+	if err := validateOperationalAuthorityFrontmatter(f); err != nil {
+		return report, fmt.Errorf("policy decision %s: %w", path, err)
+	}
 	evidence, err := store.RecordEvidence(mem.EvidenceItem{
 		SourceKind: "repo",
 		SourceID:   "policy-decision:" + filepath.ToSlash(path),
@@ -261,10 +264,12 @@ func importPolicyDecisionLocked(store *mem.Store, path string, now time.Time) (D
 		return report, err
 	}
 	q := lifecycleQualifiers(f.Kind, "decisions-repo", f.ID, f.Status)
-	// This reserved stamp is meaningful only because the promotion below goes
-	// through mem.AdjudicateOperationalDecision. Generic memory adjudication
-	// rejects callers that try to copy it.
-	q[mem.OperationalDecisionAuthorityQualifier] = mem.OperationalDecisionAuthorityValue
+	// Only operator-authenticated operational kinds enter the dedicated
+	// authority door. Ordinary policy/doctrine imports remain evidence-backed
+	// memory and never receive the reserved runtime stamp.
+	if isOperationalAuthorityKind(f.Kind) {
+		q[mem.OperationalDecisionAuthorityQualifier] = mem.OperationalDecisionAuthorityValue
+	}
 	if len(f.Domains) > 0 {
 		q["domain"] = strings.Join(f.Domains, ",")
 	}
@@ -324,7 +329,12 @@ func importPolicyDecisionLocked(store *mem.Store, path string, now time.Time) (D
 		return report, err
 	}
 	verdict := VerdictForCandidate(cands[0])
-	res, err := store.AdjudicateOperationalDecision(cands[0].ID, verdict, "policy-decision-import", now)
+	var res mem.AdjudicateResult
+	if isOperationalAuthorityKind(f.Kind) {
+		res, err = store.AdjudicateOperationalDecision(cands[0].ID, verdict, "policy-decision-import", now)
+	} else {
+		res, err = store.Adjudicate(cands[0].ID, verdict, "policy-decision-import", now)
+	}
 	if err != nil {
 		return report, err
 	}

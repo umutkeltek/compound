@@ -33,6 +33,18 @@ models:
       judge-critique:
         level: primary
         evidence: "fixture: cheap paid judge leads critique route"
+  deepseek/deepseek-v4-pro:
+    lane: "deepseek paid judge (fixture)"
+    harness: "switchback"
+    provider_route: "deepseek/deepseek-v4-pro"
+    effort_default: high
+    cost_class: api-marginal
+    tier: cheap
+    packet_ceiling: multi-file
+    capabilities:
+      judge-critique:
+        level: primary
+        evidence: "fixture: resolved paid model identity is decision-eligible"
   scout/chat:
     lane: "scout/chat (switchback)"
     harness: "switchback"
@@ -67,4 +79,5 @@ routing_defaults:
     - mac/qwen-fixture
   judge-critique:
     - auto/judge
+    - deepseek/deepseek-v4-pro
     - scout/chat

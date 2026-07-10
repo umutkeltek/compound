@@ -268,6 +268,57 @@ func TestOperationalDecisionFoldIgnoresGenericSameSlotShadow(t *testing.T) {
 	}
 }
 
+func TestOperationalDecisionFoldIgnoresGenericReviewMark(t *testing.T) {
+	s := newStore(t)
+	protected := Claim{
+		ID:         "claim_stamped_freeze_authority",
+		Seq:        1,
+		Entity:     "decision:stamped-freeze",
+		Predicate:  "decided",
+		Object:     "operator freeze",
+		ClaimType:  "decision",
+		Visibility: "operational",
+		Qualifiers: map[string]string{
+			OperationalDecisionAuthorityQualifier: OperationalDecisionAuthorityValue,
+			"kind":                                "freeze",
+			"source":                              "decisions-repo",
+			"decision_id":                         "stamped-freeze",
+			"lifecycle_status":                    "accepted",
+			"reviewed_by":                         "test-operator",
+		},
+	}
+	if err := appendJSONL(s.claimsLog(), &protected); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJSONL(s.edgesLog(), &Edge{
+		Seq:          2,
+		Kind:         EdgeKindNeedsReview,
+		From:         "synth_contradiction_generic",
+		To:           protected.ID,
+		Confidence:   1,
+		EvidenceRefs: []string{"cand_generic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ordinary, err := s.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ordinary) != 0 {
+		t.Fatalf("fixture did not reproduce generic review quarantine: %+v", ordinary)
+	}
+	operational, err := s.AllCurrentOperationalDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operational) != 1 || operational[0].ID != protected.ID {
+		t.Fatalf("generic review mark erased operational authority: %+v", operational)
+	}
+	if operational[0].State != ClaimStatePromoted || len(operational[0].ReviewRefs) != 0 || operational[0].ConfidenceDelta != 0 {
+		t.Fatalf("protected authority leaked derived review state: %+v", operational[0])
+	}
+}
+
 func TestDuplicateRejected(t *testing.T) {
 	s := newStore(t)
 	c1, _ := s.Capture([]Candidate{cand("e", "p", "same", "")}, t0)

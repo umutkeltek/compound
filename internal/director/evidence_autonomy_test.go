@@ -78,6 +78,10 @@ func seedJobHealthAutonomySample(t *testing.T, home, id string, closedAt time.Ti
 	if _, err := store.Advance(w.ID, work.AdvanceInput{Actor: "sample-executor", To: "running"}, closedAt.Add(-2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	resolvedModel := model
+	if model == "auto/judge" {
+		resolvedModel = "deepseek/deepseek-v4-pro"
+	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
 		CreatedAt:     closedAt.Add(-time.Minute),
 		RequestID:     "request-" + id,
@@ -86,7 +90,7 @@ func seedJobHealthAutonomySample(t *testing.T, home, id string, closedAt time.Ti
 		Protocol:      "panel-lane",
 		Provider:      "compound-route-plan",
 		Model:         model,
-		ResolvedModel: model,
+		ResolvedModel: resolvedModel,
 		Status:        "completed",
 		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
@@ -353,7 +357,7 @@ func TestJobHealthEvidenceThresholdFailuresRemainProposed(t *testing.T) {
 }
 
 func TestJobHealthWrongOrRevokedGrantRemainsProposed(t *testing.T) {
-	for _, mode := range []string{"wrong-class", "revoked"} {
+	for _, mode := range []string{"wrong-class", "revoked", "revoked-needs-review"} {
 		t.Run(mode, func(t *testing.T) {
 			home := seededDirectorHome(t)
 			now := directorTestNow.Add(96 * time.Hour)
@@ -366,15 +370,41 @@ func TestJobHealthWrongOrRevokedGrantRemainsProposed(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := decisions.Record(store, home, decisions.RecordInput{
+				revocationID := grantID + "-revoked"
+				revocation, err := decisions.Record(store, home, decisions.RecordInput{
 					Kind:       decisions.KindGrant,
-					ID:         grantID + "-revoked",
+					ID:         revocationID,
 					Title:      "Revoke job health autonomy",
 					ReviewedBy: "operator:test",
 					UndoOf:     grantID,
 					Now:        now.Add(-time.Hour),
-				}); err != nil {
+				})
+				if err != nil {
 					t.Fatal(err)
+				}
+				if mode == "revoked-needs-review" {
+					captured, err := store.Capture([]mem.Candidate{{
+						Entity:         "decision:" + revocationID,
+						Predicate:      "decided",
+						Object:         "generic evidence disputes the operator revocation",
+						Confidence:     1,
+						Derivation:     "deterministic",
+						ClaimType:      "decision",
+						Qualifiers:     map[string]string{"kind": decisions.KindDoctrine, "source": "generic-memory", "decision_id": revocationID, "lifecycle_status": decisions.StatusAccepted},
+						SourceTraceRef: "generic-memory:test",
+						SnippetHash:    "revocation-needs-review",
+						Visibility:     "operational",
+					}}, now.Add(-30*time.Minute))
+					if err != nil || len(captured) != 1 {
+						t.Fatalf("capture generic contradiction: candidates=%+v err=%v", captured, err)
+					}
+					sweep, err := store.SynthesisSweep([]string{"contradict"}, now.Add(-15*time.Minute))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(sweep.ReopenedClaims) != 1 || sweep.ReopenedClaims[0].ClaimID != revocation.Import.ClaimID {
+						t.Fatalf("revocation contradiction was not preserved for review: %+v", sweep.ReopenedClaims)
+					}
 				}
 			}
 			seedJobHealthAutonomySample(t, home, mode+"-a", now.Add(-48*time.Hour), "completed", "auto/judge", true)

@@ -315,7 +315,7 @@ func seedDirectorApplyGrant(t *testing.T, home string, now time.Time) {
 		Kind:       decisions.KindGrant,
 		ID:         "director-apply-grant-test",
 		Title:      "Grant director --apply (test fixture)",
-		ReviewedBy: "test-operator",
+		ReviewedBy: "operator:test",
 		Scope:      "director-apply",
 		Now:        now,
 	}); err != nil {

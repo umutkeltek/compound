@@ -81,6 +81,9 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 	if reviewedBy == "" {
 		return RecordReport{}, fmt.Errorf("decisions record: --reviewed-by required")
 	}
+	if !policy.HasOperatorProvenance(reviewedBy) {
+		return RecordReport{}, fmt.Errorf("decisions record: operational authority requires operator --reviewed-by provenance")
+	}
 	title := strings.TrimSpace(in.Title)
 	if title == "" {
 		return RecordReport{}, fmt.Errorf("decisions record: --title required")
@@ -90,9 +93,6 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 	}
 	autoClass := strings.TrimSpace(in.AutoAdmitClass)
 	if autoClass != "" || in.MinTerminalSamples != 0 || in.MinWindowDays != 0 || in.MaxFailures != 0 {
-		if !policy.HasOperatorProvenance(reviewedBy) {
-			return RecordReport{}, fmt.Errorf("decisions record: autonomy thresholds require operator --reviewed-by provenance")
-		}
 		if kind != KindGrant {
 			return RecordReport{}, fmt.Errorf("decisions record: autonomy thresholds require --kind grant")
 		}
