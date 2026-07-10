@@ -300,8 +300,6 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-decision-execute-smoke",
 		"console-standing-law-smoke",
 		"console-attention-consistency-smoke",
-		"console-work-language-smoke",
-		"console-ask-triage-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
 		"profiles-check-installed-only",
@@ -317,21 +315,13 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
-		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-work-language-smoke" || report.Steps[i].Name == "console-ask-triage-smoke"
+		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
 		if !stringSliceContains(report.ProofRefs, want) {
 			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
 		}
-	}
-}
-
-func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
-	step := proofCheckStep{Name: "console-work-trace-smoke", Command: []string{"bun", "scripts/work-trace-smoke.mjs"}, SkipIfMissing: "definitely-missing-proof-tool"}
-	got := runProofCheckStep(t.TempDir(), step, "")
-	if got.Status != "skipped" || got.SkipReason != "required executable definitely-missing-proof-tool not found" {
-		t.Fatalf("silent proof-check skip: %+v", got)
 	}
 }
 
@@ -3760,7 +3750,7 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 		return
 	}
 	homePath := t.TempDir()
-	if err := home.Init(homePath, "global", cliTestNow); err != nil {
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateRejectsRunningStateAsUsage$")
@@ -3773,25 +3763,44 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 	if exitErr.ExitCode() != 2 {
 		t.Fatalf("work create should exit 2, got %d output=%s", exitErr.ExitCode(), output)
 	}
-	if !strings.Contains(string(output), "create at ready -> claim -> advance") {
+	if !strings.Contains(string(output), "initial work state must be proposed or ready") {
 		t.Fatalf("work create usage did not explain lease-preserving path:\n%s", output)
 	}
 }
 
-func TestWorkCreateAllowsRunningStateInTestHome(t *testing.T) {
-	homePath := t.TempDir()
-	t.Setenv("COMPOUND_HOME", homePath)
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
-		t.Fatalf("init home: %v", err)
+func TestWorkCreateCommandsRejectUndocumentedInitialStates(t *testing.T) {
+	switch os.Getenv(workCLIBoundarySubEnv) {
+	case "create-admitted":
+		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "direct admitted create", "--state", "admitted"})
+		return
+	case "create-plan-admitted":
+		cmdWork([]string{"create-plan", "--owner", "compound-core", "--predicate", "direct admitted create plan", "--state", "admitted", "--dry-run"})
+		return
+	case "import-packet-admitted":
+		cmdWork([]string{"import-packet", "fixtures/work/goal-packet.md", "--state", "admitted"})
+		return
 	}
-	cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "test fixture starts running", "--state", "running"})
-	store, err := work.Open(homePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	items, err := store.List()
-	if err != nil || len(items) != 1 || items[0].State != "running" {
-		t.Fatalf("running test fixture = %+v, err=%v", items, err)
+
+	for _, child := range []string{"create-admitted", "create-plan-admitted", "import-packet-admitted"} {
+		t.Run(child, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "test", cliTestNow); err != nil {
+				t.Fatalf("init home: %v", err)
+			}
+			cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateCommandsRejectUndocumentedInitialStates$")
+			cmd.Env = append(os.Environ(), workCLIBoundarySubEnv+"="+child, "COMPOUND_HOME="+homePath)
+			output, err := cmd.CombinedOutput()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("%s should exit non-zero, got err=%v output=%s", child, err, output)
+			}
+			if exitErr.ExitCode() != 2 {
+				t.Fatalf("%s should exit 2, got %d output=%s", child, exitErr.ExitCode(), output)
+			}
+			if !strings.Contains(string(output), "initial work state must be proposed or ready") {
+				t.Fatalf("%s did not explain initial-state boundary:\n%s", child, output)
+			}
+		})
 	}
 }
 
