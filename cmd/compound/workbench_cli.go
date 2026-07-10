@@ -28,7 +28,7 @@ import (
 
 const workbenchCapabilityOfferLimit = 12
 
-const workbenchUsage = "usage: compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
+const workbenchUsage = "usage: compound workbench [--json] [--operator] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -94,6 +94,7 @@ func cmdWorkbench(args []string) {
 		os.Exit(1)
 	}
 	jsonOut := false
+	operatorOut := false
 	recent := 5
 	actor := "codex"
 	activePacketSurface := ""
@@ -110,6 +111,8 @@ func cmdWorkbench(args []string) {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
+		case "--operator":
+			operatorOut = true
 		case "--include-archived":
 			includeArchived = true
 		case "--active-packet-surface":
@@ -286,6 +289,10 @@ func cmdWorkbench(args []string) {
 	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
+		return
+	}
+	if operatorOut {
+		printWorkbenchOperator(output)
 		return
 	}
 	fmt.Printf("workbench open=%d needs_claim=%d needs_review=%d in_progress=%d terminal=%d\n",
