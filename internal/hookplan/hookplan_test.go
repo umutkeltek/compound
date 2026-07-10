@@ -1,6 +1,9 @@
 package hookplan
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"compound/internal/harness"
@@ -148,4 +151,98 @@ func reconciliationDeltaByID(reconciliation Reconciliation, id string) *Delta {
 		}
 	}
 	return nil
+}
+
+func TestReconcileRejectsDuplicateDesiredSlots(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{ID: "one", Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://one"},
+			{ID: "two", Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://two"},
+		},
+	}
+
+	_, err := Reconcile(plan, InstallationSnapshot{}, harness.DefaultRegistry())
+	if err == nil || !strings.Contains(err.Error(), "duplicate desired hook slot") {
+		t.Fatalf("Reconcile() error = %v, want duplicate desired hook slot", err)
+	}
+}
+
+func TestReconcileRejectsAmbiguousLegacyObservation(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{ID: "wanted", Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://wanted"},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Bindings: []ObservedBinding{
+			{Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://unknown-one", Active: true},
+			{Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://unknown-two", Active: true},
+		},
+	}
+
+	_, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err == nil || !strings.Contains(err.Error(), "ambiguous observed registrations") {
+		t.Fatalf("Reconcile() error = %v, want ambiguous observed registrations", err)
+	}
+}
+
+func TestReconcileCanonicalizesEquivalentInputOrder(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Revision:      "sha256:plan",
+		Bindings: []Binding{
+			{ID: "prompt", Harness: "claude_code", Event: "UserPromptSubmit", HandlerRef: "handler://prompt"},
+			{ID: "start", Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://start"},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Ref:           "harness-installation://fixture",
+		Revision:      "sha256:observed",
+		Bindings: []ObservedBinding{
+			{Harness: "claude_code", Event: "SessionStart", HandlerRef: "handler://start", Active: true},
+			{Harness: "claude_code", Event: "SessionEnd", HandlerRef: "handler://extra", Active: true},
+			{Harness: "claude_code", Event: "UserPromptSubmit", HandlerRef: "handler://prompt", Active: true},
+		},
+	}
+
+	first, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("first Reconcile() error = %v", err)
+	}
+	reverseBindings(plan.Bindings)
+	reverseObservedBindings(observed.Bindings)
+	second, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("second Reconcile() error = %v", err)
+	}
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("marshal first reconciliation: %v", err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil {
+		t.Fatalf("marshal second reconciliation: %v", err)
+	}
+	if !bytes.Equal(firstJSON, secondJSON) {
+		t.Fatalf("equivalent inputs produced different reconciliation JSON:\nfirst:  %s\nsecond: %s", firstJSON, secondJSON)
+	}
+}
+
+func reverseBindings(bindings []Binding) {
+	for left, right := 0, len(bindings)-1; left < right; left, right = left+1, right-1 {
+		bindings[left], bindings[right] = bindings[right], bindings[left]
+	}
+}
+
+func reverseObservedBindings(bindings []ObservedBinding) {
+	for left, right := 0, len(bindings)-1; left < right; left, right = left+1, right-1 {
+		bindings[left], bindings[right] = bindings[right], bindings[left]
+	}
 }
