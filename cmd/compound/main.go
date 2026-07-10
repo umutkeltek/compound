@@ -167,6 +167,8 @@ func main() {
 		cmdLocalModels(os.Args[2:])
 	case "lanebeliefs":
 		cmdLaneBeliefs(os.Args[2:])
+	case "negatives":
+		cmdNegatives(os.Args[2:])
 	case "architecture":
 		cmdArchitecture(os.Args[2:])
 	default:
