@@ -398,7 +398,7 @@ func LoadAndRevalidate(homePath, ref, expectedClass, expectedRoutePlanID string)
 	}
 	rebuilt, err := Compile(homePath, artifact.Grant, artifact.RoutePlan, generatedAt)
 	if err != nil {
-		return Artifact{}, err
+		return Artifact{}, fmt.Errorf("eligibility artifact %s is stale or source evidence changed: %w", artifact.ID, err)
 	}
 	before, _ := json.Marshal(artifact)
 	after, _ := json.Marshal(rebuilt)
