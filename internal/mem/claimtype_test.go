@@ -30,7 +30,9 @@ func TestClaimTypeAndDomainTopic(t *testing.T) {
 		t.Errorf("Topic() should prefer the domain qualifier; got %q", cur[0].Topic())
 	}
 	pos, _ := s.Positions()
-	if len(pos) != 1 || pos[0].SchemaVersion != PositionFoldSchemaVersion || pos[0].Topic != "stack" || !strings.HasPrefix(pos[0].ID, "proj::stack::slot-") {
+	if len(pos) != 1 || pos[0].SchemaVersion != PositionFoldSchemaVersion || pos[0].Topic != "stack" ||
+		pos[0].Predicate != "primary_lang" || pos[0].ClaimType != "architecture" ||
+		!strings.HasPrefix(pos[0].ID, "proj::stack::slot-") {
 		t.Errorf("position should keep the domain topic and predicate slot identity; got %+v", pos)
 	}
 	if _, err := s.Capture([]Candidate{{Entity: "x", Predicate: "y", Object: "z", ClaimType: "bogus"}}, t0); err == nil {

@@ -1960,14 +1960,129 @@ func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
 		t.Fatalf("context pack active_positions = %+v, want one folded position", pack.ActivePositions)
 	}
 	pos := pack.ActivePositions[0]
-	wantLine := fmt.Sprintf("%s → ContextPack uses folded positions digest (since-seq %d, chain-length 2)", fold.Positions[0].ID, latest.Claim.Seq)
+	wantLine := fmt.Sprintf("%s [predicate=runtime_stance, claim_type=architecture] → ContextPack uses folded positions digest (since-seq %d, chain-length 2)", fold.Positions[0].ID, latest.Claim.Seq)
 	if pos.Ref != positionRef || pos.Entity != "project:compound" || pos.Topic != "memory_default_organ" ||
+		pos.Predicate != "runtime_stance" || pos.ClaimType != "architecture" ||
 		pos.Stance != "ContextPack uses folded positions digest" || pos.SinceSeq != latest.Claim.Seq ||
 		pos.ChainLength != 2 || pos.Line != wantLine {
 		t.Fatalf("active position = %+v, want line %q", pos, wantLine)
 	}
 	if !strings.Contains(pack.SummaryMD, wantLine) {
 		t.Fatalf("summary should carry folded positions line %q, got %q", wantLine, pack.SummaryMD)
+	}
+}
+
+func TestPackWithCapabilitiesKeepsDistinctFactSlotsUnderOneDomain(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidatesIn := []mem.Candidate{
+		{
+			Entity: "compound", Predicate: "os_absorption_end_state", Object: "compound owns the meaning layer",
+			Confidence: 0.92, Derivation: "deterministic", ClaimType: "architecture",
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisCuratedPage,
+			SourceTraceRef: "ev_end_state", SnippetHash: "sha256:end-state", Visibility: "contextual",
+		},
+		{
+			Entity: "compound", Predicate: "os_absorption_stance", Object: "adapt sources instead of copying them",
+			Confidence: 0.91, Derivation: "deterministic", ClaimType: "architecture",
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisCuratedPage,
+			SourceTraceRef: "ev_stance", SnippetHash: "sha256:stance", Visibility: "contextual",
+		},
+	}
+	captured, err := store.Capture(candidatesIn, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range captured {
+		if _, err := store.Adjudicate(candidate.ID, "promote", "test", fixedNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fold, err := store.FoldPositions(mem.PositionFoldOptions{}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fold.Positions) != 2 {
+		t.Fatalf("folded positions = %+v, want two fact slots", fold.Positions)
+	}
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: "/repo/compound", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute",
+		Task: "verify os absorption end state and stance",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pack.ActivePositions) != 2 {
+		t.Fatalf("active positions = %+v, want two fact slots", pack.ActivePositions)
+	}
+	refs := map[string]bool{}
+	wantObjects := map[string]string{
+		"os_absorption_end_state": "compound owns the meaning layer",
+		"os_absorption_stance":    "adapt sources instead of copying them",
+	}
+	for _, position := range pack.ActivePositions {
+		refs[position.Ref] = true
+		wantObject, ok := wantObjects[position.Predicate]
+		if !ok {
+			t.Fatalf("unexpected active position: %+v", position)
+		}
+		if position.ClaimType != "architecture" || position.Stance != wantObject ||
+			!strings.Contains(position.Line, "[predicate="+position.Predicate+", claim_type=architecture]") {
+			t.Fatalf("active position lost slot meaning: %+v", position)
+		}
+		if !contains(pack.ActiveMemory, position.Ref) || !strings.Contains(pack.SummaryMD, position.Line) {
+			t.Fatalf("position %s not consumed by ContextPack: active=%v summary=%q", position.Ref, pack.ActiveMemory, pack.SummaryMD)
+		}
+	}
+	if len(refs) != 2 {
+		t.Fatalf("distinct fact slots collided on refs: %+v", pack.ActivePositions)
+	}
+}
+
+func TestPackWithCapabilitiesLegacyPositionCheckpointKeepsDecisionRef(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, err := store.Capture([]mem.Candidate{{
+		Entity: "compound", Predicate: "os_absorption_method", Object: "adapt sources through governed intake",
+		Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
+		Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+		SourceTraceRef: "ev_method", SnippetHash: "sha256:method", Visibility: "contextual",
+	}}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promoted, err := store.Adjudicate(captured[0].ID, "promote", "test", fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := json.Marshal(mem.Position{ID: "compound::os-absorption", Entity: "compound", Topic: "os-absorption", ActiveClaimID: promoted.Claim.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "ledger", "positions.jsonl"), append(legacy, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pack, err := PackWithCapabilities(Input{
+		Harness: "codex", Cwd: "/repo/compound", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute",
+		Task: "verify os absorption method",
+	}, DefaultPolicy(), home, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisionRef := "decision://" + promoted.Claim.ID
+	if !contains(pack.ActiveDecisions, decisionRef) || !hasIncluded(pack, decisionRef) {
+		t.Fatalf("legacy position checkpoint hid accepted decision ref %s: active=%v included=%v", decisionRef, pack.ActiveDecisions, pack.Included)
+	}
+	if len(pack.ActivePositions) != 0 {
+		t.Fatalf("decision claims belong to active_decisions, got active_positions=%+v", pack.ActivePositions)
 	}
 }
 
