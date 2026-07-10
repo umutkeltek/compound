@@ -113,13 +113,14 @@ func cmdWork(args []string) {
 		}
 		return targetWorkID
 	}
-	rejectRunningCreateState := func(usage string) {
-		manifest, manifestErr := home.LoadManifest(homePath)
-		if strings.TrimSpace(flag("--state")) == "running" && (manifestErr != nil || manifest.HomeKind != "test") {
-			fmt.Fprintln(os.Stderr, "error: create at ready -> claim -> advance")
-			fmt.Fprintln(os.Stderr, usage)
-			os.Exit(2)
+	validateCreateState := func(usage string) {
+		state := strings.TrimSpace(flag("--state"))
+		if state == "" || state == "proposed" || state == "ready" {
+			return
 		}
+		fmt.Fprintln(os.Stderr, "error: initial work state must be proposed or ready; use lifecycle commands for later states")
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
 	}
 	die := func(e error) {
 		if e != nil {
@@ -130,7 +131,7 @@ func cmdWork(args []string) {
 
 	switch sub {
 	case "create-plan":
-		rejectRunningCreateState("usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--json] [--dry-run]")
+		validateCreateState("usage: compound work create-plan [--work-id ID] --owner O --predicate P [--outcome O] [--by A] [--state proposed|ready] [--context-pack ctx] [--canonical-surface S] [--route-decision-id R] [--risk tier1] [--privacy private] [--json] [--dry-run]")
 		plan, err := store.CreatePlan(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
@@ -225,19 +226,11 @@ func cmdWork(args []string) {
 			fmt.Printf("plan: %s\n", report.WorkPlan.PlanPath)
 		}
 	case "create":
-		rejectRunningCreateState(workUsage("create"))
-		requestedState := flag("--state")
-		createState := requestedState
-		actor := firstNonEmpty(flag("--by"), flag("--actor"))
-		if requestedState == "running" {
-			createState = "ready"
-			actor = firstNonEmpty(actor, "test-fixture")
-		}
-		now := time.Now()
+		validateCreateState(workUsage("create"))
 		w, err := store.Create(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
-			Actor:            actor,
+			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
 			CanonicalSurface: flag("--canonical-surface"),
 			SuccessPredicate: flag("--predicate"),
 			DesiredOutcome:   flag("--outcome"),
@@ -245,20 +238,15 @@ func cmdWork(args []string) {
 			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
 			RouteDecisionID:  flag("--route-decision-id"),
-			State:            createState,
+			State:            flag("--state"),
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
-		}, now)
+		}, time.Now())
 		die(err)
-		if requestedState == "running" {
-			w, err = store.Claim(w.ID, actor, now)
-			die(err)
-			w, err = store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: actor}, now)
-			die(err)
-		}
 		fmt.Printf("created %s (%s)\n", w.ID, w.State)
 		printJSON(w)
 	case "import-packet":
+		validateCreateState("usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]")
 		packetPath := pos()
 		if packetPath == "" {
 			fmt.Fprintln(os.Stderr, "usage: compound work import-packet <packet.md> [--owner O] [--by A] [--state proposed|ready] [--context-pack ctx] [--risk tier1] [--privacy private]")
