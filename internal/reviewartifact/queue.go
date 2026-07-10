@@ -117,6 +117,17 @@ type QueueItem struct {
 	NextAction              string        `json:"next_action,omitempty"`
 	Actions                 []Action      `json:"actions,omitempty"`
 	DecisionCard            *DecisionCard `json:"decision_card,omitempty"`
+
+	// Brief is the generic, propose-only decision-brief translation attached
+	// from the `<id>.brief.json` sidecar, if one exists and is valid — for
+	// EVERY area (see loadDecisionBriefSidecar in brief.go). It never affects
+	// Status/Band/Readiness above; a brief that tries to inject those fields
+	// is rejected outright (see ParseDecisionBrief's strict decode).
+	Brief *DecisionBrief `json:"brief,omitempty"`
+	// Warnings carries item-level problems that do not block the item itself
+	// from queueing (e.g. an invalid `.brief.json` sidecar) — distinct from
+	// BlockedReason, which explains why the ITEM's own action is blocked.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Action is a non-mutating operator hint attached by the domain owner that
@@ -711,6 +722,12 @@ func queueItemForRel(path, rel string) (QueueItem, error) {
 		return QueueItem{}, err
 	}
 	item.ExtraPaths = extras
+	brief, warnings, err := loadDecisionBriefSidecar(filepath.Dir(path), stem)
+	if err != nil {
+		return QueueItem{}, err
+	}
+	item.Brief = brief
+	item.Warnings = warnings
 	return item, nil
 }
 
@@ -794,7 +811,7 @@ func archivedReviewExtraPaths(entries []home.OperationalArchiveEntry, byOriginal
 
 func coreReviewJSON(path string) bool {
 	name := filepath.Base(path)
-	for _, suffix := range []string{".apply.json", ".decision.json", ".reviewed.json"} {
+	for _, suffix := range []string{".apply.json", ".decision.json", ".reviewed.json", ".brief.json"} {
 		if strings.HasSuffix(name, suffix) {
 			return false
 		}
