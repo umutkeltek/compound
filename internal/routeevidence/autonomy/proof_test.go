@@ -381,6 +381,26 @@ func TestCompileFailsClosedOnTerminalSnapshotWithoutTerminalEvent(t *testing.T) 
 	}
 }
 
+func TestCompileIgnoresUnclassifiedTerminalSnapshotWithoutTerminalEvent(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "unclassified-old-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "unclassified-new-clean", proofNow.Add(-24*time.Hour), sampleOptions{})
+	unclassified := seedSample(t, home, plan, "unclassified-terminal", proofNow, sampleOptions{routeOnly: true})
+	removeWorkEvidenceRefPrefix(t, home, unclassified.WorkID, "director_trigger:job_health:")
+	removeTerminalWorkEvent(t, home, unclassified.WorkID)
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "eligible" {
+		t.Fatalf("unclassified terminal snapshot blocked class-scoped evidence: %+v", artifact)
+	}
+	for _, sample := range artifact.Samples {
+		if sample.WorkID == unclassified.WorkID {
+			t.Fatalf("unclassified terminal snapshot entered class-scoped cohort: %+v", artifact.Samples)
+		}
+	}
+}
+
 func TestCompileFailsClosedOnFutureTerminalEvent(t *testing.T) {
 	home := t.TempDir()
 	plan := installPlan(t, home, false)
@@ -553,6 +573,21 @@ func TestCompileUsesLatestUniqueTerminalReceipts(t *testing.T) {
 }
 
 func TestCompileAppliesFixedTerminalSampleLookback(t *testing.T) {
+	t.Run("lookback-end-is-inclusive", func(t *testing.T) {
+		home := t.TempDir()
+		plan := installPlan(t, home, false)
+		seedSample(t, home, plan, "inclusive-first", proofNow.Add(-24*time.Hour), sampleOptions{})
+		seedSample(t, home, plan, "inclusive-end", proofNow, sampleOptions{})
+
+		artifact := compile(t, home, plan, 2)
+		if artifact.Status != "eligible" {
+			t.Fatalf("evidence at lookback end was rejected: %+v", artifact)
+		}
+		if artifact.WindowEnd != artifact.LookbackEnd || artifact.WindowEnd != proofNow.Format(time.RFC3339) {
+			t.Fatalf("window end = %q, lookback end = %q", artifact.WindowEnd, artifact.LookbackEnd)
+		}
+	})
+
 	t.Run("stale-only-history-denies", func(t *testing.T) {
 		home := t.TempDir()
 		plan := installPlan(t, home, false)
@@ -877,6 +912,33 @@ func rewriteReceiptCreatedAt(t *testing.T, home, receiptID string, createdAt tim
 	}
 	receipt.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 	updated, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(updated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeWorkEvidenceRefPrefix(t *testing.T, home, workID, prefix string) {
+	t.Helper()
+	path := filepath.Join(home, "work", "work", workID+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item envelope.WorkEnvelope
+	if err := json.Unmarshal(raw, &item); err != nil {
+		t.Fatal(err)
+	}
+	kept := []string{}
+	for _, ref := range item.EvidenceRefs {
+		if !strings.HasPrefix(ref, prefix) {
+			kept = append(kept, ref)
+		}
+	}
+	item.EvidenceRefs = kept
+	updated, err := json.MarshalIndent(item, "", "  ")
 	if err != nil {
 		t.Fatal(err)
 	}
