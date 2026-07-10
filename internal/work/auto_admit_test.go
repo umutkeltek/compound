@@ -469,10 +469,11 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 	go func() {
 		close(createStarted)
 		_, err := s.Close(terminalWork.ID, CloseInput{
-			Outcome:  "failed",
-			MoveType: "control_plane_repair",
-			Actor:    "sample-executor",
-			Summary:  "terminal sample failed during admission",
+			Outcome:   "failed",
+			MoveType:  "control_plane_repair",
+			Actor:     "sample-executor",
+			Summary:   "terminal sample failed during admission",
+			ProofRefs: []string{"failure:concurrent-terminal-sample"},
 		}, fixedNow.Add(24*time.Hour))
 		createDone <- err
 	}()
