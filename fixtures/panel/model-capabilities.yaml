@@ -11,6 +11,12 @@ capability_classes:
 models:
   panel/free-extract:
     lane: "panel/free-extract (fixture)"
+    provider_route: direct
+    resolution:
+      mode: direct
+      targets:
+        - provider: fixture
+          model: panel/free-extract
     tier: free
     packet_ceiling: single-target
     capabilities:
@@ -19,6 +25,12 @@ models:
         evidence: "fixture: free extraction lane for panel lens calls"
   panel/cheap-judge:
     lane: "panel/cheap-judge (fixture)"
+    provider_route: direct
+    resolution:
+      mode: direct
+      targets:
+        - provider: fixture
+          model: panel/cheap-judge
     tier: cheap
     packet_ceiling: panel-target
     capabilities:
@@ -27,6 +39,12 @@ models:
         evidence: "fixture: cheap eligible judge lane for panel synthesis"
   panel/free-judge-tripwire:
     lane: "panel/free-judge-tripwire (fixture)"
+    provider_route: direct
+    resolution:
+      mode: direct
+      targets:
+        - provider: fixture
+          model: panel/free-judge-tripwire
     tier: free
     packet_ceiling: panel-target
     capabilities:

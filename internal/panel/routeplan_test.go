@@ -47,12 +47,16 @@ capability_classes: [classify-extract, judge-critique]
 models:
   local/extract:
     lane: local/extract
+    provider_route: direct
+    resolution: {mode: direct, targets: [{provider: fixture, model: local/extract}]}
     tier: local-batch
     packet_ceiling: single-target
     capabilities:
       classify-extract: {level: primary, evidence: fixture}
   paid/judge:
     lane: paid/judge
+    provider_route: direct
+    resolution: {mode: direct, targets: [{provider: fixture, model: paid/judge}]}
     tier: cheap
     packet_ceiling: single-target
     capabilities:
@@ -94,6 +98,8 @@ capability_classes:
 models:
   panel/extract:
     lane: "panel/extract"
+    provider_route: direct
+    resolution: {mode: direct, targets: [{provider: fixture, model: panel/extract}]}
     tier: free
     capabilities:
       classify-extract:
@@ -101,6 +107,8 @@ models:
         evidence: fixture
   panel/supervised-judge:
     lane: "panel/supervised-judge"
+    provider_route: direct
+    resolution: {mode: direct, targets: [{provider: fixture, model: panel/supervised-judge}]}
     tier: cheap
     capabilities:
       judge-critique:
@@ -108,6 +116,8 @@ models:
         evidence: fixture
   panel/free-judge:
     lane: "panel/free-judge"
+    provider_route: direct
+    resolution: {mode: direct, targets: [{provider: fixture, model: panel/free-judge}]}
     tier: free
     capabilities:
       judge-critique:

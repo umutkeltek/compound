@@ -456,12 +456,12 @@ capability_classes:
 models:
   %q:
     lane: %q
-	provider_route: direct
-	resolution:
-	  mode: direct
-	  targets:
-	    - provider: fixture
-	      model: %q
+    provider_route: direct
+    resolution:
+      mode: direct
+      targets:
+        - provider: fixture
+          model: %q
     tier: cheap
     packet_ceiling: panel-target
     capabilities:
