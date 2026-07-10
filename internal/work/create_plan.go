@@ -302,6 +302,9 @@ func validateCreatePlanForAdmission(plan CreatePlan) error {
 	if err := plan.Work.Validate(); err != nil {
 		return fmt.Errorf("create-plan %s work invalid: %w", plan.ID, err)
 	}
+	if err := validateDirectorOriginInitialState(plan.Work); err != nil {
+		return fmt.Errorf("create-plan %s: %w", plan.ID, err)
+	}
 	if err := plan.ActionIntent.Validate(); err != nil {
 		return fmt.Errorf("create-plan %s action_intent invalid: %w", plan.ID, err)
 	}
@@ -459,6 +462,9 @@ func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAtta
 
 func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, extraAttached []string) (envelope.WorkEnvelope, error) {
 	w := plan.Work
+	if err := validateDirectorOriginInitialState(w); err != nil {
+		return w, err
+	}
 	// The existence check must live inside the same critical section as the
 	// write. A CreatePlan can be prepared before another process creates and
 	// auto-admits the same work id; replaying that stale plan must never write
