@@ -310,6 +310,22 @@ type ActivePosition struct {
 	Line        string `json:"line"`
 }
 
+// NegativeCard is one already-tried-and-failed approach surfaced at orient time,
+// scoped to the incoming task (compound.negatives.v0.1 projection —
+// internal/negatives, joined over inbox/failure-patterns + reviews/route-remorse).
+// Display-only: read by ContextPack consumers, never by route/dispatch/claim
+// decisions. WhatWasTried/WhyItFailed are reduced to "" at build time when the
+// source free text looked operator-personal — ApproachKey and Ref remain so the
+// card still cites its source.
+type NegativeCard struct {
+	Source       string  `json:"source"` // "failure_pattern" | "route_remorse"
+	ApproachKey  string  `json:"approach_key"`
+	WhatWasTried string  `json:"what_was_tried,omitempty"`
+	WhyItFailed  string  `json:"why_it_failed,omitempty"`
+	Ref          string  `json:"ref"`
+	Confidence   float64 `json:"confidence,omitempty"`
+}
+
 type ContextPack struct {
 	Header
 	SummaryMD          string            `json:"summary_md"`
@@ -323,6 +339,7 @@ type ContextPack struct {
 	ActiveDecisions    []string          `json:"active_decisions"`
 	ActiveMemory       []string          `json:"active_memory,omitempty"`
 	ActivePositions    []ActivePosition  `json:"active_positions,omitempty"`
+	Negatives          []NegativeCard    `json:"negatives,omitempty"`
 	SourceRevisions    []SourceRev       `json:"source_revisions,omitempty"`
 	RequiredChecks     []string          `json:"required_checks"`
 	Avoid              []string          `json:"avoid"`
