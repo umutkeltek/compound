@@ -269,6 +269,7 @@ func TestJobHealthEvidenceAutonomyWritesOnlyAdmissionSurfaces(t *testing.T) {
 		"artifacts/autonomy-eligibility/",
 		"create-plans/",
 		"events/",
+		"lock/capability-lifecycle-work-admission/", // shared CreatePlan admission serialization
 		"projections/director/",
 		"work/action-contexts/",
 		"work/leases/", // enclosing Director run only; job lease absence is asserted above
