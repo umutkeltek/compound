@@ -26,6 +26,15 @@ const (
 	KindDoctrine    = "doctrine"
 	KindOperational = "operational"
 
+	// Grant/freeze/ruling are the operational-enforcement kinds `compound decisions
+	// record` writes (grants-as-gates, 2026-07-10): an operator answer to a card
+	// becomes a decision record the runtime consumes at an admission seam, not
+	// prose. They share the same lifecycle machinery as policy/doctrine/operational
+	// decisions above — same store, same qualifiers, same undo-via-supersede.
+	KindGrant  = "grant"
+	KindFreeze = "freeze"
+	KindRuling = "ruling"
+
 	StatusProposed   = "proposed"
 	StatusAccepted   = "accepted"
 	StatusSuperseded = "superseded"
@@ -57,6 +66,15 @@ type Lifecycle struct {
 	Supersedes    []string `json:"supersedes,omitempty"`
 	ReplacedBy    string   `json:"replaced_by,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+	// ReviewedBy is the operator provenance `compound decisions record` requires
+	// (falsifier d, 664e1a7 parity). Grant/freeze resolution treats an active
+	// record without it as not having provenance present.
+	ReviewedBy string `json:"reviewed_by,omitempty"`
+	// FreezeOwnerGlobs / FreezeKeywords are a freeze record's EXPLICIT scope
+	// (settled design decision 2, grants-as-gates 2026-07-10): literal owner
+	// globs and/or predicate keywords. Matching is literal, never inferred.
+	FreezeOwnerGlobs []string `json:"freeze_owner_globs,omitempty"`
+	FreezeKeywords   []string `json:"freeze_keywords,omitempty"`
 }
 
 // LifecycleGap identifies a promoted decision claim missing lifecycle proof.
@@ -150,6 +168,12 @@ type decFrontmatter struct {
 	ReviewTrigger string   `yaml:"review_trigger"`
 	Owner         string   `yaml:"owner"`
 	Scope         string   `yaml:"scope"`
+	// ReviewedBy / FreezeOwnerGlobs / FreezeKeywords are additive fields for the
+	// grants-as-gates record verb (Slice 1); every other decision source leaves
+	// them empty, so this is additive-only for existing sources.
+	ReviewedBy       string   `yaml:"reviewed_by"`
+	FreezeOwnerGlobs []string `yaml:"freeze_owner_globs"`
+	FreezeKeywords   []string `yaml:"freeze_keywords"`
 }
 
 type DecisionImportReport struct {
@@ -228,6 +252,15 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 	}
 	if f.Scope != "" {
 		q["scope"] = strings.TrimSpace(f.Scope)
+	}
+	if f.ReviewedBy != "" {
+		q["reviewed_by"] = strings.TrimSpace(f.ReviewedBy)
+	}
+	if len(f.FreezeOwnerGlobs) > 0 {
+		q["freeze_owner_globs"] = strings.Join(f.FreezeOwnerGlobs, ",")
+	}
+	if len(f.FreezeKeywords) > 0 {
+		q["freeze_keywords"] = strings.Join(f.FreezeKeywords, ",")
 	}
 	cand := mem.Candidate{
 		Entity:         decisionEntity(f.ID),
@@ -695,17 +728,20 @@ func Kind(c mem.Claim) string {
 func LifecycleFromClaim(c mem.Claim) Lifecycle {
 	q := c.Qualifiers
 	return Lifecycle{
-		ID:            q["decision_id"],
-		Kind:          kindFromQualifiers(q),
-		Choice:        c.Object,
-		Status:        statusFromQualifiers(q),
-		Scope:         q["scope"],
-		Owner:         q["owner"],
-		Falsifier:     q["falsifier"],
-		ReviewTrigger: q["review_trigger"],
-		Supersedes:    splitCSV(q["supersedes"]),
-		ReplacedBy:    q["replaced_by"],
-		EvidenceRefs:  append([]string(nil), c.EvidenceRefs...),
+		ID:               q["decision_id"],
+		Kind:             kindFromQualifiers(q),
+		Choice:           c.Object,
+		Status:           statusFromQualifiers(q),
+		Scope:            q["scope"],
+		Owner:            q["owner"],
+		Falsifier:        q["falsifier"],
+		ReviewTrigger:    q["review_trigger"],
+		Supersedes:       splitCSV(q["supersedes"]),
+		ReplacedBy:       q["replaced_by"],
+		EvidenceRefs:     append([]string(nil), c.EvidenceRefs...),
+		ReviewedBy:       q["reviewed_by"],
+		FreezeOwnerGlobs: splitCSV(q["freeze_owner_globs"]),
+		FreezeKeywords:   splitCSV(q["freeze_keywords"]),
 	}
 }
 
@@ -717,17 +753,20 @@ func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
 		refs = append(refs, c.SourceTraceRef)
 	}
 	return Lifecycle{
-		ID:            q["decision_id"],
-		Kind:          kindFromQualifiers(q),
-		Choice:        c.Object,
-		Status:        statusFromQualifiers(q),
-		Scope:         q["scope"],
-		Owner:         q["owner"],
-		Falsifier:     q["falsifier"],
-		ReviewTrigger: q["review_trigger"],
-		Supersedes:    splitCSV(q["supersedes"]),
-		ReplacedBy:    q["replaced_by"],
-		EvidenceRefs:  refs,
+		ID:               q["decision_id"],
+		Kind:             kindFromQualifiers(q),
+		Choice:           c.Object,
+		Status:           statusFromQualifiers(q),
+		Scope:            q["scope"],
+		Owner:            q["owner"],
+		Falsifier:        q["falsifier"],
+		ReviewTrigger:    q["review_trigger"],
+		Supersedes:       splitCSV(q["supersedes"]),
+		ReplacedBy:       q["replaced_by"],
+		EvidenceRefs:     refs,
+		ReviewedBy:       q["reviewed_by"],
+		FreezeOwnerGlobs: splitCSV(q["freeze_owner_globs"]),
+		FreezeKeywords:   splitCSV(q["freeze_keywords"]),
 	}
 }
 
