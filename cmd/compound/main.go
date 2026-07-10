@@ -3845,6 +3845,10 @@ func cmdReviews(args []string) {
 		cmdReviewsRecordFinding(args[1:])
 		return
 	}
+	if len(args) > 0 && args[0] == "brief-plan" {
+		cmdReviewsBriefPlan(args[1:])
+		return
+	}
 	jsonOut := hasFlag(args, "--json")
 	area := valueFlag(args, "--area")
 	includeArchived := hasFlag(args, "--include-archived")
@@ -3930,6 +3934,132 @@ func cmdReviews(args []string) {
 			}
 			fmt.Println()
 		}
+	}
+}
+
+// reviewsBriefPlanSchemaVersion versions the `compound reviews brief-plan`
+// packet SHAPE itself — distinct from reviewartifact.DecisionBriefSchemaVersion,
+// which is the schema of the brief a preparing session WRITES BACK. This is
+// the read-only instruction packet pointing at where/how to write one.
+const reviewsBriefPlanSchemaVersion = "compound.reviews_brief_plan.v0.1"
+
+// reviewsBriefPlan is the bounded, harness-agnostic instruction packet
+// `compound reviews brief-plan --item <id> --json` emits for a preparing
+// agent session (claude code / codex / claude-zai / opencode / switchback —
+// plain JSON in/out, nothing CLI-specific per this packet's boundaries).
+// Building the plan is read-only: it never writes anything, including the
+// brief itself.
+type reviewsBriefPlan struct {
+	SchemaVersion       string         `json:"schema_version"`
+	ItemID              string         `json:"item_id"`
+	Area                string         `json:"area"`
+	ArtifactPath        string         `json:"artifact_path"`
+	MarkdownPath        string         `json:"markdown_path,omitempty"`
+	EvidenceRefs        []string       `json:"evidence_refs"`
+	MemberIDs           []string       `json:"member_ids"`
+	WritePath           string         `json:"write_path"`
+	BriefSchema         map[string]any `json:"brief_schema"`
+	ProposeOnlyWarnings []string       `json:"propose_only_warnings"`
+}
+
+// cmdReviewsBriefPlan is the `compound reviews brief-plan --item <id>
+// [--json]` sub-verb (dispatched from cmdReviews, no new top-level CLI case —
+// per this packet's file boundaries). It resolves the item across every area
+// via the SAME queue projection `compound reviews` builds (so a preparing
+// session sees exactly what the operator console does), finds the decision
+// group the item belongs to (if any) so member_ids/evidence_refs cover the
+// WHOLE group rather than just the queried item, and emits the bounded,
+// read-only plan. It never writes the brief itself.
+func cmdReviewsBriefPlan(args []string) {
+	itemID := valueFlag(args, "--item")
+	jsonOut := hasFlag(args, "--json")
+	usage := "usage: compound reviews brief-plan --item ID [--json]"
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+		case "--item":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, usage)
+				os.Exit(2)
+			}
+			i++
+		default:
+			fmt.Fprintln(os.Stderr, usage)
+			os.Exit(2)
+		}
+	}
+	if itemID == "" {
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	report, err := buildReviewQueueReport(homePath, "", false)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	var item *reviewartifact.QueueItem
+	for i := range report.Items {
+		if report.Items[i].ID == itemID {
+			item = &report.Items[i]
+			break
+		}
+	}
+	if item == nil {
+		fmt.Fprintln(os.Stderr, "error: no review item with id", itemID)
+		os.Exit(1)
+	}
+	evidenceRefs := append([]string{}, item.EvidenceRefs...)
+	memberIDs := []string{item.ID}
+	for _, group := range report.Groups {
+		if group.Area != item.Area {
+			continue
+		}
+		belongs := false
+		for _, id := range group.ItemIDs {
+			if id == item.ID {
+				belongs = true
+				break
+			}
+		}
+		if !belongs {
+			continue
+		}
+		memberIDs = reviewartifact.Unique(append([]string{}, group.ItemIDs...))
+		evidenceRefs = reviewartifact.UniqueSorted(append(evidenceRefs, group.EvidenceRefs...))
+		break
+	}
+	plan := reviewsBriefPlan{
+		SchemaVersion:       reviewsBriefPlanSchemaVersion,
+		ItemID:              item.ID,
+		Area:                item.Area,
+		ArtifactPath:        item.JSONPath,
+		MarkdownPath:        item.MarkdownPath,
+		EvidenceRefs:        evidenceRefs,
+		MemberIDs:           memberIDs,
+		WritePath:           reviewartifact.DecisionBriefWritePath(item.JSONPath, item.ID),
+		BriefSchema:         reviewartifact.DecisionBriefJSONSchema(),
+		ProposeOnlyWarnings: reviewartifact.DecisionBriefProposeOnlyWarnings,
+	}
+	if jsonOut {
+		printJSON(plan)
+		return
+	}
+	fmt.Printf("brief-plan item=%s area=%s\n", plan.ItemID, plan.Area)
+	fmt.Printf(" artifact: %s\n", plan.ArtifactPath)
+	fmt.Printf(" write: %s\n", plan.WritePath)
+	if len(plan.MemberIDs) > 0 {
+		fmt.Printf(" members: %s\n", strings.Join(plan.MemberIDs, ", "))
+	}
+	for _, ref := range plan.EvidenceRefs {
+		fmt.Printf(" evidence: %s\n", ref)
+	}
+	for _, w := range plan.ProposeOnlyWarnings {
+		fmt.Printf(" warning: %s\n", w)
 	}
 }
 
