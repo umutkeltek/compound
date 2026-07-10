@@ -21,6 +21,7 @@ var proofNow = time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 
 type sampleOptions struct {
 	routeOnly        bool
+	workCreatedAt    *time.Time
 	routeWorkID      *string
 	clientProfile    string
 	protocol         string
@@ -366,6 +367,20 @@ func TestCompileFailsClosedOnRecentTerminalEventWithoutWorkSnapshot(t *testing.T
 	}
 }
 
+func TestCompileFailsClosedOnTerminalSnapshotWithoutTerminalEvent(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "missing-event-old-clean", proofNow.Add(-72*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "missing-event-new-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	createdAt := proofNow.Add(-40 * 24 * time.Hour)
+	missing := seedSample(t, home, plan, "missing-event-recent-failure", proofNow, sampleOptions{routeOnly: true, workCreatedAt: &createdAt})
+	removeTerminalWorkEvent(t, home, missing.WorkID)
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+missing.WorkID+" has 0 terminal events") {
+		t.Fatalf("terminal snapshot without terminal event did not fail closed: %v", err)
+	}
+}
+
 func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
 	for _, mode := range []string{"hot", "restored"} {
 		t.Run(mode, func(t *testing.T) {
@@ -648,6 +663,10 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 		t.Fatal(err)
 	}
 	workID := "work_autonomy_" + strings.ReplaceAll(id, "-", "_")
+	createdAt := closedAt.Add(-4 * time.Minute)
+	if opts.workCreatedAt != nil {
+		createdAt = *opts.workCreatedAt
+	}
 	w, err := store.Create(work.CreateInput{
 		WorkID:           workID,
 		Owner:            "compound-authority",
@@ -660,7 +679,7 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 		},
 		RouteDecisionID: plan.ID,
 		State:           "ready",
-	}, closedAt.Add(-4*time.Minute))
+	}, createdAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -787,6 +806,37 @@ func appendWorkEvent(t *testing.T, home string, event any) {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func removeTerminalWorkEvent(t *testing.T, home, workID string) {
+	t.Helper()
+	path := filepath.Join(home, "events", "work.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := []string{}
+	removed := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var event struct {
+			WorkID string `json:"work_id"`
+			To     string `json:"to"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.WorkID == workID && (event.To == "completed" || event.To == "failed" || event.To == "cancelled") {
+			removed++
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if removed != 1 {
+		t.Fatalf("removed terminal events for %s = %d, want 1", workID, removed)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
