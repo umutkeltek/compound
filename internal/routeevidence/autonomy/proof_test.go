@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	homepkg "compound/internal/home"
 	"compound/internal/routeevidence"
 	autonomy "compound/internal/routeevidence/autonomy"
 	"compound/internal/work"
@@ -271,6 +272,87 @@ func TestCompileFailsClosedOnUnindexedArchivedWork(t *testing.T) {
 
 	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "unindexed work file") {
 		t.Fatalf("archive move/index crash gap did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnDuplicateHotAndArchivedWorkIdentity(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "duplicate-location-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	latest := seedSample(t, home, plan, "duplicate-location", proofNow.Add(-24*time.Hour), sampleOptions{})
+	entry := archiveAutonomyWork(t, home, latest.WorkID)
+	archivedRaw, err := os.ReadFile(filepath.Join(home, filepath.FromSlash(entry.ArchivePath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hotPath := filepath.Join(home, filepath.FromSlash(entry.OriginalPath))
+	if err := os.MkdirAll(filepath.Dir(hotPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hotPath, archivedRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "duplicate work identity") {
+		t.Fatalf("duplicate hot/archive work identity did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnMutatedIndexedArchiveWork(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "archive-hash-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	latest := seedSample(t, home, plan, "archive-hash-mutated", proofNow.Add(-24*time.Hour), sampleOptions{})
+	entry := archiveAutonomyWork(t, home, latest.WorkID)
+	path := filepath.Join(home, filepath.FromSlash(entry.ArchivePath))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(raw, ' '), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "sha256") {
+		t.Fatalf("mutated indexed archive work did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnArchiveWorkStatusOrPathMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*homepkg.OperationalArchiveEntry)
+		want   string
+	}{
+		{name: "status", mutate: func(entry *homepkg.OperationalArchiveEntry) { entry.Status = "failed" }, want: "status"},
+		{name: "original-path", mutate: func(entry *homepkg.OperationalArchiveEntry) { entry.OriginalPath = "work/work/work_wrong.json" }, want: "archive path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			plan := installPlan(t, home, false)
+			seedSample(t, home, plan, tc.name+"-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+			latest := seedSample(t, home, plan, tc.name+"-mismatch", proofNow.Add(-24*time.Hour), sampleOptions{})
+			entry := archiveAutonomyWork(t, home, latest.WorkID)
+			rewriteArchiveEntry(t, home, entry.ID, tc.mutate)
+
+			if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("archive %s mismatch did not fail closed: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestCompileFailsClosedOnRecentTerminalEventWithoutWorkSnapshot(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "missing-snapshot-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	missing := seedSample(t, home, plan, "missing-snapshot", proofNow.Add(-24*time.Hour), sampleOptions{})
+	if err := os.Remove(filepath.Join(home, "work", "work", missing.WorkID+".json")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "recent terminal work "+missing.WorkID+" has 0 snapshots") {
+		t.Fatalf("missing recent terminal snapshot did not fail closed: %v", err)
 	}
 }
 
@@ -616,6 +698,46 @@ func appendWorkEvent(t *testing.T, home string, event any) {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func archiveAutonomyWork(t *testing.T, home, workID string) homepkg.OperationalArchiveEntry {
+	t.Helper()
+	rel := filepath.ToSlash(filepath.Join("work", "work", workID+".json"))
+	report, err := homepkg.ArchiveOperationalHistory(home, homepkg.OperationalArchiveOptions{Kinds: []string{"work"}, Paths: []string{rel}}, proofNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Entries) != 1 {
+		t.Fatalf("archive entries = %+v, want one", report.Entries)
+	}
+	return report.Entries[0]
+}
+
+func rewriteArchiveEntry(t *testing.T, home, entryID string, mutate func(*homepkg.OperationalArchiveEntry)) {
+	t.Helper()
+	path := homepkg.OperationalArchiveIndexPath(home)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var entry homepkg.OperationalArchiveEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.ID == entryID && entry.Operation == "archived" {
+			mutate(&entry)
+		}
+		encoded, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(encoded))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
