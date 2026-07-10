@@ -536,19 +536,19 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 		selectedModel = "auto/judge"
 	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
-		CreatedAt:     closedAt.Add(-time.Minute),
-		RequestID:     requestID,
-		WorkID:        routeWorkID,
-		ClientProfile: clientProfile,
-		Protocol:      protocol,
-		Provider:      "compound-route-plan",
+		CreatedAt:        closedAt.Add(-time.Minute),
+		RequestID:        requestID,
+		WorkID:           routeWorkID,
+		ClientProfile:    clientProfile,
+		Protocol:         protocol,
+		Provider:         "compound-route-plan",
 		Model:            selectedModel,
 		ResolvedProvider: resolvedProvider,
 		ResolvedModel:    resolvedModel,
 		ResolutionSource: resolutionSource,
 		GatewayRequestID: gatewayRequestID,
-		Status:        "completed",
-		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+		Status:           "completed",
+		EvidenceRefs:     []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -578,19 +578,19 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 func duplicateRouteRequest(t *testing.T, home string, sample seededSample, createdAt time.Time) {
 	t.Helper()
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
-		CreatedAt:     createdAt,
-		RequestID:     sample.RequestID,
-		WorkID:        sample.WorkID,
-		ClientProfile: "compound.panel.judge",
-		Protocol:      "panel-lane",
-		Provider:      "compound-route-plan",
-		Model:         "auto/judge",
+		CreatedAt:        createdAt,
+		RequestID:        sample.RequestID,
+		WorkID:           sample.WorkID,
+		ClientProfile:    "compound.panel.judge",
+		Protocol:         "panel-lane",
+		Provider:         "compound-route-plan",
+		Model:            "auto/judge",
 		ResolvedProvider: "deepseek",
 		ResolvedModel:    "deepseek/deepseek-v4-pro",
 		ResolutionSource: "gateway_route",
 		GatewayRequestID: "gateway-duplicate-" + sample.RequestID,
-		Status:        "completed",
-		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+		Status:           "completed",
+		EvidenceRefs:     []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
 	if err != nil {
 		t.Fatal(err)

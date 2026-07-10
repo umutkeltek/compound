@@ -45,7 +45,9 @@ type Evidence struct {
 	ClientProfile    string           `json:"client_profile"`
 	Protocol         string           `json:"protocol"`
 	SelectedTarget   Target           `json:"selected_target"`
+	ResolvedProvider string           `json:"resolved_provider,omitempty"`
 	ResolvedModel    string           `json:"resolved_model,omitempty"`
+	ResolutionSource string           `json:"resolution_source,omitempty"`
 	GatewayRequestID string           `json:"gateway_request_id,omitempty"`
 	Fallbacks        []Target         `json:"fallbacks,omitempty"`
 	Rejected         []RejectedTarget `json:"rejected,omitempty"`
@@ -64,7 +66,9 @@ type BuildInput struct {
 	Protocol         string
 	Provider         string
 	Model            string
+	ResolvedProvider string
 	ResolvedModel    string
+	ResolutionSource string
 	GatewayRequestID string
 	Usage            Usage
 	CostMicros       int64
@@ -99,7 +103,9 @@ func Build(in BuildInput) (Evidence, error) {
 			Model:    strings.TrimSpace(in.Model),
 			Protocol: strings.TrimSpace(in.Protocol),
 		},
+		ResolvedProvider: strings.TrimSpace(in.ResolvedProvider),
 		ResolvedModel:    strings.TrimSpace(in.ResolvedModel),
+		ResolutionSource: strings.TrimSpace(in.ResolutionSource),
 		GatewayRequestID: strings.TrimSpace(in.GatewayRequestID),
 		Usage:            in.Usage,
 		CostMicros:       in.CostMicros,
@@ -320,6 +326,9 @@ func Validate(ev Evidence) error {
 	req("selected_target.model", ev.SelectedTarget.Model)
 	req("selected_target.protocol", ev.SelectedTarget.Protocol)
 	req("status", ev.Status)
+	if ev.ResolutionSource != "" && ev.ResolutionSource != "gateway_route" && ev.ResolutionSource != "response_body" {
+		errs = append(errs, fmt.Sprintf("resolution_source=%q, want gateway_route or response_body", ev.ResolutionSource))
+	}
 	if ev.SchemaVersion != SchemaVersion {
 		errs = append(errs, fmt.Sprintf("schema_version=%q, want %q", ev.SchemaVersion, SchemaVersion))
 	}

@@ -45,11 +45,22 @@ type GrantSnapshot struct {
 }
 
 type LaneSnapshot struct {
-	ModelID       string `json:"model_id"`
-	ProviderRoute string `json:"provider_route,omitempty"`
-	Tier          string `json:"tier"`
-	ClaimLevel    string `json:"claim_level,omitempty"`
-	GateRole      string `json:"gate_role"`
+	ModelID       string         `json:"model_id"`
+	ProviderRoute string         `json:"provider_route,omitempty"`
+	Resolution    LaneResolution `json:"resolution"`
+	Tier          string         `json:"tier"`
+	ClaimLevel    string         `json:"claim_level,omitempty"`
+	GateRole      string         `json:"gate_role"`
+}
+
+type ResolvedTarget struct {
+	Provider string `json:"provider" yaml:"provider"`
+	Model    string `json:"model" yaml:"model"`
+}
+
+type LaneResolution struct {
+	Mode    string           `json:"mode" yaml:"mode"`
+	Targets []ResolvedTarget `json:"targets,omitempty" yaml:"targets,omitempty"`
 }
 
 type RoutePlanSnapshot struct {
@@ -75,8 +86,11 @@ type Sample struct {
 	RouteEvidenceSHA256 string `json:"route_evidence_sha256,omitempty"`
 	RouteStatus         string `json:"route_status,omitempty"`
 	RouteModelID        string `json:"route_model_id,omitempty"`
+	RouteMode           string `json:"route_mode,omitempty"`
+	ResolvedLaneID      string `json:"resolved_lane_id,omitempty"`
 	ProviderID          string `json:"provider_id,omitempty"`
 	ModelID             string `json:"model_id,omitempty"`
+	ResolutionSource    string `json:"resolution_source,omitempty"`
 	GateRole            string `json:"gate_role,omitempty"`
 	Valid               bool   `json:"valid"`
 	InvalidReason       string `json:"invalid_reason,omitempty"`
@@ -125,8 +139,11 @@ type routeRow struct {
 		Model    string `json:"model"`
 		Protocol string `json:"protocol"`
 	} `json:"selected_target"`
-	ResolvedModel string   `json:"resolved_model,omitempty"`
-	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
+	ResolvedProvider string   `json:"resolved_provider,omitempty"`
+	ResolvedModel    string   `json:"resolved_model,omitempty"`
+	ResolutionSource string   `json:"resolution_source,omitempty"`
+	GatewayRequestID string   `json:"gateway_request_id,omitempty"`
+	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
 }
 
 type routeRaw struct {
@@ -147,8 +164,9 @@ type decidingRouteBinding struct {
 
 type modelManifest struct {
 	Models map[string]struct {
-		ProviderRoute string `yaml:"provider_route"`
-		Tier          string `yaml:"tier"`
+		ProviderRoute string         `yaml:"provider_route"`
+		Resolution    LaneResolution `yaml:"resolution"`
+		Tier          string         `yaml:"tier"`
 		Capabilities  map[string]struct {
 			Level string `yaml:"level"`
 		} `yaml:"capabilities"`
@@ -475,7 +493,10 @@ func validateRoutePlanSnapshot(homePath string, plan RoutePlanSnapshot) (string,
 			continue
 		}
 		level := strings.TrimSpace(model.Capabilities[plan.CapabilityClass].Level)
-		expected = append(expected, LaneSnapshot{ModelID: modelID, ProviderRoute: strings.TrimSpace(model.ProviderRoute), Tier: strings.TrimSpace(model.Tier), ClaimLevel: level, GateRole: GateRole(plan.CapabilityClass, strings.TrimSpace(model.Tier), level)})
+		if reason := invalidLaneResolutionReason(model.Resolution); reason != "" {
+			return "model " + modelID + " " + reason, nil
+		}
+		expected = append(expected, LaneSnapshot{ModelID: modelID, ProviderRoute: strings.TrimSpace(model.ProviderRoute), Resolution: model.Resolution, Tier: strings.TrimSpace(model.Tier), ClaimLevel: level, GateRole: GateRole(plan.CapabilityClass, strings.TrimSpace(model.Tier), level)})
 	}
 	if !sameLanes(plan.Chain, expected) {
 		return "route plan chain does not match current model-router authority", nil
@@ -556,32 +577,63 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 			nonEligibleRoles = append(nonEligibleRoles, lanes[0].GateRole)
 			continue
 		}
+		resolvedProvider := strings.TrimSpace(rows[0].Row.ResolvedProvider)
 		resolvedModel := strings.TrimSpace(rows[0].Row.ResolvedModel)
+		resolutionSource := strings.TrimSpace(rows[0].Row.ResolutionSource)
+		if resolvedProvider == "" {
+			return invalid("resolved provider is required for deciding route evidence")
+		}
 		if resolvedModel == "" {
 			return invalid("resolved model is required for deciding route evidence")
 		}
-		if resolvedModel == strings.TrimSpace(rows[0].Row.SelectedTarget.Model) || strings.HasPrefix(resolvedModel, "auto/") {
-			return invalid("resolved model is still the requested route alias")
+		if resolutionSource != "gateway_route" && resolutionSource != "response_body" {
+			return invalid("resolved target source is required for deciding route evidence")
 		}
-		resolvedLanes := lanesForModel(plan.Chain, resolvedModel)
-		if len(resolvedLanes) > 1 {
-			return invalid("resolved model is ambiguous in current route plan")
+		selectedLane := lanes[0]
+		var resolvedLane LaneSnapshot
+		switch strings.TrimSpace(selectedLane.Resolution.Mode) {
+		case "adaptive":
+			if resolutionSource != "gateway_route" {
+				return invalid("adaptive route requires gateway resolution evidence")
+			}
+			if strings.TrimSpace(rows[0].Row.GatewayRequestID) == "" {
+				return invalid("adaptive route requires gateway request identity")
+			}
+			resolvedLanes := lanesForResolvedTarget(plan.Chain, resolvedProvider, resolvedModel)
+			if len(resolvedLanes) == 0 {
+				if resolvedModel == strings.TrimSpace(rows[0].Row.SelectedTarget.Model) {
+					return invalid("adaptive route did not resolve to exactly one concrete lane")
+				}
+				return invalid("resolved target is not present in current route plan")
+			}
+			if len(resolvedLanes) != 1 {
+				return invalid("resolved target is ambiguous in current route plan")
+			}
+			resolvedLane = resolvedLanes[0]
+		case "direct":
+			if resolutionSource == "gateway_route" && strings.TrimSpace(rows[0].Row.GatewayRequestID) == "" {
+				return invalid("gateway resolution requires gateway request identity")
+			}
+			if !laneDeclaresResolvedTarget(selectedLane, resolvedProvider, resolvedModel) {
+				return invalid("direct route resolved outside its declared target")
+			}
+			resolvedLanes := lanesForResolvedTarget(plan.Chain, resolvedProvider, resolvedModel)
+			if len(resolvedLanes) != 1 || resolvedLanes[0].ModelID != selectedLane.ModelID {
+				return invalid("direct route resolved outside its unique selected lane")
+			}
+			resolvedLane = selectedLane
+		default:
+			return invalid("selected route has unknown resolution mode")
 		}
-		if len(resolvedLanes) == 0 {
-			return invalid("resolved model is not present in current route plan")
-		}
-		if resolvedLanes[0].GateRole != "eligible" {
-			nonEligibleRoles = append(nonEligibleRoles, "resolved model gate role is "+resolvedLanes[0].GateRole)
+		if resolvedLane.GateRole != "eligible" {
+			nonEligibleRoles = append(nonEligibleRoles, "resolved model gate role is "+resolvedLane.GateRole)
 			continue
-		}
-		if strings.TrimSpace(resolvedLanes[0].ProviderRoute) == "" || strings.TrimSpace(resolvedLanes[0].ProviderRoute) != resolvedModel {
-			return invalid("resolved model does not match its current provider route")
 		}
 		matching = append(matching, struct {
 			row          routeRaw
 			lane         LaneSnapshot
 			resolvedLane LaneSnapshot
-		}{row: rows[0], lane: lanes[0], resolvedLane: resolvedLanes[0]})
+		}{row: rows[0], lane: selectedLane, resolvedLane: resolvedLane})
 	}
 	if len(matching) != 1 {
 		if len(matching) == 0 && len(nonEligibleRoles) > 0 {
@@ -594,12 +646,12 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	sample.RouteEvidenceSHA256 = "sha256:" + shaHex(chosen.row.Raw)
 	sample.RouteStatus = chosen.row.Row.Status
 	sample.RouteModelID = chosen.row.Row.SelectedTarget.Model
+	sample.RouteMode = chosen.lane.Resolution.Mode
+	sample.ResolvedLaneID = chosen.resolvedLane.ModelID
 	sample.ModelID = strings.TrimSpace(chosen.row.Row.ResolvedModel)
-	sample.ProviderID = resolvedProviderID(sample.ModelID)
+	sample.ProviderID = strings.TrimSpace(chosen.row.Row.ResolvedProvider)
+	sample.ResolutionSource = strings.TrimSpace(chosen.row.Row.ResolutionSource)
 	sample.GateRole = chosen.resolvedLane.GateRole
-	if sample.ProviderID == "" {
-		return invalid("resolved model provider identity is required")
-	}
 	if strings.TrimSpace(chosen.row.Row.WorkID) == "" {
 		return invalid("route evidence work_id is required")
 	}
@@ -956,7 +1008,19 @@ func sameLanes(a, b []LaneSnapshot) bool {
 		return false
 	}
 	for i := range a {
-		if a[i] != b[i] {
+		if a[i].ModelID != b[i].ModelID || a[i].ProviderRoute != b[i].ProviderRoute || a[i].Tier != b[i].Tier || a[i].ClaimLevel != b[i].ClaimLevel || a[i].GateRole != b[i].GateRole || !sameLaneResolution(a[i].Resolution, b[i].Resolution) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameLaneResolution(a, b LaneResolution) bool {
+	if a.Mode != b.Mode || len(a.Targets) != len(b.Targets) {
+		return false
+	}
+	for i := range a.Targets {
+		if a.Targets[i] != b.Targets[i] {
 			return false
 		}
 	}
@@ -973,12 +1037,57 @@ func lanesForModel(lanes []LaneSnapshot, modelID string) []LaneSnapshot {
 	return out
 }
 
-func resolvedProviderID(modelID string) string {
-	provider, _, ok := strings.Cut(strings.TrimSpace(modelID), "/")
-	if !ok || strings.TrimSpace(provider) == "" {
-		return ""
+func lanesForResolvedTarget(lanes []LaneSnapshot, provider, model string) []LaneSnapshot {
+	var out []LaneSnapshot
+	for _, lane := range lanes {
+		if laneDeclaresResolvedTarget(lane, provider, model) {
+			out = append(out, lane)
+		}
 	}
-	return strings.TrimSpace(provider)
+	return out
+}
+
+func laneDeclaresResolvedTarget(lane LaneSnapshot, provider, model string) bool {
+	if strings.TrimSpace(lane.Resolution.Mode) != "direct" {
+		return false
+	}
+	provider = strings.TrimSpace(provider)
+	model = strings.TrimSpace(model)
+	for _, target := range lane.Resolution.Targets {
+		if strings.TrimSpace(target.Provider) == provider && strings.TrimSpace(target.Model) == model {
+			return true
+		}
+	}
+	return false
+}
+
+func invalidLaneResolutionReason(resolution LaneResolution) string {
+	switch strings.TrimSpace(resolution.Mode) {
+	case "adaptive":
+		if len(resolution.Targets) != 0 {
+			return "adaptive resolution must not declare concrete targets"
+		}
+	case "direct":
+		if len(resolution.Targets) == 0 {
+			return "direct resolution requires at least one target"
+		}
+		seen := map[string]bool{}
+		for _, target := range resolution.Targets {
+			provider := strings.TrimSpace(target.Provider)
+			model := strings.TrimSpace(target.Model)
+			if provider == "" || model == "" {
+				return "direct resolution target requires provider and model"
+			}
+			key := provider + "\x00" + model
+			if seen[key] {
+				return "direct resolution targets must be unique"
+			}
+			seen[key] = true
+		}
+	default:
+		return "has unknown resolution mode"
+	}
+	return ""
 }
 
 func autonomyClassOf(work envelope.WorkEnvelope) string {
