@@ -1,12 +1,15 @@
 "use client";
 
+import * as Dialog from "@radix-ui/react-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
-import { Button, DocIcon, Drawer, FreshnessChip, MetaCount, UsersIcon } from "@/components/kit";
+import { Button, FreshnessChip } from "@/components/kit";
+import { remainingDecideMembers } from "@/lib/decide-members";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
-import { GovernedAct } from "./GovernedAct";
+import { decideActIdentity } from "@/lib/governed-action-client";
+import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
 const DOMAIN_TILE: Record<DecideDomain, string> = {
@@ -17,6 +20,27 @@ const DOMAIN_TILE: Record<DecideDomain, string> = {
   product: "border-product-line bg-product-soft text-product",
   neutral: "border-hair bg-soft-2 text-muted",
 };
+
+function operatorText(value: string): string {
+  return value
+    .replace(/\bclaude_code\b/gi, "Claude Code")
+    .replace(/\bswitchback_api\b/gi, "Switchback API");
+}
+
+function actorLabel(value: string): string {
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase();
+      if (lower === "api") return "API";
+      if (lower === "codex") return "Codex";
+      if (lower === "claude") return "Claude";
+      if (lower === "switchback") return "Switchback";
+      return part.charAt(0).toUpperCase() + part.slice(1);
+    })
+    .join(" ");
+}
 
 function GlyphTile({ domain, glyph }: { domain: DecideDomain; glyph: string }) {
   return (
@@ -103,7 +127,7 @@ function BriefPanel({ brief }: { brief: DecideBrief }) {
           className="shrink-0 rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-medium text-muted"
           title="This translation was prepared by an agent session for you — not the operator, not auto-applied."
         >
-          prepared by {brief.preparedBy}
+          prepared by {actorLabel(brief.preparedBy)}
         </span>
       </div>
       {brief.whatThisIs ? <p className="mt-1 text-xs leading-relaxed text-muted">{brief.whatThisIs}</p> : null}
@@ -148,39 +172,58 @@ function EnumerableApply({
   area,
   members,
   excluded,
-  cursor,
   onToggle,
   mutationsEnabled,
-  registerTrigger,
+  requiresConfirmation,
+  requiresRationale,
+  policyNote,
+  label,
 }: {
   area: string;
   members: DecideMember[];
   excluded: Set<string>;
-  cursor: number;
   onToggle: (id: string) => void;
   mutationsEnabled: boolean;
-  registerTrigger: (fn: (() => void) | null) => void;
+  requiresConfirmation: boolean;
+  requiresRationale: boolean;
+  policyNote: string;
+  label: string;
 }) {
   const router = useRouter();
+  const [open, setOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rationale, setRationale] = useState("");
+  const [completed, setCompleted] = useState<Set<string>>(() => new Set());
 
-  const included = members.filter((m) => !excluded.has(m.id));
+  const included = remainingDecideMembers(members, excluded, completed);
 
-  const apply = useCallback(async () => {
+  const apply = useCallback(async (operatorRationale: string) => {
     if (!mutationsEnabled || running || included.length === 0) return;
+    if (requiresRationale && !operatorRationale.trim()) {
+      setError("Rationale is required.");
+      return;
+    }
     setRunning(true);
     setError(null);
     setProgress({ done: 0, total: included.length });
     let failed = "";
+    let completedThisRun = 0;
     for (let i = 0; i < included.length; i++) {
       const member = included[i];
       try {
         const response = await fetch("/api/decision/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ area, itemId: member.id, actionId: member.actionId, confirmed: true }),
+          body: JSON.stringify({
+            area,
+            itemId: member.id,
+            actionId: member.actionId,
+            expectedRevision: member.expectedRevision,
+            confirmed: requiresConfirmation,
+            rationale: operatorRationale.trim(),
+          }),
         });
         const body = (await response.json().catch(() => null)) as { ok?: boolean; stderr?: string } | null;
         if (!response.ok || !body?.ok) {
@@ -191,41 +234,55 @@ function EnumerableApply({
         failed = e instanceof Error ? e.message : "request failed";
         break;
       }
-      setProgress({ done: i + 1, total: included.length });
+      completedThisRun = i + 1;
+      setCompleted((previous) => new Set(previous).add(member.id));
+      setProgress({ done: completedThisRun, total: included.length });
     }
     setRunning(false);
-    if (failed) setError(failed);
-    else router.refresh();
-  }, [area, included, mutationsEnabled, running, router]);
+    if (failed) {
+      setProgress({ done: completedThisRun, total: included.length });
+      setError(completedThisRun > 0 ? `Applied ${completedThisRun} of ${included.length}; ${failed}. Refreshing owner truth.` : failed);
+      router.refresh();
+    }
+    else {
+      setOpen(false);
+      router.refresh();
+    }
+  }, [area, included, mutationsEnabled, requiresConfirmation, requiresRationale, running, router]);
 
-  useEffect(() => {
-    registerTrigger(() => void apply());
-    return () => registerTrigger(null);
-  }, [apply, registerTrigger]);
+  const trigger = useCallback(() => {
+    if (!mutationsEnabled || running || included.length === 0) return;
+    setError(null);
+    if (requiresConfirmation) {
+      setOpen(true);
+      return;
+    }
+    void apply("");
+  }, [apply, included.length, mutationsEnabled, requiresConfirmation, running]);
 
   return (
     <div className="flex flex-col gap-2">
       <ul className="flex flex-col gap-1">
-        {members.map((m, i) => {
-          const isIncluded = !excluded.has(m.id);
+        {members.map((m) => {
+          const isCompleted = completed.has(m.id);
+          const isIncluded = !excluded.has(m.id) && !isCompleted;
           return (
-            <li
-              key={m.id}
-              className={`flex items-center gap-2 rounded-sm px-2 py-1 ${i === cursor ? "outline outline-2 outline-offset-2 outline-work" : ""}`}
-            >
-              <input
-                type="checkbox"
-                checked={isIncluded}
-                onChange={() => onToggle(m.id)}
-                aria-label={`include ${m.label}`}
-                className="accent-work"
-              />
-              <span className="min-w-0 flex-1 truncate text-xs text-muted" title={m.id}>
-                {m.label}
-              </span>
-              <code className="mono shrink-0 text-2xs text-faint" title={m.id}>
-                {m.id.length > 18 ? `${m.id.slice(0, 16)}…` : m.id}
-              </code>
+            <li key={m.id}>
+              <label className={`flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1 ${isCompleted ? "cursor-default opacity-60" : "hover:bg-soft"}`}>
+                <input
+                  type="checkbox"
+                  checked={isIncluded}
+                  disabled={isCompleted}
+                  onChange={() => onToggle(m.id)}
+                  className="h-4 w-4 shrink-0 accent-work"
+                />
+                <span className="min-w-0 flex-1 truncate text-xs text-muted" title={m.id}>
+                  {m.label}{isCompleted ? " · applied" : ""}
+                </span>
+                <code className="mono shrink-0 text-2xs text-faint" title={m.id}>
+                  {m.id.length > 18 ? `${m.id.slice(0, 16)}…` : m.id}
+                </code>
+              </label>
             </li>
           );
         })}
@@ -234,16 +291,58 @@ function EnumerableApply({
         <Button
           variant="primary"
           disabled={!mutationsEnabled || running || included.length === 0}
-          onClick={() => void apply()}
+          onClick={trigger}
           title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act."}
         >
           {running
             ? `Applying ${progress?.done ?? 0}/${progress?.total ?? included.length}…`
-            : `Apply ${included.length} of ${members.length}`}
+            : requiresConfirmation
+              ? `Review ${included.length} of ${members.length}`
+              : `Apply ${included.length} of ${members.length}`}
         </Button>
         <span className="text-2xs text-faint">each member is applied on its own; excluded members are skipped</span>
       </div>
-      {error ? <span className="text-2xs leading-snug text-crit">{error}</span> : null}
+      {!open && error ? <span role="alert" className="text-2xs leading-snug text-crit">{error}</span> : null}
+
+      <Dialog.Root open={open} onOpenChange={(next) => { if (!running) setOpen(next); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-strong/35 backdrop-blur-sm motion-reduce:backdrop-blur-none" />
+          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
+            <Dialog.Title className="text-md font-semibold text-ink">Confirm {label}</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted">
+              Applies {included.length} selected member{included.length === 1 ? "" : "s"} one at a time. Excluded members remain unchanged; completed members are not retried.
+            </Dialog.Description>
+            {policyNote ? <div className="mt-3 rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">{policyNote}</div> : null}
+            {requiresRationale ? (
+              <label className="mt-3 flex flex-col gap-1">
+                <span className="text-2xs font-bold uppercase text-faint">Rationale <span className="text-crit">*</span></span>
+                <textarea
+                  value={rationale}
+                  onChange={(event) => { setRationale(event.target.value); setError(null); }}
+                  required
+                  placeholder="Why is this the right reviewed action? This becomes decision provenance."
+                  className="min-h-24 resize-y rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                />
+              </label>
+            ) : null}
+            {error ? (
+              <div role="alert" aria-live="assertive" className="mt-3 rounded-md border border-crit-line bg-crit-soft px-3 py-2 text-xs leading-relaxed text-crit">
+                {error}
+              </div>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <Dialog.Close asChild><Button variant="secondary" disabled={running}>Cancel</Button></Dialog.Close>
+              <Button
+                variant="primary"
+                disabled={running || (requiresRationale && !rationale.trim())}
+                onClick={() => void apply(rationale)}
+              >
+                {running ? `Applying ${progress?.done ?? 0}/${progress?.total ?? included.length}…` : `Confirm ${included.length}`}
+              </Button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }
@@ -279,384 +378,375 @@ function ReadonlyMembers({ members, atomic }: { members: DecideMember[]; atomic:
   );
 }
 
-/* ---------- one decision card ---------- */
+const CAPABILITY_TONE: Record<DecideGroup["capability"]["kind"], string> = {
+  apply: "border-good-line bg-good-soft text-good",
+  record: "border-hair bg-soft text-muted",
+  track: "border-work-line bg-work-soft text-work",
+  unavailable: "border-seam-line bg-seam-soft text-seam",
+};
 
-function DecideCard({
+function CapabilityStatus({ group, compact = false }: { group: DecideGroup; compact?: boolean }) {
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center rounded-pill border font-semibold ${CAPABILITY_TONE[group.capability.kind]} ${
+        compact ? "px-2 py-0.5 text-2xs" : "px-2.5 py-1 text-xs"
+      }`}
+      title={group.capability.detail}
+    >
+      {group.capability.label}
+    </span>
+  );
+}
+
+function DecisionRow({
   group,
-  index,
-  focused,
-  evidenceOpen,
-  excluded,
-  memberCursor,
-  mutationsEnabled,
-  cardRef,
+  selected,
+  rowRef,
+  onActivate,
   onFocus,
-  onKey,
-  onOpenDetail,
-  onToggleMember,
-  registerTrigger,
+  onKeyDown,
 }: {
   group: DecideGroup;
-  index: number;
-  focused: boolean;
-  evidenceOpen: boolean;
-  excluded: Set<string>;
-  memberCursor: number;
-  mutationsEnabled: boolean;
-  cardRef: (el: HTMLElement | null) => void;
+  selected: boolean;
+  rowRef: (element: HTMLButtonElement | null) => void;
+  onActivate: () => void;
   onFocus: () => void;
-  onKey: (e: React.KeyboardEvent) => void;
-  onOpenDetail: () => void;
-  onToggleMember: (id: string) => void;
-  registerTrigger: (fn: (() => void) | null) => void;
+  onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => void;
 }) {
-  const { act } = group;
   return (
-    <article
-      ref={cardRef}
-      tabIndex={0}
-      data-decidecard
-      aria-label={`${group.areaLabel}: ${group.title}`}
+    <button
+      ref={rowRef}
+      type="button"
+      aria-pressed={selected}
+      onClick={onActivate}
       onFocus={onFocus}
-      onKeyDown={onKey}
-      className={`admission-seam rounded-lg border border-hair bg-panel px-4 py-3.5 shadow-sm transition-shadow hover:shadow ${
-        focused ? "outline outline-2 outline-offset-2 outline-work" : ""
+      onKeyDown={onKeyDown}
+      className={`grid w-full grid-cols-[auto_1fr] gap-3 border-b border-l-2 border-b-hair px-3 py-3 text-left outline-none transition-colors last:border-b-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus ${
+        selected ? "border-l-seam bg-soft" : "border-l-transparent bg-panel hover:bg-soft"
       }`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 items-start gap-2">
-          <GlyphTile domain={group.domain} glyph={group.glyph} />
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span className="text-2xs font-bold uppercase tracking-wide text-faint" title={group.areaPlain}>
-                {group.areaLabel}
-              </span>
-              {group.count > 1 ? (
-                <span className="mono text-2xs tabular-nums text-faint">· {group.count}</span>
-              ) : null}
-            </div>
-            <h3 className="mt-0.5 text-md font-semibold leading-snug text-ink">{group.title}</h3>
-          </div>
-        </div>
-        <span
-          className={`shrink-0 rounded-pill border border-seam-line bg-seam-soft px-2.5 py-0.5 text-xs font-semibold text-seam ${
-            group.old ? "" : ""
-          }`}
-        >
-          needs you
+      <GlyphTile domain={group.domain} glyph={group.glyph} />
+      <span className="min-w-0">
+        <span className="flex items-center justify-between gap-2">
+          <span className="truncate text-2xs font-bold uppercase text-faint" title={group.areaPlain}>{group.areaLabel}</span>
+          <span className={`shrink-0 text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>{group.ageLabel}</span>
         </span>
-      </div>
+        <span className="mt-1 line-clamp-2 block text-sm font-semibold leading-snug text-ink">{operatorText(group.title)}</span>
+        <span className="mt-2 flex flex-wrap items-center gap-2">
+          <CapabilityStatus group={group} compact />
+          {group.count > 1 ? <span className="mono text-2xs text-faint">{group.count} items</span> : null}
+          {group.evidence.length ? <span className="mono text-2xs text-faint">{group.evidence.length} evidence</span> : null}
+        </span>
+      </span>
+    </button>
+  );
+}
 
-      {group.unlock ? <div className="mt-1 text-xs font-medium text-good">→ {group.unlock}</div> : null}
-      {group.body ? (
-        <p className="mt-2 text-sm leading-relaxed text-muted" style={{ maxWidth: "var(--read-max)" }}>
-          {group.body}
-        </p>
-      ) : null}
-      {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
-      {group.brief ? <BriefPanel brief={group.brief} /> : null}
+function EvidenceSection({ group }: { group: DecideGroup }) {
+  if (!group.evidence.length) return null;
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <span className={`text-xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>
-            {group.ageLabel}
-            {group.old ? " · stale" : ""}
+  const rows = (
+    <div className="divide-y divide-hair border-y border-hair">
+      {group.evidence.map((evidence, index) => (
+        <div key={`${evidence.ref}:${index}`} className="grid gap-1 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-ink">{evidence.label}</span>
+            {evidence.sourceKind ? <span className="rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs text-faint">{evidence.sourceKind}</span> : null}
+          </div>
+          {evidence.summary ? <p className="text-xs leading-relaxed text-muted">{evidence.summary}</p> : null}
+          {evidence.ref ? <code className="mono break-all text-2xs text-faint">{evidence.ref}</code> : null}
+          {evidence.openCommand ? <div><CopyCmd cmd={evidence.openCommand} compact /></div> : null}
+        </div>
+      ))}
+    </div>
+  );
+
+  if (group.evidence.length > 4) {
+    return (
+      <details className="group border-t border-hair px-4 py-4">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-2xs font-bold uppercase text-faint marker:hidden">
+          <span>Evidence</span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="mono rounded-pill border border-hair bg-soft px-2 py-0.5 font-semibold normal-case text-muted">
+              {group.evidence.length} sources
+            </span>
+            <span aria-hidden className="text-sm transition-transform group-open:rotate-90">›</span>
           </span>
-          {group.members.length > 1 ? (
-            <MetaCount icon={<UsersIcon />} count={group.members.length} title="members grouped into this decision" />
-          ) : null}
-          {group.evidence.length ? (
-            <MetaCount icon={<DocIcon />} count={group.evidence.length} title="evidence refs" />
-          ) : null}
+        </summary>
+        <div className="mt-3">{rows}</div>
+      </details>
+    );
+  }
+
+  return (
+    <section className="border-t border-hair px-4 py-4">
+      <div className="text-2xs font-bold uppercase text-faint">Evidence · {group.evidence.length}</div>
+      <div className="mt-2">{rows}</div>
+    </section>
+  );
+}
+
+function decisionIdentity(group: DecideGroup): string {
+  const { act } = group;
+  if (act.mode === "bespoke") {
+    return `${group.key}:${act.mode}:${act.itemId}:${act.expectedRevision}:${act.options.map((option) => option.value).join(",")}`;
+  }
+  if (act.mode === "generic") return `${group.key}:${act.mode}:${act.itemId}:${act.actionId}:${act.expectedRevision}:${act.requiresConfirmation}:${act.effectKind}`;
+  if (act.mode === "batch-atomic") return `${group.key}:${act.mode}:${act.itemId}:${act.option}:${act.argv?.join(" ") ?? ""}`;
+  if (act.mode === "batch-enumerable") {
+    return `${group.key}:${act.mode}:${act.requiresConfirmation}:${act.requiresRationale}:${act.effectKind}:${act.members.map((member) => `${member.id}:${member.actionId}:${member.expectedRevision}`).join("|")}`;
+  }
+  return `${group.key}:${act.mode}:${act.command}`;
+}
+
+function DecisionDetail({
+  group,
+  mutationsEnabled,
+  excluded,
+  onToggleMember,
+  retainedOutcome,
+  onExecuted,
+}: {
+  group: DecideGroup;
+  mutationsEnabled: boolean;
+  excluded: Set<string>;
+  onToggleMember: (id: string) => void;
+  retainedOutcome?: ExecuteResult | null;
+  onExecuted: (result: ExecuteResult) => void;
+}) {
+  const { act } = group;
+  const effectKind = group.capability.kind === "unavailable" ? "apply" : group.capability.kind;
+  return (
+    <article className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
+      <header className="px-4 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <GlyphTile domain={group.domain} glyph={group.glyph} />
+            <div className="min-w-0">
+              <div className="text-2xs font-bold uppercase text-faint" title={group.areaPlain}>{group.areaLabel}</div>
+              <h3 className="mt-1 text-lg font-semibold leading-snug text-ink">{operatorText(group.title)}</h3>
+            </div>
+          </div>
+          <CapabilityStatus group={group} />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <code className="mono text-2xs text-faint" title={group.sampleId}>{group.sampleId}</code>
+          <span className={`text-2xs tabular-nums ${group.old ? "font-semibold text-seam" : "text-faint"}`}>{group.ageLabel}{group.old ? " · stale" : ""}</span>
           <FreshnessChip generatedAt={group.freshness.generatedAt} source={group.freshness.source} />
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" onClick={onOpenDetail}>
-            Details
-          </Button>
+      </header>
+
+      <section className="border-t border-hair px-4 py-4">
+        <div className="text-2xs font-bold uppercase text-faint">Decision context</div>
+        {group.body ? <p className="mt-2 max-w-read text-sm leading-relaxed text-muted">{group.body}</p> : null}
+        {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
+      </section>
+
+      <section className="border-t border-hair bg-soft/60 px-4 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div className="text-2xs font-bold uppercase text-faint">Governed action</div>
+            <p className="mt-1 text-xs leading-relaxed text-muted">{group.capability.detail}</p>
+          </div>
+          <span className={`rounded-pill border px-2 py-0.5 text-2xs font-semibold ${
+            mutationsEnabled ? "border-good-line bg-good-soft text-good" : "border-hair bg-panel text-muted"
+          }`}>
+            {mutationsEnabled ? "Operator actions enabled" : "Read-only console"}
+          </span>
+        </div>
+        <div className="mt-3">
           {act.mode === "copy" ? (
-            <div className="flex flex-col items-end gap-1">
-              <CopyCmd cmd={act.command} compact />
-              <span className="text-2xs text-faint">
-                No one-click action wired yet{act.reason ? ` — ${act.reason}` : ""}.
-              </span>
+            <div className="grid gap-2 border-l-2 border-seam-line pl-3">
+              <p className="text-sm font-semibold text-seam">Unavailable: owner workflow missing</p>
+              <p className="text-xs leading-relaxed text-muted">{act.reason || "This review remains inspectable, but the owner has not exposed a safe state-changing action."}</p>
+              <div><CopyCmd cmd={act.command} compact /></div>
             </div>
-          ) : act.mode === "batch-enumerable" ? null : (
-            <GovernedAct act={act} mutationsEnabled={mutationsEnabled} registerTrigger={registerTrigger} />
+          ) : act.mode === "batch-enumerable" ? (
+            <EnumerableApply
+              area={act.area}
+              members={act.members}
+              excluded={excluded}
+              onToggle={onToggleMember}
+              mutationsEnabled={mutationsEnabled}
+              requiresConfirmation={act.requiresConfirmation}
+              requiresRationale={act.requiresRationale}
+              policyNote={act.policyNote}
+              label={act.label}
+            />
+          ) : (
+            <GovernedAct
+              key={decideActIdentity(act)}
+              act={act}
+              mutationsEnabled={mutationsEnabled}
+              onExecuted={onExecuted}
+              retainedOutcome={retainedOutcome}
+              effectKind={effectKind}
+            />
           )}
         </div>
-      </div>
+      </section>
 
-      {act.mode === "batch-enumerable" ? (
-        <div className="mt-3">
-          <EnumerableApply
-            area={act.area}
-            members={act.members}
-            excluded={excluded}
-            cursor={memberCursor}
-            onToggle={onToggleMember}
-            mutationsEnabled={mutationsEnabled}
-            registerTrigger={registerTrigger}
-          />
-        </div>
-      ) : (
-        <ReadonlyMembers members={group.members} atomic={act.mode === "batch-atomic"} />
-      )}
-
-      {group.evidence.length && evidenceOpen ? (
-        <ul className="mt-3 flex flex-col gap-0.5 border-t border-hair pt-2">
-          {group.evidence.map((ref, i) => (
-            <li key={i} className="mono truncate text-2xs text-faint" title={ref}>
-              {ref}
-            </li>
-          ))}
-        </ul>
+      {group.brief ? (
+        <section className="border-t border-hair px-4 py-4">
+          <div className="text-2xs font-bold uppercase text-faint">Prepared analysis · advisory</div>
+          <BriefPanel brief={group.brief} />
+        </section>
       ) : null}
 
-      <code className="mono mt-2 block truncate text-2xs text-faint" title={group.sampleId}>
-        {group.sampleId}
-      </code>
+      <EvidenceSection group={group} />
+
+      {group.members.length > 1 ? (
+        <section className="border-t border-hair px-4 py-4">
+          <ReadonlyMembers members={group.members} atomic={act.mode === "batch-atomic"} />
+        </section>
+      ) : null}
     </article>
   );
 }
 
-/* ---------- the queue: keyboard triage + focus + aria-live ---------- */
+type RetainedDecision = { group: DecideGroup; result: ExecuteResult; identity: string };
 
 export function DecideQueue({ groups, mutationsEnabled }: { groups: DecideGroup[]; mutationsEnabled: boolean }) {
   const [filter, setFilter] = useState("");
   const [focused, setFocused] = useState(0);
-  const [evidenceOpen, setEvidenceOpen] = useState<Record<string, boolean>>({});
+  const [selectedKey, setSelectedKey] = useState(groups[0]?.key ?? "");
   const [excluded, setExcluded] = useState<Record<string, Set<string>>>({});
-  const [memberCursor, setMemberCursor] = useState<Record<string, number>>({});
-  const [detailKey, setDetailKey] = useState<string | null>(null);
+  const [retained, setRetained] = useState<Record<string, RetainedDecision>>({});
 
   const filterRef = useRef<HTMLInputElement | null>(null);
-  const cardRefs = useRef<(HTMLElement | null)[]>([]);
-  const triggers = useRef<Map<string, () => void>>(new Map());
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const detailRef = useRef<HTMLDivElement | null>(null);
 
   const visible = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return groups;
-    return groups.filter((g) => `${g.title} ${g.areaLabel} ${g.body}`.toLowerCase().includes(q));
+    const query = filter.trim().toLowerCase();
+    if (!query) return groups;
+    return groups.filter((group) => `${group.title} ${group.areaLabel} ${group.body}`.toLowerCase().includes(query));
   }, [groups, filter]);
 
   useEffect(() => {
+    const selectedIsCurrent = groups.some((group) => group.key === selectedKey);
+    const selectedIsVisible = visible.some((group) => group.key === selectedKey);
+    if (!selectedKey && visible[0]) {
+      setSelectedKey(visible[0].key);
+    } else if (selectedIsCurrent && !selectedIsVisible) {
+      setSelectedKey(visible[0]?.key ?? "");
+    } else if (selectedKey && !selectedIsCurrent && !retained[selectedKey]) {
+      setSelectedKey(visible[0]?.key ?? "");
+    }
     if (focused > visible.length - 1) setFocused(Math.max(0, visible.length - 1));
-  }, [visible.length, focused]);
+  }, [focused, groups, retained, selectedKey, visible]);
 
-  const focusCard = useCallback((i: number) => {
-    const clamped = Math.max(0, Math.min(i, cardRefs.current.length - 1));
-    setFocused(clamped);
-    cardRefs.current[clamped]?.focus();
-  }, []);
-
-  const toggleEvidence = useCallback((key: string) => {
-    setEvidenceOpen((prev) => ({ ...prev, [key]: !prev[key] }));
-  }, []);
-
-  const toggleMember = useCallback((key: string, id: string) => {
-    setExcluded((prev) => {
-      const next = new Set(prev[key] ?? []);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return { ...prev, [key]: next };
-    });
-  }, []);
-
-  const moveMemberCursor = useCallback((group: DecideGroup, delta: number) => {
-    if (group.act.mode !== "batch-enumerable") return;
-    const max = group.act.members.length - 1;
-    setMemberCursor((prev) => {
-      const cur = prev[group.key] ?? 0;
-      return { ...prev, [group.key]: Math.max(0, Math.min(max, cur + delta)) };
-    });
-  }, []);
-
-  // '/' focuses the filter from anywhere (except while already typing).
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const el = e.target as HTMLElement | null;
-      const typing = !!el?.closest("input, textarea, select, [contenteditable=true]");
-      if (e.key === "/" && !typing) {
-        e.preventDefault();
+    function onKey(event: KeyboardEvent) {
+      const element = event.target as HTMLElement | null;
+      const typing = Boolean(element?.closest("input, textarea, select, [contenteditable=true]"));
+      if (event.key === "/" && !typing) {
+        event.preventDefault();
         filterRef.current?.focus();
-        filterRef.current?.select();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  function onCardKey(e: React.KeyboardEvent, index: number, group: DecideGroup) {
-    // Only triage when the card CONTAINER itself is focused — a focused child
-    // button/checkbox handles its own keys (so `a` never double-fires).
-    if (e.target !== e.currentTarget) return;
-    switch (e.key) {
-      case "j":
-        e.preventDefault();
-        focusCard(index + 1);
-        break;
-      case "k":
-        e.preventDefault();
-        focusCard(index - 1);
-        break;
-      case "a":
-        e.preventDefault();
-        triggers.current.get(group.key)?.(); // opens ConfirmDialog when needed — never auto-fires
-        break;
-      case "e":
-        e.preventDefault();
-        toggleEvidence(group.key);
-        break;
-      case "x":
-        if (group.act.mode === "batch-enumerable") {
-          e.preventDefault();
-          const cursor = memberCursor[group.key] ?? 0;
-          const member = group.act.members[cursor];
-          if (member) toggleMember(group.key, member.id);
-        }
-        break;
-      case "ArrowDown":
-        if (group.act.mode === "batch-enumerable") {
-          e.preventDefault();
-          moveMemberCursor(group, 1);
-        }
-        break;
-      case "ArrowUp":
-        if (group.act.mode === "batch-enumerable") {
-          e.preventDefault();
-          moveMemberCursor(group, -1);
-        }
-        break;
-      case "Enter":
-      case " ":
-        e.preventDefault();
-        setDetailKey(group.key);
-        break;
-      default:
-        break;
+  const focusRow = useCallback((index: number) => {
+    const clamped = Math.max(0, Math.min(index, rowRefs.current.length - 1));
+    setFocused(clamped);
+    rowRefs.current[clamped]?.focus();
+  }, []);
+
+  const select = useCallback((group: DecideGroup, index: number, scroll = false) => {
+    setSelectedKey(group.key);
+    setFocused(index);
+    if (scroll && window.matchMedia("(max-width: 1023px)").matches) {
+      window.setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    }
+  }, []);
+
+  function onRowKey(event: React.KeyboardEvent<HTMLButtonElement>, index: number, group: DecideGroup) {
+    if (event.key === "j" || event.key === "ArrowDown") {
+      event.preventDefault();
+      focusRow(index + 1);
+    } else if (event.key === "k" || event.key === "ArrowUp") {
+      event.preventDefault();
+      focusRow(index - 1);
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      select(group, index, true);
     }
   }
 
-  const detail = detailKey ? groups.find((g) => g.key === detailKey) ?? null : null;
-  const liveMessage = visible.length
-    ? `${visible.length} decision${visible.length === 1 ? "" : "s"} need you. Focused ${Math.min(focused + 1, visible.length)} of ${visible.length}: ${visible[Math.min(focused, visible.length - 1)]?.title ?? ""}`
-    : "Nothing waits on you.";
+  const selected = visible.find((group) => group.key === selectedKey) ?? retained[selectedKey]?.group ?? visible[0] ?? null;
+  const liveMessage = selected ? `Selected decision: ${operatorText(selected.title)}` : "Nothing waits on you.";
+  const selectedIdentity = selected ? decisionIdentity(selected) : "";
+  const selectedRetained = selected ? retained[selected.key] : undefined;
 
   return (
-    <div className="flex flex-col gap-3">
-      <div aria-live="polite" className="sr-only">
-        {liveMessage}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="grid gap-3">
+      <div aria-live="polite" className="sr-only">{liveMessage}</div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <input
           ref={filterRef}
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter decisions…  ( / )"
+          onChange={(event) => setFilter(event.target.value)}
+          placeholder="Filter decisions"
           aria-label="Filter decisions"
-          className="w-full max-w-xs rounded-md border border-hair bg-panel px-3 py-1.5 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-work sm:w-64"
+          className="w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus sm:max-w-xs"
         />
-        <span className="text-2xs text-faint">
-          <kbd className="mono">j</kbd>/<kbd className="mono">k</kbd> move · <kbd className="mono">a</kbd> act ·{" "}
-          <kbd className="mono">e</kbd> evidence · <kbd className="mono">x</kbd> exclude ·{" "}
-          <kbd className="mono">Enter</kbd> details
-        </span>
+        <span className="mono text-2xs tabular-nums text-faint">{visible.length} decisions</span>
       </div>
 
-      {visible.length ? (
-        <div className="flex flex-col gap-3">
-          {visible.map((group, index) => (
-            <DecideCard
+      <div className="grid items-start gap-4 lg:grid-cols-5">
+        <div ref={listRef} className="scroll-mt-16 max-h-[52vh] overflow-y-auto rounded-lg border border-hair bg-panel lg:col-span-2 lg:max-h-none lg:overflow-visible">
+          {visible.length ? visible.map((group, index) => (
+            <DecisionRow
               key={group.key}
               group={group}
-              index={index}
-              focused={focused === index}
-              evidenceOpen={!!evidenceOpen[group.key]}
-              excluded={excluded[group.key] ?? new Set()}
-              memberCursor={memberCursor[group.key] ?? 0}
-              mutationsEnabled={mutationsEnabled}
-              cardRef={(el) => {
-                cardRefs.current[index] = el;
-              }}
-              onFocus={() => setFocused(index)}
-              onKey={(e) => onCardKey(e, index, group)}
-              onOpenDetail={() => setDetailKey(group.key)}
-              onToggleMember={(id) => toggleMember(group.key, id)}
-              registerTrigger={(fn) => {
-                if (fn) triggers.current.set(group.key, fn);
-                else triggers.current.delete(group.key);
-              }}
+              selected={selected?.key === group.key}
+              rowRef={(element) => { rowRefs.current[index] = element; }}
+              onActivate={() => select(group, index, true)}
+              onFocus={() => select(group, index)}
+              onKeyDown={(event) => onRowKey(event, index, group)}
             />
-          ))}
+          )) : (
+            <p className="border-dashed px-4 py-8 text-center text-sm text-muted">No decision matches “{filter}”.</p>
+          )}
         </div>
-      ) : (
-        <p className="rounded-lg border border-dashed border-hair bg-page px-4 py-6 text-center text-sm text-muted">
-          No decision matches “{filter}”.
-        </p>
-      )}
 
-      <Drawer
-        open={!!detail}
-        onOpenChange={(o) => !o && setDetailKey(null)}
-        title={detail?.title ?? ""}
-        meta={detail ? `${detail.areaLabel} · ${detail.sampleId}` : ""}
-      >
-        {detail ? (
-          <div className="flex flex-col gap-4 text-sm">
-            <p className="text-muted">{detail.areaPlain}</p>
-            {detail.body ? <p className="leading-relaxed text-ink">{detail.body}</p> : null}
-            {detail.consequences ? (
-              <ConsequencePair approve={detail.consequences.approve} hold={detail.consequences.hold} />
-            ) : null}
-            {detail.act.mode !== "copy" && "argv" in detail.act && detail.act.argv?.length ? (
-              <div>
-                <div className="text-2xs font-bold uppercase tracking-wide text-faint">Command</div>
-                <pre className="mono mt-1 overflow-x-auto rounded-md border border-hair bg-soft px-3 py-2 text-2xs text-muted">
-                  compound {detail.act.argv.join(" ")}
-                </pre>
-              </div>
-            ) : detail.act.mode === "copy" ? (
-              <div>
-                <div className="text-2xs font-bold uppercase tracking-wide text-faint">Command (copy)</div>
-                <pre className="mono mt-1 overflow-x-auto rounded-md border border-hair bg-soft px-3 py-2 text-2xs text-muted">
-                  {detail.act.command}
-                </pre>
-              </div>
-            ) : null}
-            {detail.members.length > 1 ? (
-              <div>
-                <div className="text-2xs font-bold uppercase tracking-wide text-faint">
-                  Members · {detail.members.length}
-                </div>
-                <ul className="mt-1 flex flex-col gap-1">
-                  {detail.members.slice(0, 80).map((m) => (
-                    <li key={m.id} className="mono truncate text-2xs text-faint" title={m.id}>
-                      {m.label}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {detail.evidence.length ? (
-              <div>
-                <div className="text-2xs font-bold uppercase tracking-wide text-faint">
-                  Evidence · {detail.evidence.length}
-                </div>
-                <ul className="mt-1 flex flex-col gap-0.5">
-                  {detail.evidence.map((ref, i) => (
-                    <li key={i} className="mono truncate text-2xs text-faint" title={ref}>
-                      {ref}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            <FreshnessChip generatedAt={detail.freshness.generatedAt} source={detail.freshness.source} />
-          </div>
-        ) : null}
-      </Drawer>
+        <div ref={detailRef} className="scroll-mt-20 lg:sticky lg:top-20 lg:col-span-3">
+          {selected ? (
+            <div className="grid gap-2">
+              <button
+                type="button"
+                onClick={() => listRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                className="inline-flex w-fit items-center gap-1.5 rounded-md border border-hair bg-panel px-2.5 py-1.5 text-xs font-semibold text-muted hover:bg-soft lg:hidden"
+              >
+                <span aria-hidden>↑</span>
+                All decisions
+              </button>
+              <DecisionDetail
+                key={selectedIdentity}
+                group={selected}
+                mutationsEnabled={mutationsEnabled}
+                excluded={excluded[selected.key] ?? new Set()}
+                onToggleMember={(id) => setExcluded((previous) => {
+                  const next = new Set(previous[selected.key] ?? []);
+                  if (next.has(id)) next.delete(id); else next.add(id);
+                  return { ...previous, [selected.key]: next };
+                })}
+                retainedOutcome={selectedRetained?.identity === selectedIdentity ? selectedRetained.result : null}
+                onExecuted={(result) => setRetained((previous) => ({
+                  ...previous,
+                  [selected.key]: { group: selected, result, identity: selectedIdentity },
+                }))}
+              />
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed border-hair bg-page px-4 py-10 text-center text-sm text-muted">Clean seam. Nothing waits on you.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { CliCaption } from "@/components/CopyCmd";
 import { Button } from "@/components/kit/Button";
 import { ConfirmDialog } from "@/components/kit/ConfirmDialog";
 import type { HeadlineActDescriptor } from "@/lib/briefing";
+import { buildHeadlineActionRequest } from "@/lib/governed-action-client";
 
 type ExecuteResult = { ok: boolean; stdout?: string; stderr?: string };
 type Phase = "idle" | "pending" | "confirmed" | "error";
@@ -50,13 +51,10 @@ export function HeadlineAct({
     );
   }
 
-  async function run() {
+  async function run(kind: "direct" | "confirm") {
     setPhase("pending");
     setMessage(null);
-    const payload =
-      act.pathway === "bespoke"
-        ? { area: act.area, itemId: act.itemId, option: act.option, fields: {} }
-        : { area: act.area, itemId: act.itemId, actionId: act.actionId, confirmed: true, rationale };
+    const payload = buildHeadlineActionRequest(act, rationale, kind);
     try {
       const response = await fetch("/api/decision/execute", {
         method: "POST",
@@ -84,7 +82,7 @@ export function HeadlineAct({
 
   function onPrimary() {
     if (act.requiresConfirmation || act.rationaleRequired) setDialogOpen(true);
-    else void run();
+    else void run("direct");
   }
 
   const stateClass =
@@ -106,7 +104,7 @@ export function HeadlineAct({
         confirmLabel={act.label}
         pending={phase === "pending"}
         confirmDisabled={act.rationaleRequired && !rationale.trim()}
-        onConfirm={() => void run()}
+        onConfirm={() => void run("confirm")}
       >
         {act.rationaleRequired ? (
           <label className="flex flex-col gap-1">

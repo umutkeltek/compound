@@ -13,7 +13,8 @@
 import type { AttentionGroup } from "@/lib/attention";
 import { arr, num, str, type Json } from "@/lib/compound";
 import { toDate } from "@/lib/time";
-import { GENERIC_ACTION_ALLOWLIST, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
+import { genericActionProjectionEligible, genericActionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
+import { specFor } from "@/lib/decision-registry";
 import type { ContinueRequest } from "@/components/ContinueButton";
 import type { StateTone } from "@/components/kit";
 
@@ -52,17 +53,16 @@ export type HeadlineActDescriptor = {
   option?: string;
   /** generic pathway only. */
   actionId?: string;
+  /** Exact rendered generic owner action; server returns 409 on drift. */
+  expectedRevision?: string;
+  /** Bespoke projection fields shown in the confirmation command. */
+  fields?: Record<string, string>;
   label: string;
   /** display-only preview (server re-resolves the real argv before running). */
   argv: string[];
   requiresConfirmation: boolean;
   rationaleRequired: boolean;
 };
-
-function flagValue(argv: string[], flag: string): string {
-  const i = argv.indexOf(flag);
-  return i >= 0 ? str(argv[i + 1]) : "";
-}
 
 export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor | null {
   const action = group?.action;
@@ -77,16 +77,45 @@ export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor
   const label = str(action.label) || "Act";
   const requiresConfirmation = Boolean(action.requires_confirmation);
 
-  // Panel run apply — bespoke `panel-apply` (itemId = the run id).
-  if (str(action.id) === "panel_run_apply" || (bare[0] === "panel" && bare[1] === "run" && bare.includes("--apply"))) {
-    const runId = flagValue(bare, "--plan");
-    if (!/^prun_[A-Za-z0-9_]+$/.test(runId)) return null;
-    return { pathway: "bespoke", area: "panel-apply", itemId: runId, option: "apply", label, argv, requiresConfirmation, rationaleRequired: false };
+  // Panel run apply — exact owner action + exact argv shape only.
+  if (str(action.id) === "panel_run_apply") {
+    const runId = bare[3] ?? "";
+    if (
+      bare.length !== 5 ||
+      bare[0] !== "panel" ||
+      bare[1] !== "run" ||
+      bare[2] !== "--plan" ||
+      bare[4] !== "--apply" ||
+      !/^prun_[A-Za-z0-9_]+$/.test(runId)
+    ) return null;
+    return { pathway: "bespoke", area: "panel-apply", itemId: runId, option: "apply", label, argv, requiresConfirmation: true, rationaleRequired: false };
   }
 
   // Panel grouped verdict record — bespoke `panel-verdict-record-group`.
   if (str(action.id) === "panel_verdict_record_group") {
-    return { pathway: "bespoke", area: "panel-verdict-record-group", itemId: str(group.key), option: "record", label, argv, requiresConfirmation, rationaleRequired: false };
+    const groupKey = str(group.key);
+    if (
+      bare.length !== 8 ||
+      bare[0] !== "panel" ||
+      bare[1] !== "verdict-record" ||
+      bare[2] !== "--group" ||
+      bare[3] !== groupKey ||
+      bare[4] !== "--rationale" ||
+      !bare[5] ||
+      bare[6] !== "--reviewed-by" ||
+      !bare[7]
+    ) return null;
+    return {
+      pathway: "bespoke",
+      area: "panel-verdict-record-group",
+      itemId: groupKey,
+      option: "record",
+      label,
+      argv,
+      requiresConfirmation: true,
+      rationaleRequired: false,
+      fields: { rationale: bare[5], reviewed_by: bare[7] },
+    };
   }
 
   // Workbench dispatch actions don't carry a stable work_id in the attention
@@ -98,12 +127,16 @@ export function headlineAct(group: AttentionGroup | null): HeadlineActDescriptor
   // (generic-actions GENERIC_ACTION_ALLOWLIST). An un-certified area would 403
   // on click, so we render no button for it (honest).
   const area = str(group.area);
-  if (GENERIC_ACTION_ALLOWLIST[area]) {
+  if (!specFor(area) && genericActionProjectionEligible(area, argv)) {
+    const itemIDs = group.item_ids.filter(Boolean);
+    const itemId = action.kind === "batch" ? str(group.key) : itemIDs.length === 1 ? itemIDs[0] : "";
+    if (!itemId) return null;
     return {
       pathway: "generic",
       area,
-      itemId: str(group.key),
+      itemId,
       actionId: str(action.id),
+      expectedRevision: genericActionRevision(action),
       label,
       argv,
       requiresConfirmation,

@@ -11,6 +11,7 @@
  * (same reason as generic-actions.selftest.ts).
  */
 
+import { remainingDecideMembers } from "./decide-members";
 import { buildDecideGroups } from "./decide-model";
 import type { Json } from "./compound";
 
@@ -68,9 +69,14 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
   //    live proof target (a multi-member capability-lifecycle-proposals
   //    group) hits when the briefed item isn't group-order-first.
   {
+    const decisionCard = {
+      claim: "Review member B.",
+      choices: [{ id: "reject", label: "Reject proposal", effect: "File member B without work." }],
+      meta: { proposal_hash: "b".repeat(64) },
+    };
     const itemByID = new Map<string, Json>([
       ["member_a", { id: "member_a", area: "capability-lifecycle-proposals" }],
-      ["member_b", { id: "member_b", area: "capability-lifecycle-proposals", brief: validBriefPayload() }],
+      ["member_b", { id: "member_b", area: "capability-lifecycle-proposals", brief: validBriefPayload(), decision_card: decisionCard }],
     ]);
     const decided = build(baseGroup(), itemByID);
     push(
@@ -81,8 +87,140 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
         decided.brief.findings.length === 1 &&
         decided.brief.findings[0].evidenceRef === "compound://evidence/finding-1" &&
         decided.brief.options[0].value === "approve" &&
-        decided.brief.recommendation.option === "approve",
-      `brief: ${decided.brief ? "present" : "MISSING"} preparedBy=${decided.brief?.preparedBy ?? "-"}`,
+        decided.brief.recommendation.option === "approve" &&
+        decided.act.mode === "bespoke" &&
+        decided.act.itemId === "member_b",
+      `brief: ${decided.brief ? "present" : "MISSING"} preparedBy=${decided.brief?.preparedBy ?? "-"} target=${decided.act.mode === "bespoke" ? decided.act.itemId : decided.act.mode}`,
+    );
+  }
+
+  // 13. A panel apply SBA and per-member verdict-record actions are different
+  //     effects. The clean member action must not replace the atomic apply.
+  {
+    const item = {
+      id: "panel_apply_member01",
+      area: "panel-verdicts",
+      actions: [
+        { id: "decision:promote", argv: ["/bin/sh", "-lc", "compound panel verdict-record && apply"] },
+        {
+          id: "panel_verdict_record_member",
+          argv: ["compound", "panel", "verdict-record", "--review", "/tmp/panel_apply_member01.json"],
+        },
+      ],
+    } as Json;
+    const group = {
+      key: "panel-verdicts|prun_fixture_apply|promote",
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      safe_batch_action: {
+        id: "panel_run_apply",
+        argv: ["compound", "panel", "run", "--plan", "prun_fixture_apply", "--apply"],
+        requires_review: true,
+      },
+    } as Json;
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
+    push(
+      "panel-apply-is-not-replaced-by-member-record",
+      decided.act.mode === "batch-atomic" && decided.act.area === "panel-apply" && decided.capability.kind === "apply",
+      `act=${decided.act.mode}${decided.act.mode === "batch-atomic" ? ` area=${decided.act.area}` : ""} capability=${decided.capability.kind}`,
+    );
+  }
+
+  // 14. A future clean panel review action must not become panel-apply merely
+  //     because the group key happens to carry a recoverable panel run id.
+  //     Only the owner's exact panel_run_apply action and argv shape may cross
+  //     the apply boundary.
+  {
+    const item = {
+      id: "future_panel_member01",
+      area: "panel-verdicts",
+    } as Json;
+    const group = {
+      key: "panel-verdicts|prun_fixture_future|needs_human",
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      safe_batch_action: {
+        id: "future_panel_record",
+        argv: ["compound", "panel", "verdict-record", "--group", "panel-verdicts|prun_fixture_future|needs_human"],
+        requires_review: true,
+      },
+    } as Json;
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
+    push(
+      "panel-apply-requires-exact-owner-action",
+      !(decided.act.mode === "batch-atomic" && decided.act.area === "panel-apply"),
+      `act=${decided.act.mode}${decided.act.mode === "batch-atomic" ? ` area=${decided.act.area}` : ""}`,
+    );
+  }
+
+  // 15. The grouped record id cannot relabel an apply argv. Atomic handlers
+  //     bind both the owner action id and the exact represented command.
+  {
+    const item = { id: "mismatched_panel_member01", area: "panel-verdicts" } as Json;
+    const group = {
+      key: "panel-verdicts|prun_fixture_mismatch|needs_human",
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      safe_batch_action: {
+        id: "panel_verdict_record_group",
+        argv: ["compound", "panel", "run", "--plan", "prun_fixture_mismatch", "--apply"],
+        requires_review: true,
+      },
+    } as Json;
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
+    push(
+      "panel-record-group-requires-exact-owner-argv",
+      !(decided.act.mode === "batch-atomic" && decided.act.area === "panel-verdict-record-group"),
+      `act=${decided.act.mode}${decided.act.mode === "batch-atomic" ? ` area=${decided.act.area}` : ""}`,
+    );
+  }
+
+  // 12. Certification is area + verb, not area alone. A job-health action
+  //     carrying another area's clean verb stays unavailable before any click.
+  {
+    const item = { id: "job_health_mismatch01", area: "job-health" } as Json;
+    const group = {
+      key: "job-health|mismatch",
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      operator_summary: "Inspect a mismatched action.",
+    } as Json;
+    const attention = {
+      groups: [{
+        key: group.key,
+        area: item.area,
+        action: {
+          id: "wrong_verb",
+          kind: "one_click",
+          argv: ["compound", "authority", "dirty-review", "/tmp/other.review.yaml"],
+        },
+      }],
+    } as Parameters<typeof buildDecideGroups>[2];
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), attention, () => item)[0];
+    push(
+      "certified-area-mismatched-verb-stays-unavailable",
+      decided.act.mode === "copy" && decided.capability.kind === "unavailable",
+      `act=${decided.act.mode} capability=${decided.capability.kind}`,
+    );
+  }
+
+  // 11. After a partial enumerable batch, a retry excludes both deliberately
+  //     skipped members and members already recorded before the failure.
+  {
+    const members = ["a", "b", "c"].map((id) => ({ id, label: id, argv: ["panel", "verdict-record"], actionId: `record_${id}` }));
+    const remaining = remainingDecideMembers(members, new Set(["c"]), new Set(["a"]));
+    push(
+      "partial-enumerable-retry-skips-completed-members",
+      remaining.map((member) => member.id).join(",") === "b",
+      `remaining=${remaining.map((member) => member.id).join(",")}`,
     );
   }
 
@@ -191,6 +329,160 @@ export function runDecideModelBriefSelfTest(): { ok: boolean; details: string[] 
       decided.brief?.options[0].commandArgv?.join(" ") ===
         "compound capability lifecycle-promote --id clp_1" && decided.act.mode === "copy",
       `argv=${decided.brief?.options[0].commandArgv?.join(" ") ?? "MISSING"} act=${decided.act.mode}`,
+    );
+  }
+
+  // 7. Owner-projected lifecycle choices become an explicit, unselected
+  //    disposition target. The rendered proposal hash is carried separately
+  //    for optimistic concurrency; brief options never feed this list.
+  {
+    const card = {
+      claim: "Teach the existing skill one verified failure pattern.",
+      why: [{ label: "evidence", detail: "Two source refs support the proposal." }],
+      choices: [
+        { id: "open_work", label: "Turn into tracked work", effect: "Create proposed work only." },
+        { id: "defer", label: "Defer with a trigger", effect: "Watch until the trigger." },
+        { id: "reject", label: "Reject proposal", effect: "File it without work." },
+      ],
+      meta: { proposal_hash: "a".repeat(64) },
+      boundary: ["no capability mutation"],
+    };
+    const item = {
+      id: "clp_fixture",
+      area: "capability-lifecycle-proposals",
+      decision_card: card,
+      evidence_refs: ["session:fixture"],
+    } as Json;
+    const group = baseGroup({
+      key: "capability-lifecycle-proposals|clp_fixture",
+      count: 1,
+      item_ids: ["clp_fixture"],
+      sample: item,
+      evidence_summaries: [{
+        ref: "session:fixture",
+        label: "Source session",
+        source_kind: "session",
+        summary: "The same failure repeated twice.",
+      }],
+    });
+    const decided = buildDecideGroups([group], new Map([["clp_fixture", item]]), null, () => item)[0];
+    const act = decided.act;
+    const actionableHere = [decided].filter((candidate) => candidate.capability.kind !== "unavailable").length;
+    push(
+      "owner-choices-explicit-and-version-bound",
+      act.mode === "bespoke" &&
+        act.options.map((option) => option.value).join(",") === "open_work,defer,reject" &&
+        act.option === "" &&
+        act.expectedRevision === "a".repeat(64) &&
+        act.supportsPreview &&
+        decided.capability.kind === "track" &&
+        actionableHere === 1 &&
+        decided.evidence[0]?.summary === "The same failure repeated twice.",
+      `act=${act.mode} option=${act.mode === "bespoke" ? act.option : "-"} capability=${decided.capability.kind} actionable=${actionableHere}`,
+    );
+  }
+
+  // 8. A bespoke owner with zero effect-compatible choices stays inspection
+  //    only even when the projection carries a different record action.
+  {
+    const item = {
+      id: "route_promotion_fixture01",
+      area: "route-promotions",
+      group_key: "route-promotions|demote|classify",
+      json_path: "/tmp/route_promotion_fixture01.json",
+      actions: [{
+        id: "route_promotion_record",
+        argv: ["compound", "route", "promotion-record", "--review", "/tmp/route_promotion_fixture01.json"],
+        requires_review: true,
+      }],
+    } as Json;
+    const group = {
+      key: item.group_key,
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      safe_batch_action: item.actions[0],
+      operator_summary: "Demote this lane?",
+    } as Json;
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
+    push(
+      "zero-option-bespoke-owner-stays-unavailable",
+      decided.act.mode === "copy" &&
+        decided.capability.kind === "unavailable" &&
+        decided.act.command === "compound reviews --area route-promotions" &&
+        decided.consequences?.approve.includes("this review card cannot promote or demote") === true,
+      `act=${decided.act.mode} capability=${decided.capability.kind}`,
+    );
+  }
+
+  // 9. Truly generic enumerable actions carry confirmation and rationale
+  //    requirements into the client instead of self-confirming on first click.
+  {
+    const item = {
+      id: "panel_verdict_fixture01",
+      area: "panel-verdicts",
+      context_label: "fixture verdict",
+      actions: [
+        ...["promote", "park", "reject", "needs_human"].map((choice) => ({
+          id: `decision:${choice}`,
+          argv: ["/bin/sh", "-lc", `compound panel verdict-record --review fixture && ${choice}`],
+          requires_review: true,
+        })),
+        {
+          id: "panel_verdict_record_member",
+          argv: ["compound", "panel", "verdict-record", "--review", "/tmp/panel_verdict_fixture01.json"],
+          requires_review: true,
+        },
+      ],
+    } as Json;
+    const group = {
+      key: "panel-verdicts|fixture",
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      safe_batch_action: {
+        id: "panel_verdict_record_group",
+        label: "Record selected verdicts",
+        argv: ["compound", "panel", "verdict-record", "--review", "/tmp/panel_verdict_fixture01.json"],
+        requires_review: true,
+        policy_note: "Records reviewed provenance only.",
+      },
+      operator_summary: "Record the reviewed verdict.",
+    } as Json;
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
+    const act = decided.act;
+    push(
+      "generic-enumerable-carries-confirmation-contract",
+      act.mode === "batch-enumerable" && act.requiresConfirmation && act.requiresRationale &&
+        act.effectKind === "record" && decided.capability.kind === "record",
+      `act=${act.mode}${act.mode === "batch-enumerable" ? ` confirm=${act.requiresConfirmation} rationale=${act.requiresRationale} effect=${act.effectKind}` : ""}`,
+    );
+  }
+
+  // 10. A clean projection action in an uncertified area remains inspection
+  //     only. The UI must not promise "Apply now" before the server 403s it.
+  {
+    const item = {
+      id: "uncertified_fixture01",
+      area: "uncertified-area",
+      actions: [{ id: "looks_clean", argv: ["compound", "work", "close", "work_fixture"] }],
+    } as Json;
+    const group = {
+      key: "uncertified-area|fixture",
+      area: item.area,
+      count: 1,
+      item_ids: [item.id],
+      sample: item,
+      safe_batch_action: item.actions[0],
+      operator_summary: "Inspect an uncertified action.",
+    } as Json;
+    const decided = buildDecideGroups([group], new Map([[item.id, item]]), null, () => item)[0];
+    push(
+      "uncertified-clean-action-stays-unavailable",
+      decided.act.mode === "copy" && decided.capability.kind === "unavailable",
+      `act=${decided.act.mode} capability=${decided.capability.kind}`,
     );
   }
 

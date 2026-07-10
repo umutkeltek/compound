@@ -5,6 +5,7 @@ import { DomainKicker } from "@/components/briefing/primitives";
 import type { AttentionGroup } from "@/lib/attention";
 import type { HeadlineActDescriptor } from "@/lib/briefing";
 import { str } from "@/lib/compound";
+import { headlineActIdentity } from "@/lib/governed-action-client";
 
 /**
  * THE headline (redesign plan Part 3): the single highest-leverage gate stated
@@ -74,7 +75,7 @@ export function Headline({
       </p>
 
       <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
-        {act ? <HeadlineAct act={act} mutationsEnabled={mutationsEnabled} /> : null}
+        {act ? <HeadlineAct key={headlineActIdentity(act)} act={act} mutationsEnabled={mutationsEnabled} /> : null}
         <Link
           href="/reviews"
           className="text-sm font-semibold text-work transition-colors hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"

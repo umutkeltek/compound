@@ -4,6 +4,7 @@ import { CopyCmd } from "@/components/CopyCmd";
 import { GovernedAct } from "@/components/decide/GovernedAct";
 import { ArrowUpIcon, ClockIcon, EmptyState, FreshnessChip, IdRef, SectionHeader, StateBadge } from "@/components/kit";
 import type { DecideGroup } from "@/lib/decide-model";
+import { decideActIdentity } from "@/lib/governed-action-client";
 
 /**
  * The route promotion/remorse gate — "should a lane change?" Renders the same
@@ -84,7 +85,9 @@ function RouteCard({
         <StateBadge state={seam ? "needs_you" : "watching"} label={seam ? "needs you" : "watching"} />
       </div>
 
-      {group.unlock ? <div className="mt-1 text-xs font-medium text-good">→ {group.unlock}</div> : null}
+      {group.capability.kind !== "unavailable" && group.unlock ? (
+        <div className="mt-1 text-xs font-medium text-good">→ {group.unlock}</div>
+      ) : null}
       {group.body ? (
         <p className="mt-2 text-sm leading-relaxed text-muted" style={{ maxWidth: "var(--read-max)" }}>
           {group.body}
@@ -111,7 +114,12 @@ function RouteCard({
           ) : act.mode === "batch-enumerable" ? (
             <span className="text-2xs text-faint">Per-member apply — open in the Decide queue.</span>
           ) : (
-            <GovernedAct act={act} mutationsEnabled={mutationsEnabled} />
+            <GovernedAct
+              key={decideActIdentity(act)}
+              act={act}
+              mutationsEnabled={mutationsEnabled}
+              effectKind={group.capability.kind === "unavailable" ? "apply" : group.capability.kind}
+            />
           )}
         </div>
       </div>
@@ -120,9 +128,9 @@ function RouteCard({
         <details className="mt-3 rounded-md border border-hair bg-soft px-3 py-2 text-xs text-muted">
           <summary className="cursor-pointer font-medium text-muted">Evidence · {group.evidence.length}</summary>
           <ul className="mt-2 flex flex-col gap-0.5">
-            {group.evidence.map((ref, i) => (
-              <li key={i} className="mono truncate text-2xs text-faint" title={ref}>
-                {ref}
+            {group.evidence.map((evidence, i) => (
+              <li key={i} className="truncate text-2xs text-faint" title={evidence.ref}>
+                {evidence.label}
               </li>
             ))}
           </ul>

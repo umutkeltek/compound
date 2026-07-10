@@ -37,28 +37,32 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         <div className="flex min-h-screen">
-          <NavContainer />
+          <NavContainer variant="desktop" />
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="sticky top-0 z-40 flex items-center gap-3 border-b border-hair bg-page/80 px-6 py-2.5 backdrop-blur">
-              <Breadcrumb />
-              <SystemBanner />
+            <header className="sticky top-0 z-40 flex min-h-12 items-center gap-2 border-b border-hair bg-page/80 px-3 py-2 backdrop-blur sm:gap-3 sm:px-5 md:px-6 md:py-2.5">
+              <NavContainer variant="mobile" />
+              <div className="hidden min-w-0 sm:block"><Breadcrumb /></div>
+              <div className="hidden min-w-0 xl:block"><SystemBanner /></div>
               <div className="ml-auto flex items-center gap-2">
-                <FreshnessChip generatedAt={str(attention?.generated_at) || undefined} source="compound attention --json" />
+                <div className="hidden xl:block"><FreshnessChip generatedAt={str(attention?.generated_at) || undefined} source="compound attention --json" /></div>
                 {/* Kill-switch / autonomy posture. Read from operator-authority
                     (level + mode); there is no cheap "halted" boolean today, so
                     this reflects governed posture, not an armed/tripped bit.
                     TODO: policy autonomy halted-state read when a projection lands. */}
-                <StatusChip
-                  tone={autonomy.tone}
-                  label={`Autonomy ${autonomy.level}`}
-                  title={`${autonomy.detail} — kill switch: compound policy autonomy-halt · source: compound policy operator-authority --json`}
-                />
-                <RefreshControl />
-                <CommandK />
+                <div>
+                  <StatusChip
+                    tone={autonomy.tone}
+                    label={`Autonomy ${autonomy.level}`}
+                    title={`${autonomy.detail} — kill switch: compound policy autonomy-halt · source: compound policy operator-authority --json`}
+                  />
+                </div>
+                <RefreshControl responsive />
+                <div className="hidden lg:block"><CommandK /></div>
                 <ThemeToggle />
               </div>
             </header>
-            <main className="mx-auto w-full flex-1 px-6 py-6" style={{ maxWidth: "1200px" }}>
+            <div className="xl:hidden"><SystemBanner compact /></div>
+            <main className="mx-auto w-full flex-1 px-3 py-4 sm:px-5 sm:py-5 md:px-6 md:py-6" style={{ maxWidth: "1200px" }}>
               {children}
             </main>
           </div>

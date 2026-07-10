@@ -19,7 +19,7 @@ import { shortText, targetLabel, uniqueBoundaries } from "@/lib/plain-language";
 
 export type Accent = "blue" | "green" | "orange" | "pink" | "violet" | "red" | "gray";
 
-export type FieldType = "text" | "textarea" | "number" | "select";
+export type FieldType = "text" | "textarea" | "number" | "select" | "datetime-local";
 
 export type FieldSpec = {
   name: string;
@@ -72,7 +72,10 @@ export type ExecContext = {
   item: Json;
   option: string;
   fields: Record<string, string>;
+  expectedRevision?: string;
 };
+
+export type DecisionEffectKind = "apply" | "record" | "track";
 
 export type DecisionAreaSpec = {
   area: string;
@@ -80,6 +83,18 @@ export type DecisionAreaSpec = {
   glyph: string;
   accent: Accent;
   source: "reviews" | "workbench" | "orient";
+
+  /** Operator-facing effect class. Permission/recording is never described as task success. */
+  effectKind?: DecisionEffectKind;
+
+  /** This owner exposes a write-free server preview before confirmation. */
+  supportsPreview?: boolean;
+
+  /** Non-preview execution must carry the client's explicit confirmation marker. */
+  requiresConfirmation?: boolean;
+
+  /** Optimistic-concurrency token rendered with the item and rechecked on submit. */
+  revisionFor?: (item: Json) => string;
 
   /** Defense in depth: allowed argv verb prefixes (checked after buildArgv). */
   argvAllowlist: string[][];
@@ -212,6 +227,116 @@ export function workOptionsFor(item: Json): DecisionOption[] {
 /* ---------- the registry ---------- */
 
 export const REGISTRY: Record<string, DecisionAreaSpec> = {
+
+  "capability-lifecycle-proposals": {
+    area: "capability-lifecycle-proposals",
+    title: "Capability lifecycle proposal",
+    glyph: "C",
+    accent: "green",
+    source: "reviews",
+    effectKind: "track",
+    supportsPreview: true,
+    requiresConfirmation: true,
+    argvAllowlist: [["capability", "lifecycle-review"]],
+    idPattern: /^clp_[A-Za-z0-9_-]+$/,
+    revisionFor: (item) => {
+      const card = item.decision_card && typeof item.decision_card === "object" ? (item.decision_card as Json) : {};
+      const meta = card.meta && typeof card.meta === "object" ? (card.meta as Json) : {};
+      return str(meta.proposal_hash);
+    },
+    optionsFor: (item) => {
+      const card = item.decision_card && typeof item.decision_card === "object" ? (item.decision_card as Json) : {};
+      return arr(card.choices)
+        .filter((choice): choice is Json => Boolean(choice) && typeof choice === "object")
+        .map((choice) => {
+          const value = str(choice.id);
+          const tone: Accent = value === "reject" ? "red" : value === "defer" ? "orange" : "green";
+          return {
+            value,
+            label: str(choice.label) || value,
+            tone,
+            description: str(choice.effect),
+          };
+        })
+        .filter((option) => ["open_work", "defer", "reject", "resume_open_work"].includes(option.value));
+    },
+    options: [],
+    plainLanguage: (item) => {
+      const card = item.decision_card && typeof item.decision_card === "object" ? (item.decision_card as Json) : {};
+      const reasons = arr(card.why).filter((reason): reason is Json => Boolean(reason) && typeof reason === "object");
+      const boundaries = arr(card.boundary).map(String).filter(Boolean);
+      const claim = str(card.claim) || str(item.operator_summary) || "Review this capability lifecycle proposal.";
+      const body = reasons.map((reason) => str(reason.detail)).filter(Boolean).join(" ");
+      return {
+        headline: claim,
+        body: shortText(body || str(item.next_action), 320),
+        evidence: arr(item.evidence_refs).map(String).slice(0, 12),
+        boundaries,
+        consequences: {
+          approve: "your disposition is recorded; open work creates one proposed WorkEnvelope while defer/reject create no work",
+          hold: "the proposal remains review evidence and no capability authority changes",
+        },
+      };
+    },
+    fields: [
+      {
+        name: "rationale",
+        type: "textarea",
+        label: "Rationale",
+        required: true,
+        placeholder: "Why is this the right disposition? This becomes durable decision provenance.",
+        showForOptions: ["open_work", "defer", "reject"],
+      },
+      {
+        name: "defer_until",
+        type: "datetime-local",
+        label: "Revisit at",
+        required: true,
+        showForOptions: ["defer"],
+      },
+    ],
+    buildArgv: (ctx) => {
+      if (ctx.option === "resume_open_work") {
+        const action = arr(ctx.item.actions)
+          .find((candidate): candidate is Json => Boolean(candidate) && typeof candidate === "object" && str((candidate as Json).id) === ctx.option);
+        const projected = arr(action?.argv).map(String).filter(Boolean);
+        if (projected.length < 2 || projected[0] !== "compound") return null;
+        const bare = projected.slice(1);
+        const valueFor = (flag: string) => {
+          const index = bare.indexOf(flag);
+          return index >= 0 ? str(bare[index + 1]) : "";
+        };
+        if (
+          valueFor("--proposal") !== ctx.itemId ||
+          valueFor("--expected-hash") !== str(ctx.expectedRevision) ||
+          valueFor("--decision") !== "open_work" ||
+          !valueFor("--rationale") ||
+          !valueFor("--actor")
+        ) return null;
+        return bare;
+      }
+      const expectedHash = str(ctx.expectedRevision);
+      const rationale = str(ctx.fields.rationale).trim();
+      if (!expectedHash || !rationale) return null;
+      const argv = [
+        "capability", "lifecycle-review",
+        "--proposal", ctx.itemId,
+        "--expected-hash", expectedHash,
+        "--decision", ctx.option,
+        "--rationale", rationale,
+        "--actor", "operator-console",
+        "--json",
+      ];
+      if (ctx.option === "defer") {
+        const local = str(ctx.fields.defer_until);
+        if (!local) return null;
+        const parsed = new Date(local);
+        if (!Number.isFinite(parsed.getTime())) return null;
+        argv.push("--defer-until", parsed.toISOString());
+      }
+      return argv;
+    },
+  },
   "external-repo-intake": {
     area: "external-repo-intake",
     title: "External repo intake",
@@ -508,6 +633,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     // the whole input. `source: "orient"` without `requiresResolvedItem`
     // lets executeDecision skip item resolution instead of 404ing.
     source: "orient",
+    requiresConfirmation: true,
     // Real CLI shape (verified 2026-07-08): `panel run --plan <run_id> --apply`.
     // There is no `panel apply` subcommand. argv is built server-side below;
     // the allowlist prefix is safe because buildArgv always appends --apply.
@@ -539,6 +665,8 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     glyph: "P",
     accent: "violet",
     source: "orient",
+    requiresConfirmation: true,
+    effectKind: "record",
     argvAllowlist: [["panel", "verdict-record"]],
     idPattern: /^panel-verdicts\|prun_[A-Za-z0-9_]+\|(needs_human|needs_trial)$/,
     plainLanguage: () => ({
@@ -595,6 +723,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     glyph: "R",
     accent: "blue",
     source: "reviews",
+    effectKind: "record",
     argvAllowlist: [["route", "promotion-record"]],
     idPattern: /^route_promotion_[a-z0-9]+$/,
     optionsFor: (item) => {
@@ -620,7 +749,6 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     plainLanguage: (item) => {
       const rec = routePromotionRecommendation(item);
       const summary = str(item.operator_summary) || "Route promotion review.";
-      const unlock = str(item.operator_unlock);
       const lane = str(item.context_label);
       const consequences =
         rec === "hold_insufficient_evidence"
@@ -631,8 +759,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
             }
           : {
               approve:
-                unlock ||
-                "promoting or demoting a lane changes routing authority — that needs a separate authority review, not a one-click; run the command below",
+                "a separate route/model authority action can change this lane's role; this review card cannot promote or demote it",
               hold: "the router keeps sending work to this lane exactly as it does now",
             };
       return {

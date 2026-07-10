@@ -136,10 +136,16 @@ function externalDecideGroup(externalNeedsYou: Json[], attention: AttentionRepor
       label: str(r.target_path) || str(r.operator_summary) || str(r.id),
       argv: null,
       actionId: "",
+      expectedRevision: "",
     })),
     evidence: [],
     freshness: { generatedAt: str(attention?.generated_at), source: "compound attention --json" },
     act: { mode: "copy", command: "compound reviews --area external-repo-intake", reason: "" },
+    capability: {
+      kind: "unavailable",
+      label: "Owner action unavailable",
+      detail: "Each repository still requires its reviewed owner artifact before a safe action exists.",
+    },
   };
 }
 
@@ -222,6 +228,8 @@ export default async function Decide() {
   const needsYouItemTotal =
     modelGroups.reduce((sum, g) => sum + g.count, 0) + externalNeedsYou.length;
   const empty = decideGroups.length === 0;
+  const readyDecisions = decideGroups.filter((group) => group.capability.kind !== "unavailable").length;
+  const ownerGaps = decideGroups.length - readyDecisions;
 
   return (
     <div className="flex flex-col gap-8">
@@ -234,19 +242,22 @@ export default async function Decide() {
               tone="seam"
               title="compound attention --json · counts.needs_you_groups — the single 'needs you' count the nav badge and briefing pill also show"
             >
-              {attnNeedsYouGroups.toLocaleString("en-US")} need you
+              {attnNeedsYouGroups.toLocaleString("en-US")} system gates
             </MetricChip>
-            <MetricChip title="compound attention --json · counts.actionable_now — needs-you groups with a wired one-click/batch act">
-              {actionableNow.toLocaleString("en-US")} one-click
+            <MetricChip title={`Decision workspace capability model · includes ${actionableNow.toLocaleString("en-US")} projection-declared one-click/batch actions plus owner choice workflows`}>
+              {readyDecisions.toLocaleString("en-US")} actionable here
             </MetricChip>
             <MetricChip
-              tone={fallbackGroups > 0 ? "seam" : "muted"}
-              title="compound attention --json · counts.fallback_groups — groups the projection had to fallback-group (writer debt; the client safety net retires when this hits 0)"
+              tone={ownerGaps > 0 ? "seam" : "muted"}
+              title="Decision groups whose owner has not exposed a safe governed workflow"
             >
-              {fallbackGroups.toLocaleString("en-US")} fallback
+              {ownerGaps.toLocaleString("en-US")} owner gaps
             </MetricChip>
-            <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
-            <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
+            <span className="hidden sm:contents">
+              {fallbackGroups > 0 ? <MetricChip title="compound attention --json · fallback grouping writer debt">{fallbackGroups} fallback</MetricChip> : null}
+              <FreshnessChip generatedAt={str(attention?.generated_at)} source="compound attention --json" />
+              <FreshnessChip generatedAt={str(reviews?.generated_at)} source="compound reviews --json" />
+            </span>
           </>
         }
       />
@@ -280,10 +291,9 @@ export default async function Decide() {
             tone="neutral"
             icon={<ClockIcon />}
             label="Watching"
-            sub="informational holds — no buttons on purpose"
             right={<span className="mono text-2xs tabular-nums text-faint">{watchingEntries.length}</span>}
           />
-          <div className="overflow-hidden rounded-xl bg-panel shadow-sm">
+          <div className="overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
             {watchingEntries.map((entry, index) => (
               <WatchingRow key={str(entry.key) || str(entry.id) || index} entry={entry} itemByID={itemByID} />
             ))}

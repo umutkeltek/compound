@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
-export function RefreshControl() {
+export function RefreshControl({ responsive = false }: { responsive?: boolean }) {
   const router = useRouter();
   const [auto, setAuto] = useState(true);
   const [tick, setTick] = useState(0);
@@ -19,23 +19,55 @@ export function RefreshControl() {
   }, [auto, router]);
 
   return (
-    <div className="flex items-center gap-2" data-tick={tick}>
-      <button
-        onClick={() => setAuto(!auto)}
-        className={`rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
-          auto ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
-        }`}
-        title="Refresh every 30 seconds"
-      >
-        auto 30s {auto ? "on" : "off"}
-      </button>
-      <button
-        onClick={() => startTransition(() => router.refresh())}
-        disabled={pending}
-        className="rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-600 transition-colors hover:bg-slate-200 disabled:cursor-wait disabled:opacity-60"
-      >
-        {pending ? "refreshing..." : "refresh"}
-      </button>
+    <div className="flex items-center" data-tick={tick}>
+      <div className={responsive ? "hidden items-center gap-2 sm:flex" : "flex items-center gap-2"}>
+        <button
+          type="button"
+          aria-pressed={auto}
+          onClick={() => setAuto(!auto)}
+          className={`rounded-full px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
+            auto ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"
+          }`}
+          title="Refresh every 30 seconds"
+        >
+          auto 30s {auto ? "on" : "off"}
+        </button>
+        <button
+          type="button"
+          aria-label={pending ? "Refreshing" : "Refresh now"}
+          onClick={() => startTransition(() => router.refresh())}
+          disabled={pending}
+          className="rounded-full bg-slate-100 px-2.5 py-1 text-[11.5px] font-medium text-slate-600 transition-colors hover:bg-slate-200 disabled:cursor-wait disabled:opacity-60"
+        >
+          {pending ? "refreshing..." : "refresh"}
+        </button>
+      </div>
+      {responsive ? (
+        <div className="flex items-center gap-1 sm:hidden">
+          <button
+            type="button"
+            aria-pressed={auto}
+            aria-label={`Automatic refresh every 30 seconds ${auto ? "on" : "off"}`}
+            onClick={() => setAuto(!auto)}
+            className={`h-8 rounded-md px-2 text-2xs font-semibold tabular-nums ${
+              auto ? "bg-good-soft text-good" : "bg-soft text-muted"
+            }`}
+            title="Toggle automatic refresh every 30 seconds"
+          >
+            30s {auto ? "on" : "off"}
+          </button>
+          <button
+            type="button"
+            aria-label={pending ? "Refreshing" : "Refresh now"}
+            title={pending ? "Refreshing" : "Refresh now"}
+            onClick={() => startTransition(() => router.refresh())}
+            disabled={pending}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-hair bg-panel text-base text-muted hover:bg-soft disabled:cursor-wait disabled:opacity-60"
+          >
+            <span aria-hidden>{pending ? "…" : "↻"}</span>
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -3,7 +3,6 @@ import {
   argvMatchesAllowlist,
   clamp01,
   type DecisionAreaSpec,
-  type DecisionOption,
   specFor,
 } from "@/lib/decision-registry";
 import {
@@ -18,7 +17,7 @@ import {
 } from "@/lib/compound";
 import { type GenericActionGate, resolveGenericAction } from "@/lib/generic-actions";
 
-type DecisionExecutionRefs = {
+export type DecisionExecutionRefs = {
   action_refs: string[];
   action_intent_ids: string[];
   policy_decision_ids: string[];
@@ -28,6 +27,19 @@ type DecisionExecutionRefs = {
   work_ids: string[];
   review_ids: string[];
   candidate_ids: string[];
+  decision_ids: string[];
+};
+
+export type DecisionExecutionEffect = {
+  kind: string;
+  status: string;
+  changed: boolean;
+  summary: string;
+  before: string;
+  after: string;
+  workId: string;
+  workState: string;
+  decisionId: string;
 };
 
 const REF_KEYS: Record<string, keyof DecisionExecutionRefs> = {
@@ -56,16 +68,19 @@ const REF_KEYS: Record<string, keyof DecisionExecutionRefs> = {
   candidate: "candidate_ids",
   candidate_id: "candidate_ids",
   candidate_ids: "candidate_ids",
+  decision_id: "decision_ids",
+  decision_ids: "decision_ids",
 };
 
 const ID_PATTERNS: Array<[keyof DecisionExecutionRefs, RegExp]> = [
-  ["action_intent_ids", /\bact_[a-z0-9_]+\b/g],
-  ["policy_decision_ids", /\bpd_[a-z0-9_]+\b/g],
-  ["receipt_ids", /\b(?:receipt|rec)_[a-z0-9_]+\b/g],
-  ["transition_ids", /\b(?:transition|tr)_[a-z0-9_]+\b/g],
-  ["work_ids", /\bwork_[a-z0-9_]+\b/g],
-  ["review_ids", /\brev_[a-z0-9_]+\b/g],
-  ["candidate_ids", /\bcand_[a-z0-9_]+\b/g],
+  ["action_intent_ids", /\bact_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["policy_decision_ids", /\b(?:pol|pd)_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["receipt_ids", /\b(?:receipt|rec)_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["transition_ids", /\b(?:transition|tr)_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["work_ids", /\bwork_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["review_ids", /\brev_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["candidate_ids", /\bcand_[a-z0-9][a-z0-9_]{5,}\b/g],
+  ["decision_ids", /\bcld_[a-z0-9][a-z0-9_]{5,}\b/g],
 ];
 
 function emptyRefs(): DecisionExecutionRefs {
@@ -79,6 +94,7 @@ function emptyRefs(): DecisionExecutionRefs {
     work_ids: [],
     review_ids: [],
     candidate_ids: [],
+    decision_ids: [],
   };
 }
 
@@ -92,9 +108,66 @@ function addDelimitedRefs(refs: DecisionExecutionRefs, key: keyof DecisionExecut
   for (const part of raw.split(/[,\s]+/)) addRef(refs, key, part);
 }
 
-function extractDecisionRefs(...texts: string[]): DecisionExecutionRefs {
+function firstJsonObject(text: string): Json | null {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) {
+      try {
+        return JSON.parse(text.slice(start, i + 1)) as Json;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function collectStructuredRefs(refs: DecisionExecutionRefs, value: unknown, path: string[] = []) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectStructuredRefs(refs, item, path);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [rawKey, nested] of Object.entries(value as Json)) {
+    const key = rawKey.toLowerCase();
+    const refKey = REF_KEYS[key] ?? (key === "id" && path.includes("disposition") ? "decision_ids" : undefined);
+    if (refKey) {
+      if (Array.isArray(nested)) {
+        for (const item of nested) addRef(refs, refKey, String(item));
+      } else if (typeof nested === "string") {
+        addRef(refs, refKey, nested);
+      }
+    }
+    collectStructuredRefs(refs, nested, [...path, key]);
+  }
+}
+
+export function extractDecisionRefs(...texts: string[]): DecisionExecutionRefs {
   const refs = emptyRefs();
-  const text = texts.join("\n");
+  const fallbackTexts: string[] = [];
+
+  for (const source of texts) {
+    const parsed = firstJsonObject(source);
+    if (parsed) collectStructuredRefs(refs, parsed);
+    else fallbackTexts.push(source);
+  }
+
+  // Structured JSON is authoritative. Avoid regex-reading schema names such
+  // as `compound.work_create_plan.v0.2` as if they were emitted work IDs.
+  const text = fallbackTexts.join("\n");
 
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim().replace(/^-\s*/, "");
@@ -110,6 +183,83 @@ function extractDecisionRefs(...texts: string[]): DecisionExecutionRefs {
     for (const match of matches) addRef(refs, key, match);
   }
   return refs;
+}
+
+export function renderedRevisionMatches(current: string, rendered: string, required: boolean): boolean {
+  if (!required) return true;
+  return Boolean(current.trim() && rendered.trim() && current.trim() === rendered.trim());
+}
+
+export function decisionStaleRevisionResponse(): Response {
+  return Response.json(
+    {
+      ok: false,
+      error_code: "stale_revision",
+      stderr: "decision source changed since it was rendered; refresh and review the current proposal",
+    },
+    { status: 409 },
+  );
+}
+
+export function genericActionAllowedForOwner(hasBespokeOwner: boolean, actionId: string): boolean {
+  return !hasBespokeOwner && actionId.trim() !== "";
+}
+
+export function genericActionRevisionMatches(current: string, rendered: string): boolean {
+  return Boolean(current && rendered && current === rendered);
+}
+
+export function missingBespokeConfirmation(required: boolean, preview: boolean, confirmed: boolean): boolean {
+  return required && !preview && !confirmed;
+}
+
+export function decisionFailureStatus(area: string, ...outputs: string[]): number {
+  if (area !== "capability-lifecycle-proposals") return 500;
+  for (const output of outputs) {
+    const payload = firstJsonObject(output);
+    const code = str(payload?.error_code);
+    if (code === "stale_revision" || code === "disposition_conflict") return 409;
+  }
+  return 500;
+}
+
+export function decisionCommandFailureResponse(
+  area: string,
+  failure: { message: string; stdout: string; stderr: string },
+  preview: boolean,
+): Response {
+  const payload = firstJsonObject(failure.stdout) ?? firstJsonObject(failure.stderr);
+  const errorCode = str(payload?.error_code);
+  const errorMessage = str(payload?.error) || failure.stderr || failure.message;
+  return Response.json({
+    ok: false,
+    stdout: failure.stdout,
+    stderr: errorMessage,
+    error_code: errorCode || undefined,
+    refs: extractDecisionRefs(failure.stdout, failure.stderr || failure.message),
+    preview,
+    effect: decisionExecutionEffect(area, failure.stdout, preview),
+  }, { status: decisionFailureStatus(area, failure.stdout, failure.stderr) });
+}
+
+function decisionExecutionEffect(area: string, stdout: string, preview: boolean): DecisionExecutionEffect | null {
+  const payload = firstJsonObject(stdout);
+  if (!payload || area !== "capability-lifecycle-proposals") return null;
+  const delta = payload.state_delta && typeof payload.state_delta === "object" ? (payload.state_delta as Json) : {};
+  const disposition = payload.disposition && typeof payload.disposition === "object" ? (payload.disposition as Json) : {};
+  const workPlan = payload.work_plan && typeof payload.work_plan === "object" ? (payload.work_plan as Json) : {};
+  const work = workPlan.work && typeof workPlan.work === "object" ? (workPlan.work as Json) : {};
+  return {
+    kind: str(disposition.decision) || str((payload.plan as Json | undefined)?.input?.decision) || "lifecycle_disposition",
+    status: str(payload.status) || (preview ? "preview" : "recorded"),
+    changed: Boolean(delta.changed),
+    summary: str(delta.summary),
+    before: str(delta.before),
+    after: str(delta.after),
+    workId: str(disposition.work_id) || str(workPlan.work_id) || str(work.id),
+    workState: str(disposition.work_state) || str(workPlan.work_state) || str(work.state),
+    decisionId: str(disposition.id),
+  };
 }
 
 async function resolveItem(spec: DecisionAreaSpec, itemId: string): Promise<Json | null> {
@@ -149,27 +299,15 @@ async function currentDispatchTarget(): Promise<Json | null> {
   return next;
 }
 
-/**
- * A bespoke spec wins only when it can actually act on THIS item. When its
- * option set for the item is empty and the caller named a projection action,
- * the governed generic pathway (generic-actions.ts — three gates + confirm)
- * takes over: decide-model offers exactly that pathway (batch-enumerable)
- * for spec'd areas with no executable option, so refusing it here strands
- * every such card (lived 2026-07-10: route-promotions demote/hold_failing
- * "Apply 1 of 1" returned `decision "" is not valid for this item's current
- * state` — the model and the endpoint disagreed about who may act).
- */
-export function genericFallbackAllowed(allowedOptions: DecisionOption[], actionId: string): boolean {
-  return allowedOptions.length === 0 && actionId.trim() !== "";
-}
-
 export async function executeDecision(body: Record<string, unknown>): Promise<Response> {
   const area = typeof body.area === "string" ? body.area : "";
   const itemId = typeof body.itemId === "string" ? body.itemId.trim() : "";
   const option = typeof body.option === "string" ? body.option : "";
   const actionId = typeof body.actionId === "string" ? body.actionId.trim() : "";
   const confirmed = body.confirmed === true;
+  const preview = body.preview === true;
   const rationale = typeof body.rationale === "string" ? body.rationale : "";
+  const expectedRevision = typeof body.expectedRevision === "string" ? body.expectedRevision.trim() : "";
 
   const fields: Record<string, string> = {};
   if (body.fields && typeof body.fields === "object") {
@@ -179,15 +317,24 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   }
   if ("confidence" in fields) fields.confidence = String(clamp01(fields.confidence));
 
+  // Every execution path re-resolves owner truth outside the short read cache.
+  // This must happen before the generic branch as well as the bespoke branch.
+  invalidateRunJsonCache();
   const spec = specFor(area);
   if (!spec) {
+    if (preview) {
+      return Response.json(
+        { ok: false, error_code: "preview_unsupported", stderr: "generic actions do not support write-free preview" },
+        { status: 400 },
+      );
+    }
     // No bespoke REGISTRY spec for this area. If the caller named a backend
     // action, fall through to the generic governed-action pathway
     // (generic-actions.ts) instead of the "unknown decision area" 400 below —
     // this is the ONLY way areas without a bespoke spec become executable.
     // A bespoke spec always wins: this branch never runs when `spec` exists.
-    if (actionId) {
-      return executeGenericAction(area, itemId, actionId, confirmed, rationale);
+    if (genericActionAllowedForOwner(false, actionId)) {
+      return executeGenericAction(area, itemId, actionId, expectedRevision, confirmed, rationale);
     }
     return Response.json({ ok: false, stderr: `unknown decision area: ${area}` }, { status: 400 });
   }
@@ -199,6 +346,11 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   const item = await resolveItem(spec, itemId);
   if (!item && (spec.source !== "orient" || spec.requiresResolvedItem)) {
     return Response.json({ ok: false, stderr: `item ${itemId} not found in ${area}` }, { status: 404 });
+  }
+
+  const currentRevision = spec.revisionFor?.(item ?? {}) ?? "";
+  if (!renderedRevisionMatches(currentRevision, expectedRevision, Boolean(spec.revisionFor))) {
+    return decisionStaleRevisionResponse();
   }
 
   if (area === "work-dispatch") {
@@ -226,9 +378,6 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
   }
 
   const allowedOptions = spec.optionsFor ? spec.optionsFor(item ?? {}) : spec.options;
-  if (genericFallbackAllowed(allowedOptions, actionId)) {
-    return executeGenericAction(area, itemId, actionId, confirmed, rationale);
-  }
   if (!allowedOptions.some((o) => o.value === option)) {
     return Response.json(
       { ok: false, stderr: `decision "${option}" is not valid for this item's current state` },
@@ -243,15 +392,24 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
     }
   }
 
-  const ctx = { itemId, item: item ?? {}, option, fields };
+  const ctx = { itemId, item: item ?? {}, option, fields, expectedRevision };
 
-  const argv = spec.buildArgv ? spec.buildArgv(ctx) : argvFromActions(item ?? {});
+  let argv = spec.buildArgv ? spec.buildArgv(ctx) : argvFromActions(item ?? {});
   if (!argv || argv.length === 0) {
     return Response.json({ ok: false, stderr: "could not resolve the command to run" }, { status: 400 });
   }
 
   if (!argvMatchesAllowlist(argv, spec.argvAllowlist)) {
     return Response.json({ ok: false, stderr: `command not allowed for ${area}` }, { status: 403 });
+  }
+
+  if (preview) {
+    if (!spec.supportsPreview) {
+      return Response.json({ ok: false, stderr: `preview is not available for ${area}` }, { status: 400 });
+    }
+    argv = [...argv, "--preview"];
+  } else if (missingBespokeConfirmation(Boolean(spec.requiresConfirmation), preview, confirmed)) {
+    return Response.json({ ok: false, stderr: "confirmation required before this decision runs" }, { status: 428 });
   }
 
   try {
@@ -265,15 +423,12 @@ export async function executeDecision(body: Record<string, unknown>): Promise<Re
       stdout: result.stdout,
       stderr: result.stderr,
       refs: extractDecisionRefs(result.stdout, result.stderr),
+      preview,
+      effect: decisionExecutionEffect(area, result.stdout, preview),
     });
   } catch (error) {
     const failure = compoundFailure(error);
-    return Response.json({
-      ok: false,
-      stdout: failure.stdout,
-      stderr: failure.stderr || failure.message,
-      refs: extractDecisionRefs(failure.stdout, failure.stderr || failure.message),
-    });
+    return decisionCommandFailureResponse(area, failure, preview);
   }
 }
 
@@ -289,12 +444,14 @@ const GENERIC_GATE_STATUS: Record<GenericActionGate, number> = {
  * The generic governed-action pathway (Phase 3a): executes an area's
  * backend-declared action when no bespoke REGISTRY spec exists. Every argv
  * comes from resolveGenericAction's fresh server-side re-resolution — this
- * function never sees or trusts client argv, only {area, itemId, actionId}.
+ * function never trusts client argv. The rendered action revision must match
+ * the freshly resolved owner action before confirmation can authorize it.
  */
 async function executeGenericAction(
   area: string,
   itemId: string,
   actionId: string,
+  expectedRevision: string,
   confirmed: boolean,
   rationale?: string,
 ): Promise<Response> {
@@ -311,6 +468,16 @@ async function executeGenericAction(
   }
 
   const { action } = resolution;
+  if (!genericActionRevisionMatches(action.revision, expectedRevision)) {
+    return Response.json(
+      {
+        ok: false,
+        error_code: "stale_action_revision",
+        stderr: "owner action changed since it was rendered; refresh and review the current command",
+      },
+      { status: 409 },
+    );
+  }
   if (action.requiresReview && !confirmed) {
     return Response.json(
       { ok: false, stderr: `action "${action.actionId}" requires confirmation before it runs` },
@@ -336,6 +503,6 @@ async function executeGenericAction(
       stdout: failure.stdout,
       stderr: failure.stderr || failure.message,
       refs: extractDecisionRefs(failure.stdout, failure.stderr || failure.message),
-    });
+    }, { status: 500 });
   }
 }

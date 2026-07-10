@@ -1,7 +1,8 @@
 import { arr, num, reviewCommand, str, type Json } from "@/lib/compound";
 import { ago, toDate } from "@/lib/time";
 import type { AttentionReport } from "@/lib/attention";
-import { type FieldSpec, specFor } from "@/lib/decision-registry";
+import { type DecisionEffectKind, type DecisionOption, type FieldSpec, specFor } from "@/lib/decision-registry";
+import { genericActionEffectKind, genericActionProjectionEligible, genericActionRevision, RATIONALE_REQUIRED_AREAS } from "@/lib/generic-actions";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf } from "@/lib/review-data";
 
@@ -69,6 +70,7 @@ export type DecideMember = {
   argv: string[] | null;
   /** Per-member action id for the generic pathway; "" when none. */
   actionId: string;
+  expectedRevision: string;
 };
 
 export type DecideAct =
@@ -77,11 +79,16 @@ export type DecideAct =
       area: string;
       itemId: string;
       option: string;
+      options: DecisionOption[];
+      defaultOption: string;
       label: string;
       requiresConfirmation: boolean;
       argv: string[] | null;
       policyNote: string;
       fields: FieldSpec[];
+      expectedRevision: string;
+      supportsPreview: boolean;
+      effectKind: DecisionEffectKind;
     }
   | {
       mode: "batch-atomic";
@@ -101,6 +108,8 @@ export type DecideAct =
       label: string;
       members: DecideMember[];
       requiresConfirmation: boolean;
+      requiresRationale: boolean;
+      effectKind: DecisionEffectKind;
       policyNote: string;
     }
   | {
@@ -108,14 +117,30 @@ export type DecideAct =
       area: string;
       itemId: string;
       actionId: string;
+      expectedRevision: string;
       label: string;
       argv: string[] | null;
       requiresConfirmation: boolean;
       copyCommand: string;
+      effectKind: DecisionEffectKind;
     }
   | { mode: "copy"; command: string; reason: string };
 
 export type DecideChip = { label: string; tone: string };
+
+export type DecideEvidence = {
+  ref: string;
+  label: string;
+  sourceKind: string;
+  summary: string;
+  openCommand: string;
+};
+
+export type DecideCapability = {
+  kind: "apply" | "record" | "track" | "unavailable";
+  label: string;
+  detail: string;
+};
 
 export type DecideBriefFinding = { finding: string; evidenceRef: string };
 
@@ -159,9 +184,10 @@ export type DecideGroup = {
   old: boolean;
   sampleId: string;
   members: DecideMember[];
-  evidence: string[];
+  evidence: DecideEvidence[];
   freshness: { generatedAt: string; source: string };
   act: DecideAct;
+  capability: DecideCapability;
   /**
    * A prepared, propose-only translation of this decision — optional so
    * existing DecideGroup literals built outside buildDecideGroups (e.g. the
@@ -198,29 +224,27 @@ function actionFlag(action: Json, flag: string): string {
 
 const RUN_ID_RE = /^prun_[A-Za-z0-9_]+$/;
 
-function batchRunId(action: Json, group: Json, sample: Json): string {
-  const argv = arr(action.argv).map(String);
-  for (const flag of ["--plan", "--run"]) {
-    const i = argv.indexOf(flag);
-    if (i >= 0 && RUN_ID_RE.test(argv[i + 1] ?? "")) return argv[i + 1];
+function panelApplyRunId(action: Json): string {
+  if (str(action.id) !== "panel_run_apply") return "";
+  const argv = cleanArgv(action.argv);
+  if (argv.length !== 5 || argv[0] !== "panel" || argv[1] !== "run" || argv[2] !== "--plan" || argv[4] !== "--apply") {
+    return "";
   }
-  const keyed = str(group.key).match(/\|(prun_[A-Za-z0-9_]+)\|/)?.[1];
-  if (keyed) return keyed;
-  const card = sample.decision_card;
-  const meta = card && typeof card === "object" ? (card as Json).meta : null;
-  const fromSample = meta && typeof meta === "object" ? str((meta as Json).run_id) : "";
-  return RUN_ID_RE.test(fromSample) ? fromSample : "";
+  return RUN_ID_RE.test(argv[3] ?? "") ? argv[3] : "";
 }
 
-function memberOf(id: string, itemByID: Map<string, Json>): DecideMember {
+function memberOf(area: string, id: string, itemByID: Map<string, Json>): DecideMember {
   const item = itemByID.get(id);
-  const action = item ? arr(item.actions)[0] : null;
-  const argv = action && isCleanCompound((action as Json).argv) ? cleanArgv((action as Json).argv) : null;
+  const action = item
+    ? arr(item.actions).find((candidate) => genericActionProjectionEligible(area, (candidate as Json).argv))
+    : null;
+  const argv = action ? cleanArgv((action as Json).argv) : null;
   return {
     id,
     label: str(item?.context_label) || str(item?.operator_summary) || id,
     argv,
     actionId: action ? str((action as Json).id) : "",
+    expectedRevision: action ? genericActionRevision(action) : "",
   };
 }
 
@@ -234,16 +258,18 @@ function memberOf(id: string, itemByID: Map<string, Json>): DecideMember {
 function enumerableMembers(group: Json, itemByID: Map<string, Json>): DecideMember[] | null {
   const ids = arr(group.item_ids).map(String).filter(Boolean);
   if (ids.length < 1) return null;
-  const members = ids.map((id) => memberOf(id, itemByID));
+  const area = areaOf(group);
+  const members = ids.map((id) => memberOf(area, id, itemByID));
   return members.every((m) => m.argv && m.argv.length > 0 && m.actionId) ? members : null;
 }
 
 function readonlyMembers(group: Json, itemByID: Map<string, Json>): DecideMember[] {
+  const area = areaOf(group);
   return arr(group.item_ids)
     .map(String)
     .filter(Boolean)
     .map((id) => {
-      const m = memberOf(id, itemByID);
+      const m = memberOf(area, id, itemByID);
       return { ...m, argv: null }; // read-only: strip any argv so the client can't fake exclusion
     });
 }
@@ -265,12 +291,29 @@ function isOldAge(createdAt: string): boolean {
   return d ? Date.now() - d.getTime() > 48 * 3600 * 1000 : false;
 }
 
-/** Prefer readable evidence_summaries labels over raw refs. */
-function groupEvidence(group: Json, fallback: string[]): string[] {
+/** Preserve the owner-projected evidence body; labels alone erase judgment context. */
+function groupEvidence(group: Json, fallback: string[]): DecideEvidence[] {
   const summaries = arr(group.evidence_summaries).filter((s): s is Json => Boolean(s) && typeof s === "object");
-  if (summaries.length) return summaries.map((s) => str(s.label) || str(s.ref)).filter(Boolean).slice(0, 12);
+  if (summaries.length) {
+    return summaries
+      .map((s) => ({
+        ref: str(s.ref),
+        label: str(s.label) || str(s.ref),
+        sourceKind: str(s.source_kind),
+        summary: str(s.summary),
+        openCommand: str(s.open_command),
+      }))
+      .filter((s) => s.ref || s.label)
+      .slice(0, 12);
+  }
   const refs = arr(group.evidence_refs).map(String).filter(Boolean);
-  return (refs.length ? refs : fallback).slice(0, 12);
+  return (refs.length ? refs : fallback).slice(0, 12).map((ref) => ({
+    ref,
+    label: ref,
+    sourceKind: "reference",
+    summary: "",
+    openCommand: "",
+  }));
 }
 
 /**
@@ -327,13 +370,17 @@ function parseBrief(raw: unknown): DecideBrief | null {
  * against the live proof shape: clp_326cfa93213e (capability-lifecycle-
  * proposals, 4 members) — the briefed member is not guaranteed to be first.
  */
-function groupBrief(group: Json, itemByID: Map<string, Json>): DecideBrief | null {
+function groupBriefTarget(group: Json, itemByID: Map<string, Json>): { brief: DecideBrief; item: Json } | null {
   for (const id of arr(group.item_ids).map(String)) {
-    const parsed = parseBrief(itemByID.get(id)?.brief);
-    if (parsed) return parsed;
+    const item = itemByID.get(id);
+    const parsed = parseBrief(item?.brief);
+    if (item && parsed) return { brief: parsed, item };
   }
   const sample = group.sample;
-  return parseBrief(sample && typeof sample === "object" ? (sample as Json).brief : null);
+  if (!sample || typeof sample !== "object") return null;
+  const item = sample as Json;
+  const brief = parseBrief(item.brief);
+  return brief ? { brief, item } : null;
 }
 
 function fallbackCommand(group: Json, sample: Json): string {
@@ -356,14 +403,27 @@ function batchAtomicAct(action: Json, group: Json, sample: Json): DecideAct | nu
   const policyNote = str(action.policy_note);
   const requiresConfirmation = action.requires_review !== false;
 
-  if (str(action.id) === "panel_verdict_record_group") {
+  const recordRationale = actionFlag(action, "--rationale");
+  const recordReviewer = actionFlag(action, "--reviewed-by");
+  const recordArgv = cleanArgv(action.argv);
+  if (
+    str(action.id) === "panel_verdict_record_group" &&
+    recordArgv.length === 8 &&
+    recordArgv[0] === "panel" &&
+    recordArgv[1] === "verdict-record" &&
+    recordArgv[2] === "--group" &&
+    recordArgv[3] === str(group.key) &&
+    recordArgv[4] === "--rationale" &&
+    recordArgv[6] === "--reviewed-by" &&
+    Boolean(recordRationale && recordReviewer)
+  ) {
     return {
       mode: "batch-atomic",
       area: "panel-verdict-record-group",
       itemId: str(group.key),
       option: "record",
       label,
-      fields: { rationale: actionFlag(action, "--rationale"), reviewed_by: actionFlag(action, "--reviewed-by") },
+      fields: { rationale: recordRationale, reviewed_by: recordReviewer },
       argv,
       policyNote,
       requiresConfirmation,
@@ -371,7 +431,7 @@ function batchAtomicAct(action: Json, group: Json, sample: Json): DecideAct | nu
     };
   }
 
-  const runId = batchRunId(action, group, sample);
+  const runId = panelApplyRunId(action);
   if (!runId) return null;
   return {
     mode: "batch-atomic",
@@ -398,36 +458,49 @@ function resolveAct(
 ): DecideAct {
   const area = areaOf(group);
   const spec = specFor(area);
+  const genericEffect = genericActionEffectKind(area);
 
   // A) bespoke registry with a usable option for THIS item.
   if (spec) {
     const options = spec.optionsFor ? spec.optionsFor(sample) : spec.options;
     if (options.length > 0) {
-      const option = spec.defaultOption ?? options[0].value;
-      const chosen = options.find((o) => o.value === option) ?? options[0];
-      const argv = spec.previewArgv ? spec.previewArgv(sample) : chosen.argv ?? null;
+      const option = spec.defaultOption ?? (options.length === 1 ? options[0].value : "");
+      const chosen = options.find((o) => o.value === option);
+      const argv = spec.previewArgv ? spec.previewArgv(sample) : chosen?.argv ?? null;
       return {
         mode: "bespoke",
         area,
         itemId: sampleId,
-        option: chosen.value,
-        label: chosen.label,
+        option,
+        options,
+        defaultOption: option,
+        label: chosen?.label ?? "Review decision",
         requiresConfirmation: true, // every governed mutation confirms
         argv,
         policyNote: "",
         fields: spec.fields,
+        expectedRevision: spec.revisionFor?.(sample) ?? "",
+        supportsPreview: Boolean(spec.supportsPreview),
+        effectKind: spec.effectKind ?? "apply",
       };
     }
-    // spec present but no executable option (route-promotions demote,
-    // synthesis-contradictions) → honest copy below, still using the spec's
-    // richer plain language for the card body.
+    // The bespoke owner defines the effect boundary. Zero options means it has
+    // no compatible workflow for this item; a projected evidence/record action
+    // cannot be substituted for a different represented effect.
+    return {
+      mode: "copy",
+      command: reviewCommand(sample),
+      reason: str(group.terminal_reason) || "The owner exposes no effect-compatible workflow for this decision.",
+    };
   }
 
   // B) run/group-scoped batch action carried by the reviews projection.
   const sba = safeBatchAction(group);
   if (sba && isCleanCompound(sba.argv)) {
-    const enumerable = enumerableMembers(group, itemByID);
-    if (enumerable) {
+    const enumerable = genericEffect && genericActionProjectionEligible(area, sba.argv)
+      ? enumerableMembers(group, itemByID)
+      : null;
+    if (enumerable && genericEffect) {
       const count = enumerable.length;
       return {
         mode: "batch-enumerable",
@@ -435,6 +508,8 @@ function resolveAct(
         label: str(sba.label) || `Apply ${count} of ${count}`,
         members: enumerable,
         requiresConfirmation: sba.requires_review !== false,
+        requiresRationale: RATIONALE_REQUIRED_AREAS.has(area),
+        effectKind: genericEffect,
         policyNote: str(sba.policy_note),
       };
     }
@@ -445,19 +520,23 @@ function resolveAct(
   // C) generic pathway — a non-bespoke area whose projection action passes the
   // gates (clean argv + an id). Executed by actionId; the client falls back to
   // the copy command on a 403 (un-allowlisted area).
-  if (!spec && attnAction && isCleanCompound(attnAction.argv)) {
+  if (!spec && genericEffect && attnAction && genericActionProjectionEligible(area, attnAction.argv)) {
     const actionId = str(attnAction.id);
     const kind = str(attnAction.kind);
-    if (actionId && (kind === "one_click" || kind === "batch")) {
+    const itemIDs = arr(group.item_ids).map(String).filter(Boolean);
+    const targetID = kind === "batch" ? str(group.key) : itemIDs.length === 1 ? itemIDs[0] : "";
+    if (actionId && targetID && (kind === "one_click" || kind === "batch")) {
       return {
         mode: "generic",
         area,
-        itemId: str(arr(group.item_ids).map(String)[0]) || sampleId,
+        itemId: targetID,
         actionId,
+        expectedRevision: genericActionRevision(attnAction),
         label: str(attnAction.label) || "Run action",
         argv: cleanArgv(attnAction.argv),
         requiresConfirmation: Boolean(attnAction.requires_confirmation),
         copyCommand: fallbackCommand(group, sample),
+        effectKind: genericEffect,
       };
     }
   }
@@ -468,6 +547,34 @@ function resolveAct(
     command: fallbackCommand(group, sample),
     reason: str(group.terminal_reason) || str(sba?.policy_note) || "",
   };
+}
+
+function capabilityForAct(act: DecideAct): DecideCapability {
+  if (act.mode === "copy") {
+    return {
+      kind: "unavailable",
+      label: "Owner action unavailable",
+      detail: act.reason || "This owner has not exposed a safe governed workflow yet.",
+    };
+  }
+  if (act.mode === "bespoke") {
+    if (act.effectKind === "track") {
+      return { kind: "track", label: "Disposition available", detail: "Choose a server-owned disposition; open work creates proposed work only." };
+    }
+    if (act.effectKind === "record") {
+      return { kind: "record", label: "Record decision", detail: "This records reviewed provenance; it does not claim downstream success." };
+    }
+  }
+  if ((act.mode === "batch-enumerable" || act.mode === "generic") && act.effectKind === "record") {
+    return { kind: "record", label: "Record decision", detail: "This records reviewed provenance; it does not perform the downstream repair or authority change." };
+  }
+  if ((act.mode === "batch-enumerable" || act.mode === "generic") && act.effectKind === "track") {
+    return { kind: "track", label: "Open tracked step", detail: "This creates or advances a governed plan; it does not claim downstream completion." };
+  }
+  if (act.mode === "batch-atomic" && act.area === "panel-verdict-record-group") {
+    return { kind: "record", label: "Record decision", detail: "This records grouped review sidecars; apply remains separate." };
+  }
+  return { kind: "apply", label: "Apply now", detail: "A fresh owner-projected action is available behind confirmation." };
 }
 
 /* ---------- public builder ---------- */
@@ -492,7 +599,8 @@ export function buildDecideGroups(
 
   return orderedGroups.map((group) => {
     const area = areaOf(group);
-    const sample = sampleFor(group);
+    const briefTarget = groupBriefTarget(group, itemByID);
+    const sample = briefTarget?.item ?? sampleFor(group);
     const sampleId = str(sample.id) || str(sample.review_id) || str(group.key);
     const spec = specFor(area);
     const pl = spec ? spec.plainLanguage(sample) : null;
@@ -504,11 +612,12 @@ export function buildDecideGroups(
     const createdAt = groupCreatedAt(group, itemByID);
     const count = num(group.count) || arr(group.item_ids).length || 1;
 
-    const title = str(group.operator_summary) || pl?.headline || "Review this decision.";
+    const hasDecisionCard = Boolean(sample.decision_card && typeof sample.decision_card === "object");
+    const title = (hasDecisionCard ? pl?.headline : "") || str(group.operator_summary) || pl?.headline || "Review this decision.";
     const evidence = groupEvidence(group, pl?.evidence ?? []);
     const members =
       act.mode === "batch-enumerable" ? act.members : readonlyMembers(group, itemByID);
-    const brief = groupBrief(group, itemByID);
+    const brief = briefTarget?.brief ?? null;
 
     return {
       key: str(group.key) || sampleId,
@@ -534,6 +643,7 @@ export function buildDecideGroups(
         source: "compound attention --json",
       },
       act,
+      capability: capabilityForAct(act),
       brief,
     };
   });

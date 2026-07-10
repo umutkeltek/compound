@@ -12,7 +12,7 @@ import { argvMatchesAllowlist } from "@/lib/decision-registry";
  *
  * Request contract (unchanged endpoint, additive fields):
  *   POST /api/decision/execute
- *   { area: string, itemId: string, actionId: string, confirmed?: boolean }
+ *   { area, itemId, actionId, expectedRevision, confirmed? }
  *   -> looks up `compound reviews --json --area <area>` fresh, finds the item
  *      (by `items[].id`) or group (by `groups[].key`), finds the action (by
  *      `actions[].id` or `safe_batch_action.id`), and — if it clears gates
@@ -62,6 +62,7 @@ export type ResolvedGenericAction = {
   label: string;
   requiresReview: boolean;
   policyNote: string;
+  revision: string;
 };
 
 export type GenericActionRejection = {
@@ -120,6 +121,36 @@ export const GENERIC_ACTION_ALLOWLIST: Record<string, string[][]> = {
   "panel-verdicts": [["panel", "verdict-record"]],
 };
 
+export type GenericActionEffectKind = "apply" | "record" | "track";
+
+const GENERIC_ACTION_EFFECT_KIND: Record<string, GenericActionEffectKind> = {
+  "job-health": "record",
+  "source-control-cleanup": "record",
+  "observation-candidates": "track",
+  "route-promotions": "record",
+  "panel-verdicts": "record",
+};
+
+export function genericActionEffectKind(area: string): GenericActionEffectKind | null {
+  return GENERIC_ACTION_EFFECT_KIND[area] ?? null;
+}
+
+/**
+ * Stable optimistic-concurrency token shared by Attention (requires_confirmation)
+ * and Reviews (requires_review). The readable JSON payload is intentional: the
+ * token is an exact comparison value, not a secret or an authority signature.
+ */
+export function genericActionRevision(rawAction: unknown): string {
+  const action = rawAction && typeof rawAction === "object" ? rawAction as Json : {};
+  const requiresReview = Boolean(action.requires_review ?? action.requires_confirmation);
+  return `generic-action-v1:${JSON.stringify([
+    str(action.id),
+    str(action.label),
+    arr(action.argv).map(String),
+    requiresReview,
+  ])}`;
+}
+
 /**
  * Areas whose CLI REQUIRES --rationale: the backend deliberately omits it
  * from the projected argv so no placeholder text can ever run. The operator
@@ -147,6 +178,19 @@ const GENERIC_GLOBAL_ARGV_ALLOWLIST: string[][] = [
   ["route", "promotion-record"],
   ["panel", "verdict-record"],
 ];
+
+/** Client-side honesty probe using the same two allowlists as execution. */
+export function genericActionProjectionEligible(area: string, rawArgv: unknown): boolean {
+  const argv = arr(rawArgv).map(String);
+  if (argv.length < 2 || argv[0] !== "compound") return false;
+  const bare = argv.slice(1);
+  const areaAllowlist = GENERIC_ACTION_ALLOWLIST[area];
+  return Boolean(
+    areaAllowlist &&
+      argvMatchesAllowlist(bare, areaAllowlist) &&
+      argvMatchesAllowlist(bare, GENERIC_GLOBAL_ARGV_ALLOWLIST),
+  );
+}
 
 function actionFromItem(item: Json, actionId: string): Json | null {
   return arr(item.actions).find((a) => str(a.id) === actionId) ?? null;
@@ -268,6 +312,7 @@ export function resolveGenericActionFromProjection(
       label: str(action.label),
       requiresReview: Boolean(action.requires_review),
       policyNote: str(action.policy_note),
+      revision: genericActionRevision(action),
     },
   };
 }

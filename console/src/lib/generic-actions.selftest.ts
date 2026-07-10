@@ -1,5 +1,6 @@
 import {
   GENERIC_ACTION_ALLOWLIST,
+  genericActionEffectKind,
   resolveGenericActionFromProjection,
 } from "./generic-actions";
 
@@ -265,6 +266,17 @@ export function runGenericActionsSelfTest(): SelfTestResult {
     } else {
       pass("projected argv with a pre-baked --rationale refused (placeholder risk)");
     }
+  }
+
+  if (
+    genericActionEffectKind("job-health") === "record" &&
+    genericActionEffectKind("panel-verdicts") === "record" &&
+    genericActionEffectKind("observation-candidates") === "track" &&
+    genericActionEffectKind("unknown-area") === null
+  ) {
+    pass("generic action effect labels distinguish certified record/track semantics and reject unknown areas");
+  } else {
+    fail("generic action effect labels drifted from certified area semantics");
   }
 
   return { ok, details };

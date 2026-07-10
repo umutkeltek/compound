@@ -1,126 +1,292 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, Field } from "@/components/kit";
-import type { DecideAct } from "@/lib/decide-model";
+import type { DecideAct, DecideCapability } from "@/lib/decide-model";
+import type { DecisionExecutionEffect, DecisionExecutionRefs } from "@/lib/decision-execute";
 import type { FieldSpec } from "@/lib/decision-registry";
+import { buildDecideActionRequest, decideActIdentity, type GovernedSubmitKind } from "@/lib/governed-action-client";
 
-type ExecuteResult = { ok: boolean; status?: number; stdout?: string; stderr?: string };
+export type ExecuteResult = {
+  ok: boolean;
+  status?: number;
+  stdout?: string;
+  stderr?: string;
+  preview?: boolean;
+  refs?: DecisionExecutionRefs;
+  effect?: DecisionExecutionEffect | null;
+};
+
 type ActState = "idle" | "pending" | "confirmed" | "error";
-
-/** The three governed single-primary acts (batch-enumerable renders its own UI). */
 type SingleAct = Extract<DecideAct, { mode: "bespoke" | "batch-atomic" | "generic" }>;
-
-function argvPreview(act: SingleAct): string[] | null {
-  return act.argv ?? null;
-}
+type OutcomeKind = Exclude<DecideCapability["kind"], "unavailable">;
 
 function actFields(act: SingleAct): FieldSpec[] {
   return act.mode === "bespoke" ? act.fields : [];
 }
 
-/**
- * One governed primary act. Click → (confirm dialog if required) → POST to the
- * one governed endpoint /api/decision/execute → optimistic pending/confirm/error
- * (DESIGN.md §5), then router.refresh() so the queue re-reads live truth.
- *
- * Payloads honor each pathway's contract:
- *   - bespoke / batch-atomic  → {area, itemId, option, fields}  (registry path)
- *   - generic                 → {area, itemId, actionId, confirmed:true}  (Sonnet
- *                               generic pathway; a 403 = area not allowlisted →
- *                               we fall back to the honest copy command).
- *
- * `registerTrigger` lets the parent queue fire this act from the `a` key without
- * ever auto-firing: `a` calls open(), which opens the dialog when confirmation
- * is required rather than executing.
- */
+function fieldsForOption(fields: FieldSpec[], option: string): FieldSpec[] {
+  return fields.filter((field) => !field.showForOptions || field.showForOptions.includes(option));
+}
+
+function initialOption(act: SingleAct): string {
+  if (act.mode !== "bespoke") return "option" in act ? act.option : "";
+  return act.defaultOption || (act.options.length === 1 ? act.options[0].value : "");
+}
+
+function idRows(refs?: DecisionExecutionRefs): Array<{ label: string; values: string[] }> {
+  if (!refs) return [];
+  return [
+    { label: "Decision", values: refs.decision_ids },
+    { label: "Work", values: refs.work_ids },
+    { label: "Action", values: refs.action_intent_ids },
+    { label: "Policy", values: refs.policy_decision_ids },
+    { label: "Receipt", values: refs.receipt_ids },
+    { label: "Transition", values: refs.transition_ids },
+  ].filter((row) => row.values.length > 0);
+}
+
+function outcomeHeading(result: ExecuteResult, preview: boolean, effectKind: OutcomeKind): string {
+  if (preview) return "Write-free preview";
+  if (!result.ok) return "Action failed";
+  if (result.effect?.changed === false) return "No state change";
+  if (effectKind === "record") return "Decision recorded";
+  if (effectKind === "track") {
+    return result.effect?.kind.endsWith("open_work") ? "Tracked work opened" : "Disposition recorded";
+  }
+  return "Change applied";
+}
+
+export function DecisionOutcome({
+  result,
+  preview = false,
+  effectKind = "apply",
+}: {
+  result: ExecuteResult;
+  preview?: boolean;
+  effectKind?: OutcomeKind;
+}) {
+  const effect = result.effect;
+  const refs = result.refs;
+  const rows = idRows(refs);
+  const workId = effect?.workId || refs?.work_ids[0] || "";
+  const tone = result.ok ? (preview ? "border-work-line bg-work-soft" : "border-good-line bg-good-soft") : "border-crit-line bg-crit-soft";
+
+  return (
+    <section className={`rounded-md border px-3 py-3 ${tone}`} aria-live="polite">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-2xs font-bold uppercase text-faint">
+            {outcomeHeading(result, preview, effectKind)}
+          </div>
+          <div className="mt-0.5 text-sm font-semibold text-ink">
+            {effect?.summary || result.stderr || result.stdout || (preview ? "Preview resolved." : "Decision recorded.")}
+          </div>
+        </div>
+        {effect?.status ? (
+          <span className="mono rounded-pill border border-hair bg-panel px-2 py-0.5 text-2xs text-muted">
+            {effect.status}
+          </span>
+        ) : null}
+      </div>
+
+      {effect?.before || effect?.after ? (
+        <div className="mt-2 flex items-center gap-2 text-xs text-muted">
+          <span className="mono">{effect.before || "current"}</span>
+          <span className="text-faint">→</span>
+          <span className="mono font-semibold text-ink">{effect.after || "unchanged"}</span>
+        </div>
+      ) : null}
+
+      {rows.length ? (
+        <dl className="mt-3 grid gap-1.5 border-t border-hair pt-2">
+          {rows.map((row) => (
+            <div key={row.label} className="grid grid-cols-4 gap-2 text-2xs">
+              <dt className="font-semibold text-faint">{row.label}</dt>
+              <dd className="col-span-3 flex flex-wrap gap-x-2 gap-y-1">
+                {row.values.map((value) =>
+                  row.label === "Work" && !preview ? (
+                    <Link key={value} href={`/work/${value}`} className="mono text-work hover:underline" title={value}>
+                      {value}
+                    </Link>
+                  ) : (
+                    <code key={value} className="mono text-muted" title={value}>{value}</code>
+                  ),
+                )}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+
+      {refs?.proof_refs.length ? (
+        <details className="mt-2 border-t border-hair pt-2">
+          <summary className="cursor-pointer text-2xs font-semibold text-muted">Proof refs · {refs.proof_refs.length}</summary>
+          <ul className="mt-1 grid gap-1">
+            {refs.proof_refs.map((ref) => <li key={ref} className="mono break-all text-2xs text-faint">{ref}</li>)}
+          </ul>
+        </details>
+      ) : null}
+
+      {workId && !preview ? (
+        <Link href={`/work/${workId}`} className="mt-3 inline-flex text-xs font-semibold text-work hover:underline">
+          Open proposed work
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
 export function GovernedAct({
   act,
   mutationsEnabled,
   registerTrigger,
   onExecuted,
+  retainedOutcome,
+  effectKind,
 }: {
   act: SingleAct;
   mutationsEnabled: boolean;
   registerTrigger?: (fn: (() => void) | null) => void;
   onExecuted?: (result: ExecuteResult) => void;
+  retainedOutcome?: ExecuteResult | null;
+  effectKind: OutcomeKind;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<ActState>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedOption, setSelectedOption] = useState(() => initialOption(act));
+  const [previewResult, setPreviewResult] = useState<ExecuteResult | null>(null);
+  const [localOutcome, setLocalOutcome] = useState<ExecuteResult | null>(null);
   const [fellBackToCopy, setFellBackToCopy] = useState(false);
+  const [invalidField, setInvalidField] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const validationMessageId = useId();
 
   const fields = actFields(act);
-  const preview = argvPreview(act);
-
-  function trigger() {
-    if (!mutationsEnabled) return; // gated off → button is disabled; no-op
-    if (act.requiresConfirmation || fields.length > 0) setOpen(true);
-    else void submit();
-  }
+  const visibleFields = fieldsForOption(fields, selectedOption);
+  const outcome = retainedOutcome ?? localOutcome;
+  const actIdentity = decideActIdentity(act);
+  const latestActIdentity = useRef(actIdentity);
+  latestActIdentity.current = actIdentity;
 
   useEffect(() => {
-    registerTrigger?.(trigger);
-    return () => registerTrigger?.(null);
+    setOpen(false);
+    setState("idle");
+    setSelectedOption(initialOption(act));
+    setPreviewResult(null);
+    setLocalOutcome(null);
+    setFellBackToCopy(false);
+    setInvalidField(null);
+    setMessage(null);
+    // The server refreshes projections every 30 seconds and recreates the act
+    // object. Reset only when the owner item/revision changes, not while the
+    // operator is writing a decision against the same revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [act, mutationsEnabled]);
+  }, [actIdentity]);
 
-  function buildBody(): Record<string, unknown> {
-    if (act.mode === "generic") {
-      return { area: act.area, itemId: act.itemId, actionId: act.actionId, confirmed: true };
-    }
+  function collectedFields(): Record<string, string> {
     const collected: Record<string, string> = {};
     if (act.mode === "batch-atomic") Object.assign(collected, act.fields);
     if (formRef.current) {
       const data = new FormData(formRef.current);
-      for (const [k, v] of data.entries()) collected[k] = typeof v === "string" ? v : "";
+      for (const [key, value] of data.entries()) collected[key] = typeof value === "string" ? value : "";
     }
-    return { area: act.area, itemId: act.itemId, option: act.option, fields: collected };
+    return collected;
   }
 
-  async function submit() {
-    // A required field that is still empty must block the POST (the endpoint
-    // rejects it too, but stop here so the operator sees which field).
-    if (formRef.current) {
-      for (const f of fields) {
-        if (!f.required) continue;
-        const value = new FormData(formRef.current).get(f.name);
-        if (!String(value ?? "").trim()) {
-          setState("error");
-          setMessage(`${f.label} is required.`);
-          return;
-        }
+  function validateDraft(): boolean {
+    if (act.mode === "bespoke" && !selectedOption) {
+      setState("error");
+      setInvalidField("decision_option");
+      setMessage("Choose one disposition before previewing.");
+      formRef.current?.querySelector<HTMLInputElement>('input[name="decision_option"]')?.focus();
+      return false;
+    }
+    const values = collectedFields();
+    for (const field of visibleFields) {
+      if (field.required && !String(values[field.name] ?? "").trim()) {
+        setState("error");
+        setInvalidField(field.name);
+        setMessage(`${field.label} is required.`);
+        const control = formRef.current?.elements.namedItem(field.name);
+        if (control instanceof HTMLElement) control.focus();
+        return false;
       }
     }
+    setInvalidField(null);
+    return true;
+  }
+
+  async function request(kind: GovernedSubmitKind): Promise<ExecuteResult> {
+    const response = await fetch("/api/decision/execute", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(buildDecideActionRequest(act, selectedOption, collectedFields(), kind)),
+    });
+    const parsed = (await response.json().catch(() => null)) as ExecuteResult | null;
+    return parsed
+      ? { ...parsed, status: response.status }
+      : { ok: false, status: response.status, stderr: `Request failed with ${response.status}` };
+  }
+
+  async function trigger() {
+    if (!mutationsEnabled || state === "pending" || !validateDraft()) return;
+    setMessage(null);
+    if (act.mode === "bespoke" && act.supportsPreview) {
+      const previewIdentity = actIdentity;
+      setState("pending");
+      try {
+        const result = await request("preview");
+        if (latestActIdentity.current !== previewIdentity) return;
+        if (!result.ok) {
+          setState("error");
+          setMessage(result.stderr || "Preview failed.");
+          return;
+        }
+        setPreviewResult(result);
+        setState("idle");
+        setOpen(true);
+      } catch (error) {
+        setState("error");
+        setMessage(error instanceof Error ? error.message : "Preview failed.");
+      }
+      return;
+    }
+    if (act.requiresConfirmation || fields.length > 0 || (act.mode === "bespoke" && act.options.length > 1)) {
+      setOpen(true);
+      return;
+    }
+    await submit("direct");
+  }
+
+  useEffect(() => {
+    registerTrigger?.(() => void trigger());
+    return () => registerTrigger?.(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [act, mutationsEnabled, selectedOption, state]);
+
+  async function submit(kind: Exclude<GovernedSubmitKind, "preview">) {
+    if (!validateDraft()) return;
     setState("pending");
     setMessage(null);
     try {
-      const response = await fetch("/api/decision/execute", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(buildBody()),
-      });
-      const parsed = (await response.json().catch(() => null)) as ExecuteResult | null;
-      const result: ExecuteResult = parsed
-        ? { ...parsed, status: response.status }
-        : { ok: false, status: response.status, stderr: `Request failed with ${response.status}` };
+      const result = await request(kind);
       onExecuted?.(result);
       if (result.ok) {
+        setLocalOutcome(result);
         setState("confirmed");
         setOpen(false);
         router.refresh();
-        window.setTimeout(() => setState("idle"), 900);
         return;
       }
-      // Generic pathway: a 403 means the area is not allowlisted for one-click
-      // — fall back to the honest copy command rather than pretending.
-      if (act.mode === "generic" && response.status === 403) {
+      if (act.mode === "generic" && result.status === 403) {
         setFellBackToCopy(true);
         setOpen(false);
         setState("idle");
@@ -128,11 +294,9 @@ export function GovernedAct({
       }
       setState("error");
       setMessage(result.stderr || result.stdout || "Command failed.");
-      window.setTimeout(() => setState("idle"), 1600);
     } catch (error) {
       setState("error");
       setMessage(error instanceof Error ? error.message : "Request failed.");
-      window.setTimeout(() => setState("idle"), 1600);
     }
   }
 
@@ -140,74 +304,133 @@ export function GovernedAct({
     return (
       <div className="flex flex-col items-start gap-1">
         <CopyCmd cmd={act.copyCommand} compact />
-        <span className="text-2xs text-faint">No one-click action wired yet for this area.</span>
+        <span className="text-2xs text-faint">The owner action is not allowlisted for console execution.</span>
       </div>
     );
   }
 
-  const stateClass =
-    state === "pending"
-      ? "action-pending"
-      : state === "confirmed"
-        ? "action-confirmed"
-        : state === "error"
-          ? "action-error"
-          : "";
+  const stateClass = state === "pending" ? "action-pending" : state === "confirmed" ? "action-confirmed" : state === "error" ? "action-error" : "";
+  const chosen = act.mode === "bespoke" ? act.options.find((option) => option.value === selectedOption) : null;
+  const buttonLabel = state === "pending"
+    ? (act.mode === "bespoke" && act.supportsPreview ? "Preparing preview…" : "Working…")
+    : act.mode === "bespoke" && act.supportsPreview
+      ? selectedOption ? `Preview ${chosen?.label ?? "decision"}` : "Choose a disposition"
+      : chosen?.label ?? act.label;
 
   return (
-    <div className="flex flex-col items-start gap-1.5">
-      <Button
-        variant="primary"
-        disabled={!mutationsEnabled || state === "pending"}
-        onClick={trigger}
-        className={stateClass}
-        title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act from the console."}
+    <div className="flex flex-col gap-3">
+      <form
+        key={actIdentity}
+        ref={formRef}
+        className="flex flex-col gap-3"
+        onSubmit={(event) => event.preventDefault()}
+        onInput={() => { setInvalidField(null); if (state === "error") { setState("idle"); setMessage(null); } }}
       >
-        {state === "pending" ? "Working…" : act.label}
-      </Button>
-      {state === "error" && message ? <span className="text-2xs leading-snug text-crit">{message}</span> : null}
+        {act.mode === "bespoke" && act.options.length > 1 ? (
+          <fieldset
+            aria-invalid={invalidField === "decision_option" || undefined}
+            aria-describedby={invalidField === "decision_option" ? validationMessageId : undefined}
+          >
+            <legend className="mb-1 text-2xs font-bold uppercase text-faint">Your decision</legend>
+            <div className="grid gap-2 lg:grid-cols-3">
+              {act.options.map((option) => {
+                const selected = selectedOption === option.value;
+                return (
+                  <label
+                    key={option.value}
+                    className={`grid cursor-pointer grid-cols-[auto_1fr] gap-3 rounded-md border px-3 py-2.5 transition-colors ${
+                      selected ? "border-work-line bg-work-soft" : "border-hair bg-panel hover:bg-soft"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="decision_option"
+                      value={option.value}
+                      checked={selected}
+                      disabled={state === "pending"}
+                      onChange={() => { setSelectedOption(option.value); setPreviewResult(null); setInvalidField(null); setMessage(null); }}
+                      className="mt-0.5 h-4 w-4 accent-current"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-ink">{option.label}</span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-muted">{option.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+        ) : null}
+
+        {visibleFields.length ? (
+          <div className="grid gap-3 border-t border-hair pt-3">
+            {visibleFields.map((field) => (
+              <Field
+                key={field.name}
+                field={field}
+                disabled={state === "pending"}
+                invalid={invalidField === field.name}
+                describedBy={invalidField === field.name ? validationMessageId : undefined}
+              />
+            ))}
+          </div>
+        ) : null}
+      </form>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          disabled={!mutationsEnabled || state === "pending" || (act.mode === "bespoke" && !selectedOption)}
+          onClick={() => void trigger()}
+          className={stateClass}
+          title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act from the console."}
+        >
+          {buttonLabel}
+        </Button>
+        {act.mode === "bespoke" && act.supportsPreview ? (
+          <span className="text-2xs text-faint">Preview writes nothing. Confirm rechecks the proposal revision.</span>
+        ) : null}
+      </div>
+      {!open && state === "error" && message ? <span id={validationMessageId} role="alert" className="text-xs leading-snug text-crit">{message}</span> : null}
+      {outcome ? <DecisionOutcome result={outcome} effectKind={effectKind} /> : null}
 
       <Dialog.Root open={open} onOpenChange={setOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-strong/35 backdrop-blur-sm motion-reduce:backdrop-blur-none" />
-          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
-            <Dialog.Title className="text-md font-semibold text-ink">{act.label}</Dialog.Title>
+          <Dialog.Content className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 overflow-y-auto overscroll-contain rounded-lg border border-hair bg-panel p-5 shadow-lg focus:outline-none">
+            <Dialog.Title className="text-md font-semibold text-ink">Confirm {chosen?.label ?? act.label}</Dialog.Title>
             <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted">
-              This runs a governed <code className="mono">compound</code> command. Each target gets its own
-              PolicyDecision.
+              The owner re-resolves current state before writing. A policy allow grants this action; it is not proof that follow-on work succeeded.
             </Dialog.Description>
+
+            {previewResult ? <div className="mt-3"><DecisionOutcome result={previewResult} preview effectKind={effectKind} /></div> : null}
 
             {act.mode === "batch-atomic" ? (
               <div className="mt-3 rounded-md border border-seam-line bg-seam-soft px-3 py-2 text-xs leading-relaxed text-seam">
-                Applies to every one of the {act.memberCount} member
-                {act.memberCount === 1 ? "" : "s"} together — members cannot be excluded one by one.
+                Applies to all {act.memberCount} members together. Members cannot be excluded individually.
               </div>
             ) : null}
 
             {act.mode !== "generic" && act.policyNote ? (
-              <div className="mt-3 rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">
-                {act.policyNote}
-              </div>
+              <div className="mt-3 rounded-md border border-hair bg-soft px-3 py-2 text-xs leading-relaxed text-muted">{act.policyNote}</div>
             ) : null}
 
-            <form ref={formRef} className="mt-3 flex flex-col gap-3">
-              {fields.map((f) => (
-                <Field key={f.name} field={f} />
-              ))}
-            </form>
-
-            {preview && preview.length ? (
+            {act.argv?.length ? (
               <pre className="mono mt-3 overflow-x-auto rounded-md border border-hair bg-soft px-3 py-2 text-2xs leading-relaxed text-muted">
-                compound {preview.join(" ")}
+                compound {act.argv.join(" ")}
               </pre>
             ) : null}
 
+            {state === "error" && message ? (
+              <div id={validationMessageId} role="alert" aria-live="assertive" className="mt-3 rounded-md border border-crit-line bg-crit-soft px-3 py-2 text-xs leading-relaxed text-crit">
+                {message}
+              </div>
+            ) : null}
+
             <div className="mt-4 flex justify-end gap-2">
-              <Dialog.Close asChild>
-                <Button variant="secondary">Cancel</Button>
-              </Dialog.Close>
-              <Button variant="primary" disabled={state === "pending"} onClick={() => void submit()}>
-                {state === "pending" ? "Working…" : "Confirm"}
+              <Dialog.Close asChild><Button variant="secondary">Cancel</Button></Dialog.Close>
+              <Button variant="primary" disabled={state === "pending"} onClick={() => void submit("confirm")}>
+                {state === "pending" ? "Working…" : "Confirm decision"}
               </Button>
             </div>
           </Dialog.Content>

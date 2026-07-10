@@ -20,7 +20,7 @@ export function PageHeader({
         {breadcrumb ? <div className="mono mb-1 text-2xs text-faint">{breadcrumb}</div> : null}
         <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
       </div>
-      {right ? <div className="flex shrink-0 flex-wrap items-center gap-2">{right}</div> : null}
+      {right ? <div className="flex min-w-0 w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">{right}</div> : null}
     </div>
   );
 }

@@ -16,11 +16,11 @@ import { attentionNeedsYouGroups, getAttention } from "@/lib/attention";
  *   (both = 3 live), but it is now read off the single projection so there is
  *   one source of truth instead of two fetches that could drift.
  */
-export async function NavContainer() {
+export async function NavContainer({ variant = "desktop" }: { variant?: "desktop" | "mobile" }) {
   const attention = await getAttention();
   const decideCount = attention?.counts?.needs_you_groups ?? 0;
   const workCount = attentionNeedsYouGroups(attention)
     .filter((group) => group.source === "workbench")
     .reduce((sum, group) => sum + group.count, 0);
-  return <Nav decideCount={decideCount} workCount={workCount} />;
+  return <Nav decideCount={decideCount} workCount={workCount} variant={variant} />;
 }
