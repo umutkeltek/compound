@@ -1,6 +1,8 @@
 package routeevidence
 
 import (
+	"bytes"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -103,8 +105,10 @@ func TestPromotionReviewQueueRoutesAuthorityRecommendationsToBriefPlan(t *testin
 		reviewID       string
 		recommendation string
 	}{
+		{name: "promote", reviewID: "route_promotion_promote", recommendation: "promote"},
 		{name: "demote", reviewID: "route_promotion_demote", recommendation: "demote"},
 		{name: "hold failing", reviewID: "route_promotion_hold_failing", recommendation: promotionRecommendationHoldFailing},
+		{name: "unknown", reviewID: "route_promotion_unknown", recommendation: "future_review_kind"},
 	}
 
 	for _, tt := range tests {
@@ -133,10 +137,21 @@ func TestPromotionReviewQueueRoutesAuthorityRecommendationsToBriefPlan(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			AnnotatePromotionReviewQueue(&report)
-			reviewartifact.Recount(&report)
 			if len(report.Items) != 1 {
 				t.Fatalf("items = %d, want 1", len(report.Items))
+			}
+			before, err := os.ReadFile(report.Items[0].JSONPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			AnnotatePromotionReviewQueue(&report)
+			reviewartifact.Recount(&report)
+			after, err := os.ReadFile(report.Items[0].JSONPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatal("queue annotation mutated the review artifact")
 			}
 			item := report.Items[0]
 			if item.Readiness != "needs_review" {
@@ -154,5 +169,60 @@ func TestPromotionReviewQueueRoutesAuthorityRecommendationsToBriefPlan(t *testin
 				t.Fatalf("action argv = %v, want clean proposal-only argv %v", action.Argv, wantArgv)
 			}
 		})
+	}
+}
+
+func TestPromotionReviewQueueKeepsRecordActionForInsufficientEvidence(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 9, 16, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	review := PromotionReview{
+		SchemaVersion:   PromotionReviewSchemaVersion,
+		ID:              "route_promotion_insufficient_evidence",
+		CreatedAt:       now.Format(time.RFC3339),
+		Status:          "review_required",
+		Recommendation:  promotionRecommendationHoldInsufficient,
+		Reason:          "samples below promotion criteria",
+		LaneID:          "lane/extract",
+		CapabilityClass: "classify-extract",
+		EvidenceRefs:    []string{"route_c"},
+	}
+	if _, err := reviewartifact.Write(homePath, routePromotionReviewArea, review.ID, review, " ", "# Route promotion\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := reviewartifact.Queue(homePath, reviewartifact.QueueOptions{Area: routePromotionReviewArea}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(report.Items))
+	}
+	before, err := os.ReadFile(report.Items[0].JSONPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	AnnotatePromotionReviewQueue(&report)
+	reviewartifact.Recount(&report)
+	after, err := os.ReadFile(report.Items[0].JSONPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("queue annotation mutated the review artifact")
+	}
+	item := report.Items[0]
+	if len(item.Actions) != 1 {
+		t.Fatalf("hold-insufficient review should carry exactly one clean action: %+v", item.Actions)
+	}
+	action := item.Actions[0]
+	if action.ID != "route_promotion_record" || !action.RequiresReview {
+		t.Fatalf("action = %+v, want id=route_promotion_record requires_review=true", action)
+	}
+	wantArgv := []string{"compound", "route", "promotion-record", "--review", item.JSONPath}
+	if !reflect.DeepEqual(action.Argv, wantArgv) {
+		t.Fatalf("action argv = %v, want clean hold-record argv %v", action.Argv, wantArgv)
 	}
 }
