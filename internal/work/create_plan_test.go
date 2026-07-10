@@ -67,7 +67,7 @@ func TestCreatePlanRejectsRunningState(t *testing.T) {
 	}
 }
 
-func TestCreateRequiresDirectorOriginToStartProposed(t *testing.T) {
+func TestCreateRequiresDirectorProposalToStartProposed(t *testing.T) {
 	s := newStore(t)
 	for _, state := range []string{"", "ready", "admitted"} {
 		name := state
@@ -80,14 +80,14 @@ func TestCreateRequiresDirectorOriginToStartProposed(t *testing.T) {
 			Owner:            "compound-authority",
 			Actor:            "codex",
 			State:            state,
-			SuccessPredicate: "director-origin work cannot skip admission",
+			SuccessPredicate: "director-proposed work cannot skip admission",
 			EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:" + name},
 		}, fixedNow)
-		if err == nil || !strings.Contains(err.Error(), "director-origin work must start in proposed state") {
-			t.Fatalf("Create director-origin state %q error = %v", state, err)
+		if err == nil || !strings.Contains(err.Error(), "director-proposed work must start in proposed state") {
+			t.Fatalf("Create director-proposed state %q error = %v", state, err)
 		}
 		if _, err := s.Get(workID); err == nil {
-			t.Fatalf("rejected director-origin state %q persisted work %s", state, workID)
+			t.Fatalf("rejected director-proposed state %q persisted work %s", state, workID)
 		}
 	}
 
@@ -96,11 +96,11 @@ func TestCreateRequiresDirectorOriginToStartProposed(t *testing.T) {
 		Owner:            "compound-authority",
 		Actor:            "codex",
 		State:            "proposed",
-		SuccessPredicate: "director-origin work starts before admission",
+		SuccessPredicate: "director-proposed work starts before admission",
 		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:proposed"},
 	}, fixedNow)
 	if err != nil || allowed.State != "proposed" {
-		t.Fatalf("proposed director-origin create failed: work=%+v err=%v", allowed, err)
+		t.Fatalf("proposed director-proposed create failed: work=%+v err=%v", allowed, err)
 	}
 }
 
@@ -124,7 +124,7 @@ func TestAdmitCreatePlanRejectsDirectorOriginOutsideProposed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.AdmitCreatePlan(plan, "", fixedNow.Add(time.Minute), AdmitCreatePlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), "director-origin work must start in proposed state") {
+	if _, err := s.AdmitCreatePlan(plan, "", fixedNow.Add(time.Minute), AdmitCreatePlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), "director-proposed work must start in proposed state") {
 		t.Fatalf("legacy ready director create-plan admission error = %v", err)
 	}
 	if _, err := s.Get(plan.WorkID); err == nil {
