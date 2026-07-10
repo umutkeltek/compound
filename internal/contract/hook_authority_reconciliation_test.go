@@ -48,6 +48,11 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 	if len(got.Observation.Bindings) != 6 {
 		t.Fatalf("observed installation bindings = %+v, want six live registrations", got.Observation.Bindings)
 	}
+	for _, binding := range got.Observation.Bindings {
+		if binding.HandlerRevision != "" {
+			t.Fatalf("config command digest masqueraded as handler revision: %+v", binding)
+		}
+	}
 	delta := hookReconciliationDelta(got.Reconciliation, "claude_code", "SessionEnd")
 	if delta == nil || delta.State != hookplan.StateExtraUnowned {
 		t.Fatalf("Claude SessionEnd delta = %+v, want extra_unowned", delta)

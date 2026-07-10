@@ -235,6 +235,41 @@ func TestReconcileCanonicalizesEquivalentInputOrder(t *testing.T) {
 	}
 }
 
+func TestReconcileDoesNotInventHandlerDriftWithoutObservedRevision(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{
+				ID:              "start",
+				Harness:         "claude_code",
+				Event:           "SessionStart",
+				HandlerRef:      "handler://start",
+				HandlerRevision: "sha256:handler-content",
+			},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Bindings: []ObservedBinding{
+			{
+				Harness:    "claude_code",
+				Event:      "SessionStart",
+				HandlerRef: "handler://start",
+				Active:     true,
+			},
+		},
+	}
+
+	got, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(got.Deltas) != 1 || got.Deltas[0].State != StateReady {
+		t.Fatalf("Reconcile() deltas = %+v, want ready while observed handler revision is unknown", got.Deltas)
+	}
+}
+
 func reverseBindings(bindings []Binding) {
 	for left, right := 0, len(bindings)-1; left < right; left, right = left+1, right-1 {
 		bindings[left], bindings[right] = bindings[right], bindings[left]
