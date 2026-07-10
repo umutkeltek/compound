@@ -143,8 +143,8 @@ func TestPositionsFoldTopicAndChain(t *testing.T) {
 		by[p.Topic] = p
 	}
 	lang := by["lang"]
-	if lang.ID != "project:api::lang" || lang.ActiveObject != "go" || lang.ActiveClaimID != r2.Claim.ID {
-		t.Errorf("lang position should be active 'go' (id project:api::lang, claim %s); got %+v", r2.Claim.ID, lang)
+	if !strings.HasPrefix(lang.ID, "project:api::lang::slot-") || lang.ActiveObject != "go" || lang.ActiveClaimID != r2.Claim.ID {
+		t.Errorf("lang position should be active 'go' in its fact slot (claim %s); got %+v", r2.Claim.ID, lang)
 	}
 	// the chain carries the FULL history oldest→newest, not just the latest value.
 	if len(lang.ClaimChain) != 2 || lang.ClaimChain[0] != r1.Claim.ID || lang.ClaimChain[1] != r2.Claim.ID {

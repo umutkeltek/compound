@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"strings"
 	"testing"
 
 	"compound/internal/candidates"
@@ -29,10 +30,34 @@ func TestClaimTypeAndDomainTopic(t *testing.T) {
 		t.Errorf("Topic() should prefer the domain qualifier; got %q", cur[0].Topic())
 	}
 	pos, _ := s.Positions()
-	if len(pos) != 1 || pos[0].Topic != "stack" || pos[0].ID != "proj::stack::primary_lang::architecture" {
+	if len(pos) != 1 || pos[0].SchemaVersion != PositionFoldSchemaVersion || pos[0].Topic != "stack" || !strings.HasPrefix(pos[0].ID, "proj::stack::slot-") {
 		t.Errorf("position should keep the domain topic and predicate slot identity; got %+v", pos)
 	}
 	if _, err := s.Capture([]Candidate{{Entity: "x", Predicate: "y", Object: "z", ClaimType: "bogus"}}, t0); err == nil {
 		t.Error("an unknown claim_type must be rejected at capture")
+	}
+}
+
+func TestPositionIDDistinguishesOptionalSlotAxes(t *testing.T) {
+	domainPredicate := Claim{Entity: "e", Predicate: "decision", Qualifiers: map[string]string{"domain": "language"}}
+	typedPredicate := Claim{Entity: "e", Predicate: "language", ClaimType: "decision"}
+	first := positionIDForClaim(domainPredicate)
+	second := positionIDForClaim(typedPredicate)
+	if first == second {
+		t.Fatalf("distinct fact slots share position id %q", first)
+	}
+}
+
+func TestLoadFoldedPositionsRejectsLegacyCheckpoint(t *testing.T) {
+	s := newStore(t)
+	if err := appendJSONL(s.positionsLog(), &Position{ID: "e::topic", Entity: "e", Topic: "topic", ActiveClaimID: "claim_old"}); err != nil {
+		t.Fatal(err)
+	}
+	positions, err := s.LoadFoldedPositions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(positions) != 0 {
+		t.Fatalf("legacy checkpoint remained consumable: %+v", positions)
 	}
 }

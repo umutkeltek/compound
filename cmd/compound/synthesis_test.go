@@ -30,7 +30,7 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 		Confidence:     0.9,
 		Derivation:     "extracted",
 		ClaimType:      "decision",
-		Qualifiers:     map[string]string{"domain": "language", "decision_id": "api-language"},
+		Qualifiers:     map[string]string{"domain": "language"},
 		SourceTraceRef: "trace_a",
 		SnippetHash:    "hash_a",
 		Visibility:     "public",
@@ -52,7 +52,7 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 		Predicate:  "runtime",
 		Object:     "Go",
 		ClaimType:  "decision",
-		Qualifiers: map[string]string{"domain": "language", "decision_id": "api-language"},
+		Qualifiers: map[string]string{"domain": "language"},
 		Confidence: 0.9,
 		Visibility: "public",
 		CreatedAt:  "2026-07-02T00:00:00Z",
@@ -64,7 +64,7 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 		Predicate:  "implementation_language",
 		Object:     "Rust",
 		ClaimType:  "decision",
-		Qualifiers: map[string]string{"domain": "language", "decision_id": "api-language"},
+		Qualifiers: map[string]string{"domain": "language"},
 		Confidence: 0.8,
 		Visibility: "public",
 		CreatedAt:  "2026-07-02T00:00:00Z",
@@ -86,21 +86,12 @@ func TestSynthesisSweepCLIWritesReportAndDoesNotMutateMemory(t *testing.T) {
 	if result.Report.EchoFoldProposalCount != 1 || result.Report.ContradictionProposalCount != 1 {
 		t.Fatalf("report counts = echo %d contradiction %d, want 1/1", result.Report.EchoFoldProposalCount, result.Report.ContradictionProposalCount)
 	}
-	if result.Report.ReviewDebtCount != 2 || len(result.Report.ReopenedClaims) != 2 {
-		t.Fatalf("review debt = %d reopened=%+v, want two reopened claims", result.Report.ReviewDebtCount, result.Report.ReopenedClaims)
+	if result.Report.ReviewDebtCount != 1 || len(result.Report.ReopenedClaims) != 1 {
+		t.Fatalf("review debt = %d reopened=%+v, want only the matching predicate slot", result.Report.ReviewDebtCount, result.Report.ReopenedClaims)
 	}
-	reopened := map[string]mem.SynthesisClaimReview{}
-	for _, item := range result.Report.ReopenedClaims {
-		reopened[item.ClaimID] = item
-	}
-	for _, claimID := range []string{"claim_go", "claim_rust"} {
-		item, ok := reopened[claimID]
-		if !ok {
-			t.Fatalf("claim %s not reopened: %+v", claimID, result.Report.ReopenedClaims)
-		}
-		if item.State != mem.ClaimStateNeedsReview || item.ReviewRef == "" || len(item.CandidateIDs) == 0 {
-			t.Fatalf("claim %s reopened marker incomplete: %+v", claimID, item)
-		}
+	item := result.Report.ReopenedClaims[0]
+	if item.ClaimID != "claim_rust" || item.State != mem.ClaimStateNeedsReview || item.ReviewRef == "" || len(item.CandidateIDs) == 0 {
+		t.Fatalf("matching predicate slot reopened marker incomplete: %+v", item)
 	}
 	if result.ReportPath == "" {
 		t.Fatal("expected report artifact path")

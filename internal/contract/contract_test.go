@@ -1936,8 +1936,12 @@ func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.FoldPositions(mem.PositionFoldOptions{}, fixedNow.Add(2*time.Minute)); err != nil {
+	fold, err := store.FoldPositions(mem.PositionFoldOptions{}, fixedNow.Add(2*time.Minute))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(fold.Positions) != 1 {
+		t.Fatalf("folded positions = %+v, want one runtime_stance slot", fold.Positions)
 	}
 
 	in := Input{Harness: "codex", Cwd: "/repo/compound", Task: "wire memory default organ positions ContextPack", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
@@ -1945,7 +1949,7 @@ func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	positionRef := "position://project:compound::memory_default_organ"
+	positionRef := "position://" + fold.Positions[0].ID
 	if !contains(pack.ActiveMemory, positionRef) {
 		t.Fatalf("context pack active_memory = %v, want positions-derived ref %s", pack.ActiveMemory, positionRef)
 	}
@@ -1956,7 +1960,7 @@ func TestPackWithCapabilitiesInjectsFoldedPositionDigest(t *testing.T) {
 		t.Fatalf("context pack active_positions = %+v, want one folded position", pack.ActivePositions)
 	}
 	pos := pack.ActivePositions[0]
-	wantLine := fmt.Sprintf("project:compound::memory_default_organ → ContextPack uses folded positions digest (since-seq %d, chain-length 2)", latest.Claim.Seq)
+	wantLine := fmt.Sprintf("%s → ContextPack uses folded positions digest (since-seq %d, chain-length 2)", fold.Positions[0].ID, latest.Claim.Seq)
 	if pos.Ref != positionRef || pos.Entity != "project:compound" || pos.Topic != "memory_default_organ" ||
 		pos.Stance != "ContextPack uses folded positions digest" || pos.SinceSeq != latest.Claim.Seq ||
 		pos.ChainLength != 2 || pos.Line != wantLine {
