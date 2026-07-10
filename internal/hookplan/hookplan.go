@@ -5,6 +5,7 @@ package hookplan
 
 import (
 	"fmt"
+	"sort"
 
 	"compound/internal/harness"
 )
@@ -103,11 +104,23 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		ObservationRef:      observed.Ref,
 		ObservationRevision: observed.Revision,
 	}
-	consumed := make([]bool, len(observed.Bindings))
-	for _, desired := range plan.Bindings {
+	desiredBindings := append([]Binding(nil), plan.Bindings...)
+	observedBindings := append([]ObservedBinding(nil), observed.Bindings...)
+	sort.SliceStable(desiredBindings, func(i, j int) bool {
+		return bindingSortKey(desiredBindings[i]) < bindingSortKey(desiredBindings[j])
+	})
+	sort.SliceStable(observedBindings, func(i, j int) bool {
+		return observedBindingSortKey(observedBindings[i]) < observedBindingSortKey(observedBindings[j])
+	})
+	if err := validateDesiredBindings(desiredBindings); err != nil {
+		return Reconciliation{}, err
+	}
+
+	consumed := make([]bool, len(observedBindings))
+	for _, desired := range desiredBindings {
 		matched := -1
 		var slotCandidates []int
-		for i, actual := range observed.Bindings {
+		for i, actual := range observedBindings {
 			if consumed[i] || !sameSlot(desired, actual) {
 				continue
 			}
@@ -139,7 +152,7 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			delta.Reason = "harness registry does not support the desired event capability"
 		}
 		if matched >= 0 {
-			actual := observed.Bindings[matched]
+			actual := observedBindings[matched]
 			consumed[matched] = true
 			delta.ObservedHandlerRef = actual.HandlerRef
 			delta.ObservedSourceRef = actual.SourceRef
@@ -160,7 +173,7 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		}
 		out.Deltas = append(out.Deltas, delta)
 	}
-	for i, actual := range observed.Bindings {
+	for i, actual := range observedBindings {
 		if consumed[i] {
 			continue
 		}
@@ -175,6 +188,30 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		})
 	}
 	return out, nil
+}
+
+func validateDesiredBindings(bindings []Binding) error {
+	seenSlots := map[string]string{}
+	for _, binding := range bindings {
+		key := bindingSlotKey(binding.Harness, binding.Event, binding.Matcher)
+		if priorID, exists := seenSlots[key]; exists {
+			return fmt.Errorf("duplicate desired hook slot %s/%s matcher %q in bindings %q and %q", binding.Harness, binding.Event, binding.Matcher, priorID, binding.ID)
+		}
+		seenSlots[key] = binding.ID
+	}
+	return nil
+}
+
+func bindingSortKey(binding Binding) string {
+	return bindingSlotKey(binding.Harness, binding.Event, binding.Matcher) + "\x00" + binding.ID + "\x00" + binding.HandlerRef
+}
+
+func observedBindingSortKey(binding ObservedBinding) string {
+	return bindingSlotKey(binding.Harness, binding.Event, binding.Matcher) + "\x00" + binding.BindingID + "\x00" + binding.HandlerRef + "\x00" + binding.SourceRef
+}
+
+func bindingSlotKey(harnessName, event, matcher string) string {
+	return harnessName + "\x00" + event + "\x00" + matcher
 }
 
 func sameSlot(desired Binding, actual ObservedBinding) bool {
