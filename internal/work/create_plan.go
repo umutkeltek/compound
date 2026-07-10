@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/envelope"
@@ -151,10 +152,20 @@ func (s *Store) AdmitCreatePlanPath(path string, now time.Time, opts AdmitCreate
 }
 
 func (s *Store) AdmitCreatePlan(plan CreatePlan, planPath string, now time.Time, opts AdmitCreatePlanOptions) (AdmitCreatePlanReport, error) {
-	planPath = strings.TrimSpace(firstNonEmpty(planPath, plan.PlanPath))
 	if err := validateCreatePlanForAdmission(plan); err != nil {
 		return AdmitCreatePlanReport{}, err
 	}
+	var report AdmitCreatePlanReport
+	err := s.withCreatePlanAdmissionLock(plan.WorkID, func() error {
+		var admitErr error
+		report, admitErr = s.admitCreatePlanLocked(plan, planPath, now, opts)
+		return admitErr
+	})
+	return report, err
+}
+
+func (s *Store) admitCreatePlanLocked(plan CreatePlan, planPath string, now time.Time, opts AdmitCreatePlanOptions) (AdmitCreatePlanReport, error) {
+	planPath = strings.TrimSpace(firstNonEmpty(planPath, plan.PlanPath))
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = firstNonEmpty(plan.Actor, plan.Work.Owner, "compound")
@@ -185,6 +196,9 @@ func (s *Store) AdmitCreatePlan(plan CreatePlan, planPath string, now time.Time,
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return report, err
 	}
+	if _, err := s.admissionEventsFor(plan.WorkID); err != nil {
+		return report, err
+	}
 	w, err := s.admitWork(plan, now, note, []string{"create_plan:" + plan.ID})
 	if err != nil {
 		return report, err
@@ -194,6 +208,65 @@ func (s *Store) AdmitCreatePlan(plan CreatePlan, planPath string, now time.Time,
 	report.WorkState = w.State
 	report.WorkOwner = w.Owner
 	return report, nil
+}
+
+// admissionEventsFor is stricter than the read projection. Admission may append
+// to the shared JSONL log, so an unterminated or malformed record must stop the
+// write instead of being silently skipped and concatenated with a new event.
+func (s *Store) admissionEventsFor(workID string) ([]Event, error) {
+	b, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, nil
+	}
+	if b[len(b)-1] != '\n' {
+		return nil, fmt.Errorf("work event log has an incomplete trailing record")
+	}
+	var out []Event
+	for lineNumber, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var event Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, fmt.Errorf("work event log malformed at line %d: %w", lineNumber+1, err)
+		}
+		if strings.TrimSpace(event.WorkID) == "" {
+			return nil, fmt.Errorf("work event log malformed at line %d: work_id required", lineNumber+1)
+		}
+		if event.WorkID == workID {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) withCreatePlanAdmissionLock(workID string, fn func() error) error {
+	if strings.TrimSpace(workID) == "" || filepath.Base(workID) != workID {
+		return fmt.Errorf("invalid create-plan work id %q", workID)
+	}
+	// Keep the original lifecycle lock path so old and new binaries serialize
+	// against the same inode during an installed-runtime transition.
+	path := filepath.Join(s.home, "lock", "capability-lifecycle-work-admission", workID+".lock")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return fn()
 }
 
 func validateCreatePlanForAdmission(plan CreatePlan) error {

@@ -23,7 +23,7 @@ func OperatorCardForLifecycleProposal(p CapabilityLifecycleProposal) (reviewarti
 	return reviewartifact.NewOperatorCard(
 		fmt.Sprintf("Capability screening proposes a lifecycle change touching %d evidence hooks. Review the proposal?", n),
 		subject,
-		"capability-lifecycle-proposals|"+reviewartifact.FirstNonEmpty(p.ProposalKind, "proposal"),
+		"capability-lifecycle-proposals|"+p.ID,
 		"capability lifecycle changes only after review",
 	)
 }

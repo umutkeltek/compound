@@ -1,9 +1,13 @@
 package capgraph
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -115,24 +119,26 @@ func BuildCapabilityLifecycleProposal(in CapabilityLifecycleProposalInput, now t
 }
 
 // AnnotateCapabilityLifecycleProposalQueue fills in the operator card for
-// capability-lifecycle-proposals review artifacts. There is no separate
-// applied/reviewed sidecar for this area yet (RecordCapabilityLifecycleProposal
-// only ever writes the proposal itself), so every item is a still-open
-// review_required decision.
+// capability-lifecycle-proposals review artifacts. The proposal remains source
+// evidence; a separate decision sidecar drives queue movement after review.
 func AnnotateCapabilityLifecycleProposalQueue(report *reviewartifact.QueueReport) {
 	if report == nil {
 		return
+	}
+	now, err := time.Parse(time.RFC3339, report.GeneratedAt)
+	if err != nil {
+		now = time.Now()
 	}
 	for i := range report.Items {
 		item := &report.Items[i]
 		if item.Area != CapabilityLifecycleProposalReviewArea {
 			continue
 		}
-		annotateCapabilityLifecycleProposalItem(item)
+		annotateCapabilityLifecycleProposalItem(item, now)
 	}
 }
 
-func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem) {
+func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem, now time.Time) {
 	if item.JSONPath == "" {
 		item.Readiness = "blocked"
 		item.BlockedReason = "capability lifecycle proposal path missing"
@@ -151,12 +157,80 @@ func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem) {
 		item.BlockedReason = "capability lifecycle proposal unreadable"
 		return
 	}
+	snapshot, err := LoadCapabilityLifecycleProposalSnapshot(filepath.Dir(filepath.Dir(filepath.Dir(item.JSONPath))), proposal.ID)
+	if err != nil {
+		item.Readiness = "blocked"
+		item.BlockedReason = "capability lifecycle proposal snapshot unreadable"
+		return
+	}
+	item.EvidenceRefs = reviewartifact.Unique(append(item.EvidenceRefs, proposal.EvidenceRefs...))
+	item.Owner = "capability-graph"
 	band := reviewartifact.BandNeedsYou
-	if proposal.Status == "recorded" || proposal.Status == "resolved" || proposal.Status == "accepted" || proposal.Status == "applied" || proposal.Status == "ok" {
+	var disposition *CapabilityLifecycleDisposition
+	var reservation *CapabilityLifecycleDispositionReservation
+	choicesAvailable := true
+	recorded, recordedOK := capabilityLifecycleDispositionFromExtras(item.ExtraPaths)
+	recordedOK = recordedOK && recorded.ProposalID == proposal.ID && recorded.ProposalHash == snapshot.Hash
+	reserved, reservedOK := capabilityLifecycleReservationFromExtras(item.ExtraPaths)
+	reservedOK = reservedOK && reserved.ProposalID == proposal.ID && reserved.ProposalHash == snapshot.Hash
+	reservationResolved := false
+	if reservedOK {
+		if final, ok := capabilityLifecycleDispositionFromExtrasByID(item.ExtraPaths, reserved.DispositionID); ok && final.ProposalID == proposal.ID && final.ProposalHash == snapshot.Hash {
+			recorded = final
+			recordedOK = true
+			reservationResolved = true
+		}
+	}
+	if reservedOK && !reservationResolved {
+		reservation = &reserved
+		choicesAvailable = false
+		item.Actions = []reviewartifact.Action{capabilityLifecycleResumeAction(reserved)}
+		item.Status = "held"
+		band = reviewartifact.BandNeedsYou
+		item.Readiness = "ready_to_apply"
+		item.BlockedReason = ""
+		item.NextAction = "resume the exact reserved tracked-work disposition " + reserved.DispositionID
+	} else if recordedOK {
+		disposition = &recorded
+		item.Actions = nil
+		item.BlockedReason = ""
+		switch recorded.Decision {
+		case CapabilityLifecycleOpenWork:
+			choicesAvailable = false
+			item.Status = "recorded"
+			band = recorded.AfterBand
+			item.Readiness = "no_action"
+			item.NextAction = "capability lifecycle proposal linked to proposed work " + recorded.WorkID
+		case CapabilityLifecycleDefer:
+			revisitAt, err := time.Parse(time.RFC3339, recorded.DeferUntil)
+			if err == nil && !now.Before(revisitAt) {
+				item.Actions = capabilityLifecycleDecisionActions()
+				item.Status = "review_required"
+				band = reviewartifact.BandNeedsYou
+				item.Readiness = "needs_review"
+				item.NextAction = "defer trigger reached; review capability lifecycle proposal now"
+			} else {
+				choicesAvailable = false
+				item.Status = "held"
+				band = recorded.AfterBand
+				item.Readiness = "watching"
+				item.NextAction = "revisit capability lifecycle proposal after " + recorded.DeferUntil
+			}
+		default:
+			choicesAvailable = false
+			item.Status = "recorded"
+			band = recorded.AfterBand
+			item.Readiness = "no_action"
+			item.NextAction = "capability lifecycle proposal rejected and filed"
+		}
+	} else if proposal.Status == "recorded" || proposal.Status == "resolved" || proposal.Status == "accepted" || proposal.Status == "applied" || proposal.Status == "ok" {
+		choicesAvailable = false
+		item.Actions = nil
 		band = reviewartifact.BandFiled
 		item.Readiness = "no_action"
 		item.NextAction = "capability lifecycle proposal recorded"
 	} else {
+		item.Actions = capabilityLifecycleDecisionActions()
 		item.Readiness = "needs_review"
 		item.NextAction = "review capability lifecycle proposal " + reviewartifact.FirstNonEmpty(proposal.Subject, proposal.ID)
 	}
@@ -168,6 +242,13 @@ func annotateCapabilityLifecycleProposalItem(item *reviewartifact.QueueItem) {
 	if err := reviewartifact.SetOperatorCard(item, card, reviewartifact.SummarySourceAnnotator, band); err != nil {
 		item.BlockedReason = reviewartifact.FirstNonEmpty(item.BlockedReason, "capability lifecycle operator card invalid: "+err.Error())
 	}
+	item.DecisionCard = capabilityLifecycleDecisionCard(snapshot, disposition)
+	if reservation != nil {
+		item.DecisionCard = capabilityLifecycleReservationDecisionCard(snapshot, *reservation)
+	} else if !choicesAvailable {
+		item.DecisionCard.Choices = nil
+		item.DecisionCard.CanonicalActionHint = ""
+	}
 }
 
 func RecordCapabilityLifecycleProposal(homePath string, proposal CapabilityLifecycleProposal) (CapabilityLifecycleProposalPaths, error) {
@@ -177,8 +258,124 @@ func RecordCapabilityLifecycleProposal(homePath string, proposal CapabilityLifec
 	if strings.TrimSpace(proposal.ID) == "" {
 		return CapabilityLifecycleProposalPaths{}, fmt.Errorf("capability lifecycle proposal id required")
 	}
-	paths, err := reviewartifact.Write(homePath, CapabilityLifecycleProposalReviewArea, proposal.ID, proposal, "  ", RenderCapabilityLifecycleProposalReview(proposal))
-	return CapabilityLifecycleProposalPaths{PlanPath: paths.PlanPath, ReviewPath: paths.ReviewPath}, err
+	dir, err := reviewartifact.Dir(homePath, CapabilityLifecycleProposalReviewArea)
+	if err != nil {
+		return CapabilityLifecycleProposalPaths{}, err
+	}
+	out := CapabilityLifecycleProposalPaths{
+		PlanPath:   filepath.Join(dir, proposal.ID+".json"),
+		ReviewPath: filepath.Join(dir, proposal.ID+".md"),
+	}
+	err = withCapabilityLifecycleDispositionLock(homePath, proposal.ID, func() error {
+		winner, collision, err := publishCapabilityLifecycleProposalJSON(out.PlanPath, proposal)
+		if err != nil {
+			return err
+		}
+		// Markdown is a projection of the immutable JSON winner. Publishing JSON
+		// first makes a crash between the pair recoverable by any later replay,
+		// including a losing concurrent semantic collision.
+		if err := recoverCapabilityLifecycleProposalMarkdown(out.ReviewPath, winner); err != nil {
+			return err
+		}
+		if collision {
+			return fmt.Errorf("capability lifecycle proposal %s semantic collision; refusing to overwrite reviewed evidence", proposal.ID)
+		}
+		return nil
+	})
+	return out, err
+}
+
+func publishCapabilityLifecycleProposalJSON(path string, requested CapabilityLifecycleProposal) (CapabilityLifecycleProposal, bool, error) {
+	if existing, err := loadCapabilityLifecycleProposalCanonical(path, requested.ID); err == nil {
+		return existing, !sameCapabilityLifecycleProposalSemantics(existing, requested), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return CapabilityLifecycleProposal{}, false, err
+	}
+
+	data, err := marshalCapabilityLifecycleProposalCanonical(requested)
+	if err != nil {
+		return CapabilityLifecycleProposal{}, false, err
+	}
+	if err := publishCapabilityLifecycleCanonical(path, data, false); err != nil && !errors.Is(err, os.ErrExist) {
+		return CapabilityLifecycleProposal{}, false, err
+	}
+	winner, err := loadCapabilityLifecycleProposalCanonical(path, requested.ID)
+	if err != nil {
+		return CapabilityLifecycleProposal{}, false, err
+	}
+	return winner, !sameCapabilityLifecycleProposalSemantics(winner, requested), nil
+}
+
+func loadCapabilityLifecycleProposalCanonical(path, proposalID string) (CapabilityLifecycleProposal, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CapabilityLifecycleProposal{}, err
+	}
+	var proposal CapabilityLifecycleProposal
+	if err := json.Unmarshal(data, &proposal); err != nil {
+		return CapabilityLifecycleProposal{}, fmt.Errorf("existing capability lifecycle proposal %s unreadable: %w", proposalID, err)
+	}
+	if proposal.SchemaVersion != CapabilityLifecycleProposalSchemaVersion || proposal.ID != proposalID {
+		return CapabilityLifecycleProposal{}, fmt.Errorf("existing capability lifecycle proposal %s identity/schema mismatch", proposalID)
+	}
+	if strings.TrimSpace(proposal.Statement) == "" || len(reviewartifact.Unique(proposal.EvidenceRefs)) == 0 {
+		return CapabilityLifecycleProposal{}, fmt.Errorf("existing capability lifecycle proposal %s incomplete", proposalID)
+	}
+	return proposal, nil
+}
+
+func sameCapabilityLifecycleProposalSemantics(existing, requested CapabilityLifecycleProposal) bool {
+	// CreatedAt is observation metadata, not semantic identity. The first
+	// writer's bytes remain authoritative even when a replay observes later.
+	existing.CreatedAt = requested.CreatedAt
+	return reflect.DeepEqual(existing, requested)
+}
+
+func marshalCapabilityLifecycleProposalCanonical(proposal CapabilityLifecycleProposal) ([]byte, error) {
+	data, err := json.Marshal(proposal)
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	card, err := OperatorCardForLifecycleProposal(proposal)
+	if err != nil {
+		return nil, fmt.Errorf("capability lifecycle proposal %s operator card: %w", proposal.ID, err)
+	}
+	if err := reviewartifact.ValidateOperatorCard(card); err != nil {
+		return nil, fmt.Errorf("capability lifecycle proposal %s invalid operator card: %w", proposal.ID, err)
+	}
+	reviewartifact.PutOperatorCard(payload, card)
+	payload["summary_source"] = reviewartifact.SummarySourceWriter
+	data, err = json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func recoverCapabilityLifecycleProposalMarkdown(path string, proposal CapabilityLifecycleProposal) error {
+	want := []byte(RenderCapabilityLifecycleProposalReview(proposal))
+	current, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(current, want) {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	repair := err == nil
+	if err := publishCapabilityLifecycleCanonical(path, want, repair); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			current, readErr := os.ReadFile(path)
+			if readErr == nil && bytes.Equal(current, want) {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func RenderCapabilityLifecycleProposalReview(proposal CapabilityLifecycleProposal) string {
