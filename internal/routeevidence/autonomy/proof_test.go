@@ -392,6 +392,18 @@ func TestCompileFailsClosedOnFutureTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestCompileFailsClosedOnFutureReceiptTimestamp(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "future-receipt-current", proofNow.Add(-24*time.Hour), sampleOptions{})
+	future := seedSample(t, home, plan, "future-receipt", proofNow, sampleOptions{})
+	rewriteReceiptCreatedAt(t, home, future.ReceiptID, proofNow.Add(24*time.Hour))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+future.WorkID+" has receipt timestamp after eligibility evaluation") {
+		t.Fatalf("future receipt timestamp did not fail closed: %v", err)
+	}
+}
+
 func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
 	for _, mode := range []string{"hot", "restored"} {
 		t.Run(mode, func(t *testing.T) {
@@ -848,6 +860,27 @@ func removeTerminalWorkEvent(t *testing.T, home, workID string) {
 		t.Fatalf("removed terminal events for %s = %d, want 1", workID, removed)
 	}
 	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rewriteReceiptCreatedAt(t *testing.T, home, receiptID string, createdAt time.Time) {
+	t.Helper()
+	path := filepath.Join(home, "events", receiptID+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	updated, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(updated, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
