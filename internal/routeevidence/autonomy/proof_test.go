@@ -18,12 +18,16 @@ import (
 var proofNow = time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 
 type sampleOptions struct {
-	routeOnly     bool
-	routeWorkID   *string
-	clientProfile string
-	protocol      string
-	requestID     string
-	resolvedModel *string
+	routeOnly        bool
+	routeWorkID      *string
+	clientProfile    string
+	protocol         string
+	requestID        string
+	selectedModel    string
+	resolvedProvider *string
+	resolvedModel    *string
+	resolutionSource *string
+	gatewayRequestID *string
 }
 
 type seededSample struct {
@@ -83,21 +87,32 @@ func TestCompileRequiresExactDecidingRouteBinding(t *testing.T) {
 
 func TestCompileRequiresEligibleResolvedModelIdentity(t *testing.T) {
 	tests := []struct {
-		name          string
-		resolvedModel string
-		wantReason    string
+		name             string
+		resolvedProvider string
+		resolvedModel    string
+		resolutionSource string
+		gatewayRequestID string
+		wantReason       string
 	}{
-		{name: "missing", resolvedModel: "", wantReason: "resolved model is required"},
-		{name: "route-alias", resolvedModel: "auto/judge", wantReason: "resolved model is still the requested route alias"},
-		{name: "free-fallback", resolvedModel: "scout/chat", wantReason: "resolved model gate role is tripwire_only"},
-		{name: "unknown-override", resolvedModel: "provider/unlisted-model", wantReason: "resolved model is not present in current route plan"},
+		{name: "missing-provider", resolvedModel: "deepseek/deepseek-v4-pro", resolutionSource: "gateway_route", gatewayRequestID: "gateway-missing-provider", wantReason: "resolved provider is required"},
+		{name: "missing-model", resolvedProvider: "deepseek", resolutionSource: "gateway_route", gatewayRequestID: "gateway-missing-model", wantReason: "resolved model is required"},
+		{name: "unresolved-adaptive-alias", resolvedProvider: "switchback", resolvedModel: "auto/judge", resolutionSource: "gateway_route", gatewayRequestID: "gateway-unresolved-alias", wantReason: "adaptive route did not resolve to exactly one concrete lane"},
+		{name: "adaptive-without-gateway-source", resolvedProvider: "deepseek", resolvedModel: "deepseek/deepseek-v4-pro", resolutionSource: "response_body", wantReason: "adaptive route requires gateway resolution evidence"},
+		{name: "adaptive-without-gateway-request", resolvedProvider: "deepseek", resolvedModel: "deepseek/deepseek-v4-pro", resolutionSource: "gateway_route", wantReason: "adaptive route requires gateway request identity"},
+		{name: "free-fallback", resolvedProvider: "scout", resolvedModel: "scout/chat", resolutionSource: "gateway_route", gatewayRequestID: "gateway-free", wantReason: "resolved model gate role is tripwire_only"},
+		{name: "unknown-override", resolvedProvider: "provider", resolvedModel: "provider/unlisted-model", resolutionSource: "gateway_route", gatewayRequestID: "gateway-unknown", wantReason: "resolved target is not present in current route plan"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			plan := installPlan(t, home, false)
 			seedSample(t, home, plan, tc.name+"-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
-			seedSample(t, home, plan, tc.name+"-bad", proofNow.Add(-24*time.Hour), sampleOptions{resolvedModel: stringPointer(tc.resolvedModel)})
+			seedSample(t, home, plan, tc.name+"-bad", proofNow.Add(-24*time.Hour), sampleOptions{
+				resolvedProvider: stringPointer(tc.resolvedProvider),
+				resolvedModel:    stringPointer(tc.resolvedModel),
+				resolutionSource: stringPointer(tc.resolutionSource),
+				gatewayRequestID: stringPointer(tc.gatewayRequestID),
+			})
 
 			artifact := compile(t, home, plan, 2)
 			if artifact.Status != "ineligible" {
@@ -119,10 +134,77 @@ func TestCompileBindsResolvedProviderAndModelIdentity(t *testing.T) {
 		t.Fatalf("resolved paid judge evidence was rejected: %+v", artifact)
 	}
 	for _, sample := range artifact.Samples {
-		if sample.RouteModelID != "auto/judge" || sample.ProviderID != "deepseek" || sample.ModelID != "deepseek/deepseek-v4-pro" || sample.GateRole != "eligible" {
+		if sample.RouteModelID != "auto/judge" || sample.RouteMode != "adaptive" || sample.ResolvedLaneID != "deepseek/deepseek-v4-pro" || sample.ProviderID != "deepseek" || sample.ModelID != "deepseek/deepseek-v4-pro" || sample.ResolutionSource != "gateway_route" || sample.GateRole != "eligible" {
 			t.Fatalf("resolved provider/model identity was not sealed: %+v", sample)
 		}
 	}
+}
+
+func TestCompileAllowsConcreteDirectSelectedModelToEqualResolvedModel(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	opts := sampleOptions{
+		selectedModel:    "deepseek/deepseek-v4-pro",
+		resolvedProvider: stringPointer("deepseek"),
+		resolvedModel:    stringPointer("deepseek/deepseek-v4-pro"),
+		resolutionSource: stringPointer("gateway_route"),
+		gatewayRequestID: stringPointer("gateway-direct-paid"),
+	}
+	seedSample(t, home, plan, "direct-paid-first", proofNow.Add(-48*time.Hour), opts)
+	seedSample(t, home, plan, "direct-paid-second", proofNow.Add(-24*time.Hour), opts)
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "eligible" {
+		t.Fatalf("direct paid selected==resolved evidence was rejected: %+v", artifact)
+	}
+	for _, sample := range artifact.Samples {
+		if sample.RouteModelID != "deepseek/deepseek-v4-pro" || sample.RouteMode != "direct" || sample.ResolvedLaneID != "deepseek/deepseek-v4-pro" || sample.ProviderID != "deepseek" || sample.ModelID != "deepseek/deepseek-v4-pro" {
+			t.Fatalf("direct paid identity was not sealed: %+v", sample)
+		}
+	}
+}
+
+func TestCompileAllowsEligibleLocalDirectLane(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	opts := sampleOptions{
+		selectedModel:    "mac/qwen-fixture",
+		resolvedProvider: stringPointer("lmstudio"),
+		resolvedModel:    stringPointer("qwen-fixture-served"),
+		resolutionSource: stringPointer("response_body"),
+		gatewayRequestID: stringPointer(""),
+	}
+	seedSample(t, home, plan, "local-direct-first", proofNow.Add(-48*time.Hour), opts)
+	seedSample(t, home, plan, "local-direct-second", proofNow.Add(-24*time.Hour), opts)
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "eligible" {
+		t.Fatalf("eligible local direct evidence was rejected: %+v", artifact)
+	}
+	for _, sample := range artifact.Samples {
+		if sample.RouteMode != "direct" || sample.ResolvedLaneID != "mac/qwen-fixture" || sample.ProviderID != "lmstudio" || sample.ModelID != "qwen-fixture-served" || sample.ResolutionSource != "response_body" || sample.GateRole != "eligible" {
+			t.Fatalf("local direct identity was not sealed: %+v", sample)
+		}
+	}
+}
+
+func TestCompileRejectsDirectLaneResolvingToDifferentLane(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "direct-mismatch-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "direct-mismatch-bad", proofNow.Add(-24*time.Hour), sampleOptions{
+		selectedModel:    "deepseek/deepseek-v4-pro",
+		resolvedProvider: stringPointer("lmstudio"),
+		resolvedModel:    stringPointer("qwen-fixture-served"),
+		resolutionSource: stringPointer("response_body"),
+		gatewayRequestID: stringPointer(""),
+	})
+
+	artifact := compile(t, home, plan, 2)
+	if artifact.Status != "ineligible" {
+		t.Fatalf("direct lane resolved to a different lane: %+v", artifact)
+	}
+	assertReason(t, artifact, "direct route resolved outside its declared target")
 }
 
 func TestGateRoleFailsClosedForUnknownClaimLevel(t *testing.T) {
@@ -357,9 +439,10 @@ func installPlan(t *testing.T, home string, assumed bool) autonomy.RoutePlanSnap
 		SourceRevision:  revision,
 		CapabilityClass: "judge-critique",
 		Chain: []autonomy.LaneSnapshot{
-			{ModelID: "auto/judge", ProviderRoute: "auto/judge", Tier: "cheap", ClaimLevel: claimLevel, GateRole: gateRole},
-			{ModelID: "deepseek/deepseek-v4-pro", ProviderRoute: "deepseek/deepseek-v4-pro", Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
-			{ModelID: "scout/chat", ProviderRoute: "scout/chat", Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
+			{ModelID: "auto/judge", ProviderRoute: "auto/judge", Resolution: autonomy.LaneResolution{Mode: "adaptive"}, Tier: "cheap", ClaimLevel: claimLevel, GateRole: gateRole},
+			{ModelID: "deepseek/deepseek-v4-pro", ProviderRoute: "deepseek/deepseek-v4-pro", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "deepseek", Model: "deepseek/deepseek-v4-pro"}}}, Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
+			{ModelID: "scout/chat", ProviderRoute: "scout/chat", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "scout", Model: "scout/chat"}}}, Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
+			{ModelID: "mac/qwen-fixture", ProviderRoute: "direct", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "lmstudio", Model: "qwen-fixture-served"}}}, Tier: "local-batch", ClaimLevel: "primary", GateRole: "eligible"},
 		},
 	}
 }
@@ -436,6 +519,22 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 	if opts.resolvedModel != nil {
 		resolvedModel = *opts.resolvedModel
 	}
+	resolvedProvider := "deepseek"
+	if opts.resolvedProvider != nil {
+		resolvedProvider = *opts.resolvedProvider
+	}
+	resolutionSource := "gateway_route"
+	if opts.resolutionSource != nil {
+		resolutionSource = *opts.resolutionSource
+	}
+	gatewayRequestID := "gateway-" + id
+	if opts.gatewayRequestID != nil {
+		gatewayRequestID = *opts.gatewayRequestID
+	}
+	selectedModel := opts.selectedModel
+	if selectedModel == "" {
+		selectedModel = "auto/judge"
+	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
 		CreatedAt:     closedAt.Add(-time.Minute),
 		RequestID:     requestID,
@@ -443,8 +542,11 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 		ClientProfile: clientProfile,
 		Protocol:      protocol,
 		Provider:      "compound-route-plan",
-		Model:         "auto/judge",
-		ResolvedModel: resolvedModel,
+		Model:            selectedModel,
+		ResolvedProvider: resolvedProvider,
+		ResolvedModel:    resolvedModel,
+		ResolutionSource: resolutionSource,
+		GatewayRequestID: gatewayRequestID,
 		Status:        "completed",
 		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
@@ -483,7 +585,10 @@ func duplicateRouteRequest(t *testing.T, home string, sample seededSample, creat
 		Protocol:      "panel-lane",
 		Provider:      "compound-route-plan",
 		Model:         "auto/judge",
-		ResolvedModel: "deepseek/deepseek-v4-pro",
+		ResolvedProvider: "deepseek",
+		ResolvedModel:    "deepseek/deepseek-v4-pro",
+		ResolutionSource: "gateway_route",
+		GatewayRequestID: "gateway-duplicate-" + sample.RequestID,
 		Status:        "completed",
 		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})

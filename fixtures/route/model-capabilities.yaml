@@ -13,6 +13,8 @@ models:
     lane: "auto/extract (switchback adaptive profile)"
     harness: "switchback"
     provider_route: "auto/extract"
+    resolution:
+      mode: adaptive
     effort_default: low
     cost_class: free
     tier: free
@@ -25,6 +27,8 @@ models:
     lane: "auto/judge (switchback adaptive profile)"
     harness: "switchback"
     provider_route: "auto/judge"
+    resolution:
+      mode: adaptive
     effort_default: high
     cost_class: api-marginal
     tier: cheap
@@ -37,6 +41,11 @@ models:
     lane: "deepseek paid judge (fixture)"
     harness: "switchback"
     provider_route: "deepseek/deepseek-v4-pro"
+    resolution:
+      mode: direct
+      targets:
+        - provider: deepseek
+          model: deepseek/deepseek-v4-pro
     effort_default: high
     cost_class: api-marginal
     tier: cheap
@@ -49,6 +58,11 @@ models:
     lane: "scout/chat (switchback)"
     harness: "switchback"
     provider_route: "scout/chat"
+    resolution:
+      mode: direct
+      targets:
+        - provider: scout
+          model: scout/chat
     effort_default: low
     cost_class: free
     tier: free
@@ -63,7 +77,12 @@ models:
   mac/qwen-fixture:
     lane: "local/mac-fast (fixture)"
     harness: "local"
-    provider_route: "local/mac-fast"
+    provider_route: "direct"
+    resolution:
+      mode: direct
+      targets:
+        - provider: lmstudio
+          model: qwen-fixture-served
     effort_default: medium
     cost_class: local
     tier: local-batch
@@ -72,6 +91,9 @@ models:
       classify-extract:
         level: assumed
         evidence: "fixture: local privacy lane requires supervised promotion"
+      judge-critique:
+        level: primary
+        evidence: "fixture: eligible local direct judge"
 routing_defaults:
   classify-extract:
     - auto/extract
@@ -81,3 +103,4 @@ routing_defaults:
     - auto/judge
     - deepseek/deepseek-v4-pro
     - scout/chat
+    - mac/qwen-fixture
