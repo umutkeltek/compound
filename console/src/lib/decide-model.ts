@@ -117,6 +117,30 @@ export type DecideAct =
 
 export type DecideChip = { label: string; tone: string };
 
+export type DecideBriefFinding = { finding: string; evidenceRef: string };
+
+export type DecideBriefOption = {
+  value: string;
+  label: string;
+  consequenceApprove: string;
+  consequenceHold: string;
+  /** Copy/display material ONLY in this slice — never wired into /api/decision/execute. */
+  commandArgv: string[] | null;
+};
+
+export type DecideBriefRecommendation = { option: string; confidence: number; rationale: string };
+
+/** compound.decision_brief.v0.1 (internal/reviewartifact/brief.go), mapped to camelCase for the client. */
+export type DecideBrief = {
+  headline: string;
+  whatThisIs: string;
+  findings: DecideBriefFinding[];
+  options: DecideBriefOption[];
+  recommendation: DecideBriefRecommendation;
+  preparedBy: string;
+  preparedAt: string;
+};
+
 export type DecideGroup = {
   key: string;
   area: string;
@@ -138,6 +162,13 @@ export type DecideGroup = {
   evidence: string[];
   freshness: { generatedAt: string; source: string };
   act: DecideAct;
+  /**
+   * A prepared, propose-only translation of this decision — optional so
+   * existing DecideGroup literals built outside buildDecideGroups (e.g. the
+   * external-repo-intake card in app/reviews/page.tsx) keep compiling
+   * unchanged. undefined/null means "render exactly as before this packet."
+   */
+  brief?: DecideBrief | null;
 };
 
 /* ---------- helpers ---------- */
@@ -240,6 +271,69 @@ function groupEvidence(group: Json, fallback: string[]): string[] {
   if (summaries.length) return summaries.map((s) => str(s.label) || str(s.ref)).filter(Boolean).slice(0, 12);
   const refs = arr(group.evidence_refs).map(String).filter(Boolean);
   return (refs.length ? refs : fallback).slice(0, 12);
+}
+
+/**
+ * Maps a raw `item.brief` (compound.decision_brief.v0.1, already validated
+ * server-side by internal/reviewartifact.ParseDecisionBrief) into the client
+ * shape. Independently defensive: requires a headline, a prepared_by, and at
+ * least one finding with an evidence ref, so a stale/partial payload can
+ * never half-render even if it somehow reached the client — belt-and-
+ * suspenders on top of the server-side evidence-ref-required /
+ * prepared_by-required validation, not a replacement for it.
+ */
+function parseBrief(raw: unknown): DecideBrief | null {
+  if (!raw || typeof raw !== "object") return null;
+  const b = raw as Json;
+  const headline = str(b.headline);
+  const preparedBy = str(b.prepared_by);
+  if (!headline || !preparedBy) return null;
+  const findings = arr(b.findings)
+    .filter((f): f is Json => Boolean(f) && typeof f === "object")
+    .map((f) => ({ finding: str(f.finding), evidenceRef: str(f.evidence_ref) }))
+    .filter((f) => f.evidenceRef);
+  if (!findings.length) return null;
+  const options = arr(b.options)
+    .filter((o): o is Json => Boolean(o) && typeof o === "object")
+    .map((o) => ({
+      value: str(o.value),
+      label: str(o.label),
+      consequenceApprove: str(o.consequence_approve),
+      consequenceHold: str(o.consequence_hold),
+      commandArgv: Array.isArray(o.command_argv) ? arr(o.command_argv).map(String).filter(Boolean) : null,
+    }));
+  const rec = b.recommendation && typeof b.recommendation === "object" ? (b.recommendation as Json) : {};
+  return {
+    headline,
+    whatThisIs: str(b.what_this_is),
+    findings,
+    options,
+    recommendation: {
+      option: str(rec.option),
+      confidence: num(rec.confidence),
+      rationale: str(rec.rationale),
+    },
+    preparedBy,
+    preparedAt: str(b.prepared_at),
+  };
+}
+
+/**
+ * Scans EVERY group member for a valid brief — NOT just `group.sample`.
+ * `group.sample` is only the FIRST member the Go projection saw while
+ * building the group (internal/reviewartifact/queue.go buildQueueGroups sets
+ * Sample once, on first-seen) — a brief prepared for any other member would
+ * silently vanish from the card if this only looked at the sample. Verified
+ * against the live proof shape: clp_326cfa93213e (capability-lifecycle-
+ * proposals, 4 members) — the briefed member is not guaranteed to be first.
+ */
+function groupBrief(group: Json, itemByID: Map<string, Json>): DecideBrief | null {
+  for (const id of arr(group.item_ids).map(String)) {
+    const parsed = parseBrief(itemByID.get(id)?.brief);
+    if (parsed) return parsed;
+  }
+  const sample = group.sample;
+  return parseBrief(sample && typeof sample === "object" ? (sample as Json).brief : null);
 }
 
 function fallbackCommand(group: Json, sample: Json): string {
@@ -414,6 +508,7 @@ export function buildDecideGroups(
     const evidence = groupEvidence(group, pl?.evidence ?? []);
     const members =
       act.mode === "batch-enumerable" ? act.members : readonlyMembers(group, itemByID);
+    const brief = groupBrief(group, itemByID);
 
     return {
       key: str(group.key) || sampleId,
@@ -439,6 +534,7 @@ export function buildDecideGroups(
         source: "compound attention --json",
       },
       act,
+      brief,
     };
   });
 }

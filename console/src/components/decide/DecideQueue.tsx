@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 
 import { CopyCmd } from "@/components/CopyCmd";
 import { Button, DocIcon, Drawer, FreshnessChip, MetaCount, UsersIcon } from "@/components/kit";
-import type { DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
+import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
 import { GovernedAct } from "./GovernedAct";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
@@ -42,6 +42,102 @@ function ConsequencePair({ approve, hold }: { approve: string; hold: string }) {
         <span> → </span>
         {hold}
       </div>
+    </div>
+  );
+}
+
+/* ---------- decision-brief translation (propose-only; display-only) ----------
+ * Renders ONLY when a card's group carries a prepared, already-validated
+ * `brief` (see decide-model.ts groupBrief — scans every group member, not
+ * just group.sample). Un-briefed cards render with `group.brief` undefined/
+ * null, so this whole block is absent and every byte above/below it is
+ * exactly what rendered before this packet (the frozen-markup guarantee).
+ * `command_argv` is copy/display material ONLY — never wired to a fetch, so
+ * a brief can never introduce a new execution path (see AGENTS.md boundary:
+ * "Do not wire brief-sourced argv into /api/decision/execute").
+ */
+function BriefOptionRow({ option, recommended }: { option: DecideBriefOption; recommended: boolean }) {
+  const argv = option.commandArgv;
+  const copyCmd = argv && argv.length ? (argv[0] === "compound" ? argv.join(" ") : `compound ${argv.join(" ")}`) : "";
+  return (
+    <div
+      className={`rounded-md border px-3 py-2 text-xs leading-relaxed ${
+        recommended ? "border-good/40 bg-good/5" : "border-hair bg-soft"
+      }`}
+    >
+      <div className="flex items-center gap-1.5">
+        <span className="font-semibold text-ink">{option.label || option.value}</span>
+        {recommended ? (
+          <span className="rounded-pill bg-good/15 px-1.5 py-0.5 text-2xs font-semibold text-good">recommended</span>
+        ) : null}
+      </div>
+      {option.consequenceApprove ? (
+        <div className="mt-1 text-ink">
+          <span className="font-semibold text-good">if chosen</span>
+          <span className="text-faint"> → </span>
+          {option.consequenceApprove}
+        </div>
+      ) : null}
+      {option.consequenceHold ? (
+        <div className="mt-0.5 text-muted">
+          <span className="font-semibold">if not</span>
+          <span> → </span>
+          {option.consequenceHold}
+        </div>
+      ) : null}
+      {copyCmd ? (
+        <div className="mt-1.5">
+          <CopyCmd cmd={copyCmd} compact />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function BriefPanel({ brief }: { brief: DecideBrief }) {
+  return (
+    <div className="mt-3 rounded-md border border-hair bg-page px-3 py-2.5">
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-sm font-semibold leading-snug text-ink">{brief.headline}</div>
+        <span
+          className="shrink-0 rounded-pill border border-hair bg-soft px-2 py-0.5 text-2xs font-medium text-muted"
+          title="This translation was prepared by an agent session for you — not the operator, not auto-applied."
+        >
+          prepared by {brief.preparedBy}
+        </span>
+      </div>
+      {brief.whatThisIs ? <p className="mt-1 text-xs leading-relaxed text-muted">{brief.whatThisIs}</p> : null}
+      {brief.findings.length ? (
+        <ul className="mt-2 flex flex-col gap-1">
+          {brief.findings.map((f, i) => (
+            <li key={i} className="text-xs leading-relaxed text-ink">
+              <span>{f.finding}</span>{" "}
+              {f.evidenceRef ? (
+                <code className="mono text-2xs text-faint" title={f.evidenceRef}>
+                  {f.evidenceRef}
+                </code>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {brief.options.length ? (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {brief.options.map((o, i) => (
+            <BriefOptionRow
+              key={o.value || i}
+              option={o}
+              recommended={Boolean(brief.recommendation.option) && o.value === brief.recommendation.option}
+            />
+          ))}
+        </div>
+      ) : null}
+      {brief.recommendation.rationale ? (
+        <p className="mt-2 text-2xs leading-relaxed text-faint">
+          <span className="font-semibold text-muted">why this lean</span> — {brief.recommendation.rationale}
+          {brief.recommendation.confidence ? ` (confidence ${Math.round(brief.recommendation.confidence * 100)}%)` : ""}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -258,6 +354,7 @@ function DecideCard({
         </p>
       ) : null}
       {group.consequences ? <ConsequencePair approve={group.consequences.approve} hold={group.consequences.hold} /> : null}
+      {group.brief ? <BriefPanel brief={group.brief} /> : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2.5">
