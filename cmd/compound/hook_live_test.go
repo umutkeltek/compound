@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"compound/internal/home"
+	"compound/internal/policy"
 )
 
 func TestHookLiveSessionStartEmitsAdditionalContext(t *testing.T) {
@@ -254,16 +255,16 @@ func TestHookLivePreToolUseMapsClaudeWriteInput(t *testing.T) {
 	}
 }
 
-func TestHookLiveCodexPreToolUseEmitsCodexPolicyDecision(t *testing.T) {
+func TestHookLiveCodexPreToolUseEmitsNativeAllowForApplyPatch(t *testing.T) {
 	homePath := t.TempDir()
 	repo := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
-	target := filepath.Join(repo, "README.md")
+	patch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** End Patch"
 	input := `{"hook_event_name":"PreToolUse","session_id":"sess_codex_pretool","cwd":` +
-		quoteJSON(repo) + `,"tool_name":"Write","tool_input":{"file_path":` + quoteJSON(target) + `}}`
+		quoteJSON(repo) + `,"tool_name":"apply_patch","tool_input":{"command":` + quoteJSON(patch) + `}}`
 	var code int
 	out := captureStdout(t, func() {
 		withStdin(t, input, func() {
@@ -273,18 +274,71 @@ func TestHookLiveCodexPreToolUseEmitsCodexPolicyDecision(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("codex live pre-tool-use exit = %d\n%s", code, out)
 	}
-	var resp codexLiveHookResponse
+	var resp claudeLiveHookResponse
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		t.Fatalf("parse codex live response: %v\n%s", err, out)
 	}
-	if resp.SchemaVersion != "compound.codex_live_hook_response.v0.1" ||
-		resp.HookName != "PreToolUse" ||
-		resp.Status != "ok" ||
-		resp.EventID == "" {
-		t.Fatalf("codex live pre-tool-use response = %+v", resp)
+	if resp.HookSpecificOutput.HookEventName != "PreToolUse" || resp.HookSpecificOutput.PermissionDecision != "" {
+		t.Fatalf("codex native allow response = %+v", resp.HookSpecificOutput)
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "events")); err != nil {
 		t.Fatalf("codex live hook should persist event artifacts in temp home: %v", err)
+	}
+}
+
+func TestHookLiveCodexPreToolUseDeniesWhenAnyApplyPatchTargetIsMisplacedCanon(t *testing.T) {
+	homePath := t.TempDir()
+	repo := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "config", "policy.yaml"), []byte("placement_guard_mode: block\n"), 0o644); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	rules := policy.PlacementRules{Owners: []policy.PlacementOwnerRule{{
+		ID: "decisions", Owner: "decisions", Status: "active",
+		CanonicalWriteGlobs: []string{filepath.Join(repo, "decisions", "**")},
+		CanonFilenameGlobs:  []string{"DEC-*.md"}, Confidence: "block",
+	}}}
+	rulesJSON, err := json.Marshal(rules)
+	if err != nil {
+		t.Fatalf("marshal placement rules: %v", err)
+	}
+	rulesSource := filepath.Join(t.TempDir(), "placement-rules.json")
+	if err := os.WriteFile(rulesSource, rulesJSON, 0o644); err != nil {
+		t.Fatalf("write placement rules: %v", err)
+	}
+	if _, err := policy.ImportPlacementRules(homePath, rulesSource, cliTestNow); err != nil {
+		t.Fatalf("import placement rules: %v", err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: README.md\n@@\n-old\n+new\n*** Add File: DEC-9.md\n+decision\n*** End Patch"
+	input := `{"hook_event_name":"PreToolUse","session_id":"sess_codex_block","cwd":` +
+		quoteJSON(repo) + `,"tool_name":"apply_patch","tool_input":{"command":` + quoteJSON(patch) + `}}`
+	var code int
+	out := captureStdout(t, func() {
+		withStdin(t, input, func() {
+			code = runHookCommand([]string{"pre-tool-use", "--live", "--harness", "codex"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("codex native hook exit = %d, want JSON decision on exit 0\n%s", code, out)
+	}
+	var resp claudeLiveHookResponse
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
+		t.Fatalf("parse codex native response: %v\n%s", err, out)
+	}
+	got := resp.HookSpecificOutput
+	if got.HookEventName != "PreToolUse" || got.PermissionDecision != "deny" || !strings.Contains(strings.ToLower(got.PermissionDecisionReason), "placement") {
+		t.Fatalf("codex native deny response = %+v", got)
+	}
+	stream, err := os.ReadFile(filepath.Join(homePath, "events", "hook-events.ndjson"))
+	if err != nil {
+		t.Fatalf("read hook events: %v", err)
+	}
+	if !strings.Contains(string(stream), `"status":"blocked"`) {
+		t.Fatalf("hook event did not prove native block:\n%s", string(stream))
 	}
 }
 

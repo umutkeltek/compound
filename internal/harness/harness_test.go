@@ -9,12 +9,12 @@ import (
 
 func TestSupportsByHarness(t *testing.T) {
 	r := DefaultRegistry()
-	// claude_code can block a tool call; codex cannot (must be enforced via wrapper).
+	// Current Claude Code and Codex releases both expose blocking PreToolUse hooks.
 	if !r.Supports("claude_code", "PreToolUse") {
 		t.Error("claude_code should support PreToolUse block")
 	}
-	if r.Supports("codex", "PreToolUse") {
-		t.Error("codex should NOT be assumed to block a tool call natively")
+	if !r.Supports("codex", "PreToolUse") {
+		t.Error("codex should support the stable native PreToolUse block")
 	}
 	// claude_code has a real SessionEnd event; codex has none (Stop is its only
 	// end-of-turn hook) — conflating them would silently overclaim a receipt codex

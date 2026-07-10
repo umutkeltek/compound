@@ -970,8 +970,8 @@ func TestPromptWorkClosesWithContextTransition(t *testing.T) {
 	}
 }
 
-// The headline P5 proof: the SAME held action is enforced differently by harness
-// capability — claude_code blocks; codex fails open (must be enforced via a wrapper).
+// The headline P5 proof: both current harnesses enforce the same held action at
+// their native PreToolUse boundary.
 func TestPreToolUseCapabilityAware(t *testing.T) {
 	mkFx := func(h string) Fixture {
 		ai := &envelope.ActionIntent{
@@ -1000,8 +1000,8 @@ func TestPreToolUseCapabilityAware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codex run: %v", err)
 	}
-	if codex.Event.Status != "fail_open" {
-		t.Errorf("codex cannot block natively → should be fail_open, got %q", codex.Event.Status)
+	if codex.Event.Status != "blocked" {
+		t.Errorf("codex should block through native PreToolUse, got %q", codex.Event.Status)
 	}
 	// Both compute the same decision (hold); only the ENFORCEMENT differs.
 	for _, res := range []Result{claude, codex} {
@@ -1009,6 +1009,44 @@ func TestPreToolUseCapabilityAware(t *testing.T) {
 		if pd.Outcome != "hold" {
 			t.Errorf("destructive action should evaluate to hold, got %q", pd.Outcome)
 		}
+	}
+}
+
+func TestPreToolUseBatchBlocksWhenAnyActionIsHeld(t *testing.T) {
+	allowed := envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: "act_allowed", CreatedAt: fixedNow.Format(time.RFC3339),
+			Producer: envelope.Producer{Kind: "hook", Name: "compound"}, IDs: envelope.IDs{WorkID: "work_batch"},
+			Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Capability: "filesystem.write", Action: "write_file",
+		Target:        envelope.ActionTarget{Kind: "file", Path: "README.md"},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "repo",
+	}
+	held := allowed
+	held.Header.ID = "act_held"
+	held.Capability = "filesystem.delete"
+	held.Action = "delete_tree"
+	held.Target = envelope.ActionTarget{Kind: "path", Path: "build/cache"}
+	held.MutationClass = "destructive"
+	held.Reversibility = "hard"
+
+	res, err := Run(Fixture{
+		Hook: "pre-tool-use", Harness: "codex", WorkID: "work_batch",
+		Actions: []envelope.ActionIntent{allowed, held},
+	}, baseDeps(), fixedNow)
+	if err != nil {
+		t.Fatalf("run batched pre-tool-use: %v", err)
+	}
+	if res.Event.Status != "blocked" {
+		t.Fatalf("batch status = %q, want blocked", res.Event.Status)
+	}
+	if got := kinds(res.Produced); len(got) != 4 || got[0] != "action_intent" || got[1] != "policy_decision" || got[2] != "action_intent" || got[3] != "policy_decision" {
+		t.Fatalf("batch produced = %v, want action/policy pair per target", got)
+	}
+	if got := res.Produced[3].(*envelope.PolicyDecision).Outcome; got != "hold" {
+		t.Fatalf("held batch policy = %q, want hold", got)
 	}
 }
 
