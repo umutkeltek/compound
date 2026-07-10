@@ -373,6 +373,9 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 	if err := w.Validate(); err != nil {
 		return CreatePlan{}, err
 	}
+	if err := validateDirectorOriginInitialState(w); err != nil {
+		return CreatePlan{}, err
+	}
 	if opts.ActionContext == nil {
 		meaningContext, err := s.promotedMeaningActionContext(w.IDs.ContextPackID)
 		if err != nil {
@@ -435,6 +438,13 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 		plan.PlanPath = path
 	}
 	return plan, nil
+}
+
+func validateDirectorOriginInitialState(w envelope.WorkEnvelope) error {
+	if directorProposedWork(w) && strings.TrimSpace(w.State) != "proposed" {
+		return fmt.Errorf("director-origin work must start in proposed state; got %q", w.State)
+	}
+	return nil
 }
 
 func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAttached []string) (envelope.WorkEnvelope, error) {
