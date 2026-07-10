@@ -557,9 +557,14 @@ func protectedOperationalDecisionClaim(claim Claim) bool {
 	if HasOperationalDecisionAuthority(q) {
 		return true
 	}
-	return q["source"] == "decisions-repo" &&
-		q["source"] == "decisions-repo" &&
-		q["lifecycle_status"] == "accepted"
+	return q["source"] == "decisions-repo" && q["lifecycle_status"] == "accepted"
+}
+
+// HasProtectedOperationalDecisionAuthority recognizes both the current
+// reserved-stamp format and the narrow pre-stamp operator record retained for
+// migration. Non-operator legacy/stamped claims are never authority.
+func HasProtectedOperationalDecisionAuthority(claim Claim) bool {
+	return protectedOperationalDecisionClaim(claim)
 }
 
 func (s *Store) protectedOperationalDecisionInSlot(candidate Candidate) (Claim, error) {

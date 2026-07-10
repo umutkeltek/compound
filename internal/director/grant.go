@@ -104,7 +104,7 @@ func resolveApplyGrant(homePath string, now time.Time) (resolvedApplyGrant, erro
 	if err != nil {
 		return resolvedApplyGrant{}, err
 	}
-	active := decisions.AuthoritativeActiveDecisions(claims, decisions.KindGrant)
+	active := decisions.ActiveDecisions(claims, decisions.KindGrant)
 	var candidates []mem.Claim
 	for _, c := range active {
 		l := decisions.LifecycleFromClaim(c)

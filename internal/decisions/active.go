@@ -69,7 +69,7 @@ func ActiveDecisions(claims []mem.Claim, kind string) []mem.Claim {
 func AuthoritativeActiveDecisions(claims []mem.Claim, kind string) []mem.Claim {
 	var authoritative []mem.Claim
 	for _, c := range claims {
-		if c.ClaimType == "decision" && mem.HasOperationalDecisionAuthority(c.Qualifiers) && policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"]) {
+		if c.ClaimType == "decision" && mem.HasProtectedOperationalDecisionAuthority(c) && policy.HasOperatorProvenance(c.Qualifiers["reviewed_by"]) {
 			authoritative = append(authoritative, c)
 		}
 	}
