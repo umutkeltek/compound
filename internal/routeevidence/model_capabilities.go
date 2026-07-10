@@ -121,7 +121,8 @@ type ModelCapabilitiesSourceAuthority struct {
 }
 
 type CapabilityRoutePlanOptions struct {
-	PrivacySensitive bool
+	PrivacySensitive            bool
+	SuppressPendingObservations bool
 }
 
 type CapabilityRoutePlan struct {
@@ -406,13 +407,15 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 			plan.Warnings = append(plan.Warnings, "free judge/critique lane "+lane.ModelID+" may object but must not gate verdicts")
 		}
 	}
-	pending, err := pendingRouteObservations(homePath, capabilityClass, defaults, now)
-	if err != nil {
-		return CapabilityRoutePlan{}, err
-	}
-	plan.PendingObservations = pending
-	if len(pending) > 0 {
-		plan.Warnings = append(plan.Warnings, "pending route observations require owner review before routing policy changes")
+	if !opts.SuppressPendingObservations {
+		pending, err := pendingRouteObservations(homePath, capabilityClass, defaults, now)
+		if err != nil {
+			return CapabilityRoutePlan{}, err
+		}
+		plan.PendingObservations = pending
+		if len(pending) > 0 {
+			plan.Warnings = append(plan.Warnings, "pending route observations require owner review before routing policy changes")
+		}
 	}
 	plan.Warnings = sortedStrings(plan.Warnings)
 	if len(plan.Chain) == 0 {

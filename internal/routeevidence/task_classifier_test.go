@@ -1,6 +1,9 @@
 package routeevidence
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestClassifyCapabilityTaskUsesOwnedOrderedRules(t *testing.T) {
 	tests := []struct {
@@ -31,7 +34,19 @@ func TestClassifyCapabilityTaskUsesOwnedOrderedRules(t *testing.T) {
 			if got.DeterministicFirst == "" || got.EvaluationMethod == "" || got.RuleID == "" {
 				t.Fatalf("classification must explain its deterministic and evaluation contract: %+v", got)
 			}
+			if got.SchemaVersion != CapabilityTaskClassifierSchemaVersion || got.AuthorityRef != CapabilityTaskClassifierAuthorityRef || !strings.HasPrefix(got.AuthorityRevision, "sha256:") {
+				t.Fatalf("classification must bind its versioned authority contract: %+v", got)
+			}
 		})
+	}
+}
+
+func TestCapabilityTaskClassifierRevisionChangesWithRules(t *testing.T) {
+	baseline := taskClassifierRevision(taskClassificationRules)
+	changed := append([]taskClassificationRule{}, taskClassificationRules...)
+	changed[0].evaluationMethod += " plus changed proof"
+	if got := taskClassifierRevision(changed); got == baseline {
+		t.Fatal("classifier authority revision did not change with rule contract")
 	}
 }
 

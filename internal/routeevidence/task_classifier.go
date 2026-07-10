@@ -1,13 +1,23 @@
 package routeevidence
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"regexp"
 	"strings"
+)
+
+const (
+	CapabilityTaskClassifierSchemaVersion = "compound.capability_task_classifier.v0.1"
+	CapabilityTaskClassifierAuthorityRef  = "contract://capability-task-classifier"
 )
 
 // TaskClassification is the deterministic task-to-route-class decision used
 // before planning against the Compound-owned model-router authority.
 type TaskClassification struct {
+	SchemaVersion      string `json:"schema_version"`
+	AuthorityRef       string `json:"authority_ref"`
+	AuthorityRevision  string `json:"authority_revision"`
 	RuleID             string `json:"rule_id"`
 	CapabilityClass    string `json:"capability_class"`
 	DeterministicFirst string `json:"deterministic_first"`
@@ -37,6 +47,8 @@ var taskClassificationRules = []taskClassificationRule{
 	taskRule("build-implement", "build-implement", `\b(build|implement|fix|debug|feature|refactor|code|patch)\b`, "reproduce/run tests before LLM code work", "tests + diff + runtime verification"),
 }
 
+var capabilityTaskClassifierRevision = taskClassifierRevision(taskClassificationRules)
+
 func taskRule(id, capabilityClass, pattern, deterministicFirst, evaluationMethod string) taskClassificationRule {
 	return taskClassificationRule{
 		id:                 id,
@@ -54,6 +66,9 @@ func ClassifyCapabilityTask(task string) TaskClassification {
 	for _, rule := range taskClassificationRules {
 		if rule.pattern.MatchString(task) {
 			return TaskClassification{
+				SchemaVersion:      CapabilityTaskClassifierSchemaVersion,
+				AuthorityRef:       CapabilityTaskClassifierAuthorityRef,
+				AuthorityRevision:  capabilityTaskClassifierRevision,
 				RuleID:             rule.id,
 				CapabilityClass:    rule.capabilityClass,
 				DeterministicFirst: rule.deterministicFirst,
@@ -62,9 +77,23 @@ func ClassifyCapabilityTask(task string) TaskClassification {
 		}
 	}
 	return TaskClassification{
+		SchemaVersion:      CapabilityTaskClassifierSchemaVersion,
+		AuthorityRef:       CapabilityTaskClassifierAuthorityRef,
+		AuthorityRevision:  capabilityTaskClassifierRevision,
 		RuleID:             "default-classify-extract",
 		CapabilityClass:    "classify-extract",
 		DeterministicFirst: "deterministic tool/script first",
 		EvaluationMethod:   "schema/sample validation",
 	}
+}
+
+func taskClassifierRevision(rules []taskClassificationRule) string {
+	var contract strings.Builder
+	contract.WriteString(CapabilityTaskClassifierSchemaVersion)
+	contract.WriteByte('\n')
+	for _, rule := range rules {
+		fmt.Fprintf(&contract, "%s\x00%s\x00%s\x00%s\x00%s\n", rule.id, rule.capabilityClass, rule.pattern.String(), rule.deterministicFirst, rule.evaluationMethod)
+	}
+	sum := sha256.Sum256([]byte(contract.String()))
+	return fmt.Sprintf("sha256:%x", sum)
 }

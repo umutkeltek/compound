@@ -23,7 +23,7 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 	if err := home.Init(homePath, "test", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	store := addCapabilityGraphFixture(t, homePath)
+	addCapabilityGraphFixture(t, homePath)
 	if _, err := routeevidence.ImportModelCapabilitiesYAML(homePath, filepath.Join("..", "..", "fixtures", "route", "model-capabilities.yaml"), cliTestNow); err != nil {
 		t.Fatal(err)
 	}
@@ -69,8 +69,14 @@ func TestCapabilityResolveComposesOwnedSurfaceAndRouteWithoutMutation(t *testing
 	if len(report.RoutePlan.PendingObservations) != 0 {
 		t.Fatalf("bounded capability resolution must not embed pending route observation bodies: %+v", report.RoutePlan.PendingObservations)
 	}
-	if report.AuthorityRefs[0] != capgraph.CapabilityGraphAuthorityRef || report.AuthorityRefs[1] != routeevidence.ModelCapabilitiesAuthorityRef {
+	if report.Classification.AuthorityRef != routeevidence.CapabilityTaskClassifierAuthorityRef || !validSHA256Revision(report.Classification.AuthorityRevision) {
+		t.Fatalf("classification authority missing: %+v", report.Classification)
+	}
+	if report.AuthorityRefs[0] != routeevidence.CapabilityTaskClassifierAuthorityRef || report.AuthorityRefs[1] != capgraph.CapabilityGraphAuthorityRef || report.AuthorityRefs[2] != routeevidence.ModelCapabilitiesAuthorityRef {
 		t.Fatalf("authority refs = %v", report.AuthorityRefs)
+	}
+	if report.Limits.MaxJSONBytes != capabilityResolutionMaxJSONBytes || report.Limits.PendingObservationBodiesRead {
+		t.Fatalf("resolution bounds missing: %+v", report.Limits)
 	}
 }
 
@@ -163,6 +169,32 @@ func TestCapabilityResolveRejectsPrivacyPlanWithoutEligibleLane(t *testing.T) {
 	}
 	if _, err := buildCapabilityResolutionReport(store, homePath, "audit private records", "", true, cliTestNow); err == nil || !strings.Contains(err.Error(), "no eligible lane") {
 		t.Fatalf("empty privacy route error = %v", err)
+	}
+}
+
+func TestCapabilityResolutionBoundsRouteAndEncodedBytes(t *testing.T) {
+	plan := routeevidence.CapabilityRoutePlan{
+		Chain:             make([]routeevidence.CapabilityRouteLane, capabilityResolutionRouteLaneLimit+4),
+		Omitted:           make([]routeevidence.CapabilityRouteLane, capabilityResolutionPolicyOmitLimit+3),
+		Warnings:          make([]string, capabilityResolutionWarningLimit+2),
+		LaneJustification: make([]string, capabilityResolutionRouteLaneLimit+4),
+		PendingObservations: []routeevidence.PendingRouteObservation{
+			{CandidateID: "route-observation", Detail: strings.Repeat("x", 1024)},
+		},
+	}
+	bounded := boundCapabilityRoutePlan(plan)
+	if len(bounded.Chain) != capabilityResolutionRouteLaneLimit || bounded.OmittedRouteLaneCount != 4 {
+		t.Fatalf("route chain not bounded: %+v", bounded)
+	}
+	if len(bounded.Omitted) != capabilityResolutionPolicyOmitLimit || bounded.HiddenPolicyOmitCount != 3 {
+		t.Fatalf("policy omissions not bounded: %+v", bounded)
+	}
+	if len(bounded.Warnings) != capabilityResolutionWarningLimit || bounded.OmittedWarningCount != 2 || len(bounded.PendingObservations) != 0 {
+		t.Fatalf("route metadata not bounded: %+v", bounded)
+	}
+	oversize := capabilityResolutionReport{Task: strings.Repeat("x", capabilityResolutionMaxJSONBytes+1)}
+	if err := ensureCapabilityResolutionBound(oversize); err == nil {
+		t.Fatal("oversize capability resolution should fail closed")
 	}
 }
 

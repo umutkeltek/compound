@@ -36,7 +36,12 @@ func cmdCapability(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
-	store, err := capgraph.Open(homePath)
+	var store *capgraph.Store
+	if args[0] == "resolve" {
+		store, err = capgraph.OpenReadOnly(homePath)
+	} else {
+		store, err = capgraph.Open(homePath)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
