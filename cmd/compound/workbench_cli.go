@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/attention"
 	"compound/internal/authority"
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
@@ -36,12 +37,25 @@ type workbenchCLIOutput struct {
 	ReviewQueue       *workbenchReviewQueue              `json:"review_queue,omitempty"`
 }
 
+// workbenchReviewQueue is the workbench's operator-load headline. It is the
+// ONE meter (packet W1e): Counts.ReviewRequired is not computed independently
+// from review-artifact status anymore — it is overwritten with the attention
+// projection's needs_you count (internal/attention) so this surface never
+// disagrees with `compound attention`. The JSON field name stays stable for
+// existing consumers (e.g. the umut-os session-start digest hook reads
+// workbench.review_queue.counts.review_required); only its source changed.
+// BlockedOnYou is additive detail from the same projection, never a
+// different total. If the attention projection's inputs cannot be read,
+// AttentionUnavailable is set and Counts.ReviewRequired keeps the last-known
+// review-artifact-derived value instead of silently recomputing anything.
 type workbenchReviewQueue struct {
-	SchemaVersion string                     `json:"schema_version"`
-	AuthorityRef  string                     `json:"authority_ref"`
-	Area          string                     `json:"area,omitempty"`
-	Counts        reviewartifact.QueueCounts `json:"counts"`
-	Actionable    []workbenchReviewItem      `json:"actionable,omitempty"`
+	SchemaVersion        string                     `json:"schema_version"`
+	AuthorityRef         string                     `json:"authority_ref"`
+	Area                 string                     `json:"area,omitempty"`
+	Counts               reviewartifact.QueueCounts `json:"counts"`
+	BlockedOnYou         int                        `json:"blocked_on_you,omitempty"`
+	AttentionUnavailable bool                       `json:"attention_unavailable,omitempty"`
+	Actionable           []workbenchReviewItem      `json:"actionable,omitempty"`
 }
 
 type workbenchReviewItem struct {
@@ -268,6 +282,7 @@ func cmdWorkbench(args []string) {
 		os.Exit(1)
 	}
 	reviewQueue := buildWorkbenchReviewQueue(reviewReport)
+	applyAttentionMeter(&reviewQueue, store, reviewReport, report, time.Now())
 	output := workbenchCLIOutput{WorkbenchReport: report, CapabilitySurface: capabilitySurface, RoutePlan: routePlan, ReviewQueue: &reviewQueue}
 	if jsonOut {
 		printJSON(output)
@@ -547,6 +562,33 @@ func buildWorkbenchReviewQueue(report reviewartifact.QueueReport) workbenchRevie
 		})
 	}
 	return out
+}
+
+// applyAttentionMeter is the ONE meter seam (packet W1e, work_246942fca52c):
+// it overwrites reviewQueue's independently-computed review_required with
+// the attention projection's needs_you count, and adds blocked_on_you as
+// additive detail, so workbench never reports a different "what needs the
+// operator" total than `compound attention`. attention.Build itself never
+// errors; the only failure mode is an unreadable executor source feeding its
+// Inputs (e.g. a corrupt hook-events or route-evidence file), surfaced here
+// as a *work.Store.ExecutorsProjection error. On that path this function
+// sets AttentionUnavailable and returns without touching reviewQueue.Counts
+// again — the review-artifact-derived value already in Counts.ReviewRequired
+// stands as the last-known count. It never falls back to recomputing an
+// independent total silently; the flag makes the degradation visible.
+func applyAttentionMeter(reviewQueue *workbenchReviewQueue, store *work.Store, reviews reviewartifact.QueueReport, bench work.WorkbenchReport, now time.Time) {
+	executors, err := store.ExecutorsProjection(now)
+	if err != nil {
+		reviewQueue.AttentionUnavailable = true
+		return
+	}
+	report := attention.Build(attention.Inputs{
+		Reviews:   &reviews,
+		Workbench: &bench,
+		Executors: &executors,
+	}, now)
+	reviewQueue.Counts.ReviewRequired = report.Counts.NeedsYou
+	reviewQueue.BlockedOnYou = report.Counts.BlockedOnYou
 }
 
 func workbenchReviewReadinessActionable(readiness string) bool {
