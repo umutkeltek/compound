@@ -2049,20 +2049,38 @@ func TestPackWithCapabilitiesLegacyPositionCheckpointKeepsDecisionRef(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	captured, err := store.Capture([]mem.Candidate{{
-		Entity: "compound", Predicate: "os_absorption_method", Object: "adapt sources through governed intake",
-		Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
-		Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
-		SourceTraceRef: "ev_method", SnippetHash: "sha256:method", Visibility: "contextual",
-	}}, fixedNow)
+	captured, err := store.Capture([]mem.Candidate{
+		{
+			Entity: "compound", Predicate: "os_absorption_end_state", Object: "compound owns the meaning layer",
+			Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+			SourceTraceRef: "ev_end_state", SnippetHash: "sha256:end-state-decision", Visibility: "contextual",
+		},
+		{
+			Entity: "compound", Predicate: "os_absorption_stance", Object: "sources remain evidence",
+			Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+			SourceTraceRef: "ev_stance", SnippetHash: "sha256:stance-decision", Visibility: "contextual",
+		},
+		{
+			Entity: "compound", Predicate: "os_absorption_method", Object: "adapt sources through governed intake",
+			Confidence: 0.92, Derivation: "deterministic", ClaimType: "decision",
+			Qualifiers: map[string]string{"domain": "os-absorption"}, PromotionBasis: candidates.BasisExplicitConfirmation,
+			SourceTraceRef: "ev_method", SnippetHash: "sha256:method-decision", Visibility: "contextual",
+		},
+	}, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	promoted, err := store.Adjudicate(captured[0].ID, "promote", "test", fixedNow)
-	if err != nil {
-		t.Fatal(err)
+	promoted := make([]mem.AdjudicateResult, 0, len(captured))
+	for _, candidate := range captured {
+		result, err := store.Adjudicate(candidate.ID, "promote", "test", fixedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		promoted = append(promoted, result)
 	}
-	legacy, err := json.Marshal(mem.Position{ID: "compound::os-absorption", Entity: "compound", Topic: "os-absorption", ActiveClaimID: promoted.Claim.ID})
+	legacy, err := json.Marshal(mem.Position{ID: "compound::os-absorption", Entity: "compound", Topic: "os-absorption", ActiveClaimID: promoted[2].Claim.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2077,9 +2095,11 @@ func TestPackWithCapabilitiesLegacyPositionCheckpointKeepsDecisionRef(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	decisionRef := "decision://" + promoted.Claim.ID
-	if !contains(pack.ActiveDecisions, decisionRef) || !hasIncluded(pack, decisionRef) {
-		t.Fatalf("legacy position checkpoint hid accepted decision ref %s: active=%v included=%v", decisionRef, pack.ActiveDecisions, pack.Included)
+	for _, result := range promoted {
+		decisionRef := "decision://" + result.Claim.ID
+		if !contains(pack.ActiveDecisions, decisionRef) || !hasIncluded(pack, decisionRef) {
+			t.Fatalf("legacy position checkpoint hid accepted decision ref %s: active=%v included=%v", decisionRef, pack.ActiveDecisions, pack.Included)
+		}
 	}
 	if len(pack.ActivePositions) != 0 {
 		t.Fatalf("decision claims belong to active_decisions, got active_positions=%+v", pack.ActivePositions)

@@ -31,21 +31,27 @@ func TestMemoryConceptCLIVerbs(t *testing.T) {
 		t.Fatal(err)
 	}
 	entity := "project:cli-concept-fixture"
-	captured, err := store.Capture([]mem.Candidate{{
-		Entity:         entity,
-		Predicate:      "delivery_mode",
-		Object:         "automated",
-		Confidence:     0.9,
-		Derivation:     "deterministic",
-		PromotionBasis: candidates.BasisExplicitConfirmation,
-		SourceTraceRef: "trace_cli_concept",
-		TopicRefs:      []string{"topic:application-platforms"},
-	}}, cliTestNow)
+	captured, err := store.Capture([]mem.Candidate{
+		{
+			Entity: entity, Predicate: "delivery_mode", Object: "automated", Confidence: 0.9,
+			Derivation: "deterministic", ClaimType: "architecture", Qualifiers: map[string]string{"domain": "delivery"},
+			PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_cli_concept_mode",
+			SnippetHash: "sha256:delivery-mode", TopicRefs: []string{"topic:application-platforms"},
+		},
+		{
+			Entity: entity, Predicate: "delivery_owner", Object: "compound", Confidence: 0.9,
+			Derivation: "deterministic", ClaimType: "architecture", Qualifiers: map[string]string{"domain": "delivery"},
+			PromotionBasis: candidates.BasisExplicitConfirmation, SourceTraceRef: "trace_cli_concept_owner",
+			SnippetHash: "sha256:delivery-owner", TopicRefs: []string{"topic:application-platforms"},
+		},
+	}, cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Adjudicate(captured[0].ID, "promote", "", cliTestNow); err != nil {
-		t.Fatal(err)
+	for _, candidate := range captured {
+		if _, err := store.Adjudicate(candidate.ID, "promote", "", cliTestNow); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	foldOut := captureStdout(t, func() {
@@ -55,7 +61,7 @@ func TestMemoryConceptCLIVerbs(t *testing.T) {
 	if err := json.Unmarshal([]byte(foldOut), &fold); err != nil {
 		t.Fatalf("parse fold json: %v\n%s", err, foldOut)
 	}
-	if fold.Count != 1 || fold.Positions[0].ActiveObject != "automated" {
+	if fold.Count != 2 {
 		t.Fatalf("fold report = %+v", fold)
 	}
 
@@ -66,8 +72,18 @@ func TestMemoryConceptCLIVerbs(t *testing.T) {
 	if err := json.Unmarshal([]byte(positionOut), &position); err != nil {
 		t.Fatalf("parse position json: %v\n%s", err, positionOut)
 	}
-	if len(position.Positions) != 1 || position.Positions[0].Position.ActiveObject != "automated" || len(position.Positions[0].Claims) != 1 {
+	if len(position.Positions) != 2 {
 		t.Fatalf("position result = %+v", position)
+	}
+	positionText := captureStdout(t, func() {
+		cmdMemory([]string{"position", entity, "--topic", "topic:application-platforms"})
+	})
+	for _, detail := range position.Positions {
+		p := detail.Position
+		wantPositionLine := p.ID + " [predicate=" + p.Predicate + ", claim_type=" + p.ClaimType + "] = " + p.ActiveObject
+		if !strings.Contains(positionText, wantPositionLine) {
+			t.Fatalf("position text lost fact-slot identity %q:\n%s", wantPositionLine, positionText)
+		}
 	}
 
 	recallOut := captureStdout(t, func() {
@@ -77,7 +93,7 @@ func TestMemoryConceptCLIVerbs(t *testing.T) {
 	if err := json.Unmarshal([]byte(recallOut), &recall); err != nil {
 		t.Fatalf("parse recall json: %v\n%s", err, recallOut)
 	}
-	if len(recall.Claims) != 1 || recall.Claims[0].Object != "automated" {
+	if len(recall.Claims) != 2 {
 		t.Fatalf("recall result = %+v", recall)
 	}
 }

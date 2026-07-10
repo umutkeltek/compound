@@ -178,6 +178,7 @@ type Position struct {
 	Entity                string   `json:"entity"`
 	Topic                 string   `json:"topic"` // mem's topic axis = domain qualifier, else predicate
 	Predicate             string   `json:"predicate,omitempty"`
+	ClaimType             string   `json:"claim_type,omitempty"`
 	ActiveClaimID         string   `json:"active_claim_id"`
 	ActiveObject          string   `json:"active_object"` // the current value (convenience)
 	Status                string   `json:"status"`        // active | retired | contested

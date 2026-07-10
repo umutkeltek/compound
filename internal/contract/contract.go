@@ -1595,6 +1595,8 @@ func loadPositionRefs(homePath string, in Input, rule MemoryRule, semanticRanks 
 func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelope.ActivePosition {
 	entity := firstNonEmpty(position.Entity, activeClaim.Entity)
 	topic := firstNonEmpty(position.Topic, activeClaim.Topic())
+	predicate := firstNonEmpty(position.Predicate, activeClaim.Predicate)
+	claimType := firstNonEmpty(position.ClaimType, activeClaim.ClaimType)
 	stance := firstNonEmpty(position.ActiveObject, activeClaim.Object)
 	if entity == "" || topic == "" || stance == "" {
 		return envelope.ActivePosition{}
@@ -1605,11 +1607,13 @@ func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelo
 		chainLength = 1
 	}
 	contested := strings.EqualFold(strings.TrimSpace(position.Status), "contested")
-	line := activePositionLine(positionID, stance, activeClaim.Seq, chainLength, contested)
+	line := activePositionLine(positionID, predicate, claimType, stance, activeClaim.Seq, chainLength, contested)
 	return envelope.ActivePosition{
 		Ref:         "position://" + positionID,
 		Entity:      entity,
 		Topic:       topic,
+		Predicate:   predicate,
+		ClaimType:   claimType,
 		Stance:      stance,
 		SinceSeq:    activeClaim.Seq,
 		ChainLength: chainLength,
@@ -1618,8 +1622,19 @@ func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelo
 	}
 }
 
-func activePositionLine(positionID, stance string, sinceSeq int64, chainLength int, contested bool) string {
-	line := fmt.Sprintf("%s → %s (since-seq %d, chain-length %d)", positionID, stance, sinceSeq, chainLength)
+func activePositionLine(positionID, predicate, claimType, stance string, sinceSeq int64, chainLength int, contested bool) string {
+	slotFields := make([]string, 0, 2)
+	if predicate = strings.TrimSpace(predicate); predicate != "" {
+		slotFields = append(slotFields, "predicate="+predicate)
+	}
+	if claimType = strings.TrimSpace(claimType); claimType != "" {
+		slotFields = append(slotFields, "claim_type="+claimType)
+	}
+	slot := ""
+	if len(slotFields) > 0 {
+		slot = " [" + strings.Join(slotFields, ", ") + "]"
+	}
+	line := fmt.Sprintf("%s%s → %s (since-seq %d, chain-length %d)", positionID, slot, stance, sinceSeq, chainLength)
 	if contested {
 		line += " [contested]"
 	}

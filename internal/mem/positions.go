@@ -289,6 +289,7 @@ func buildPosition(id, entity, topic string, claims []Claim, superseded map[stri
 		Entity:                entity,
 		Topic:                 topic,
 		Predicate:             active.Predicate,
+		ClaimType:             active.ClaimType,
 		ActiveClaimID:         active.ID,
 		ActiveObject:          active.Object,
 		Status:                status,

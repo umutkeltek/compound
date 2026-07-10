@@ -68,7 +68,7 @@ func cmdMemoryPosition(store *mem.Store, args []string) {
 	}
 	for _, detail := range result.Positions {
 		p := detail.Position
-		fmt.Printf("%s.%s = %s  [%s, claim %s]\n", p.Entity, p.Topic, p.ActiveObject, p.Status, p.ActiveClaimID)
+		fmt.Printf("%s [predicate=%s, claim_type=%s] = %s  [%s, claim %s]\n", p.ID, p.Predicate, p.ClaimType, p.ActiveObject, p.Status, p.ActiveClaimID)
 		if len(p.SupportingClaimRefs) > 0 {
 			fmt.Printf("  supporting: %s\n", strings.Join(p.SupportingClaimRefs, ","))
 		}

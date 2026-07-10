@@ -116,7 +116,7 @@ func TestDeltaLoop(t *testing.T) {
 	}
 }
 
-// Positions folds the ledger into the current durable stance per (entity, topic), carrying the
+// Positions folds the ledger into the current durable stance per narrow fact slot, carrying the
 // supersession chain old→new — the spine-native convergence of the Gen-1 position.Build. Proven
 // here as the first capability landed on the spine toward the wholesale Gen-1 retirement.
 func TestPositionsFoldTopicAndChain(t *testing.T) {

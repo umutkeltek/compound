@@ -1723,8 +1723,8 @@ func cmdMemory(args []string) {
 	case "position":
 		cmdMemoryPosition(store, rest)
 	case "positions":
-		// the spine-native Position: current durable stance per (entity, topic) WITH the
-		// supersession chain (old→new) — the convergence of Gen-1 internal/position onto the spine.
+		// The spine-native Position: current durable stance per narrow fact slot WITH the
+		// supersession chain (old→new); topic remains the broader aggregation axis.
 		ps, err := store.Positions()
 		die(err)
 		for _, p := range ps {
