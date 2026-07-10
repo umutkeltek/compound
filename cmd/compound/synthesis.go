@@ -79,14 +79,29 @@ type synthesisSeedCorroborationArtifact struct {
 	Proposal      mem.SynthesisCorroborationProposal `json:"proposal"`
 }
 
+const synthesisUsage = "usage: compound synthesis sweep [--stage cluster,contradict,corroborate,decay,reconcile] [--json]\n" +
+	"       compound synthesis digest [--since <ts>] [--json]"
+
 func cmdSynthesis(args []string) {
-	if len(args) == 0 || args[0] != "sweep" {
-		fmt.Fprintln(os.Stderr, "usage: compound synthesis sweep [--stage cluster,contradict,corroborate,decay,reconcile] [--json]")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, synthesisUsage)
 		os.Exit(2)
 	}
+	switch args[0] {
+	case "sweep":
+		cmdSynthesisSweep(args[1:])
+	case "digest":
+		cmdSynthesisDigest(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, synthesisUsage)
+		os.Exit(2)
+	}
+}
+
+func cmdSynthesisSweep(args []string) {
 	var stages []string
 	jsonOut := false
-	for i := 1; i < len(args); i++ {
+	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json":
 			jsonOut = true
@@ -110,6 +125,58 @@ func cmdSynthesis(args []string) {
 	}
 	fmt.Printf("synthesis sweep work=%s receipt=%s transition=%s clusters=%d echo_fold=%d contradictions=%d decayed=%d volatile_extended=%d volatile_cooled=%d volatile_carded=%d report=%s\n",
 		out.WorkID, out.ReceiptID, out.TransitionID, out.Report.ClusterCount, out.Report.EchoFoldProposalCount, out.Report.ContradictionProposalCount, out.Report.DecayedCount, out.Report.VolatileExtendedCount, out.Report.VolatileCooledCount, out.Report.VolatileCardedCount, out.ReportPath)
+}
+
+// cmdSynthesisDigest renders the blast-tiered reconcile digest: the operator's read receipts
+// page for everything reconcile already did autonomously (parent packet decisions-down §2).
+// Strictly read-only — unlike sweep it never opens a WorkEnvelope, writes a checkpoint, or
+// appends to the ledger; it only folds existing claims/positions/checkpoint state for display.
+func cmdSynthesisDigest(args []string) {
+	var since string
+	jsonOut := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOut = true
+		case "--since":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --since requires value")
+				os.Exit(2)
+			}
+			i++
+			since = args[i]
+		default:
+			fmt.Fprintln(os.Stderr, "unknown synthesis digest arg:", args[i])
+			os.Exit(2)
+		}
+	}
+	out, err := runSynthesisDigest(since, time.Now())
+	die(err)
+	if jsonOut {
+		printJSON(out)
+		return
+	}
+	fmt.Print(out.RenderText())
+}
+
+func runSynthesisDigest(since string, now time.Time) (mem.SynthesisReconcileDigest, error) {
+	homePath, err := home.Resolve("")
+	if err != nil {
+		return mem.SynthesisReconcileDigest{}, err
+	}
+	memStore, err := mem.Open(homePath)
+	if err != nil {
+		return mem.SynthesisReconcileDigest{}, err
+	}
+	var opts mem.SynthesisReconcileDigestOptions
+	if since = strings.TrimSpace(since); since != "" {
+		parsed, err := time.Parse(time.RFC3339, since)
+		if err != nil {
+			return mem.SynthesisReconcileDigest{}, fmt.Errorf("invalid --since value %q: %w", since, err)
+		}
+		opts.Since = parsed
+	}
+	return memStore.SynthesisReconcileDigest(now, opts)
 }
 
 func runSynthesisSweep(stages []string, now time.Time) (synthesisSweepOutput, error) {
