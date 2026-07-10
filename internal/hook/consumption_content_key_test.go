@@ -309,7 +309,8 @@ func TestSessionEndIneligibleContentKeyFallsBackToExactIDOnly(t *testing.T) {
 
 	// A SEPARATE session where the bare id IS present must still be credited via v1 -- ineligible
 	// content-key must never suppress the untouched exact-id path.
-	wid2 := closeableWork(t, store, "ctx_thin")
+	writeConsumePackWithClaims(t, home, "ctx_thin_exact_id", claim)
+	wid2 := closeableWork(t, store, "ctx_thin_exact_id")
 	idTranscript := "" +
 		`{"role":"system","content":"# Compound Context Injection\n- ` + "`" + claim.Ref + "`" +
 		` source=generated reason=` + claimLedgerReason(claim.Entity, claim.Predicate, claim.Object) + `"}` + "\n" +

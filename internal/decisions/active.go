@@ -57,3 +57,24 @@ func ActiveDecisions(claims []mem.Claim, kind string) []mem.Claim {
 	}
 	return out
 }
+
+// AuthoritativeActiveDecisions is the stricter projection for decisions that
+// can release autonomous work. It admits only claims minted by the dedicated
+// policy-decision import door and lets only equally authoritative claims
+// supersede them. Generic recalled meaning remains evidence even if it copies
+// every visible lifecycle qualifier.
+func AuthoritativeActiveDecisions(claims []mem.Claim, kind string) []mem.Claim {
+	var authoritative []mem.Claim
+	for _, c := range claims {
+		if c.ClaimType == "decision" && mem.HasOperationalDecisionAuthority(c.Qualifiers) {
+			authoritative = append(authoritative, c)
+		}
+	}
+	var out []mem.Claim
+	for _, c := range AllActiveDecisions(authoritative) {
+		if LifecycleFromClaim(c).Kind == kind {
+			out = append(out, c)
+		}
+	}
+	return out
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"compound/internal/envelope"
+	"compound/internal/policy"
 )
 
 const workHoldConditionStale = "condition_stale"
@@ -293,10 +294,5 @@ func directorProposedWork(w envelope.WorkEnvelope) bool {
 }
 
 func hasOperatorProvenance(actor string) bool {
-	actor = strings.ToLower(strings.TrimSpace(actor))
-	return actor == "operator" ||
-		strings.HasPrefix(actor, "operator-") ||
-		strings.HasPrefix(actor, "operator:") ||
-		strings.HasPrefix(actor, "human-") ||
-		strings.HasPrefix(actor, "human:")
+	return policy.HasOperatorProvenance(actor)
 }

@@ -19,7 +19,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	homepkg "compound/internal/home"
 	"compound/internal/mem"
+	"compound/internal/policy"
 )
 
 // defaultRecordFalsifier / defaultRecordReviewTrigger let an operator record
@@ -35,18 +37,22 @@ const (
 // RecordInput carries the operator-facing fields for `compound decisions
 // record --kind grant|freeze|ruling --reviewed-by <operator>`.
 type RecordInput struct {
-	Kind          string   // grant | freeze | ruling (required)
-	ID            string   // optional; a stable slug is generated from kind+title when empty
-	Title         string   // required; the decision choice/title
-	ReviewedBy    string   // required; refused without it (falsifier d, 664e1a7 parity)
-	Scope         string   // e.g. "director-apply" for a grant
-	OwnerGlobs    []string // freeze scope: literal owner globs (settled design decision 2)
-	Keywords      []string // freeze scope: literal predicate/evidence keywords
-	Domains       []string
-	Falsifier     string
-	ReviewTrigger string
-	UndoOf        string // optional; this record supersedes the named decision id (falsifier c)
-	Now           time.Time
+	Kind               string   // grant | freeze | ruling (required)
+	ID                 string   // optional; a stable slug is generated from kind+title when empty
+	Title              string   // required; the decision choice/title
+	ReviewedBy         string   // required; refused without it (falsifier d, 664e1a7 parity)
+	Scope              string   // e.g. "director-apply" for a grant
+	OwnerGlobs         []string // freeze scope: literal owner globs (settled design decision 2)
+	Keywords           []string // freeze scope: literal predicate/evidence keywords
+	Domains            []string
+	Falsifier          string
+	ReviewTrigger      string
+	UndoOf             string // optional; this record supersedes the named decision id (falsifier c)
+	AutoAdmitClass     string // autonomy grant: exact director class (first live class: job_health)
+	MinTerminalSamples int    // autonomy grant: deterministic latest-terminal sample count
+	MinWindowDays      int    // autonomy grant: minimum span between oldest/newest selected sample
+	MaxFailures        int    // autonomy grant: maximum failed/blocked/no-op receipts in that window
+	Now                time.Time
 }
 
 // RecordReport is what `compound decisions record` prints/returns: where the
@@ -82,6 +88,30 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 	if store == nil {
 		return RecordReport{}, fmt.Errorf("decisions record: mem store required")
 	}
+	autoClass := strings.TrimSpace(in.AutoAdmitClass)
+	if autoClass != "" || in.MinTerminalSamples != 0 || in.MinWindowDays != 0 || in.MaxFailures != 0 {
+		if !policy.HasOperatorProvenance(reviewedBy) {
+			return RecordReport{}, fmt.Errorf("decisions record: autonomy thresholds require operator --reviewed-by provenance")
+		}
+		if kind != KindGrant {
+			return RecordReport{}, fmt.Errorf("decisions record: autonomy thresholds require --kind grant")
+		}
+		if strings.TrimSpace(in.Scope) != AutonomyGrantScope {
+			return RecordReport{}, fmt.Errorf("decisions record: autonomy thresholds require --scope %s", AutonomyGrantScope)
+		}
+		if autoClass == "" {
+			return RecordReport{}, fmt.Errorf("decisions record: autonomy thresholds require --auto-admit-class")
+		}
+		if in.MinTerminalSamples <= 0 {
+			return RecordReport{}, fmt.Errorf("decisions record: --min-terminal-samples must be positive")
+		}
+		if in.MinWindowDays <= 0 {
+			return RecordReport{}, fmt.Errorf("decisions record: --min-window-days must be positive")
+		}
+		if in.MaxFailures < 0 || in.MaxFailures >= in.MinTerminalSamples {
+			return RecordReport{}, fmt.Errorf("decisions record: --max-failures must be >= 0 and less than --min-terminal-samples")
+		}
+	}
 	now := in.Now
 	if now.IsZero() {
 		now = time.Now()
@@ -100,18 +130,22 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 	}
 
 	fm := decFrontmatter{
-		ID:               id,
-		Title:            title,
-		Kind:             kind,
-		Status:           StatusAccepted,
-		Owner:            reviewedBy,
-		ReviewedBy:       reviewedBy,
-		Scope:            strings.TrimSpace(in.Scope),
-		Domains:          cleanRecordStrings(in.Domains),
-		FreezeOwnerGlobs: cleanRecordStrings(in.OwnerGlobs),
-		FreezeKeywords:   cleanRecordStrings(in.Keywords),
-		Falsifier:        falsifier,
-		ReviewTrigger:    reviewTrigger,
+		ID:                 id,
+		Title:              title,
+		Kind:               kind,
+		Status:             StatusAccepted,
+		Owner:              reviewedBy,
+		ReviewedBy:         reviewedBy,
+		Scope:              strings.TrimSpace(in.Scope),
+		Domains:            cleanRecordStrings(in.Domains),
+		FreezeOwnerGlobs:   cleanRecordStrings(in.OwnerGlobs),
+		FreezeKeywords:     cleanRecordStrings(in.Keywords),
+		AutoAdmitClass:     autoClass,
+		MinTerminalSamples: in.MinTerminalSamples,
+		MinWindowDays:      in.MinWindowDays,
+		MaxFailures:        in.MaxFailures,
+		Falsifier:          falsifier,
+		ReviewTrigger:      reviewTrigger,
 	}
 	if undoOf := strings.TrimSpace(in.UndoOf); undoOf != "" {
 		fm.Supersedes = []string{undoOf}
@@ -127,20 +161,24 @@ func Record(store *mem.Store, homePath string, in RecordInput) (RecordReport, er
 	fmt.Fprintf(&body, "# %s\n\n", title)
 	fmt.Fprintf(&body, "Recorded via `compound decisions record --kind %s --reviewed-by %s`.\n", kind, reviewedBy)
 
-	dir := filepath.Join(homePath, "decisions", "operator")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return RecordReport{}, err
-	}
-	path := filepath.Join(dir, id+".md")
-	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
-		return RecordReport{}, err
-	}
-
-	report, err := ImportPolicyDecision(store, path, now)
-	if err != nil {
-		return RecordReport{}, err
-	}
-	return RecordReport{Path: path, Import: report}, nil
+	var out RecordReport
+	err = homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		dir := filepath.Join(homePath, "decisions", "operator")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		path := filepath.Join(dir, id+".md")
+		if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
+			return err
+		}
+		report, err := importPolicyDecisionLocked(store, path, now)
+		if err != nil {
+			return err
+		}
+		out = RecordReport{Path: path, Import: report}
+		return nil
+	})
+	return out, err
 }
 
 func cleanRecordStrings(values []string) []string {

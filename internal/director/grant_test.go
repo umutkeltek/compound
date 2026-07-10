@@ -1,6 +1,9 @@
 package director
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -8,6 +11,44 @@ import (
 	"compound/internal/mem"
 	"compound/internal/work"
 )
+
+func TestResolveApplyGrantPreservesLegacyRecordedGrant(t *testing.T) {
+	home := seededDirectorHome(t)
+	legacy := mem.Claim{
+		ID:         "claim_legacy_director_apply",
+		Seq:        1,
+		Entity:     "decision:legacy-director-apply",
+		Predicate:  "decided",
+		Object:     "Legacy director apply grant",
+		ClaimType:  "decision",
+		Visibility: "operational",
+		Qualifiers: map[string]string{
+			"kind":             decisions.KindGrant,
+			"source":           "decisions-repo",
+			"decision_id":      "legacy-director-apply",
+			"lifecycle_status": decisions.StatusAccepted,
+			"reviewed_by":      "legacy-operator",
+			"scope":            directorApplyGrantScope,
+		},
+	}
+	body, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "ledger"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "ledger", "claims.jsonl"), append(body, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := resolveApplyGrant(home, directorTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.DecisionID != "legacy-director-apply" || grant.ReviewedBy != "legacy-operator" {
+		t.Fatalf("legacy recorded grant did not survive authority-stamp migration: %+v", grant)
+	}
+}
 
 // TestDirectorApplyRefusesWithoutGrant is falsifier a (red half): director
 // --apply with no active director-apply grant record is refused BEFORE
@@ -49,10 +90,9 @@ func TestDirectorApplyRefusesWithoutGrant(t *testing.T) {
 
 // TestDirectorApplyWithGrantRunsAndCitesIt is falsifier a (green half): once
 // an active director-apply grant record exists, --apply runs and cites the
-// grant — in the report and in the run WorkEnvelope's evidence refs — and
-// constructs a real work.AutoAdmitInput{EligibilityReason, GrantRef} per
-// proposal (the W9-J6 first increment through the pre-built auto_admit.go
-// door).
+// grant — in the report and in the run WorkEnvelope's evidence refs. This
+// broad filing grant is deliberately NOT an autonomy grant; a review_debt
+// proposal receives no AutoAdmitInput.
 func TestDirectorApplyWithGrantRunsAndCitesIt(t *testing.T) {
 	home := seededDirectorHome(t)
 	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-grant-02")
@@ -87,14 +127,8 @@ func TestDirectorApplyWithGrantRunsAndCitesIt(t *testing.T) {
 		t.Fatalf("run report must cite the grant, got GrantRef=%q", report.GrantRef)
 	}
 	proposal := report.Proposals[0]
-	if proposal.AutoAdmit == nil {
-		t.Fatalf("apply-mode proposal must construct an AutoAdmitInput: %+v", proposal)
-	}
-	if proposal.AutoAdmit.GrantRef != report.GrantRef {
-		t.Fatalf("proposal AutoAdmitInput.GrantRef = %q, want %q", proposal.AutoAdmit.GrantRef, report.GrantRef)
-	}
-	if !strings.Contains(proposal.AutoAdmit.EligibilityReason, "director-apply-grant-2026-07-10") {
-		t.Fatalf("AutoAdmitInput.EligibilityReason must cite the grant id, got %q", proposal.AutoAdmit.EligibilityReason)
+	if proposal.AutoAdmit != nil || proposal.EligibilityRef != "" {
+		t.Fatalf("director-apply grant must not masquerade as class autonomy: %+v", proposal)
 	}
 
 	// The grant is also cited in the run's own WorkEnvelope evidence, not just

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	homepkg "compound/internal/home"
 )
 
 const (
@@ -75,6 +77,16 @@ type StandingGrantsSourceAuthorityRecord struct {
 }
 
 func ImportStandingGrants(homePath, sourcePath string, now time.Time) (StandingGrantsImportReport, error) {
+	var report StandingGrantsImportReport
+	var importErr error
+	err := homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		report, importErr = importStandingGrantsLocked(homePath, sourcePath, now)
+		return importErr
+	})
+	return report, err
+}
+
+func importStandingGrantsLocked(homePath, sourcePath string, now time.Time) (StandingGrantsImportReport, error) {
 	source, data, err := loadStandingGrantSource(sourcePath)
 	if err != nil {
 		return StandingGrantsImportReport{}, err

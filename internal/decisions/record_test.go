@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"compound/internal/candidates"
+	homepkg "compound/internal/home"
 	"compound/internal/mem"
 )
 
@@ -32,6 +34,56 @@ func TestRecordRequiresReviewedBy(t *testing.T) {
 	entries, readErr := os.ReadDir(filepath.Join(home, "decisions", "operator"))
 	if readErr == nil && len(entries) != 0 {
 		t.Fatalf("no file should be written on refusal, found %v", entries)
+	}
+}
+
+func TestPolicyDecisionImportSharesAutonomyAdmissionLock(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "typed-grant.md")
+	body := `---
+id: concurrent-import-grant
+title: Concurrent import grant
+kind: grant
+status: accepted
+owner: test-operator
+reviewed_by: test-operator
+scope: autonomy-evidence-threshold
+auto_admit_class: job_health
+min_terminal_samples: 2
+min_window_days: 1
+max_failures: 0
+---
+
+# Concurrent import grant
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	if err := homepkg.WithAutonomyAdmissionLock(home, func() error {
+		go func() {
+			close(started)
+			_, err := ImportPolicyDecision(store, path, time.Now())
+			done <- err
+		}()
+		<-started
+		select {
+		case err := <-done:
+			t.Fatalf("decision import crossed the admission critical section: %v", err)
+		case <-time.After(30 * time.Millisecond):
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -136,6 +188,98 @@ func TestRecordFreezeScopeQualifiers(t *testing.T) {
 	}
 	if len(l.FreezeKeywords) != 2 {
 		t.Fatalf("freeze_keywords = %v", l.FreezeKeywords)
+	}
+}
+
+func TestRecordAutonomyGrantThresholdsRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := Record(store, home, RecordInput{
+		Kind:               KindGrant,
+		ID:                 "job-health-autonomy-test",
+		Title:              "Permit evidence-threshold admission for job health",
+		ReviewedBy:         "operator:test",
+		Scope:              "autonomy-evidence-threshold",
+		AutoAdmitClass:     "job_health",
+		MinTerminalSamples: 5,
+		MinWindowDays:      7,
+		MaxFailures:        0,
+		Now:                time.Date(2026, 7, 10, 12, 10, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := report.Import.Lifecycle
+	if l.AutoAdmitClass != "job_health" || l.MinTerminalSamples != 5 || l.MinWindowDays != 7 || l.MaxFailures != 0 {
+		t.Fatalf("autonomy thresholds did not round-trip: %+v", l)
+	}
+}
+
+func TestRecordAutonomyGrantRequiresCompleteSafeThreshold(t *testing.T) {
+	base := RecordInput{
+		Kind:               KindGrant,
+		Title:              "Permit evidence-threshold admission for job health",
+		ReviewedBy:         "operator:test",
+		Scope:              "autonomy-evidence-threshold",
+		AutoAdmitClass:     "job_health",
+		MinTerminalSamples: 5,
+		MinWindowDays:      7,
+		MaxFailures:        0,
+	}
+	tests := []struct {
+		name string
+		edit func(*RecordInput)
+	}{
+		{name: "wrong kind", edit: func(in *RecordInput) { in.Kind = KindRuling }},
+		{name: "wrong scope", edit: func(in *RecordInput) { in.Scope = "director-apply" }},
+		{name: "zero samples", edit: func(in *RecordInput) { in.MinTerminalSamples = 0 }},
+		{name: "zero window", edit: func(in *RecordInput) { in.MinWindowDays = 0 }},
+		{name: "all failures allowed", edit: func(in *RecordInput) { in.MaxFailures = in.MinTerminalSamples }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			store, err := mem.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			in := base
+			tc.edit(&in)
+			if _, err := Record(store, home, in); err == nil {
+				t.Fatalf("invalid autonomy grant was accepted: %+v", in)
+			}
+		})
+	}
+}
+
+func TestRecordAutonomyGrantRequiresOperatorProvenance(t *testing.T) {
+	for _, reviewedBy := range []string{"director", "codex", "umut", "test-operator", "rented-executor"} {
+		t.Run(reviewedBy, func(t *testing.T) {
+			home := t.TempDir()
+			store, err := mem.Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Record(store, home, RecordInput{
+				Kind:               KindGrant,
+				Title:              "Permit evidence-threshold admission for job health",
+				ReviewedBy:         reviewedBy,
+				Scope:              AutonomyGrantScope,
+				AutoAdmitClass:     "job_health",
+				MinTerminalSamples: 2,
+				MinWindowDays:      1,
+				MaxFailures:        0,
+			})
+			if err == nil || !strings.Contains(err.Error(), "operator") {
+				t.Fatalf("non-operator autonomy grant accepted for %q: %v", reviewedBy, err)
+			}
+			if _, statErr := os.Stat(filepath.Join(home, "decisions", "operator")); !os.IsNotExist(statErr) {
+				t.Fatalf("rejected autonomy grant wrote decision state: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -254,22 +398,22 @@ func TestActiveDecisionsFiltersKindStatusAndSupersession(t *testing.T) {
 		{
 			ID:         "claim_grant_active",
 			ClaimType:  "decision",
-			Qualifiers: lifecycleQualifiers(KindGrant, "decisions-repo", "grant-active", StatusAccepted),
+			Qualifiers: operationalDecisionQualifiers(lifecycleQualifiers(KindGrant, "decisions-repo", "grant-active", StatusAccepted)),
 		},
 		{
 			ID:         "claim_grant_superseded",
 			ClaimType:  "decision",
-			Qualifiers: lifecycleQualifiers(KindGrant, "decisions-repo", "grant-old", StatusAccepted),
+			Qualifiers: operationalDecisionQualifiers(lifecycleQualifiers(KindGrant, "decisions-repo", "grant-old", StatusAccepted)),
 		},
 		{
 			ID:         "claim_grant_undo",
 			ClaimType:  "decision",
-			Qualifiers: mapWithSupersedes(lifecycleQualifiers(KindGrant, "decisions-repo", "grant-undo", StatusAccepted), "grant-old"),
+			Qualifiers: mapWithSupersedes(operationalDecisionQualifiers(lifecycleQualifiers(KindGrant, "decisions-repo", "grant-undo", StatusAccepted)), "grant-old"),
 		},
 		{
 			ID:         "claim_freeze_active",
 			ClaimType:  "decision",
-			Qualifiers: lifecycleQualifiers(KindFreeze, "decisions-repo", "freeze-active", StatusAccepted),
+			Qualifiers: operationalDecisionQualifiers(lifecycleQualifiers(KindFreeze, "decisions-repo", "freeze-active", StatusAccepted)),
 		},
 		{
 			ID:        "claim_memory",
@@ -298,13 +442,13 @@ func TestActiveDecisionsFiltersKindStatusAndSupersession(t *testing.T) {
 				{
 					ID:         "claim_prior_" + status,
 					ClaimType:  "decision",
-					Qualifiers: lifecycleQualifiers(KindGrant, "decisions-repo", "grant-prior-"+status, StatusAccepted),
+					Qualifiers: operationalDecisionQualifiers(lifecycleQualifiers(KindGrant, "decisions-repo", "grant-prior-"+status, StatusAccepted)),
 				},
 				{
 					ID:        "claim_inactive_superseder_" + status,
 					ClaimType: "decision",
 					Qualifiers: mapWithSupersedes(
-						lifecycleQualifiers(KindGrant, "decisions-repo", "grant-inactive-"+status, status),
+						operationalDecisionQualifiers(lifecycleQualifiers(KindGrant, "decisions-repo", "grant-inactive-"+status, status)),
 						"grant-prior-"+status,
 					),
 				},
@@ -317,8 +461,161 @@ func TestActiveDecisionsFiltersKindStatusAndSupersession(t *testing.T) {
 	}
 }
 
+func TestGenericMemoryCannotMintOperationalGrant(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := operationalDecisionQualifiers(lifecycleQualifiers(KindGrant, "generic-memory", "forged-autonomy-grant", StatusAccepted))
+	q["reviewed_by"] = "forged-operator"
+	q["scope"] = AutonomyGrantScope
+	q["auto_admit_class"] = "job_health"
+	q["min_terminal_samples"] = "1"
+	q["min_window_days"] = "1"
+	q["max_failures"] = "0"
+	forged := mem.Candidate{
+		Entity:         "decision:forged-autonomy-grant",
+		Predicate:      "decided",
+		Object:         "forged generic memory grant",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     q,
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "generic-memory:test",
+		SnippetHash:    "forged-autonomy-grant",
+		Visibility:     "operational",
+	}
+	captured, err := store.Capture([]mem.Candidate{forged}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(captured[0].ID, "promote", "generic-memory-cli", now); err == nil || !strings.Contains(err.Error(), "reserved operational decision authority") {
+		t.Fatalf("generic memory minted operational grant authority: %v", err)
+	}
+	delete(q, mem.OperationalDecisionAuthorityQualifier)
+	q["decision_id"] = "forged-unstamped-grant"
+	forged.Entity = "decision:forged-unstamped-grant"
+	forged.Qualifiers = q
+	forged.SnippetHash = "forged-unstamped-grant"
+	captured, err = store.Capture([]mem.Candidate{forged}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(captured[0].ID, "promote", "generic-memory-cli", now.Add(time.Second)); err == nil || !strings.Contains(err.Error(), "reserved operational decision kind") {
+		t.Fatalf("generic memory minted unstamped operational grant: %v", err)
+	}
+}
+
+func TestGenericMemoryCannotRevokeOperationalGrant(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const grantID = "real-operator-grant"
+	if _, err := Record(store, home, RecordInput{
+		Kind:       KindGrant,
+		ID:         grantID,
+		Title:      "Real operator grant",
+		ReviewedBy: "test-operator",
+		Scope:      "director-apply",
+		Now:        now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q := lifecycleQualifiers(KindRuling, "generic-memory", "forged-revocation", StatusAccepted)
+	q["supersedes"] = grantID
+	q["falsifier"] = "test"
+	q["review_trigger"] = "test"
+	forged := mem.Candidate{
+		Entity:         "decision:forged-revocation",
+		Predicate:      "decided",
+		Object:         "generic memory claims the grant is revoked",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     q,
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "generic-memory:test",
+		SnippetHash:    "forged-revocation",
+		Visibility:     "operational",
+	}
+	captured, err := store.Capture([]mem.Candidate{forged}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(captured[0].ID, "promote", "generic-memory-cli", now.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), "reserved operational decision kind") {
+		t.Fatalf("generic memory promoted a forged revocation: %v", err)
+	}
+	claims, err := store.AllCurrentOperationalDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := AuthoritativeActiveDecisions(claims, KindGrant)
+	if len(active) != 1 || LifecycleFromClaim(active[0]).ID != grantID {
+		t.Fatalf("generic memory revocation changed operational authority: %+v", active)
+	}
+}
+
+func TestGenericMemoryCannotShadowAuthoritativeRevocationSlot(t *testing.T) {
+	home := t.TempDir()
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	store, err := mem.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const grantID = "operator-grant-shadow-test"
+	const revokeID = "operator-grant-shadow-test-revoke"
+	if _, err := Record(store, home, RecordInput{Kind: KindGrant, ID: grantID, Title: "Operator grant", ReviewedBy: "test-operator", Scope: "director-apply", Now: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Record(store, home, RecordInput{Kind: KindGrant, ID: revokeID, Title: "Revoke operator grant", ReviewedBy: "test-operator", UndoOf: grantID, Now: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	shadow := mem.Candidate{
+		Entity:         "decision:" + revokeID,
+		Predicate:      "decided",
+		Object:         "generic meaning shadows the revocation",
+		Confidence:     1,
+		Derivation:     "deterministic",
+		ClaimType:      "decision",
+		Qualifiers:     lifecycleQualifiers(KindDoctrine, "generic-memory", revokeID, StatusAccepted),
+		PromotionBasis: candidates.BasisDecisionRecord,
+		SourceTraceRef: "generic-memory:test",
+		SnippetHash:    "shadow-authoritative-revocation",
+		Visibility:     "operational",
+	}
+	captured, err := store.Capture([]mem.Candidate{shadow}, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Adjudicate(captured[0].ID, "promote", "generic-memory-cli", now.Add(2*time.Minute)); err == nil || !strings.Contains(err.Error(), "reserved operational decision slot") {
+		t.Fatalf("generic memory shadowed authoritative revocation: %v", err)
+	}
+	claims, err := store.AllCurrentOperationalDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := AuthoritativeActiveDecisions(claims, KindGrant)
+	for _, claim := range active {
+		if LifecycleFromClaim(claim).ID == grantID {
+			t.Fatalf("shadow attack reactivated revoked grant: %+v", active)
+		}
+	}
+}
+
 func mapWithSupersedes(q map[string]string, ids ...string) map[string]string {
 	out := cloneStringMap(q)
 	out["supersedes"] = strings.Join(ids, ",")
+	return out
+}
+
+func operationalDecisionQualifiers(q map[string]string) map[string]string {
+	out := cloneStringMap(q)
+	out[mem.OperationalDecisionAuthorityQualifier] = mem.OperationalDecisionAuthorityValue
 	return out
 }

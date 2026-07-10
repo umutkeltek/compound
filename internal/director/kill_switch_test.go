@@ -8,45 +8,37 @@ import (
 	"compound/internal/work"
 )
 
-// TestKillSwitchHaltsDirectorAutoAdmit wires W9-J4 to a REAL director proposal: a
-// review-debt work the director actually proposed cannot be autonomously admitted while
-// the policy-owned halt is engaged, and can once the operator clears it. Manual
-// materialization of the create-plan (proposed) is unaffected either way.
+// TestKillSwitchHaltsDirectorAutoAdmit wires the halt to the real typed
+// job_health path: even a threshold-met class grant stays proposed while the
+// halt is engaged, then the same sealed eligibility admits after it is cleared.
 func TestKillSwitchHaltsDirectorAutoAdmit(t *testing.T) {
 	home := seededDirectorHome(t)
-	seedDirectorApplyGrant(t, home, directorTestNow)
-	seedReviewDebt(t, home, "synthetic-review-debt", "review-debt-01")
+	now := directorTestNow.Add(96 * time.Hour)
+	seedDirectorApplyGrant(t, home, now.Add(-72*time.Hour))
+	seedJobHealthAutonomyGrant(t, home, "job_health", 2, 1, 0, now.Add(-72*time.Hour))
+	seedJobHealthAutonomySample(t, home, "halt-a", now.Add(-48*time.Hour), "completed", "auto/judge", true)
+	seedJobHealthAutonomySample(t, home, "halt-b", now.Add(-24*time.Hour), "completed", "auto/judge", true)
+	seedFailingJobHealth(t, home)
+	if err := policy.WriteAutonomyHalt(home, policy.AutonomyHalt{Global: true, Reason: "incident review"}); err != nil {
+		t.Fatalf("engage halt: %v", err)
+	}
 
-	report, err := Propose(home, Options{Apply: true, Now: directorTestNow})
+	report, err := Propose(home, Options{Apply: true, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.ProposalCount != 1 {
-		t.Fatalf("expected one director proposal, got %+v", report)
+	proposal := findProposalByKind(report, "job_health")
+	if proposal == nil || proposal.AutoAdmit == nil || proposal.AutoAdmitResult == nil {
+		t.Fatalf("expected one typed job_health auto-admit attempt, got %+v", report)
 	}
-
 	store, err := work.Open(home)
 	if err != nil {
 		t.Fatal(err)
 	}
-	materialized, err := store.AdmitCreatePlanPath(report.Proposals[0].PlanPath, directorTestNow.Add(time.Minute), work.AdmitCreatePlanOptions{Actor: "operator-test"})
-	if err != nil {
-		t.Fatal(err)
+	if !proposal.AutoAdmitResult.Halted || proposal.AutoAdmitResult.Admitted {
+		t.Fatalf("global halt must deny director auto-admit: %+v", proposal)
 	}
-	if materialized.WorkState != "proposed" {
-		t.Fatalf("materialized director work should be proposed, got %q", materialized.WorkState)
-	}
-	grant := work.AutoAdmitInput{By: "director", EligibilityReason: "clean-window: 5 clean runs"}
-
-	// Halt engaged: autonomous admission of the real proposal is denied; it stays proposed.
-	if err := policy.WriteAutonomyHalt(home, policy.AutonomyHalt{Global: true, Reason: "incident review"}); err != nil {
-		t.Fatalf("engage halt: %v", err)
-	}
-	halted, err := store.AdmitAuto(materialized.WorkID, grant, directorTestNow.Add(2*time.Minute))
-	if err == nil || !halted.Halted || halted.Admitted {
-		t.Fatalf("global halt must deny director auto-admit: err=%v res=%+v", err, halted)
-	}
-	if got, _ := store.Get(materialized.WorkID); got.State != "proposed" {
+	if got, _ := store.Get(proposal.WorkID); got.State != "proposed" {
 		t.Fatalf("halted director work must stay proposed, got %q", got.State)
 	}
 
@@ -54,11 +46,11 @@ func TestKillSwitchHaltsDirectorAutoAdmit(t *testing.T) {
 	if err := policy.WriteAutonomyHalt(home, policy.AutonomyHalt{}); err != nil {
 		t.Fatalf("clear halt: %v", err)
 	}
-	admitted, err := store.AdmitAuto(materialized.WorkID, grant, directorTestNow.Add(3*time.Minute))
+	admitted, err := store.AdmitAuto(proposal.WorkID, *proposal.AutoAdmit, now.Add(time.Minute))
 	if err != nil || !admitted.Admitted {
 		t.Fatalf("cleared halt must let director auto-admit proceed: err=%v res=%+v", err, admitted)
 	}
-	if got, _ := store.Get(materialized.WorkID); got.State != "admitted" {
+	if got, _ := store.Get(proposal.WorkID); got.State != "admitted" {
 		t.Fatalf("director work should be admitted after clearing halt, got %q", got.State)
 	}
 }

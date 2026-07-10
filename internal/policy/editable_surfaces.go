@@ -30,6 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"compound/internal/envelope"
+	homepkg "compound/internal/home"
 )
 
 const (
@@ -88,7 +89,10 @@ type EditableSurfaces struct {
 	AuthorityRef     string            `json:"authority_ref,omitempty"`
 }
 
-// editableSurfacesFile is the YAML the operator edits.
+// editableSurfacesFile is the YAML projection. Supported writers go through
+// WriteEditableSurfaces and the shared admission lock. A manual edit while
+// autonomy is available is unsupported; engage the global autonomy halt,
+// edit and validate, then clear the halt through its command.
 type editableSurfacesFile struct {
 	SchemaVersion string                     `yaml:"schema_version,omitempty"`
 	Surfaces      []editableSurfaceFileEntry `yaml:"surfaces,omitempty"`
@@ -226,6 +230,12 @@ func isMutationClass(class string) bool {
 // WriteEditableSurfaces persists a registry (operator/ops helper and test seam). It writes
 // the same file LoadEditableSurfaces reads, so an edit is visible to the very next check.
 func WriteEditableSurfaces(homePath string, reg EditableSurfaces) error {
+	return homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		return writeEditableSurfacesLocked(homePath, reg)
+	})
+}
+
+func writeEditableSurfacesLocked(homePath string, reg EditableSurfaces) error {
 	homePath = strings.TrimSpace(homePath)
 	if homePath == "" {
 		return fmt.Errorf("COMPOUND_HOME required")

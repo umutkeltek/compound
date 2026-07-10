@@ -17,6 +17,7 @@ import (
 	"compound/internal/product"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
+	autonomyproof "compound/internal/routeevidence/autonomy"
 	"compound/internal/work"
 )
 
@@ -66,9 +67,9 @@ type Report struct {
 	RunMoveType              string         `json:"run_move_type,omitempty"`
 	NoDelta                  bool           `json:"no_delta,omitempty"`
 	ResultPath               string         `json:"result_path,omitempty"`
-	// GrantRef cites the active director-apply grant decision record this run
-	// resolved (grants-as-gates, 2026-07-10). Set only in --apply mode; empty
-	// in a dry run, which never requires a grant.
+	// GrantRef cites the active broad director-apply grant this run resolved.
+	// That grant authorizes filing suggestions only; class-scoped autonomy uses
+	// the separate grant sealed into each eligibility artifact.
 	GrantRef             string                `json:"grant_ref,omitempty"`
 	Proposals            []Proposal            `json:"proposals,omitempty"`
 	SuppressedDuplicates []SuppressedDuplicate `json:"suppressed_duplicates,omitempty"`
@@ -90,13 +91,16 @@ type Proposal struct {
 	PlanPath        string                            `json:"plan_path,omitempty"`
 	RoutePlan       routeevidence.CapabilityRoutePlan `json:"route_plan"`
 	WorkPlan        work.CreatePlan                   `json:"work_plan,omitempty"`
-	// AutoAdmit is the trust-dial eligibility this apply run computed for this
-	// proposal from the active director-apply grant (grants-as-gates,
-	// 2026-07-10; W9-J6 first increment). Set only in --apply mode when a
-	// grant was resolved; nil in a dry run. This packet constructs and cites
-	// it — it does NOT itself call AdmitAuto (see director/grant.go doc and
-	// the executor handoff for why that's a deliberate, separate increment).
-	AutoAdmit *work.AutoAdmitInput `json:"auto_admit,omitempty"`
+	// AutoAdmit records the typed request used at the sole admission seam.
+	// It is present only for a job-health apply attempt with a current
+	// class-scoped autonomy grant; dry runs and broad filing grants cannot
+	// construct it. AutoAdmitResult records whether the revalidated evidence
+	// threshold actually admitted the proposal.
+	AutoAdmit       *work.AutoAdmitInput  `json:"auto_admit,omitempty"`
+	EligibilityRef  string                `json:"eligibility_ref,omitempty"`
+	AdmissionID     string                `json:"admission_id,omitempty"`
+	AutoAdmitResult *work.AutoAdmitResult `json:"auto_admit_result,omitempty"`
+	AutoAdmitError  string                `json:"auto_admit_error,omitempty"`
 }
 
 type SuppressedDuplicate struct {
@@ -177,10 +181,10 @@ func Propose(homePath string, opts Options) (Report, error) {
 		Mode:          mode,
 		ProposedBy:    DirectorActor,
 	}
-	// Grant consumption (grants-as-gates, 2026-07-10): --apply refuses BEFORE
-	// filing anything without an active director-apply grant record. Dry run
-	// never requires one. The kill-switch inside AdmitAuto still wins wherever
-	// a caller later admits through the AutoAdmitInput this run constructs.
+	// The broad director-apply grant authorizes filing create-plan previews and
+	// proposed work. It is deliberately not autonomy authority: job-health
+	// admission below independently resolves a typed class grant and replays
+	// its evidence at AdmitAuto. Dry runs require neither grant.
 	var grant resolvedApplyGrant
 	if opts.Apply {
 		var grantErr error
@@ -266,18 +270,11 @@ func Propose(homePath string, opts Options) (Report, error) {
 					return report, err
 				}
 			}
-			// Construct the trust-dial eligibility this run resolved from the
-			// active director-apply grant, citing it on the proposal itself
-			// (grants-as-gates, 2026-07-10). This packet stops at constructing
-			// and citing AutoAdmitInput — a follow-up increment threads it
-			// through AdmitCreatePlan + AdmitAuto to actually admit (see
-			// director/grant.go doc + the executor handoff).
-			admitInput := work.AutoAdmitInput{
-				By:                DirectorActor,
-				EligibilityReason: "director-apply-grant:" + grant.DecisionID,
-				GrantRef:          grant.GrantRef,
+			if proposal.Kind == "job_health" {
+				if err := attemptJobHealthEvidenceAutonomy(homePath, store, &proposal, plan, now); err != nil {
+					return report, err
+				}
 			}
-			proposal.AutoAdmit = &admitInput
 		}
 		report.Proposals = append(report.Proposals, proposal)
 		dupes.addPlan(proposal.TriggerRef, proposal.ID)
@@ -299,6 +296,63 @@ func Propose(homePath string, opts Options) (Report, error) {
 		}
 	}
 	return report, nil
+}
+
+func attemptJobHealthEvidenceAutonomy(homePath string, store *work.Store, proposal *Proposal, plan work.CreatePlan, now time.Time) error {
+	admission, err := store.AdmitCreatePlanPath(plan.PlanPath, now, work.AdmitCreatePlanOptions{Actor: DirectorActor, Note: "director_job_health_proposal"})
+	if err != nil {
+		return err
+	}
+	proposal.AdmissionID = admission.ID
+	proposal.WorkState = admission.WorkState
+
+	grant, ok, err := resolveAutonomyGrant(homePath, "job_health")
+	if err != nil {
+		proposal.AutoAdmitError = err.Error()
+		return nil
+	}
+	if !ok {
+		proposal.AutoAdmitError = "no active class-scoped autonomy grant for job_health"
+		return nil
+	}
+	eligibility, err := autonomyproof.Compile(homePath, grant.Proof, autonomyRoutePlanSnapshot(proposal.RoutePlan), now)
+	if err != nil {
+		return err
+	}
+	if _, err := autonomyproof.Record(homePath, eligibility); err != nil {
+		return err
+	}
+	proposal.EligibilityRef = eligibility.Ref()
+	input := work.AutoAdmitInput{By: DirectorActor, EligibilityRef: eligibility.Ref()}
+	proposal.AutoAdmit = &input
+	result, admitErr := store.AdmitAuto(proposal.WorkID, input, now)
+	proposal.AutoAdmitResult = &result
+	proposal.WorkState = result.WorkState
+	if admitErr != nil {
+		proposal.AutoAdmitError = admitErr.Error()
+	}
+	return nil
+}
+
+func autonomyRoutePlanSnapshot(plan routeevidence.CapabilityRoutePlan) autonomyproof.RoutePlanSnapshot {
+	out := autonomyproof.RoutePlanSnapshot{
+		ID:                plan.ID,
+		AuthorityPath:     plan.AuthorityPath,
+		SourceAuthorityID: plan.SourceAuthorityID,
+		SourceRevision:    plan.SourceRevision,
+		CapabilityClass:   plan.CapabilityClass,
+		PrivacySensitive:  plan.PrivacySensitive,
+		Chain:             []autonomyproof.LaneSnapshot{},
+	}
+	for _, lane := range plan.Chain {
+		out.Chain = append(out.Chain, autonomyproof.LaneSnapshot{
+			ModelID:    lane.ModelID,
+			Tier:       lane.Tier,
+			ClaimLevel: lane.ClaimLevel,
+			GateRole:   lane.GateRole,
+		})
+	}
+	return out
 }
 
 func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
@@ -1089,7 +1143,7 @@ func recordApplyRunEnvelope(store *work.Store, report *Report, now time.Time) er
 		SuccessPredicate: "Record director propose --apply run receipt and closing transition",
 		DesiredOutcome:   "Director apply run is enveloped with proposal, duplicate, and skip counts",
 		NonGoals: []string{
-			"do not admit, claim, advance, dispatch, or close proposed work generated by the director",
+			"do not claim, dispatch, execute, or close suggested work; only evidence-qualified job_health may stop at admitted",
 			"do not mutate scheduler, source, product, review, or memory owner state",
 		},
 		EvidenceRefs: directorRunEvidenceRefs(*report),

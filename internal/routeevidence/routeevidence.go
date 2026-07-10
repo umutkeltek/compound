@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	homepkg "compound/internal/home"
 )
 
 const SchemaVersion = "compound.execution_route_evidence.v0.1"
@@ -264,6 +265,12 @@ func RecordEvidence(homePath string, ev Evidence) error {
 	if err := Validate(ev); err != nil {
 		return err
 	}
+	return homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		return recordEvidenceLocked(homePath, ev)
+	})
+}
+
+func recordEvidenceLocked(homePath string, ev Evidence) error {
 	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

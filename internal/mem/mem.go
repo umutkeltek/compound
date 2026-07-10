@@ -50,6 +50,14 @@ const (
 	ClaimStatePromoted    = "promoted"
 	ClaimStateNeedsReview = "needs_review"
 
+	// OperationalDecisionAuthorityQualifier is reserved for accepted policy
+	// decisions imported through the dedicated, locked decisions authority
+	// boundary. Generic memory candidates may describe grants, freezes, or
+	// revocations as evidence, but they cannot mint this stamp through
+	// Adjudicate and therefore cannot become runtime admission authority.
+	OperationalDecisionAuthorityQualifier = "_compound_operational_decision_authority"
+	OperationalDecisionAuthorityValue     = "policy-import-v1"
+
 	EdgeKindSupersedes    = "supersedes"
 	EdgeKindReinforces    = "reinforces"
 	EdgeKindNeedsReview   = "needs_review"
@@ -207,6 +215,16 @@ func Open(homePath string) (*Store, error) {
 	return &Store{home: homePath}, nil
 }
 
+// HomePath exposes the runtime root to sibling authority owners that must
+// coordinate one cross-object critical section. It is not an authority read;
+// callers still use the owning package for ledger operations.
+func (s *Store) HomePath() string {
+	if s == nil {
+		return ""
+	}
+	return s.home
+}
+
 func (s *Store) candDir() string {
 	return filepath.Join(s.home, candidates.InboxDir(candidates.Memory))
 }
@@ -350,6 +368,19 @@ type AdjudicateResult struct {
 // provenance), supersedes the prior current claim if the value changed (edge, not delete),
 // and emits a Transition (memory_delta). A duplicate (same current value) is rejected.
 func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
+	return s.adjudicate(candID, verdict, workID, now, false)
+}
+
+// AdjudicateOperationalDecision is the dedicated claim-append door used by
+// the policy decision importer. It stamps promoted decision claims as
+// operational authority after the importer has parsed operator-owned policy
+// input under the shared autonomy-admission lock. Callers with ordinary
+// extracted/inferred memory must use Adjudicate instead.
+func (s *Store) AdjudicateOperationalDecision(candID, verdict, workID string, now time.Time) (AdjudicateResult, error) {
+	return s.adjudicate(candID, verdict, workID, now, true)
+}
+
+func (s *Store) adjudicate(candID, verdict, workID string, now time.Time, operationalDecision bool) (AdjudicateResult, error) {
 	var res AdjudicateResult
 	if !oneOf(verdict, Verdicts) {
 		return res, fmt.Errorf("verdict must be one of %v, got %q", Verdicts, verdict)
@@ -362,6 +393,19 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	res.Verdict = verdict
 	if c.State == "promoted" {
 		return res, fmt.Errorf("candidate %s already promoted", candID)
+	}
+	if c.Qualifiers != nil && strings.TrimSpace(c.Qualifiers[OperationalDecisionAuthorityQualifier]) != "" && !operationalDecision {
+		return res, fmt.Errorf("candidate %s uses reserved operational decision authority qualifier; import it through the policy decisions authority", candID)
+	}
+	if !operationalDecision && verdict == "promote" && isOperationalDecisionKind(c.Qualifiers["kind"]) {
+		return res, fmt.Errorf("candidate %s uses reserved operational decision kind %q; import it through the policy decisions authority", candID, c.Qualifiers["kind"])
+	}
+	if operationalDecision && verdict == "promote" {
+		if c.ClaimType != "decision" {
+			return res, fmt.Errorf("candidate %s cannot receive operational decision authority: claim_type must be decision", candID)
+		}
+		c.Qualifiers = cloneStringMap(c.Qualifiers)
+		c.Qualifiers[OperationalDecisionAuthorityQualifier] = OperationalDecisionAuthorityValue
 	}
 
 	if verdict != "promote" {
@@ -399,6 +443,15 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 		hasPrior, dup bool
 	)
 	lockErr := s.withLock(func() error {
+		if !operationalDecision && c.ClaimType == "decision" {
+			protected, err := s.protectedOperationalDecisionInSlot(c)
+			if err != nil {
+				return err
+			}
+			if protected.ID != "" {
+				return fmt.Errorf("candidate %s targets reserved operational decision slot held by %s", c.ID, protected.ID)
+			}
+		}
 		p, hp, err := s.currentClusterClaim(c, 0)
 		if err != nil {
 			return err
@@ -451,6 +504,75 @@ func (s *Store) Adjudicate(candID, verdict, workID string, now time.Time) (Adjud
 	}
 	res.Candidate, res.Claim, res.Transition = c, &claim, &tr
 	return res, nil
+}
+
+// HasOperationalDecisionAuthority reports whether qualifiers carry the exact
+// reserved stamp minted by AdjudicateOperationalDecision. A source string or
+// a grant-shaped set of ordinary qualifiers is not authority.
+func HasOperationalDecisionAuthority(qualifiers map[string]string) bool {
+	return qualifiers != nil && qualifiers[OperationalDecisionAuthorityQualifier] == OperationalDecisionAuthorityValue
+}
+
+func isOperationalDecisionKind(kind string) bool {
+	switch strings.TrimSpace(strings.ToLower(kind)) {
+	case "grant", "freeze", "ruling":
+		return true
+	default:
+		return false
+	}
+}
+
+// protectedOperationalDecisionClaim includes the reserved-stamp format and
+// the narrow legacy format written by `compound decisions record` before the
+// stamp existed. The legacy branch keeps already-recorded operator grants and
+// freezes live across the migration; generic promotion can no longer create
+// this shape because operational kinds are reserved above.
+func protectedOperationalDecisionClaim(claim Claim) bool {
+	if claim.ClaimType != "decision" {
+		return false
+	}
+	if HasOperationalDecisionAuthority(claim.Qualifiers) {
+		return true
+	}
+	q := claim.Qualifiers
+	return q != nil &&
+		q["source"] == "decisions-repo" &&
+		q["lifecycle_status"] == "accepted" &&
+		strings.TrimSpace(q["reviewed_by"]) != "" &&
+		isOperationalDecisionKind(q["kind"])
+}
+
+func (s *Store) protectedOperationalDecisionInSlot(candidate Candidate) (Claim, error) {
+	want, err := s.candidateClusterKey(candidate)
+	if err != nil {
+		return Claim{}, err
+	}
+	claims, err := s.loadClaimsRaw()
+	if err != nil {
+		return Claim{}, err
+	}
+	var latest Claim
+	for _, claim := range claims {
+		if !protectedOperationalDecisionClaim(claim) {
+			continue
+		}
+		got, err := s.claimClusterKey(claim)
+		if err != nil {
+			return Claim{}, err
+		}
+		if sameClusterKey(got, want) && claim.Seq > latest.Seq {
+			latest = claim
+		}
+	}
+	return latest, nil
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in)+1)
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 // The promotion decision is pure: nonPromoteState / isDuplicatePromotion /

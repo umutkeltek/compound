@@ -11,9 +11,10 @@ import (
 	"testing"
 )
 
-// TestProposeApplyWritesConfinedToProposalSurfaces is the director's
-// suggestion-only boundary expressed as an enforced invariant: a director
-// --apply run may only ever touch proposal-preview and run-receipt surfaces.
+// TestProposeApplyWritesConfinedToProposalSurfaces is the non-autonomous-class
+// boundary expressed as an enforced invariant: this review_debt apply run may
+// only touch proposal-preview and run-receipt surfaces. The separate
+// job_health success-path boundary test pins the one admitted exception.
 // If the director ever gains a new write surface (memory, policy owners,
 // config, source/product owners, scheduler state), the observed write set
 // escapes the allowlist and this test FAILS.

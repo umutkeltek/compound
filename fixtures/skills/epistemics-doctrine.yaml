@@ -8,7 +8,7 @@ source_ref:
   kind: architecture_contract
   owner: architecture-doctor
   source_class: source
-  revision: docs-architecture-epistemics-v1
+  revision: docs-architecture-epistemics-v2
 evidence_refs:
   - docs/architecture/epistemics.md
 skills:
@@ -95,4 +95,17 @@ skills:
       - external capability
     capabilities:
       - architecture-doctor
+    weight: 1
+  - id: doctrine:epistemics-evidence-gated-autonomy
+    kind: doctrine
+    name: Suggested Work Requires Evidence-Gated Admission
+    status: active
+    triggers:
+      - epistemics
+      - suggested work
+      - standing autonomy grant
+      - evidence threshold
+    capabilities:
+      - director-propose
+      - route-evidence
     weight: 1

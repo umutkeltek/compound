@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -220,6 +221,51 @@ func (s *Store) visibleWireEdges(cur []Claim, minConf float64) ([]WireEdge, erro
 // AllCurrent returns the current (non-superseded, non-retired) claims — the canon a distiller
 // compares new extractions against (RetrievedPriorState). Public accessor over currentVisible.
 func (s *Store) AllCurrent() ([]Claim, error) { return s.currentVisible() }
+
+// AllCurrentOperationalDecisions returns the runtime decision-control subset
+// with its own protected supersession fold. Only another stamped/legacy
+// operator decision may hide one of these claims; an ordinary memory edge or
+// same-slot shadow cannot erase grant/freeze/revocation authority before its
+// consumer validates it.
+func (s *Store) AllCurrentOperationalDecisions() ([]Claim, error) {
+	claims, err := s.loadClaims()
+	if err != nil {
+		return nil, err
+	}
+	protected := map[string]bool{}
+	for _, claim := range claims {
+		if protectedOperationalDecisionClaim(claim) {
+			protected[claim.ID] = true
+		}
+	}
+	superseded := map[string]bool{}
+	err = readJSONL(s.edgesLog(), func(line []byte) error {
+		var edge Edge
+		if err := json.Unmarshal(line, &edge); err != nil {
+			return err
+		}
+		if edge.Kind == EdgeKindSupersedes && protected[edge.From] && protected[edge.To] {
+			superseded[edge.To] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, claim := range claims {
+		if protected[claim.ID] && protected[claim.Supersedes] {
+			superseded[claim.Supersedes] = true
+		}
+	}
+	var out []Claim
+	for _, claim := range claims {
+		if !protected[claim.ID] || claim.Visibility == "retired" || claim.State == ClaimStateNeedsReview || superseded[claim.ID] {
+			continue
+		}
+		out = append(out, claim)
+	}
+	return out, nil
+}
 
 // currentVisible returns the current (non-superseded as of now), non-retired claims — the set
 // an engine is allowed to surface (the relevance gate, computed by the ledger).

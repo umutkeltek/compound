@@ -162,7 +162,8 @@ func TestApplySkillCandidateMappingAndFailSoft(t *testing.T) {
 		run.Targets = append(run.Targets, Target{Ref: tc.id, Privacy: "internal", StateBefore: "review_required"})
 		run.Findings = append(run.Findings, TargetFinding{TargetRef: tc.id, VerdictArtifact: filepath.Join(home, "reviews", "panel-verdicts", tc.id+".json"), Synthesis: Synthesis{SchemaVersion: SynthesisSchemaVersion, Decision: tc.decision, Confidence: 0.86, Rationale: tc.rationale}})
 	}
-	got, err := Apply(home, run, incrementingPanelNowForTest())
+	now := incrementingPanelNowForTest()
+	got, err := Apply(home, run, now)
 	if err != nil {
 		t.Fatalf("apply skill candidates: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestApplySkillCandidateMappingAndFailSoft(t *testing.T) {
 	if !strings.Contains(byID["scr_skill_fail_soft"].Application.Note, "record skill candidate decision failed") {
 		t.Fatalf("fail-soft note = %q", byID["scr_skill_fail_soft"].Application.Note)
 	}
-	again, err := Apply(home, got, incrementingPanelNowForTest())
+	again, err := Apply(home, got, now)
 	if err != nil {
 		t.Fatalf("reapply skill candidates: %v", err)
 	}

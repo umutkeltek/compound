@@ -353,7 +353,12 @@ type AdvanceInput struct {
 	ArtifactID     string
 	VerificationID string
 	ContextPackID  string
-	Note           string
+	// EvidenceRefs are immutable proof attachments for a specialized admitted
+	// transition (currently evidence-threshold autonomy). Generic CLI advances
+	// leave this empty. applyAdvance persists them on both the WorkEnvelope and
+	// the exact lifecycle event so replay does not depend on a mutable sidecar.
+	EvidenceRefs []string
+	Note         string
 	// Steal and StealReason mirror CloseInput's lease escape hatch (see
 	// leaseHolderAdvanceGate in lease_advance.go): advancing a work held by a different
 	// actor is refused unless Steal is true AND StealReason is non-empty.
@@ -364,6 +369,16 @@ type AdvanceInput struct {
 // Advance moves a work along a legal edge of the state machine, optionally attaching
 // linked envelope ids (runs = executed actions, artifacts = outputs).
 func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
+	var out envelope.WorkEnvelope
+	var advanceErr error
+	err := home.WithAutonomyAdmissionLock(s.home, func() error {
+		out, advanceErr = s.advanceLocked(workID, in, now)
+		return advanceErr
+	})
+	return out, err
+}
+
+func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -437,6 +452,10 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	attached := []string{plan.ActionIntent.ID, plan.Decision.ID}
+	if len(in.EvidenceRefs) > 0 {
+		w.EvidenceRefs = mergeUnique(w.EvidenceRefs, in.EvidenceRefs)
+		attached = append(attached, in.EvidenceRefs...)
+	}
 	if in.RunID != "" {
 		w.RunIDs = append(w.RunIDs, in.RunID)
 		attached = append(attached, in.RunID)
@@ -479,6 +498,16 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 // (Decoupled from the policy package on purpose: the store enforces on the decision's
 // own outcome, so the gate holds even if a caller skips the evaluator.)
 func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) (envelope.WorkEnvelope, error) {
+	var out envelope.WorkEnvelope
+	var recordErr error
+	err := home.WithAutonomyAdmissionLock(s.home, func() error {
+		out, recordErr = s.recordActionLocked(workID, ai, pd, now)
+		return recordErr
+	})
+	return out, err
+}
+
+func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) (envelope.WorkEnvelope, error) {
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -568,6 +597,16 @@ var receiptOutcome = map[string]string{"completed": "completed", "failed": "fail
 // Close lands a work in a terminal state and emits the Receipt + Transition that tie the
 // whole chain (context -> runs -> outputs) to this work_id.
 func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult, error) {
+	var out CloseResult
+	var closeErr error
+	err := home.WithAutonomyAdmissionLock(s.home, func() error {
+		out, closeErr = s.closeLocked(workID, in, now)
+		return closeErr
+	})
+	return out, err
+}
+
+func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseResult, error) {
 	var res CloseResult
 	w, err := s.Get(workID)
 	if err != nil {

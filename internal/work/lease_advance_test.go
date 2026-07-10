@@ -192,8 +192,9 @@ func TestAdvanceUnclaimedWorkUnaffected(t *testing.T) {
 // auto_admit_test.go suite (left unmodified by this change) already proves.
 func TestAdvanceAutoAdmitBypassesLeaseGateByDesign(t *testing.T) {
 	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_lease_gate_bypass", fixedNow)
-	res, err := s.AdmitAuto(id, AutoAdmitInput{By: "director", EligibilityReason: "clean-window: 7 clean runs"}, fixedNow.Add(time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("AdmitAuto must not be gated by the advance lease gate: %v", err)
 	}

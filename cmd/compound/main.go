@@ -292,11 +292,11 @@ compound workbench [--json] [--recent N] [--actor A] [--active-packet-surface S]
 compound attention [--json] [--home P] ranked operator-attention projection from reviews, workbench, and executors; no mutation
 compound executors [--json] read-only executor projection from Workbench, leases, and profile guide; no health overclaim
 compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bundle: tests/vet/build/gofmt/diff/doctors/redact
-  compound director propose [--dry-run|--apply] --json          suggested-work proposals backed by evidence; no add/continue side effects
+  compound director propose [--dry-run|--apply] --json          suggested work; apply may evidence-admit job_health but never executes it
   compound release export-public [--repo P] [--target archive.tar.gz] [--prefix NAME] [--json] public source archive from git archive HEAD with private/runtime path gate
   compound reviews [--json] [--area A] [--include-archived] read-only owner-review artifact queue; no apply
   compound reviews record-finding (--work-id W|--auto-work) --target state/runs/.../finding.json --summary S [--root DIR] [--capability review.finding] [--source-artifact state/runs/.../artifact.json] [--source-trace trace_id] [--evidence-ref REF...]
-  compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority> ActionIntent -> PolicyDecision; import policy authorities
+  compound policy <evaluate|import-placement-rules|placement-authority|import-standing-grants|standing-grants-authority|import-operator-state|operator-authority|import-operator-prompts|operator-prompts-authority|import-operator-approval-frontier|operator-approval-frontier-authority|import-release-goal-holds|release-goal-holds-authority|autonomy-halt> ActionIntent -> PolicyDecision; import policy authorities / mutate halt through its locked command
   compound hook <name> [--enforce] <fixture.json>               run lifecycle hook over fixture; --enforce exits nonzero on pre-tool holds
   compound harness <list|NAME|observe [registry.yaml|--os-entrypoints file]> HarnessRegistry capabilities + limits; observe records capability evidence/no-promote
   compound transition show <id>                                 inspect a Transition or envelope
@@ -3516,14 +3516,82 @@ func cmdPolicy(args []string) {
 		}
 		printJSON(report)
 	case "autonomy-halt":
-		if len(args) != 1 && !(len(args) == 2 && args[1] == "--json") {
-			fmt.Fprintln(os.Stderr, "usage: compound policy autonomy-halt [--json]")
+		const autonomyHaltUsage = "usage: compound policy autonomy-halt [--json | --global --reason <text> | --clear-global | --disable-class <class> --reason <text> | --enable-class <class>]"
+		jsonOut := false
+		setGlobal := false
+		clearGlobal := false
+		disableClass := ""
+		enableClass := ""
+		reason := ""
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+				jsonOut = true
+			case "--global":
+				setGlobal = true
+			case "--clear-global":
+				clearGlobal = true
+			case "--disable-class":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, autonomyHaltUsage)
+					os.Exit(2)
+				}
+				i++
+				disableClass = strings.TrimSpace(args[i])
+			case "--enable-class":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, autonomyHaltUsage)
+					os.Exit(2)
+				}
+				i++
+				enableClass = strings.TrimSpace(args[i])
+			case "--reason":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, autonomyHaltUsage)
+					os.Exit(2)
+				}
+				i++
+				reason = strings.TrimSpace(args[i])
+			default:
+				fmt.Fprintln(os.Stderr, autonomyHaltUsage)
+				os.Exit(2)
+			}
+		}
+		mutationCount := 0
+		for _, active := range []bool{setGlobal, clearGlobal, disableClass != "", enableClass != ""} {
+			if active {
+				mutationCount++
+			}
+		}
+		if mutationCount > 1 || ((setGlobal || disableClass != "") && reason == "") || ((!setGlobal && disableClass == "") && reason != "") {
+			fmt.Fprintln(os.Stderr, autonomyHaltUsage)
 			os.Exit(2)
 		}
 		homePath, err := home.Resolve("")
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
+		}
+		if mutationCount == 1 {
+			err := policy.UpdateAutonomyHalt(homePath, func(halt *policy.AutonomyHalt) error {
+				switch {
+				case setGlobal:
+					halt.Global = true
+					halt.Reason = reason
+				case clearGlobal:
+					halt.Global = false
+					halt.Reason = ""
+				case disableClass != "":
+					halt.DisabledClasses[disableClass] = reason
+				case enableClass != "":
+					delete(halt.DisabledClasses, enableClass)
+				}
+				return nil
+			})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "policy autonomy-halt:", err)
+				os.Exit(1)
+			}
 		}
 		type autonomyHaltClass struct {
 			Class  string `json:"class"`
@@ -3557,7 +3625,7 @@ func cmdPolicy(args []string) {
 		}
 		sort.Slice(report.DisabledClasses, func(i, j int) bool { return report.DisabledClasses[i].Class < report.DisabledClasses[j].Class })
 		report.DisabledClassCount = len(report.DisabledClasses)
-		if len(args) == 2 && args[1] == "--json" {
+		if jsonOut {
 			printJSON(report)
 			return
 		}
@@ -7213,19 +7281,38 @@ func cmdDecisions(args []string) {
 		}
 	case "record":
 		jsonOut := hasFlag(args[1:], "--json")
+		minTerminalSamples, err := intFlag(args[1:], "--min-terminal-samples")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions record:", err)
+			os.Exit(2)
+		}
+		minWindowDays, err := intFlag(args[1:], "--min-window-days")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions record:", err)
+			os.Exit(2)
+		}
+		maxFailures, err := intFlag(args[1:], "--max-failures")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions record:", err)
+			os.Exit(2)
+		}
 		in := decisions.RecordInput{
-			Kind:          value("--kind"),
-			ID:            value("--id"),
-			Title:         value("--title"),
-			ReviewedBy:    value("--reviewed-by"),
-			Scope:         value("--scope"),
-			OwnerGlobs:    values("--owner-glob"),
-			Keywords:      values("--keyword"),
-			Domains:       values("--domain"),
-			Falsifier:     value("--falsifier"),
-			ReviewTrigger: value("--review-trigger"),
-			UndoOf:        value("--undo-of"),
-			Now:           time.Now(),
+			Kind:               value("--kind"),
+			ID:                 value("--id"),
+			Title:              value("--title"),
+			ReviewedBy:         value("--reviewed-by"),
+			Scope:              value("--scope"),
+			OwnerGlobs:         values("--owner-glob"),
+			Keywords:           values("--keyword"),
+			Domains:            values("--domain"),
+			Falsifier:          value("--falsifier"),
+			ReviewTrigger:      value("--review-trigger"),
+			UndoOf:             value("--undo-of"),
+			AutoAdmitClass:     value("--auto-admit-class"),
+			MinTerminalSamples: minTerminalSamples,
+			MinWindowDays:      minWindowDays,
+			MaxFailures:        maxFailures,
+			Now:                time.Now(),
 		}
 		report, err := decisions.Record(store, homePath, in)
 		if err != nil {
@@ -7242,6 +7329,12 @@ func cmdDecisions(args []string) {
 		fmt.Printf("- status: %s\n", report.Import.Lifecycle.Status)
 		fmt.Printf("- scope: %s\n", report.Import.Lifecycle.Scope)
 		fmt.Printf("- reviewed_by: %s\n", report.Import.Lifecycle.ReviewedBy)
+		if report.Import.Lifecycle.AutoAdmitClass != "" {
+			fmt.Printf("- auto_admit_class: %s\n", report.Import.Lifecycle.AutoAdmitClass)
+			fmt.Printf("- min_terminal_samples: %d\n", report.Import.Lifecycle.MinTerminalSamples)
+			fmt.Printf("- min_window_days: %d\n", report.Import.Lifecycle.MinWindowDays)
+			fmt.Printf("- max_failures: %d\n", report.Import.Lifecycle.MaxFailures)
+		}
 		fmt.Printf("- verdict: %s\n", report.Import.Verdict)
 		fmt.Printf("- claim: %s\n", report.Import.ClaimID)
 	case "doctor":

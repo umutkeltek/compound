@@ -209,6 +209,65 @@ func TestAdjudicatePromoteRequiresPromotionBasis(t *testing.T) {
 	}
 }
 
+func TestOperationalDecisionFoldIgnoresGenericSameSlotShadow(t *testing.T) {
+	s := newStore(t)
+	legacy := Claim{
+		ID:         "claim_legacy_freeze_authority",
+		Seq:        1,
+		Entity:     "decision:legacy-freeze",
+		Predicate:  "decided",
+		Object:     "legacy operator freeze",
+		ClaimType:  "decision",
+		Visibility: "operational",
+		Qualifiers: map[string]string{
+			"kind":             "freeze",
+			"source":           "decisions-repo",
+			"decision_id":      "legacy-freeze",
+			"lifecycle_status": "accepted",
+			"reviewed_by":      "test-operator",
+		},
+	}
+	shadow := Claim{
+		ID:         "claim_generic_shadow",
+		Seq:        2,
+		Entity:     legacy.Entity,
+		Predicate:  legacy.Predicate,
+		Object:     "generic same-slot shadow",
+		ClaimType:  "decision",
+		Visibility: "operational",
+		Supersedes: legacy.ID,
+		Qualifiers: map[string]string{
+			"kind":             "doctrine",
+			"source":           "generic-memory",
+			"decision_id":      "legacy-freeze",
+			"lifecycle_status": "accepted",
+		},
+	}
+	if err := appendJSONL(s.claimsLog(), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJSONL(s.claimsLog(), &shadow); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJSONL(s.edgesLog(), &Edge{Seq: shadow.Seq, Kind: EdgeKindSupersedes, From: shadow.ID, To: legacy.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ordinary, err := s.AllCurrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ordinary) != 1 || ordinary[0].ID != shadow.ID {
+		t.Fatalf("fixture did not reproduce generic MVCC shadow: %+v", ordinary)
+	}
+	operational, err := s.AllCurrentOperationalDecisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operational) != 1 || operational[0].ID != legacy.ID {
+		t.Fatalf("generic shadow erased operational authority: %+v", operational)
+	}
+}
+
 func TestDuplicateRejected(t *testing.T) {
 	s := newStore(t)
 	c1, _ := s.Capture([]Candidate{cand("e", "p", "same", "")}, t0)

@@ -54,3 +54,40 @@ func TestPolicyAutonomyHaltSurfacesState(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyAutonomyHaltCommandMutatesGlobalAndClassState(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	setGlobal := captureStdout(t, func() {
+		cmdPolicy([]string{"autonomy-halt", "--global", "--reason", "incident response", "--json"})
+	})
+	for _, want := range []string{`"global_halt": true`, `"reason": "incident response"`} {
+		if !strings.Contains(setGlobal, want) {
+			t.Fatalf("global halt mutation missing %q:\n%s", want, setGlobal)
+		}
+	}
+
+	disableClass := captureStdout(t, func() {
+		cmdPolicy([]string{"autonomy-halt", "--disable-class", "job_health", "--reason", "noisy evidence", "--json"})
+	})
+	for _, want := range []string{`"class": "job_health"`, `"reason": "noisy evidence"`} {
+		if !strings.Contains(disableClass, want) {
+			t.Fatalf("class halt mutation missing %q:\n%s", want, disableClass)
+		}
+	}
+
+	cleared := captureStdout(t, func() {
+		cmdPolicy([]string{"autonomy-halt", "--clear-global", "--json"})
+	})
+	if !strings.Contains(cleared, `"global_halt": false`) || !strings.Contains(cleared, `"class": "job_health"`) {
+		t.Fatalf("clearing global halt must preserve class halt:\n%s", cleared)
+	}
+
+	enabled := captureStdout(t, func() {
+		cmdPolicy([]string{"autonomy-halt", "--enable-class", "job_health", "--json"})
+	})
+	if !strings.Contains(enabled, `"disabled_class_count": 0`) {
+		t.Fatalf("enabling class did not clear class halt:\n%s", enabled)
+	}
+}

@@ -79,8 +79,8 @@ func TestBackfillGrantsAsGatesTonightsTwoRecords(t *testing.T) {
 	if reviewProp == nil || absorptionProp == nil {
 		t.Fatalf("expected both a review_debt and an absorption_debt proposal: %+v", report.Proposals)
 	}
-	if reviewProp.AutoAdmit == nil || absorptionProp.AutoAdmit == nil {
-		t.Fatalf("both proposals should carry a constructed AutoAdmitInput citing the grant")
+	if reviewProp.AutoAdmit != nil || absorptionProp.AutoAdmit != nil {
+		t.Fatalf("director-apply grant files proposals but must not create cross-class autonomy")
 	}
 
 	store, err := work.Open(home)
@@ -94,7 +94,7 @@ func TestBackfillGrantsAsGatesTonightsTwoRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := store.AdmitAuto(admittedAbsorption.WorkID, *absorptionProp.AutoAdmit, directorTestNow.Add(2))
+	res, err := store.AdmitAuto(admittedAbsorption.WorkID, work.AutoAdmitInput{By: "director"}, directorTestNow.Add(2))
 	if err == nil || res.Admitted {
 		t.Fatalf("new-organ/absorption proposal must be denied by the active freeze: err=%v res=%+v", err, res)
 	}
@@ -105,17 +105,21 @@ func TestBackfillGrantsAsGatesTonightsTwoRecords(t *testing.T) {
 		t.Fatalf("frozen absorption_debt work must stay proposed, got %q", got.State)
 	}
 
-	// Materialize + auto-admit the review_debt (smoothness/wiring) proposal:
-	// it matches no freeze scope and must pass, citing the grant.
+	// Materialize the review_debt proposal. It matches no freeze, but the broad
+	// director-apply grant still cannot admit it: only a typed class grant and
+	// evidence artifact may do that. The operator can always admit manually.
 	admittedReview, err := store.AdmitCreatePlanPath(reviewProp.PlanPath, directorTestNow.Add(3), work.AdmitCreatePlanOptions{Actor: "operator-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resReview, err := store.AdmitAuto(admittedReview.WorkID, *reviewProp.AutoAdmit, directorTestNow.Add(4))
-	if err != nil || !resReview.Admitted {
-		t.Fatalf("smoothness/wiring proposal must pass the freeze and auto-admit: err=%v res=%+v", err, resReview)
+	resReview, err := store.AdmitAuto(admittedReview.WorkID, work.AutoAdmitInput{By: "director"}, directorTestNow.Add(4))
+	if err == nil || resReview.Admitted {
+		t.Fatalf("broad filing grant must not auto-admit review_debt: err=%v res=%+v", err, resReview)
 	}
-	if got, _ := store.Get(admittedReview.WorkID); got.State != "admitted" {
-		t.Fatalf("review_debt work should be admitted, got %q", got.State)
+	if got, _ := store.Get(admittedReview.WorkID); got.State != "proposed" {
+		t.Fatalf("review_debt work should remain proposed, got %q", got.State)
+	}
+	if _, err := store.Advance(admittedReview.WorkID, work.AdvanceInput{Actor: "operator-test", To: "admitted"}, directorTestNow.Add(5)); err != nil {
+		t.Fatalf("manual operator admission must remain available: %v", err)
 	}
 }

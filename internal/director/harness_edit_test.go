@@ -360,7 +360,8 @@ func TestHarnessEditProposeApplyWritesCardConfined(t *testing.T) {
 
 // --- Falsifier 4: a director-emitted harness-edit proposal, once its create-plan
 // is admitted into a proposed WorkEnvelope, cannot AdmitAuto while its surface is
-// unwhitelisted (fail-closed), and CAN once the operator whitelists that surface.
+// unwhitelisted (fail-closed). Once whitelisted it reaches the next gate and is
+// still refused because the first evidence-autonomy grant is job_health-only.
 // Red without TargetSurface threading: an untargeted work would fail-open. ---
 func TestHarnessEditProposalGatedByEditableSurfacesWhitelist(t *testing.T) {
 	home := seededDirectorHome(t)
@@ -375,7 +376,7 @@ func TestHarnessEditProposalGatedByEditableSurfacesWhitelist(t *testing.T) {
 		t.Fatalf("admitted harness-edit work must carry target_surface %q, got %q", surface, w.TargetSurface)
 	}
 
-	eligible := work.AutoAdmitInput{By: "director", EligibilityReason: "clean-window: synthetic"}
+	eligible := work.AutoAdmitInput{By: "director"}
 
 	// Registry absent ⇒ fail-closed deny.
 	res, err := store.AdmitAuto(workID, eligible, directorTestNow.Add(2*time.Minute))
@@ -389,15 +390,19 @@ func TestHarnessEditProposalGatedByEditableSurfacesWhitelist(t *testing.T) {
 		t.Fatalf("denied harness-edit proposal must stay proposed, got %q", got.State)
 	}
 
-	// Operator whitelists the surface ⇒ admits.
+	// Operator whitelists the surface ⇒ the editable-surface denial clears, but
+	// harness_edit still has no enabled class-scoped autonomy slice.
 	if err := policy.WriteEditableSurfaces(home, policy.EditableSurfaces{Entries: []policy.EditableSurface{
 		{Surface: surface, ProposalClass: "local_reversible", Status: policy.EditableSurfaceStatusActive},
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	res, err = store.AdmitAuto(workID, eligible, directorTestNow.Add(3*time.Minute))
-	if err != nil || !res.Admitted {
-		t.Fatalf("whitelisted harness-edit proposal must admit: err=%v res=%+v", err, res)
+	if err == nil || res.Admitted || !strings.Contains(err.Error(), "no enabled evidence-autonomy slice") {
+		t.Fatalf("whitelisted harness-edit must stop at the class gate: err=%v res=%+v", err, res)
+	}
+	if got, _ := store.Get(workID); got.State != "proposed" {
+		t.Fatalf("harness-edit work should remain proposed, got %q", got.State)
 	}
 }
 
@@ -420,7 +425,7 @@ func TestHarnessEditProposalHaltWinsOverWhitelist(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := store.AdmitAuto(workID, work.AutoAdmitInput{By: "director", EligibilityReason: "clean-window: synthetic"}, directorTestNow.Add(2*time.Minute))
+	res, err := store.AdmitAuto(workID, work.AutoAdmitInput{By: "director"}, directorTestNow.Add(2*time.Minute))
 	if err == nil || res.Admitted {
 		t.Fatalf("halt must deny even a whitelisted harness-edit proposal: err=%v res=%+v", err, res)
 	}

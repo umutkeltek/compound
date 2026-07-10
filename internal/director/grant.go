@@ -3,11 +3,10 @@ package director
 // Director-apply grant consumption (grants-as-gates, 2026-07-10): director
 // --apply now requires an active operator grant decision record (kind=grant,
 // status=accepted, scope=director-apply, reviewed_by present) before it
-// files anything. This is W9-J6's first increment through the pre-built door
-// in internal/work/auto_admit.go: AutoAdmitInput.GrantRef is the designed
-// slot for exactly this evidence. The kill-switch inside AdmitAuto still
-// wins — resolving a grant here only proves eligibility; it never bypasses
-// the halt.
+// files anything. That broad grant authorizes filing only. A separate,
+// class-scoped autonomy grant carries explicit sample/window/failure
+// thresholds and is sealed into a content-addressed eligibility artifact;
+// neither grant can bypass the kill-switch or operator-only risk frontier.
 //
 // The read path is decisions.ActiveDecisions over mem.Store claims ONLY —
 // never markdown, worklog, or brain prose (falsifier e): a worklog line or a
@@ -21,18 +20,74 @@ import (
 
 	"compound/internal/decisions"
 	"compound/internal/mem"
+	autonomyproof "compound/internal/routeevidence/autonomy"
 )
 
 // directorApplyGrantScope is the fixed scope director --apply resolves.
 const directorApplyGrantScope = "director-apply"
 
-// resolvedApplyGrant is the ACTIVE director-apply grant Propose(apply=true)
-// resolves before filing anything.
+// resolvedApplyGrant is the active broad director-apply grant
+// Propose(apply=true) resolves before filing anything. It never authorizes
+// proposed -> admitted.
 type resolvedApplyGrant struct {
 	DecisionID string
 	ClaimID    string
 	ReviewedBy string
 	GrantRef   string
+}
+
+type resolvedAutonomyGrant struct {
+	Proof autonomyproof.GrantSnapshot
+}
+
+// resolveAutonomyGrant is deliberately stricter than resolveApplyGrant. The
+// broad director-apply grant authorizes filing suggestions; this grant may
+// move exactly one class across proposed -> admitted, so zero or multiple
+// active records are both non-authority. Thresholds must be complete and
+// safe before any evidence compiler sees them.
+func resolveAutonomyGrant(homePath, class string) (resolvedAutonomyGrant, bool, error) {
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return resolvedAutonomyGrant{}, false, err
+	}
+	claims, err := store.AllCurrentOperationalDecisions()
+	if err != nil {
+		return resolvedAutonomyGrant{}, false, err
+	}
+	class = strings.TrimSpace(class)
+	var matches []mem.Claim
+	for _, claim := range decisions.AuthoritativeActiveDecisions(claims, decisions.KindGrant) {
+		lifecycle := decisions.LifecycleFromClaim(claim)
+		if lifecycle.Scope != decisions.AutonomyGrantScope || lifecycle.AutoAdmitClass != class {
+			continue
+		}
+		if strings.TrimSpace(lifecycle.ReviewedBy) == "" {
+			return resolvedAutonomyGrant{}, false, fmt.Errorf("autonomy grant %q has no reviewed_by provenance", lifecycle.ID)
+		}
+		if lifecycle.MinTerminalSamples <= 0 || lifecycle.MinWindowDays <= 0 || lifecycle.MaxFailures < 0 || lifecycle.MaxFailures >= lifecycle.MinTerminalSamples {
+			return resolvedAutonomyGrant{}, false, fmt.Errorf("autonomy grant %q has an incomplete or unsafe threshold", lifecycle.ID)
+		}
+		matches = append(matches, claim)
+	}
+	if len(matches) == 0 {
+		return resolvedAutonomyGrant{}, false, nil
+	}
+	if len(matches) != 1 {
+		return resolvedAutonomyGrant{}, false, fmt.Errorf("autonomy grant for class %q is ambiguous: %d active records", class, len(matches))
+	}
+	claim := matches[0]
+	lifecycle := decisions.LifecycleFromClaim(claim)
+	return resolvedAutonomyGrant{Proof: autonomyproof.GrantSnapshot{
+		DecisionID:         lifecycle.ID,
+		ClaimID:            claim.ID,
+		GrantRef:           "grant:" + lifecycle.ID,
+		ClaimRef:           "claim:" + claim.ID,
+		ReviewedBy:         lifecycle.ReviewedBy,
+		Class:              lifecycle.AutoAdmitClass,
+		MinTerminalSamples: lifecycle.MinTerminalSamples,
+		MinWindowDays:      lifecycle.MinWindowDays,
+		MaxFailures:        lifecycle.MaxFailures,
+	}}, true, nil
 }
 
 // resolveApplyGrant reads ONLY decision records (mem claims) for an active
@@ -44,7 +99,7 @@ func resolveApplyGrant(homePath string, now time.Time) (resolvedApplyGrant, erro
 	if err != nil {
 		return resolvedApplyGrant{}, err
 	}
-	claims, err := store.AllCurrent()
+	claims, err := store.AllCurrentOperationalDecisions()
 	if err != nil {
 		return resolvedApplyGrant{}, err
 	}

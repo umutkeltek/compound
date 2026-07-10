@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	homepkg "compound/internal/home"
 	"compound/internal/reviewartifact"
+	autonomyproof "compound/internal/routeevidence/autonomy"
 	"compound/internal/writeback"
 	"gopkg.in/yaml.v3"
 )
@@ -195,6 +197,16 @@ func ImportModelCapabilitiesYAML(homePath, sourcePath string, now time.Time) (Mo
 	if err := validateModelCapabilities(manifest); err != nil {
 		return ModelCapabilitiesImportReport{}, err
 	}
+	var report ModelCapabilitiesImportReport
+	err = homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		var installErr error
+		report, installErr = installModelCapabilities(homePath, sourcePath, data, manifest, now)
+		return installErr
+	})
+	return report, err
+}
+
+func installModelCapabilities(homePath, sourcePath string, data []byte, manifest ModelCapabilitiesManifest, now time.Time) (ModelCapabilitiesImportReport, error) {
 	if err := os.MkdirAll(filepath.Join(homePath, "registries"), 0o755); err != nil {
 		return ModelCapabilitiesImportReport{}, err
 	}
@@ -358,7 +370,7 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 	}
 	plan := CapabilityRoutePlan{
 		SchemaVersion:     CapabilityRoutePlanSchemaVersion,
-		ID:                idFor("crp_", capabilityClass, fmt.Sprint(opts.PrivacySensitive), authorityPath, sourceRevision),
+		ID:                autonomyproof.RoutePlanID(capabilityClass, opts.PrivacySensitive, authorityPath, sourceRevision),
 		CreatedAt:         rfc3339(now),
 		Status:            "planned",
 		AuthorityRef:      ModelCapabilitiesAuthorityRef,
@@ -516,18 +528,7 @@ func capabilityRouteLane(class, modelID string, model ModelCapabilityEntry, posi
 }
 
 func gateRole(class, tier, level string) string {
-	switch {
-	case level == "avoid":
-		return "avoid"
-	case level == "assumed":
-		return "supervised_only"
-	case tier == "free" && (class == "judge-critique" || class == "certify"):
-		return "tripwire_only"
-	case level == "":
-		return "review_missing_claim"
-	default:
-		return "eligible"
-	}
+	return autonomyproof.GateRole(class, tier, level)
 }
 
 func laneJustification(class string, position int, modelID string, model ModelCapabilityEntry, claim CapabilityClaim, role string) string {

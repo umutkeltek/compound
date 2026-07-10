@@ -12,6 +12,7 @@ import (
 // harness surface (an EVOLVE-BLOCK harness-edit proposal), in state `proposed`.
 func makeSurfaceDirectorWork(t *testing.T, s *Store, surface, id string, now time.Time) string {
 	t.Helper()
+	plan := ensureJobHealthAutonomyPlan(t, s)
 	w, err := s.Create(CreateInput{
 		WorkID:           id,
 		Owner:            "compound-authority",
@@ -19,7 +20,8 @@ func makeSurfaceDirectorWork(t *testing.T, s *Store, surface, id string, now tim
 		TargetSurface:    surface,
 		SuccessPredicate: "edit " + surface + " via " + id,
 		State:            "proposed",
-		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:" + surface + ":" + id},
+		EvidenceRefs:     []string{"proposed_by:director", "director_trigger:job_health:" + id, "route_plan:" + plan.ID},
+		RouteDecisionID:  plan.ID,
 	}, now)
 	if err != nil {
 		t.Fatalf("create proposed surface work: %v", err)
@@ -36,7 +38,7 @@ func makeSurfaceDirectorWork(t *testing.T, s *Store, surface, id string, now tim
 // AGAIN once the surface is retired. It fails if the admission seam ignores the registry.
 func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: 7 clean runs"}
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
 
 	// Phase A — registry ABSENT: fail-closed, the surface proposal is denied and stays proposed.
 	a := makeSurfaceDirectorWork(t, s, "skill_descriptions", "work_surf_a", fixedNow)
@@ -87,7 +89,7 @@ func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 // the halt runs first and wins. It fails if the surface gate could route around the halt.
 func TestEditableSurfaceHaltWins(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: 7 clean runs"}
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
 
 	// Surface actively whitelisted...
 	if err := policy.WriteEditableSurfaces(s.home, policy.EditableSurfaces{Entries: []policy.EditableSurface{
@@ -119,7 +121,7 @@ func TestEditableSurfaceHaltWins(t *testing.T) {
 // proposals.
 func TestEditableSurfaceIgnoresProposalsWithoutTargetSurface(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: 7 clean runs"}
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_no_surface", fixedNow)
 	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(1*time.Minute))
 	if err != nil || !res.Admitted {

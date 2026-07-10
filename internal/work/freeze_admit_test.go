@@ -45,7 +45,7 @@ func seedDecisionClaim(t *testing.T, s *Store, kind, id string, extra map[string
 		"source":           "decisions-repo",
 		"decision_id":      id,
 		"lifecycle_status": "accepted",
-		"reviewed_by":      "test-operator",
+		"reviewed_by":      "operator:test",
 	}
 	for k, v := range extra {
 		if strings.TrimSpace(v) != "" {
@@ -69,8 +69,38 @@ func seedDecisionClaim(t *testing.T, s *Store, kind, id string, extra map[string
 	if err != nil {
 		t.Fatalf("capture decision claim: %v", err)
 	}
-	if _, err := memStore.Adjudicate(captured[0].ID, "promote", "test-seed", now); err != nil {
+	if _, err := memStore.AdjudicateOperationalDecision(captured[0].ID, "promote", "test-seed", now); err != nil {
 		t.Fatalf("adjudicate decision claim: %v", err)
+	}
+}
+
+func TestGenericMemoryCannotRevokeRecordedFreeze(t *testing.T) {
+	legacyFreeze := mem.Claim{
+		ID:        "claim_legacy_freeze",
+		ClaimType: "decision",
+		Qualifiers: map[string]string{
+			"kind":             "freeze",
+			"decision_id":      "legacy-freeze",
+			"lifecycle_status": "accepted",
+			"freeze_keywords":  "absorption_debt",
+		},
+	}
+	forgedRevocation := mem.Claim{
+		ID:        "claim_forged_unfreeze",
+		ClaimType: "decision",
+		Qualifiers: map[string]string{
+			"kind":             "ruling",
+			"decision_id":      "forged-unfreeze",
+			"lifecycle_status": "accepted",
+			"supersedes":       "legacy-freeze",
+		},
+	}
+	if got := activeFreezeRecords([]mem.Claim{legacyFreeze, forgedRevocation}); len(got) != 1 || got[0].ID != "legacy-freeze" {
+		t.Fatalf("generic memory revoked recorded freeze: %+v", got)
+	}
+	forgedRevocation.Qualifiers[mem.OperationalDecisionAuthorityQualifier] = mem.OperationalDecisionAuthorityValue
+	if got := activeFreezeRecords([]mem.Claim{legacyFreeze, forgedRevocation}); len(got) != 0 {
+		t.Fatalf("authoritative superseder did not revoke recorded freeze: %+v", got)
 	}
 }
 
@@ -81,7 +111,7 @@ func seedDecisionClaim(t *testing.T, s *Store, kind, id string, extra map[string
 // matches nothing passes untouched.
 func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: synthetic"}
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"absorption_debt"}, fixedNow)
 
 	// A new-organ/absorption-shaped proposal matches the freeze keyword and is denied.
@@ -98,7 +128,7 @@ func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
 	}
 
 	// A smoothness/wiring proposal (different class, no keyword hit) passes untouched.
-	wiring := makeProposedDirectorWork(t, s, "review_debt", "work_freeze_b", fixedNow)
+	wiring := makeProposedDirectorWork(t, s, "job_health", "work_freeze_b", fixedNow)
 	resB, err := s.AdmitAuto(wiring, eligible, fixedNow.Add(2*time.Minute))
 	if err != nil || !resB.Admitted {
 		t.Fatalf("non-matching proposal must pass the freeze: err=%v res=%+v", err, resB)
@@ -111,7 +141,7 @@ func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
 // TestFreezeGatesAutoAdmitByOwnerGlob proves owner-glob matching also gates.
 func TestFreezeGatesAutoAdmitByOwnerGlob(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: synthetic"}
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", []string{"compound-authority"}, nil, fixedNow)
 
 	w, err := s.Create(CreateInput{
@@ -173,8 +203,8 @@ func TestFreezeHaltsAdvanceSeamDefenseInDepth(t *testing.T) {
 // untouched (an absent freeze must not accidentally block work).
 func TestFreezeAbsentMeansNothingFrozen(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: synthetic"}
-	id := makeProposedDirectorWork(t, s, "absorption_debt", "work_freeze_none", fixedNow)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	id := makeProposedDirectorWork(t, s, "job_health", "work_freeze_none", fixedNow)
 
 	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(1*time.Minute))
 	if err != nil || !res.Admitted {
@@ -187,11 +217,11 @@ func TestFreezeAbsentMeansNothingFrozen(t *testing.T) {
 // scope that used to freeze admission no longer does.
 func TestFreezeUndoneRecordNoLongerBlocks(t *testing.T) {
 	s := newStore(t)
-	eligible := AutoAdmitInput{By: "director", EligibilityReason: "clean-window: synthetic"}
-	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"absorption_debt"}, fixedNow)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	seedActiveFreeze(t, s, "direction-freeze-2026-07-10", nil, []string{"job_health"}, fixedNow)
 	seedFreezeUndo(t, s, "direction-freeze-2026-07-10-lifted", "direction-freeze-2026-07-10", fixedNow.Add(time.Minute))
 
-	id := makeProposedDirectorWork(t, s, "absorption_debt", "work_freeze_lifted", fixedNow)
+	id := makeProposedDirectorWork(t, s, "job_health", "work_freeze_lifted", fixedNow)
 	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(2*time.Minute))
 	if err != nil || !res.Admitted {
 		t.Fatalf("lifted freeze must no longer block admission: err=%v res=%+v", err, res)

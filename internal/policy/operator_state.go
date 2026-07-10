@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	homepkg "compound/internal/home"
 )
 
 const (
@@ -88,6 +90,16 @@ func parseOperatorState(data []byte) (OperatorState, error) {
 }
 
 func ImportOperatorState(homePath, sourcePath string, now time.Time) (OperatorStateImportReport, error) {
+	var report OperatorStateImportReport
+	var importErr error
+	err := homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		report, importErr = importOperatorStateLocked(homePath, sourcePath, now)
+		return importErr
+	})
+	return report, err
+}
+
+func importOperatorStateLocked(homePath, sourcePath string, now time.Time) (OperatorStateImportReport, error) {
 	if strings.TrimSpace(homePath) == "" {
 		return OperatorStateImportReport{}, fmt.Errorf("COMPOUND_HOME required")
 	}

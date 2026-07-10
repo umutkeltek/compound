@@ -406,6 +406,16 @@ func ArchiveOperationalHistory(homePath string, opts OperationalArchiveOptions, 
 	if err != nil {
 		return OperationalArchiveReport{}, err
 	}
+	var report OperationalArchiveReport
+	var archiveErr error
+	err = WithAutonomyAdmissionLock(homePath, func() error {
+		report, archiveErr = archiveOperationalHistoryLocked(homePath, opts, now)
+		return archiveErr
+	})
+	return report, err
+}
+
+func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOptions, now time.Time) (OperationalArchiveReport, error) {
 	if err := requireHealthyHome(homePath); err != nil {
 		return OperationalArchiveReport{}, err
 	}
@@ -441,6 +451,7 @@ func ArchiveOperationalHistory(homePath string, opts OperationalArchiveOptions, 
 	}
 	report.ArchivedCount = len(report.Entries)
 	if !opts.DryRun && len(report.Entries) > 0 {
+		operationalArchiveBeforeIndexCommit("archived", report.Entries)
 		if err := appendOperationalArchiveEntries(homePath, report.Entries); err != nil {
 			return OperationalArchiveReport{}, err
 		}
@@ -453,6 +464,16 @@ func RestoreOperationalArchive(homePath string, opts OperationalRestoreOptions, 
 	if err != nil {
 		return OperationalArchiveReport{}, err
 	}
+	var report OperationalArchiveReport
+	var restoreErr error
+	err = WithAutonomyAdmissionLock(homePath, func() error {
+		report, restoreErr = restoreOperationalArchiveLocked(homePath, opts, now)
+		return restoreErr
+	})
+	return report, err
+}
+
+func restoreOperationalArchiveLocked(homePath string, opts OperationalRestoreOptions, now time.Time) (OperationalArchiveReport, error) {
 	if err := requireHealthyHome(homePath); err != nil {
 		return OperationalArchiveReport{}, err
 	}
@@ -481,12 +502,18 @@ func RestoreOperationalArchive(homePath string, opts OperationalRestoreOptions, 
 	}
 	report.RestoredCount = len(report.Entries)
 	if !opts.DryRun && len(report.Entries) > 0 {
+		operationalArchiveBeforeIndexCommit("restored", report.Entries)
 		if err := appendOperationalArchiveEntries(homePath, report.Entries); err != nil {
 			return OperationalArchiveReport{}, err
 		}
 	}
 	return report, nil
 }
+
+// operationalArchiveBeforeIndexCommit is a deterministic test seam at the
+// exact state the admission lock protects: files have moved, while the
+// archive index still describes the prior location. Production is a no-op.
+var operationalArchiveBeforeIndexCommit = func(_ string, _ []OperationalArchiveEntry) {}
 
 func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions, now time.Time) ([]operationalCandidate, error) {
 	kinds, err := operationalArchiveKinds(opts.Kinds)

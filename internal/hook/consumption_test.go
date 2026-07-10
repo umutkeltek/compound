@@ -74,7 +74,7 @@ func writeConsumePack(t *testing.T, home, packID string, claimRefs ...string) {
 // closeableWork creates a work bound to packID and advances it to a closeable state.
 func closeableWork(t *testing.T, store *work.Store, packID string) string {
 	t.Helper()
-	w, err := store.Create(work.CreateInput{Owner: "o", SuccessPredicate: "prove consumption", ContextPackID: packID}, fixedNow)
+	w, err := store.Create(work.CreateInput{Owner: "o", SuccessPredicate: "prove consumption " + packID, ContextPackID: packID}, fixedNow)
 	if err != nil {
 		t.Fatalf("create work: %v", err)
 	}

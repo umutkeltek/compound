@@ -11,12 +11,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"compound/internal/candidates"
+	homepkg "compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/writeback"
 )
@@ -34,6 +36,12 @@ const (
 	KindGrant  = "grant"
 	KindFreeze = "freeze"
 	KindRuling = "ruling"
+
+	// AutonomyGrantScope is the exact operational grant scope consumed by the
+	// evidence-threshold admission path. It is separate from director-apply:
+	// one authorizes filing suggestions, the other authorizes one class to
+	// cross proposed -> admitted after deterministic evidence proves its bound.
+	AutonomyGrantScope = "autonomy-evidence-threshold"
 
 	StatusProposed   = "proposed"
 	StatusAccepted   = "accepted"
@@ -73,8 +81,12 @@ type Lifecycle struct {
 	// FreezeOwnerGlobs / FreezeKeywords are a freeze record's EXPLICIT scope
 	// (settled design decision 2, grants-as-gates 2026-07-10): literal owner
 	// globs and/or predicate keywords. Matching is literal, never inferred.
-	FreezeOwnerGlobs []string `json:"freeze_owner_globs,omitempty"`
-	FreezeKeywords   []string `json:"freeze_keywords,omitempty"`
+	FreezeOwnerGlobs   []string `json:"freeze_owner_globs,omitempty"`
+	FreezeKeywords     []string `json:"freeze_keywords,omitempty"`
+	AutoAdmitClass     string   `json:"auto_admit_class,omitempty"`
+	MinTerminalSamples int      `json:"min_terminal_samples,omitempty"`
+	MinWindowDays      int      `json:"min_window_days,omitempty"`
+	MaxFailures        int      `json:"max_failures,omitempty"`
 }
 
 // LifecycleGap identifies a promoted decision claim missing lifecycle proof.
@@ -171,9 +183,13 @@ type decFrontmatter struct {
 	// ReviewedBy / FreezeOwnerGlobs / FreezeKeywords are additive fields for the
 	// grants-as-gates record verb (Slice 1); every other decision source leaves
 	// them empty, so this is additive-only for existing sources.
-	ReviewedBy       string   `yaml:"reviewed_by"`
-	FreezeOwnerGlobs []string `yaml:"freeze_owner_globs"`
-	FreezeKeywords   []string `yaml:"freeze_keywords"`
+	ReviewedBy         string   `yaml:"reviewed_by"`
+	FreezeOwnerGlobs   []string `yaml:"freeze_owner_globs"`
+	FreezeKeywords     []string `yaml:"freeze_keywords"`
+	AutoAdmitClass     string   `yaml:"auto_admit_class"`
+	MinTerminalSamples int      `yaml:"min_terminal_samples"`
+	MinWindowDays      int      `yaml:"min_window_days"`
+	MaxFailures        int      `yaml:"max_failures"`
 }
 
 type DecisionImportReport struct {
@@ -191,6 +207,19 @@ type BrainDecisionReport = DecisionImportReport
 // ImportPolicyDecision imports one decisions-repo markdown record through the
 // same evidence-backed lifecycle path used by curated knowledge decisions.
 func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (DecisionImportReport, error) {
+	if store == nil {
+		return DecisionImportReport{}, fmt.Errorf("policy decision import: mem store required")
+	}
+	var report DecisionImportReport
+	var importErr error
+	err := homepkg.WithAutonomyAdmissionLock(store.HomePath(), func() error {
+		report, importErr = importPolicyDecisionLocked(store, path, now)
+		return importErr
+	})
+	return report, err
+}
+
+func importPolicyDecisionLocked(store *mem.Store, path string, now time.Time) (DecisionImportReport, error) {
 	var report DecisionImportReport
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -232,6 +261,10 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 		return report, err
 	}
 	q := lifecycleQualifiers(f.Kind, "decisions-repo", f.ID, f.Status)
+	// This reserved stamp is meaningful only because the promotion below goes
+	// through mem.AdjudicateOperationalDecision. Generic memory adjudication
+	// rejects callers that try to copy it.
+	q[mem.OperationalDecisionAuthorityQualifier] = mem.OperationalDecisionAuthorityValue
 	if len(f.Domains) > 0 {
 		q["domain"] = strings.Join(f.Domains, ",")
 	}
@@ -262,6 +295,12 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 	if len(f.FreezeKeywords) > 0 {
 		q["freeze_keywords"] = strings.Join(f.FreezeKeywords, ",")
 	}
+	if f.AutoAdmitClass != "" {
+		q["auto_admit_class"] = strings.TrimSpace(f.AutoAdmitClass)
+		q["min_terminal_samples"] = strconv.Itoa(f.MinTerminalSamples)
+		q["min_window_days"] = strconv.Itoa(f.MinWindowDays)
+		q["max_failures"] = strconv.Itoa(f.MaxFailures)
+	}
 	cand := mem.Candidate{
 		Entity:         decisionEntity(f.ID),
 		Predicate:      "decided",
@@ -285,7 +324,7 @@ func ImportPolicyDecision(store *mem.Store, path string, now time.Time) (Decisio
 		return report, err
 	}
 	verdict := VerdictForCandidate(cands[0])
-	res, err := store.Adjudicate(cands[0].ID, verdict, "policy-decision-import", now)
+	res, err := store.AdjudicateOperationalDecision(cands[0].ID, verdict, "policy-decision-import", now)
 	if err != nil {
 		return report, err
 	}
@@ -728,20 +767,24 @@ func Kind(c mem.Claim) string {
 func LifecycleFromClaim(c mem.Claim) Lifecycle {
 	q := c.Qualifiers
 	return Lifecycle{
-		ID:               q["decision_id"],
-		Kind:             kindFromQualifiers(q),
-		Choice:           c.Object,
-		Status:           statusFromQualifiers(q),
-		Scope:            q["scope"],
-		Owner:            q["owner"],
-		Falsifier:        q["falsifier"],
-		ReviewTrigger:    q["review_trigger"],
-		Supersedes:       splitCSV(q["supersedes"]),
-		ReplacedBy:       q["replaced_by"],
-		EvidenceRefs:     append([]string(nil), c.EvidenceRefs...),
-		ReviewedBy:       q["reviewed_by"],
-		FreezeOwnerGlobs: splitCSV(q["freeze_owner_globs"]),
-		FreezeKeywords:   splitCSV(q["freeze_keywords"]),
+		ID:                 q["decision_id"],
+		Kind:               kindFromQualifiers(q),
+		Choice:             c.Object,
+		Status:             statusFromQualifiers(q),
+		Scope:              q["scope"],
+		Owner:              q["owner"],
+		Falsifier:          q["falsifier"],
+		ReviewTrigger:      q["review_trigger"],
+		Supersedes:         splitCSV(q["supersedes"]),
+		ReplacedBy:         q["replaced_by"],
+		EvidenceRefs:       append([]string(nil), c.EvidenceRefs...),
+		ReviewedBy:         q["reviewed_by"],
+		FreezeOwnerGlobs:   splitCSV(q["freeze_owner_globs"]),
+		FreezeKeywords:     splitCSV(q["freeze_keywords"]),
+		AutoAdmitClass:     q["auto_admit_class"],
+		MinTerminalSamples: qualifierInt(q, "min_terminal_samples"),
+		MinWindowDays:      qualifierInt(q, "min_window_days"),
+		MaxFailures:        qualifierInt(q, "max_failures"),
 	}
 }
 
@@ -753,21 +796,30 @@ func LifecycleFromCandidate(c mem.Candidate) Lifecycle {
 		refs = append(refs, c.SourceTraceRef)
 	}
 	return Lifecycle{
-		ID:               q["decision_id"],
-		Kind:             kindFromQualifiers(q),
-		Choice:           c.Object,
-		Status:           statusFromQualifiers(q),
-		Scope:            q["scope"],
-		Owner:            q["owner"],
-		Falsifier:        q["falsifier"],
-		ReviewTrigger:    q["review_trigger"],
-		Supersedes:       splitCSV(q["supersedes"]),
-		ReplacedBy:       q["replaced_by"],
-		EvidenceRefs:     refs,
-		ReviewedBy:       q["reviewed_by"],
-		FreezeOwnerGlobs: splitCSV(q["freeze_owner_globs"]),
-		FreezeKeywords:   splitCSV(q["freeze_keywords"]),
+		ID:                 q["decision_id"],
+		Kind:               kindFromQualifiers(q),
+		Choice:             c.Object,
+		Status:             statusFromQualifiers(q),
+		Scope:              q["scope"],
+		Owner:              q["owner"],
+		Falsifier:          q["falsifier"],
+		ReviewTrigger:      q["review_trigger"],
+		Supersedes:         splitCSV(q["supersedes"]),
+		ReplacedBy:         q["replaced_by"],
+		EvidenceRefs:       refs,
+		ReviewedBy:         q["reviewed_by"],
+		FreezeOwnerGlobs:   splitCSV(q["freeze_owner_globs"]),
+		FreezeKeywords:     splitCSV(q["freeze_keywords"]),
+		AutoAdmitClass:     q["auto_admit_class"],
+		MinTerminalSamples: qualifierInt(q, "min_terminal_samples"),
+		MinWindowDays:      qualifierInt(q, "min_window_days"),
+		MaxFailures:        qualifierInt(q, "max_failures"),
 	}
+}
+
+func qualifierInt(q map[string]string, key string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(q[key]))
+	return n
 }
 
 // MissingRequired reports fields required for a durable decision artifact.

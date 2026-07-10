@@ -1,13 +1,13 @@
 package policy
 
 // Autonomy kill-switch (W9-J4): a policy-owned halt read LIVE at the admission seam.
-// It is the single mandatory chokepoint every autonomous admission passes through:
-// any future trust-dial auto-admit (W9-J6) and any director-originated advance MUST
+// It is the first mandatory chokepoint every autonomous admission passes through:
+// typed evidence-threshold auto-admit and any director-originated advance MUST
 // consult it before releasing a proposed WorkEnvelope. A global halt stops ALL
-// autonomous admission; a per-class disable stops one class. The operator flips a
-// COMPOUND_HOME file (no rebuild, no daemon); each check re-reads it so a mid-flight
-// halt takes effect on the next admission. Governance is enforced at the adapter here,
-// never asked for in a prompt.
+// autonomous admission; a per-class disable stops one class. The operator flips it
+// through `compound policy autonomy-halt`, whose writer shares the admission lock
+// (no rebuild, no daemon). Each check re-reads the file. Governance is enforced at
+// the adapter here, never asked for in a prompt.
 
 import (
 	"fmt"
@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"compound/internal/envelope"
+	homepkg "compound/internal/home"
 )
 
 const (
@@ -38,7 +39,8 @@ type AutonomyHalt struct {
 	AuthorityRef    string            `json:"authority_ref,omitempty"`
 }
 
-// autonomyHaltFile is the YAML the operator edits to flip the switch.
+// autonomyHaltFile is the persisted projection written by the policy command.
+// Direct edits bypass the admission lock and are not a supported mutation path.
 type autonomyHaltFile struct {
 	SchemaVersion   string                   `yaml:"schema_version,omitempty"`
 	Global          bool                     `yaml:"global"`
@@ -51,7 +53,7 @@ type autonomyHaltClassEntry struct {
 	Reason string `yaml:"reason,omitempty"`
 }
 
-// AutonomyHaltPath is the operator-flippable halt file under COMPOUND_HOME/config.
+// AutonomyHaltPath is the halt projection under COMPOUND_HOME/config.
 func AutonomyHaltPath(homePath string) string {
 	return filepath.Join(homePath, "config", autonomyHaltFileName)
 }
@@ -98,6 +100,34 @@ func LoadAutonomyHalt(homePath string) (AutonomyHalt, string, error) {
 // WriteAutonomyHalt persists a halt state (operator/ops helper and test seam). It writes
 // the same file LoadAutonomyHalt reads, so a flip is visible to the very next check.
 func WriteAutonomyHalt(homePath string, halt AutonomyHalt) error {
+	return homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		return writeAutonomyHaltLocked(homePath, halt)
+	})
+}
+
+// UpdateAutonomyHalt performs a read-modify-write under the same lock used by
+// AdmitAuto. It is the operator CLI seam for global and per-class changes, so
+// concurrent admission has one serializable order with an emergency halt.
+func UpdateAutonomyHalt(homePath string, update func(*AutonomyHalt) error) error {
+	if update == nil {
+		return fmt.Errorf("autonomy halt update callback required")
+	}
+	return homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		halt, _, err := LoadAutonomyHalt(homePath)
+		if err != nil {
+			return err
+		}
+		if halt.DisabledClasses == nil {
+			halt.DisabledClasses = map[string]string{}
+		}
+		if err := update(&halt); err != nil {
+			return err
+		}
+		return writeAutonomyHaltLocked(homePath, halt)
+	})
+}
+
+func writeAutonomyHaltLocked(homePath string, halt AutonomyHalt) error {
 	homePath = strings.TrimSpace(homePath)
 	if homePath == "" {
 		return fmt.Errorf("COMPOUND_HOME required")

@@ -58,3 +58,33 @@ func TestCmdDecisionsRecordFreezeWritesScopeQualifiers(t *testing.T) {
 		t.Fatalf("decisions record freeze output missing id:\n%s", out)
 	}
 }
+
+func TestCmdDecisionsRecordWritesTypedAutonomyThreshold(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+
+	out := captureStdout(t, func() {
+		cmdDecisions([]string{
+			"record",
+			"--kind", "grant",
+			"--id", "job-health-autonomy-test",
+			"--title", "Permit evidence-threshold admission for job health",
+			"--reviewed-by", "operator:test",
+			"--scope", "autonomy-evidence-threshold",
+			"--auto-admit-class", "job_health",
+			"--min-terminal-samples", "5",
+			"--min-window-days", "7",
+			"--max-failures", "0",
+		})
+	})
+	for _, want := range []string{
+		"- auto_admit_class: job_health",
+		"- min_terminal_samples: 5",
+		"- min_window_days: 7",
+		"- max_failures: 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("typed autonomy grant output missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -47,7 +47,9 @@ type StandingGrant struct {
 }
 
 // Config is the declarative policy. Shipped as a leak-free built-in default; overridable
-// from COMPOUND_HOME/config/policy.yaml.
+// from COMPOUND_HOME/config/policy.yaml. Direct edits while autonomous admission is
+// available are unsupported: engage the locked global autonomy halt first, edit and
+// validate the projection, then clear the halt through the command.
 type Config struct {
 	ForbiddenPaths               []string             `yaml:"forbidden_paths" json:"forbidden_paths"`
 	ClassOutcome                 map[string]ClassRule `yaml:"class_outcome" json:"class_outcome"`

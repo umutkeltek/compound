@@ -1,49 +1,73 @@
 package work
 
-// Auto-admit chokepoint (W9-J4). AdmitAuto is the ONLY path that releases a
-// director-proposed work proposed -> admitted WITHOUT operator provenance. It exists so a
-// future trust-dial (W9-J6) has exactly one gated door to walk through, and that door is
-// wired through the policy-owned autonomy kill-switch FIRST. The generic Advance seam
-// keeps a defense-in-depth copy of the same halt check, so no autonomous admission path
-// can ignore the flag. Nothing in this package constructs an eligible AutoAdmitInput, so
-// zero autonomy ships by default; the switch only stops what J6 will later start.
+// Auto-admit chokepoint. AdmitAuto is the ONLY path that releases
+// director-proposed work from proposed -> admitted without operator
+// provenance. The first enabled slice is hard-limited to job_health and
+// requires a current typed grant plus a content-addressed eligibility proof
+// replayed from terminal Receipts and route evidence. The kill-switch runs
+// first, and the generic Advance seam retains a defense-in-depth halt check.
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"compound/internal/envelope"
+	homepkg "compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	autonomyproof "compound/internal/routeevidence/autonomy"
 )
 
-// AutoAdmitInput carries a trust-dial auto-admit request. Eligibility is supplied by the
-// caller: W9-J6 computes it from a clean-window operator grant. Until then no shipped
-// caller sets EligibilityReason, so nothing auto-admits. The kill-switch overrides
-// eligibility unconditionally.
+// AutoAdmitInput carries a typed auto-admit request. EligibilityRef identifies
+// the artifact to load and fully revalidate; no caller assertion establishes
+// authority. The kill-switch overrides valid eligibility unconditionally.
 type AutoAdmitInput struct {
-	By                string // autonomous actor requesting admission (default "director")
-	EligibilityReason string // non-empty asserts the class is clean-window eligible (W9-J6)
-	GrantRef          string // optional clean-window / standing-grant evidence ref
-	Note              string
+	By             string // autonomous actor requesting admission (default "director")
+	EligibilityRef string // required content-addressed autonomy eligibility artifact
+	Note           string
+	// Deprecated compatibility fields decode old saved reports but are never
+	// consulted. A caller string or grant ref cannot establish eligibility.
+	EligibilityReason string `json:"eligibility_reason,omitempty"`
+	GrantRef          string `json:"grant_ref,omitempty"`
 }
 
 // AutoAdmitResult reports the outcome of an auto-admit attempt. On a halt or an
 // ineligible request Admitted is false and the work stays proposed.
 type AutoAdmitResult struct {
-	WorkID    string `json:"work_id"`
-	WorkState string `json:"work_state"`
-	Class     string `json:"class"`
-	Admitted  bool   `json:"admitted"`
-	Halted    bool   `json:"halted"`
-	Reason    string `json:"reason,omitempty"`
+	WorkID         string   `json:"work_id"`
+	WorkState      string   `json:"work_state"`
+	Class          string   `json:"class"`
+	Admitted       bool     `json:"admitted"`
+	Halted         bool     `json:"halted"`
+	Reason         string   `json:"reason,omitempty"`
+	EligibilityRef string   `json:"eligibility_ref,omitempty"`
+	GrantRef       string   `json:"grant_ref,omitempty"`
+	EvidenceRefs   []string `json:"evidence_refs,omitempty"`
 }
 
-// AdmitAuto attempts an autonomous admission of a director-proposed work. Order is
-// load-and-shape -> kill-switch (halt always wins, records a deny) -> eligibility (J6) ->
-// admit. It never mutates on a blocked, halted, or ineligible request.
+// autoAdmitBeforeCommit is a test synchronization seam. Production keeps the
+// no-op; tests use it to prove concurrent authority writers cannot enter
+// between final eligibility validation and the admitted transition.
+var autoAdmitBeforeCommit = func() {}
+
+// AdmitAuto attempts autonomous admission of director-proposed work. Its fixed
+// precedence is load-and-shape -> halt -> editable surface -> freeze ->
+// operator-only risk -> typed eligibility -> admit. It never changes work
+// state on a blocked, halted, or ineligible request; denials still leave an
+// auditable policy/event trail where the corresponding guard owns one.
 func (s *Store) AdmitAuto(workID string, in AutoAdmitInput, now time.Time) (AutoAdmitResult, error) {
+	var out AutoAdmitResult
+	var admitErr error
+	err := homepkg.WithAutonomyAdmissionLock(s.home, func() error {
+		out, admitErr = s.admitAutoLocked(workID, in, now)
+		return admitErr
+	})
+	return out, err
+}
+
+func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time) (AutoAdmitResult, error) {
 	w, err := s.Get(workID)
 	if err != nil {
 		return AutoAdmitResult{}, err
@@ -86,23 +110,192 @@ func (s *Store) AdmitAuto(workID string, in AutoAdmitInput, now time.Time) (Auto
 		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: err.Error()}, err
 	}
 
-	// 2. Eligibility (W9-J6 supplies this; unset by default => nothing auto-admits).
-	eligibility := strings.TrimSpace(in.EligibilityReason)
-	if eligibility == "" {
-		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: "no clean-window grant"},
-			fmt.Errorf("auto-admit not eligible for class %q: no clean-window grant (W9-J6 supplies eligibility)", class)
+	// 1.7 Operator-only risk frontier. This is deliberately outside ordinary
+	// standing-grant evaluation: no policy grant can override it.
+	action, err := s.autonomyAdmissionAction(w)
+	if err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: err.Error()}, err
+	}
+	cfg, _, err := policy.LoadConfig(s.home)
+	if err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class}, err
+	}
+	if reason := policy.AutonomyOperatorOnlyReason(action, cfg); reason != "" {
+		if recErr := s.recordAutonomyRiskDeny(w, actor, "admitted", reason, now); recErr != nil {
+			return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class}, recErr
+		}
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: reason}, fmt.Errorf("auto-admit operator-only risk: %s", reason)
+	}
+
+	// 2. Typed evidence eligibility. job_health is the only enabled class in
+	// this first vertical slice. The artifact is loaded by content id and fully
+	// recompiled from current receipts, raw route-row hashes, and router source
+	// revision; caller-provided strings and GrantRef are ignored.
+	if class != "job_health" {
+		reason := fmt.Sprintf("class %q has no enabled evidence-autonomy slice", class)
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: reason}, fmt.Errorf("auto-admit not eligible: %s", reason)
+	}
+	eligibilityRef := strings.TrimSpace(in.EligibilityRef)
+	if eligibilityRef == "" {
+		reason := "typed eligibility artifact required; caller assertions are not authority"
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, Reason: reason}, fmt.Errorf("auto-admit not eligible for class %q: %s", class, reason)
+	}
+	eligibility, err := autonomyproof.LoadAndRevalidate(s.home, eligibilityRef, class, w.RouteDecisionID)
+	if err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: "proposed", Class: class, EligibilityRef: eligibilityRef, Reason: err.Error()}, err
+	}
+	refs := eligibility.AdmissionRefs()
+	resultBase := AutoAdmitResult{
+		WorkID:         w.ID,
+		WorkState:      "proposed",
+		Class:          class,
+		EligibilityRef: eligibility.Ref(),
+		GrantRef:       eligibility.Grant.GrantRef,
+		EvidenceRefs:   append([]string{}, refs...),
+	}
+	if err := s.validateActiveAutonomyGrant(eligibility); err != nil {
+		resultBase.Reason = err.Error()
+		if recErr := s.recordAutonomyEligibilityDeny(w, actor, "admitted", err.Error(), refs, now); recErr != nil {
+			return resultBase, recErr
+		}
+		return resultBase, err
+	}
+	if eligibility.Status != "eligible" {
+		reason := strings.Join(eligibility.Reasons, "; ")
+		if reason == "" {
+			reason = "eligibility threshold not met"
+		}
+		resultBase.Reason = reason
+		if recErr := s.recordAutonomyEligibilityDeny(w, actor, "admitted", reason, refs, now); recErr != nil {
+			return resultBase, recErr
+		}
+		return resultBase, fmt.Errorf("auto-admit not eligible for class %q: %s", class, reason)
 	}
 
 	// 3. Cleared: admit through the shared advance write path.
+	autoAdmitBeforeCommit()
 	note := strings.TrimSpace(in.Note)
 	if note == "" {
-		note = "auto-admitted (" + class + "): " + eligibility
+		note = "auto-admitted (" + class + "): " + eligibility.Ref()
 	}
-	advanced, err := s.applyAdvance(w, AdvanceInput{Actor: actor, To: "admitted", Note: note}, now)
+	advanced, err := s.applyAdvance(w, AdvanceInput{
+		Actor:          actor,
+		To:             "admitted",
+		VerificationID: eligibility.ID,
+		EvidenceRefs:   refs,
+		Note:           note,
+	}, now)
 	if err != nil {
-		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State, Class: class}, err
+		return resultBase, err
 	}
-	return AutoAdmitResult{WorkID: advanced.ID, WorkState: advanced.State, Class: class, Admitted: true, Reason: eligibility}, nil
+	resultBase.WorkID = advanced.ID
+	resultBase.WorkState = advanced.State
+	resultBase.Admitted = true
+	resultBase.Reason = eligibility.Ref()
+	return resultBase, nil
+}
+
+func (s *Store) autonomyAdmissionAction(w envelope.WorkEnvelope) (envelope.ActionIntent, error) {
+	for _, ref := range w.RunIDs {
+		if !strings.HasPrefix(ref, "act_") {
+			continue
+		}
+		var action envelope.ActionIntent
+		if err := s.readJSON(s.envPath(ref), &action); err != nil {
+			return envelope.ActionIntent{}, fmt.Errorf("autonomy admission action %s unreadable: %w", ref, err)
+		}
+		if err := action.Validate(); err != nil {
+			return envelope.ActionIntent{}, fmt.Errorf("autonomy admission action %s invalid: %w", ref, err)
+		}
+		if action.IDs.WorkID != w.ID {
+			return envelope.ActionIntent{}, fmt.Errorf("autonomy admission action %s belongs to work %s", ref, action.IDs.WorkID)
+		}
+		return action, nil
+	}
+	return envelope.ActionIntent{}, fmt.Errorf("autonomy admission requires a recorded create ActionIntent")
+}
+
+func (s *Store) validateActiveAutonomyGrant(artifact autonomyproof.Artifact) error {
+	store, err := mem.Open(s.home)
+	if err != nil {
+		return err
+	}
+	claims, err := store.AllCurrentOperationalDecisions()
+	if err != nil {
+		return err
+	}
+	superseded := map[string]bool{}
+	for _, claim := range claims {
+		if claim.ClaimType != "decision" ||
+			!mem.HasOperationalDecisionAuthority(claim.Qualifiers) ||
+			claim.Qualifiers["lifecycle_status"] != "accepted" {
+			continue
+		}
+		for _, id := range splitFreezeCSV(claim.Qualifiers["supersedes"]) {
+			superseded[id] = true
+		}
+	}
+	var classClaims []mem.Claim
+	for _, claim := range claims {
+		q := claim.Qualifiers
+		if claim.ClaimType != "decision" ||
+			!mem.HasOperationalDecisionAuthority(q) ||
+			q["kind"] != "grant" || q["lifecycle_status"] != "accepted" || q["scope"] != "autonomy-evidence-threshold" {
+			continue
+		}
+		if superseded[q["decision_id"]] || strings.TrimSpace(q["reviewed_by"]) == "" || q["auto_admit_class"] != artifact.Class {
+			continue
+		}
+		classClaims = append(classClaims, claim)
+	}
+	if len(classClaims) != 1 {
+		return fmt.Errorf("active class-scoped autonomy grant for %q is missing or ambiguous (found %d)", artifact.Class, len(classClaims))
+	}
+	claim := classClaims[0]
+	q := claim.Qualifiers
+	grant := artifact.Grant
+	if claim.ID != grant.ClaimID || q["decision_id"] != grant.DecisionID || grant.GrantRef != "grant:"+q["decision_id"] || grant.ClaimRef != "claim:"+claim.ID {
+		return fmt.Errorf("eligibility grant ref does not match the active grant claim")
+	}
+	if q["reviewed_by"] != grant.ReviewedBy || qualifierInt(q, "min_terminal_samples") != grant.MinTerminalSamples || qualifierInt(q, "min_window_days") != grant.MinWindowDays || qualifierInt(q, "max_failures") != grant.MaxFailures {
+		return fmt.Errorf("eligibility threshold does not match the active grant")
+	}
+	return nil
+}
+
+func qualifierInt(q map[string]string, key string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(q[key]))
+	return n
+}
+
+func (s *Store) recordAutonomyRiskDeny(w envelope.WorkEnvelope, actor, to, reason string, now time.Time) error {
+	ai := s.advanceActionIntent(w, actor, to, now, AdvancePlanOptions{Actor: actor, To: to})
+	pd := policy.AutonomyRiskDenyDecision(ai, reason, now)
+	return s.recordAutonomyDeny(w, actor, "autonomy risk deny: "+reason, ai, pd, []string{policy.AutonomyRiskAuthorityRef}, now)
+}
+
+func (s *Store) recordAutonomyEligibilityDeny(w envelope.WorkEnvelope, actor, to, reason string, refs []string, now time.Time) error {
+	ai := s.advanceActionIntent(w, actor, to, now, AdvancePlanOptions{Actor: actor, To: to})
+	pd := policy.AutonomyEligibilityDenyDecision(ai, reason, now)
+	pd.EvidenceRefs = mergeUnique(pd.EvidenceRefs, refs)
+	return s.recordAutonomyDeny(w, actor, "autonomy eligibility deny: "+reason, ai, pd, refs, now)
+}
+
+func (s *Store) recordAutonomyDeny(w envelope.WorkEnvelope, actor, note string, ai envelope.ActionIntent, pd envelope.PolicyDecision, refs []string, now time.Time) error {
+	if err := ai.Validate(); err != nil {
+		return err
+	}
+	if err := pd.Validate(); err != nil {
+		return err
+	}
+	if err := s.writeJSON(s.envPath(ai.ID), &ai); err != nil {
+		return err
+	}
+	if err := s.writeJSON(s.envPath(pd.ID), &pd); err != nil {
+		return err
+	}
+	attached := mergeUnique([]string{ai.ID, pd.ID}, refs)
+	return s.appendEvent(Event{TS: ts(now), WorkID: w.ID, From: w.State, To: w.State, By: actor, Note: note, Attached: attached})
 }
 
 // autonomyHaltGuard is the defense-in-depth kill-switch check inside the generic Advance
@@ -309,7 +502,7 @@ func (s *Store) matchingFreeze(w envelope.WorkEnvelope) (bool, policy.FreezeReco
 	if err != nil {
 		return false, policy.FreezeRecord{}, err
 	}
-	claims, err := memStore.AllCurrent()
+	claims, err := memStore.AllCurrentOperationalDecisions()
 	if err != nil {
 		return false, policy.FreezeRecord{}, err
 	}
@@ -319,12 +512,14 @@ func (s *Store) matchingFreeze(w envelope.WorkEnvelope) (bool, policy.FreezeReco
 }
 
 // activeFreezeRecords projects current decision claims into policy.FreezeRecord
-// values: accepted kind=freeze claims not named in any other current
-// record's supersedes qualifier (undo = supersede, falsifier c).
+// values: accepted kind=freeze claims not named by an authoritative current
+// record's supersedes qualifier (undo = supersede, falsifier c). Legacy
+// recorded freezes remain fail-safe active; only the new locked-import stamp
+// may release them, so generic memory cannot forge an unfreeze.
 func activeFreezeRecords(claims []mem.Claim) []policy.FreezeRecord {
 	superseded := map[string]bool{}
 	for _, c := range claims {
-		if c.ClaimType != "decision" {
+		if c.ClaimType != "decision" || !mem.HasOperationalDecisionAuthority(c.Qualifiers) {
 			continue
 		}
 		for _, id := range splitFreezeCSV(c.Qualifiers[freezeDecisionSupersedesField]) {

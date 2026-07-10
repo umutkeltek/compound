@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	homepkg "compound/internal/home"
 	"compound/internal/policy"
 )
 
@@ -360,7 +361,26 @@ func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts C
 }
 
 func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAttached []string) (envelope.WorkEnvelope, error) {
+	var out envelope.WorkEnvelope
+	var admitErr error
+	err := homepkg.WithAutonomyAdmissionLock(s.home, func() error {
+		out, admitErr = s.admitWorkLocked(plan, now, note, extraAttached)
+		return admitErr
+	})
+	return out, err
+}
+
+func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, extraAttached []string) (envelope.WorkEnvelope, error) {
 	w := plan.Work
+	// The existence check must live inside the same critical section as the
+	// write. A CreatePlan can be prepared before another process creates and
+	// auto-admits the same work id; replaying that stale plan must never write
+	// its older proposed state over the admitted envelope.
+	if existing, err := s.Get(w.ID); err == nil {
+		return existing, fmt.Errorf("work %s already exists; refusing stale create-plan %s overwrite (current state %s)", w.ID, plan.ID, existing.State)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return w, err
+	}
 	if !plan.Policy.Allowed {
 		return w, fmt.Errorf("cannot create work %s: policy %s (decision %s)", w.ID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
 	}
