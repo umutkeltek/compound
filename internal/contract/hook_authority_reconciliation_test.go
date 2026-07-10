@@ -53,6 +53,9 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 		if binding.HandlerRevision != "" {
 			t.Fatalf("config command digest masqueraded as handler revision: %+v", binding)
 		}
+		if binding.InvocationRevision == "" {
+			t.Fatalf("observed hook lost privacy-safe invocation identity: %+v", binding)
+		}
 	}
 	delta := hookReconciliationDelta(got.Reconciliation, "claude_code", "SessionEnd")
 	if delta == nil || delta.State != hookplan.StateExtraUnowned {
@@ -67,19 +70,80 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 	}
 }
 
-func TestCanonicalHookHandlerRefKeepsCompoundArgumentsInIdentity(t *testing.T) {
+func TestCanonicalHookInvocationRevisionIncludesArgumentsForEveryHandler(t *testing.T) {
 	harnessHome := t.TempDir()
-	desired := canonicalHookHandlerRef(`"$HOME/.local/bin/compound" hook pre-tool-use --live --harness codex`, harnessHome)
-	observed := canonicalHookHandlerRef(filepath.Join(harnessHome, ".local", "bin", "compound")+` hook pre-tool-use --live --harness codex`, harnessHome)
-	drifted := canonicalHookHandlerRef(filepath.Join(harnessHome, ".local", "bin", "compound")+` hook session-start --live --harness codex`, harnessHome)
-	if !strings.HasPrefix(desired, "handler:sha256:") {
-		t.Fatalf("canonical Compound handler ref = %q, want privacy-safe digest", desired)
+	tests := []struct {
+		name       string
+		desired    string
+		observed   string
+		driftedArg string
+	}{
+		{
+			name:       "compound binary",
+			desired:    `"$HOME/.local/bin/compound" hook pre-tool-use --live --harness codex`,
+			observed:   filepath.Join(harnessHome, ".local", "bin", "compound") + ` hook pre-tool-use --live --harness codex`,
+			driftedArg: filepath.Join(harnessHome, ".local", "bin", "compound") + ` hook session-start --live --harness codex`,
+		},
+		{
+			name:       "typescript hook",
+			desired:    `"$HOME/.claude/hooks/RecallContext.hook.ts" --mode compact`,
+			observed:   `"` + filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts") + `" --mode compact`,
+			driftedArg: `"` + filepath.Join(harnessHome, ".claude", "hooks", "RecallContext.hook.ts") + `" --mode full`,
+		},
 	}
-	if desired != observed {
-		t.Fatalf("equivalent Compound commands differ: desired=%q observed=%q", desired, observed)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			desired := canonicalHookInvocationRevision(test.desired, harnessHome)
+			observed := canonicalHookInvocationRevision(test.observed, harnessHome)
+			drifted := canonicalHookInvocationRevision(test.driftedArg, harnessHome)
+			if !strings.HasPrefix(desired, "sha256:") {
+				t.Fatalf("canonical invocation revision = %q, want privacy-safe digest", desired)
+			}
+			if desired != observed {
+				t.Fatalf("equivalent commands differ: desired=%q observed=%q", desired, observed)
+			}
+			if desired == drifted {
+				t.Fatalf("different command arguments collapsed to %q", desired)
+			}
+		})
 	}
-	if desired == drifted {
-		t.Fatalf("different Compound command arguments collapsed to %q", desired)
+}
+
+func TestHookPlanSkipsRetiredInstalledRows(t *testing.T) {
+	manifest := InstalledHooksManifest{
+		SchemaVersion: installedHooksSchemaVersion,
+		Hooks: []InstalledHook{
+			{Harness: "claude_code", Name: "SessionStart", Event: "SessionStart", Ref: "handler://active", Status: "current"},
+			{Harness: "claude_code", Name: "SessionEnd", Event: "SessionEnd", Ref: "handler://retired", Status: "retired"},
+		},
+	}
+	plan, err := hookPlanFromInstalledManifest(manifest, t.TempDir())
+	if err != nil {
+		t.Fatalf("hookPlanFromInstalledManifest() error = %v", err)
+	}
+	if len(plan.Bindings) != 1 || plan.Bindings[0].Event != "SessionStart" {
+		t.Fatalf("HookPlan bindings = %+v, want only current row", plan.Bindings)
+	}
+}
+
+func TestReconcileInstalledHooksWithoutPlanStillReportsObservedExtras(t *testing.T) {
+	compoundHome := t.TempDir()
+	harnessHome := t.TempDir()
+	writeHarnessHookConfig(t, filepath.Join(harnessHome, ".claude", "settings.json"), `{
+  "hooks": {
+    "SessionEnd": [{"hooks":[{"type":"command","command":"\"$HOME/.claude/hooks/SessionReceipt.hook.ts\""}]}]
+  }
+}`)
+
+	got, err := ReconcileInstalledHooks(compoundHome, harnessHome, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
+	}
+	if len(got.Plan.Bindings) != 0 || len(got.Observation.Bindings) != 1 {
+		t.Fatalf("desired/observed split = plan:%+v observed:%+v", got.Plan.Bindings, got.Observation.Bindings)
+	}
+	if len(got.Reconciliation.Deltas) != 1 || got.Reconciliation.Deltas[0].State != hookplan.StateExtraUnowned {
+		t.Fatalf("reconciliation = %+v, want observed hook extra_unowned", got.Reconciliation.Deltas)
 	}
 }
 

@@ -1249,8 +1249,8 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "Write|Edit") {
 		t.Fatalf("Codex hook import lost the native PreToolUse matcher: %+v", manifest.Hooks)
 	}
-	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasPrefix(gate.Ref, "handler:sha256:") {
-		t.Fatalf("Codex hook import lost the privacy-safe Compound command identity: %+v", gate)
+	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasSuffix(gate.Ref, "/.local/bin/compound") || !strings.HasPrefix(gate.InvocationRevision, "sha256:") {
+		t.Fatalf("Codex hook import lost the handler display ref or privacy-safe invocation identity: %+v", gate)
 	}
 	records, err := LoadInstalledHooksSourceAuthority(home)
 	if err != nil {
@@ -1319,8 +1319,8 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "Write|Edit") {
 		t.Fatalf("imported hook registration should preserve Codex PreToolUse matcher: %+v", manifest.Hooks)
 	}
-	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasPrefix(gate.Ref, "handler:sha256:") {
-		t.Fatalf("imported hook registration should preserve a privacy-safe Compound command identity: %+v", gate)
+	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasSuffix(gate.Ref, "/.local/bin/compound") || !strings.HasPrefix(gate.InvocationRevision, "sha256:") {
+		t.Fatalf("imported hook registration should preserve the handler display ref and privacy-safe invocation identity: %+v", gate)
 	}
 
 	claudeInput := Input{Harness: "claude_code", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}

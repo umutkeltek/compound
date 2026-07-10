@@ -63,12 +63,16 @@ func TestHooksAuthorityObserveLiveCLI(t *testing.T) {
 		t.Fatalf("hooks-authority --observe-live failed: %v\n%s", err, output)
 	}
 	var report struct {
+		Privacy                 string                        `json:"privacy"`
 		HookPlan                hookplan.HookPlan             `json:"hook_plan"`
 		InstallationObservation hookplan.InstallationSnapshot `json:"installation_observation"`
 		Reconciliation          hookplan.Reconciliation       `json:"reconciliation"`
 	}
 	if err := json.Unmarshal(output, &report); err != nil {
 		t.Fatalf("parse hooks-authority output: %v\n%s", err, output)
+	}
+	if report.Privacy != "private" {
+		t.Fatalf("hooks-authority privacy = %q, want private for path-bearing local report", report.Privacy)
 	}
 	if len(report.HookPlan.Bindings) != importReport.HookCount || len(report.InstallationObservation.Bindings) != 6 {
 		t.Fatalf("hooks-authority desired/observed split = plan:%d observed:%d", len(report.HookPlan.Bindings), len(report.InstallationObservation.Bindings))

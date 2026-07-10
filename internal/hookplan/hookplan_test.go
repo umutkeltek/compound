@@ -51,10 +51,10 @@ func TestReconcileObservedExtraNeverBecomesDesired(t *testing.T) {
 		t.Fatalf("observed bindings changed desired plan: %+v", plan.Bindings)
 	}
 	if len(got.Deltas) != 2 {
-		t.Fatalf("Reconcile() deltas = %+v, want ready + extra_unowned", got.Deltas)
+		t.Fatalf("Reconcile() deltas = %+v, want registered + extra_unowned", got.Deltas)
 	}
-	if got.Deltas[0].State != StateReady || got.Deltas[0].Event != "SessionStart" {
-		t.Fatalf("first delta = %+v, want SessionStart ready", got.Deltas[0])
+	if got.Deltas[0].State != StateRegistered || got.Deltas[0].Event != "SessionStart" {
+		t.Fatalf("first delta = %+v, want SessionStart registered", got.Deltas[0])
 	}
 	if got.Deltas[1].State != StateExtraUnowned || got.Deltas[1].Event != "SessionEnd" {
 		t.Fatalf("second delta = %+v, want SessionEnd extra_unowned", got.Deltas[1])
@@ -235,7 +235,7 @@ func TestReconcileCanonicalizesEquivalentInputOrder(t *testing.T) {
 	}
 }
 
-func TestReconcileDoesNotInventHandlerDriftWithoutObservedRevision(t *testing.T) {
+func TestReconcileReportsRegisteredWithoutObservedHandlerRevision(t *testing.T) {
 	plan := HookPlan{
 		SchemaVersion: HookPlanSchemaVersion,
 		ID:            "hook-plan",
@@ -265,8 +265,80 @@ func TestReconcileDoesNotInventHandlerDriftWithoutObservedRevision(t *testing.T)
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
+	if len(got.Deltas) != 1 || got.Deltas[0].State != StateRegistered {
+		t.Fatalf("Reconcile() deltas = %+v, want registered while observed handler revision is unknown", got.Deltas)
+	}
+}
+
+func TestReconcileDetectsInvocationArgumentDrift(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{
+				ID:                 "prompt",
+				Harness:            "claude_code",
+				Event:              "UserPromptSubmit",
+				HandlerRef:         "$HOME/.claude/hooks/IntentRecall.hook.ts",
+				InvocationRevision: "sha256:desired-argv",
+			},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Bindings: []ObservedBinding{
+			{
+				Harness:            "claude_code",
+				Event:              "UserPromptSubmit",
+				HandlerRef:         "$HOME/.claude/hooks/IntentRecall.hook.ts",
+				InvocationRevision: "sha256:changed-argv",
+				Active:             true,
+			},
+		},
+	}
+
+	got, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if len(got.Deltas) != 1 || got.Deltas[0].State != StateDrifted {
+		t.Fatalf("Reconcile() deltas = %+v, want invocation drift", got.Deltas)
+	}
+}
+
+func TestReconcileReportsReadyOnlyForVerifiedHandlerContent(t *testing.T) {
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Bindings: []Binding{
+			{
+				ID:              "start",
+				Harness:         "claude_code",
+				Event:           "SessionStart",
+				HandlerRef:      "handler://start",
+				HandlerRevision: "sha256:verified-content",
+			},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Bindings: []ObservedBinding{
+			{
+				Harness:         "claude_code",
+				Event:           "SessionStart",
+				HandlerRef:      "handler://start",
+				HandlerRevision: "sha256:verified-content",
+				Active:          true,
+			},
+		},
+	}
+
+	got, err := Reconcile(plan, observed, harness.DefaultRegistry())
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
 	if len(got.Deltas) != 1 || got.Deltas[0].State != StateReady {
-		t.Fatalf("Reconcile() deltas = %+v, want ready while observed handler revision is unknown", got.Deltas)
+		t.Fatalf("Reconcile() deltas = %+v, want content-verified ready", got.Deltas)
 	}
 }
 
