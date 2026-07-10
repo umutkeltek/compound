@@ -152,8 +152,13 @@ type routeRaw struct {
 }
 
 type receiptEvidence struct {
-	Refs       []string
-	TerminalAt string
+	Refs      []string
+	Terminals []terminalEvidence
+}
+
+type terminalEvidence struct {
+	At         string
+	WorkSHA256 string
 }
 
 type decidingRouteBinding struct {
@@ -514,8 +519,8 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 		sample.InvalidReason = reason
 		return sample
 	}
-	if strings.TrimSpace(receiptEvidence.TerminalAt) != "" {
-		sample.ReceiptCreatedAt = strings.TrimSpace(receiptEvidence.TerminalAt)
+	if len(receiptEvidence.Terminals) == 1 && strings.TrimSpace(receiptEvidence.Terminals[0].At) != "" {
+		sample.ReceiptCreatedAt = strings.TrimSpace(receiptEvidence.Terminals[0].At)
 	}
 	if ws.Work.RouteDecisionID != plan.ID || !containsExact(ws.Work.EvidenceRefs, "route_plan:"+plan.ID) {
 		return invalid("route plan does not match current plan and revision")
@@ -800,16 +805,24 @@ func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
 	}
 	for workID, evidence := range receipts {
-		terminalAt := strings.TrimSpace(evidence.TerminalAt)
-		if terminalAt == "" {
+		if len(evidence.Terminals) == 0 {
 			continue
 		}
-		parsed, err := time.Parse(time.RFC3339, terminalAt)
-		if err != nil {
-			return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminalAt)
+		recent := false
+		for _, terminal := range evidence.Terminals {
+			parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(terminal.At))
+			if err != nil {
+				return fmt.Errorf("terminal work %s has invalid terminal timestamp %q", workID, terminal.At)
+			}
+			if !parsed.Before(lookbackStart) {
+				recent = true
+			}
 		}
-		if parsed.Before(lookbackStart) {
+		if !recent {
 			continue
+		}
+		if len(evidence.Terminals) != 1 {
+			return fmt.Errorf("recent terminal work %s has multiple terminal events (%d)", workID, len(evidence.Terminals))
 		}
 		snapshots := byID[workID]
 		if len(snapshots) != 1 {
@@ -817,6 +830,16 @@ func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]
 		}
 		if !terminalWorkState(snapshots[0].Work.State) {
 			return fmt.Errorf("recent terminal work %s snapshot state %q is not terminal", workID, snapshots[0].Work.State)
+		}
+		if strings.TrimSpace(evidence.Terminals[0].WorkSHA256) == "" {
+			return fmt.Errorf("recent terminal work %s terminal event snapshot hash is required", workID)
+		}
+		data, err := json.Marshal(snapshots[0].Work)
+		if err != nil {
+			return err
+		}
+		if evidence.Terminals[0].WorkSHA256 != "sha256:"+shaHex(data) {
+			return fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
 		}
 	}
 	return nil
@@ -837,10 +860,11 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		var event struct {
-			TS       string   `json:"ts"`
-			WorkID   string   `json:"work_id"`
-			To       string   `json:"to"`
-			Attached []string `json:"attached"`
+			TS         string   `json:"ts"`
+			WorkID     string   `json:"work_id"`
+			To         string   `json:"to"`
+			Attached   []string `json:"attached"`
+			WorkSHA256 string   `json:"work_sha256,omitempty"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return nil, err
@@ -848,7 +872,7 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 		evidence := out[event.WorkID]
 		terminal := terminalWorkState(event.To)
 		if terminal && strings.TrimSpace(event.TS) != "" {
-			evidence.TerminalAt = normalizedEvidenceTime(event.TS)
+			evidence.Terminals = append(evidence.Terminals, terminalEvidence{At: normalizedEvidenceTime(event.TS), WorkSHA256: strings.TrimSpace(event.WorkSHA256)})
 		}
 		if terminal {
 			for _, ref := range event.Attached {

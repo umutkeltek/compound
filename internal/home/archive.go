@@ -390,6 +390,9 @@ func LoadOperationalArchiveIndex(homePath string) ([]OperationalArchiveEntry, er
 		}
 		switch entry.Operation {
 		case "archived":
+			if prior, ok := active[entry.ID]; ok {
+				return nil, fmt.Errorf("operational archive index line %d repeats active archived operation %s (prior path %s)", i+1, entry.ID, prior.OriginalPath)
+			}
 			active[entry.ID] = entry
 		case "restored":
 			delete(active, entry.ID)

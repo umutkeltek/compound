@@ -72,13 +72,14 @@ func (s *Store) envPath(id string) string   { return filepath.Join(s.home, "even
 
 // Event is one append-only lifecycle record.
 type Event struct {
-	TS       string   `json:"ts"`
-	WorkID   string   `json:"work_id"`
-	From     string   `json:"from"`
-	To       string   `json:"to"`
-	By       string   `json:"by,omitempty"`
-	Note     string   `json:"note,omitempty"`
-	Attached []string `json:"attached,omitempty"`
+	TS         string   `json:"ts"`
+	WorkID     string   `json:"work_id"`
+	From       string   `json:"from"`
+	To         string   `json:"to"`
+	By         string   `json:"by,omitempty"`
+	Note       string   `json:"note,omitempty"`
+	Attached   []string `json:"attached,omitempty"`
+	WorkSHA256 string   `json:"work_sha256,omitempty"`
 }
 
 // Lease records who holds a claimed work (claim-before-you-touch / D7).
@@ -496,7 +497,14 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	} else {
 		note += " (policy " + plan.Policy.Outcome + ")"
 	}
-	return w, s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: note, Attached: attached})
+	event := Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: note, Attached: attached}
+	if terminalStates[in.To] {
+		event.WorkSHA256, err = workEnvelopeSHA256(w)
+		if err != nil {
+			return w, err
+		}
+	}
+	return w, s.appendEvent(event)
 }
 
 // --- act (governed mutation) ---
@@ -783,7 +791,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
 		return res, err
 	}
-	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}}); err != nil {
+	workSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
+		return res, err
+	}
+	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, WorkSHA256: workSHA256}); err != nil {
 		return res, err
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
@@ -797,6 +809,15 @@ func (s *Store) writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func workEnvelopeSHA256(work envelope.WorkEnvelope) (string, error) {
+	data, err := json.Marshal(work)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func (s *Store) capabilityRefsForContextPack(contextPackID string) ([]string, error) {
