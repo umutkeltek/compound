@@ -22,6 +22,7 @@ var proofNow = time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 type sampleOptions struct {
 	routeOnly        bool
 	workCreatedAt    *time.Time
+	autonomyClass    string
 	routeWorkID      *string
 	clientProfile    string
 	protocol         string
@@ -412,6 +413,27 @@ func TestCompileFailsClosedOnFutureTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestCompileIgnoresFutureTerminalEventFromOtherClass(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "foreign-future-old-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "foreign-future-new-clean", proofNow.Add(-24*time.Hour), sampleOptions{})
+	foreign := seedSample(t, home, plan, "foreign-future", proofNow.Add(24*time.Hour), sampleOptions{autonomyClass: "other_class"})
+
+	artifact, err := compileArtifact(home, plan, 2)
+	if err != nil {
+		t.Fatalf("valid foreign-class terminal event blocked job_health evidence: %v", err)
+	}
+	if artifact.Status != "eligible" {
+		t.Fatalf("foreign-class terminal event changed job_health eligibility: %+v", artifact)
+	}
+	for _, sample := range artifact.Samples {
+		if sample.WorkID == foreign.WorkID {
+			t.Fatalf("foreign-class terminal event entered job_health cohort: %+v", artifact.Samples)
+		}
+	}
+}
+
 func TestCompileFailsClosedOnFutureReceiptTimestamp(t *testing.T) {
 	home := t.TempDir()
 	plan := installPlan(t, home, false)
@@ -742,6 +764,10 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 	if opts.workCreatedAt != nil {
 		createdAt = *opts.workCreatedAt
 	}
+	autonomyClass := opts.autonomyClass
+	if autonomyClass == "" {
+		autonomyClass = "job_health"
+	}
 	w, err := store.Create(work.CreateInput{
 		WorkID:           workID,
 		Owner:            "compound-authority",
@@ -749,7 +775,7 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 		SuccessPredicate: "prove autonomy sample " + id,
 		EvidenceRefs: []string{
 			"proposed_by:director",
-			"director_trigger:job_health:" + id,
+			"director_trigger:" + autonomyClass + ":" + id,
 			"route_plan:" + plan.ID,
 		},
 		RouteDecisionID: plan.ID,
