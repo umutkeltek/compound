@@ -25,6 +25,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/harness"
 	"compound/internal/mem"
+	"compound/internal/negatives"
 	"compound/internal/projection"
 )
 
@@ -761,6 +762,54 @@ func PackWithCapabilities(in Input, pol OrientationPolicy, homePath string, now 
 	if len(records) > 0 {
 		pack.SummaryMD += fmt.Sprintf(" %d projection freshness ref(s) included; generated views are context evidence, not truth.", len(records))
 	}
+	pack, err = appendNegatives(pack, homePath, in)
+	if err != nil {
+		return pack, err
+	}
+	return pack, nil
+}
+
+// appendNegatives joins the negatives projection (internal/negatives — a
+// rebuildable read-only view over inbox/failure-patterns + reviews/route-remorse)
+// on the incoming Intent's owner/task-class scope and attaches top-k negative
+// cards to the ContextPack. Read-only influence, exactly like the capability-offer
+// and projection-freshness sections above it: display only, never routing — it
+// never touches ActiveHooks/ActiveDecisions/RequiredChecks/MutationPolicy, and a
+// missing projection file fails open (zero cards, no error), mirroring
+// mem.LoadTemperatureLookup's degrade-gracefully contract.
+func appendNegatives(pack envelope.ContextPack, homePath string, in Input) (envelope.ContextPack, error) {
+	proj, ok, err := negatives.ReadProjection(homePath)
+	if err != nil {
+		return pack, err
+	}
+	if !ok || len(proj.Records) == 0 {
+		return pack, nil
+	}
+	ownerTokens := negatives.ScopeTokens(in.Harness, in.RepoKind, filepath.Base(in.Cwd))
+	taskTokens := negatives.ScopeTokens(in.Task)
+	matched := negatives.MatchingRecords(proj.Records, ownerTokens, taskTokens, maxContextNegativeCards)
+	if len(matched) == 0 {
+		return pack, nil
+	}
+	for _, rec := range matched {
+		pack.Negatives = append(pack.Negatives, envelope.NegativeCard{
+			Source:       rec.Source,
+			ApproachKey:  rec.ApproachKey,
+			WhatWasTried: rec.WhatWasTried,
+			WhyItFailed:  rec.WhyItFailed,
+			Ref:          rec.Ref,
+			Confidence:   rec.Confidence,
+		})
+		pack.Included = append(pack.Included, envelope.IncludedRef{
+			Ref:         rec.Ref,
+			SourceClass: "generated",
+			Reason:      fmt.Sprintf("negatives_projection source=%s approach_key=%s scope-matched to this task; display-only, never routes/dispatches/claims", rec.Source, rec.ApproachKey),
+			Confidence:  rec.Confidence,
+			Status:      "current",
+		})
+	}
+	pack.SourceRevisions = mergeSourceRevisions(pack.SourceRevisions, []envelope.SourceRev{{Source: negatives.ProjectionRef, Rev: proj.ComputedAt}})
+	pack.SummaryMD += fmt.Sprintf(" %d already-tried-and-failed negative(s) surfaced (scope-matched, display-only).", len(matched))
 	return pack, nil
 }
 
@@ -1113,6 +1162,9 @@ const (
 	maxContextMemoryRefs             = 5
 	maxContextCapabilityOffers       = 12
 	maxContextExternalRepoIntakeRefs = 5
+	// maxContextNegativeCards bounds the negatives section — scoped surfacing only,
+	// never a firehose of every recorded failure (packet boundary).
+	maxContextNegativeCards = 5
 )
 
 func externalRepoIntakeRef(repo string) string {
