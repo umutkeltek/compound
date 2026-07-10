@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const PositionFoldSchemaVersion = "compound.memory_position_fold.v0.1"
+const PositionFoldSchemaVersion = "compound.memory_position_fold.v0.2"
 
 type PositionFoldOptions struct {
 	Entity  string
@@ -75,14 +75,25 @@ func shouldWriteGlobalPositionsProjection(opts PositionFoldOptions) bool {
 
 func (s *Store) LoadFoldedPositions() ([]Position, error) {
 	var out []Position
+	stale := false
 	err := readJSONL(s.positionsLog(), func(line []byte) error {
 		var p Position
 		if err := json.Unmarshal(line, &p); err != nil {
 			return err
 		}
+		if p.SchemaVersion != PositionFoldSchemaVersion {
+			stale = true
+			return nil
+		}
 		out = append(out, p)
 		return nil
 	})
+	if stale {
+		// A stale derived checkpoint must never hide current claims. Returning an
+		// empty projection makes ContextPack fall back to the live claim path until
+		// a global `compound memory fold` rewrites the checkpoint.
+		return nil, err
+	}
 	return out, err
 }
 
@@ -273,6 +284,7 @@ func buildPosition(id, entity, topic string, claims []Claim, superseded map[stri
 		status = "contested"
 	}
 	return Position{
+		SchemaVersion:         PositionFoldSchemaVersion,
 		ID:                    id,
 		Entity:                entity,
 		Topic:                 topic,
@@ -292,18 +304,8 @@ func buildPosition(id, entity, topic string, claims []Claim, superseded map[stri
 }
 
 func positionIDForClaim(claim Claim) string {
-	parts := []string{strings.TrimSpace(claim.Entity), strings.TrimSpace(claim.Topic())}
-	clusterEntity := decisionClusterEntity(claim.Entity, claim.ClaimType, claim.Qualifiers, claim.ID)
-	switch {
-	case NormalizeClaimValue(clusterEntity) != NormalizeClaimValue(claim.Entity):
-		parts = append(parts, strings.TrimSpace(clusterEntity))
-	case NormalizeClaimValue(claim.Predicate) != NormalizeClaimValue(claim.Topic()):
-		parts = append(parts, strings.TrimSpace(claim.Predicate))
-	}
-	if strings.TrimSpace(claim.ClaimType) != "" {
-		parts = append(parts, strings.TrimSpace(claim.ClaimType))
-	}
-	return strings.Join(parts, "::")
+	slot := ClaimSlotKey(claim.Entity, claim.Predicate, claim.ClaimType, claim.Qualifiers, claim.ID)
+	return strings.TrimSpace(claim.Entity) + "::" + strings.TrimSpace(claim.Topic()) + "::slot-" + shortHash(slot)
 }
 
 func (s *Store) topicScopeSet(topic string) (map[string]bool, []string, error) {

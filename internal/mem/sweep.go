@@ -249,16 +249,33 @@ func normalizeSynthesisStages(stages []string) ([]string, map[string]bool, error
 
 func (s *Store) synthesisCandidateClusters(candidates []Candidate) ([]SynthesisCluster, []SynthesisEchoFoldProposal, error) {
 	groups := map[string][]Candidate{}
+	type echoGroup struct {
+		clusterKey string
+		object     string
+		ids        []string
+	}
+	echoGroups := map[string]*echoGroup{}
 	for _, c := range candidates {
 		key, err := s.candidateClusterKey(c)
 		if err != nil {
 			return nil, nil, err
 		}
 		groups[key] = append(groups[key], c)
+		echoKey, err := s.candidateEchoKey(c)
+		if err != nil {
+			return nil, nil, err
+		}
+		object := NormalizeClaimValue(c.Object)
+		equivalenceKey := strings.Join([]string{echoKey, object, normalizedClaimQualifiersKey(c.Qualifiers)}, clusterSep)
+		group := echoGroups[equivalenceKey]
+		if group == nil {
+			group = &echoGroup{clusterKey: echoKey, object: object}
+			echoGroups[equivalenceKey] = group
+		}
+		group.ids = append(group.ids, c.ID)
 	}
 	keys := sortedKeys(groups)
 	clusters := make([]SynthesisCluster, 0, len(keys))
-	var proposals []SynthesisEchoFoldProposal
 	for _, key := range keys {
 		group := groups[key]
 		sort.Slice(group, func(i, j int) bool { return group[i].ID < group[j].ID })
@@ -272,21 +289,31 @@ func (s *Store) synthesisCandidateClusters(candidates []Candidate) ([]SynthesisC
 			ids = append(ids, c.ID)
 		}
 		clusters = append(clusters, SynthesisCluster{ClusterKey: key, CandidateCount: len(group), ObjectCount: len(objects), CandidateIDs: ids})
-		for _, object := range objects {
-			candidateIDs := objectGroups[object]
-			sort.Strings(candidateIDs)
-			if len(candidateIDs) < 2 {
-				continue
-			}
-			proposals = append(proposals, SynthesisEchoFoldProposal{
-				ID:               idFor("synth_echo_", key, object, strings.Join(candidateIDs, ",")),
-				ClusterKey:       key,
-				NormalizedObject: object,
-				CandidateIDs:     candidateIDs,
-			})
+	}
+	var proposals []SynthesisEchoFoldProposal
+	for _, key := range sortedKeys(echoGroups) {
+		group := echoGroups[key]
+		if len(group.ids) < 2 {
+			continue
 		}
+		sort.Strings(group.ids)
+		proposals = append(proposals, SynthesisEchoFoldProposal{
+			ID:               idFor("synth_echo_", group.clusterKey, group.object, strings.Join(group.ids, ",")),
+			ClusterKey:       group.clusterKey,
+			NormalizedObject: group.object,
+			CandidateIDs:     group.ids,
+		})
 	}
 	return clusters, proposals, nil
+}
+
+func normalizedClaimQualifiersKey(qualifiers map[string]string) string {
+	keys := sortedKeys(qualifiers)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+NormalizeClaimValue(qualifiers[key]))
+	}
+	return strings.Join(parts, clusterSep)
 }
 
 type synthesisContradictionGroup struct {

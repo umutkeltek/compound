@@ -1599,14 +1599,15 @@ func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelo
 	if entity == "" || topic == "" || stance == "" {
 		return envelope.ActivePosition{}
 	}
+	positionID := firstNonEmpty(position.ID, entity+"::"+topic)
 	chainLength := len(position.ClaimChain)
 	if chainLength == 0 && position.ActiveClaimID != "" {
 		chainLength = 1
 	}
 	contested := strings.EqualFold(strings.TrimSpace(position.Status), "contested")
-	line := activePositionLine(entity, topic, stance, activeClaim.Seq, chainLength, contested)
+	line := activePositionLine(positionID, stance, activeClaim.Seq, chainLength, contested)
 	return envelope.ActivePosition{
-		Ref:         "position://" + entity + "::" + topic,
+		Ref:         "position://" + positionID,
 		Entity:      entity,
 		Topic:       topic,
 		Stance:      stance,
@@ -1617,8 +1618,8 @@ func activePositionFromFold(position mem.Position, activeClaim mem.Claim) envelo
 	}
 }
 
-func activePositionLine(entity, topic, stance string, sinceSeq int64, chainLength int, contested bool) string {
-	line := fmt.Sprintf("%s::%s → %s (since-seq %d, chain-length %d)", entity, topic, stance, sinceSeq, chainLength)
+func activePositionLine(positionID, stance string, sinceSeq int64, chainLength int, contested bool) string {
+	line := fmt.Sprintf("%s → %s (since-seq %d, chain-length %d)", positionID, stance, sinceSeq, chainLength)
 	if contested {
 		line += " [contested]"
 	}

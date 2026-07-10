@@ -173,7 +173,8 @@ type Edge struct {
 // active claim is the current (non-superseded) version; the chain is the FULL supersession history
 // (MVCC-by-fold), so a Position carries old→new, not just the latest value.
 type Position struct {
-	ID                    string   `json:"id"` // stable entity::topic[::predicate][::claim_type] slot id
+	SchemaVersion         string   `json:"schema_version"`
+	ID                    string   `json:"id"` // readable entity::topic prefix plus a fact-slot hash
 	Entity                string   `json:"entity"`
 	Topic                 string   `json:"topic"` // mem's topic axis = domain qualifier, else predicate
 	Predicate             string   `json:"predicate,omitempty"`
