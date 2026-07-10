@@ -4,7 +4,7 @@ package work
 // only: nothing stopped a non-holder actor from closing a work another actor's executor was
 // still mid-build on. Tonight's twin-collisions (work_b1c9d3d624e1 consumed+closed by a lane
 // that never held it; work_fc4a3b26a15a closed by a concurrent session mid-build) are the
-// exact regression this file closes. See docs_private/packets/2026-07-09-close-gate-lease.md.
+// exact regression this file closes. See docs_private/plan/packets/2026-07-09-close-gate-lease.md.
 //
 // The gate lives here, in the Store, so every close door (Close, ClosePlan preview, and any
 // future caller) inherits it — not in the CLI layer. Design:

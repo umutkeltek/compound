@@ -6,7 +6,7 @@ package work
 // advances to running/verifying, so residue reliably survives. DispatchPlan/DispatchClaim
 // never consulted it for "ready" candidates, and DispatchClosePlan/DispatchClose never
 // consulted it for "verifying" candidates — the exact live incident (DispatchClose closes
-// ANY actor's verifying work) named in docs_private/packets/2026-07-09-close-gate-lease.md.
+// ANY actor's verifying work) named in docs_private/plan/packets/2026-07-09-close-gate-lease.md.
 
 import (
 	"strings"

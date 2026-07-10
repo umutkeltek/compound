@@ -1,7 +1,7 @@
 package work
 
 // Close-gate lease enforcement (2026-07-09 packet). Tonight's twin-collisions (see
-// docs_private/packets/2026-07-09-close-gate-lease.md) showed leases exist but nothing
+// docs_private/plan/packets/2026-07-09-close-gate-lease.md) showed leases exist but nothing
 // enforces them at close: a non-holder actor could close a work another actor's executor
 // was still mid-build on. These tests pin the falsifier list from that packet.
 
