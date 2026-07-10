@@ -482,12 +482,7 @@ func TestOSAbsorptionPacketEvidenceRequiresCanonicalDigestShape(t *testing.T) {
 }
 
 func TestOSAbsorptionWorkPacketAuthorityRejectsRelativeSourceDirectory(t *testing.T) {
-	homePath := t.TempDir()
-	store, err := work.Open(homePath)
-	if err != nil {
-		t.Fatalf("open work store: %v", err)
-	}
-	_, err = osAbsorptionSourcePacketWork(homePath, store, OSAbsorptionMatrixRow{SourceKind: "packet_dir", SourceRef: "relative/packets"}, nil)
+	_, _, _, err := osAbsorptionSourcePacketCandidates(OSAbsorptionMatrixRow{SourceKind: "packet_dir", SourceRef: "relative/packets"})
 	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
 		t.Fatalf("relative packet directory must fail cwd-independent proof, got %v", err)
 	}
