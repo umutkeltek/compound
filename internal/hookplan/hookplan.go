@@ -3,7 +3,11 @@
 // internal/hook; observed registrations never become desired authority here.
 package hookplan
 
-import "compound/internal/harness"
+import (
+	"fmt"
+
+	"compound/internal/harness"
+)
 
 const (
 	HookPlanSchemaVersion             = "compound.hook_plan.v0.1"
@@ -90,10 +94,8 @@ type Reconciliation struct {
 }
 
 // Reconcile compares desired authority to observed evidence without mutating
-// either input. Capability validation and non-ready classifications deepen in
-// subsequent vertical tests.
+// either input.
 func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Registry) (Reconciliation, error) {
-	_ = registry
 	out := Reconciliation{
 		SchemaVersion:       ReconciliationSchemaVersion,
 		PlanID:              plan.ID,
@@ -104,14 +106,25 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 	consumed := make([]bool, len(observed.Bindings))
 	for _, desired := range plan.Bindings {
 		matched := -1
+		var slotCandidates []int
 		for i, actual := range observed.Bindings {
-			if consumed[i] || desired.Harness != actual.Harness || desired.Event != actual.Event || desired.Matcher != actual.Matcher {
+			if consumed[i] || !sameSlot(desired, actual) {
 				continue
 			}
-			if desired.HandlerRef == actual.HandlerRef {
+			if actual.BindingID != "" && actual.BindingID != desired.ID {
+				continue
+			}
+			slotCandidates = append(slotCandidates, i)
+			if actual.BindingID == desired.ID || desired.HandlerRef == actual.HandlerRef {
 				matched = i
 				break
 			}
+		}
+		if matched < 0 && len(slotCandidates) == 1 {
+			matched = slotCandidates[0]
+		}
+		if matched < 0 && len(slotCandidates) > 1 {
+			return Reconciliation{}, fmt.Errorf("hook plan binding %q has %d ambiguous observed registrations for %s/%s matcher %q", desired.ID, len(slotCandidates), desired.Harness, desired.Event, desired.Matcher)
 		}
 		delta := Delta{
 			BindingID:         desired.ID,
@@ -121,12 +134,29 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 			DesiredHandlerRef: desired.HandlerRef,
 			State:             StateMissing,
 		}
+		if !bindingSupported(desired, registry) {
+			delta.State = StateUnsupported
+			delta.Reason = "harness registry does not support the desired event capability"
+		}
 		if matched >= 0 {
 			actual := observed.Bindings[matched]
 			consumed[matched] = true
-			delta.State = StateReady
 			delta.ObservedHandlerRef = actual.HandlerRef
 			delta.ObservedSourceRef = actual.SourceRef
+			switch {
+			case delta.State == StateUnsupported:
+			case !actual.Active:
+				delta.State = StateActivationRequired
+				delta.Reason = "desired binding is installed but inactive"
+			case desired.HandlerRef != actual.HandlerRef || handlerRevisionDrifted(desired, actual):
+				delta.State = StateDrifted
+				delta.Reason = "observed handler does not match desired binding"
+			default:
+				delta.State = StateReady
+			}
+		} else if delta.State != StateUnsupported && desired.Activation == ActivationOperator {
+			delta.State = StateActivationRequired
+			delta.Reason = "desired binding requires operator activation"
 		}
 		out.Deltas = append(out.Deltas, delta)
 	}
@@ -145,4 +175,22 @@ func Reconcile(plan HookPlan, observed InstallationSnapshot, registry harness.Re
 		})
 	}
 	return out, nil
+}
+
+func sameSlot(desired Binding, actual ObservedBinding) bool {
+	return desired.Harness == actual.Harness && desired.Event == actual.Event && desired.Matcher == actual.Matcher
+}
+
+func bindingSupported(binding Binding, registry harness.Registry) bool {
+	if _, found := registry.Get(binding.Harness); !found {
+		return false
+	}
+	if binding.Blocking && binding.Event != "PreToolUse" {
+		return false
+	}
+	return registry.Supports(binding.Harness, binding.Event)
+}
+
+func handlerRevisionDrifted(desired Binding, actual ObservedBinding) bool {
+	return desired.HandlerRevision != "" && desired.HandlerRevision != actual.HandlerRevision
 }
