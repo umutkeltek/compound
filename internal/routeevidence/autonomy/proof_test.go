@@ -381,6 +381,17 @@ func TestCompileFailsClosedOnTerminalSnapshotWithoutTerminalEvent(t *testing.T) 
 	}
 }
 
+func TestCompileFailsClosedOnFutureTerminalEvent(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "future-event-current", proofNow.Add(-24*time.Hour), sampleOptions{})
+	future := seedSample(t, home, plan, "future-event", proofNow.Add(48*time.Hour), sampleOptions{})
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+future.WorkID+" has terminal timestamp after eligibility evaluation") {
+		t.Fatalf("future terminal event did not fail closed: %v", err)
+	}
+}
+
 func TestCompileFailsClosedWhenRecentWorkClassIsMutated(t *testing.T) {
 	for _, mode := range []string{"hot", "restored"} {
 		t.Run(mode, func(t *testing.T) {
