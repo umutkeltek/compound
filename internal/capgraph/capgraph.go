@@ -124,6 +124,23 @@ func Open(homePath string) (*Store, error) {
 	return &Store{home: homePath}, nil
 }
 
+// OpenReadOnly opens an existing capability graph without creating runtime
+// directories. Read-only front doors use it so an absent home stays absent.
+func OpenReadOnly(homePath string) (*Store, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
+	}
+	registries := filepath.Join(homePath, "registries")
+	info, err := os.Stat(registries)
+	if err != nil {
+		return nil, fmt.Errorf("open capability graph read-only: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("open capability graph read-only: %s is not a directory", registries)
+	}
+	return &Store{home: homePath}, nil
+}
+
 func (s *Store) setSemanticLane(lane string) {
 	if lane == "" {
 		lane = semanticLaneOff
