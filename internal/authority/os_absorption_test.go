@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
+	"compound/internal/envelope"
+	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/work"
 )
 
 func TestOSAbsorptionMatrixImportAndDoctor(t *testing.T) {
@@ -286,6 +290,261 @@ func TestOSAbsorptionCountsSplitProvenVsAsserted(t *testing.T) {
 	if doctor.MachineProvenCount == doctor.AbsorbedCount {
 		t.Fatalf("machine_proven_count must diverge from absorbed_count to prove the split is real: %+v", doctor)
 	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityProofBindsArchivedSourcePacket(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	if err := home.Init(homePath, "test", now); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+
+	sourceDir := filepath.Join(t.TempDir(), "umut-os", "packets")
+	sourcePacket := writePacketAuthorityFixture(t, sourceDir, "source-packet.md", "Source packet")
+	sourceClosed := closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
+	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed absorption packet")
+	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
+
+	if _, err := home.ArchiveOperationalHistory(homePath, home.OperationalArchiveOptions{Kinds: []string{"work"}}, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("archive terminal work: %v", err)
+	}
+
+	got := doctorPacketAuthorityRow(t, homePath, packetAuthorityRow(sourceDir, listedClosed.Work.ID), now.Add(3*time.Minute))
+	if got.ProofStatus != "ok" || got.Status != "wrapper" {
+		t.Fatalf("packet row should be machine-proven without changing status: %+v", got)
+	}
+	for _, workID := range []string{listedClosed.Work.ID, sourceClosed.Work.ID} {
+		if !strings.Contains(got.ProofRef, workID) {
+			t.Fatalf("proof ref %q missing %s", got.ProofRef, workID)
+		}
+	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityProofRequiresEveryListedWork(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	sourceDir := filepath.Join(t.TempDir(), "packets")
+	sourcePacket := writePacketAuthorityFixture(t, sourceDir, "source-packet.md", "Source packet")
+	closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
+	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed packet")
+	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
+
+	got := doctorPacketAuthorityRow(t, homePath, packetAuthorityRow(sourceDir, listedClosed.Work.ID, "work_missing"), now.Add(2*time.Minute))
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "work_missing") {
+		t.Fatalf("one missing listed work must fail the whole row: %+v", got)
+	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityProofRejectsNonPacketWork(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, homePath string, closed work.CloseResult)
+		want   string
+	}{
+		{
+			name: "runtime source class",
+			mutate: func(t *testing.T, homePath string, closed work.CloseResult) {
+				t.Helper()
+				mutatePacketAuthorityWork(t, homePath, closed.Work.ID, func(w *envelope.WorkEnvelope) {
+					w.Authority.SourceClass = "runtime"
+				})
+			},
+			want: "source_class",
+		},
+		{
+			name: "non-packet canonical surface",
+			mutate: func(t *testing.T, homePath string, closed work.CloseResult) {
+				t.Helper()
+				mutatePacketAuthorityWork(t, homePath, closed.Work.ID, func(w *envelope.WorkEnvelope) {
+					w.CanonicalSurface = "command:not-a-packet"
+				})
+			},
+			want: "canonical_surface",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			homePath := t.TempDir()
+			now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+			sourceDir := filepath.Join(t.TempDir(), "packets")
+			sourcePacket := writePacketAuthorityFixture(t, sourceDir, "source-packet.md", "Source packet")
+			closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
+			listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed packet")
+			listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
+			tt.mutate(t, homePath, listedClosed)
+
+			got := doctorPacketAuthorityRow(t, homePath, packetAuthorityRow(sourceDir, listedClosed.Work.ID), now.Add(2*time.Minute))
+			if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, tt.want) {
+				t.Fatalf("non-packet work should fail with %q: %+v", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityProofRequiresReceiptTransitionChain(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	sourceDir := filepath.Join(t.TempDir(), "packets")
+	sourcePacket := writePacketAuthorityFixture(t, sourceDir, "source-packet.md", "Source packet")
+	closePacketAuthorityWork(t, homePath, sourcePacket, true, now)
+	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Listed packet")
+	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, false, now.Add(time.Minute))
+	if err := os.Remove(filepath.Join(homePath, "events", listedClosed.Transition.ID+".json")); err != nil {
+		t.Fatalf("remove transition falsifier: %v", err)
+	}
+
+	got := doctorPacketAuthorityRow(t, homePath, packetAuthorityRow(sourceDir, listedClosed.Work.ID), now.Add(2*time.Minute))
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "transition") {
+		t.Fatalf("completed state without transition proof must fail: %+v", got)
+	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityProofRejectsUnboundSourceDirectory(t *testing.T) {
+	homePath := t.TempDir()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC)
+	sourceDir := filepath.Join(t.TempDir(), "packets")
+	writePacketAuthorityFixture(t, sourceDir, "never-imported.md", "Never imported source packet")
+	listedPacket := writePacketAuthorityFixture(t, t.TempDir(), "listed-packet.md", "Valid but unrelated packet")
+	listedClosed := closePacketAuthorityWork(t, homePath, listedPacket, true, now)
+
+	got := doctorPacketAuthorityRow(t, homePath, packetAuthorityRow(sourceDir, listedClosed.Work.ID), now.Add(time.Minute))
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "source directory") {
+		t.Fatalf("unrelated packet work must not prove the declared source directory: %+v", got)
+	}
+}
+
+func TestOSAbsorptionWorkPacketAuthorityProofModeSelection(t *testing.T) {
+	if !osAbsorptionNeedsWorkPacketProof(OSAbsorptionMatrixRow{ProofMode: osAbsorptionProofModeWorkPacket}) {
+		t.Fatal("explicit work_packet_authority mode should opt in regardless of row shape")
+	}
+	auto := OSAbsorptionMatrixRow{CompoundOwner: "compound://work", SourceKind: "packet_dir", Status: "wrapper"}
+	if !osAbsorptionNeedsWorkPacketProof(auto) {
+		t.Fatal("live work packet tuple should auto-detect")
+	}
+	auto.ProofMode = osAbsorptionProofModeCapability
+	if osAbsorptionNeedsWorkPacketProof(auto) {
+		t.Fatal("an explicit different proof mode must suppress tuple auto-detection")
+	}
+}
+
+func packetAuthorityRow(sourceDir string, workIDs ...string) OSAbsorptionMatrixRow {
+	r := row("os_source_umut_packets", sourceDir, "wrapper", "compound://work", "compound work import-packet / workbench / dispatch-step", "")
+	r.SourceKind = "packet_dir"
+	r.EvidenceRefs = append([]string(nil), workIDs...)
+	return r
+}
+
+func doctorPacketAuthorityRow(t *testing.T, homePath string, matrixRow OSAbsorptionMatrixRow, now time.Time) OSAbsorptionDoctorRow {
+	t.Helper()
+	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
+	writeJSONFixture(t, matrixPath, OSAbsorptionSourceMatrix{SchemaVersion: OSAbsorptionMatrixSchema, Rows: []OSAbsorptionMatrixRow{matrixRow}})
+	if _, err := ImportOSAbsorptionMatrix(homePath, matrixPath, now); err != nil {
+		t.Fatalf("import matrix: %v", err)
+	}
+	report, err := OSAbsorptionDoctor(homePath)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("doctor rows = %+v, want one", report.Rows)
+	}
+	return report.Rows[0]
+}
+
+func writePacketAuthorityFixture(t *testing.T, dir, name, title string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir packet fixture: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	body := "# " + title + "\nDate: 2026-07-05\nStatus: ready\nOwner: authority-test\nSuccess: packet proof reaches a state delta.\n\n## Objective\n\nProve packet authority.\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write packet fixture: %v", err)
+	}
+	return path
+}
+
+func closePacketAuthorityWork(t *testing.T, homePath, packetPath string, withContext bool, now time.Time) work.CloseResult {
+	t.Helper()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	contextID := ""
+	if withContext {
+		contextID = "ctx_" + digest12(packetPath)
+		writePacketAuthorityContext(t, homePath, contextID, now)
+	}
+	imported, err := store.ImportPacket(packetPath, work.PacketImportOptions{State: "ready", Actor: "authority-test", ContextPackID: contextID}, now)
+	if err != nil {
+		t.Fatalf("import packet: %v", err)
+	}
+	if _, err := store.Claim(imported.Work.ID, "authority-test", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim packet: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "running", Actor: "authority-test", Note: "run packet proof"}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("advance packet: %v", err)
+	}
+	if _, err := store.Advance(imported.Work.ID, work.AdvanceInput{To: "verifying", Actor: "authority-test", VerificationID: "check:packet-authority"}, now.Add(3*time.Second)); err != nil {
+		t.Fatalf("verify packet: %v", err)
+	}
+	closed, err := store.Close(imported.Work.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "packet authority fixture complete",
+		Changed:   true,
+		Actor:     "authority-test",
+		ProofRefs: []string{"repair:packet-authority-test"},
+	}, now.Add(4*time.Second))
+	if err != nil {
+		t.Fatalf("close packet: %v", err)
+	}
+	return closed
+}
+
+func writePacketAuthorityContext(t *testing.T, homePath, id string, now time.Time) {
+	t.Helper()
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            id,
+			CreatedAt:     now.UTC().Format(time.RFC3339),
+			Producer:      envelope.Producer{Kind: "test", Name: "authority-test"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier1",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD:          "packet authority context",
+		Included:           []envelope.IncludedRef{},
+		Excluded:           []envelope.ExcludedRef{},
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		RequiredChecks:     []string{},
+		Avoid:              []string{},
+	}
+	path := filepath.Join(homePath, "context", "packs", id+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir context fixture: %v", err)
+	}
+	writeJSONFixture(t, path, pack)
+}
+
+func mutatePacketAuthorityWork(t *testing.T, homePath, workID string, mutate func(*envelope.WorkEnvelope)) {
+	t.Helper()
+	path := filepath.Join(homePath, "work", "work", workID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read work fixture: %v", err)
+	}
+	var w envelope.WorkEnvelope
+	if err := json.Unmarshal(data, &w); err != nil {
+		t.Fatalf("decode work fixture: %v", err)
+	}
+	mutate(&w)
+	writeJSONFixture(t, path, w)
 }
 
 func row(id, source, status, owner, consumer, proofMode string) OSAbsorptionMatrixRow {
