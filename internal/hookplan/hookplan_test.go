@@ -57,3 +57,95 @@ func TestReconcileObservedExtraNeverBecomesDesired(t *testing.T) {
 		t.Fatalf("second delta = %+v, want SessionEnd extra_unowned", got.Deltas[1])
 	}
 }
+
+func TestReconcileKeepsMissingDriftActivationAndCapabilityFailuresDistinct(t *testing.T) {
+	registry := harness.DefaultRegistry()
+	registry.Harnesses["observe_only"] = harness.Harness{
+		Name: "observe_only",
+		Capabilities: harness.Capabilities{
+			PreToolUseBlock: false,
+		},
+	}
+	plan := HookPlan{
+		SchemaVersion: HookPlanSchemaVersion,
+		ID:            "hook-plan",
+		Revision:      "sha256:plan",
+		Bindings: []Binding{
+			{
+				ID:         "missing",
+				Harness:    "claude_code",
+				Event:      "SessionEnd",
+				HandlerRef: "handler://receipt",
+				Activation: ActivationManaged,
+			},
+			{
+				ID:         "activate",
+				Harness:    "claude_code",
+				Event:      "PostToolUse",
+				HandlerRef: "handler://artifact-capture",
+				Activation: ActivationOperator,
+			},
+			{
+				ID:         "drift",
+				Harness:    "claude_code",
+				Event:      "UserPromptSubmit",
+				HandlerRef: "handler://desired-context",
+			},
+			{
+				ID:         "unsupported",
+				Harness:    "observe_only",
+				Event:      "PreToolUse",
+				HandlerRef: "handler://policy-gate",
+				Blocking:   true,
+			},
+		},
+	}
+	observed := InstallationSnapshot{
+		SchemaVersion: InstallationSnapshotSchemaVersion,
+		Ref:           "harness-installation://fixture",
+		Revision:      "sha256:observed",
+		Bindings: []ObservedBinding{
+			{
+				Harness:    "claude_code",
+				Event:      "UserPromptSubmit",
+				HandlerRef: "handler://old-context",
+				Active:     true,
+			},
+			{
+				Harness:    "observe_only",
+				Event:      "PreToolUse",
+				HandlerRef: "handler://policy-gate",
+				Active:     true,
+			},
+		},
+	}
+
+	got, err := Reconcile(plan, observed, registry)
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	wants := map[string]string{
+		"missing":     StateMissing,
+		"activate":    StateActivationRequired,
+		"drift":       StateDrifted,
+		"unsupported": StateUnsupported,
+	}
+	for id, want := range wants {
+		delta := reconciliationDeltaByID(got, id)
+		if delta == nil || delta.State != want {
+			t.Errorf("delta %q = %+v, want state %q", id, delta, want)
+		}
+	}
+	if len(got.Deltas) != len(wants) {
+		t.Fatalf("Reconcile() deltas = %+v, want one result per desired binding", got.Deltas)
+	}
+}
+
+func reconciliationDeltaByID(reconciliation Reconciliation, id string) *Delta {
+	for i := range reconciliation.Deltas {
+		if reconciliation.Deltas[i].BindingID == id {
+			return &reconciliation.Deltas[i]
+		}
+	}
+	return nil
+}
