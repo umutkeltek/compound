@@ -23,7 +23,8 @@ func TestHooksAuthorityObserveLiveCLI(t *testing.T) {
 	harnessHome := t.TempDir()
 	t.Setenv("HOME", harnessHome)
 	registrationSource := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
-	if _, err := contract.ImportHookRegistrationTS(compoundHome, registrationSource, time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC)); err != nil {
+	importReport, err := contract.ImportHookRegistrationTS(compoundHome, registrationSource, time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC))
+	if err != nil {
 		t.Fatalf("ImportHookRegistrationTS() error = %v", err)
 	}
 	claudeSettings := filepath.Join(harnessHome, ".claude", "settings.json")
@@ -69,8 +70,11 @@ func TestHooksAuthorityObserveLiveCLI(t *testing.T) {
 	if err := json.Unmarshal(output, &report); err != nil {
 		t.Fatalf("parse hooks-authority output: %v\n%s", err, output)
 	}
-	if len(report.HookPlan.Bindings) != 5 || len(report.InstallationObservation.Bindings) != 6 {
+	if len(report.HookPlan.Bindings) != importReport.HookCount || len(report.InstallationObservation.Bindings) != 6 {
 		t.Fatalf("hooks-authority desired/observed split = plan:%d observed:%d", len(report.HookPlan.Bindings), len(report.InstallationObservation.Bindings))
+	}
+	if cliHookPlanHasEvent(report.HookPlan, "claude_code", "SessionEnd") {
+		t.Fatalf("hooks-authority promoted observed SessionEnd into desired plan: %+v", report.HookPlan.Bindings)
 	}
 	delta := cliHookReconciliationDelta(report.Reconciliation, "claude_code", "SessionEnd")
 	if delta == nil || delta.State != hookplan.StateExtraUnowned {
@@ -100,6 +104,15 @@ func cliHookReconciliationDelta(reconciliation hookplan.Reconciliation, harnessN
 		}
 	}
 	return nil
+}
+
+func cliHookPlanHasEvent(plan hookplan.HookPlan, harnessName, event string) bool {
+	for _, binding := range plan.Bindings {
+		if binding.Harness == harnessName && binding.Event == event {
+			return true
+		}
+	}
+	return false
 }
 
 func assertCLIFileUnchanged(t *testing.T, path string, before []byte) {

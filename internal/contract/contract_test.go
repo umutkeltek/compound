@@ -1233,7 +1233,7 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import codex hooks json: %v", err)
 	}
-	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 2 {
+	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 3 {
 		t.Fatalf("unexpected import report: %+v", report)
 	}
 	if len(report.Harnesses) != 1 || report.Harnesses[0] != "codex" {
@@ -1243,8 +1243,14 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load installed hooks manifest: %v", err)
 	}
-	if len(manifest.Hooks) != 2 {
+	if len(manifest.Hooks) != 3 {
 		t.Fatalf("installed hooks = %+v", manifest.Hooks)
+	}
+	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "Write|Edit") {
+		t.Fatalf("Codex hook import lost the native PreToolUse matcher: %+v", manifest.Hooks)
+	}
+	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasPrefix(gate.Ref, "handler:sha256:") {
+		t.Fatalf("Codex hook import lost the privacy-safe Compound command identity: %+v", gate)
 	}
 	records, err := LoadInstalledHooksSourceAuthority(home)
 	if err != nil {
@@ -1261,7 +1267,7 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+	for _, want := range []string{"hook://codex/PreToolUse", "hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
 		if !contains(ec.ActiveHooks, want) {
 			t.Fatalf("effective contract active hooks = %v, want %s", ec.ActiveHooks, want)
 		}
@@ -1270,7 +1276,7 @@ func TestImportCodexHooksJSONFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+	for _, want := range []string{"hook://codex/PreToolUse", "hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
 		if !contains(pack.ActiveHooks, want) {
 			t.Fatalf("context pack active hooks = %v, want %s", pack.ActiveHooks, want)
 		}
@@ -1287,7 +1293,7 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import hook registration ts: %v", err)
 	}
-	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 5 {
+	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 6 {
 		t.Fatalf("unexpected import report: %+v", report)
 	}
 	if len(report.Harnesses) != 2 || report.Harnesses[0] != "claude_code" || report.Harnesses[1] != "codex" {
@@ -1309,6 +1315,12 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	}
 	if !installedHookHasMatcher(manifest, "claude_code", "PreToolUse", "Write|Edit|MultiEdit") {
 		t.Fatalf("imported hook registration should preserve PreToolUse matcher: %+v", manifest.Hooks)
+	}
+	if !installedHookHasMatcher(manifest, "codex", "PreToolUse", "Write|Edit") {
+		t.Fatalf("imported hook registration should preserve Codex PreToolUse matcher: %+v", manifest.Hooks)
+	}
+	if gate := findInstalledHook(manifest, "codex", "PreToolUse"); gate == nil || !strings.HasPrefix(gate.Ref, "handler:sha256:") {
+		t.Fatalf("imported hook registration should preserve a privacy-safe Compound command identity: %+v", gate)
 	}
 
 	claudeInput := Input{Harness: "claude_code", Cwd: t.TempDir(), Task: "use hooks", RepoKind: "control-plane", RepoKindVia: "flag", Mode: "execute"}
@@ -1352,9 +1364,8 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if contains(codex.ActiveHooks, "hook://claude_code/PreToolUse") {
 		t.Fatalf("codex effective contract leaked claude hook: %v", codex.ActiveHooks)
 	}
-	reason := excludedRefReason(codex.Excluded, "hook://codex/PreToolUse")
-	if !strings.Contains(reason, "claude_code") || !strings.Contains(reason, "not requested harness codex") {
-		t.Fatalf("codex missing write-gate exclusion should cite incompatible harness evidence, got %q", reason)
+	if !contains(codex.ActiveHooks, "hook://codex/PreToolUse") {
+		t.Fatalf("codex effective contract active hooks = %v, want native PreToolUse", codex.ActiveHooks)
 	}
 	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
 		if !contains(codex.ActiveHooks, want) {
@@ -1363,7 +1374,7 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	}
 }
 
-func TestInstalledHookGateReadinessFlagsFailOpenCodex(t *testing.T) {
+func TestInstalledHookGateReadinessRequiresWrapperForFailOpenCodex(t *testing.T) {
 	home := t.TempDir()
 	source := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
 	if _, err := ImportHookRegistrationTS(home, source, fixedNow); err != nil {
@@ -1382,7 +1393,7 @@ func TestInstalledHookGateReadinessFlagsFailOpenCodex(t *testing.T) {
 		t.Fatalf("claude readiness = %+v", claude)
 	}
 	codex := findHookGateReadiness(readiness, "codex")
-	if codex == nil || codex.Status != "missing_gate" || !codex.AdapterRequired {
+	if codex == nil || codex.Status != "wrapper_required" || !codex.AdapterRequired {
 		t.Fatalf("codex readiness = %+v", codex)
 	}
 	if !strings.Contains(codex.AdapterCommand, "hook pre-tool-use --enforce") {
@@ -1451,7 +1462,7 @@ func TestInstalledHookRuntimeReadinessAddsMissingAdapterActions(t *testing.T) {
 	}
 }
 
-func TestPackWithCapabilitiesRecordsMissingWriteGateForMutationTask(t *testing.T) {
+func TestPackWithCapabilitiesRecordsUninstalledNativeWriteGateForMutationTask(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, "config"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1493,10 +1504,15 @@ hooks:
 	if !strings.Contains(reason, "no installed PreToolUse write gate") {
 		t.Fatalf("context pack excluded=%v, want missing write gate reason", pack.Excluded)
 	}
-	if !containsStringWith(pack.RequiredChecks, "pre_write_gate codex/PreToolUse status=missing_gate") ||
-		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce fixtures/hooks/pre-tool-use.codex.json") ||
-		!containsStringWith(pack.RequiredChecks, "expected_exit_code=3") {
-		t.Fatalf("context pack required_checks = %v, want pre-write adapter check", pack.RequiredChecks)
+	readiness := findEnvelopeHookReadiness(pack.HookReadiness, "codex", "PreToolUse")
+	if readiness == nil || readiness.Status != "not_installed" || !readiness.NativeBlock || readiness.Installed || readiness.AdapterRequired {
+		t.Fatalf("context pack hook readiness = %+v, want native gate awaiting installation", pack.HookReadiness)
+	}
+	if action := findEnvelopeHookAction(readiness.Actions, "operator_install_required"); action == nil || !action.RequiresOperator {
+		t.Fatalf("uninstalled native gate missing operator install action: %+v", readiness.Actions)
+	}
+	if len(pack.RequiredChecks) != 0 {
+		t.Fatalf("uninstalled native gate should not misrepresent fixture proof as a sufficient pre-write check: %v", pack.RequiredChecks)
 	}
 
 	readOnly := in
@@ -1560,47 +1576,38 @@ hooks:
 		t.Fatalf("effective contract excluded=%v, want missing write gate reason", ec.Excluded)
 	}
 	codexReadiness := findEnvelopeHookReadiness(ec.HookReadiness, "codex", "PreToolUse")
-	if codexReadiness == nil || codexReadiness.Status != "missing_gate" || !codexReadiness.AdapterRequired {
-		t.Fatalf("effective contract hook readiness = %+v, want codex missing_gate adapter-required", ec.HookReadiness)
+	if codexReadiness == nil || codexReadiness.Status != "not_installed" || !codexReadiness.NativeBlock || codexReadiness.Installed || codexReadiness.AdapterRequired {
+		t.Fatalf("effective contract hook readiness = %+v, want native gate awaiting installation", ec.HookReadiness)
 	}
-	if codexReadiness.AdapterCommand == "" {
-		t.Fatalf("effective contract hook readiness missing adapter command: %+v", codexReadiness)
+	if codexReadiness.AdapterCommand != "" {
+		t.Fatalf("native gate awaiting installation should not prescribe a wrapper adapter: %+v", codexReadiness)
 	}
 	if action := findEnvelopeHookAction(codexReadiness.Actions, "prove_fixture_gate"); action == nil ||
 		action.ExpectedExitCode != 3 ||
 		!strings.Contains(action.Command, "fixtures/hooks/pre-tool-use.codex.json") {
 		t.Fatalf("effective contract hook readiness missing fixture action: %+v", codexReadiness.Actions)
 	}
-	if action := findEnvelopeHookAction(codexReadiness.Actions, "prove_live_wrapper_gate"); action == nil ||
-		action.ExpectedStatus != "ok" ||
-		!strings.Contains(action.Command, "compound hook pre-tool-use --live --harness codex") {
-		t.Fatalf("effective contract hook readiness missing live wrapper action: %+v", codexReadiness.Actions)
-	}
-	if action := findEnvelopeHookAction(codexReadiness.Actions, "operator_wrapper_required"); action == nil || !action.RequiresOperator {
-		t.Fatalf("effective contract hook readiness missing operator action: %+v", codexReadiness.Actions)
+	if action := findEnvelopeHookAction(codexReadiness.Actions, "operator_install_required"); action == nil || !action.RequiresOperator {
+		t.Fatalf("effective contract hook readiness missing native install action: %+v", codexReadiness.Actions)
 	}
 	pack, err := PackWithCapabilities(in, DefaultPolicy(), home, fixedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	packReadiness := findEnvelopeHookReadiness(pack.HookReadiness, "codex", "PreToolUse")
-	if packReadiness == nil || packReadiness.Status != "missing_gate" || !packReadiness.AdapterRequired {
-		t.Fatalf("context pack hook readiness = %+v, want codex missing_gate adapter-required", pack.HookReadiness)
+	if packReadiness == nil || packReadiness.Status != "not_installed" || !packReadiness.NativeBlock || packReadiness.AdapterRequired {
+		t.Fatalf("context pack hook readiness = %+v, want native gate awaiting installation", pack.HookReadiness)
 	}
 	if action := findEnvelopeHookAction(packReadiness.Actions, "prove_fixture_gate"); action == nil ||
 		action.ExpectedExitCode != 3 ||
 		!strings.Contains(action.Command, "fixtures/hooks/pre-tool-use.codex.json") {
 		t.Fatalf("context pack hook readiness missing fixture action: %+v", packReadiness.Actions)
 	}
-	if action := findEnvelopeHookAction(packReadiness.Actions, "prove_live_wrapper_gate"); action == nil ||
-		action.ExpectedStatus != "ok" ||
-		!strings.Contains(action.Command, "compound hook pre-tool-use --live --harness codex") {
-		t.Fatalf("context pack hook readiness missing live wrapper action: %+v", packReadiness.Actions)
+	if action := findEnvelopeHookAction(packReadiness.Actions, "operator_install_required"); action == nil || !action.RequiresOperator {
+		t.Fatalf("context pack hook readiness missing native install action: %+v", packReadiness.Actions)
 	}
-	if !containsStringWith(pack.RequiredChecks, "pre_write_gate codex/PreToolUse status=missing_gate") ||
-		!containsStringWith(pack.RequiredChecks, "compound hook pre-tool-use --enforce fixtures/hooks/pre-tool-use.codex.json") ||
-		!containsStringWith(pack.RequiredChecks, "expected_exit_code=3") {
-		t.Fatalf("context pack required_checks = %v, want pre-write adapter check", pack.RequiredChecks)
+	if len(pack.RequiredChecks) != 0 {
+		t.Fatalf("native gate awaiting installation should not expose wrapper checks: %v", pack.RequiredChecks)
 	}
 	readOnly := in
 	readOnly.Task = "audit README headings"
@@ -2966,6 +2973,15 @@ func installedHookHasMatcher(manifest InstalledHooksManifest, harness, name, mat
 		}
 	}
 	return false
+}
+
+func findInstalledHook(manifest InstalledHooksManifest, harness, name string) *InstalledHook {
+	for i := range manifest.Hooks {
+		if manifest.Hooks[i].Harness == harness && manifest.Hooks[i].Name == name {
+			return &manifest.Hooks[i]
+		}
+	}
+	return nil
 }
 
 func findHookGateReadiness(readiness []HookGateReadiness, harness string) *HookGateReadiness {

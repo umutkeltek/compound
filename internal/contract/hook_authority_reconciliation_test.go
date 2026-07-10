@@ -17,7 +17,8 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 	harnessHome := t.TempDir()
 	t.Setenv("HOME", harnessHome)
 	registrationSource := filepath.Join("..", "..", "fixtures", "harness", "hook-registration.ts")
-	if _, err := ImportHookRegistrationTS(compoundHome, registrationSource, time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC)); err != nil {
+	importReport, err := ImportHookRegistrationTS(compoundHome, registrationSource, time.Date(2026, 7, 10, 4, 0, 0, 0, time.UTC))
+	if err != nil {
 		t.Fatalf("ImportHookRegistrationTS() error = %v", err)
 	}
 	writeHarnessHookConfig(t, filepath.Join(harnessHome, ".claude", "settings.json"), `{
@@ -39,8 +40,8 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 	if err != nil {
 		t.Fatalf("ReconcileInstalledHooks() error = %v", err)
 	}
-	if len(got.Plan.Bindings) != 5 {
-		t.Fatalf("desired HookPlan bindings = %+v, want five authority rows", got.Plan.Bindings)
+	if len(got.Plan.Bindings) != importReport.HookCount {
+		t.Fatalf("desired HookPlan bindings = %+v, want %d imported authority rows", got.Plan.Bindings, importReport.HookCount)
 	}
 	if hookPlanHasEvent(got.Plan, "claude_code", "SessionEnd") {
 		t.Fatalf("observed SessionEnd was promoted into desired plan: %+v", got.Plan.Bindings)
@@ -63,6 +64,22 @@ func TestReconcileInstalledHooksReportsLiveClaudeSessionEndAsExtraUnowned(t *tes
 	}
 	if strings.Contains(string(encoded), ".bun/bin/bun ") || strings.Contains(string(encoded), `\"$HOME`) {
 		t.Fatalf("reconciliation leaked a full harness command: %s", encoded)
+	}
+}
+
+func TestCanonicalHookHandlerRefKeepsCompoundArgumentsInIdentity(t *testing.T) {
+	harnessHome := t.TempDir()
+	desired := canonicalHookHandlerRef(`"$HOME/.local/bin/compound" hook pre-tool-use --live --harness codex`, harnessHome)
+	observed := canonicalHookHandlerRef(filepath.Join(harnessHome, ".local", "bin", "compound")+` hook pre-tool-use --live --harness codex`, harnessHome)
+	drifted := canonicalHookHandlerRef(filepath.Join(harnessHome, ".local", "bin", "compound")+` hook session-start --live --harness codex`, harnessHome)
+	if !strings.HasPrefix(desired, "handler:sha256:") {
+		t.Fatalf("canonical Compound handler ref = %q, want privacy-safe digest", desired)
+	}
+	if desired != observed {
+		t.Fatalf("equivalent Compound commands differ: desired=%q observed=%q", desired, observed)
+	}
+	if desired == drifted {
+		t.Fatalf("different Compound command arguments collapsed to %q", desired)
 	}
 }
 
