@@ -81,6 +81,68 @@ func TestCompileFailsClosedWhenTerminalReceiptIsMutatedAfterClose(t *testing.T) 
 	}
 }
 
+func TestCompileFailsClosedOnNonLocalTerminalReceiptRef(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "receipt-ref-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "receipt-ref-alias", proofNow.Add(-24*time.Hour), sampleOptions{})
+	aliasedRef := "rec_/../" + victim.ReceiptID
+	rewriteTerminalReceiptRef(t, home, victim.WorkID, victim.ReceiptID, aliasedRef)
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt ref must be a local basename") {
+		t.Fatalf("non-local terminal receipt ref did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedWhenReceiptIdentityDoesNotMatchRef(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "receipt-id-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "receipt-id-mismatch", proofNow.Add(-24*time.Hour), sampleOptions{})
+	aliasID := "rec_filename_alias"
+	receiptRaw, err := os.ReadFile(filepath.Join(home, "events", victim.ReceiptID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "events", aliasID+".json"), receiptRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rewriteTerminalReceiptRef(t, home, victim.WorkID, victim.ReceiptID, aliasID)
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt identity does not match ref") {
+		t.Fatalf("receipt filename/ref identity mismatch did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedTerminalReceipt(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "receipt-symlink-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "receipt-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
+	receiptPath := filepath.Join(home, "events", victim.ReceiptID+".json")
+	receiptRaw, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedPath := filepath.Join(home, "escaped-receipts", victim.ReceiptID+".json")
+	if err := os.MkdirAll(filepath.Dir(escapedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(escapedPath, receiptRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(receiptPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(escapedPath, receiptPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt file must be a regular file") {
+		t.Fatalf("symlinked terminal receipt did not fail closed: %v", err)
+	}
+}
+
 func TestCompileRequiresExactDecidingRouteBinding(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -401,6 +463,96 @@ func TestCompileFailsClosedOnArchiveWorkStatusOrPathMismatch(t *testing.T) {
 	}
 }
 
+func TestCompileFailsClosedOnArchivePathTraversalPair(t *testing.T) {
+	home := t.TempDir()
+	if err := homepkg.Init(home, "local", proofNow.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "archive-traversal-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "archive-traversal", proofNow.Add(-24*time.Hour), sampleOptions{})
+	entry := archiveAutonomyWork(t, home, victim.WorkID)
+	escapedPath := filepath.Join(home, "escaped-archive", victim.WorkID+".json")
+	if err := os.MkdirAll(filepath.Dir(escapedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(home, filepath.FromSlash(entry.ArchivePath)), escapedPath); err != nil {
+		t.Fatal(err)
+	}
+	rewriteArchiveEntry(t, home, entry.ID, func(forged *homepkg.OperationalArchiveEntry) {
+		forged.OriginalPath = "work/work/../../../../../escaped-archive/" + victim.WorkID + ".json"
+		forged.ArchivePath = homepkg.OperationalArchiveFilesRel + "/" + forged.OriginalPath
+		sum := sha256.Sum256([]byte(filepath.ToSlash(forged.OriginalPath)))
+		forged.ID = "oparch_" + hex.EncodeToString(sum[:])[:12]
+	})
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "original path must be a canonical local path") {
+		t.Fatalf("traversing archive path pair did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedArchivedWork(t *testing.T) {
+	home := t.TempDir()
+	if err := homepkg.Init(home, "local", proofNow.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "archive-symlink-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "archive-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
+	entry := archiveAutonomyWork(t, home, victim.WorkID)
+	archivePath := filepath.Join(home, filepath.FromSlash(entry.ArchivePath))
+	archiveRaw, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedPath := filepath.Join(home, "escaped-archive", victim.WorkID+".json")
+	if err := os.MkdirAll(filepath.Dir(escapedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(escapedPath, archiveRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(archivePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(escapedPath, archivePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "archive file must be a regular file") {
+		t.Fatalf("symlinked archived work did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedHotWork(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "hot-symlink-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "hot-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
+	workPath := filepath.Join(home, "work", "work", victim.WorkID+".json")
+	workRaw, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	escapedPath := filepath.Join(home, "escaped-work", victim.WorkID+".json")
+	if err := os.MkdirAll(filepath.Dir(escapedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(escapedPath, workRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(escapedPath, workPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "work file must be a regular file") {
+		t.Fatalf("symlinked hot work did not fail closed: %v", err)
+	}
+}
+
 func TestCompileFailsClosedOnRecentTerminalEventWithoutWorkSnapshot(t *testing.T) {
 	home := t.TempDir()
 	plan := installPlan(t, home, false)
@@ -457,6 +609,28 @@ func TestCompileFailsClosedOnFutureTerminalEvent(t *testing.T) {
 
 	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+future.WorkID+" has terminal timestamp after eligibility evaluation") {
 		t.Fatalf("future terminal event did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnWorkEventLedgerWithoutFinalNewline(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "jsonl-framing-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "jsonl-framing-final", proofNow.Add(-24*time.Hour), sampleOptions{})
+	path := filepath.Join(home, "events", "work.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		t.Fatalf("work event fixture was not newline framed")
+	}
+	if err := os.WriteFile(path, raw[:len(raw)-1], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "work event ledger must end with newline") {
+		t.Fatalf("valid final JSON event without newline did not fail closed: %v", err)
 	}
 }
 
@@ -1026,6 +1200,52 @@ func appendWorkEvent(t *testing.T, home string, event any) {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func rewriteTerminalReceiptRef(t *testing.T, home, workID, oldRef, newRef string) {
+	t.Helper()
+	path := filepath.Join(home, "events", "work.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	updated := 0
+	for index, line := range lines {
+		var event struct {
+			WorkID   string   `json:"work_id"`
+			To       string   `json:"to"`
+			Attached []string `json:"attached"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.WorkID != workID || (event.To != "completed" && event.To != "failed" && event.To != "cancelled") {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(line), &fields); err != nil {
+			t.Fatal(err)
+		}
+		for refIndex, ref := range event.Attached {
+			if ref == oldRef {
+				event.Attached[refIndex] = newRef
+				updated++
+			}
+		}
+		fields["attached"] = event.Attached
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines[index] = string(encoded)
+	}
+	if updated != 1 {
+		t.Fatalf("terminal receipt refs rewritten for %s = %d, want 1", workID, updated)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
