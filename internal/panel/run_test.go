@@ -270,6 +270,42 @@ func TestExecuteDryRunChargesPersistedRouteTokensBeforeResume(t *testing.T) {
 	}
 }
 
+func TestExecuteDryRunRejectsLegacyUnknownSpendBeforeResume(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{
+		MaxTotalTokens: 4000,
+		MaxUSDMicros:   1_000_000,
+	})
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     requestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.lens",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.LensLane.ModelID,
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "unknown token usage") {
+		t.Fatalf("legacy route row with unknown spend did not fail closed: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("legacy unknown spend was detected only after %d provider call(s)", caller.calls)
+	}
+}
+
 func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
