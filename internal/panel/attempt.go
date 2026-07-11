@@ -22,7 +22,7 @@ type panelAttempt struct {
 	SchemaVersion string   `json:"schema_version"`
 	Kind          string   `json:"kind"`
 	RunID         string   `json:"run_id"`
-	WorkID        string   `json:"work_id,omitempty"`
+	WorkID        *string  `json:"work_id"`
 	TargetRef     string   `json:"target_ref"`
 	RequestID     string   `json:"request_id,omitempty"`
 	ClientProfile string   `json:"client_profile,omitempty"`
@@ -59,8 +59,7 @@ func withPanelRunLock(homePath, runID string, fn func() error) error {
 }
 
 func validPanelRunID(runID string) bool {
-	runID = strings.TrimSpace(runID)
-	return strings.HasPrefix(runID, "prun_") && filepath.Base(runID) == runID
+	return runID == strings.TrimSpace(runID) && strings.HasPrefix(runID, "prun_") && filepath.Base(runID) == runID
 }
 
 func panelAttemptDir(homePath, runID string) string {
@@ -80,7 +79,7 @@ func reservePanelTargetAttempt(homePath string, run Run, targetRef string, creat
 		SchemaVersion: panelAttemptSchemaVersion,
 		Kind:          "target",
 		RunID:         run.ID,
-		WorkID:        run.WorkID,
+		WorkID:        panelStringRef(run.WorkID),
 		TargetRef:     targetRef,
 		CreatedAt:     createdAt.UTC().Format(time.RFC3339),
 	}
@@ -99,7 +98,7 @@ func reservePanelTargetAttempt(homePath string, run Run, targetRef string, creat
 	if err := validatePanelAttemptCore(existing, "target", run, targetRef, ""); err != nil {
 		return false, err
 	}
-	if existing.WorkID != run.WorkID {
+	if existing.WorkID == nil || *existing.WorkID != run.WorkID {
 		return false, fmt.Errorf("panel target attempt conflicts with work identity for %s", targetRef)
 	}
 	return false, nil
@@ -111,7 +110,7 @@ func reservePanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 		SchemaVersion: panelAttemptSchemaVersion,
 		Kind:          "call",
 		RunID:         run.ID,
-		WorkID:        run.WorkID,
+		WorkID:        panelStringRef(run.WorkID),
 		TargetRef:     targetRef,
 		RequestID:     requestID,
 		ClientProfile: clientProfile,
@@ -145,6 +144,9 @@ func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 	if err := validatePanelAttemptCore(attempt, "call", run, targetRef, requestID); err != nil {
 		return routeevidence.Evidence{}, false, err
 	}
+	if err := validatePanelCallAttemptIdentity(attempt, run, requestID, clientProfile, callRole, lane); err != nil {
+		return routeevidence.Evidence{}, false, err
+	}
 
 	existing, ok, err := routeevidence.LookupRequestID(homePath, requestID)
 	if err != nil {
@@ -153,20 +155,6 @@ func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 	if !ok {
 		return routeevidence.Evidence{}, false, fmt.Errorf("unresolved route attempt %s has unknown_spend; refusing another provider call", requestID)
 	}
-	// Older reservation fixtures may omit the extended identity. New writers
-	// always persist it; when present, every field must still match exactly.
-	if attempt.WorkID != "" && attempt.WorkID != run.WorkID {
-		return routeevidence.Evidence{}, false, fmt.Errorf("panel route attempt %s conflicts with work identity", requestID)
-	}
-	if attempt.ClientProfile != "" && attempt.ClientProfile != clientProfile {
-		return routeevidence.Evidence{}, false, fmt.Errorf("panel route attempt %s conflicts with client profile", requestID)
-	}
-	if attempt.CallRole != "" && attempt.CallRole != callRole {
-		return routeevidence.Evidence{}, false, fmt.Errorf("panel route attempt %s conflicts with call role", requestID)
-	}
-	if attempt.Lane != nil && !reflect.DeepEqual(*attempt.Lane, lane) {
-		return routeevidence.Evidence{}, false, fmt.Errorf("panel route attempt %s conflicts with lane identity", requestID)
-	}
 	if existing.RecordedVia != routeevidence.RecorderGeneric {
 		return routeevidence.Evidence{}, false, fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
 	}
@@ -174,6 +162,25 @@ func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 		return routeevidence.Evidence{}, false, fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
 	}
 	return existing, true, nil
+}
+
+func validatePanelCallAttemptIdentity(attempt panelAttempt, run Run, requestID, clientProfile, callRole string, lane LaneRef) error {
+	if attempt.WorkID == nil || strings.TrimSpace(attempt.ClientProfile) == "" || strings.TrimSpace(attempt.CallRole) == "" || attempt.Lane == nil {
+		return fmt.Errorf("incomplete panel call attempt identity for %s", requestID)
+	}
+	if *attempt.WorkID != run.WorkID {
+		return fmt.Errorf("panel route attempt %s conflicts with work identity", requestID)
+	}
+	if attempt.ClientProfile != clientProfile {
+		return fmt.Errorf("panel route attempt %s conflicts with client profile", requestID)
+	}
+	if attempt.CallRole != callRole {
+		return fmt.Errorf("panel route attempt %s conflicts with call role", requestID)
+	}
+	if !reflect.DeepEqual(*attempt.Lane, lane) {
+		return fmt.Errorf("panel route attempt %s conflicts with lane identity", requestID)
+	}
+	return nil
 }
 
 func panelTargetAttemptRefs(homePath string, run Run) (map[string]bool, error) {
@@ -201,7 +208,7 @@ func panelTargetAttemptRefs(homePath string, run Run) (map[string]bool, error) {
 		if err := validatePanelAttemptCore(attempt, "target", run, attempt.TargetRef, ""); err != nil {
 			return nil, err
 		}
-		if attempt.WorkID != run.WorkID {
+		if attempt.WorkID == nil || *attempt.WorkID != run.WorkID {
 			return nil, fmt.Errorf("panel target attempt %s conflicts with work identity", attempt.TargetRef)
 		}
 		if !allowed[attempt.TargetRef] {
@@ -261,7 +268,23 @@ func writePanelAttemptExclusive(path string, attempt panelAttempt) (bool, error)
 		_ = os.Remove(path)
 		return false, err
 	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return false, err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return false, syncErr
+	}
+	if closeErr != nil {
+		return false, closeErr
+	}
 	return true, nil
+}
+
+func panelStringRef(value string) *string {
+	return &value
 }
 
 func readPanelAttempt(path string) (panelAttempt, error) {
