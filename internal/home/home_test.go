@@ -284,19 +284,32 @@ func TestCompactClearsTransientAndOptionalRebuildableDirs(t *testing.T) {
 	}
 	writeHomeFile(t, h, "ledger/keep.json", "keep")
 	writeHomeFile(t, h, "tmp/cache.txt", "drop")
-	writeHomeFile(t, h, "lock/lease", "drop")
+	writeHomeFile(t, h, "lock/autonomy-admission.lock", "keep stable")
 	writeHomeFile(t, h, "indexes/cache.db", "drop")
 	writeHomeFile(t, h, "projections/view.json", "drop")
+	lockBefore, err := os.Stat(filepath.Join(h, "lock", "autonomy-admission.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	report, err := Compact(h, CompactOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.RemovedFiles != 2 || report.RemovedBytes == 0 {
+	if report.RemovedFiles != 1 || report.RemovedBytes == 0 || slices.Contains(report.ClearedDirs, "lock") {
 		t.Fatalf("compact report = %+v", report)
 	}
 	assertMissing(t, filepath.Join(h, "tmp/cache.txt"))
-	assertMissing(t, filepath.Join(h, "lock/lease"))
+	lockAfter, err := os.Stat(filepath.Join(h, "lock", "autonomy-admission.lock"))
+	if err != nil {
+		t.Fatalf("coordination lock removed by compact: %v", err)
+	}
+	if !os.SameFile(lockBefore, lockAfter) {
+		t.Fatal("compact replaced the autonomy admission lock inode")
+	}
+	if got := mustReadHomeFile(t, h, "lock/autonomy-admission.lock"); got != "keep stable" {
+		t.Fatalf("coordination lock changed: %q", got)
+	}
 	if got := mustReadHomeFile(t, h, "ledger/keep.json"); got != "keep" {
 		t.Fatalf("ledger changed: %q", got)
 	}
