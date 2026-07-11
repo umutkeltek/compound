@@ -18,7 +18,10 @@ import (
 	homepkg "compound/internal/home"
 )
 
-const SchemaVersion = "compound.execution_route_evidence.v0.1"
+const (
+	SchemaVersion                = "compound.execution_route_evidence.v0.1"
+	executionRouteEvidenceLedger = "execution-route-evidence.jsonl"
+)
 
 const (
 	RecorderGeneric             = "generic"
@@ -400,32 +403,32 @@ func uniqueEvidenceForRequestID(homePath, requestID string) (Evidence, bool, err
 }
 
 func recordEvidenceLocked(homePath string, ev Evidence) error {
-	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	root, err := openRouteEvidenceLedgerRoot(homePath)
+	if err != nil {
 		return err
 	}
-	current, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	defer root.Close()
+	current, currentInfo, err := readRouteEvidenceLedgerSnapshot(root, executionRouteEvidenceLedger)
+	if err != nil {
 		return err
 	}
 	b, err := json.Marshal(&ev)
 	if err != nil {
 		return err
 	}
+	after := append(append([]byte(nil), current...), b...)
+	after = append(after, '\n')
 
-	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	digest := sha256.Sum256(after)
+	tempName := fmt.Sprintf(".%s.%d.%s.tmp", executionRouteEvidenceLedger, os.Getpid(), hex.EncodeToString(digest[:])[:12])
+	file, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	tmpPath := file.Name()
 	cleanup := func(cause error) error {
 		_ = file.Close()
-		_ = os.Remove(tmpPath)
+		_ = root.Remove(tempName)
 		return cause
-	}
-	if err := file.Chmod(0o644); err != nil {
-		return cleanup(err)
 	}
 	if len(current) > 0 {
 		if err := writeRouteEvidenceChunk(file, current); err != nil {
@@ -441,11 +444,128 @@ func recordEvidenceLocked(homePath string, ev Evidence) error {
 	if err := closeRouteEvidenceFile(file); err != nil {
 		return cleanup(err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+	tempData, tempInfo, err := readRouteEvidenceLedgerFile(root, tempName)
+	if err != nil {
+		return cleanup(err)
+	}
+	if !bytes.Equal(tempData, after) {
+		return cleanup(fmt.Errorf("execution route evidence temporary publication changed before commit"))
+	}
+	observed, observedInfo, err := readRouteEvidenceLedgerSnapshot(root, executionRouteEvidenceLedger)
+	if err != nil {
+		return cleanup(err)
+	}
+	if !sameRouteEvidenceLedgerSnapshot(current, currentInfo, observed, observedInfo) {
+		return cleanup(fmt.Errorf("execution route evidence ledger changed after snapshot"))
+	}
+	if err := root.Rename(tempName, executionRouteEvidenceLedger); err != nil {
+		_ = root.Remove(tempName)
 		return err
 	}
-	return syncRouteEvidenceLedgerDirectory(dir)
+	published, publishedInfo, err := readRouteEvidenceLedgerFile(root, executionRouteEvidenceLedger)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(tempInfo, publishedInfo) || !bytes.Equal(published, after) {
+		return fmt.Errorf("execution route evidence ledger does not match committed postimage")
+	}
+	return syncRouteEvidenceLedgerDirectory(root)
+}
+
+func openRouteEvidenceLedgerRoot(homePath string) (*os.Root, error) {
+	homeRoot, err := os.OpenRoot(homePath)
+	if err != nil {
+		return nil, err
+	}
+	defer homeRoot.Close()
+	if err := homeRoot.MkdirAll("ledger", 0o755); err != nil {
+		return nil, err
+	}
+	ledgerInfo, err := homeRoot.Lstat("ledger")
+	if err != nil {
+		return nil, err
+	}
+	if ledgerInfo.Mode()&os.ModeSymlink != 0 || !ledgerInfo.IsDir() {
+		return nil, fmt.Errorf("execution route evidence ledger path must be a directory beneath compound home")
+	}
+	root, err := homeRoot.OpenRoot("ledger")
+	if err != nil {
+		return nil, err
+	}
+	pinned, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	finalInfo, err := homeRoot.Lstat("ledger")
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	if finalInfo.Mode()&os.ModeSymlink != 0 || !finalInfo.IsDir() ||
+		!os.SameFile(ledgerInfo, finalInfo) || !os.SameFile(finalInfo, pinned) {
+		_ = root.Close()
+		return nil, fmt.Errorf("execution route evidence ledger path must remain a stable directory beneath compound home")
+	}
+	return root, nil
+}
+
+func readRouteEvidenceLedgerSnapshot(root *os.Root, name string) ([]byte, os.FileInfo, error) {
+	data, info, err := readRouteEvidenceLedgerFile(root, name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil
+	}
+	return data, info, err
+}
+
+func readRouteEvidenceLedgerFile(root *os.Root, name string) ([]byte, os.FileInfo, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("execution route evidence ledger must be a regular file")
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !opened.Mode().IsRegular() || !sameRouteEvidenceLedgerVersion(before, opened) {
+		return nil, nil, fmt.Errorf("execution route evidence ledger changed while it was opened")
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	openedAfter, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	finalInfo, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !finalInfo.Mode().IsRegular() || !sameRouteEvidenceLedgerVersion(opened, openedAfter) ||
+		!sameRouteEvidenceLedgerVersion(openedAfter, finalInfo) || int64(len(data)) != finalInfo.Size() {
+		return nil, nil, fmt.Errorf("execution route evidence ledger changed while it was read")
+	}
+	return data, finalInfo, nil
+}
+
+func sameRouteEvidenceLedgerVersion(left, right os.FileInfo) bool {
+	return os.SameFile(left, right) && left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
+}
+
+func sameRouteEvidenceLedgerSnapshot(expected []byte, expectedInfo os.FileInfo, actual []byte, actualInfo os.FileInfo) bool {
+	if expectedInfo == nil || actualInfo == nil {
+		return expectedInfo == nil && actualInfo == nil
+	}
+	return os.SameFile(expectedInfo, actualInfo) && bytes.Equal(expected, actual)
 }
 
 func writeRouteEvidenceChunk(file *os.File, data []byte) error {
@@ -459,8 +579,8 @@ func writeRouteEvidenceChunk(file *os.File, data []byte) error {
 	return nil
 }
 
-func syncRouteEvidenceLedgerDirectory(path string) error {
-	dir, err := os.Open(path)
+func syncRouteEvidenceLedgerDirectory(root *os.Root) error {
+	dir, err := root.Open(".")
 	if err != nil {
 		return err
 	}
