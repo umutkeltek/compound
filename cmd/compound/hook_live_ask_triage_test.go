@@ -379,6 +379,7 @@ func writeAskCodexJobNamed(t *testing.T, name, threadID, turnID, workID string) 
 	payload := map[string]any{
 		"id":       strings.TrimSuffix(name, ".json"),
 		"status":   "running",
+		"pid":      os.Getpid(),
 		"threadId": threadID,
 		"turnId":   turnID,
 		"request":  map[string]any{"prompt": "Execute Compound envelope " + workID, "write": true},

@@ -80,6 +80,7 @@ type AskTriageReview struct {
 type codexTrackedJob struct {
 	ID            string `json:"id"`
 	Status        string `json:"status"`
+	PID           int    `json:"pid"`
 	ThreadID      string `json:"threadId"`
 	TurnID        string `json:"turnId"`
 	Summary       string `json:"summary"`
@@ -242,7 +243,7 @@ func resolveCodexStopBinding(store *work.Store, in CodexStopInput) (*codexStopBi
 			continue
 		}
 		var job codexTrackedJob
-		if json.Unmarshal(data, &job) != nil || !strings.EqualFold(strings.TrimSpace(job.Status), "running") || strings.TrimSpace(job.ThreadID) != strings.TrimSpace(in.SessionID) || strings.TrimSpace(job.TurnID) != strings.TrimSpace(in.TurnID) {
+		if json.Unmarshal(data, &job) != nil || !strings.EqualFold(strings.TrimSpace(job.Status), "running") || !work.PIDAlive(job.PID) || strings.TrimSpace(job.ThreadID) != strings.TrimSpace(in.SessionID) || strings.TrimSpace(job.TurnID) != strings.TrimSpace(in.TurnID) {
 			continue
 		}
 		workIDs := askUniqueStrings(askWorkRefPattern.FindAllString(strings.Join([]string{job.Summary, job.Title, job.Request.Prompt}, " "), -1))

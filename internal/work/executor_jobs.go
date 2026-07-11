@@ -111,7 +111,7 @@ func scanStalledCodexJobs(dir string, now time.Time) ([]stalledCodexJob, []strin
 			if strings.ToLower(strings.TrimSpace(job.Status)) != "running" {
 				continue
 			}
-			if job.PID > 0 && pidAlive(job.PID) {
+			if job.PID > 0 && PIDAlive(job.PID) {
 				continue // a live process still owns this running job
 			}
 			reason := fmt.Sprintf("job reports running but pid %d is not alive", job.PID)

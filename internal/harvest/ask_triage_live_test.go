@@ -3,7 +3,9 @@ package harvest
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,9 +47,54 @@ func TestAskLawsFromClaimsUsesAuthoritativeOperationalFold(t *testing.T) {
 	}
 }
 
-func TestCodexStopOnlyBindsRunningCompanionJobs(t *testing.T) {
-	for _, status := range []string{"completed", "failed"} {
-		t.Run(status, func(t *testing.T) {
+func TestAskLawsFromClaimsHonorsAuthoritativeSuperseder(t *testing.T) {
+	predecessor := mem.Claim{
+		ID:        "claim_predecessor",
+		ClaimType: "decision",
+		Object:    "Reversible actions inside an existing envelope may proceed.",
+		Qualifiers: map[string]string{
+			mem.OperationalDecisionAuthorityQualifier: mem.OperationalDecisionAuthorityValue,
+			"decision_id":      "ruling-predecessor",
+			"lifecycle_status": "accepted",
+			"reviewed_by":      "operator:test",
+			"scope":            "reversible work inside an existing envelope",
+		},
+	}
+	superseder := mem.Claim{
+		ID:        "claim_superseder",
+		ClaimType: "decision",
+		Object:    "Reversible work now requires operator review.",
+		Qualifiers: map[string]string{
+			mem.OperationalDecisionAuthorityQualifier: mem.OperationalDecisionAuthorityValue,
+			"decision_id":      "ruling-superseder",
+			"lifecycle_status": "accepted",
+			"reviewed_by":      "operator:test",
+			"scope":            "reversible work inside an existing envelope",
+			"supersedes":       "ruling-predecessor",
+		},
+	}
+
+	laws := AskLawsFromClaims([]mem.Claim{predecessor, superseder})
+	if len(laws) != 1 || laws[0].ClaimID != superseder.ID {
+		t.Fatalf("standing laws = %+v, want only authoritative superseder", laws)
+	}
+}
+
+func TestCodexStopRejectsNonLiveCompanionJobs(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  string
+		deadPID bool
+	}{
+		{name: "completed", status: "completed"},
+		{name: "failed", status: "failed"},
+		{name: "cancelled", status: "cancelled"},
+		{name: "empty status"},
+		{name: "running without pid", status: "running"},
+		{name: "running with dead pid", status: "running", deadPID: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			homePath := t.TempDir()
 			if err := home.Init(homePath, "ask-triage-test", askTriageTestNow); err != nil {
 				t.Fatalf("init home: %v", err)
@@ -96,7 +143,11 @@ func TestCodexStopOnlyBindsRunningCompanionJobs(t *testing.T) {
 			const threadID = "019f0000-0000-7000-8000-000000000555"
 			const turnID = "019f0000-0000-7000-8000-000000000666"
 			jobsRoot := filepath.Join(t.TempDir(), "jobs-state")
-			writeAskTriageJob(t, jobsRoot, status, threadID, turnID, w.ID)
+			pid := 0
+			if tc.deadPID {
+				pid = askTriageDeadPID(t)
+			}
+			writeAskTriageJob(t, jobsRoot, tc.status, pid, threadID, turnID, w.ID)
 			out, err := HandleCodexStop(homePath, CodexStopInput{
 				SessionID:            threadID,
 				TurnID:               turnID,
@@ -108,23 +159,23 @@ func TestCodexStopOnlyBindsRunningCompanionJobs(t *testing.T) {
 				t.Fatalf("handle Stop: %v", err)
 			}
 			if !out.Handled || out.Disposition != "delivery_unavailable" {
-				t.Fatalf("%s companion outcome = %+v, want delivery_unavailable review", status, out)
+				t.Fatalf("%s companion outcome = %+v, want delivery_unavailable review", tc.name, out)
 			}
 			if out.ActionIntentID != "" || out.PolicyDecisionID != "" || out.ReceiptID != "" || out.TransitionID != "" {
-				t.Fatalf("%s companion minted an action chain: %+v", status, out)
+				t.Fatalf("%s companion minted an action chain: %+v", tc.name, out)
 			}
 			for _, ref := range out.SideEffects {
 				base := filepath.Base(ref)
 				if strings.HasPrefix(base, "act_") || strings.HasPrefix(base, "pol_") || strings.HasPrefix(base, "rec_") || strings.HasPrefix(base, "tr_") {
-					t.Fatalf("%s companion reported action-chain side effect %q", status, ref)
+					t.Fatalf("%s companion reported action-chain side effect %q", tc.name, ref)
 				}
 			}
 			after, err := workStore.Get(w.ID)
 			if err != nil {
 				t.Fatalf("get work after Stop: %v", err)
 			}
-			if after.State != "running" || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
-				t.Fatalf("%s companion mutated parent work: before=%+v after=%+v", status, before, after)
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("%s companion mutated parent work: before=%+v after=%+v", tc.name, before, after)
 			}
 		})
 	}
@@ -141,9 +192,9 @@ func TestCodexStopBindingNormalizesRunningStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	const threadID = "019f0000-0000-7000-8000-000000000777"
-	const turnID = "019f0000-0000-7000-8000-000000000888"
+	const turnID = "019f0abc-0def-7000-8abc-0000abcd0888"
 	jobsRoot := filepath.Join(t.TempDir(), "jobs-state")
-	writeAskTriageJob(t, jobsRoot, " RUNNING ", threadID, turnID, w.ID)
+	writeAskTriageJob(t, jobsRoot, " RUNNING ", os.Getpid(), threadID, turnID, w.ID)
 
 	binding, reason, err := resolveCodexStopBinding(store, CodexStopInput{SessionID: threadID, TurnID: turnID, JobsStateDir: jobsRoot})
 	if err != nil {
@@ -208,25 +259,45 @@ func writeAskTriageTranscript(t *testing.T, userText, assistantText string) stri
 
 var askTriageTestNow = time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 
-func writeAskTriageJob(t *testing.T, root, status, threadID, turnID, workID string) {
+func writeAskTriageJob(t *testing.T, root, status string, pid int, threadID, turnID, workID string) {
 	t.Helper()
 	dir := filepath.Join(root, "compound-test", "jobs")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	job := codexTrackedJob{
-		ID:       "job-" + status,
-		Status:   status,
-		ThreadID: threadID,
-		TurnID:   turnID,
-		Summary:  "Execute Compound envelope " + workID,
+	jobID := "job-" + status
+	job := map[string]any{
+		"id":       jobID,
+		"status":   status,
+		"threadId": threadID,
+		"turnId":   turnID,
+		"summary":  "Execute Compound envelope " + workID,
+		"request":  map[string]any{"prompt": "Continue reversible work for " + workID},
 	}
-	job.Request.Prompt = "Continue reversible work for " + workID
+	if pid > 0 {
+		job["pid"] = pid
+	}
 	data, err := json.Marshal(job)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, job.ID+".json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, jobID+".json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func askTriageDeadPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		cmd = exec.Command("sh", "-c", "exit 0")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("spawn short-lived process: %v", err)
+		}
+	}
+	pid := cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("wait short-lived process: %v", err)
+	}
+	return pid
 }
