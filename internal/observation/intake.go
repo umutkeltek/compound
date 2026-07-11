@@ -103,6 +103,7 @@ type SourceIntakeActionCard struct {
 	StopConditions     []string `json:"stop_conditions,omitempty"`
 	Boundary           string   `json:"boundary"`
 	Proof              string   `json:"proof"`
+	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 }
 
 type sourceIntakeDetail struct {
@@ -177,8 +178,10 @@ func LoadSourceIntakeProjection(homePath string, now time.Time, limit int) (Sour
 		projection.Rows = projection.Rows[:limit]
 	}
 	projection.RowCount = len(projection.Rows)
+	seenActionCardIDs := map[string]bool{}
 	for i := range projection.Rows {
 		cards := sourceIntakeActionCards(homePath, projection.Rows[i], now)
+		cards = dedupeSourceIntakeActionCards(cards, seenActionCardIDs)
 		projection.Rows[i].ActionCards = cards
 		projection.Rows[i].ActionRequired = len(cards) > 0
 		projection.ActionCards = append(projection.ActionCards, cards...)
@@ -336,6 +339,9 @@ func sourceIntakeRows(record SourceIntakeRecord) []SourceIntakeRow {
 
 func sourceIntakeActionCards(homePath string, row SourceIntakeRow, now time.Time) []SourceIntakeActionCard {
 	var cards []SourceIntakeActionCard
+	if expectedState, observedState, ok := sourceIntakeDivergenceDimensions(row); ok {
+		cards = append(cards, sourceIntakeDivergenceCard(row, expectedState, observedState))
+	}
 	if sourceIntakeRowIsStale(row, now) {
 		cards = append(cards, sourceIntakeActionCard(row, "stale_source",
 			"Refresh stale source observation",
@@ -457,6 +463,103 @@ func sourceIntakeActionCard(row SourceIntakeRow, kind, title, severity string, c
 		Boundary:           boundary,
 		Proof:              proof,
 	}
+}
+
+// sourceIntakeDivergenceDimensions reports whether an applied source
+// observation declared a real state divergence: its dimensions carry both
+// expected_state and observed_state, non-empty, and they differ. The
+// dimensions never reach the persisted Report/RouteDecision, so this reloads
+// the original batch (already referenced by row.SourcePath) and locates the
+// matching observation by its stable id. Missing file, missing observation,
+// missing keys, or equal values all mean "no divergence" -- this never
+// guesses divergence from prose.
+func sourceIntakeDivergenceDimensions(row SourceIntakeRow) (expectedState, observedState string, ok bool) {
+	if row.Status != "applied" || row.Route != RouteSourceObservation {
+		return "", "", false
+	}
+	if strings.TrimSpace(row.SourcePath) == "" {
+		return "", "", false
+	}
+	batch, err := LoadBatch(row.SourcePath)
+	if err != nil {
+		return "", "", false
+	}
+	obs, found := findObservation(batch, row.ObservationID)
+	if !found {
+		return "", "", false
+	}
+	expectedState = strings.TrimSpace(obs.Dimensions["expected_state"])
+	observedState = strings.TrimSpace(obs.Dimensions["observed_state"])
+	if expectedState == "" || observedState == "" || expectedState == observedState {
+		return "", "", false
+	}
+	return expectedState, observedState, true
+}
+
+// sourceIntakeDivergenceCard builds the divergence_declared action card. The
+// card id is keyed on the observation id (not the row id, which is
+// record-scoped) so a re-applied identical observation resolves to the same
+// card id and dedupes at the projection level instead of stacking.
+func sourceIntakeDivergenceCard(row SourceIntakeRow, expectedState, observedState string) SourceIntakeActionCard {
+	subject := firstNonEmpty(row.SubjectID, row.SourceRef, row.SourceKind, "source")
+	evidenceRefs := append([]string{}, row.EvidenceRefs...)
+	if ref := firstStringWithPrefix(row.AppliedIDs, "source_observation:"); ref != "" {
+		evidenceRefs = append(evidenceRefs, ref)
+	}
+	return SourceIntakeActionCard{
+		ID:            stableID("sicard_", row.ObservationID, "divergence_declared"),
+		Kind:          "divergence_declared",
+		Title:         fmt.Sprintf("%s declared expected %s but observed %s", subject, expectedState, observedState),
+		Severity:      "high",
+		RowID:         row.ID,
+		ObservationID: row.ObservationID,
+		Route:         row.Route,
+		Owner:         row.Owner,
+		Command:       sourceIntakeFirstCommand(row.NextCommand, []string{"compound", "source", "connections", "--json"}),
+		RequiredInputs: []string{
+			"operator review of the diverged state and an explicit remediation or accepted-state decision",
+		},
+		ExpectedValidation: []string{
+			"expected_state and observed_state agree on a subsequent applied observation, or the divergence is explicitly accepted with a recorded reason",
+			"source-intake projection stops emitting this card for the observation once resolved",
+		},
+		StopConditions: []string{
+			"remediation requires live credentials, account access, scheduler mutation, or a production-side mutation outside this review",
+		},
+		Boundary:     "no live remediation, no infra mutation, no auto-admit from this card; review and decision only",
+		Proof:        "rerun source intake/connections and verify the divergence_declared card cleared or remains explicitly visible with an accepted-state decision",
+		EvidenceRefs: compact(evidenceRefs),
+	}
+}
+
+func firstStringWithPrefix(values []string, prefix string) string {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return value
+		}
+	}
+	return ""
+}
+
+// dedupeSourceIntakeActionCards drops any card whose id was already emitted
+// earlier in the projection build (seen is shared across all rows). Existing
+// card kinds key their id off the record-scoped row id, so this is a no-op
+// for them; divergence_declared keys off the observation id, so a re-applied
+// identical observation collapses to a single card instead of stacking one
+// per record.
+func dedupeSourceIntakeActionCards(cards []SourceIntakeActionCard, seen map[string]bool) []SourceIntakeActionCard {
+	if len(cards) == 0 {
+		return cards
+	}
+	out := make([]SourceIntakeActionCard, 0, len(cards))
+	for _, card := range cards {
+		if seen[card.ID] {
+			continue
+		}
+		seen[card.ID] = true
+		out = append(out, card)
+	}
+	return out
 }
 
 func sourceIntakeRouteCommand(row SourceIntakeRow, mode string) []string {
