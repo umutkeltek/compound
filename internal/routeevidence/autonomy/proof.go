@@ -808,7 +808,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	var out []workSnapshot
 	seen := map[string]string{}
 	for _, location := range locations {
-		raw, err := readRegularFile(location.Path, location.FileKind)
+		raw, err := readRegularFile(homePath, location.Path, location.FileKind)
 		if err != nil {
 			return nil, err
 		}
@@ -938,17 +938,14 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) {
 	out := map[string]receiptEvidence{}
 	path := filepath.Join(homePath, "events", "work.jsonl")
-	file, err := os.Open(path)
+	raw, err := readRegularFile(homePath, path, "work event ledger")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
 		}
 		return nil, err
 	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	scanner.Split(splitStrictWorkEventLines)
+	scanner := strictJSONLScanner(raw, "work event ledger")
 	for scanner.Scan() {
 		var event struct {
 			TS            string   `json:"ts"`
@@ -987,7 +984,7 @@ func loadBoundReceipt(homePath, ref string) (string, envelope.Receipt, []byte, e
 	if err != nil {
 		return "", envelope.Receipt{}, nil, err
 	}
-	raw, err := readRegularFile(path, "receipt")
+	raw, err := readRegularFile(homePath, path, "receipt")
 	if err != nil {
 		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt unreadable: %w", err)
 	}
@@ -1036,15 +1033,28 @@ func canonicalLocalSlashPath(raw string) (string, bool) {
 	return local, true
 }
 
-func readRegularFile(path, kind string) ([]byte, error) {
-	before, err := os.Lstat(path)
+func readRegularFile(homePath, path, kind string) ([]byte, error) {
+	homePath = filepath.Clean(homePath)
+	path = filepath.Clean(path)
+	relativePath, err := filepath.Rel(homePath, path)
+	if err != nil {
+		return nil, fmt.Errorf("%s file path is not relative to compound home: %w", kind, err)
+	}
+	if relativePath == "." || !filepath.IsLocal(relativePath) {
+		return nil, fmt.Errorf("%s file must remain beneath compound home: %s", kind, path)
+	}
+
+	root, err := os.OpenRoot(homePath)
 	if err != nil {
 		return nil, err
 	}
-	if !before.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s file must be a regular file: %s", kind, path)
+	defer root.Close()
+
+	before, err := lstatRegularPath(root, relativePath, path, kind)
+	if err != nil {
+		return nil, err
 	}
-	file, err := os.Open(path)
+	file, err := root.Open(relativePath)
 	if err != nil {
 		return nil, err
 	}
@@ -1053,14 +1063,20 @@ func readRegularFile(path, kind string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	after, err := os.Lstat(path)
+	after, err := lstatRegularPath(root, relativePath, path, kind)
 	if err != nil {
 		return nil, err
 	}
-	if !opened.Mode().IsRegular() ||
-		!after.Mode().IsRegular() ||
-		!os.SameFile(before, opened) ||
-		!os.SameFile(before, after) {
+	if len(before) != len(after) {
+		return nil, fmt.Errorf("%s path must be stable beneath compound home: %s", kind, path)
+	}
+	for index := range before {
+		if !os.SameFile(before[index], after[index]) {
+			return nil, fmt.Errorf("%s path must be stable beneath compound home: %s", kind, path)
+		}
+	}
+	leaf := before[len(before)-1]
+	if !opened.Mode().IsRegular() || !os.SameFile(leaf, opened) {
 		return nil, fmt.Errorf("%s file must be a stable regular file: %s", kind, path)
 	}
 	raw, err := io.ReadAll(file)
@@ -1070,18 +1086,55 @@ func readRegularFile(path, kind string) ([]byte, error) {
 	return raw, nil
 }
 
-func splitStrictWorkEventLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if index := bytes.IndexByte(data, '\n'); index >= 0 {
-		end := index
-		if end > 0 && data[end-1] == '\r' {
-			end--
+func lstatRegularPath(root *os.Root, relativePath, displayPath, kind string) ([]os.FileInfo, error) {
+	components := strings.Split(relativePath, string(filepath.Separator))
+	infos := make([]os.FileInfo, 0, len(components))
+	for index := range components {
+		componentPath := filepath.Join(components[:index+1]...)
+		info, err := root.Lstat(componentPath)
+		if err != nil {
+			return nil, err
 		}
-		return index + 1, data[:end], nil
+		leaf := index == len(components)-1
+		if info.Mode()&os.ModeSymlink != 0 {
+			if leaf {
+				return nil, fmt.Errorf("%s file must be a regular file: %s", kind, displayPath)
+			}
+			return nil, fmt.Errorf("%s path must not contain symlink beneath compound home: %s", kind, displayPath)
+		}
+		if leaf {
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("%s file must be a regular file: %s", kind, displayPath)
+			}
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("%s path ancestor must be a directory beneath compound home: %s", kind, displayPath)
+		}
+		infos = append(infos, info)
 	}
-	if atEOF && len(data) > 0 {
-		return 0, nil, fmt.Errorf("work event ledger must end with newline")
+	return infos, nil
+}
+
+func strictJSONLScanner(raw []byte, ledger string) *bufio.Scanner {
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner.Split(splitStrictJSONLLines(ledger))
+	return scanner
+}
+
+func splitStrictJSONLLines(ledger string) bufio.SplitFunc {
+	return func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if index := bytes.IndexByte(data, '\n'); index >= 0 {
+			end := index
+			if end > 0 && data[end-1] == '\r' {
+				end--
+			}
+			return index + 1, data[:end], nil
+		}
+		if atEOF && len(data) > 0 {
+			return 0, nil, fmt.Errorf("%s must end with newline", ledger)
+		}
+		return 0, nil, nil
 	}
-	return 0, nil, nil
 }
 
 func normalizedEvidenceTime(value string) string {
@@ -1098,16 +1151,14 @@ func normalizedEvidenceTime(value string) string {
 func loadRouteRows(homePath string) (map[string][]routeRaw, error) {
 	out := map[string][]routeRaw{}
 	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
-	file, err := os.Open(path)
+	raw, err := readRegularFile(homePath, path, "route evidence ledger")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return out, nil
 		}
 		return nil, err
 	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner := strictJSONLScanner(raw, "route evidence ledger")
 	for scanner.Scan() {
 		raw := bytes.TrimSpace(append([]byte(nil), scanner.Bytes()...))
 		if len(raw) == 0 {
