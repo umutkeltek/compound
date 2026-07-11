@@ -1,6 +1,7 @@
 package work
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +65,102 @@ func TestCreatePlanRejectsRunningState(t *testing.T) {
 		SuccessPredicate: "direct running create is rejected",
 	}, fixedNow); err == nil || !strings.Contains(err.Error(), "create at ready, then claim and advance") {
 		t.Fatalf("Create running error = %v", err)
+	}
+}
+
+func TestCreatePlanRejectsTerminalInitialStatesWithoutRecording(t *testing.T) {
+	for _, state := range []string{"completed", "failed", "cancelled"} {
+		t.Run(state, func(t *testing.T) {
+			s := newStore(t)
+			workID := "work_terminal_plan_" + state
+			_, err := s.CreatePlan(CreateInput{
+				WorkID:           workID,
+				Owner:            "compound-core",
+				Actor:            "codex",
+				State:            state,
+				SuccessPredicate: "terminal work must be closed with proof",
+			}, fixedNow, CreatePlanOptions{Record: true})
+			if err == nil || !strings.Contains(err.Error(), "use Close") {
+				t.Errorf("CreatePlan terminal state %q error = %v", state, err)
+			}
+			if _, err := s.Get(workID); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("rejected terminal plan persisted work %s: %v", workID, err)
+			}
+			plans, err := filepath.Glob(filepath.Join(s.home, "create-plans", "*.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plans) != 0 {
+				t.Errorf("rejected terminal plan recorded artifacts: %v", plans)
+			}
+		})
+	}
+}
+
+func TestCreateRejectsTerminalInitialStatesWithoutLifecycleArtifacts(t *testing.T) {
+	for _, state := range []string{"completed", "failed", "cancelled"} {
+		t.Run(state, func(t *testing.T) {
+			s := newStore(t)
+			workID := "work_terminal_create_" + state
+			_, err := s.Create(CreateInput{
+				WorkID:           workID,
+				Owner:            "compound-core",
+				Actor:            "codex",
+				State:            state,
+				SuccessPredicate: "terminal work must be closed with proof",
+			}, fixedNow)
+			if err == nil || !strings.Contains(err.Error(), "use Close") {
+				t.Errorf("Create terminal state %q error = %v", state, err)
+			}
+			if _, err := s.Get(workID); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("rejected terminal create persisted work %s: %v", workID, err)
+			}
+			events, err := s.eventsFor(workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 0 {
+				t.Errorf("rejected terminal create recorded lifecycle events: %+v", events)
+			}
+		})
+	}
+}
+
+func TestAdmitCreatePlanRejectsResealedTerminalState(t *testing.T) {
+	for _, state := range []string{"completed", "failed", "cancelled"} {
+		t.Run(state, func(t *testing.T) {
+			s := newStore(t)
+			workID := "work_terminal_admission_" + state
+			plan, err := s.CreatePlan(CreateInput{
+				WorkID:           workID,
+				Owner:            "compound-core",
+				Actor:            "codex",
+				SuccessPredicate: "create-plan admission cannot bypass Close",
+			}, fixedNow, CreatePlanOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan.Work.State = state
+			plan.WorkState = state
+			plan.ID, err = createPlanContentID(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := s.AdmitCreatePlan(plan, "", fixedNow.Add(time.Minute), AdmitCreatePlanOptions{Actor: "codex"}); err == nil || !strings.Contains(err.Error(), "use Close") {
+				t.Errorf("AdmitCreatePlan terminal state %q error = %v", state, err)
+			}
+			if _, err := s.Get(workID); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("rejected terminal admission persisted work %s: %v", workID, err)
+			}
+			events, err := s.eventsFor(workID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 0 {
+				t.Errorf("rejected terminal admission recorded lifecycle events: %+v", events)
+			}
+		})
 	}
 }
 

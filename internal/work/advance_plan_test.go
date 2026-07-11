@@ -82,6 +82,85 @@ func TestAdvanceRecordsPolicyAction(t *testing.T) {
 	}
 }
 
+func TestAdvancePlanAndAdvanceRejectTerminalTargetsWithoutProoflessTerminal(t *testing.T) {
+	tests := []struct {
+		name     string
+		from     string
+		to       string
+		needsRun bool
+	}{
+		{name: "running to completed", from: "running", to: "completed", needsRun: true},
+		{name: "running to failed", from: "running", to: "failed", needsRun: true},
+		{name: "ready to cancelled", from: "ready", to: "cancelled"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			w, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "terminal state belongs to Close"}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.needsRun {
+				if _, err := s.Claim(w.ID, "codex", fixedNow); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Advance(w.ID, AdvanceInput{Actor: "codex", To: "running"}, fixedNow); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, eventsBefore, err := s.Show(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.State != tc.from {
+				t.Fatalf("setup state = %q, want %q", before.State, tc.from)
+			}
+
+			if _, err := s.AdvancePlan(w.ID, fixedNow, AdvancePlanOptions{Actor: "codex", To: tc.to, Record: true}); err == nil || !strings.Contains(err.Error(), "use Close") {
+				t.Errorf("AdvancePlan %s -> %s error = %v", tc.from, tc.to, err)
+			}
+			plans, err := filepath.Glob(filepath.Join(s.home, "advance-plans", "*.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plans) != 0 {
+				t.Errorf("rejected terminal advance plan recorded artifacts: %v", plans)
+			}
+
+			if _, err := s.Advance(w.ID, AdvanceInput{Actor: "codex", To: tc.to}, fixedNow); err == nil || !strings.Contains(err.Error(), "use Close") {
+				t.Errorf("Advance %s -> %s error = %v", tc.from, tc.to, err)
+			}
+			after, eventsAfter, err := s.Show(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.State != before.State || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID || after.IDs.TransitionID != "" {
+				t.Errorf("rejected terminal advance mutated work: before=%+v after=%+v", before, after)
+			}
+			if len(eventsAfter) != len(eventsBefore) {
+				t.Errorf("rejected terminal advance appended events: before=%+v after=%+v", eventsBefore, eventsAfter)
+			}
+			for _, pattern := range []string{"rec_*.json", "tr_*.json"} {
+				artifacts, err := filepath.Glob(filepath.Join(s.home, "events", pattern))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(artifacts) != 0 {
+					t.Errorf("rejected terminal advance emitted %s artifacts: %v", pattern, artifacts)
+				}
+			}
+
+			closed, err := s.Close(w.ID, CloseInput{Actor: "codex", Outcome: tc.to, MoveType: "audit_only", Summary: "terminal state entered through Close"}, fixedNow)
+			if err != nil {
+				t.Fatalf("Close %s -> %s: %v", tc.from, tc.to, err)
+			}
+			if closed.Work.State != tc.to || closed.Receipt.ID == "" || closed.Transition.ID == "" || closed.Work.IDs.TransitionID != closed.Transition.ID {
+				t.Errorf("Close did not emit terminal proof chain: %+v", closed)
+			}
+		})
+	}
+}
+
 // Falsifier 5: AdvancePlan (the non-mutating preview) must report the same lease-holder
 // denial the real advance would hit, without recording or mutating anything — no
 // allowed-preview-then-refused-act divergence. With a valid steal, the preview reports
