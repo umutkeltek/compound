@@ -72,6 +72,75 @@ func RenderJobHealthReviewYAMLDraft(plan JobHealthPlan) string {
 	return b.String()
 }
 
+// jobHealthReviewPlaceholderDecision is the literal TODO sentinel
+// RenderJobHealthReviewYAMLDraft writes for an unfilled review.
+// FillJobHealthReviewDraft treats an empty decision the same way
+// (belt-and-suspenders against a hand-edited draft).
+const jobHealthReviewPlaceholderDecision = "TODO_decision_repair_required_parked_disabled_no_action_owner_action_done"
+
+// jobHealthReviewNextActionDefaults mirrors the packet's settled per-decision
+// next-action copy (2026-07-11): the plain default an operator gets when they
+// pick a decision but do not type their own next action.
+var jobHealthReviewNextActionDefaults = map[string]string{
+	"repair_required":   "file repair work for this job",
+	"parked":            "revisit when the job matters again",
+	"disabled":          "confirm the job is intentionally off",
+	"no_action":         "none",
+	"owner_action_done": "verify the owner's fix on next run",
+}
+
+// JobHealthReviewFillInput carries the CLI's optional `--decision` /
+// `--rationale` / `--confidence` / `--next-action` flags into
+// FillJobHealthReviewDraft. Confidence is a pointer so "flag absent" (default
+// 1 — an operator record is a full-confidence decision) is distinguishable
+// from an explicit 0.
+type JobHealthReviewFillInput struct {
+	Decision   string
+	Rationale  string
+	Confidence *float64
+	NextAction string
+}
+
+// FillJobHealthReviewDraft turns an unfilled job-health-review draft into a
+// filled one IN PLACE on disk: the YAML file remains the durable record
+// (fill semantics, settled design #2). It only fills a draft whose on-disk
+// decision is still the TODO placeholder (or empty) — a draft that already
+// carries a valid, DIFFERENT decision is refused rather than silently
+// overwritten. The caller still runs the existing Load+Validate+Record path
+// on the (possibly just-filled) file afterward; this function does not
+// validate or record on its own.
+func FillJobHealthReviewDraft(path string, input JobHealthReviewFillInput, now time.Time) error {
+	review, err := LoadJobHealthReview(path)
+	if err != nil {
+		return err
+	}
+	existing := strings.TrimSpace(review.Decision)
+	if existing != "" && existing != jobHealthReviewPlaceholderDecision {
+		if existing != input.Decision {
+			return fmt.Errorf("job-health review already recorded as %s; edit the YAML explicitly to change a recorded decision", existing)
+		}
+		return nil // already filled with this same decision; leave the record untouched
+	}
+	review.Decision = input.Decision
+	review.Rationale = input.Rationale
+	if input.Confidence != nil {
+		review.Confidence = *input.Confidence
+	} else {
+		review.Confidence = 1
+	}
+	if strings.TrimSpace(input.NextAction) != "" {
+		review.NextAction = input.NextAction
+	} else {
+		review.NextAction = jobHealthReviewNextActionDefaults[input.Decision]
+	}
+	review.ReviewedAt = reviewartifact.Timestamp(now)
+	out, err := yaml.Marshal(review)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
+}
+
 func LoadJobHealthReview(path string) (JobHealthReview, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

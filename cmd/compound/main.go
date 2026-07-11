@@ -337,7 +337,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
 compound capability <add|resolve|surface|observe|consume|consume-receipts|list|graph|authority|lifecycle-review|external-intake|outbound-distribution-plan|outbound-distribution-verdict-plan|outbound-distribution-verdict-review|outbound-distribution-dry-run-receipt|outbound-distribution-dry-run-review|external-intake-review-plan|external-intake-evaluation-plan|external-intake-import-reviewed|external-intake-review|tool-boundary-doctor|skill-source-doctor|import-topology|import-skills|import-evaluations|import-surfacing-misses|evaluation-plan|evaluation-review|skill-plan|skill-candidate-review|skill-candidate-decision> capability graph: auto-surface, never auto-execute; lifecycle-review records hash-bound operator disposition and only open_work creates proposed WorkEnvelope state; tool-boundary-doctor checks MCP/tool/plugin inventory stays observed/non-executing; skill-source-doctor validates raw SKILL.md sources read-only; imports accept normalized files, OS generated JSON, mcporter JSON, capability-evaluation records, or skill surfacing feedback reports
  compound panel <import-lenses|lenses|plan|run|verdict-record|show> perspective panel planning and dry-run verdicts
   compound local-models advise [--lm-studio-url U] [--required MODEL]... [--min-context MODEL=TOKENS]... [--host-context-limit N] [--idle-ttl DURATION] [--json] local model context/load/unload advice with lifecycle intents; reads configured local provider, no mutation
-  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity> import/query authority through spine memory
+  compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
@@ -5561,7 +5561,7 @@ func openMemStore() (*mem.Store, string) {
 
 func cmdAuthority(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> | resolve <token> | <entity>")
+		fmt.Fprintln(os.Stderr, "usage: compound authority import [registry.yaml] | path <path-authority.yaml> | path-registry <os-path-authority.yaml> | git <repo-path> | dirty-plan <repo-path> [--work-id id] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-job-roster <cron-jobs.json> | import-job-token-governance <cron-token-usage.json> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity>")
 		os.Exit(2)
 	}
 	store, homePath := openMemStore()
@@ -5755,16 +5755,41 @@ func cmdAuthority(args []string) {
 		return
 	}
 	if args[0] == "job-health-review" {
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority job-health-review <review.yaml>")
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound authority job-health-review <review.yaml> [--decision repair_required|parked|disabled|no_action|owner_action_done] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json]")
 			os.Exit(2)
 		}
-		review, err := authority.LoadJobHealthReview(args[1])
+		reviewPath := args[1]
+		fillFlags := args[2:]
+		// Fill semantics (settled design #2): only a draft still carrying the
+		// TODO placeholder gets filled from flags and written back to the SAME
+		// path — the YAML remains the durable record. No --decision -> no fill,
+		// so behavior stays byte-identical to before these flags existed.
+		if hasFlag(fillFlags, "--decision") {
+			fill := authority.JobHealthReviewFillInput{
+				Decision:   flagValue(fillFlags, "--decision"),
+				Rationale:  flagValue(fillFlags, "--rationale"),
+				NextAction: flagValue(fillFlags, "--next-action"),
+			}
+			if hasFlag(fillFlags, "--confidence") {
+				conf, err := strconv.ParseFloat(flagValue(fillFlags, "--confidence"), 64)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "authority job-health-review: --confidence must be a number")
+					os.Exit(2)
+				}
+				fill.Confidence = &conf
+			}
+			if err := authority.FillJobHealthReviewDraft(reviewPath, fill, time.Now()); err != nil {
+				fmt.Fprintln(os.Stderr, "authority job-health-review:", err)
+				os.Exit(1)
+			}
+		}
+		review, err := authority.LoadJobHealthReview(reviewPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority job-health-review:", err)
 			os.Exit(1)
 		}
-		report, err := authority.RecordJobHealthReview(homePath, review, args[1], time.Now())
+		report, err := authority.RecordJobHealthReview(homePath, review, reviewPath, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority job-health-review:", err)
 			os.Exit(1)
