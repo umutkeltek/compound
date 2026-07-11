@@ -409,23 +409,27 @@ func TestExecuteDryRunBlocksGatewayMeteredLaneWithoutUSDBudget(t *testing.T) {
 	}
 }
 
-func TestExecuteDryRunSkipsDuplicateRouteEvidenceOnResume(t *testing.T) {
+func TestExecuteDryRunRecordsANewRouteAttemptOnResume(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
 	lensRef := run.LensSet.Included[0].Ref
 	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
-		CreatedAt:     fixedPanelNow(),
-		RequestID:     requestID,
-		WorkID:        run.WorkID,
-		ClientProfile: "compound.panel.lens",
-		Protocol:      "panel-lane",
-		Provider:      "compound-route-plan",
-		Model:         run.Route.LensLane.ModelID,
-		Usage:         routeevidence.Usage{TotalTokens: 7},
-		Status:        "completed",
-		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+		CreatedAt:        fixedPanelNow(),
+		RequestID:        requestID,
+		WorkID:           run.WorkID,
+		ClientProfile:    "compound.panel.lens",
+		Protocol:         "panel-lane",
+		Provider:         "compound-route-plan",
+		Model:            run.Route.LensLane.ModelID,
+		ResolvedProvider: "deepseek",
+		ResolvedModel:    "deepseek/deepseek-v4-pro",
+		ResolutionSource: "gateway_route",
+		GatewayRequestID: "gateway-before-crash",
+		Usage:            routeevidence.Usage{TotalTokens: 7},
+		Status:           "completed",
+		EvidenceRefs:     []string{routeevidence.ModelCapabilitiesAuthorityRef},
 	})
 	if err != nil {
 		t.Fatalf("build route evidence: %v", err)
@@ -434,7 +438,16 @@ func TestExecuteDryRunSkipsDuplicateRouteEvidenceOnResume(t *testing.T) {
 		t.Fatalf("preseed route evidence: %v", err)
 	}
 
-	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	caller := &countingLensCaller{
+		delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")},
+		decorate: func(req CallRequest, result *CallResult) {
+			result.ResolvedProvider = "deepseek"
+			result.ResolvedModel = "deepseek/deepseek-v4-pro"
+			result.ResolutionSource = "gateway_route"
+			result.GatewayRequestID = "gateway-resume-" + req.LensID
+		},
+	}
+	got, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
 	if err != nil {
 		t.Fatalf("execute dry run: %v", err)
 	}
@@ -444,8 +457,14 @@ func TestExecuteDryRunSkipsDuplicateRouteEvidenceOnResume(t *testing.T) {
 	if rows := routeEvidenceRequestRows(t, home, requestID); rows != 1 {
 		t.Fatalf("request_id rows = %d, want 1", rows)
 	}
-	if got.Findings[0].LensFindings[0].RouteEvidenceRef != ev.ID {
-		t.Fatalf("route evidence ref = %q, want preseeded %q", got.Findings[0].LensFindings[0].RouteEvidenceRef, ev.ID)
+	if rows := routeEvidenceRequestRows(t, home, requestID+":resume1"); rows != 1 {
+		t.Fatalf("resume request_id rows = %d, want 1", rows)
+	}
+	if got.Findings[0].LensFindings[0].RouteEvidenceRef == ev.ID {
+		t.Fatalf("resume reused stale route evidence %q for a new provider call", ev.ID)
+	}
+	if caller.calls == 0 {
+		t.Fatal("resume did not execute the missing model output")
 	}
 }
 
@@ -454,15 +473,16 @@ func TestExecuteDryRunRejectsImportedRequestIDShadow(t *testing.T) {
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
 	run.WorkID = "work_panel_import_shadow"
-	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + judgePromptID
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
 	forged, err := routeevidence.Build(routeevidence.BuildInput{
 		CreatedAt:        fixedPanelNow(),
 		RequestID:        requestID,
 		WorkID:           run.WorkID,
-		ClientProfile:    "compound.panel.judge",
+		ClientProfile:    "compound.panel.lens",
 		Protocol:         "panel-lane",
 		Provider:         "compound-route-plan",
-		Model:            run.Route.JudgeLane.ModelID,
+		Model:            run.Route.LensLane.ModelID,
 		ResolvedProvider: "deepseek",
 		ResolvedModel:    "deepseek/deepseek-v4-pro",
 		ResolutionSource: "gateway_route",
@@ -485,9 +505,28 @@ func TestExecuteDryRunRejectsImportedRequestIDShadow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "untrusted route evidence") {
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "untrusted route evidence") {
 		t.Fatalf("imported request-id shadow did not fail closed: %v", err)
 	}
+	if caller.calls != 0 {
+		t.Fatalf("imported shadow was detected only after %d provider call(s)", caller.calls)
+	}
+}
+
+type countingLensCaller struct {
+	delegate LensCaller
+	decorate func(CallRequest, *CallResult)
+	calls    int
+}
+
+func (c *countingLensCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
+	c.calls++
+	result, err := c.delegate.Call(ctx, req)
+	if c.decorate != nil {
+		c.decorate(req, &result)
+	}
+	return result, err
 }
 
 func routeEvidenceRequestRows(t *testing.T, home, requestID string) int {
