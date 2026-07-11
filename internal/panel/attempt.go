@@ -416,7 +416,7 @@ func readPanelAttempt(path string) (panelAttempt, error) {
 	return attempt, nil
 }
 
-func persistedPanelRouteTokens(homePath, runID string) (int, error) {
+func persistedPanelRouteTokens(homePath string, run Run) (int, error) {
 	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -425,7 +425,7 @@ func persistedPanelRouteTokens(homePath, runID string) (int, error) {
 		}
 		return 0, err
 	}
-	prefix := "panel:" + runID + ":"
+	prefix := "panel:" + run.ID + ":"
 	total := 0
 	for i, raw := range strings.Split(string(data), "\n") {
 		line := strings.TrimSpace(raw)
@@ -439,14 +439,37 @@ func persistedPanelRouteTokens(homePath, runID string) (int, error) {
 		if !strings.HasPrefix(row.RequestID, prefix) {
 			continue
 		}
+		if strings.TrimSpace(row.RecordedVia) == "" {
+			row.RecordedVia = routeevidence.RecorderGeneric
+		}
+		if row.RecordedVia != routeevidence.RecorderGeneric {
+			return 0, fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", row.RequestID, row.RecordedVia)
+		}
 		if row.Usage.TotalTokens < 0 {
 			return 0, fmt.Errorf("panel route evidence %s has negative token usage", row.ID)
 		}
+		if row.Usage.TotalTokens == 0 && persistedPanelRouteRequiresKnownUsage(run, row) {
+			return 0, fmt.Errorf("panel request %s has unknown token usage", row.RequestID)
+		}
 		next := total + row.Usage.TotalTokens
 		if next < total {
-			return 0, fmt.Errorf("panel route token usage overflow for run %s", runID)
+			return 0, fmt.Errorf("panel route token usage overflow for run %s", run.ID)
 		}
 		total = next
 	}
 	return total, nil
+}
+
+func persistedPanelRouteRequiresKnownUsage(run Run, row routeevidence.Evidence) bool {
+	if run.Budget.MaxTotalTokens > 0 {
+		return true
+	}
+	switch row.ClientProfile {
+	case "compound.panel.lens":
+		return laneIsMetered(run.Route.LensLane)
+	case "compound.panel.judge":
+		return laneIsMetered(run.Route.JudgeLane)
+	default:
+		return true
+	}
 }

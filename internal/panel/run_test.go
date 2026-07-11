@@ -879,8 +879,19 @@ func TestExecuteDryRunRecordsANewRouteAttemptOnResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build route evidence: %v", err)
 	}
-	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
-		t.Fatalf("preseed route evidence: %v", err)
+	// Legacy rows predate recorded_via. They remain generic evidence and must
+	// still allocate a fresh :resumeN request instead of being rejected.
+	ev.RecordedVia = ""
+	legacyRow, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+	if err := os.MkdirAll(filepath.Dir(ledgerPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ledgerPath, append(legacyRow, '\n'), 0o644); err != nil {
+		t.Fatalf("preseed legacy route evidence: %v", err)
 	}
 
 	caller := &countingLensCaller{

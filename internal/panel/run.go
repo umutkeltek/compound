@@ -143,7 +143,7 @@ func executeDryRunLocked(ctx context.Context, homePath string, store *Store, run
 	for targetRef := range existingFindings {
 		usedTargets[targetRef] = true
 	}
-	persistedTokens, err := persistedPanelRouteTokens(homePath, run.ID)
+	persistedTokens, err := persistedPanelRouteTokens(homePath, run)
 	if err != nil {
 		return failDryRun(store, run, "route-budget", err)
 	}
