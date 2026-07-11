@@ -1,9 +1,15 @@
 package work
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/envelope"
@@ -34,6 +40,11 @@ type ReceiptedActionResult struct {
 }
 
 var receiptedActionBeforeCommit = func() {}
+var receiptedActionBeforePublish = func(string) error { return nil }
+var receiptedActionAfterWrite = func(string) error { return nil }
+var writeReceiptedActionTemp = func(_ string, file *os.File, data []byte) error {
+	return writeReceiptedActionTempFully(file, data)
+}
 
 func (s *Store) RecordReceiptedAction(workID string, in ReceiptedActionInput, now time.Time) (ReceiptedActionResult, error) {
 	var out ReceiptedActionResult
@@ -54,17 +65,20 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err != nil {
 		return out, err
 	}
+	if err := w.Validate(); err != nil {
+		return out, fmt.Errorf("work envelope invalid: %w", err)
+	}
 	if terminalStates[w.State] {
 		return out, fmt.Errorf("work %s is %s (terminal); cannot record a receipted action", workID, w.State)
 	}
 	if expected := strings.TrimSpace(in.ExpectedWorkState); expected != "" && w.State != expected {
 		return out, fmt.Errorf("work %s state %q no longer matches expected state %q", workID, w.State, expected)
 	}
-	action := in.Action
-	if action.IDs.WorkID != workID {
-		return out, fmt.Errorf("action work_id %q does not match work %q", action.IDs.WorkID, workID)
+	requestedAction := in.Action
+	if requestedAction.IDs.WorkID != workID {
+		return out, fmt.Errorf("action work_id %q does not match work %q", requestedAction.IDs.WorkID, workID)
 	}
-	if err := action.Validate(); err != nil {
+	if err := requestedAction.Validate(); err != nil {
 		return out, fmt.Errorf("action intent invalid: %w", err)
 	}
 	claimID := strings.TrimSpace(in.OperationalDecisionClaimID)
@@ -77,6 +91,14 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	cfg, _, err := policy.LoadConfig(s.home)
 	if err != nil {
 		return out, err
+	}
+	action, actionPresent, err := s.preflightReceiptedAction(requestedAction)
+	if err != nil {
+		return out, err
+	}
+	transactionNow, err := time.Parse(time.RFC3339, action.CreatedAt)
+	if err != nil {
+		return out, fmt.Errorf("receipted action %s created_at invalid: %w", action.ID, err)
 	}
 	if reason := policy.AutonomyOperatorOnlyReason(action, cfg); reason != "" {
 		return out, fmt.Errorf("cannot record autonomous receipted action: %s", reason)
@@ -104,20 +126,13 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	decisionID := idFor("pol_", "receipted-action", workID, action.ID, claimID)
 	receiptID := idFor("rec_", "receipted-action", workID, action.ID, claimID)
 	transitionID := idFor("tr_", "receipted-action", workID, action.ID, claimID)
-	if receiptedActionArtifactsExist(s, action.ID, decisionID, receiptID, transitionID) {
-		return s.replayReceiptedAction(w, in, action, decisionID, receiptID, transitionID, proofRefs, moveType, now)
-	}
-	if receiptedActionAnyArtifactExists(s, action.ID, decisionID, receiptID, transitionID) {
-		return out, fmt.Errorf("receipted action %s has an incomplete persisted transaction", action.ID)
-	}
-
-	receiptedActionBeforeCommit()
 	decision := currentDecision
 	decision.ID = decisionID
+	decision.CreatedAt = action.CreatedAt
 	decision.EvidenceRefs = mergeUnique(decision.EvidenceRefs, proofRefs)
 	used := normalizeCapabilityRefs([]string{action.Capability})
 	receipt := envelope.Receipt{
-		Header:     newHeader(envelope.SVReceipt, receiptID, now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
+		Header:     newHeader(envelope.SVReceipt, receiptID, transactionNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		Outcome:    "completed",
 		MoveType:   moveType,
 		StateDelta: envelope.StateDelta{Changed: true, Summary: strings.TrimSpace(in.Summary), FilesChanged: []string{}, Artifacts: []string{}, Verification: []string{}},
@@ -138,7 +153,7 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	}
 	beforeRefs := mergeUnique([]string{w.IDs.ContextPackID, "claim:" + claimID})
 	transition := envelope.Transition{
-		Header:     newHeader(envelope.SVTransition, transitionID, now, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
+		Header:     newHeader(envelope.SVTransition, transitionID, transactionNow, workID, w.IDs.ContextPackID, w.Privacy, w.Risk),
 		BeforeRefs: beforeRefs,
 		ActionRefs: []string{action.ID},
 		AfterRefs:  []string{receipt.ID},
@@ -156,23 +171,96 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err := transition.Validate(); err != nil {
 		return out, fmt.Errorf("emitted receipted-action transition invalid: %w", err)
 	}
+
+	decisionPresent, err := s.preflightReceiptedEnvelope("decision", decision.ID, &decision, &envelope.PolicyDecision{})
+	if err != nil {
+		return out, err
+	}
+	receiptPresent, err := s.preflightReceiptedEnvelope("receipt", receipt.ID, &receipt, &envelope.Receipt{})
+	if err != nil {
+		return out, err
+	}
+	transitionPresent, err := s.preflightReceiptedEnvelope("transition", transition.ID, &transition, &envelope.Transition{})
+	if err != nil {
+		return out, err
+	}
+
+	workLinked := proofChainContains(w.RunIDs, action.ID)
+	policyLinked := w.PolicyDecisionID == decision.ID
+	if workLinked != policyLinked {
+		return out, fmt.Errorf("receipted action %s conflicts with persisted work links", action.ID)
+	}
+	if strings.TrimSpace(w.IDs.TransitionID) != "" {
+		return out, fmt.Errorf("receipted action %s conflicts with persisted work transition_id %s", action.ID, w.IDs.TransitionID)
+	}
+	expectedWork := w
+	expectedWork.RunIDs = mergeUnique(expectedWork.RunIDs, []string{action.ID})
+	expectedWork.PolicyDecisionID = decision.ID
+	if err := expectedWork.Validate(); err != nil {
+		return out, fmt.Errorf("receipted action %s expected work invalid: %w", action.ID, err)
+	}
+	expectedEvent := receiptedActionEvent(expectedWork, action, decision, receipt, transition, transactionNow)
+	events, err := s.admissionEventsFor(workID)
+	if err != nil {
+		return out, fmt.Errorf("receipted action %s event preflight: %w", action.ID, err)
+	}
+	eventPresent, err := preflightReceiptedActionEvent(events, expectedEvent)
+	if err != nil {
+		return out, err
+	}
+	stages := []struct {
+		name    string
+		present bool
+	}{
+		{"action", actionPresent},
+		{"decision", decisionPresent},
+		{"receipt", receiptPresent},
+		{"transition", transitionPresent},
+		{"work", workLinked},
+		{"event", eventPresent},
+	}
+	if err := validateReceiptedActionPrefix(action.ID, stages); err != nil {
+		return out, err
+	}
+	replayed := false
+	for _, stage := range stages {
+		replayed = replayed || stage.present
+	}
+
+	receiptedActionBeforeCommit()
 	for _, item := range []struct {
+		name    string
+		present bool
 		id      string
-		payload any
-	}{{action.ID, &action}, {decision.ID, &decision}, {receipt.ID, &receipt}, {transition.ID, &transition}} {
-		if err := s.writeJSON(s.envPath(item.id), item.payload); err != nil {
+		payload envelope.Envelope
+	}{
+		{"action", actionPresent, action.ID, &action},
+		{"decision", decisionPresent, decision.ID, &decision},
+		{"receipt", receiptPresent, receipt.ID, &receipt},
+		{"transition", transitionPresent, transition.ID, &transition},
+	} {
+		if item.present {
+			continue
+		}
+		if err := s.writeReceiptedActionBoundary(item.name, s.envPath(item.id), item.payload); err != nil {
 			return out, err
 		}
 	}
-	w.RunIDs = mergeUnique(w.RunIDs, []string{action.ID})
-	w.PolicyDecisionID = decision.ID
-	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
-		return out, err
+	if !workLinked {
+		if err := s.writeReceiptedActionBoundary("work", s.workPath(workID), &expectedWork); err != nil {
+			return out, err
+		}
 	}
-	if err := s.appendEvent(receiptedActionEvent(w, action, decision, receipt, transition, now)); err != nil {
-		return out, err
+	if !eventPresent {
+		if err := s.appendEventControlled(
+			expectedEvent,
+			func() error { return receiptedActionBeforePublish("event") },
+			func() error { return receiptedActionAfterWrite("event") },
+		); err != nil {
+			return out, err
+		}
 	}
-	return ReceiptedActionResult{Work: w, Action: action, Decision: decision, Receipt: receipt, Transition: transition}, nil
+	return ReceiptedActionResult{Work: expectedWork, Action: action, Decision: decision, Receipt: receipt, Transition: transition, Replayed: replayed}, nil
 }
 
 func currentReceiptedActionLaw(homePath, claimID string) error {
@@ -192,80 +280,163 @@ func currentReceiptedActionLaw(homePath, claimID string) error {
 	return fmt.Errorf("claim %s is not a current authoritative operational decision", claimID)
 }
 
-func receiptedActionArtifactsExist(s *Store, ids ...string) bool {
-	for _, id := range ids {
-		if _, err := os.Stat(s.envPath(id)); err != nil {
-			return false
-		}
+func (s *Store) preflightReceiptedAction(requested envelope.ActionIntent) (envelope.ActionIntent, bool, error) {
+	var stored envelope.ActionIntent
+	err := s.readJSON(s.envPath(requested.ID), &stored)
+	if errors.Is(err, os.ErrNotExist) {
+		return requested, false, nil
 	}
-	return true
+	if err != nil {
+		return envelope.ActionIntent{}, false, fmt.Errorf("receipted action %s persisted action unreadable: %w", requested.ID, err)
+	}
+	if err := stored.Validate(); err != nil {
+		return envelope.ActionIntent{}, false, fmt.Errorf("receipted action %s persisted action invalid: %w", requested.ID, err)
+	}
+	// The adapter rebuilds the same deterministic action on retry with a fresh
+	// hook timestamp. CreatedAt is the only deliberately volatile field; the
+	// first durable action fixes the transaction timestamp for the suffix.
+	normalized := requested
+	normalized.CreatedAt = stored.CreatedAt
+	if !reflect.DeepEqual(stored, normalized) {
+		return envelope.ActionIntent{}, false, fmt.Errorf("receipted action %s persisted action conflicts with requested transaction", requested.ID)
+	}
+	return stored, true, nil
 }
 
-func receiptedActionAnyArtifactExists(s *Store, ids ...string) bool {
-	for _, id := range ids {
-		if _, err := os.Stat(s.envPath(id)); err == nil {
+func (s *Store) preflightReceiptedEnvelope(kind, id string, expected, target envelope.Envelope) (bool, error) {
+	err := s.readJSON(s.envPath(id), target)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("receipted action %s persisted %s unreadable: %w", id, kind, err)
+	}
+	if err := target.Validate(); err != nil {
+		return false, fmt.Errorf("receipted action %s persisted %s invalid: %w", id, kind, err)
+	}
+	if !reflect.DeepEqual(expected, target) {
+		return false, fmt.Errorf("receipted action %s persisted %s conflicts with requested transaction", id, kind)
+	}
+	return true, nil
+}
+
+func validateReceiptedActionPrefix(actionID string, stages []struct {
+	name    string
+	present bool
+}) error {
+	missing := false
+	for _, stage := range stages {
+		if !stage.present {
+			missing = true
+			continue
+		}
+		if missing {
+			return fmt.Errorf("receipted action %s persisted transaction is out of order at %s", actionID, stage.name)
+		}
+	}
+	return nil
+}
+
+func (s *Store) writeReceiptedActionBoundary(name, path string, payload any) error {
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := writeReceiptedActionTemp(name, tmp, data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := receiptedActionBeforePublish(name); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if err := syncReceiptedActionDir(dir); err != nil {
+		return err
+	}
+	return receiptedActionAfterWrite(name)
+}
+
+func writeReceiptedActionTempFully(file *os.File, data []byte) error {
+	for remaining := data; len(remaining) > 0; {
+		n, err := file.Write(remaining)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		remaining = remaining[n:]
+	}
+	return nil
+}
+
+func syncReceiptedActionDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
+	return nil
+}
+
+func preflightReceiptedActionEvent(events []Event, expected Event) (bool, error) {
+	matching := 0
+	for _, event := range events {
+		if !receiptedActionEventTouches(event, expected.Attached) {
+			continue
+		}
+		if !sameReceiptedActionEvent(event, expected) {
+			return false, fmt.Errorf("receipted action %s persisted event conflicts with requested transaction", expected.Attached[0])
+		}
+		matching++
+	}
+	if matching > 1 {
+		return false, fmt.Errorf("receipted action %s has %d duplicate persisted events", expected.Attached[0], matching)
+	}
+	return matching == 1, nil
+}
+
+func receiptedActionEventTouches(event Event, refs []string) bool {
+	for _, attached := range event.Attached {
+		if proofChainContains(refs, attached) {
 			return true
 		}
 	}
 	return false
 }
 
-func (s *Store) replayReceiptedAction(w envelope.WorkEnvelope, in ReceiptedActionInput, action envelope.ActionIntent, decisionID, receiptID, transitionID string, proofRefs []string, moveType string, now time.Time) (ReceiptedActionResult, error) {
-	var storedAction envelope.ActionIntent
-	var decision envelope.PolicyDecision
-	var receipt envelope.Receipt
-	var transition envelope.Transition
-	for _, item := range []struct {
-		id     string
-		target any
-	}{{action.ID, &storedAction}, {decisionID, &decision}, {receiptID, &receipt}, {transitionID, &transition}} {
-		if err := s.readJSON(s.envPath(item.id), item.target); err != nil {
-			return ReceiptedActionResult{}, err
-		}
-	}
-	if !sameReceiptedAction(storedAction, action) || decision.ActionIntentID != action.ID || receipt.IDs.WorkID != w.ID ||
-		transition.IDs.WorkID != w.ID || receipt.MoveType != moveType || receipt.StateDelta.Summary != strings.TrimSpace(in.Summary) ||
-		strings.Join(receipt.ProofRefs, "\x00") != strings.Join(proofRefs, "\x00") || !proofChainContains(transition.AfterRefs, receipt.ID) {
-		return ReceiptedActionResult{}, fmt.Errorf("receipted action %s replay conflicts with persisted transaction", action.ID)
-	}
-	for _, item := range []envelope.Envelope{&storedAction, &decision, &receipt, &transition} {
-		if err := item.Validate(); err != nil {
-			return ReceiptedActionResult{}, fmt.Errorf("receipted action %s replay artifact invalid: %w", action.ID, err)
-		}
-	}
-	w.RunIDs = mergeUnique(w.RunIDs, []string{action.ID})
-	w.PolicyDecisionID = decision.ID
-	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {
-		return ReceiptedActionResult{}, err
-	}
-	events, err := s.eventsFor(w.ID)
-	if err != nil {
-		return ReceiptedActionResult{}, err
-	}
-	if !receiptedActionEventExists(events, receipt.ID, transition.ID) {
-		if err := s.appendEvent(receiptedActionEvent(w, storedAction, decision, receipt, transition, now)); err != nil {
-			return ReceiptedActionResult{}, err
-		}
-	}
-	return ReceiptedActionResult{Work: w, Action: storedAction, Decision: decision, Receipt: receipt, Transition: transition, Replayed: true}, nil
-}
-
-func sameReceiptedAction(a, b envelope.ActionIntent) bool {
-	return a.ID == b.ID && a.IDs.WorkID == b.IDs.WorkID && a.IDs.SessionID == b.IDs.SessionID &&
-		a.Capability == b.Capability && a.Action == b.Action && a.Target == b.Target &&
-		a.MutationClass == b.MutationClass && a.Reversibility == b.Reversibility && a.BlastRadius == b.BlastRadius &&
-		a.RollbackPlan == b.RollbackPlan
+func sameReceiptedActionEvent(a, b Event) bool {
+	// Event time was nanosecond precision before recovery fixed its transaction
+	// clock to ActionIntent.created_at. Every authority/link field must match;
+	// TS is provenance-only and may differ across the runtime cutover.
+	a.TS = b.TS
+	return reflect.DeepEqual(a, b)
 }
 
 func receiptedActionEvent(w envelope.WorkEnvelope, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition, now time.Time) Event {
 	return Event{TS: ts(now), WorkID: w.ID, From: w.State, To: w.State, By: action.Actor, Note: "receipted action recorded: " + action.Action + " (policy " + decision.Outcome + ")", Attached: []string{action.ID, decision.ID, receipt.ID, transition.ID}}
-}
-
-func receiptedActionEventExists(events []Event, receiptID, transitionID string) bool {
-	for _, event := range events {
-		if proofChainContains(event.Attached, receiptID) && proofChainContains(event.Attached, transitionID) {
-			return true
-		}
-	}
-	return false
 }

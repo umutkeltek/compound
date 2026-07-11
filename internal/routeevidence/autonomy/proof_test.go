@@ -162,13 +162,32 @@ func TestCompileUsesLatestUniqueTerminalReceipts(t *testing.T) {
 		plan := installPlan(t, home, false)
 		seedSample(t, home, plan, "first", proofNow.Add(-48*time.Hour), sampleOptions{})
 		latest := seedSample(t, home, plan, "latest", proofNow.Add(-24*time.Hour), sampleOptions{})
-		appendWorkEvent(t, home, map[string]any{"work_id": latest.WorkID, "attached": []string{latest.ReceiptID}})
+		appendWorkEvent(t, home, map[string]any{"work_id": latest.WorkID, "to": "completed", "attached": []string{latest.ReceiptID}})
 
 		artifact := compile(t, home, plan, 2)
 		if artifact.Status != "ineligible" {
 			t.Fatalf("duplicate receipt attachment escaped: %+v", artifact)
 		}
 		assertReason(t, artifact, "receipt refs; exactly one required")
+	})
+
+	t.Run("nonterminal-action-receipt-is-not-terminal-evidence", func(t *testing.T) {
+		home := t.TempDir()
+		plan := installPlan(t, home, false)
+		seedSample(t, home, plan, "first", proofNow.Add(-48*time.Hour), sampleOptions{})
+		latest := seedSample(t, home, plan, "latest", proofNow.Add(-24*time.Hour), sampleOptions{})
+		appendWorkEvent(t, home, map[string]any{
+			"ts":       proofNow.Add(-23 * time.Hour).Format(time.RFC3339),
+			"work_id":  latest.WorkID,
+			"from":     "running",
+			"to":       "running",
+			"attached": []string{"rec_intermediate_action"},
+		})
+
+		artifact := compile(t, home, plan, 2)
+		if artifact.Status != "eligible" {
+			t.Fatalf("nonterminal action receipt polluted terminal autonomy evidence: %+v", artifact)
+		}
 	})
 }
 

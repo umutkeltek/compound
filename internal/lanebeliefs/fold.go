@@ -78,6 +78,7 @@ type foldCursor struct {
 type workEvent struct {
 	TS       string   `json:"ts"`
 	WorkID   string   `json:"work_id"`
+	To       string   `json:"to"`
 	Attached []string `json:"attached"`
 }
 
@@ -145,6 +146,9 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 
 	groups := map[string]*receiptGroup{}
 	for _, ev := range events {
+		if !laneBeliefTerminalState(ev.Event.To) {
+			continue
+		}
 		transitionCount := countAttachedPrefix(ev.Event.Attached, "tr_")
 		for _, id := range ev.Event.Attached {
 			if !strings.HasPrefix(id, "rec_") {
@@ -259,6 +263,11 @@ func Fold(homePath string, opts FoldOptions) (FoldReport, error) {
 		}
 	}
 	return report, nil
+}
+
+func laneBeliefTerminalState(state string) bool {
+	state = strings.TrimSpace(state)
+	return state == "completed" || state == "failed" || state == "cancelled"
 }
 
 func List(homePath string) (ListReport, error) {

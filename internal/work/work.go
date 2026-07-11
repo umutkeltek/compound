@@ -11,11 +11,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/envelope"
@@ -1070,18 +1072,132 @@ func (s *Store) ListLeases() ([]Lease, error) {
 	return leases, nil
 }
 
+var writeWorkEvent = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
+
 func (s *Store) appendEvent(e Event) error {
-	f, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	b, err := marshalWorkEvent(e)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	return s.withWorkEventLock(func() error {
+		// Open only after taking the stable sidecar lock. Opening first could
+		// retain an inode that a controlled publication replaces while waiting.
+		f, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		n, err := writeWorkEvent(f, b)
+		if err == nil && n != len(b) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// appendEventControlled publishes one JSONL append by atomically replacing the
+// canonical log. The receipted-action transaction uses this rarer O(n) path so
+// a killed writer can leave only a disposable temp file, never a torn canonical
+// tail. beforePublish runs after the temp file is durable but before rename;
+// afterPublish runs after rename and directory sync.
+func (s *Store) appendEventControlled(e Event, beforePublish, afterPublish func() error) error {
+	b, err := marshalWorkEvent(e)
+	if err != nil {
+		return err
+	}
+	return s.withWorkEventLock(func() error {
+		current, err := os.ReadFile(s.eventsLog())
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if _, err := decodeAdmissionEvents(current, ""); err != nil {
+			return err
+		}
+
+		dir := filepath.Dir(s.eventsLog())
+		tmp, err := os.CreateTemp(dir, "."+filepath.Base(s.eventsLog())+".tmp-*")
+		if err != nil {
+			return err
+		}
+		tmpPath := tmp.Name()
+		defer os.Remove(tmpPath)
+		if err := tmp.Chmod(0o644); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+		if err := writeWorkEventPrefix(tmp, current); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+		n, writeErr := writeWorkEvent(tmp, b)
+		if writeErr == nil && n != len(b) {
+			writeErr = io.ErrShortWrite
+		}
+		if writeErr != nil {
+			_ = tmp.Close()
+			return writeErr
+		}
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return err
+		}
+		if err := tmp.Close(); err != nil {
+			return err
+		}
+		if beforePublish != nil {
+			if err := beforePublish(); err != nil {
+				return err
+			}
+		}
+		if err := os.Rename(tmpPath, s.eventsLog()); err != nil {
+			return err
+		}
+		if err := syncReceiptedActionDir(dir); err != nil {
+			return err
+		}
+		if afterPublish != nil {
+			return afterPublish()
+		}
+		return nil
+	})
+}
+
+func marshalWorkEvent(e Event) ([]byte, error) {
 	b, err := json.Marshal(e)
 	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+func (s *Store) withWorkEventLock(fn func() error) error {
+	lock, err := os.OpenFile(s.eventsLog()+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(b, '\n'))
-	return err
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return fn()
+}
+
+func writeWorkEventPrefix(file *os.File, data []byte) error {
+	for remaining := data; len(remaining) > 0; {
+		n, err := file.Write(remaining)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		remaining = remaining[n:]
+	}
+	return nil
 }
 
 func (s *Store) eventsFor(workID string) ([]Event, error) {

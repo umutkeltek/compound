@@ -693,32 +693,44 @@ func (s *Store) workbenchItem(w envelope.WorkEnvelope, events []Event, report *W
 		item.ClaimedBy = lease.By
 		item.ClaimedAt = lease.ClaimAt
 	}
-	item.ReceiptID = lastAttachedWithPrefix(events, "rec_")
-	if item.ReceiptID != "" {
-		var rec envelope.Receipt
-		if err := s.readJSON(s.envPath(item.ReceiptID), &rec); err != nil {
-			report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" unreadable: "+err.Error())
-		} else if err := rec.Validate(); err != nil {
-			report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" invalid: "+err.Error())
-		} else {
-			item.MoveType = rec.MoveType
-			item.Changed = rec.EffectiveChanged()
-			item.EvidenceRefs = mergeUnique(item.EvidenceRefs, rec.ProofRefs)
-			item.ReviewTrigger = rec.Next.ReviewTrigger
-			item.recentAt = workbenchLatestTimestamp(item.recentAt, rec.CreatedAt)
+	if terminalStates[w.State] {
+		if item.TransitionID != "" {
+			var tr envelope.Transition
+			if err := s.readJSON(s.envPath(item.TransitionID), &tr); err != nil {
+				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" unreadable: "+err.Error())
+			} else if err := tr.Validate(); err != nil {
+				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" invalid: "+err.Error())
+			} else if tr.IDs.WorkID != w.ID {
+				report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" belongs to work "+tr.IDs.WorkID)
+			} else {
+				receiptRefs := compactPrefix(tr.AfterRefs, "rec_")
+				switch len(receiptRefs) {
+				case 0:
+					report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" has no closing receipt ref")
+				case 1:
+					item.ReceiptID = receiptRefs[0]
+				default:
+					report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" has multiple closing receipt refs")
+				}
+				item.recentAt = workbenchLatestTimestamp(item.recentAt, tr.CreatedAt)
+			}
 		}
-	}
-	if item.TransitionID == "" {
-		item.TransitionID = lastAttachedWithPrefix(events, "tr_")
-	}
-	if terminalStates[w.State] && item.TransitionID != "" {
-		var tr envelope.Transition
-		if err := s.readJSON(s.envPath(item.TransitionID), &tr); err != nil {
-			report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" unreadable: "+err.Error())
-		} else if err := tr.Validate(); err != nil {
-			report.Integrity = append(report.Integrity, w.ID+": transition "+item.TransitionID+" invalid: "+err.Error())
-		} else {
-			item.recentAt = workbenchLatestTimestamp(item.recentAt, tr.CreatedAt)
+		if item.ReceiptID != "" {
+			var rec envelope.Receipt
+			if err := s.readJSON(s.envPath(item.ReceiptID), &rec); err != nil {
+				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" unreadable: "+err.Error())
+			} else if err := rec.Validate(); err != nil {
+				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" invalid: "+err.Error())
+			} else if rec.IDs.WorkID != w.ID {
+				report.Integrity = append(report.Integrity, w.ID+": receipt "+item.ReceiptID+" belongs to work "+rec.IDs.WorkID)
+				item.ReceiptID = ""
+			} else {
+				item.MoveType = rec.MoveType
+				item.Changed = rec.EffectiveChanged()
+				item.EvidenceRefs = mergeUnique(item.EvidenceRefs, rec.ProofRefs)
+				item.ReviewTrigger = rec.Next.ReviewTrigger
+				item.recentAt = workbenchLatestTimestamp(item.recentAt, rec.CreatedAt)
+			}
 		}
 	}
 	item.ObservatoryTags = workbenchObservatoryTags(item)

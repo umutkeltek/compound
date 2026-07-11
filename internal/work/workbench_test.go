@@ -1332,7 +1332,8 @@ func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Summary: "cancel test artifact"}, fixedNow); err != nil {
+	closed, err := s.Close(w.ID, CloseInput{Outcome: "cancelled", MoveType: "audit_only", Summary: "cancel test artifact"}, fixedNow)
+	if err != nil {
 		t.Fatal(err)
 	}
 	report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
@@ -1344,6 +1345,48 @@ func TestWorkbenchDoesNotCountCancelledWorkAsMissingProof(t *testing.T) {
 	}
 	if len(report.Recent) != 1 || report.Recent[0].WorkID != w.ID || report.Recent[0].State != "cancelled" {
 		t.Fatalf("recent cancelled work missing: %+v", report.Recent)
+	}
+	if report.Recent[0].ReceiptID != closed.Receipt.ID || report.Recent[0].TransitionID != closed.Transition.ID {
+		t.Fatalf("cancelled terminal proof hidden: item=%+v close=%+v", report.Recent[0], closed)
+	}
+}
+
+func TestWorkbenchDoesNotProjectCrossWorkTerminalProofComplete(t *testing.T) {
+	for _, artifact := range []string{"transition", "receipt"} {
+		t.Run(artifact, func(t *testing.T) {
+			s := newStore(t)
+			w := runningWork(t, s, "terminal proof remains bound to one work")
+			closed, err := s.Close(w.ID, CloseInput{Outcome: "completed", MoveType: "audit_only", Summary: "close for mismatch test"}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch artifact {
+			case "transition":
+				crossWork := closed.Transition
+				crossWork.IDs.WorkID = "work_elsewhere"
+				if err := s.writeJSON(s.envPath(crossWork.ID), &crossWork); err != nil {
+					t.Fatal(err)
+				}
+			case "receipt":
+				crossWork := closed.Receipt
+				crossWork.IDs.WorkID = "work_elsewhere"
+				if err := s.writeJSON(s.envPath(crossWork.ID), &crossWork); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			report, err := s.Workbench(fixedNow, WorkbenchOptions{RecentLimit: 10})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Recent) != 1 || len(report.Integrity) == 0 {
+				t.Fatalf("cross-work %s did not surface integrity risk: %+v", artifact, report)
+			}
+			item := report.Recent[0]
+			if contains(item.ObservatoryTags, "proof:complete") || item.ReceiptID != "" {
+				t.Fatalf("cross-work %s projected terminal proof complete: %+v", artifact, item)
+			}
+		})
 	}
 }
 

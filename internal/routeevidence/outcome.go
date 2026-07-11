@@ -336,6 +336,7 @@ func ResolveOutcomeReviewInputs(homePath string, sel OutcomeReviewSelector) (Evi
 
 type workReceiptEvent struct {
 	WorkID   string   `json:"work_id"`
+	To       string   `json:"to"`
 	Attached []string `json:"attached,omitempty"`
 }
 
@@ -363,7 +364,7 @@ func latestReceiptIDForWork(homePath, workID string) (string, error) {
 		if err := json.Unmarshal(raw, &event); err != nil {
 			return "", fmt.Errorf("decode work event line %d: %w", line, err)
 		}
-		if event.WorkID != workID {
+		if event.WorkID != workID || !terminalReceiptEventState(event.To) {
 			continue
 		}
 		for _, attached := range event.Attached {
@@ -376,6 +377,11 @@ func latestReceiptIDForWork(homePath, workID string) (string, error) {
 		return "", fmt.Errorf("scan work event log: %w", err)
 	}
 	return receiptID, nil
+}
+
+func terminalReceiptEventState(state string) bool {
+	state = strings.TrimSpace(state)
+	return state == "completed" || state == "failed" || state == "cancelled"
 }
 
 func bareRuntimeID(kind, id string) (string, error) {

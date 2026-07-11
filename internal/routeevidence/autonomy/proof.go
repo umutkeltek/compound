@@ -648,12 +648,15 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 			return nil, err
 		}
 		evidence := out[event.WorkID]
-		if terminalWorkState(event.To) && strings.TrimSpace(event.TS) != "" {
+		terminal := terminalWorkState(event.To)
+		if terminal && strings.TrimSpace(event.TS) != "" {
 			evidence.TerminalAt = normalizedEvidenceTime(event.TS)
 		}
-		for _, ref := range event.Attached {
-			if strings.HasPrefix(ref, "rec_") {
-				evidence.Refs = append(evidence.Refs, strings.TrimSpace(ref))
+		if terminal {
+			for _, ref := range event.Attached {
+				if strings.HasPrefix(ref, "rec_") {
+					evidence.Refs = append(evidence.Refs, strings.TrimSpace(ref))
+				}
 			}
 		}
 		out[event.WorkID] = evidence

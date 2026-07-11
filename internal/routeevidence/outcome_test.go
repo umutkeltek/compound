@@ -152,6 +152,29 @@ func TestResolveOutcomeReviewInputsByWorkID(t *testing.T) {
 	}
 }
 
+func TestLoadReceiptForWorkIDIgnoresNonterminalActionReceipt(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("completed", true)
+	writeReceiptArtifact(t, home, rec)
+	appendWorkReceiptEventTo(t, home, rec.IDs.WorkID, rec.ID, "running")
+
+	if got, err := LoadReceiptForWorkID(home, rec.IDs.WorkID); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("nonterminal action receipt resolved as parent outcome: err=%v receipt=%+v", err, got)
+	}
+}
+
+func TestLoadReceiptForWorkIDIncludesCancelledTerminalReceipt(t *testing.T) {
+	home := t.TempDir()
+	rec := fixtureReceipt("no_op", false)
+	writeReceiptArtifact(t, home, rec)
+	appendWorkReceiptEventTo(t, home, rec.IDs.WorkID, rec.ID, "cancelled")
+
+	got, err := LoadReceiptForWorkID(home, rec.IDs.WorkID)
+	if err != nil || got.ID != rec.ID {
+		t.Fatalf("cancelled terminal receipt did not resolve by work: err=%v receipt=%+v", err, got)
+	}
+}
+
 func TestResolveOutcomeReviewInputsByReceiptID(t *testing.T) {
 	home := t.TempDir()
 	rec := fixtureReceipt("completed", true)
@@ -276,6 +299,11 @@ func writeReceiptArtifact(t *testing.T, home string, rec envelope.Receipt) {
 
 func appendWorkReceiptEvent(t *testing.T, home, workID, receiptID string) {
 	t.Helper()
+	appendWorkReceiptEventTo(t, home, workID, receiptID, "completed")
+}
+
+func appendWorkReceiptEventTo(t *testing.T, home, workID, receiptID, to string) {
+	t.Helper()
 	dir := filepath.Join(home, "events")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -284,7 +312,7 @@ func appendWorkReceiptEvent(t *testing.T, home, workID, receiptID string) {
 		"ts":       rfc3339(t0),
 		"work_id":  workID,
 		"from":     "verifying",
-		"to":       "completed",
+		"to":       to,
 		"attached": []string{receiptID},
 	}
 	data, err := json.Marshal(row)

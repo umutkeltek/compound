@@ -131,6 +131,48 @@ func TestFoldUnresolvedLaneYieldsZeroEvidence(t *testing.T) {
 	}
 }
 
+func TestFoldIgnoresNonterminalActionReceipt(t *testing.T) {
+	homePath := t.TempDir()
+	writeLaneReceiptEvent(t, homePath, laneReceiptFixture{
+		ReceiptID: "rec_intermediate_action",
+		WorkID:    "work_parent_still_running",
+		LaneID:    "fixture/judge",
+		MoveType:  "control_plane_repair",
+		Outcome:   "completed",
+		Changed:   true,
+		To:        "running",
+	})
+
+	report, err := Fold(homePath, FoldOptions{Now: foldTestTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RawReceiptCount != 0 || report.NewObservationCount != 0 || report.CandidateCount != 0 || len(report.Aggregates) != 0 {
+		t.Fatalf("nonterminal action receipt became lane outcome evidence: %+v", report)
+	}
+}
+
+func TestFoldIncludesCancelledTerminalReceipt(t *testing.T) {
+	homePath := t.TempDir()
+	writeLaneReceiptEvent(t, homePath, laneReceiptFixture{
+		ReceiptID: "rec_cancelled_terminal",
+		WorkID:    "work_cancelled_terminal",
+		LaneID:    "fixture/judge",
+		MoveType:  "outward_delta",
+		Outcome:   "no_op",
+		Changed:   false,
+		To:        "cancelled",
+	})
+
+	report, err := Fold(homePath, FoldOptions{Now: foldTestTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RawReceiptCount != 1 || report.NewObservationCount != 1 || len(report.Aggregates) != 1 {
+		t.Fatalf("cancelled terminal receipt disappeared from lane outcomes: %+v", report)
+	}
+}
+
 func TestFoldConstantsMatchBinding(t *testing.T) {
 	if MIN_LANE_RECEIPTS != 5 || MIN_CORROBORATION_WORKS != 2 || BETA_PRIOR_ALPHA != 2 || BETA_PRIOR_BETA != 2 || PROMOTE_POSTERIOR_FLOOR != 0.66 || COOL_AFTER_FOLDS != 3 || PER_CYCLE_CANDIDATE_CAP <= 0 {
 		t.Fatalf("fold constants drifted")
@@ -145,6 +187,7 @@ type laneReceiptFixture struct {
 	Outcome   string
 	Changed   bool
 	Summary   string
+	To        string
 }
 
 func writeLaneReceiptEvent(t *testing.T, homePath string, fx laneReceiptFixture) {
@@ -175,11 +218,15 @@ func writeLaneReceiptEvent(t *testing.T, homePath string, fx laneReceiptFixture)
 		ProofRefs:  []string{"proof:test"},
 	}
 	writeJSONFile(t, filepath.Join(homePath, "events", fx.ReceiptID+".json"), receipt)
+	to := fx.To
+	if to == "" {
+		to = "completed"
+	}
 	line := map[string]any{
 		"ts":       created,
 		"work_id":  fx.WorkID,
 		"from":     "running",
-		"to":       "completed",
+		"to":       to,
 		"attached": []string{fx.ReceiptID},
 	}
 	b, err := json.Marshal(line)

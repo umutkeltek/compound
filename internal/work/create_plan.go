@@ -221,6 +221,10 @@ func (s *Store) admissionEventsFor(workID string) ([]Event, error) {
 		}
 		return nil, err
 	}
+	return decodeAdmissionEvents(b, workID)
+}
+
+func decodeAdmissionEvents(b []byte, workID string) ([]Event, error) {
 	if len(b) == 0 {
 		return nil, nil
 	}
@@ -240,7 +244,7 @@ func (s *Store) admissionEventsFor(workID string) ([]Event, error) {
 		if strings.TrimSpace(event.WorkID) == "" {
 			return nil, fmt.Errorf("work event log malformed at line %d: work_id required", lineNumber+1)
 		}
-		if event.WorkID == workID {
+		if workID == "" || event.WorkID == workID {
 			out = append(out, event)
 		}
 	}
