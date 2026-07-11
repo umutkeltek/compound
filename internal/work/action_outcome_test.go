@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +113,172 @@ func TestRecordReceiptedActionKeepsParentOpenAndIsStateIdempotent(t *testing.T) 
 		if string(body) != before[path] {
 			t.Fatalf("replay rewrote %s", filepath.Base(path))
 		}
+	}
+}
+
+func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-historical-replay", "", fixedNow)
+	aInput := receiptedActionTestInput(w, claimID, "act_receipted_historical_a", "recorded historical action A", fixedNow.Add(time.Minute))
+	bInput := receiptedActionTestInput(w, claimID, "act_receipted_historical_b", "recorded newer action B", fixedNow.Add(2*time.Minute))
+
+	a, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeWork, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeWork.RunIDs) < 2 || beforeWork.RunIDs[len(beforeWork.RunIDs)-2] != a.Action.ID || beforeWork.RunIDs[len(beforeWork.RunIDs)-1] != b.Action.ID {
+		t.Fatalf("receipted action order = %v, want suffix [%s %s]", beforeWork.RunIDs, a.Action.ID, b.Action.ID)
+	}
+	beforeWorkBytes, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEventBytes, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := s.admissionEventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replayInput := aInput
+	replayInput.Action.CreatedAt = fixedNow.Add(3 * time.Minute).UTC().Format(time.RFC3339)
+	replay, err := s.RecordReceiptedAction(w.ID, replayInput, fixedNow.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("historical replay: %v", err)
+	}
+	if !replay.Replayed || replay.Action.ID != a.Action.ID || replay.Decision.ID != a.Decision.ID || replay.Receipt.ID != a.Receipt.ID || replay.Transition.ID != a.Transition.ID {
+		t.Fatalf("historical replay did not return transaction A: %+v", replay)
+	}
+	if replay.Work.PolicyDecisionID != b.Decision.ID || !slices.Equal(replay.Work.RunIDs, beforeWork.RunIDs) {
+		t.Fatalf("historical replay returned rewound work: %+v", replay.Work)
+	}
+	afterWorkBytes, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterWorkBytes) != string(beforeWorkBytes) {
+		t.Fatal("historical replay rewrote the WorkEnvelope")
+	}
+	afterWork, err := s.Get(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterWork.PolicyDecisionID != b.Decision.ID || !slices.Equal(afterWork.RunIDs, beforeWork.RunIDs) {
+		t.Fatalf("historical replay rewound persisted work: %+v", afterWork)
+	}
+	afterEventBytes, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := s.admissionEventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterEvents) != len(beforeEvents) || string(afterEventBytes) != string(beforeEventBytes) {
+		t.Fatalf("historical replay republished an event: before=%d after=%d", len(beforeEvents), len(afterEvents))
+	}
+}
+
+func TestRecordReceiptedActionRejectsHistoricalReplayWithCorruptNewerPolicyLink(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-corrupt-newer-link", "", fixedNow)
+	aInput := receiptedActionTestInput(w, claimID, "act_receipted_corrupt_link_a", "recorded historical action A", fixedNow.Add(time.Minute))
+	bInput := receiptedActionTestInput(w, claimID, "act_receipted_corrupt_link_b", "recorded newer action B", fixedNow.Add(2*time.Minute))
+
+	a, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptDecision := b.Decision
+	corruptDecision.ActionIntentID = a.Action.ID
+	if err := s.writeJSON(s.envPath(b.Decision.ID), &corruptDecision); err != nil {
+		t.Fatal(err)
+	}
+	beforeWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(3*time.Minute))
+	if err == nil || replay.Replayed || !strings.Contains(err.Error(), "conflicts with persisted work links") {
+		t.Fatalf("corrupt newer policy link authorized historical replay: err=%v result=%+v", err, replay)
+	}
+	afterWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterWork) != string(beforeWork) || string(afterEvents) != string(beforeEvents) {
+		t.Fatal("rejected historical replay changed work or event state")
+	}
+}
+
+func TestRecordReceiptedActionRejectsHistoricalReplayWithoutOriginalEvent(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-historical-event", "", fixedNow)
+	aInput := receiptedActionTestInput(w, claimID, "act_receipted_missing_event_a", "recorded historical action A", fixedNow.Add(time.Minute))
+	bInput := receiptedActionTestInput(w, claimID, "act_receipted_missing_event_b", "recorded newer action B", fixedNow.Add(2*time.Minute))
+
+	eventsBeforeA, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	eventsAfterA, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	eventsAfterB, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventsAfterB) < len(eventsAfterA) || !strings.HasPrefix(string(eventsAfterB), string(eventsAfterA)) {
+		t.Fatal("receipted action events were not append-only")
+	}
+	eventsWithoutA := append(append([]byte{}, eventsBeforeA...), eventsAfterB[len(eventsAfterA):]...)
+	if err := os.WriteFile(s.eventsLog(), eventsWithoutA, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(3*time.Minute))
+	if err == nil || replay.Replayed || !strings.Contains(err.Error(), "historical transaction is missing its event") {
+		t.Fatalf("historical replay repaired an event after newer chronology: err=%v result=%+v", err, replay)
+	}
+	afterReplay, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterReplay) != string(eventsWithoutA) {
+		t.Fatal("rejected historical replay changed the event log")
 	}
 }
 
@@ -709,6 +876,17 @@ func receiptedActionIntent(w envelope.WorkEnvelope, id string, now time.Time) en
 		Reversibility: "easy",
 		BlastRadius:   "local",
 		RollbackPlan:  "retain the Stop event and review any contradiction",
+	}
+}
+
+func receiptedActionTestInput(w envelope.WorkEnvelope, claimID, actionID, summary string, now time.Time) ReceiptedActionInput {
+	return ReceiptedActionInput{
+		Action:                     receiptedActionIntent(w, actionID, now),
+		OperationalDecisionClaimID: claimID,
+		ExpectedWorkState:          "running",
+		Summary:                    summary,
+		MoveType:                   "control_plane_repair",
+		ProofRefs:                  []string{"claim:" + claimID},
 	}
 }
 

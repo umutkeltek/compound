@@ -185,17 +185,18 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 		return out, err
 	}
 
-	workLinked := proofChainContains(w.RunIDs, action.ID)
-	policyLinked := w.PolicyDecisionID == decision.ID
-	if workLinked != policyLinked {
-		return out, fmt.Errorf("receipted action %s conflicts with persisted work links", action.ID)
+	workLinked, historicalReplay, err := s.preflightReceiptedActionWorkLink(w, action.ID, decision.ID)
+	if err != nil {
+		return out, err
 	}
 	if strings.TrimSpace(w.IDs.TransitionID) != "" {
 		return out, fmt.Errorf("receipted action %s conflicts with persisted work transition_id %s", action.ID, w.IDs.TransitionID)
 	}
 	expectedWork := w
-	expectedWork.RunIDs = mergeUnique(expectedWork.RunIDs, []string{action.ID})
-	expectedWork.PolicyDecisionID = decision.ID
+	if !historicalReplay {
+		expectedWork.RunIDs = mergeUnique(expectedWork.RunIDs, []string{action.ID})
+		expectedWork.PolicyDecisionID = decision.ID
+	}
 	if err := expectedWork.Validate(); err != nil {
 		return out, fmt.Errorf("receipted action %s expected work invalid: %w", action.ID, err)
 	}
@@ -207,6 +208,9 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	eventPresent, err := preflightReceiptedActionEvent(events, expectedEvent)
 	if err != nil {
 		return out, err
+	}
+	if historicalReplay && !eventPresent {
+		return out, fmt.Errorf("receipted action %s historical transaction is missing its event", action.ID)
 	}
 	stages := []struct {
 		name    string
@@ -318,6 +322,78 @@ func (s *Store) preflightReceiptedEnvelope(kind, id string, expected, target env
 		return false, fmt.Errorf("receipted action %s persisted %s conflicts with requested transaction", id, kind)
 	}
 	return true, nil
+}
+
+func (s *Store) preflightReceiptedActionWorkLink(w envelope.WorkEnvelope, actionID, decisionID string) (bool, bool, error) {
+	actionIndex := -1
+	latestActionIndex := -1
+	for i, ref := range w.RunIDs {
+		if strings.HasPrefix(ref, "act_") {
+			latestActionIndex = i
+		}
+		if ref != actionID {
+			continue
+		}
+		if actionIndex >= 0 {
+			return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: duplicate run reference", actionID)
+		}
+		actionIndex = i
+	}
+
+	policyLinked := w.PolicyDecisionID == decisionID
+	if actionIndex < 0 {
+		if policyLinked {
+			return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: policy is linked without its action", actionID)
+		}
+		return false, false, nil
+	}
+	if actionIndex == latestActionIndex {
+		if !policyLinked {
+			return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: latest action policy differs", actionID)
+		}
+		return true, false, nil
+	}
+	if policyLinked {
+		return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: historical action owns the current policy link", actionID)
+	}
+
+	latestActionID := w.RunIDs[latestActionIndex]
+	if err := s.validateReceiptedActionNewerWorkLink(w, latestActionID); err != nil {
+		return false, false, fmt.Errorf("receipted action %s conflicts with persisted work links: %w", actionID, err)
+	}
+	return true, true, nil
+}
+
+func (s *Store) validateReceiptedActionNewerWorkLink(w envelope.WorkEnvelope, latestActionID string) error {
+	var latestAction envelope.ActionIntent
+	if err := s.readJSON(s.envPath(latestActionID), &latestAction); err != nil {
+		return fmt.Errorf("latest action %s unreadable: %w", latestActionID, err)
+	}
+	if err := latestAction.Validate(); err != nil {
+		return fmt.Errorf("latest action %s invalid: %w", latestActionID, err)
+	}
+	if latestAction.ID != latestActionID || latestAction.IDs.WorkID != w.ID {
+		return fmt.Errorf("latest action %s does not belong to work %s", latestActionID, w.ID)
+	}
+
+	policyID := strings.TrimSpace(w.PolicyDecisionID)
+	if policyID == "" {
+		return fmt.Errorf("latest action %s has no current policy", latestActionID)
+	}
+	var latestDecision envelope.PolicyDecision
+	if err := s.readJSON(s.envPath(policyID), &latestDecision); err != nil {
+		return fmt.Errorf("current policy %s unreadable: %w", policyID, err)
+	}
+	if err := latestDecision.Validate(); err != nil {
+		return fmt.Errorf("current policy %s invalid: %w", policyID, err)
+	}
+	if latestDecision.ID != policyID || latestDecision.IDs.WorkID != w.ID || latestDecision.ActionIntentID != latestActionID {
+		return fmt.Errorf("current policy %s does not belong to latest action %s", policyID, latestActionID)
+	}
+	if !policy.Allowed(latestDecision) {
+		return fmt.Errorf("current policy %s did not allow latest action %s", policyID, latestActionID)
+	}
+	return nil
 }
 
 func validateReceiptedActionPrefix(actionID string, stages []struct {
