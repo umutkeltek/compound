@@ -581,6 +581,9 @@ func nextPanelRouteRequestID(homePath string, run Run, targetRef, baseRequestID,
 		if !samePanelRouteIdentity(existing, requestID, run.WorkID, clientProfile, lane) {
 			return "", fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
 		}
+		if existing.Usage.TotalTokens <= 0 && panelCallRequiresKnownUsage(run, lane) {
+			return "", fmt.Errorf("panel request %s has unknown token usage", requestID)
+		}
 	}
 }
 
