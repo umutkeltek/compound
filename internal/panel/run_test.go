@@ -300,6 +300,7 @@ func TestExecuteDryRunRejectsPersistedNegativeBudgetBeforeSpend(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	validInvocation := run
 	run.Budget = Budget{MaxUSDMicros: 1, MaxTotalTokens: -1}
 	data, err := json.MarshalIndent(run, "", "  ")
 	if err != nil {
@@ -330,7 +331,7 @@ func TestExecuteDryRunRejectsPersistedNegativeBudgetBeforeSpend(t *testing.T) {
 	}
 
 	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
-	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "must be non-negative") {
+	if _, err := ExecuteDryRun(context.Background(), home, validInvocation, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "must be non-negative") {
 		t.Fatalf("persisted negative budget did not fail validation: %v", err)
 	}
 	if caller.calls != 0 {
