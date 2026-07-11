@@ -214,6 +214,42 @@ func TestJobHealthEvidenceThresholdAutonomyAdmitsAndRetainsExactProofs(t *testin
 	}
 }
 
+func TestJobHealthEvidenceAutonomyReconsidersExistingProposalAfterNewEvidence(t *testing.T) {
+	home := seededDirectorHome(t)
+	firstNow := directorTestNow.Add(96 * time.Hour)
+	seedDirectorApplyGrant(t, home, firstNow.Add(-72*time.Hour))
+	seedJobHealthAutonomyGrant(t, home, "job_health", 2, 1, 0, firstNow.Add(-72*time.Hour))
+	seedJobHealthAutonomySample(t, home, "reconsider-a", firstNow.Add(-48*time.Hour), "completed", "auto/judge", true)
+	seedFailingJobHealth(t, home)
+
+	first, err := Propose(home, Options{Apply: true, Now: firstNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJob := findProposalByKind(first, "job_health")
+	if firstJob == nil || firstJob.WorkState != "proposed" || firstJob.AutoAdmitResult == nil || firstJob.AutoAdmitResult.Admitted {
+		t.Fatalf("insufficient first pass must leave job_health proposed: %+v", firstJob)
+	}
+
+	seedJobHealthAutonomySample(t, home, "reconsider-b", firstNow.Add(24*time.Hour), "completed", "auto/judge", true)
+	second, err := Propose(home, Options{Apply: true, Now: firstNow.Add(48 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJob := findProposalByKind(second, "job_health")
+	if secondJob == nil || secondJob.WorkID != firstJob.WorkID || secondJob.WorkState != "admitted" || secondJob.AutoAdmitResult == nil || !secondJob.AutoAdmitResult.Admitted {
+		t.Fatalf("new evidence must reconsider and admit the existing proposal: first=%+v second=%+v report=%+v", firstJob, secondJob, second)
+	}
+	store, err := work.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(firstJob.WorkID)
+	if err != nil || got.State != "admitted" {
+		t.Fatalf("reconsidered work must be admitted in place: state=%q err=%v", got.State, err)
+	}
+}
+
 func TestJobHealthEvidenceAutonomyWritesOnlyAdmissionSurfaces(t *testing.T) {
 	home := seededDirectorHome(t)
 	now := directorTestNow.Add(96 * time.Hour)

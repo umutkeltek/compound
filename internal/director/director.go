@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"compound/internal/authority"
+	"compound/internal/envelope"
 	"compound/internal/observation"
 	"compound/internal/product"
 	"compound/internal/reviewartifact"
@@ -101,6 +103,7 @@ type Proposal struct {
 	AdmissionID     string                `json:"admission_id,omitempty"`
 	AutoAdmitResult *work.AutoAdmitResult `json:"auto_admit_result,omitempty"`
 	AutoAdmitError  string                `json:"auto_admit_error,omitempty"`
+	expectedWork    envelope.WorkEnvelope
 }
 
 type SuppressedDuplicate struct {
@@ -225,6 +228,19 @@ func Propose(homePath string, opts Options) (Report, error) {
 			dup.Kind = proposal.Kind
 			dup.Title = proposal.Title
 			dup.EvidenceRefs = append([]string{}, proposal.EvidenceRefs...)
+			if opts.Apply && proposal.Kind == "job_health" {
+				reconsidered, err := reconsiderJobHealthEvidenceAutonomy(homePath, store, &proposal, *dup, now)
+				if err != nil {
+					return report, err
+				}
+				if reconsidered {
+					report.Proposals = append(report.Proposals, proposal)
+					continue
+				}
+				if proposal.AutoAdmitError != "" {
+					report.Warnings = append(report.Warnings, proposal.AutoAdmitError)
+				}
+			}
 			report.SuppressedDuplicates = append(report.SuppressedDuplicates, *dup)
 			continue
 		}
@@ -305,6 +321,51 @@ func attemptJobHealthEvidenceAutonomy(homePath string, store *work.Store, propos
 	}
 	proposal.AdmissionID = admission.ID
 	proposal.WorkState = admission.WorkState
+	return evaluateJobHealthEvidenceAutonomy(homePath, store, proposal, now)
+}
+
+func reconsiderJobHealthEvidenceAutonomy(homePath string, store *work.Store, proposal *Proposal, duplicate SuppressedDuplicate, now time.Time) (bool, error) {
+	if len(duplicate.ExistingWorkIDs) != 1 || duplicate.ExistingWorkIDs[0] != proposal.WorkID {
+		return false, nil
+	}
+	existing, err := store.Get(proposal.WorkID)
+	if err != nil {
+		return false, err
+	}
+	if existing.State != "proposed" {
+		return false, nil
+	}
+	if !sameDirectorProposalWork(existing, proposal.expectedWork) {
+		proposal.AutoAdmitError = "existing job_health proposal does not match current Director semantics; refusing autonomous reconsideration"
+		return false, nil
+	}
+	proposal.WorkState = existing.State
+	if err := evaluateJobHealthEvidenceAutonomy(homePath, store, proposal, now); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func sameDirectorProposalWork(existing, expected envelope.WorkEnvelope) bool {
+	return existing.ID == expected.ID &&
+		existing.Owner == expected.Owner &&
+		existing.CanonicalSurface == expected.CanonicalSurface &&
+		existing.TargetSurface == expected.TargetSurface &&
+		existing.State == expected.State &&
+		existing.DesiredOutcome == expected.DesiredOutcome &&
+		existing.SuccessPredicate == expected.SuccessPredicate &&
+		existing.ProofMedium == expected.ProofMedium &&
+		existing.RouteDecisionID == expected.RouteDecisionID &&
+		existing.Privacy == expected.Privacy &&
+		existing.Risk == expected.Risk &&
+		existing.Scope == expected.Scope &&
+		existing.Authority == expected.Authority &&
+		existing.Uncertainty == expected.Uncertainty &&
+		slices.Equal(existing.NonGoals, expected.NonGoals) &&
+		slices.Equal(existing.EvidenceRefs, expected.EvidenceRefs)
+}
+
+func evaluateJobHealthEvidenceAutonomy(homePath string, store *work.Store, proposal *Proposal, now time.Time) error {
 
 	grant, ok, err := resolveAutonomyGrant(homePath, "job_health")
 	if err != nil {
@@ -547,6 +608,7 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 		WorkID:          workID,
 		WorkState:       "proposed",
 		RoutePlan:       routePlan,
+		expectedWork:    workEnvelope,
 	}, nil
 }
 
