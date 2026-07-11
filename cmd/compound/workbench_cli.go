@@ -30,8 +30,18 @@ import (
 
 const workbenchCapabilityOfferLimit = 12
 const workbenchOperatorStageLimit = 3
+const workbenchOperatorOpportunityMaxRunes = 96
+const workbenchOperatorMissionMaxRunes = 96
+const workbenchOperatorDecisionMaxRunes = 120
+const workbenchOperatorProofMaxRunes = 96
 
 const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
+
+var (
+	operatorAbsolutePathPattern = regexp.MustCompile(`(^|[[:space:]("'=\[])/(?:[^[:space:]|,;)]*)`)
+	operatorActionIDPattern     = regexp.MustCompile(`\bact_[A-Za-z0-9][A-Za-z0-9_:-]*\b`)
+	operatorPolicyIDPattern     = regexp.MustCompile(`\bpol_[A-Za-z0-9][A-Za-z0-9_:-]*\b`)
+)
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -630,7 +640,7 @@ func printOperatorGroup(group operatorWorkbenchGroup) {
 			operatorValue(row.Proof),
 			operatorValue(row.Item.ReceiptID),
 			operatorValue(row.Item.TransitionID),
-			operatorValue(row.Learning),
+			operatorDefaultText(operatorValue(row.Learning), workbenchOperatorProofMaxRunes),
 		)
 	}
 }
@@ -675,7 +685,7 @@ func operatorWorkbenchRows(report work.WorkbenchReport) []operatorWorkbenchRow {
 			Status:      status,
 			Authority:   authority,
 			Opportunity: operatorOpportunityForItem(item),
-			Mission:     firstNonEmpty(item.DesiredOutcome, item.SuccessPredicate, "unknown/not yet proven"),
+			Mission:     operatorMissionForItem(item),
 			Assignee:    operatorAssigneeForItem(item),
 			Proof:       operatorProofForItem(item),
 			Decision:    operatorDecisionForItem(item),
@@ -707,7 +717,32 @@ func operatorWorkbenchGroups(rows []operatorWorkbenchRow) map[string][]operatorW
 		indexes[stage][key] = len(groups[stage])
 		groups[stage] = append(groups[stage], operatorWorkbenchGroup{Representative: row, Count: 1})
 	}
+	sortOperatorWorkbenchGroups(groups)
 	return groups
+}
+
+func sortOperatorWorkbenchGroups(groups map[string][]operatorWorkbenchGroup) {
+	for stage := range groups {
+		sort.SliceStable(groups[stage], func(i, j int) bool {
+			pi := operatorGroupPriority(groups[stage][i])
+			pj := operatorGroupPriority(groups[stage][j])
+			return pi < pj
+		})
+	}
+}
+
+func operatorGroupPriority(group operatorWorkbenchGroup) int {
+	return operatorRowPriority(group.Representative)
+}
+
+func operatorRowPriority(row operatorWorkbenchRow) int {
+	if operatorIsSourceControlToolWriteHold(row.Item) {
+		return 30
+	}
+	if operatorIsMeaningfulDecisionRow(row) {
+		return 0
+	}
+	return 10
 }
 
 func operatorStageForRow(row operatorWorkbenchRow) string {
@@ -726,6 +761,9 @@ func operatorStageForRow(row operatorWorkbenchRow) string {
 }
 
 func operatorGroupKey(row operatorWorkbenchRow) string {
+	if operatorIsSourceControlToolWriteHold(row.Item) {
+		return operatorStageForRow(row) + "|held-source-control-tool-write-gates"
+	}
 	return strings.Join([]string{
 		operatorStageForRow(row),
 		operatorNormalizeGroupText(row.Status),
@@ -749,14 +787,42 @@ func operatorStageRowCount(groups []operatorWorkbenchGroup) int {
 }
 
 func operatorTopPriorityRow(rows []operatorWorkbenchRow) *operatorWorkbenchRow {
-	for _, stage := range []string{"Needs you", "Working", "Ready", "Recent proof", "Other"} {
-		for i := range rows {
-			if operatorStageForRow(rows[i]) == stage {
-				return &rows[i]
-			}
+	if len(rows) == 0 {
+		return nil
+	}
+	best := 0
+	for i := 1; i < len(rows); i++ {
+		if operatorRowLess(rows[i], rows[best]) {
+			best = i
 		}
 	}
-	return nil
+	return &rows[best]
+}
+
+func operatorRowLess(a, b operatorWorkbenchRow) bool {
+	as := operatorStagePriority(a)
+	bs := operatorStagePriority(b)
+	if as != bs {
+		return as < bs
+	}
+	ap := operatorRowPriority(a)
+	bp := operatorRowPriority(b)
+	return ap < bp
+}
+
+func operatorStagePriority(row operatorWorkbenchRow) int {
+	switch operatorStageForRow(row) {
+	case "Needs you":
+		return 0
+	case "Working":
+		return 1
+	case "Ready":
+		return 2
+	case "Recent proof":
+		return 3
+	default:
+		return 4
+	}
 }
 
 // operatorStatusForItem is a deterministic translation of existing
@@ -818,7 +884,17 @@ func operatorItemNeedsUmut(item work.WorkbenchItem) bool {
 }
 
 func operatorOpportunityForItem(item work.WorkbenchItem) string {
-	return firstNonEmpty(item.SuccessPredicate, item.CanonicalSurface, item.WorkID, "unknown/not yet proven")
+	if operatorIsSourceControlToolWriteHold(item) {
+		return "held source-control tool-write gates"
+	}
+	return operatorDefaultText(firstNonEmpty(item.SuccessPredicate, item.CanonicalSurface, item.WorkID, "unknown/not yet proven"), workbenchOperatorOpportunityMaxRunes)
+}
+
+func operatorMissionForItem(item work.WorkbenchItem) string {
+	if operatorIsSourceControlToolWriteHold(item) {
+		return "review current source-control write gate before clearing held work"
+	}
+	return operatorDefaultText(firstNonEmpty(item.DesiredOutcome, item.SuccessPredicate, "unknown/not yet proven"), workbenchOperatorMissionMaxRunes)
 }
 
 func operatorAssigneeForItem(item work.WorkbenchItem) string {
@@ -827,21 +903,21 @@ func operatorAssigneeForItem(item work.WorkbenchItem) string {
 
 func operatorProofForItem(item work.WorkbenchItem) string {
 	if proof := firstNonEmpty(item.EvidenceRefs...); proof != "" {
-		return proof
+		return operatorHumanProofRef(proof)
 	}
 	if proof := firstNonEmpty(item.VerificationIDs...); proof != "" {
-		return proof
+		return operatorHumanProofRef(proof)
 	}
 	if proof := firstNonEmpty(item.ArtifactIDs...); proof != "" {
-		return proof
+		return operatorHumanProofRef(proof)
 	}
 	for _, obs := range item.RunObservations {
 		if obs.TraceID != "" {
-			return obs.TraceID
+			return operatorHumanProofRef(obs.TraceID)
 		}
 	}
 	if item.ReceiptID != "" && item.TransitionID != "" {
-		return item.ReceiptID + " + " + item.TransitionID
+		return "receipt and transition recorded"
 	}
 	return "unknown/not yet proven"
 }
@@ -897,7 +973,7 @@ func operatorSummaryChoice(output workbenchCLIOutput, rows []operatorWorkbenchRo
 		return "the next governed dispatch step"
 	}
 	if output.DispatchNext.WaitReason != "" {
-		return "to wait on " + operatorWords(output.DispatchNext.WaitReason)
+		return "to wait on " + operatorDefaultText(operatorWords(output.DispatchNext.WaitReason), workbenchOperatorDecisionMaxRunes)
 	}
 	return "to inspect current work"
 }
@@ -960,7 +1036,7 @@ func operatorSummaryNeed(output workbenchCLIOutput, rows []operatorWorkbenchRow)
 		return "receipt/transition proof"
 	}
 	if output.DispatchNext.WaitReason != "" {
-		return operatorWords(output.DispatchNext.WaitReason)
+		return operatorDefaultText(operatorWords(output.DispatchNext.WaitReason), workbenchOperatorDecisionMaxRunes)
 	}
 	return "nothing; visible work is integrated"
 }
@@ -971,7 +1047,93 @@ func operatorDecisionText(value string) string {
 	if value == "" {
 		return "unknown/not yet proven"
 	}
+	return operatorDefaultText(value, workbenchOperatorDecisionMaxRunes)
+}
+
+func operatorHumanProofRef(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if operatorActionIDPattern.MatchString(value) || operatorPolicyIDPattern.MatchString(value) {
+		return "governed action/policy proof recorded"
+	}
+	if operatorAbsolutePathPattern.MatchString(value) {
+		return "local proof file recorded"
+	}
+	return operatorDefaultText(value, workbenchOperatorProofMaxRunes)
+}
+
+func operatorDefaultText(value string, maxRunes int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	value = operatorRedactDefaultText(value)
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "unknown"
+	}
+	return operatorTruncateRunes(value, maxRunes)
+}
+
+func operatorRedactDefaultText(value string) string {
+	value = operatorAbsolutePathPattern.ReplaceAllString(value, "${1}local path")
+	value = operatorActionIDPattern.ReplaceAllString(value, "governed action id")
+	value = operatorPolicyIDPattern.ReplaceAllString(value, "policy decision id")
 	return value
+}
+
+func operatorTruncateRunes(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return strings.TrimSpace(string(runes[:maxRunes-3])) + "..."
+}
+
+func operatorIsMeaningfulDecisionRow(row operatorWorkbenchRow) bool {
+	text := operatorItemSearchText(row.Item)
+	for _, needle := range []string{"product", "review", "operator decision", "adjudicat", "approval", "pricing", "release"} {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func operatorIsSourceControlToolWriteHold(item work.WorkbenchItem) bool {
+	if item.State != "held" && item.State != "blocked" {
+		return false
+	}
+	text := operatorItemSearchText(item)
+	hasSourceControl := strings.Contains(text, "source-control") || strings.Contains(text, "source control")
+	hasToolWriteGate := strings.Contains(text, "tool-write") ||
+		strings.Contains(text, "tool write") ||
+		strings.Contains(text, "policy-gate") ||
+		strings.Contains(text, "policy gate")
+	return hasSourceControl && hasToolWriteGate
+}
+
+func operatorItemSearchText(item work.WorkbenchItem) string {
+	parts := []string{
+		item.State,
+		item.SuccessPredicate,
+		item.DesiredOutcome,
+		item.CanonicalSurface,
+		item.NextAction,
+		strings.Join(item.EvidenceRefs, " "),
+	}
+	for _, card := range item.ReviewCards {
+		parts = append(parts, card.Kind, card.Title, card.NextAction, card.GateID, card.SourceKind)
+	}
+	return strings.ToLower(strings.Join(parts, " "))
 }
 
 func operatorCount(n int, singular, plural string) string {
