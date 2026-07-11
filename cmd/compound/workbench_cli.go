@@ -34,8 +34,8 @@ const workbenchOperatorOpportunityMaxRunes = 96
 const workbenchOperatorMissionMaxRunes = 96
 const workbenchOperatorDecisionMaxRunes = 120
 const workbenchOperatorProofMaxRunes = 96
-const workbenchOperatorSummaryOpportunityMaxRunes = 56
-const workbenchOperatorSummaryChoiceMaxRunes = 48
+const workbenchOperatorSummaryOpportunityMaxRunes = 48
+const workbenchOperatorSummaryChoiceMaxRunes = 36
 
 const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
