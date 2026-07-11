@@ -33,6 +33,10 @@ var writeRouteEvidenceFile = func(file *os.File, data []byte) (int, error) { ret
 var syncRouteEvidenceFile = func(file *os.File) error { return file.Sync() }
 var closeRouteEvidenceFile = func(file *os.File) error { return file.Close() }
 
+// routeEvidenceBeforeLedgerReplace is a deterministic test seam after the
+// canonical preimage has been validated but before publication.
+var routeEvidenceBeforeLedgerReplace = func() {}
+
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
@@ -458,6 +462,7 @@ func recordEvidenceLocked(homePath string, ev Evidence) error {
 	if !sameRouteEvidenceLedgerSnapshot(current, currentInfo, observed, observedInfo) {
 		return cleanup(fmt.Errorf("execution route evidence ledger changed after snapshot"))
 	}
+	routeEvidenceBeforeLedgerReplace()
 	if err := root.Rename(tempName, executionRouteEvidenceLedger); err != nil {
 		_ = root.Remove(tempName)
 		return err

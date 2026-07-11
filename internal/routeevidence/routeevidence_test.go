@@ -397,33 +397,38 @@ func TestRecordClaimedJoinedRejectsSameInodeLedgerAppendBeforePublish(t *testing
 		t.Fatalf("claim request id: %v", err)
 	}
 
-	previousWrite := writeRouteEvidenceFile
-	t.Cleanup(func() { writeRouteEvidenceFile = previousWrite })
+	previousHook := routeEvidenceBeforeLedgerReplace
+	t.Cleanup(func() { routeEvidenceBeforeLedgerReplace = previousHook })
 	injected := false
 	var afterAppendInfo os.FileInfo
-	writeRouteEvidenceFile = func(file *os.File, data []byte) (int, error) {
-		n, err := file.Write(data)
-		if err != nil || n != len(data) || injected {
-			return n, err
+	routeEvidenceBeforeLedgerReplace = func() {
+		if injected {
+			return
 		}
 		injected = true
 		canonical, err := os.OpenFile(ledgerPath, os.O_APPEND|os.O_WRONLY, 0)
 		if err != nil {
-			return n, err
+			t.Errorf("open canonical ledger for concurrent append: %v", err)
+			return
 		}
 		if _, err := canonical.Write(concurrentRow); err != nil {
 			_ = canonical.Close()
-			return n, err
+			t.Errorf("append concurrent ledger row: %v", err)
+			return
 		}
 		if err := canonical.Sync(); err != nil {
 			_ = canonical.Close()
-			return n, err
+			t.Errorf("sync concurrent ledger row: %v", err)
+			return
 		}
 		if err := canonical.Close(); err != nil {
-			return n, err
+			t.Errorf("close concurrent ledger row: %v", err)
+			return
 		}
 		afterAppendInfo, err = os.Stat(ledgerPath)
-		return n, err
+		if err != nil {
+			t.Errorf("stat concurrently appended ledger: %v", err)
+		}
 	}
 
 	if _, err := RecordClaimedJoined(home, ev, claim); err == nil {
