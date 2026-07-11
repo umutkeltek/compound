@@ -273,7 +273,7 @@ func TestExecuteDryRunChargesPersistedRouteTokensBeforeResume(t *testing.T) {
 func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
-	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxItems: 2})
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxItems: 2, MaxTotalTokens: 4000})
 	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + run.LensSet.Included[0].Ref
 	attemptDir := filepath.Join(home, "panel-runs", "attempts", targetDigest(run.ID))
 	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
@@ -340,7 +340,7 @@ func TestExecuteDryRunResumeSkipsExistingVerdictArtifact(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	writePanelFixtureTarget(t, home, "mcand_example_api_dissent")
-	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, Budget{})
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, Budget{MaxTotalTokens: 4000})
 	if _, err := reviewartifact.Write(home, "panel-verdicts", verdictArtifactID(run.ID, "mcand_example_api_clean"), map[string]string{"id": "preexisting"}, " ", "preexisting\n"); err != nil {
 		t.Fatalf("write preexisting verdict: %v", err)
 	}
@@ -377,6 +377,7 @@ func TestExecuteDryRunSelfJudgmentGuardrail(t *testing.T) {
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
 	run.Route.JudgeLane.ModelID = run.Route.LensLane.ModelID
+	saveRunnablePlan(t, home, run)
 	got, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
 	if err != nil {
 		t.Fatalf("execute dry run: %v", err)
@@ -413,6 +414,17 @@ func buildRunnablePlan(t *testing.T, home string, refs []string, budget Budget) 
 		t.Fatalf("build runnable plan: %v", err)
 	}
 	return run
+}
+
+func saveRunnablePlan(t *testing.T, home string, run Run) {
+	t.Helper()
+	store, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func fixedPanelNow() time.Time { return panelTestNow }
@@ -543,7 +555,7 @@ func TestExecuteDryRunBlocksGatewayMeteredLaneWithoutUSDBudget(t *testing.T) {
 func TestExecuteDryRunRecordsANewRouteAttemptOnResume(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
-	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
 	lensRef := run.LensSet.Included[0].Ref
 	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
 	ev, err := routeevidence.Build(routeevidence.BuildInput{
@@ -602,8 +614,9 @@ func TestExecuteDryRunRecordsANewRouteAttemptOnResume(t *testing.T) {
 func TestExecuteDryRunRejectsImportedRequestIDShadow(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
-	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
 	run.WorkID = "work_panel_import_shadow"
+	saveRunnablePlan(t, home, run)
 	lensRef := run.LensSet.Included[0].Ref
 	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
 	forged, err := routeevidence.Build(routeevidence.BuildInput{

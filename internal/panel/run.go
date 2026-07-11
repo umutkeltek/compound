@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,11 @@ import (
 )
 
 const judgePromptID = "judge:panel-synthesis"
+
+var (
+	errPanelTokenBudget   = errors.New("budget:max_total_tokens")
+	errPanelMeteredResume = errors.New("budget:metered_target_resume_requires_max_total_tokens")
+)
 
 type decodedLensResponse struct {
 	Confidence float64   `json:"confidence"`
@@ -39,15 +45,34 @@ type verdictArtifactPayload struct {
 // provider call preflights its deterministic route-attempt identity and records
 // a fresh row, allocating :resumeN when a prior matching attempt exists.
 func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCaller, now func() time.Time) (Run, error) {
+	result := run
+	err := withPanelRunLock(homePath, run.ID, func() error {
+		store, err := Open(homePath)
+		if err != nil {
+			return err
+		}
+		persisted, err := store.LoadRun(run.ID)
+		if err == nil {
+			run = persisted
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		result = run
+		if panelRunExecutionTerminal(run.Status) {
+			return nil
+		}
+		result, err = executeDryRunLocked(ctx, homePath, store, run, caller, now)
+		return err
+	})
+	return result, err
+}
+
+func executeDryRunLocked(ctx context.Context, homePath string, store *Store, run Run, caller LensCaller, now func() time.Time) (Run, error) {
 	if caller == nil {
 		return run, fmt.Errorf("no caller configured")
 	}
 	if now == nil {
 		now = time.Now
-	}
-	store, err := Open(homePath)
-	if err != nil {
-		return run, err
 	}
 	if strings.TrimSpace(run.Route.LensLane.ModelID) == "" {
 		err := ErrBlockedNoLane{Class: lensCapabilityClass}
@@ -102,15 +127,25 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 	}
 
 	existingFindings := targetFindingSet(run.Findings)
-	processed := 0
+	attemptedTargets, err := panelTargetAttemptRefs(homePath, run)
+	if err != nil {
+		return failDryRun(store, run, "attempt-ledger", err)
+	}
+	usedTargets := attemptedTargets
+	for targetRef := range existingFindings {
+		usedTargets[targetRef] = true
+	}
+	persistedTokens, err := persistedPanelRouteTokens(homePath, run.ID)
+	if err != nil {
+		return failDryRun(store, run, "route-budget", err)
+	}
 	tokensUsed := totalRunTokens(run)
+	if persistedTokens > tokensUsed {
+		tokensUsed = persistedTokens
+	}
 	for _, target := range run.Targets {
 		if existingFindings[target.Ref] {
 			continue
-		}
-		targetInput, err := loadRunTargetInput(homePath, run.TargetKind, target.Ref)
-		if err != nil {
-			return failDryRun(store, run, target.Ref, err)
 		}
 		artifactID := verdictArtifactID(run.ID, target.Ref)
 		if path, ok, err := verdictArtifactExists(homePath, artifactID); err != nil {
@@ -123,7 +158,16 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 			}
 			continue
 		}
-		if run.Budget.MaxItems > 0 && processed >= run.Budget.MaxItems {
+		if panelTokenBudgetReached(run.Budget, tokensUsed) {
+			run.Status = "stopped_budget"
+			run.StoppedReason = errPanelTokenBudget.Error()
+			run.NextAction = "create a new panel plan with a higher --max-tokens bound only if more verdicts are still worth reviewing"
+			if err := store.SaveRun(run); err != nil {
+				return run, err
+			}
+			return run, nil
+		}
+		if !usedTargets[target.Ref] && run.Budget.MaxItems > 0 && len(usedTargets) >= run.Budget.MaxItems {
 			run.Status = "stopped_budget"
 			run.StoppedReason = "budget:max_items"
 			run.NextAction = "create a new panel plan with a higher --max-items bound only if more verdicts are still worth reviewing"
@@ -132,14 +176,42 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 			}
 			return run, nil
 		}
+		targetInput, err := loadRunTargetInput(homePath, run.TargetKind, target.Ref)
+		if err != nil {
+			return failDryRun(store, run, target.Ref, err)
+		}
+		if !usedTargets[target.Ref] {
+			if _, err := reservePanelTargetAttempt(homePath, run, target.Ref, now().UTC()); err != nil {
+				return failDryRun(store, run, target.Ref, err)
+			}
+			usedTargets[target.Ref] = true
+		}
 
-		finding, used, err := executeTargetDryRun(ctx, homePath, run, targetInput, caller, now)
+		finding, used, err := executeTargetDryRun(ctx, homePath, run, targetInput, caller, now, tokensUsed)
+		if errors.Is(err, errPanelTokenBudget) {
+			tokensUsed += used
+			run.Status = "stopped_budget"
+			run.StoppedReason = errPanelTokenBudget.Error()
+			run.NextAction = "create a new panel plan with a higher --max-tokens bound only if more verdicts are still worth reviewing"
+			if saveErr := store.SaveRun(run); saveErr != nil {
+				return run, saveErr
+			}
+			return run, nil
+		}
+		if errors.Is(err, errPanelMeteredResume) {
+			run.Status = "blocked"
+			run.StoppedReason = errPanelMeteredResume.Error()
+			run.NextAction = "create a new panel plan with an explicit --max-tokens bound before resuming a target that can reach a metered lane"
+			if saveErr := store.SaveRun(run); saveErr != nil {
+				return run, fmt.Errorf("%w; additionally failed to save blocked panel run: %v", err, saveErr)
+			}
+			return run, err
+		}
 		if err != nil {
 			return failDryRun(store, run, target.Ref, err)
 		}
 		run.Findings = append(run.Findings, finding)
 		existingFindings[target.Ref] = true
-		processed++
 		tokensUsed += used
 		run.CountsAfter = copyCounts(run.CountsBefore)
 		if run.Budget.MaxTotalTokens > 0 && tokensUsed >= run.Budget.MaxTotalTokens && len(existingFindings) < len(run.Targets) {
@@ -166,6 +238,19 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		return run, err
 	}
 	return run, nil
+}
+
+func panelRunExecutionTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "stopped_budget", "failed", "verdicts_recorded", "applied":
+		return true
+	default:
+		return false
+	}
+}
+
+func panelTokenBudgetReached(budget Budget, tokensUsed int) bool {
+	return budget.MaxTotalTokens > 0 && tokensUsed >= budget.MaxTotalTokens
 }
 
 type meteredBudgetCaller interface {
@@ -240,7 +325,7 @@ func truncateStoppedReason(reason string) string {
 	return reason[:maxStoppedReason] + "..."
 }
 
-func executeTargetDryRun(ctx context.Context, homePath string, run Run, target TargetInput, caller LensCaller, now func() time.Time) (TargetFinding, int, error) {
+func executeTargetDryRun(ctx context.Context, homePath string, run Run, target TargetInput, caller LensCaller, now func() time.Time, tokensBefore int) (TargetFinding, int, error) {
 	lensFindings := []LensFinding{}
 	outputs := []LensOutput{}
 	tokensUsed := 0
@@ -254,12 +339,22 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
+		if panelTokenBudgetReached(run.Budget, tokensBefore+tokensUsed) {
+			return TargetFinding{}, tokensUsed, errPanelTokenBudget
+		}
 		baseRequestID := "panel:" + run.ID + ":" + targetDigest(target.Ref) + ":" + included.Ref
-		requestID, err := nextPanelRouteRequestID(homePath, baseRequestID, run.WorkID, "compound.panel.lens", run.Route.LensLane)
+		requestID, err := nextPanelRouteRequestID(homePath, run, target.Ref, baseRequestID, "compound.panel.lens", included.Ref, run.Route.LensLane)
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
+		if requestID != baseRequestID && hasMeteredLane(run.Route) && run.Budget.MaxTotalTokens == 0 {
+			return TargetFinding{}, tokensUsed, errPanelMeteredResume
+		}
+		if err := reservePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.lens", included.Ref, run.Route.LensLane, now().UTC()); err != nil {
+			return TargetFinding{}, tokensUsed, err
+		}
 		callResult, callErr := caller.Call(ctx, CallRequest{LensID: included.Ref, TargetRef: target.Ref, Lane: run.Route.LensLane, System: system, User: user})
+		tokensUsed += callResult.TotalTokens
 		status := "completed"
 		if callErr != nil {
 			status = "failed"
@@ -268,7 +363,6 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
-		tokensUsed += callResult.TotalTokens
 		if callErr != nil {
 			lensFindings = append(lensFindings, failedLensFinding(included.Ref, run.Route.LensLane, routeRef, callResult, callErr))
 			outputs = append(outputs, LensOutput{Lens: lens, Err: callErr})
@@ -284,11 +378,11 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		outputs = append(outputs, LensOutput{Lens: lens, Confidence: decoded.Confidence, Findings: decoded.Findings})
 	}
 
-	judge, judgeRouteRef, judgeTokens, malformed, err := callJudge(ctx, homePath, run, target, successfulLensOutputsForJudge(outputs), caller, now)
+	judge, judgeRouteRef, judgeTokens, malformed, err := callJudge(ctx, homePath, run, target, successfulLensOutputsForJudge(outputs), caller, now, tokensBefore+tokensUsed)
+	tokensUsed += judgeTokens
 	if err != nil {
 		return TargetFinding{}, tokensUsed, err
 	}
-	tokensUsed += judgeTokens
 	synthesis := Synthesize(outputs, judge, Guardrails{})
 	synthesis.JudgeRouteEvidenceRef = judgeRouteRef
 	synthesis.JudgeUsage = Usage{TotalTokens: judgeTokens}
@@ -313,7 +407,7 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 	return TargetFinding{TargetRef: target.Ref, LensFindings: lensFindings, Synthesis: synthesis, VerdictArtifact: artifactPath}, tokensUsed, nil
 }
 
-func callJudge(ctx context.Context, homePath string, run Run, target TargetInput, successful []LensOutput, caller LensCaller, now func() time.Time) (JudgeOutput, string, int, bool, error) {
+func callJudge(ctx context.Context, homePath string, run Run, target TargetInput, successful []LensOutput, caller LensCaller, now func() time.Time, tokensBefore int) (JudgeOutput, string, int, bool, error) {
 	system, err := readPrompt(lensPromptPath(homePath, judgePromptID))
 	if err != nil {
 		return JudgeOutput{}, "", 0, false, err
@@ -326,15 +420,25 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 	var tokens int
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
+		if panelTokenBudgetReached(run.Budget, tokensBefore+tokens) {
+			return JudgeOutput{}, lastRouteRef, tokens, false, errPanelTokenBudget
+		}
 		baseRequestID := "panel:" + run.ID + ":" + targetDigest(target.Ref) + ":" + judgePromptID
 		if attempt > 0 {
 			baseRequestID += fmt.Sprintf(":retry%d", attempt)
 		}
-		requestID, err := nextPanelRouteRequestID(homePath, baseRequestID, run.WorkID, "compound.panel.judge", run.Route.JudgeLane)
+		requestID, err := nextPanelRouteRequestID(homePath, run, target.Ref, baseRequestID, "compound.panel.judge", judgePromptID, run.Route.JudgeLane)
 		if err != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
+		if requestID != baseRequestID && hasMeteredLane(run.Route) && run.Budget.MaxTotalTokens == 0 {
+			return JudgeOutput{}, lastRouteRef, tokens, false, errPanelMeteredResume
+		}
+		if err := reservePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.judge", judgePromptID, run.Route.JudgeLane, now().UTC()); err != nil {
+			return JudgeOutput{}, lastRouteRef, tokens, false, err
+		}
 		callResult, callErr := caller.Call(ctx, CallRequest{LensID: judgePromptID, TargetRef: target.Ref, Lane: run.Route.JudgeLane, System: system, User: user})
+		tokens += callResult.TotalTokens
 		status := "completed"
 		if callErr != nil {
 			status = "failed"
@@ -344,7 +448,6 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
 		lastRouteRef = routeRef
-		tokens += callResult.TotalTokens
 		if callErr != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, callErr
 		}
@@ -429,11 +532,16 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 	return recorded.Evidence.ID, nil
 }
 
-func nextPanelRouteRequestID(homePath, baseRequestID, workID, clientProfile string, lane LaneRef) (string, error) {
+func nextPanelRouteRequestID(homePath string, run Run, targetRef, baseRequestID, clientProfile, callRole string, lane LaneRef) (string, error) {
 	for resume := 0; ; resume++ {
 		requestID := baseRequestID
 		if resume > 0 {
 			requestID += fmt.Sprintf(":resume%d", resume)
+		}
+		if _, ok, err := inspectPanelCallAttempt(homePath, run, targetRef, requestID, clientProfile, callRole, lane); err != nil {
+			return "", err
+		} else if ok {
+			continue
 		}
 		existing, ok, err := routeevidence.LookupRequestID(homePath, requestID)
 		if err != nil {
@@ -445,7 +553,7 @@ func nextPanelRouteRequestID(homePath, baseRequestID, workID, clientProfile stri
 		if existing.RecordedVia != routeevidence.RecorderGeneric {
 			return "", fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
 		}
-		if !samePanelRouteIdentity(existing, requestID, workID, clientProfile, lane) {
+		if !samePanelRouteIdentity(existing, requestID, run.WorkID, clientProfile, lane) {
 			return "", fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
 		}
 	}
