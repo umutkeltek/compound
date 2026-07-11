@@ -117,6 +117,28 @@ func (s *Store) actionContextSnapshotForWork(w envelope.WorkEnvelope, events []E
 	return cloneWorkActionContext(snapshot.ActionContext), true, nil
 }
 
+// ValidateActionContextSnapshotForWork proves that an admitted WorkEnvelope's
+// immutable action-context snapshot is readable and exactly matches the current
+// expected semantics. Callers crossing an automated review boundary must fail
+// closed on a missing, unreadable, or stale snapshot.
+func (s *Store) ValidateActionContextSnapshotForWork(w envelope.WorkEnvelope, expected *WorkActionContext) error {
+	events, err := s.eventsFor(w.ID)
+	if err != nil {
+		return fmt.Errorf("action context lifecycle unreadable: %w", err)
+	}
+	actual, found, warnings := s.actionContextSnapshotForWork(w, events)
+	if len(warnings) > 0 {
+		return fmt.Errorf("action context snapshot invalid: %s", strings.Join(warnings, "; "))
+	}
+	if !found {
+		return fmt.Errorf("immutable action context snapshot missing")
+	}
+	if !sameWorkActionContext(actual, expected) {
+		return fmt.Errorf("immutable action context snapshot does not match expected semantics")
+	}
+	return nil
+}
+
 func sameWorkActionContext(a, b *WorkActionContext) bool {
 	a = normalizeWorkActionContext(a)
 	b = normalizeWorkActionContext(b)

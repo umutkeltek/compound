@@ -45,6 +45,18 @@ func TestAdmittedActionContextUsesImmutableSnapshot(t *testing.T) {
 	if snapshotRef == "" {
 		t.Fatalf("admission event missing immutable action-context snapshot: %+v", events)
 	}
+	snapshotWork, err := s.Get(plan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ValidateActionContextSnapshotForWork(snapshotWork, ctx); err != nil {
+		t.Fatalf("matching action context snapshot rejected: %v", err)
+	}
+	differentContext := cloneWorkActionContext(ctx)
+	differentContext.ActionSummary = "run different semantics"
+	if err := s.ValidateActionContextSnapshotForWork(snapshotWork, differentContext); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("different expected action context was accepted: %v", err)
+	}
 
 	tampered := plan
 	tampered.ActionContext = cloneWorkActionContext(plan.ActionContext)

@@ -98,12 +98,13 @@ type Proposal struct {
 	// class-scoped autonomy grant; dry runs and broad filing grants cannot
 	// construct it. AutoAdmitResult records whether the revalidated evidence
 	// threshold actually admitted the proposal.
-	AutoAdmit       *work.AutoAdmitInput  `json:"auto_admit,omitempty"`
-	EligibilityRef  string                `json:"eligibility_ref,omitempty"`
-	AdmissionID     string                `json:"admission_id,omitempty"`
-	AutoAdmitResult *work.AutoAdmitResult `json:"auto_admit_result,omitempty"`
-	AutoAdmitError  string                `json:"auto_admit_error,omitempty"`
-	expectedWork    envelope.WorkEnvelope
+	AutoAdmit             *work.AutoAdmitInput  `json:"auto_admit,omitempty"`
+	EligibilityRef        string                `json:"eligibility_ref,omitempty"`
+	AdmissionID           string                `json:"admission_id,omitempty"`
+	AutoAdmitResult       *work.AutoAdmitResult `json:"auto_admit_result,omitempty"`
+	AutoAdmitError        string                `json:"auto_admit_error,omitempty"`
+	expectedWork          envelope.WorkEnvelope
+	expectedActionContext *work.WorkActionContext
 }
 
 type SuppressedDuplicate struct {
@@ -268,7 +269,7 @@ func Propose(homePath string, opts Options) (Report, error) {
 				MutationClass: "local_reversible",
 				Reversibility: "easy",
 				BlastRadius:   "local",
-				ActionContext: actionContextFor(cand, proposal),
+				ActionContext: proposal.expectedActionContext,
 				Record:        true,
 			})
 			if err != nil {
@@ -337,6 +338,10 @@ func reconsiderJobHealthEvidenceAutonomy(homePath string, store *work.Store, pro
 	}
 	if !sameDirectorProposalWork(existing, proposal.expectedWork) {
 		proposal.AutoAdmitError = "existing job_health proposal does not match current Director semantics; refusing autonomous reconsideration"
+		return false, nil
+	}
+	if err := store.ValidateActionContextSnapshotForWork(existing, proposal.expectedActionContext); err != nil {
+		proposal.AutoAdmitError = "existing job_health proposal action context does not match current Director semantics; refusing autonomous reconsideration: " + err.Error()
 		return false, nil
 	}
 	proposal.WorkState = existing.State
@@ -596,7 +601,7 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 	if store == nil {
 		return Proposal{}, &SkippedCandidate{Kind: cand.Kind, Title: cand.Title, Reason: "work_store_unavailable", EvidenceRefs: refs}
 	}
-	return Proposal{
+	proposal := Proposal{
 		ID:              idFor("dirprop_", triggerRef),
 		TriggerRef:      triggerRef,
 		Kind:            cand.Kind,
@@ -609,7 +614,9 @@ func buildProposal(homePath string, store *work.Store, cand candidate, now time.
 		WorkState:       "proposed",
 		RoutePlan:       routePlan,
 		expectedWork:    workEnvelope,
-	}, nil
+	}
+	proposal.expectedActionContext = actionContextFor(cand, proposal)
+	return proposal, nil
 }
 
 func productLoopCandidates(homePath string, now time.Time) ([]candidate, error) {
