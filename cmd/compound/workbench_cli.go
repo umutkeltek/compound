@@ -29,13 +29,13 @@ import (
 )
 
 const workbenchCapabilityOfferLimit = 12
-const workbenchOperatorStageLimit = 3
-const workbenchOperatorOpportunityMaxRunes = 96
-const workbenchOperatorMissionMaxRunes = 96
-const workbenchOperatorDecisionMaxRunes = 120
-const workbenchOperatorProofMaxRunes = 96
-const workbenchOperatorSummaryOpportunityMaxRunes = 48
-const workbenchOperatorSummaryChoiceMaxRunes = 36
+const workbenchOperatorStageLimit = 2
+const workbenchOperatorOpportunityMaxRunes = 72
+const workbenchOperatorMissionMaxRunes = 72
+const workbenchOperatorDecisionMaxRunes = 80
+const workbenchOperatorProofMaxRunes = 72
+const workbenchOperatorSummaryOpportunityMaxRunes = 44
+const workbenchOperatorSummaryChoiceMaxRunes = 32
 
 const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
