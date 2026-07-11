@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,6 +203,136 @@ func TestExecuteDryRunBudgetStop(t *testing.T) {
 	}
 	if got.Status != "stopped_budget" || got.StoppedReason != "budget:max_items" || len(got.Findings) != 1 {
 		t.Fatalf("budget run = %+v", got)
+	}
+}
+
+func TestExecuteDryRunStoppedBudgetCannotResume(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	writePanelFixtureTarget(t, home, "mcand_example_api_dissent")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean", "mcand_example_api_dissent"}, Budget{MaxItems: 1})
+	first, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "stopped_budget" || len(first.Findings) != 1 {
+		t.Fatalf("first run = %+v", first)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	resumed, err := ExecuteDryRun(context.Background(), home, first, caller, fixedPanelNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != "stopped_budget" || resumed.StoppedReason != "budget:max_items" || len(resumed.Findings) != 1 {
+		t.Fatalf("stopped run resumed past its original bound: %+v", resumed)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("stopped run spent %d additional provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunChargesPersistedRouteTokensBeforeResume(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 7})
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     requestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.lens",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.LensLane.ModelID,
+		Usage:         routeevidence.Usage{TotalTokens: 7},
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	got, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "stopped_budget" || got.StoppedReason != "budget:max_total_tokens" {
+		t.Fatalf("persisted token spend did not stop resume: %+v", got)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("persisted token spend was charged only after %d new provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxItems: 2})
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + run.LensSet.Included[0].Ref
+	attemptDir := filepath.Join(home, "panel-runs", "attempts", targetDigest(run.ID))
+	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := json.Marshal(map[string]string{
+		"schema_version": "compound.panel_attempt.v0.1",
+		"kind":           "call",
+		"run_id":         run.ID,
+		"target_ref":     "mcand_example_api_clean",
+		"request_id":     requestID,
+		"created_at":     fixedPanelNow().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attemptDir, "call-"+targetDigest(requestID)+".json"), append(attempt, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	got, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
+	if err == nil || !strings.Contains(err.Error(), "unresolved route attempt") {
+		t.Fatalf("unresolved reservation did not fail closed: run=%+v err=%v", got, err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("unresolved reservation was detected only after %d provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunSerializesConcurrentExecutors(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	caller := &synchronizedCountingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+
+	type result struct {
+		run Run
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			got, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
+			results <- result{run: got, err: err}
+		}()
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		got := <-results
+		if got.err != nil || got.run.Status != "verdicts_recorded" {
+			t.Fatalf("concurrent executor %d: status=%q err=%v", i, got.run.Status, got.err)
+		}
+	}
+	wantCalls := len(run.LensSet.Included) + 1
+	if got := caller.CallCount(); got != wantCalls {
+		t.Fatalf("concurrent executors made %d provider calls, want one run's %d", got, wantCalls)
 	}
 }
 
@@ -518,6 +649,25 @@ type countingLensCaller struct {
 	delegate LensCaller
 	decorate func(CallRequest, *CallResult)
 	calls    int
+}
+
+type synchronizedCountingLensCaller struct {
+	delegate LensCaller
+	mu       sync.Mutex
+	calls    int
+}
+
+func (c *synchronizedCountingLensCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.delegate.Call(ctx, req)
+}
+
+func (c *synchronizedCountingLensCaller) CallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 func (c *countingLensCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
