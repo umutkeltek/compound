@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadOperationalArchiveIndexRejectsSymlinkedAuthority(t *testing.T) {
@@ -66,6 +67,210 @@ func TestLoadOperationalArchiveIndexRejectsUnterminatedFinalRow(t *testing.T) {
 
 	if _, err := LoadOperationalArchiveIndex(home); err == nil || !strings.Contains(err.Error(), "operational archive index must end with newline") {
 		t.Fatalf("unterminated operational archive index did not fail closed: %v", err)
+	}
+}
+
+func TestOperationalArchiveIndexPublishRejectsSymlinkSwapAndRollsBack(t *testing.T) {
+	operations := []struct {
+		name string
+		hook string
+	}{
+		{name: "archive", hook: "archived"},
+		{name: "restore", hook: "restored"},
+	}
+	for _, operation := range operations {
+		for _, swapKind := range []string{"leaf", "ancestor"} {
+			t.Run(operation.name+"/"+swapKind, func(t *testing.T) {
+				home := filepath.Join(t.TempDir(), ".compound")
+				if err := Init(home, "test", archiveTestNow); err != nil {
+					t.Fatal(err)
+				}
+				workRel := "work/work/work_rooted_index_publish.json"
+				workRaw := []byte(`{"id":"work_rooted_index_publish","state":"completed"}`)
+				hotPath := filepath.Join(home, filepath.FromSlash(workRel))
+				archivePath := filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(workRel))
+				if err := os.WriteFile(hotPath, workRaw, 0o644); err != nil {
+					t.Fatal(err)
+				}
+
+				activeBefore := 0
+				if operation.name == "restore" {
+					report, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow)
+					if err != nil || report.ArchivedCount != 1 {
+						t.Fatalf("seed operational archive: report=%+v err=%v", report, err)
+					}
+					activeBefore = 1
+				}
+
+				previousHook := operationalArchiveBeforeIndexCommit
+				t.Cleanup(func() { operationalArchiveBeforeIndexCommit = previousHook })
+				var swap operationalArchiveIndexSwap
+				operationalArchiveBeforeIndexCommit = func(gotOperation string, entries []OperationalArchiveEntry) {
+					if gotOperation != operation.hook || len(entries) != 1 {
+						t.Fatalf("index publish gap = operation:%q entries:%+v", gotOperation, entries)
+					}
+					swap = installOperationalArchiveIndexSwap(t, home, swapKind)
+				}
+
+				var operationErr error
+				if operation.name == "archive" {
+					_, operationErr = ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(time.Minute))
+				} else {
+					_, operationErr = RestoreOperationalArchive(home, OperationalRestoreOptions{All: true}, archiveTestNow.Add(time.Minute))
+				}
+				operationalArchiveBeforeIndexCommit = previousHook
+				if swap.restore == nil {
+					t.Fatal("operational archive index swap hook did not run")
+				}
+				swap.restore()
+
+				if operationErr == nil {
+					t.Errorf("%s unexpectedly committed through %s symlink swap", operation.name, swapKind)
+				}
+				externalAfter, err := os.ReadFile(swap.externalPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(externalAfter, swap.externalRaw) {
+					t.Errorf("%s %s swap mutated external index:\n got %q\nwant %q", operation.name, swapKind, externalAfter, swap.externalRaw)
+				}
+				active, err := LoadOperationalArchiveIndex(home)
+				if err != nil {
+					t.Fatalf("load canonical index after rejected %s: %v", operation.name, err)
+				}
+				if len(active) != activeBefore {
+					t.Errorf("%s %s swap falsely committed canonical index: active=%+v want_count=%d", operation.name, swapKind, active, activeBefore)
+				}
+				if operation.name == "archive" {
+					assertOperationalArchiveFileState(t, hotPath, workRaw, true)
+					assertOperationalArchiveFileState(t, archivePath, workRaw, false)
+				} else {
+					assertOperationalArchiveFileState(t, hotPath, workRaw, false)
+					assertOperationalArchiveFileState(t, archivePath, workRaw, true)
+				}
+
+				if operation.name == "archive" {
+					retry, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(2*time.Minute))
+					if err != nil || retry.ArchivedCount != 1 {
+						t.Errorf("archive was not recoverable by clean retry: report=%+v err=%v", retry, err)
+					}
+					activeBefore = 1
+				} else {
+					retry, err := RestoreOperationalArchive(home, OperationalRestoreOptions{All: true}, archiveTestNow.Add(2*time.Minute))
+					if err != nil || retry.RestoredCount != 1 {
+						t.Errorf("restore was not recoverable by clean retry: report=%+v err=%v", retry, err)
+					}
+					activeBefore = 0
+				}
+				active, err = LoadOperationalArchiveIndex(home)
+				if err != nil || len(active) != activeBefore {
+					t.Errorf("canonical index after clean %s retry: active=%+v err=%v want_count=%d", operation.name, active, err, activeBefore)
+				}
+			})
+		}
+	}
+}
+
+type operationalArchiveIndexSwap struct {
+	externalPath string
+	externalRaw  []byte
+	restore      func()
+}
+
+func installOperationalArchiveIndexSwap(t *testing.T, home, swapKind string) operationalArchiveIndexSwap {
+	t.Helper()
+	indexPath := OperationalArchiveIndexPath(home)
+	externalRaw := []byte("{\"external\":true}\n")
+	var externalPath string
+	var restore func()
+
+	switch swapKind {
+	case "leaf":
+		externalPath = filepath.Join(t.TempDir(), "index.jsonl")
+		if err := os.WriteFile(externalPath, externalRaw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		backupPath := filepath.Join(t.TempDir(), "index.backup.jsonl")
+		hadIndex := false
+		if _, err := os.Lstat(indexPath); err == nil {
+			if err := os.Rename(indexPath, backupPath); err != nil {
+				t.Fatal(err)
+			}
+			hadIndex = true
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(externalPath, indexPath); err != nil {
+			t.Fatal(err)
+		}
+		restored := false
+		restore = func() {
+			if restored {
+				return
+			}
+			restored = true
+			if err := os.Remove(indexPath); err != nil && !os.IsNotExist(err) {
+				t.Errorf("remove swapped archive index leaf: %v", err)
+				return
+			}
+			if hadIndex {
+				if err := os.Rename(backupPath, indexPath); err != nil {
+					t.Errorf("restore archive index leaf: %v", err)
+				}
+			}
+		}
+	case "ancestor":
+		ancestorPath := filepath.Dir(indexPath)
+		backupPath := filepath.Join(filepath.Dir(ancestorPath), ".operational-index-swap-backup")
+		externalDir := t.TempDir()
+		externalPath = filepath.Join(externalDir, "index.jsonl")
+		if err := os.WriteFile(externalPath, externalRaw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(ancestorPath, backupPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(externalDir, ancestorPath); err != nil {
+			t.Fatal(err)
+		}
+		restored := false
+		restore = func() {
+			if restored {
+				return
+			}
+			restored = true
+			if err := os.Remove(ancestorPath); err != nil && !os.IsNotExist(err) {
+				t.Errorf("remove swapped archive index ancestor: %v", err)
+				return
+			}
+			if err := os.Rename(backupPath, ancestorPath); err != nil {
+				t.Errorf("restore archive index ancestor: %v", err)
+			}
+		}
+	default:
+		t.Fatalf("unknown operational archive index swap kind %q", swapKind)
+	}
+
+	swap := operationalArchiveIndexSwap{externalPath: externalPath, externalRaw: externalRaw, restore: restore}
+	t.Cleanup(swap.restore)
+	return swap
+}
+
+func assertOperationalArchiveFileState(t *testing.T, path string, want []byte, shouldExist bool) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if shouldExist {
+		if err != nil {
+			t.Errorf("expected operational archive file %s: %v", path, err)
+			return
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("operational archive file %s changed:\n got %q\nwant %q", path, got, want)
+		}
+		return
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("operational archive file %s unexpectedly exists or returned unexpected error: %v", path, err)
 	}
 }
 
