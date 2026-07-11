@@ -15,6 +15,7 @@ import (
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/distiller"
+	"compound/internal/harvest"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/reviewartifact"
@@ -106,6 +107,8 @@ func cmdSessions(args []string) {
 	switch args[0] {
 	case "mine":
 		cmdSessionsMine(args[1:])
+	case "harvest":
+		cmdSessionsHarvest(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, sessionsUsage())
 		os.Exit(2)
@@ -113,7 +116,89 @@ func cmdSessions(args []string) {
 }
 
 func sessionsUsage() string {
-	return "usage: compound sessions mine [--dry-run|--apply] [--since 24h] [--json]"
+	return "usage:\n" +
+		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--json]\n" +
+		"  compound sessions harvest --transcript <path> [--dry-run] [--json]"
+}
+
+// cmdSessionsHarvest turns operator utterances in one session transcript into
+// decision-record candidates through the existing machinery: restatements of
+// accepted records append corroboration evidence (no duplicate), novel rulings
+// land as proposed-only decision candidates. --dry-run is read-only (the live
+// proof path); default applies the corroborations/candidates.
+func cmdSessionsHarvest(args []string) {
+	transcript := ""
+	jsonOut := false
+	dryRun := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--transcript":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, sessionsUsage())
+				os.Exit(2)
+			}
+			transcript = args[i+1]
+			i++
+		case "--dry-run":
+			dryRun = true
+		case "--json":
+			jsonOut = true
+		default:
+			fmt.Fprintln(os.Stderr, sessionsUsage())
+			os.Exit(2)
+		}
+	}
+	if strings.TrimSpace(transcript) == "" {
+		fmt.Fprintln(os.Stderr, "sessions harvest: --transcript <path> required")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sessions harvest:", err)
+		os.Exit(1)
+	}
+	report, err := harvest.Run(store, homePath, harvest.Options{
+		TranscriptPath: transcript,
+		DryRun:         dryRun,
+		Now:            time.Now(),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sessions harvest:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("# session ruling harvest%s\n\n", map[bool]string{true: " (dry-run)"}[dryRun])
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- transcript: %s\n", report.TranscriptPath)
+	fmt.Printf("- session: %s\n", report.SessionID)
+	fmt.Printf("- utterances: %d\n", report.Utterances)
+	fmt.Printf("- classified: %d\n", report.Classified)
+	fmt.Printf("- corroborations: %d\n", report.Corroborations)
+	fmt.Printf("- conflicts: %d\n", report.Conflicts)
+	fmt.Printf("- novel: %d\n", report.Novel)
+	for _, item := range report.Items {
+		matched := ""
+		if item.Match != nil {
+			matched = fmt.Sprintf(" -> %s (%.2f)", item.Match.ClaimID, item.Match.Score)
+		}
+		fmt.Printf("- [%s/%s L%d]%s %s\n", item.Outcome, item.Kind, item.LineNo, matched, clipHarvestQuote(item.Quote))
+	}
+}
+
+func clipHarvestQuote(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len([]rune(s)) <= 100 {
+		return s
+	}
+	return string([]rune(s)[:97]) + "..."
 }
 
 func cmdSessionsMine(args []string) {
