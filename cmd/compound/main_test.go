@@ -3760,7 +3760,7 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 		return
 	}
 	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+	if err := home.Init(homePath, "global", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateRejectsRunningStateAsUsage$")
@@ -3773,8 +3773,38 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 	if exitErr.ExitCode() != 2 {
 		t.Fatalf("work create should exit 2, got %d output=%s", exitErr.ExitCode(), output)
 	}
-	if !strings.Contains(string(output), "initial work state must be proposed or ready") {
+	if !strings.Contains(string(output), "create at ready -> claim -> advance") {
 		t.Fatalf("work create usage did not explain lease-preserving path:\n%s", output)
+	}
+}
+
+func TestWorkCreateAllowsRunningStateInTestHomeThroughLifecycle(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "test fixture starts running", "--state", "running"})
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.List()
+	if err != nil || len(items) != 1 || items[0].State != "running" {
+		t.Fatalf("running test fixture = %+v, err=%v", items, err)
+	}
+	_, events, err := store.Show(items[0].ID)
+	if err != nil {
+		t.Fatalf("show running test fixture: %v", err)
+	}
+	wantTransitions := [][2]string{{"", "ready"}, {"ready", "claimed"}, {"claimed", "running"}}
+	if len(events) != len(wantTransitions) {
+		t.Fatalf("running test fixture lifecycle = %+v, want %d events", events, len(wantTransitions))
+	}
+	for i, want := range wantTransitions {
+		if events[i].From != want[0] || events[i].To != want[1] {
+			t.Fatalf("running test fixture event %d = %+v, want %q -> %q", i, events[i], want[0], want[1])
+		}
 	}
 }
 
@@ -3783,15 +3813,21 @@ func TestWorkCreateCommandsRejectUndocumentedInitialStates(t *testing.T) {
 	case "create-admitted":
 		cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "direct admitted create", "--state", "admitted"})
 		return
+	case "create-plan-running":
+		cmdWork([]string{"create-plan", "--owner", "compound-core", "--predicate", "direct running create plan", "--state", "running", "--dry-run"})
+		return
 	case "create-plan-admitted":
 		cmdWork([]string{"create-plan", "--owner", "compound-core", "--predicate", "direct admitted create plan", "--state", "admitted", "--dry-run"})
+		return
+	case "import-packet-running":
+		cmdWork([]string{"import-packet", filepath.Join("..", "..", "fixtures", "work", "goal-packet.md"), "--state", "running"})
 		return
 	case "import-packet-admitted":
 		cmdWork([]string{"import-packet", filepath.Join("..", "..", "fixtures", "work", "goal-packet.md"), "--state", "admitted"})
 		return
 	}
 
-	for _, child := range []string{"create-admitted", "create-plan-admitted", "import-packet-admitted"} {
+	for _, child := range []string{"create-admitted", "create-plan-running", "create-plan-admitted", "import-packet-running", "import-packet-admitted"} {
 		t.Run(child, func(t *testing.T) {
 			homePath := t.TempDir()
 			if err := home.Init(homePath, "test", cliTestNow); err != nil {
