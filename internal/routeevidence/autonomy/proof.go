@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -552,18 +553,9 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	if len(receiptEvidence.Refs) != 1 {
 		return invalid(fmt.Sprintf("terminal work has %d receipt refs; exactly one required", len(receiptEvidence.Refs)))
 	}
-	receiptID := strings.TrimSpace(receiptEvidence.Refs[0])
-	receiptPath := filepath.Join(homePath, "events", receiptID+".json")
-	receiptRaw, err := os.ReadFile(receiptPath)
+	receiptID, receipt, receiptRaw, err := loadBoundReceipt(homePath, receiptEvidence.Refs[0])
 	if err != nil {
-		return invalid("receipt unreadable: " + err.Error())
-	}
-	var receipt envelope.Receipt
-	if err := json.Unmarshal(receiptRaw, &receipt); err != nil {
-		return invalid("receipt invalid: " + err.Error())
-	}
-	if err := receipt.Validate(); err != nil {
-		return invalid("receipt invalid: " + err.Error())
+		return invalid(err.Error())
 	}
 	if len(receiptEvidence.Terminals) != 1 || strings.TrimSpace(receiptEvidence.Terminals[0].ReceiptSHA256) == "" {
 		return invalid("terminal event receipt snapshot hash is required")
@@ -575,7 +567,7 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	if receiptEvidence.Terminals[0].ReceiptSHA256 != "sha256:"+shaHex(receiptCanonical) {
 		return invalid("receipt snapshot hash does not match terminal event")
 	}
-	sample.ReceiptID = receipt.ID
+	sample.ReceiptID = receiptID
 	sample.ReceiptSHA256 = "sha256:" + shaHex(receiptRaw)
 	sample.ReceiptCreatedAt = receipt.CreatedAt
 	sample.ReceiptOutcome = receipt.Outcome
@@ -738,6 +730,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	type workLocation struct {
 		Path         string
 		OriginalPath string
+		FileKind     string
 		Archive      *homepkg.OperationalArchiveEntry
 	}
 	locations := []workLocation{}
@@ -748,7 +741,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
 			originalPath := filepath.ToSlash(filepath.Join("work", "work", entry.Name()))
-			locations = append(locations, workLocation{Path: filepath.Join(homePath, filepath.FromSlash(originalPath)), OriginalPath: originalPath})
+			locations = append(locations, workLocation{Path: filepath.Join(homePath, filepath.FromSlash(originalPath)), OriginalPath: originalPath, FileKind: "work"})
 		}
 	}
 	archive, err := homepkg.LoadOperationalArchiveIndex(homePath)
@@ -756,32 +749,48 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 		return nil, err
 	}
 	indexedArchivePaths := map[string]bool{}
+	archiveWorkRoot := filepath.Join(homepkg.OperationalArchiveFilesRoot(homePath), "work", "work")
 	for _, entry := range archive {
-		if entry.Kind == "work" && strings.HasPrefix(entry.OriginalPath, "work/work/") && strings.HasSuffix(entry.OriginalPath, ".json") {
-			expectedArchivePath := filepath.ToSlash(filepath.Join(homepkg.OperationalArchiveFilesRel, filepath.FromSlash(entry.OriginalPath)))
-			if filepath.ToSlash(filepath.Clean(entry.ArchivePath)) != filepath.ToSlash(filepath.Clean(expectedArchivePath)) {
-				return nil, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
-			}
-			if !terminalWorkState(strings.TrimSpace(entry.Status)) {
-				return nil, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
-			}
-			if strings.TrimSpace(entry.SHA256) == "" {
-				return nil, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
-			}
-			wantID := "oparch_" + shaHex([]byte(filepath.ToSlash(entry.OriginalPath)))[:12]
-			if entry.ID != wantID {
-				return nil, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
-			}
-			archivePath := filepath.Clean(filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath)))
-			if indexedArchivePaths[archivePath] {
-				return nil, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
-			}
-			entryCopy := entry
-			locations = append(locations, workLocation{Path: archivePath, OriginalPath: entry.OriginalPath, Archive: &entryCopy})
-			indexedArchivePaths[archivePath] = true
+		if entry.Kind != "work" {
+			continue
 		}
+		originalPath, ok := canonicalLocalSlashPath(entry.OriginalPath)
+		if !ok {
+			return nil, fmt.Errorf("operational archive work %s original path must be a canonical local path", entry.ID)
+		}
+		if filepath.Dir(originalPath) != filepath.Join("work", "work") || filepath.Ext(originalPath) != ".json" {
+			return nil, fmt.Errorf("operational archive work %s original path is outside the owned work root", entry.ID)
+		}
+		archiveRel, ok := canonicalLocalSlashPath(entry.ArchivePath)
+		if !ok {
+			return nil, fmt.Errorf("operational archive work %s archive path must be a canonical local path", entry.ID)
+		}
+		expectedArchivePath := filepath.Join(homepkg.OperationalArchiveFilesRel, originalPath)
+		if archiveRel != expectedArchivePath {
+			return nil, fmt.Errorf("operational archive work %s archive path does not match original path", entry.ID)
+		}
+		if !terminalWorkState(strings.TrimSpace(entry.Status)) {
+			return nil, fmt.Errorf("operational archive work %s status %q is not terminal", entry.ID, entry.Status)
+		}
+		if strings.TrimSpace(entry.SHA256) == "" {
+			return nil, fmt.Errorf("operational archive work %s sha256 is required", entry.ID)
+		}
+		wantID := "oparch_" + shaHex([]byte(filepath.ToSlash(originalPath)))[:12]
+		if entry.ID != wantID {
+			return nil, fmt.Errorf("operational archive work id %s does not match original path", entry.ID)
+		}
+		archivePath := filepath.Join(homePath, archiveRel)
+		if filepath.Dir(archivePath) != archiveWorkRoot {
+			return nil, fmt.Errorf("operational archive work %s archive path is outside the owned archive work root", entry.ID)
+		}
+		if indexedArchivePaths[archivePath] {
+			return nil, fmt.Errorf("operational archive work path %s is indexed more than once", entry.ArchivePath)
+		}
+		entryCopy := entry
+		locations = append(locations, workLocation{Path: archivePath, OriginalPath: entry.OriginalPath, FileKind: "archive", Archive: &entryCopy})
+		indexedArchivePaths[archivePath] = true
 	}
-	physicalArchiveWorkDir := filepath.Join(homepkg.OperationalArchiveFilesRoot(homePath), "work", "work")
+	physicalArchiveWorkDir := archiveWorkRoot
 	archivedFiles, err := os.ReadDir(physicalArchiveWorkDir)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -799,7 +808,7 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	var out []workSnapshot
 	seen := map[string]string{}
 	for _, location := range locations {
-		raw, err := os.ReadFile(location.Path)
+		raw, err := readRegularFile(location.Path, location.FileKind)
 		if err != nil {
 			return nil, err
 		}
@@ -908,13 +917,9 @@ func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, rec
 		if len(evidence.Refs) != 1 {
 			return fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
 		}
-		receiptRaw, err := os.ReadFile(filepath.Join(homePath, "events", evidence.Refs[0]+".json"))
+		_, receipt, _, err := loadBoundReceipt(homePath, evidence.Refs[0])
 		if err != nil {
-			return fmt.Errorf("terminal work %s receipt unreadable: %w", workID, err)
-		}
-		var receipt envelope.Receipt
-		if err := json.Unmarshal(receiptRaw, &receipt); err != nil {
-			return fmt.Errorf("terminal work %s receipt invalid: %w", workID, err)
+			return fmt.Errorf("terminal work %s %w", workID, err)
 		}
 		receiptCanonical, err := json.Marshal(receipt)
 		if err != nil {
@@ -943,6 +948,7 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner.Split(splitStrictWorkEventLines)
 	for scanner.Scan() {
 		var event struct {
 			TS            string   `json:"ts"`
@@ -967,13 +973,115 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 		if terminal {
 			for _, ref := range event.Attached {
 				if strings.HasPrefix(ref, "rec_") {
-					evidence.Refs = append(evidence.Refs, strings.TrimSpace(ref))
+					evidence.Refs = append(evidence.Refs, ref)
 				}
 			}
 		}
 		out[event.WorkID] = evidence
 	}
 	return out, scanner.Err()
+}
+
+func loadBoundReceipt(homePath, ref string) (string, envelope.Receipt, []byte, error) {
+	receiptID, path, err := terminalReceiptPath(homePath, ref)
+	if err != nil {
+		return "", envelope.Receipt{}, nil, err
+	}
+	raw, err := readRegularFile(path, "receipt")
+	if err != nil {
+		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt unreadable: %w", err)
+	}
+	var receipt envelope.Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt invalid: %w", err)
+	}
+	if err := receipt.Validate(); err != nil {
+		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt invalid: %w", err)
+	}
+	if receipt.ID != receiptID {
+		return "", envelope.Receipt{}, nil, fmt.Errorf("receipt identity does not match ref: decoded %q, ref %q", receipt.ID, receiptID)
+	}
+	return receiptID, receipt, raw, nil
+}
+
+func terminalReceiptPath(homePath, ref string) (string, string, error) {
+	receiptID := strings.TrimSpace(ref)
+	if receiptID == "" ||
+		receiptID != ref ||
+		!strings.HasPrefix(receiptID, "rec_") ||
+		receiptID == "." ||
+		receiptID == ".." ||
+		strings.ContainsAny(receiptID, `/\`) ||
+		!filepath.IsLocal(receiptID) ||
+		filepath.Clean(receiptID) != receiptID ||
+		filepath.Base(receiptID) != receiptID {
+		return "", "", fmt.Errorf("receipt ref must be a local basename: %q", ref)
+	}
+	eventsRoot := filepath.Clean(filepath.Join(homePath, "events"))
+	path := filepath.Join(eventsRoot, receiptID+".json")
+	if filepath.Dir(path) != eventsRoot {
+		return "", "", fmt.Errorf("receipt ref must remain under the owned events root: %q", ref)
+	}
+	return receiptID, path, nil
+}
+
+func canonicalLocalSlashPath(raw string) (string, bool) {
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.Contains(raw, `\`) {
+		return "", false
+	}
+	local := filepath.FromSlash(raw)
+	if !filepath.IsLocal(local) || filepath.Clean(local) != local || filepath.ToSlash(local) != raw {
+		return "", false
+	}
+	return local, true
+}
+
+func readRegularFile(path, kind string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s file must be a regular file: %s", kind, path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() ||
+		!after.Mode().IsRegular() ||
+		!os.SameFile(before, opened) ||
+		!os.SameFile(before, after) {
+		return nil, fmt.Errorf("%s file must be a stable regular file: %s", kind, path)
+	}
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+func splitStrictWorkEventLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if index := bytes.IndexByte(data, '\n'); index >= 0 {
+		end := index
+		if end > 0 && data[end-1] == '\r' {
+			end--
+		}
+		return index + 1, data[:end], nil
+	}
+	if atEOF && len(data) > 0 {
+		return 0, nil, fmt.Errorf("work event ledger must end with newline")
+	}
+	return 0, nil, nil
 }
 
 func normalizedEvidenceTime(value string) string {
