@@ -1,5 +1,6 @@
 import { consoleMutationBlockedResponse } from "@/lib/console-mutations";
 import { executeDecision } from "@/lib/decision-execute";
+import { instanceUnpinnedBlockedResponse } from "@/lib/instance-pin";
 
 /*
  * The single generic mutation endpoint. Replaces /api/reviews/record and
@@ -11,6 +12,13 @@ import { executeDecision } from "@/lib/decision-execute";
 export async function POST(request: Request) {
   const blocked = consoleMutationBlockedResponse(request);
   if (blocked) return blocked;
+
+  // Origin-pin: an instance started without an explicit home pin would silently
+  // write the canonical home (the 2026-07-11 cross-port breach). Refuse the
+  // mutation unless this server is pinned to a home the operator chose. See
+  // instance-pin.ts.
+  const unpinned = instanceUnpinnedBlockedResponse();
+  if (unpinned) return unpinned;
 
   let body: Record<string, unknown>;
   try {

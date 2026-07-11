@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const consoleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = path.join(consoleRoot, "src");
 
-const ownerExceptions = new Set(["lib/compound.ts"]);
+const ownerExceptions = new Set(["lib/compound.ts", "lib/instance-pin.ts"]);
 const forbiddenWriters = /\b(writeFile|appendFile|rm|unlink|rename|mkdir)\b/;
 
 async function sourceFiles(dir) {

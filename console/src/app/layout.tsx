@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { NavContainer } from "@/components/NavContainer";
+import { InstanceBadge } from "@/components/InstanceBadge";
 import { CommandK } from "@/components/CommandK";
 import { RefreshControl } from "@/components/RefreshControl";
 import { SystemBanner } from "@/components/SystemBanner";
@@ -41,6 +42,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           <div className="flex min-w-0 flex-1 flex-col">
             <header className="sticky top-0 z-40 flex min-h-12 items-center gap-2 border-b border-hair bg-page/80 px-3 py-2 backdrop-blur sm:gap-3 sm:px-5 md:px-6 md:py-2.5">
               <NavContainer variant="mobile" />
+              <InstanceBadge />
               <div className="hidden min-w-0 sm:block"><Breadcrumb /></div>
               <div className="hidden min-w-0 xl:block"><SystemBanner /></div>
               <div className="ml-auto flex items-center gap-2">

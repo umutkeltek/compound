@@ -6,9 +6,13 @@ import { promisify } from "node:util";
 
 const exec = promisify(execFile);
 
-/** Runtime home: never repo. */
-export const COMPOUND_HOME =
-  process.env.COMPOUND_HOME || `${homedir()}/.compound`;
+/** Runtime home: never repo. Resolved to an absolute path ONCE at module load
+ * (process start) so it is the frozen instance pin — no per-request value can
+ * retarget the home a mutation writes. Mirrors instance-pin.ts's resolution;
+ * the instance-pin smoke asserts the two never drift. */
+export const COMPOUND_HOME = resolve(
+  (process.env.COMPOUND_HOME ?? "").trim() || `${homedir()}/.compound`,
+);
 
 export function privateFallbacksEnabled(): boolean {
   return process.env.COMPOUND_CONSOLE_PRIVATE_FALLBACKS === "1";

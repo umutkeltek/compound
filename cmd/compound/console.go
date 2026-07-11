@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -72,15 +74,19 @@ func cmdConsole(args []string) {
 			return
 		}
 	}
+	pinLabel := consoleInstancePinLabel(plan.Env["COMPOUND_HOME"])
 	if dryRun {
-		fmt.Printf("console operator dry-run: cd %s && %s\n", plan.ConsoleDir, strings.Join(plan.Command, " "))
+		fmt.Printf("console operator dry-run: home %s; cd %s && %s\n", pinLabel, plan.ConsoleDir, strings.Join(plan.Command, " "))
 		return
 	}
 	if _, err := exec.LookPath(plan.Command[0]); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %s not found; install Bun or run from a shell with Bun on PATH\n", plan.Command[0])
 		os.Exit(1)
 	}
-	fmt.Println("console operator: local console on port 3777")
+	// Pin identity: print the exact home this instance is bound to so an operator
+	// running several ports can always tell which instance they launched. Mirrors
+	// the console's always-visible InstanceBadge (same home + short hash).
+	fmt.Printf("console operator: local console on port 3777 — home %s\n", pinLabel)
 	cmd := exec.Command(plan.Command[0], plan.Command[1:]...)
 	cmd.Dir = plan.ConsoleDir
 	cmd.Env = consoleLaunchEnv(plan.Env)
@@ -193,6 +199,24 @@ func validateConsoleDir(dir string) (string, error) {
 		return "", fmt.Errorf("console package.json is a directory at %s", abs)
 	}
 	return abs, nil
+}
+
+// consoleHomeShortHash fingerprints an absolute home path. It mirrors the
+// console's instance-pin.ts (sha256 of the absolute home, first 7 hex chars) so
+// the terminal launch line and the browser InstanceBadge show the SAME hash for
+// the same instance — an operator can match them by eye across ports.
+func consoleHomeShortHash(homePath string) string {
+	sum := sha256.Sum256([]byte(homePath))
+	return hex.EncodeToString(sum[:])[:7]
+}
+
+// consoleInstancePinLabel renders the human pin identity: "<leaf> #<hash> (<abs>)".
+func consoleInstancePinLabel(homePath string) string {
+	homePath = strings.TrimSpace(homePath)
+	if homePath == "" {
+		return "(unpinned)"
+	}
+	return fmt.Sprintf("%s #%s (%s)", filepath.Base(homePath), consoleHomeShortHash(homePath), homePath)
 }
 
 func consoleLaunchEnv(extra map[string]string) []string {
