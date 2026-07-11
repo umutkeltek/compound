@@ -990,7 +990,22 @@ func duplicateRouteRequest(t *testing.T, home string, sample seededSample, creat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := routeevidence.RecordEvidence(home, ev); err != nil {
+	// Canonical writers reject duplicate request IDs. Append directly to model a
+	// legacy/corrupt ledger and keep the compiler's ambiguity guard falsifiable.
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerPath := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+	file, err := os.OpenFile(ledgerPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
