@@ -27,8 +27,9 @@ import (
 )
 
 const workbenchCapabilityOfferLimit = 12
+const workbenchOperatorStageLimit = 3
 
-const workbenchUsage = "usage: compound workbench [--json] [--operator] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
+const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
 type workbenchCLIOutput struct {
 	work.WorkbenchReport
@@ -95,6 +96,8 @@ func cmdWorkbench(args []string) {
 	}
 	jsonOut := false
 	operatorOut := false
+	operatorAdvanced := false
+	operatorLimit := workbenchOperatorStageLimit
 	recent := 5
 	actor := "codex"
 	activePacketSurface := ""
@@ -113,6 +116,20 @@ func cmdWorkbench(args []string) {
 			jsonOut = true
 		case "--operator":
 			operatorOut = true
+		case "--advanced", "--operator-advanced":
+			operatorAdvanced = true
+		case "--operator-limit":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, workbenchUsage)
+				os.Exit(2)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				fmt.Fprintln(os.Stderr, "error: --operator-limit must be a non-negative integer")
+				os.Exit(2)
+			}
+			operatorLimit = n
 		case "--include-archived":
 			includeArchived = true
 		case "--active-packet-surface":
@@ -292,7 +309,7 @@ func cmdWorkbench(args []string) {
 		return
 	}
 	if operatorOut {
-		printWorkbenchOperator(output)
+		printWorkbenchOperator(output, workbenchOperatorOptions{StageLimit: operatorLimit, ShowAdvanced: operatorAdvanced})
 		return
 	}
 	fmt.Printf("workbench open=%d needs_claim=%d needs_review=%d in_progress=%d terminal=%d\n",
@@ -513,6 +530,11 @@ func cmdWorkbench(args []string) {
 	}
 }
 
+type workbenchOperatorOptions struct {
+	StageLimit   int
+	ShowAdvanced bool
+}
+
 type operatorWorkbenchRow struct {
 	Item        work.WorkbenchItem
 	Status      string
@@ -525,80 +547,100 @@ type operatorWorkbenchRow struct {
 	Learning    string
 }
 
-func printWorkbenchOperator(output workbenchCLIOutput) {
+type operatorWorkbenchGroup struct {
+	Representative operatorWorkbenchRow
+	Count          int
+}
+
+func printWorkbenchOperator(output workbenchCLIOutput, opts workbenchOperatorOptions) {
+	if opts.StageLimit <= 0 {
+		opts.StageLimit = workbenchOperatorStageLimit
+	}
 	rows := operatorWorkbenchRows(output.WorkbenchReport)
+	groups := operatorWorkbenchGroups(rows)
 	fmt.Println("Operator workbench")
-	fmt.Println("Flow stages: Explore → Build → Prove → Integrate")
-	fmt.Println("Narrative: Opportunity → Mission → Run → Proof → Decision → Learning")
+	fmt.Println("Flow: Needs you → Working → Ready")
+	fmt.Println("Narrative: highest-priority mission first; raw proof fields require --operator-advanced")
 	fmt.Println("Summary: " + operatorFlowSummary(output, rows))
 	fmt.Println()
 	if len(rows) == 0 {
-		fmt.Println("Explore")
-		fmt.Println("Opportunity")
-		fmt.Println("- [Parked] no visible work; Authority: Free to act")
-		fmt.Println()
-		fmt.Println("Build")
-		fmt.Println("Mission")
-		fmt.Println("- unknown/not yet proven")
-		fmt.Println()
-		fmt.Println("Prove")
-		fmt.Println("Proof")
-		fmt.Println("- unknown/not yet proven")
-		fmt.Println()
-		fmt.Println("Integrate")
-		fmt.Println("Decision")
-		fmt.Println("- no action available from workbench")
-		fmt.Println("Learning")
-		fmt.Println("- unknown/not yet proven")
-		fmt.Println()
-		fmt.Println("Advanced")
-		fmt.Printf("- generated_at=%s counts_open=%d counts_terminal=%d dispatch_wait=%s\n",
-			operatorValue(output.GeneratedAt),
-			output.Counts.Open,
-			output.Counts.Terminal,
-			operatorValue(output.DispatchNext.WaitReason),
-		)
+		fmt.Println("Needs you (0)")
+		fmt.Println("- none")
+		fmt.Println("Working (0)")
+		fmt.Println("- none")
+		fmt.Println("Ready (0)")
+		fmt.Println("- none")
+		if opts.ShowAdvanced {
+			printWorkbenchOperatorAdvanced(output, rows)
+		}
 		return
 	}
 
-	fmt.Println("Explore")
-	fmt.Println("Opportunity")
-	for _, row := range rows {
-		fmt.Printf("- [%s] %s | Authority: %s\n", row.Status, row.Opportunity, row.Authority)
+	printOperatorStage("Needs you", groups["Needs you"], opts.StageLimit)
+	printOperatorStage("Working", groups["Working"], opts.StageLimit)
+	printOperatorStage("Ready", groups["Ready"], opts.StageLimit)
+	printOperatorStage("Recent proof", groups["Recent proof"], opts.StageLimit)
+	if other := groups["Other"]; len(other) > 0 {
+		printOperatorStage("Other", other, opts.StageLimit)
 	}
-	fmt.Println()
-	fmt.Println("Build")
-	fmt.Println("Mission")
-	for _, row := range rows {
-		fmt.Printf("- %s: %s\n", row.Item.WorkID, row.Mission)
+	fmt.Printf("Counts: open=%d needs_you=%d working=%d ready=%d recent=%d\n",
+		output.Counts.Open,
+		operatorStageRowCount(groups["Needs you"]),
+		operatorStageRowCount(groups["Working"]),
+		operatorStageRowCount(groups["Ready"]),
+		len(output.Recent),
+	)
+	if opts.ShowAdvanced {
+		printWorkbenchOperatorAdvanced(output, rows)
 	}
-	fmt.Println("Run")
-	for _, row := range rows {
-		fmt.Printf("- %s: assigned %s; state=%s; next=%s\n",
-			row.Item.WorkID,
-			row.Assignee,
-			operatorValue(row.Item.State),
-			operatorValue(row.Item.NextAction),
+}
+
+func printOperatorStage(title string, groups []operatorWorkbenchGroup, limit int) {
+	total := operatorStageRowCount(groups)
+	fmt.Printf("%s (%d)\n", title, total)
+	if total == 0 {
+		fmt.Println("- none")
+		return
+	}
+	shownRows := 0
+	for i, group := range groups {
+		if limit > 0 && i >= limit {
+			break
+		}
+		shownRows += group.Count
+		printOperatorGroup(group)
+	}
+	if omitted := total - shownRows; omitted > 0 {
+		fmt.Printf("- %s omitted\n", operatorCount(omitted, "item", "items"))
+	}
+}
+
+func printOperatorGroup(group operatorWorkbenchGroup) {
+	row := group.Representative
+	similar := ""
+	if group.Count > 1 {
+		similar = fmt.Sprintf(" (+%d similar)", group.Count-1)
+	}
+	fmt.Printf("- %s%s | Mission: %s | Authority: %s\n", row.Opportunity, similar, row.Mission, row.Authority)
+	fmt.Printf("  work: %s; status=%s; assigned=%s; next=%s\n", row.Item.WorkID, row.Status, row.Assignee, operatorDecisionText(row.Decision))
+	if row.Proof != "unknown/not yet proven" || row.Learning != "unknown/not yet proven" || row.Item.ReceiptID != "" || row.Item.TransitionID != "" {
+		fmt.Printf("  proof: %s; receipt=%s; transition=%s; learning=%s\n",
+			operatorValue(row.Proof),
+			operatorValue(row.Item.ReceiptID),
+			operatorValue(row.Item.TransitionID),
+			operatorValue(row.Learning),
 		)
 	}
-	fmt.Println()
-	fmt.Println("Prove")
-	fmt.Println("Proof")
-	for _, row := range rows {
-		fmt.Printf("- %s: %s\n", row.Item.WorkID, row.Proof)
-	}
-	fmt.Println()
-	fmt.Println("Integrate")
-	fmt.Println("Decision")
-	for _, row := range rows {
-		fmt.Printf("- %s: Authority: %s; %s\n", row.Item.WorkID, row.Authority, row.Decision)
-	}
-	fmt.Println("Learning")
-	for _, row := range rows {
-		fmt.Printf("- %s: %s\n", row.Item.WorkID, row.Learning)
-	}
-	fmt.Println()
+}
+
+func printWorkbenchOperatorAdvanced(output workbenchCLIOutput, rows []operatorWorkbenchRow) {
 	fmt.Println("Advanced")
+	fmt.Printf("- generated_at=%s counts_open=%d counts_terminal=%d dispatch_wait=%s\n",
+		operatorValue(output.GeneratedAt),
+		output.Counts.Open,
+		output.Counts.Terminal,
+		operatorValue(output.DispatchNext.WaitReason),
+	)
 	for _, row := range rows {
 		fmt.Printf("- work_id=%s state=%s status=%s authority=%s owner=%s claimed_by=%s policy=%s receipt=%s transition=%s move=%s changed=%t evidence=%s artifacts=%s verifications=%s\n",
 			row.Item.WorkID,
@@ -639,6 +681,80 @@ func operatorWorkbenchRows(report work.WorkbenchReport) []operatorWorkbenchRow {
 		})
 	}
 	return rows
+}
+
+func operatorWorkbenchGroups(rows []operatorWorkbenchRow) map[string][]operatorWorkbenchGroup {
+	groups := map[string][]operatorWorkbenchGroup{
+		"Needs you":    {},
+		"Working":      {},
+		"Ready":        {},
+		"Recent proof": {},
+		"Other":        {},
+	}
+	indexes := map[string]map[string]int{}
+	for _, row := range rows {
+		stage := operatorStageForRow(row)
+		if indexes[stage] == nil {
+			indexes[stage] = map[string]int{}
+		}
+		key := operatorGroupKey(row)
+		if idx, ok := indexes[stage][key]; ok {
+			groups[stage][idx].Count++
+			continue
+		}
+		indexes[stage][key] = len(groups[stage])
+		groups[stage] = append(groups[stage], operatorWorkbenchGroup{Representative: row, Count: 1})
+	}
+	return groups
+}
+
+func operatorStageForRow(row operatorWorkbenchRow) string {
+	switch row.Status {
+	case "Needs you", "Blocked":
+		return "Needs you"
+	case "Working", "Proving":
+		return "Working"
+	case "Ready":
+		return "Ready"
+	case "Integrated", "Verified":
+		return "Recent proof"
+	default:
+		return "Other"
+	}
+}
+
+func operatorGroupKey(row operatorWorkbenchRow) string {
+	return strings.Join([]string{
+		operatorStageForRow(row),
+		operatorNormalizeGroupText(row.Status),
+		operatorNormalizeGroupText(row.Authority),
+		operatorNormalizeGroupText(row.Opportunity),
+		operatorNormalizeGroupText(row.Mission),
+		operatorNormalizeGroupText(operatorDecisionText(row.Decision)),
+	}, "|")
+}
+
+func operatorNormalizeGroupText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(operatorWords(value)), " "))
+}
+
+func operatorStageRowCount(groups []operatorWorkbenchGroup) int {
+	total := 0
+	for _, group := range groups {
+		total += group.Count
+	}
+	return total
+}
+
+func operatorTopPriorityRow(rows []operatorWorkbenchRow) *operatorWorkbenchRow {
+	for _, stage := range []string{"Needs you", "Working", "Ready", "Recent proof", "Other"} {
+		for i := range rows {
+			if operatorStageForRow(rows[i]) == stage {
+				return &rows[i]
+			}
+		}
+	}
+	return nil
 }
 
 // operatorStatusForItem is a deterministic translation of existing
@@ -750,15 +866,18 @@ func operatorLearningForItem(item work.WorkbenchItem) string {
 
 func operatorFlowSummary(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
 	return fmt.Sprintf("We noticed %s, chose %s, assigned %s, proved it with %s, and now need %s.",
-		operatorSummaryOpportunity(output),
-		operatorSummaryChoice(output),
+		operatorSummaryOpportunity(output, rows),
+		operatorSummaryChoice(output, rows),
 		operatorSummaryAssignee(output, rows),
 		operatorSummaryProof(rows),
-		operatorSummaryNeed(output),
+		operatorSummaryNeed(output, rows),
 	)
 }
 
-func operatorSummaryOpportunity(output workbenchCLIOutput) string {
+func operatorSummaryOpportunity(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
+	if top := operatorTopPriorityRow(rows); top != nil {
+		return "top priority " + top.Status + ": " + top.Opportunity
+	}
 	if output.Counts.Open > 0 {
 		return operatorCount(output.Counts.Open, "open work item", "open work items")
 	}
@@ -768,7 +887,10 @@ func operatorSummaryOpportunity(output workbenchCLIOutput) string {
 	return "no active work"
 }
 
-func operatorSummaryChoice(output workbenchCLIOutput) string {
+func operatorSummaryChoice(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
+	if top := operatorTopPriorityRow(rows); top != nil && top.Decision != "unknown/not yet proven" {
+		return operatorDecisionText(top.Decision)
+	}
 	if output.DispatchNext.CanRun {
 		return "the next governed dispatch step"
 	}
@@ -791,6 +913,9 @@ func operatorSummaryAssignee(output workbenchCLIOutput, rows []operatorWorkbench
 }
 
 func operatorSummaryProof(rows []operatorWorkbenchRow) string {
+	if top := operatorTopPriorityRow(rows); top != nil && top.Proof != "unknown/not yet proven" {
+		return top.Proof
+	}
 	for _, row := range rows {
 		if (row.Status == "Integrated" || row.Status == "Verified") && row.Proof != "unknown/not yet proven" {
 			return row.Proof
@@ -804,14 +929,21 @@ func operatorSummaryProof(rows []operatorWorkbenchRow) string {
 	return "unknown/not yet proven"
 }
 
-func operatorSummaryNeed(output workbenchCLIOutput) string {
-	if output.ReviewQueue != nil {
-		if output.ReviewQueue.BlockedOnYou > 0 {
-			return "Umut to clear " + operatorCount(output.ReviewQueue.BlockedOnYou, "blocked item", "blocked items")
+func operatorSummaryNeed(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
+	if top := operatorTopPriorityRow(rows); top != nil {
+		switch operatorStageForRow(*top) {
+		case "Needs you":
+			return "review the top Needs you mission"
+		case "Working":
+			return "move the top Working mission toward proof"
+		case "Ready":
+			return "claim or dispatch the top Ready mission"
+		case "Recent proof":
+			return "mine the latest proof only if it changes future work"
 		}
-		if output.ReviewQueue.Counts.ReviewRequired > 0 {
-			return "review for " + operatorCount(output.ReviewQueue.Counts.ReviewRequired, "item", "items")
-		}
+	}
+	if output.ReviewQueue != nil && output.ReviewQueue.Counts.ReviewRequired > 0 {
+		return "review for " + operatorCount(output.ReviewQueue.Counts.ReviewRequired, "item", "items")
 	}
 	if output.Counts.NeedsReview > 0 {
 		return "review for " + operatorCount(output.Counts.NeedsReview, "work item", "work items")
@@ -829,6 +961,15 @@ func operatorSummaryNeed(output workbenchCLIOutput) string {
 		return operatorWords(output.DispatchNext.WaitReason)
 	}
 	return "nothing; visible work is integrated"
+}
+
+func operatorDecisionText(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "next: ")
+	if value == "" {
+		return "unknown/not yet proven"
+	}
+	return value
 }
 
 func operatorCount(n int, singular, plural string) string {

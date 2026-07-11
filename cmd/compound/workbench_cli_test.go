@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"compound/internal/attention"
 	"compound/internal/home"
@@ -97,6 +99,12 @@ func TestWorkbenchOperatorModeTranslatesEnvelopeIntoOperatorLanguage(t *testing.
 	operator := captureStdout(t, func() {
 		cmdWorkbench([]string{"--operator", "--recent", "10"})
 	})
+	operatorAdvanced := captureStdout(t, func() {
+		cmdWorkbench([]string{"--operator", "--operator-advanced", "--recent", "10"})
+	})
+	operatorAdvancedAlias := captureStdout(t, func() {
+		cmdWorkbench([]string{"--operator", "--advanced", "--recent", "10"})
+	})
 	operatorJSON := captureStdout(t, func() {
 		cmdWorkbench([]string{"--json", "--operator", "--recent", "10"})
 	})
@@ -104,21 +112,28 @@ func TestWorkbenchOperatorModeTranslatesEnvelopeIntoOperatorLanguage(t *testing.
 	if before != after {
 		t.Fatalf("compound workbench --operator mutated COMPOUND_HOME: before=%s after=%s", before, after)
 	}
+	if strings.Contains(operator, "Advanced") {
+		t.Fatalf("operator workbench default output must hide Advanced without opt-in:\n%s", operator)
+	}
+	if !strings.Contains(operatorAdvanced, "Advanced") || !strings.Contains(operatorAdvanced, closed.Receipt.ID) || !strings.Contains(operatorAdvanced, closed.Transition.ID) {
+		t.Fatalf("operator workbench advanced output missing raw details:\n%s", operatorAdvanced)
+	}
+	if !strings.Contains(operatorAdvancedAlias, "Advanced") || !strings.Contains(operatorAdvancedAlias, closed.Receipt.ID) || !strings.Contains(operatorAdvancedAlias, closed.Transition.ID) {
+		t.Fatalf("operator workbench --advanced alias output missing raw details:\n%s", operatorAdvancedAlias)
+	}
 	for _, want := range []string{
 		"Operator workbench",
-		"Flow stages: Explore → Build → Prove → Integrate",
-		"Narrative: Opportunity → Mission → Run → Proof → Decision → Learning",
+		"Flow: Needs you → Working → Ready",
 		"Summary: We noticed",
 		"chose",
 		"assigned codex",
 		"proved it with proof:operator-mode-test",
 		"and now need",
-		"Opportunity",
 		"Mission",
-		"Run",
-		"Proof",
-		"Decision",
-		"Learning",
+		"Needs you",
+		"Working",
+		"Ready",
+		"Recent proof",
 		"Ready",
 		"Proving",
 		"Needs you",
@@ -126,7 +141,6 @@ func TestWorkbenchOperatorModeTranslatesEnvelopeIntoOperatorLanguage(t *testing.
 		"Authority: Free to act",
 		"Authority: Review before landing",
 		"Authority: Needs Umut",
-		"Advanced",
 		ready.ID,
 		proving.ID,
 		held.ID,
@@ -148,6 +162,159 @@ func TestWorkbenchOperatorModeTranslatesEnvelopeIntoOperatorLanguage(t *testing.
 	if parsed.Counts.Total != 4 || parsed.ReviewQueue == nil {
 		t.Fatalf("--json --operator did not preserve workbench JSON contract: counts=%+v review=%+v", parsed.Counts, parsed.ReviewQueue)
 	}
+}
+
+func TestWorkbenchOperatorDefaultIsBoundedGroupedAndJSONStable(t *testing.T) {
+	newVerboseOperatorWorkbenchFixture(t, 30)
+
+	operator := captureStdout(t, func() {
+		cmdWorkbench([]string{"--operator", "--recent", "10"})
+	})
+	lineCount := countNonEmptyLines(operator)
+	if lineCount > 42 {
+		t.Fatalf("default operator output is too verbose: lines=%d\n%s", lineCount, operator)
+	}
+	if strings.Contains(operator, "Advanced") {
+		t.Fatalf("default operator output must hide Advanced without explicit opt-in:\n%s", operator)
+	}
+	if strings.Contains(operator, "clear 30 blocked items") || strings.Contains(operator, "clear 30 blocked item") {
+		t.Fatalf("operator summary must not tell Umut to clear all historical holds:\n%s", operator)
+	}
+	if !strings.Contains(operator, "repeated held private config gate") {
+		t.Fatalf("operator summary should name the actual top priority:\n%s", operator)
+	}
+	if !strings.Contains(operator, "29 similar") {
+		t.Fatalf("duplicate held rows should be grouped with a compact similar-count:\n%s", operator)
+	}
+	if got := strings.Count(operator, "work_dup_hold_"); got > 2 {
+		t.Fatalf("duplicate held work IDs rendered individually (%d occurrences):\n%s", got, operator)
+	}
+	for _, want := range []string{
+		"Needs you",
+		"Working",
+		"Ready",
+		"Recent proof",
+		"omitted",
+	} {
+		if !strings.Contains(operator, want) {
+			t.Fatalf("bounded operator output missing %q:\n%s", want, operator)
+		}
+	}
+
+	baseJSON := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--recent", "10"})
+	})
+	operatorJSON := captureStdout(t, func() {
+		cmdWorkbench([]string{"--json", "--operator", "--recent", "10"})
+	})
+	base := normalizedWorkbenchOutput(t, baseJSON)
+	withOperator := normalizedWorkbenchOutput(t, operatorJSON)
+	if !reflect.DeepEqual(base, withOperator) {
+		t.Fatalf("--operator changed JSON contract\nbase=%+v\noperator=%+v", base, withOperator)
+	}
+}
+
+func newVerboseOperatorWorkbenchFixture(t *testing.T, duplicateHolds int) string {
+	t.Helper()
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+	for i := 0; i < duplicateHolds; i++ {
+		if _, err := store.Create(work.CreateInput{
+			WorkID:           fmt.Sprintf("work_dup_hold_%02d", i),
+			Owner:            "compound-core",
+			State:            "held",
+			CanonicalSurface: "source:private-config",
+			SuccessPredicate: "repeated held private config gate",
+			DesiredOutcome:   "private config unlocks source refresh",
+		}, cliTestNow.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("create duplicate held work %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		running, err := store.Create(work.CreateInput{
+			WorkID:           fmt.Sprintf("work_running_%02d", i),
+			Owner:            "compound-core",
+			CanonicalSurface: fmt.Sprintf("surface:running-%02d", i),
+			SuccessPredicate: fmt.Sprintf("working mission %02d proves the active lane", i),
+			DesiredOutcome:   fmt.Sprintf("working outcome %02d", i),
+		}, cliTestNow.Add(time.Duration(duplicateHolds+i)*time.Minute))
+		if err != nil {
+			t.Fatalf("create running work %d: %v", i, err)
+		}
+		if _, err := store.Claim(running.ID, "codex", cliTestNow.Add(time.Duration(duplicateHolds+i)*time.Minute)); err != nil {
+			t.Fatalf("claim running work %d: %v", i, err)
+		}
+		if _, err := store.Advance(running.ID, work.AdvanceInput{To: "running"}, cliTestNow.Add(time.Duration(duplicateHolds+i)*time.Minute)); err != nil {
+			t.Fatalf("advance running work %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 5; i++ {
+		if _, err := store.Create(work.CreateInput{
+			WorkID:           fmt.Sprintf("work_ready_%02d", i),
+			Owner:            "compound-core",
+			CanonicalSurface: fmt.Sprintf("surface:ready-%02d", i),
+			SuccessPredicate: fmt.Sprintf("ready mission %02d is dispatchable", i),
+			DesiredOutcome:   fmt.Sprintf("ready outcome %02d", i),
+		}, cliTestNow.Add(time.Duration(duplicateHolds+10+i)*time.Minute)); err != nil {
+			t.Fatalf("create ready work %d: %v", i, err)
+		}
+	}
+	done, err := store.Create(work.CreateInput{
+		WorkID:           "work_recent_done",
+		Owner:            "compound-core",
+		CanonicalSurface: "surface:recent-proof",
+		SuccessPredicate: "recent proof stays visible but bounded",
+		DesiredOutcome:   "recent learning is available",
+	}, cliTestNow.Add(time.Duration(duplicateHolds+20)*time.Minute))
+	if err != nil {
+		t.Fatalf("create recent proof work: %v", err)
+	}
+	if _, err := store.Claim(done.ID, "codex", cliTestNow.Add(time.Duration(duplicateHolds+20)*time.Minute)); err != nil {
+		t.Fatalf("claim recent proof work: %v", err)
+	}
+	if _, err := store.Advance(done.ID, work.AdvanceInput{To: "running"}, cliTestNow.Add(time.Duration(duplicateHolds+20)*time.Minute)); err != nil {
+		t.Fatalf("advance recent proof running: %v", err)
+	}
+	if _, err := store.Advance(done.ID, work.AdvanceInput{To: "verifying", VerificationID: "verification_recent_done"}, cliTestNow.Add(time.Duration(duplicateHolds+20)*time.Minute)); err != nil {
+		t.Fatalf("advance recent proof verifying: %v", err)
+	}
+	if _, err := store.Close(done.ID, work.CloseInput{
+		Outcome:   "completed",
+		MoveType:  "control_plane_repair",
+		Summary:   "recent proof fixture",
+		Changed:   true,
+		ProofRefs: []string{"proof:recent-done"},
+	}, cliTestNow.Add(time.Duration(duplicateHolds+20)*time.Minute)); err != nil {
+		t.Fatalf("close recent proof work: %v", err)
+	}
+	return homePath
+}
+
+func countNonEmptyLines(s string) int {
+	count := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func normalizedWorkbenchOutput(t *testing.T, raw string) workbenchCLIOutput {
+	t.Helper()
+	var out workbenchCLIOutput
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		t.Fatalf("parse workbench JSON: %v\n%s", err, raw)
+	}
+	out.GeneratedAt = ""
+	return out
 }
 
 // Falsifier f1: a fixture where the review queue and attention projection disagree
