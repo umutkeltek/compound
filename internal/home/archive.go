@@ -2,6 +2,7 @@ package home
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1612,6 +1613,8 @@ func (tx *operationalArchiveTransaction) publishIndex() error {
 		tx.indexAfter,
 		tx.indexBeforeMode,
 		"commit",
+		tx.indexBefore,
+		tx.indexBeforeInfo,
 	)
 	tx.indexPublished = published
 	tx.indexPublishedInfo = info
@@ -1638,6 +1641,8 @@ func (tx *operationalArchiveTransaction) restoreIndex() error {
 		tx.indexBefore,
 		tx.indexBeforeMode,
 		"rollback",
+		tx.indexAfter,
+		tx.indexPublishedInfo,
 	)
 	if err != nil {
 		if published {
@@ -1709,7 +1714,7 @@ func (tx *operationalArchiveTransaction) close() {
 	}
 }
 
-func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode, purpose string) (os.FileInfo, bool, error) {
+func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode, purpose string, expectedData []byte, expectedInfo os.FileInfo) (os.FileInfo, bool, error) {
 	digest := operationalArchiveBytesSHA256(data)
 	tempName := fmt.Sprintf(".%s.%d.%s.%s.tmp", name, os.Getpid(), purpose, digest[:12])
 	file, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
@@ -1734,18 +1739,44 @@ func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []
 		return nil, false, err
 	}
 	operationalArchiveBeforeIndexReplace(purpose)
+	if err := validateOperationalArchiveRootFilePreimage(root, name, expectedData, expectedInfo); err != nil {
+		return cleanup(err)
+	}
 	if err := root.Rename(tempName, name); err != nil {
 		_ = root.Remove(tempName)
 		return nil, false, err
 	}
-	info, statErr := root.Lstat(name)
+	publishedData, _, info, err := readOperationalArchiveRootFile(root, name, "published operational archive index")
+	if err != nil {
+		return nil, true, err
+	}
+	if !bytes.Equal(publishedData, data) {
+		return info, true, fmt.Errorf("published operational archive index does not match intended postimage: %s", name)
+	}
 	if err := syncOperationalArchiveRoot(root); err != nil {
 		return info, true, err
 	}
-	if statErr != nil {
-		return nil, true, statErr
-	}
 	return info, true, nil
+}
+
+func validateOperationalArchiveRootFilePreimage(root *os.Root, name string, expectedData []byte, expectedInfo os.FileInfo) error {
+	data, _, info, err := readOperationalArchiveRootFile(root, name, "operational archive index preimage")
+	if expectedInfo == nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("operational archive index appeared before replacement: %s", name)
+	}
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(expectedInfo, info) || !bytes.Equal(expectedData, data) {
+		return fmt.Errorf("operational archive index changed before replacement: %s", name)
+	}
+	return nil
 }
 
 func writeNewOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode) error {
