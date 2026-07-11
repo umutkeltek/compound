@@ -28,6 +28,8 @@ type panelAttempt struct {
 	ClientProfile string   `json:"client_profile,omitempty"`
 	CallRole      string   `json:"call_role,omitempty"`
 	Lane          *LaneRef `json:"lane,omitempty"`
+	EvidenceID    string   `json:"evidence_id,omitempty"`
+	UsageKnown    *bool    `json:"usage_known,omitempty"`
 	CreatedAt     string   `json:"created_at"`
 }
 
@@ -72,6 +74,10 @@ func panelTargetAttemptPath(homePath, runID, targetRef string) string {
 
 func panelCallAttemptPath(homePath, runID, requestID string) string {
 	return filepath.Join(panelAttemptDir(homePath, runID), "call-"+targetDigest(requestID)+".json")
+}
+
+func panelCallCompletionPath(homePath, runID, requestID string) string {
+	return filepath.Join(panelAttemptDir(homePath, runID), "complete-"+targetDigest(requestID)+".json")
 }
 
 func reservePanelTargetAttempt(homePath string, run Run, targetRef string, createdAt time.Time) (bool, error) {
@@ -132,6 +138,47 @@ func reservePanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 	return fmt.Errorf("panel route attempt %s already resolved; allocate a fresh request id", requestID)
 }
 
+func completePanelCallAttempt(homePath string, run Run, targetRef, requestID, clientProfile, callRole string, lane LaneRef, evidenceID string, usageKnown bool, createdAt time.Time) error {
+	laneCopy := lane
+	known := usageKnown
+	attempt := panelAttempt{
+		SchemaVersion: panelAttemptSchemaVersion,
+		Kind:          "call_completion",
+		RunID:         run.ID,
+		WorkID:        panelStringRef(run.WorkID),
+		TargetRef:     targetRef,
+		RequestID:     requestID,
+		ClientProfile: clientProfile,
+		CallRole:      callRole,
+		Lane:          &laneCopy,
+		EvidenceID:    strings.TrimSpace(evidenceID),
+		UsageKnown:    &known,
+		CreatedAt:     createdAt.UTC().Format(time.RFC3339),
+	}
+	path := panelCallCompletionPath(homePath, run.ID, requestID)
+	created, err := writePanelAttemptExclusive(path, attempt)
+	if err != nil {
+		return err
+	}
+	if created {
+		return nil
+	}
+	existing, err := readPanelAttempt(path)
+	if err != nil {
+		return err
+	}
+	if err := validatePanelAttemptCore(existing, "call_completion", run, targetRef, requestID); err != nil {
+		return err
+	}
+	if err := validatePanelCallAttemptIdentity(existing, run, requestID, clientProfile, callRole, lane); err != nil {
+		return err
+	}
+	if existing.EvidenceID != attempt.EvidenceID || existing.UsageKnown == nil || *existing.UsageKnown != usageKnown {
+		return fmt.Errorf("panel route completion %s conflicts with evidence or usage identity", requestID)
+	}
+	return nil
+}
+
 func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, clientProfile, callRole string, lane LaneRef) (routeevidence.Evidence, bool, error) {
 	path := panelCallAttemptPath(homePath, run.ID, requestID)
 	attempt, err := readPanelAttempt(path)
@@ -147,6 +194,22 @@ func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 	if err := validatePanelCallAttemptIdentity(attempt, run, requestID, clientProfile, callRole, lane); err != nil {
 		return routeevidence.Evidence{}, false, err
 	}
+	completion, err := readPanelAttempt(panelCallCompletionPath(homePath, run.ID, requestID))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return routeevidence.Evidence{}, false, fmt.Errorf("unresolved route attempt %s has unknown_spend; refusing another provider call", requestID)
+		}
+		return routeevidence.Evidence{}, false, err
+	}
+	if err := validatePanelAttemptCore(completion, "call_completion", run, targetRef, requestID); err != nil {
+		return routeevidence.Evidence{}, false, err
+	}
+	if err := validatePanelCallAttemptIdentity(completion, run, requestID, clientProfile, callRole, lane); err != nil {
+		return routeevidence.Evidence{}, false, err
+	}
+	if strings.TrimSpace(completion.EvidenceID) == "" || completion.UsageKnown == nil {
+		return routeevidence.Evidence{}, false, fmt.Errorf("incomplete panel route completion identity for %s", requestID)
+	}
 
 	existing, ok, err := panelRouteEvidenceForRequest(homePath, requestID)
 	if err != nil {
@@ -155,11 +218,17 @@ func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 	if !ok {
 		return routeevidence.Evidence{}, false, fmt.Errorf("unresolved route attempt %s has unknown_spend; refusing another provider call", requestID)
 	}
+	if existing.ID != completion.EvidenceID {
+		return routeevidence.Evidence{}, false, fmt.Errorf("panel route completion %s conflicts with route evidence %s", requestID, existing.ID)
+	}
 	if existing.RecordedVia != routeevidence.RecorderGeneric {
 		return routeevidence.Evidence{}, false, fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
 	}
 	if !samePanelRouteIdentity(existing, requestID, run.WorkID, clientProfile, lane) {
 		return routeevidence.Evidence{}, false, fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
+	}
+	if !*completion.UsageKnown && panelCallRequiresKnownUsage(run, lane) {
+		return routeevidence.Evidence{}, false, fmt.Errorf("panel request %s has unknown token usage", requestID)
 	}
 	return existing, true, nil
 }
@@ -181,6 +250,10 @@ func validatePanelCallAttemptIdentity(attempt panelAttempt, run Run, requestID, 
 		return fmt.Errorf("panel route attempt %s conflicts with lane identity", requestID)
 	}
 	return nil
+}
+
+func panelCallRequiresKnownUsage(run Run, lane LaneRef) bool {
+	return run.Budget.MaxTotalTokens > 0 || laneIsMetered(lane)
 }
 
 func panelTargetAttemptRefs(homePath string, run Run) (map[string]bool, error) {
@@ -229,7 +302,7 @@ func validatePanelAttemptCore(attempt panelAttempt, kind string, run Run, target
 	if attempt.Kind != kind || attempt.RunID != run.ID || attempt.TargetRef != targetRef {
 		return fmt.Errorf("panel %s attempt conflicts with run or target identity", kind)
 	}
-	if kind == "call" && attempt.RequestID != requestID {
+	if (kind == "call" || kind == "call_completion") && attempt.RequestID != requestID {
 		return fmt.Errorf("panel call attempt conflicts with request identity %s", requestID)
 	}
 	if _, err := time.Parse(time.RFC3339, attempt.CreatedAt); err != nil {

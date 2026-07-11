@@ -363,6 +363,16 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
+		usageKnown := callResult.TotalTokens > 0
+		if err := completePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.lens", included.Ref, run.Route.LensLane, routeRef, usageKnown, now().UTC()); err != nil {
+			return TargetFinding{}, tokensUsed, err
+		}
+		if !usageKnown && panelCallRequiresKnownUsage(run, run.Route.LensLane) {
+			if callErr != nil {
+				return TargetFinding{}, tokensUsed, fmt.Errorf("panel request %s has unknown token usage: %w", requestID, callErr)
+			}
+			return TargetFinding{}, tokensUsed, fmt.Errorf("panel request %s has unknown token usage", requestID)
+		}
 		if callErr != nil {
 			lensFindings = append(lensFindings, failedLensFinding(included.Ref, run.Route.LensLane, routeRef, callResult, callErr))
 			outputs = append(outputs, LensOutput{Lens: lens, Err: callErr})
@@ -447,7 +457,17 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 		if err != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
+		usageKnown := callResult.TotalTokens > 0
+		if err := completePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.judge", judgePromptID, run.Route.JudgeLane, routeRef, usageKnown, now().UTC()); err != nil {
+			return JudgeOutput{}, lastRouteRef, tokens, false, err
+		}
 		lastRouteRef = routeRef
+		if !usageKnown && panelCallRequiresKnownUsage(run, run.Route.JudgeLane) {
+			if callErr != nil {
+				return JudgeOutput{}, lastRouteRef, tokens, false, fmt.Errorf("panel request %s has unknown token usage: %w", requestID, callErr)
+			}
+			return JudgeOutput{}, lastRouteRef, tokens, false, fmt.Errorf("panel request %s has unknown token usage", requestID)
+		}
 		if callErr != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, callErr
 		}
