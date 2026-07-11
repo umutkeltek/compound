@@ -24,34 +24,67 @@ type dispatchPrompt struct {
 }
 
 func (s *Store) attachDispatchPrompt(workID, actor string, now time.Time) (dispatchPrompt, error) {
-	w, err := s.Get(workID)
-	if err != nil {
-		return dispatchPrompt{}, err
+	for {
+		w, err := s.Get(workID)
+		if err != nil {
+			return dispatchPrompt{}, err
+		}
+		workSHA256, err := workEnvelopeSHA256(w)
+		if err != nil {
+			return dispatchPrompt{}, err
+		}
+		pack, err := s.dispatchContextPack(w, actor, now)
+		if err != nil {
+			return dispatchPrompt{}, err
+		}
+		if err := pack.Validate(); err != nil {
+			return dispatchPrompt{}, fmt.Errorf("dispatch context pack invalid: %w", err)
+		}
+
+		var committed envelope.WorkEnvelope
+		retry := false
+		err = s.withLifecycleMutation(func() error {
+			current, err := s.recoverPendingClaimBeforeMutation(workID)
+			if err != nil {
+				return err
+			}
+			currentSHA256, err := workEnvelopeSHA256(current)
+			if err != nil {
+				return err
+			}
+			if currentSHA256 != workSHA256 {
+				retry = true
+				return nil
+			}
+
+			packPath := filepath.Join(s.home, "context", "packs", pack.ID+".json")
+			if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
+				return err
+			}
+			if err := s.writeJSON(packPath, &pack); err != nil {
+				return err
+			}
+			current.IDs.ContextPackID = pack.ID
+			if err := s.writeJSON(s.workPath(current.ID), &current); err != nil {
+				return err
+			}
+			committed = current
+			return nil
+		})
+		if err != nil {
+			return dispatchPrompt{}, err
+		}
+		if retry {
+			continue
+		}
+
+		offers := dispatchPromptOffers(pack)
+		return dispatchPrompt{
+			ContextPackID:       pack.ID,
+			CapabilitiesOffered: offers,
+			Markdown:            renderDispatchPrompt(committed, offers),
+		}, nil
 	}
-	pack, err := s.dispatchContextPack(w, actor, now)
-	if err != nil {
-		return dispatchPrompt{}, err
-	}
-	if err := pack.Validate(); err != nil {
-		return dispatchPrompt{}, fmt.Errorf("dispatch context pack invalid: %w", err)
-	}
-	packPath := filepath.Join(s.home, "context", "packs", pack.ID+".json")
-	if err := os.MkdirAll(filepath.Dir(packPath), 0o755); err != nil {
-		return dispatchPrompt{}, err
-	}
-	if err := s.writeJSON(packPath, &pack); err != nil {
-		return dispatchPrompt{}, err
-	}
-	w.IDs.ContextPackID = pack.ID
-	if err := s.writeJSON(s.workPath(w.ID), &w); err != nil {
-		return dispatchPrompt{}, err
-	}
-	offers := dispatchPromptOffers(pack)
-	return dispatchPrompt{
-		ContextPackID:       pack.ID,
-		CapabilitiesOffered: offers,
-		Markdown:            renderDispatchPrompt(w, offers),
-	}, nil
 }
 
 func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now time.Time) (envelope.ContextPack, error) {
