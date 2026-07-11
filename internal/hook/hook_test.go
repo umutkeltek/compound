@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1315,6 +1316,10 @@ func TestHandledOrActiveStopWithWorkIDSuppressesSessionClose(t *testing.T) {
 			if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, fixedNow); err != nil {
 				t.Fatal(err)
 			}
+			before, err := store.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			deps := baseDeps()
 			deps.Store = store
@@ -1325,6 +1330,8 @@ func TestHandledOrActiveStopWithWorkIDSuppressesSessionClose(t *testing.T) {
 				TurnID:             "turn_bound_stop",
 				WorkID:             w.ID,
 				Summary:            "turn stopped after adapter handling",
+				Outcome:            "completed",
+				MoveType:           "audit_only",
 				StopHookActive:     tc.active,
 				StopTriageHandled:  tc.triaged,
 				AdapterSideEffects: tc.sideEffects,
@@ -1350,8 +1357,8 @@ func TestHandledOrActiveStopWithWorkIDSuppressesSessionClose(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if after.State != "running" {
-				t.Fatalf("handled Stop closed parent work: %+v", after)
+			if !reflect.DeepEqual(after, before) || after.IDs.TransitionID != "" {
+				t.Fatalf("handled Stop mutated parent work: before=%+v after=%+v", before, after)
 			}
 		})
 	}

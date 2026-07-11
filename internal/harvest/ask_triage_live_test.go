@@ -84,11 +84,12 @@ func TestCodexStopRejectsNonLiveCompanionJobs(t *testing.T) {
 	tests := []struct {
 		name    string
 		status  string
+		pid     int
 		deadPID bool
 	}{
-		{name: "completed", status: "completed"},
-		{name: "failed", status: "failed"},
-		{name: "cancelled", status: "cancelled"},
+		{name: "completed", status: "completed", pid: os.Getpid()},
+		{name: "failed", status: "failed", pid: os.Getpid()},
+		{name: "cancelled", status: "cancelled", pid: os.Getpid()},
 		{name: "empty status"},
 		{name: "running without pid", status: "running"},
 		{name: "running with dead pid", status: "running", deadPID: true},
@@ -143,7 +144,7 @@ func TestCodexStopRejectsNonLiveCompanionJobs(t *testing.T) {
 			const threadID = "019f0000-0000-7000-8000-000000000555"
 			const turnID = "019f0000-0000-7000-8000-000000000666"
 			jobsRoot := filepath.Join(t.TempDir(), "jobs-state")
-			pid := 0
+			pid := tc.pid
 			if tc.deadPID {
 				pid = askTriageDeadPID(t)
 			}

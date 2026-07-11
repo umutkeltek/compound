@@ -243,6 +243,8 @@ func resolveCodexStopBinding(store *work.Store, in CodexStopInput) (*codexStopBi
 			continue
 		}
 		var job codexTrackedJob
+		// The live Stop payload's exact thread/turn pair is the delivery identity.
+		// PID liveness is only a negative filter for stale running job records.
 		if json.Unmarshal(data, &job) != nil || !strings.EqualFold(strings.TrimSpace(job.Status), "running") || !work.PIDAlive(job.PID) || strings.TrimSpace(job.ThreadID) != strings.TrimSpace(in.SessionID) || strings.TrimSpace(job.TurnID) != strings.TrimSpace(in.TurnID) {
 			continue
 		}
