@@ -47,6 +47,11 @@ func (publication *RootedFileCAS) State() RootedFileCASState {
 // canonical entry still matches the caller's snapshot. Existing entries use a
 // kernel name exchange so the displaced file can be validated after the
 // linearization point; an absent entry uses a no-replace hard link.
+//
+// Callers must serialize every supported writer and close writable descriptors
+// before publication. The CAS protects rooted directory entries and mutations
+// completed before exchange; no portable filesystem primitive can revoke a
+// hostile process's already-open writable descriptor after exchange.
 func BeginRootedFileCAS(
 	root *os.Root,
 	canonicalName string,
@@ -194,6 +199,10 @@ func (publication *RootedFileCAS) Rollback() error {
 		publication.state = RootedFileCASAmbiguous
 		return fmt.Errorf("read rooted file CAS displaced preimage before rollback: %w", err)
 	}
+	if !os.SameFile(publication.displacedInfo, displacedInfo) || !bytes.Equal(publication.displacedData, displacedData) {
+		publication.state = RootedFileCASAmbiguous
+		return fmt.Errorf("refusing rooted file CAS rollback after displaced preimage identity changed")
+	}
 	if err := exchangeRootedCASFiles(publication.root, publication.recoveryName, publication.canonicalName); err != nil {
 		publication.state = RootedFileCASAmbiguous
 		return fmt.Errorf("atomically restore rooted file CAS preimage: %w", err)
@@ -204,7 +213,7 @@ func (publication *RootedFileCAS) Rollback() error {
 		publication.state = RootedFileCASAmbiguous
 		return fmt.Errorf("rooted file CAS rollback identity is ambiguous: %w", errors.Join(restoredErr, preparedErr))
 	}
-	if !os.SameFile(displacedInfo, restoredInfo) || !bytes.Equal(displacedData, restoredData) ||
+	if !os.SameFile(publication.displacedInfo, restoredInfo) || !bytes.Equal(publication.displacedData, restoredData) ||
 		!os.SameFile(publication.replacementInfo, preparedInfo) || !bytes.Equal(publication.replacementData, preparedData) {
 		publication.state = RootedFileCASAmbiguous
 		return fmt.Errorf("rooted file CAS rollback identity is ambiguous")
