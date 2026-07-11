@@ -5,11 +5,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/envelope"
@@ -399,20 +401,75 @@ func uniqueEvidenceForRequestID(homePath, requestID string) (Evidence, bool, err
 
 func recordEvidenceLocked(homePath string, ev Evidence) error {
 	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+	current, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	defer closeRouteEvidenceFile(f)
 	b, err := json.Marshal(&ev)
 	if err != nil {
 		return err
 	}
-	_, err = writeRouteEvidenceFile(f, append(b, '\n'))
-	return err
+
+	file, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := file.Name()
+	cleanup := func(cause error) error {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return cause
+	}
+	if err := file.Chmod(0o644); err != nil {
+		return cleanup(err)
+	}
+	if len(current) > 0 {
+		if err := writeRouteEvidenceChunk(file, current); err != nil {
+			return cleanup(err)
+		}
+	}
+	if err := writeRouteEvidenceChunk(file, append(b, '\n')); err != nil {
+		return cleanup(err)
+	}
+	if err := syncRouteEvidenceFile(file); err != nil {
+		return cleanup(err)
+	}
+	if err := closeRouteEvidenceFile(file); err != nil {
+		return cleanup(err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return syncRouteEvidenceLedgerDirectory(dir)
+}
+
+func writeRouteEvidenceChunk(file *os.File, data []byte) error {
+	n, err := writeRouteEvidenceFile(file, data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func syncRouteEvidenceLedgerDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return syncErr
+	}
+	return closeErr
 }
 
 func RecordTransition(homePath string, tr envelope.Transition) error {
