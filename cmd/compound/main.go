@@ -2962,6 +2962,61 @@ func cmdHarness(args []string) {
 	if len(args) > 0 {
 		target = args[0]
 	}
+	if target == "generate" || target == "drift" {
+		if hasFlag(args[1:], "--apply") {
+			fmt.Fprintln(os.Stderr, "compound harness generate: --apply is outside this dry-run W4 slice")
+			os.Exit(2)
+		}
+		harnessName := flagValue(args[1:], "--harness")
+		if harnessName == "" {
+			fmt.Fprintf(os.Stderr, "usage: compound harness %s --harness <name> [--json]\n", target)
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(set COMPOUND_HOME)")
+			os.Exit(1)
+		}
+		if target == "generate" {
+			render, err := harness.RenderPermissions(homePath, harnessName)
+			die(err)
+			if hasFlag(args[1:], "--json") {
+				die(json.NewEncoder(os.Stdout).Encode(render))
+				return
+			}
+			fmt.Println("# harness generate (dry-run)")
+			fmt.Printf("- harness: %s\n", harnessName)
+			fmt.Printf("- target: %s\n", render.TargetPath)
+			fmt.Printf("- changed: %t\n", render.Changed)
+			fmt.Printf("- source_authority: %s\n", render.Artifact.SourceAuthorityRef)
+			fmt.Printf("- source_revision: %s\n", render.Artifact.SourceRevision)
+			fmt.Printf("- intended_sha256: %s\n", render.Artifact.ContentSHA256)
+			for _, detail := range render.Details {
+				fmt.Printf("- delta: %s\n", detail)
+			}
+			if render.Changed {
+				fmt.Printf("\n--- %s\n+++ intended:%s\n%s", render.TargetPath, render.Artifact.SourceAuthorityRef, render.Content)
+			}
+			return
+		}
+		report, err := harness.PermissionDrift(homePath, harnessName)
+		die(err)
+		if hasFlag(args[1:], "--json") {
+			die(json.NewEncoder(os.Stdout).Encode(report))
+		} else {
+			fmt.Println("# harness drift")
+			fmt.Printf("- harness: %s\n", report.Harness)
+			fmt.Printf("- target: %s\n", report.TargetPath)
+			fmt.Printf("- status: %s\n", map[bool]string{true: "drift", false: "clean"}[report.Drifted])
+			for _, detail := range report.Details {
+				fmt.Printf("- detail: %s\n", detail)
+			}
+		}
+		if report.Drifted {
+			os.Exit(1)
+		}
+		return
+	}
 	if target == "observe" {
 		if len(args) > 3 {
 			fmt.Fprintln(os.Stderr, "usage: compound harness observe [harness-registry.yaml|--os-entrypoints file]")
