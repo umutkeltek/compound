@@ -802,7 +802,12 @@ func routeEvidenceRows(t *testing.T, home string) int {
 
 func TestRecordPanelRouteEvidenceIncludesGatewayMetadata(t *testing.T) {
 	home := t.TempDir()
-	_, err := recordPanelRouteEvidence(home, fixedPanelNow(), "work_1", "panel:req_1", "compound.panel.judge", LaneRef{ModelID: "auto/judge", Tier: "cheap"}, CallResult{
+	lane := LaneRef{ModelID: "auto/judge", Tier: "cheap"}
+	claim, err := claimPanelRouteRequest(home, "work_1", "panel:req_1", "compound.panel.judge", lane)
+	if err != nil {
+		t.Fatalf("claim route request: %v", err)
+	}
+	_, err = recordPanelRouteEvidence(home, fixedPanelNow(), "work_1", "panel:req_1", "compound.panel.judge", lane, claim, CallResult{
 		TotalTokens:      7,
 		LatencyMS:        12,
 		ResolvedProvider: "nvidia",

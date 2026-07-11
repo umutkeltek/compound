@@ -212,17 +212,27 @@ func RecordJoinedUniqueRequestID(homePath string, ev Evidence) (ImportResult, er
 	return recordJoinedVia(homePath, ev, RecorderGeneric)
 }
 
+// RecordClaimedJoined records evidence only for the exact durable request-id
+// claim previously acquired by the caller.
+func RecordClaimedJoined(homePath string, ev Evidence, claim RequestClaim) (ImportResult, error) {
+	return recordJoinedViaClaim(homePath, ev, RecorderGeneric, &claim)
+}
+
 func RecordPanelRuntimeJoined(homePath string, ev Evidence) (ImportResult, error) {
 	return recordJoinedVia(homePath, ev, RecorderTrustedPanelRuntime)
 }
 
 func recordJoinedVia(homePath string, ev Evidence, recorder string) (ImportResult, error) {
+	return recordJoinedViaClaim(homePath, ev, recorder, nil)
+}
+
+func recordJoinedViaClaim(homePath string, ev Evidence, recorder string, claim *RequestClaim) (ImportResult, error) {
 	ev.RecordedVia = normalizedRecorder(recorder)
 	ev, tr, err := JoinTransition(ev)
 	if err != nil {
 		return ImportResult{}, err
 	}
-	recorded, err := recordEvidenceUniqueRequestID(homePath, ev)
+	recorded, err := recordEvidenceUniqueRequestID(homePath, ev, claim)
 	if err != nil {
 		return ImportResult{}, err
 	}
@@ -298,16 +308,20 @@ func BuildTransition(ev Evidence) (envelope.Transition, error) {
 
 func RecordEvidence(homePath string, ev Evidence) error {
 	ev.RecordedVia = RecorderGeneric
-	_, err := recordEvidenceUniqueRequestID(homePath, ev)
+	_, err := recordEvidenceUniqueRequestID(homePath, ev, nil)
 	return err
 }
 
-func recordEvidenceUniqueRequestID(homePath string, ev Evidence) (Evidence, error) {
+func recordEvidenceUniqueRequestID(homePath string, ev Evidence, claim *RequestClaim) (Evidence, error) {
 	if err := Validate(ev); err != nil {
 		return Evidence{}, err
 	}
 	var recorded Evidence
 	err := homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		claimed, err := authorizeRequestClaimLocked(homePath, ev, claim)
+		if err != nil {
+			return err
+		}
 		existing, ok, err := uniqueEvidenceForRequestID(homePath, ev.RequestID)
 		if err != nil {
 			return err
@@ -325,11 +339,21 @@ func recordEvidenceUniqueRequestID(homePath string, ev Evidence) (Evidence, erro
 			if !bytes.Equal(existingJSON, incomingJSON) {
 				return fmt.Errorf("execution route evidence request_id %q already recorded as %s", ev.RequestID, existing.ID)
 			}
+			if claimed {
+				if err := releaseRequestClaimLocked(homePath, *claim); err != nil {
+					return err
+				}
+			}
 			recorded = existing
 			return nil
 		}
 		if err := recordEvidenceLocked(homePath, ev); err != nil {
 			return err
+		}
+		if claimed {
+			if err := releaseRequestClaimLocked(homePath, *claim); err != nil {
+				return err
+			}
 		}
 		recorded = ev
 		return nil

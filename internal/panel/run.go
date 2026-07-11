@@ -364,13 +364,17 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		if err := reservePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.lens", included.Ref, run.Route.LensLane, now().UTC()); err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
+		requestClaim, err := claimPanelRouteRequest(homePath, run.WorkID, requestID, "compound.panel.lens", run.Route.LensLane)
+		if err != nil {
+			return TargetFinding{}, tokensUsed, err
+		}
 		callResult, callErr := caller.Call(ctx, CallRequest{LensID: included.Ref, TargetRef: target.Ref, Lane: run.Route.LensLane, System: system, User: user})
 		tokensUsed += callResult.TotalTokens
 		status := "completed"
 		if callErr != nil {
 			status = "failed"
 		}
-		routeRef, err := recordPanelRouteEvidence(homePath, now().UTC(), run.WorkID, requestID, "compound.panel.lens", run.Route.LensLane, callResult, status)
+		routeRef, err := recordPanelRouteEvidence(homePath, now().UTC(), run.WorkID, requestID, "compound.panel.lens", run.Route.LensLane, requestClaim, callResult, status)
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
@@ -458,13 +462,17 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 		if err := reservePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.judge", judgePromptID, run.Route.JudgeLane, now().UTC()); err != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
+		requestClaim, err := claimPanelRouteRequest(homePath, run.WorkID, requestID, "compound.panel.judge", run.Route.JudgeLane)
+		if err != nil {
+			return JudgeOutput{}, lastRouteRef, tokens, false, err
+		}
 		callResult, callErr := caller.Call(ctx, CallRequest{LensID: judgePromptID, TargetRef: target.Ref, Lane: run.Route.JudgeLane, System: system, User: user})
 		tokens += callResult.TotalTokens
 		status := "completed"
 		if callErr != nil {
 			status = "failed"
 		}
-		routeRef, err := recordPanelRouteEvidence(homePath, now().UTC(), run.WorkID, requestID, "compound.panel.judge", run.Route.JudgeLane, callResult, status)
+		routeRef, err := recordPanelRouteEvidence(homePath, now().UTC(), run.WorkID, requestID, "compound.panel.judge", run.Route.JudgeLane, requestClaim, callResult, status)
 		if err != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
@@ -543,12 +551,27 @@ func isJSONFenceOpener(line string) bool {
 	return strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(opener, "```")), "json")
 }
 
-func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requestID, clientProfile string, lane LaneRef, result CallResult, status string) (string, error) {
+func claimPanelRouteRequest(homePath, workID, requestID, clientProfile string, lane LaneRef) (routeevidence.RequestClaim, error) {
+	claim, err := routeevidence.BuildRequestClaim(requestID, workID, clientProfile, "panel-lane", routeevidence.Target{
+		Provider: "compound-route-plan",
+		Model:    lane.ModelID,
+		Protocol: "panel-lane",
+	})
+	if err != nil {
+		return routeevidence.RequestClaim{}, err
+	}
+	if err := routeevidence.ClaimRequestID(homePath, claim); err != nil {
+		return routeevidence.RequestClaim{}, err
+	}
+	return claim, nil
+}
+
+func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requestID, clientProfile string, lane LaneRef, claim routeevidence.RequestClaim, result CallResult, status string) (string, error) {
 	ev, err := routeevidence.Build(routeevidence.BuildInput{CreatedAt: createdAt, RequestID: requestID, WorkID: workID, ClientProfile: clientProfile, Protocol: "panel-lane", Provider: "compound-route-plan", Model: lane.ModelID, ResolvedProvider: result.ResolvedProvider, ResolvedModel: result.ResolvedModel, ResolutionSource: result.ResolutionSource, GatewayRequestID: result.GatewayRequestID, Usage: routeevidence.Usage{TotalTokens: result.TotalTokens}, LatencyMS: result.LatencyMS, Status: status, EvidenceRefs: []string{routeevidence.ModelCapabilitiesAuthorityRef}})
 	if err != nil {
 		return "", err
 	}
-	recorded, err := routeevidence.RecordJoinedUniqueRequestID(homePath, ev)
+	recorded, err := routeevidence.RecordClaimedJoined(homePath, ev, claim)
 	if err != nil {
 		return "", err
 	}

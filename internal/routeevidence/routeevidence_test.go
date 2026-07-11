@@ -2,6 +2,7 @@ package routeevidence
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -208,6 +209,34 @@ func TestRecordJoinedUniqueRequestIDSerializesGenericWriter(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("concurrent request-id writes persisted %d transitions, want 1", len(events))
+	}
+}
+
+func TestRequestClaimExcludesOtherWritersAndIsConsumedByOwner(t *testing.T) {
+	home := t.TempDir()
+	ev := fixtureEvidence()
+	claim, err := BuildRequestClaim(ev.RequestID, ev.WorkID, ev.ClientProfile, ev.Protocol, ev.SelectedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ClaimRequestID(home, claim); err != nil {
+		t.Fatalf("claim request id: %v", err)
+	}
+	if _, err := RecordJoined(home, ev); err == nil || !strings.Contains(err.Error(), "is claimed") {
+		t.Fatalf("unclaimed writer was not excluded: %v", err)
+	}
+	result, err := RecordClaimedJoined(home, ev, claim)
+	if err != nil {
+		t.Fatalf("record claimed evidence: %v", err)
+	}
+	if result.Evidence.RequestID != ev.RequestID {
+		t.Fatalf("recorded request_id = %q, want %q", result.Evidence.RequestID, ev.RequestID)
+	}
+	if _, err := os.Stat(requestClaimPath(home, ev.RequestID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("consumed request claim still exists: %v", err)
+	}
+	if _, err := RecordJoined(home, ev); err != nil {
+		t.Fatalf("released request id lost normal idempotency: %v", err)
 	}
 }
 
