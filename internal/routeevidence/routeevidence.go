@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"time"
 
@@ -315,7 +314,15 @@ func recordEvidenceUniqueRequestID(homePath string, ev Evidence) (Evidence, erro
 		}
 		if ok {
 			existing.RecordedVia = normalizedRecorder(existing.RecordedVia)
-			if !reflect.DeepEqual(existing, ev) {
+			existingJSON, err := json.Marshal(existing)
+			if err != nil {
+				return err
+			}
+			incomingJSON, err := json.Marshal(ev)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(existingJSON, incomingJSON) {
 				return fmt.Errorf("execution route evidence request_id %q already recorded as %s", ev.RequestID, existing.ID)
 			}
 			recorded = existing
