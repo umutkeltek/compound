@@ -326,7 +326,7 @@ func Compact(homePath string, opts CompactOptions) (CompactReport, error) {
 	if err := requireHealthyHome(homePath); err != nil {
 		return CompactReport{}, err
 	}
-	dirs := []string{"lock", "tmp"}
+	dirs := []string{"tmp"}
 	if opts.Rebuildable {
 		dirs = append(dirs, "indexes", "projections")
 	}
