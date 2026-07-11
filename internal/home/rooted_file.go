@@ -1,6 +1,7 @@
 package home
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -117,6 +118,12 @@ func WriteRootedNewFileDurable(homePath, path, kind string, data []byte, perm os
 // RemoveRootedRegularFileDurable removes and directory-syncs an owned regular
 // file only when no path component beneath home is a symbolic link.
 func RemoveRootedRegularFileDurable(homePath, path, kind string) error {
+	return RemoveRootedRegularFileDurableValidated(homePath, path, kind, nil)
+}
+
+// RemoveRootedRegularFileDurableValidated removes an owned regular file only
+// when validator accepts the exact content and inode moved into quarantine.
+func RemoveRootedRegularFileDurableValidated(homePath, path, kind string, validator func([]byte) error) error {
 	root, relativePath, displayPath, err := openRootedPath(homePath, path, kind)
 	if err != nil {
 		return err
@@ -146,16 +153,88 @@ func RemoveRootedRegularFileDurable(homePath, path, kind string) error {
 		_ = file.Close()
 		return fmt.Errorf("%s file must be a stable regular file: %s", kind, displayPath)
 	}
-	if err := root.Remove(relativePath); err != nil {
+	data, err := io.ReadAll(file)
+	if err != nil {
 		_ = file.Close()
 		return err
 	}
-	closeErr := file.Close()
-	syncErr := syncRootedDirectory(root, filepath.Dir(relativePath), displayPath, kind)
-	if closeErr != nil {
-		return closeErr
+	if validator != nil {
+		if err := validator(data); err != nil {
+			_ = file.Close()
+			return err
+		}
 	}
-	return syncErr
+
+	parentPath := filepath.Dir(relativePath)
+	parents, err := lstatRootedDirectoryPath(root, parentPath, displayPath, kind, false)
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	if parentPath != "." && !sameRootedPath(before[:len(before)-1], parents) {
+		_ = file.Close()
+		return fmt.Errorf("%s path must be stable beneath compound home: %s", kind, displayPath)
+	}
+	quarantinePath := relativePath + ".remove-pending"
+	if _, err := root.Lstat(quarantinePath); err == nil {
+		_ = file.Close()
+		return fmt.Errorf("%s removal quarantine already exists: %s", kind, displayPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		_ = file.Close()
+		return err
+	}
+	if err := root.Rename(relativePath, quarantinePath); err != nil {
+		_ = file.Close()
+		return err
+	}
+	restore := func(cause error) error {
+		_ = file.Close()
+		if _, err := root.Lstat(relativePath); err == nil {
+			return fmt.Errorf("%w; %s replacement retained at quarantine because original path is occupied", cause, kind)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w; inspect %s original path before quarantine restore: %v", cause, kind, err)
+		}
+		if err := root.Rename(quarantinePath, relativePath); err != nil {
+			return fmt.Errorf("%w; restore %s quarantine: %v", cause, kind, err)
+		}
+		if err := syncRootedDirectory(root, parentPath, displayPath, kind); err != nil {
+			return fmt.Errorf("%w; sync restored %s quarantine: %v", cause, kind, err)
+		}
+		return cause
+	}
+
+	quarantined, err := root.Lstat(quarantinePath)
+	if err != nil {
+		return restore(err)
+	}
+	quarantineFile, err := root.Open(quarantinePath)
+	if err != nil {
+		return restore(err)
+	}
+	quarantineOpened, err := quarantineFile.Stat()
+	if err != nil {
+		_ = quarantineFile.Close()
+		return restore(err)
+	}
+	quarantineData, err := io.ReadAll(quarantineFile)
+	if err != nil {
+		_ = quarantineFile.Close()
+		return restore(err)
+	}
+	if err := quarantineFile.Close(); err != nil {
+		return restore(err)
+	}
+	if quarantined.Mode()&os.ModeSymlink != 0 || !quarantined.Mode().IsRegular() ||
+		!quarantineOpened.Mode().IsRegular() || !os.SameFile(opened, quarantineOpened) || !bytes.Equal(data, quarantineData) {
+		return restore(fmt.Errorf("%s file changed after validation: %s", kind, displayPath))
+	}
+	if err := file.Close(); err != nil {
+		return restore(err)
+	}
+	if err := root.Remove(quarantinePath); err != nil {
+		return restore(err)
+	}
+	return syncRootedDirectory(root, parentPath, displayPath, kind)
 }
 
 func openRootedPath(homePath, path, kind string) (*os.Root, string, string, error) {
@@ -214,11 +293,23 @@ func lstatRootedRegularPath(root *os.Root, relativePath, displayPath, kind strin
 }
 
 func ensureRootedDirectories(root *os.Root, relativePath, displayPath, kind string, perm os.FileMode) ([]os.FileInfo, error) {
-	if _, err := lstatRootedDirectoryPath(root, relativePath, displayPath, kind, true); err != nil {
+	existing, err := lstatRootedDirectoryPath(root, relativePath, displayPath, kind, true)
+	if err != nil {
 		return nil, err
 	}
-	if relativePath != "." {
-		if err := root.MkdirAll(relativePath, perm); err != nil {
+	if relativePath == "." {
+		return existing, nil
+	}
+	components := strings.Split(relativePath, string(filepath.Separator))
+	for index := len(existing); index < len(components); index++ {
+		componentPath := filepath.Join(components[:index+1]...)
+		if err := root.Mkdir(componentPath, perm); err != nil {
+			return nil, err
+		}
+		parentPath := filepath.Dir(componentPath)
+		if err := syncRootedDirectory(root, parentPath, displayPath, kind); err != nil {
+			_ = root.Remove(componentPath)
+			_ = syncRootedDirectory(root, parentPath, displayPath, kind)
 			return nil, err
 		}
 	}

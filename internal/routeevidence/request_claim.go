@@ -132,15 +132,17 @@ func authorizeRequestClaimLocked(homePath string, ev Evidence, supplied *Request
 
 func releaseRequestClaimLocked(homePath string, claim RequestClaim) error {
 	path := requestClaimPath(homePath, claim.RequestID)
-	stored, present, err := loadRequestClaim(homePath, claim.RequestID)
-	if err != nil {
-		return err
-	}
-	if !present || stored != claim {
-		return fmt.Errorf("execution route evidence request_id %q claim changed before release", claim.RequestID)
-	}
-	requestClaimBeforeReleaseRemove()
-	return homepkg.RemoveRootedRegularFileDurable(homePath, path, "request claim")
+	return homepkg.RemoveRootedRegularFileDurableValidated(homePath, path, "request claim", func(data []byte) error {
+		stored, err := decodeRequestClaim(data, path, claim.RequestID)
+		if err != nil {
+			return err
+		}
+		if stored != claim {
+			return fmt.Errorf("execution route evidence request_id %q claim changed before release", claim.RequestID)
+		}
+		requestClaimBeforeReleaseRemove()
+		return nil
+	})
 }
 
 func loadRequestClaim(homePath, requestID string) (RequestClaim, bool, error) {
@@ -152,26 +154,34 @@ func loadRequestClaim(homePath, requestID string) (RequestClaim, bool, error) {
 		}
 		return RequestClaim{}, false, err
 	}
+	claim, err := decodeRequestClaim(data, path, requestID)
+	if err != nil {
+		return RequestClaim{}, false, err
+	}
+	return claim, true, nil
+}
+
+func decodeRequestClaim(data []byte, path, requestID string) (RequestClaim, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var claim RequestClaim
 	if err := dec.Decode(&claim); err != nil {
-		return RequestClaim{}, false, fmt.Errorf("decode execution route request claim %s: %w", path, err)
+		return RequestClaim{}, fmt.Errorf("decode execution route request claim %s: %w", path, err)
 	}
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return RequestClaim{}, false, fmt.Errorf("decode execution route request claim %s: trailing JSON", path)
+			return RequestClaim{}, fmt.Errorf("decode execution route request claim %s: trailing JSON", path)
 		}
-		return RequestClaim{}, false, fmt.Errorf("decode execution route request claim %s trailing JSON: %w", path, err)
+		return RequestClaim{}, fmt.Errorf("decode execution route request claim %s trailing JSON: %w", path, err)
 	}
 	if err := claim.Validate(); err != nil {
-		return RequestClaim{}, false, err
+		return RequestClaim{}, err
 	}
 	if claim.RequestID != requestID {
-		return RequestClaim{}, false, fmt.Errorf("execution route request claim path conflicts with request_id %q", requestID)
+		return RequestClaim{}, fmt.Errorf("execution route request claim path conflicts with request_id %q", requestID)
 	}
-	return claim, true, nil
+	return claim, nil
 }
 
 func requestClaimPath(homePath, requestID string) string {
