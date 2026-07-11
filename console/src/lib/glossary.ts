@@ -14,6 +14,7 @@ export const AREA_GLOSSARY: Record<string, string> = {
   "synthesis-sweeps": "Reports from the background pass that clusters, contradicts, and corroborates memory.",
   "seed-corroborations": "Something you once said just turned out to matter — a later outcome corroborates it. Promote it or leave it parked.",
   "job-health": "Background jobs (crons, daemons) that failed or look unhealthy.",
+  "autonomy-grant-mint": "Job-health work is piling up on your click — decide whether the system may admit it on its own once it has proven itself.",
   "source-control-cleanup": "Git hygiene chores (dirty files, stray artifacts) queued for cleanup.",
   "distiller-improvements": "The extraction organ proposing upgrades to its own method.",
   "distiller-requests": "Asks for the distiller to (re)process specific material.",

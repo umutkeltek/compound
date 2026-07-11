@@ -249,7 +249,9 @@ export function decisionCommandFailureResponse(
 
 function decisionExecutionEffect(area: string, stdout: string, preview: boolean): DecisionExecutionEffect | null {
   const payload = firstJsonObject(stdout);
-  if (!payload || area !== "capability-lifecycle-proposals") return null;
+  if (!payload) return null;
+  if (area === "autonomy-grant-mint") return autonomyGrantMintEffect(payload, preview);
+  if (area !== "capability-lifecycle-proposals") return null;
   const delta = payload.state_delta && typeof payload.state_delta === "object" ? (payload.state_delta as Json) : {};
   const disposition = payload.disposition && typeof payload.disposition === "object" ? (payload.disposition as Json) : {};
   const workPlan = payload.work_plan && typeof payload.work_plan === "object" ? (payload.work_plan as Json) : {};
@@ -264,6 +266,33 @@ function decisionExecutionEffect(area: string, stdout: string, preview: boolean)
     workId: str(disposition.work_id) || str(workPlan.work_id) || str(work.id),
     workState: str(disposition.work_state) || str(workPlan.work_state) || str(work.state),
     decisionId: str(disposition.id),
+  };
+}
+
+/**
+ * Renders `decisions record --json` (RecordReport: internal/decisions/record.go)
+ * as a plain consequence for the grant-mint owner, so DecisionOutcome shows
+ * "job-health work can now start on its own…" + the recorded decision id
+ * instead of raw JSON. It never claims task success — recording a grant is a
+ * permission, and every future auto-admit still writes its own receipt.
+ */
+function autonomyGrantMintEffect(payload: Json, preview: boolean): DecisionExecutionEffect {
+  const imp = payload.import && typeof payload.import === "object" ? (payload.import as Json) : {};
+  const lifecycle = imp.lifecycle && typeof imp.lifecycle === "object" ? (imp.lifecycle as Json) : {};
+  const cls = str(lifecycle.auto_admit_class) || "job_health";
+  const plain = cls.replace(/_/g, "-");
+  const label = plain.charAt(0).toUpperCase() + plain.slice(1);
+  const status = str(lifecycle.status) || (preview ? "preview" : "recorded");
+  return {
+    kind: str(lifecycle.kind) || "grant",
+    status,
+    changed: !preview && Boolean(str(lifecycle.id)),
+    summary: `${label} work can now start on its own once it clears the bar you set — every start still writes a receipt, and one switch halts it.`,
+    before: "",
+    after: "",
+    workId: "",
+    workState: "",
+    decisionId: str(lifecycle.id),
   };
 }
 

@@ -341,6 +341,96 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       return argv;
     },
   },
+  /* ----------------------------------------------------------------------
+   * autonomy-grant-mint (operator correction of record, 2026-07-11). The
+   * governed autonomy grant becomes a plain-language card, not a CLI command
+   * to copy. The item is SYNTHESIZED server-side (internal/decisions/
+   * grant_mint.go) only when director job_health work is waiting and no valid
+   * grant exists; this entry adds the human layer and rebuilds the exact
+   * `decisions record` argv from the operator's three editable thresholds.
+   * `decisions record` has NO --preview (it writes), so this owner does NOT
+   * set supportsPreview: it confirms via requiresConfirmation, and the confirm
+   * dialog's Technical-details block is the exact-command disclosure where the
+   * machine terms (scope/class/thresholds) live — never in the card copy.
+   * Client threshold checks mirror internal/decisions/record.go for immediate
+   * feedback; the Go validator remains the real gate.
+   * -------------------------------------------------------------------- */
+  "autonomy-grant-mint": {
+    area: "autonomy-grant-mint",
+    title: "Autonomy grant",
+    glyph: "A",
+    accent: "green",
+    source: "reviews",
+    effectKind: "record",
+    requiresConfirmation: true,
+    argvAllowlist: [["decisions", "record"]],
+    idPattern: /^agm_[a-z0-9_]+$/,
+    options: [
+      {
+        value: "grant",
+        label: "Grant it",
+        tone: "green",
+        description:
+          "Record an autonomy grant so proven job-health work starts without you. Every start still writes a receipt and one switch halts it.",
+      },
+    ],
+    defaultOption: "grant",
+    plainLanguage: (item) => {
+      const cls = grantMintClass(item);
+      const plain = cls.replace(/_/g, "-");
+      const waiting = grantMintWaitingCount(item);
+      const noun = waiting === 1 ? "item is" : "items are";
+      return {
+        // What never changes — the calm guardrail, led with before the tradeoff.
+        headline: `Let the system admit ${plain} work on its own?`,
+        body:
+          "Anything external, destructive, irreversible, financial, or security-related still always comes to you. No grant can override that.",
+        consequences: {
+          // if you act → what changes; if you wait → why it is here.
+          approve: `after the system has closed enough ${plain} items cleanly (you set the bar below), new ones start without you — every start writes a receipt, and one switch halts it`,
+          hold: `${waiting} ${plain} ${noun} waiting; each currently needs your click`,
+        },
+      };
+    },
+    fields: [
+      { name: "min_terminal_samples", type: "number", label: "Proven completions required", required: true, min: 1, step: 1, defaultValue: "5" },
+      { name: "min_window_days", type: "number", label: "Within days", required: true, min: 1, step: 1, defaultValue: "7" },
+      { name: "max_failures", type: "number", label: "Failures allowed", required: true, min: 0, step: 1, defaultValue: "0" },
+    ],
+    buildArgv: (ctx) => {
+      if (ctx.option !== "grant") return null;
+      const samples = grantMintInt(ctx.fields.min_terminal_samples, 5);
+      const windowDays = grantMintInt(ctx.fields.min_window_days, 7);
+      const failures = grantMintInt(ctx.fields.max_failures, 0);
+      if (samples === null || windowDays === null || failures === null) return null;
+      // Mirror internal/decisions/record.go: samples>0, window>0,
+      // 0 <= failures < samples. The Go validator remains the real gate.
+      if (samples <= 0 || windowDays <= 0) return null;
+      if (failures < 0 || failures >= samples) return null;
+      const cls = grantMintClass(ctx.item);
+      return [
+        "decisions", "record",
+        "--kind", "grant",
+        "--scope", "autonomy-evidence-threshold",
+        "--auto-admit-class", cls,
+        "--min-terminal-samples", String(samples),
+        "--min-window-days", String(windowDays),
+        "--max-failures", String(failures),
+        "--reviewed-by", "operator-console",
+        "--title", `Let the system admit ${cls.replace(/_/g, "-")} work on its own`,
+        "--json",
+      ];
+    },
+    previewArgv: (item) => {
+      const cls = grantMintClass(item);
+      return [
+        "decisions", "record", "--kind", "grant", "--scope", "autonomy-evidence-threshold",
+        "--auto-admit-class", cls, "--min-terminal-samples", "5", "--min-window-days", "7",
+        "--max-failures", "0", "--reviewed-by", "operator-console",
+        "--title", `Let the system admit ${cls.replace(/_/g, "-")} work on its own`, "--json",
+      ];
+    },
+  },
   "external-repo-intake": {
     area: "external-repo-intake",
     title: "External repo intake",
@@ -896,6 +986,33 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
 function routePromotionRecommendation(item: Json): string {
   const fromKey = str(item.group_key).split("|")[1];
   return (fromKey || str(item.recommendation)).trim();
+}
+
+/** Read the auto-admit class from a synthesized grant-mint item's decision
+ * card meta (Go owner: internal/decisions/grant_mint.go). Falls back to the
+ * only currently enabled class so the card stays actionable if meta is thin. */
+function grantMintClass(item: Json): string {
+  const card = item.decision_card && typeof item.decision_card === "object" ? (item.decision_card as Json) : {};
+  const meta = card.meta && typeof card.meta === "object" ? (card.meta as Json) : {};
+  return str(meta.auto_admit_class) || "job_health";
+}
+
+/** Waiting-item count from the grant-mint decision card meta; clamped to >= 0. */
+function grantMintWaitingCount(item: Json): number {
+  const card = item.decision_card && typeof item.decision_card === "object" ? (item.decision_card as Json) : {};
+  const meta = card.meta && typeof card.meta === "object" ? (card.meta as Json) : {};
+  const n = Math.trunc(Number(meta.waiting_count));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Parse an integer threshold field. Empty ⇒ the field's default; a non-integer
+ * ⇒ null (buildArgv rejects, so the CLI is never handed a malformed threshold). */
+function grantMintInt(raw: unknown, fallback: number): number | null {
+  const s = String(raw ?? "").trim();
+  if (s === "") return fallback;
+  if (!/^-?\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : null;
 }
 
 /** Look up a spec by area. */

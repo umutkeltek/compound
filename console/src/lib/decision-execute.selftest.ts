@@ -617,6 +617,57 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
     );
   }
 
+  // 18. autonomy-grant-mint (operator correction of record). The bespoke owner
+  //     rebuilds the EXACT `decisions record` argv from the operator's three
+  //     thresholds, mirrors record.go's threshold rules (reject out-of-range),
+  //     renders the verbatim plain-language copy with the dynamic count, and —
+  //     because `decisions record` has no write-free --preview — must NOT set
+  //     supportsPreview (a "preview" would mint the grant for real).
+  {
+    const grant = specFor("autonomy-grant-mint");
+    const item = {
+      id: "agm_job_health",
+      area: "autonomy-grant-mint",
+      decision_card: { meta: { auto_admit_class: "job_health", waiting_count: "3" } },
+    } as Json;
+    const argv = grant?.buildArgv?.({
+      itemId: "agm_job_health",
+      item,
+      option: "grant",
+      fields: { min_terminal_samples: "5", min_window_days: "7", max_failures: "0" },
+    });
+    const wantArgv = [
+      "decisions", "record",
+      "--kind", "grant",
+      "--scope", "autonomy-evidence-threshold",
+      "--auto-admit-class", "job_health",
+      "--min-terminal-samples", "5",
+      "--min-window-days", "7",
+      "--max-failures", "0",
+      "--reviewed-by", "operator-console",
+      "--title", "Let the system admit job-health work on its own",
+      "--json",
+    ];
+    const reject = (fields: Record<string, string>) =>
+      grant?.buildArgv?.({ itemId: "agm_job_health", item, option: "grant", fields });
+    const pl = grant?.plainLanguage(item);
+    push(
+      "grant-mint-buildargv-exact-and-rules-mirror-record-go",
+      grant?.requiresConfirmation === true &&
+        grant?.supportsPreview !== true &&
+        grant?.idPattern.test("agm_job_health") === true &&
+        grant?.idPattern.test("agm_") === false &&
+        argv?.join(" ") === wantArgv.join(" ") &&
+        reject({ min_terminal_samples: "5", min_window_days: "7", max_failures: "5" }) == null &&
+        reject({ min_terminal_samples: "0", min_window_days: "7", max_failures: "0" }) == null &&
+        reject({ min_terminal_samples: "abc", min_window_days: "7", max_failures: "0" }) == null &&
+        pl?.headline === "Let the system admit job-health work on its own?" &&
+        pl?.body.startsWith("Anything external, destructive, irreversible, financial, or security-related") === true &&
+        pl?.consequences?.hold === "3 job-health items are waiting; each currently needs your click",
+      `argv=${argv?.join(" ") ?? "null"} preview=${String(grant?.supportsPreview)} hold=${pl?.consequences?.hold ?? "none"}`,
+    );
+  }
+
   const failed = checks.filter((c) => !c.ok);
   return {
     ok: failed.length === 0,

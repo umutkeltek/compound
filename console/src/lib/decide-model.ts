@@ -55,6 +55,7 @@ const DOMAIN_BY_AREA: Record<string, DecideDomain> = {
   "observation-candidates": "capability",
   "product-action-cards": "product",
   "job-health": "work",
+  "autonomy-grant-mint": "work",
   "work-advance": "work",
   "workbench-needs-claim": "work",
 };
