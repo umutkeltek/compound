@@ -300,6 +300,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-decision-execute-smoke",
 		"console-standing-law-smoke",
 		"console-attention-consistency-smoke",
+		"console-work-language-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
 		"profiles-check-installed-only",
@@ -315,13 +316,21 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
-		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke"
+		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-work-language-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
 		if !stringSliceContains(report.ProofRefs, want) {
 			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
 		}
+	}
+}
+
+func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
+	step := proofCheckStep{Name: "console-work-trace-smoke", Command: []string{"bun", "scripts/work-trace-smoke.mjs"}, SkipIfMissing: "definitely-missing-proof-tool"}
+	got := runProofCheckStep(t.TempDir(), step, "")
+	if got.Status != "skipped" || got.SkipReason != "required executable definitely-missing-proof-tool not found" {
+		t.Fatalf("silent proof-check skip: %+v", got)
 	}
 }
 
@@ -3746,7 +3755,7 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 		return
 	}
 	homePath := t.TempDir()
-	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+	if err := home.Init(homePath, "global", cliTestNow); err != nil {
 		t.Fatalf("init home: %v", err)
 	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestWorkCreateRejectsRunningStateAsUsage$")
@@ -3759,8 +3768,25 @@ func TestWorkCreateRejectsRunningStateAsUsage(t *testing.T) {
 	if exitErr.ExitCode() != 2 {
 		t.Fatalf("work create should exit 2, got %d output=%s", exitErr.ExitCode(), output)
 	}
-	if !strings.Contains(string(output), "create at ready, then claim and advance") {
+	if !strings.Contains(string(output), "create at ready -> claim -> advance") {
 		t.Fatalf("work create usage did not explain lease-preserving path:\n%s", output)
+	}
+}
+
+func TestWorkCreateAllowsRunningStateInTestHome(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	cmdWork([]string{"create", "--owner", "compound-core", "--predicate", "test fixture starts running", "--state", "running"})
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := store.List()
+	if err != nil || len(items) != 1 || items[0].State != "running" {
+		t.Fatalf("running test fixture = %+v, err=%v", items, err)
 	}
 }
 

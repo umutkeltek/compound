@@ -66,6 +66,19 @@ type Manifest struct {
 	ActiveModules []string `yaml:"active_modules"`
 }
 
+// LoadManifest reads the identity record without mutating the home.
+func LoadManifest(homePath string) (Manifest, error) {
+	data, err := os.ReadFile(filepath.Join(homePath, ManifestName))
+	if err != nil {
+		return Manifest{}, err
+	}
+	var manifest Manifest
+	if err := yaml.Unmarshal(data, &manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
 // HomeConfig is the optional COMPOUND_HOME/config/home.yaml operator config.
 // Absence is normal for fresh installs; doctor checks that depend on it fail open.
 type HomeConfig struct {

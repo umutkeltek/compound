@@ -7,9 +7,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * Work — "Where is every unit of work in its lifecycle, and what can I move?"
- * Default Pipeline lens (the seven envelope stages), plus a by-state Board and
- * the Offered-packets menu; any card opens the envelope Trace drawer with its
- * governed action row. This absorbs the retired /flow route.
+ * Default Pipeline lens (the seven work stages), plus a by-state Board and
+ * the Offered-packets menu; any card opens its history and available actions.
  */
 export default async function WorkPage({
   searchParams,
@@ -50,8 +49,8 @@ export default async function WorkPage({
         }
       />
       <p className="text-sm text-muted" style={{ maxWidth: "var(--read-max)" }}>
-        Where every unit of work sits in its lifecycle, and what you can move. Scan the amber Admit seam for what
-        waits on you; open any card for its envelope trace and governed moves.
+        See where every job stands and what can move next. Scan Add to work for what waits on you; open any card
+        for its history and available actions.
       </p>
 
       <WorkLenses

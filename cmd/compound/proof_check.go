@@ -34,6 +34,7 @@ type proofCheckStep struct {
 	Command       []string `json:"command"`
 	Dir           string   `json:"dir,omitempty"`
 	SkipIfMissing string   `json:"skip_if_missing,omitempty"`
+	SkipReason    string   `json:"skip_reason,omitempty"`
 	ProofRef      string   `json:"proof_ref"`
 	Status        string   `json:"status"`
 	ExitCode      int      `json:"exit_code,omitempty"`
@@ -202,6 +203,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-decision-execute-smoke", Command: consoleBunSmokeCommand("scripts/decision-execute-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-decision-execute-smoke"},
 		{Name: "console-standing-law-smoke", Command: consoleBunSmokeCommand("scripts/standing-law-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-standing-law-smoke"},
 		{Name: "console-attention-consistency-smoke", Command: consoleSmokeCommand("scripts/attention-consistency-smoke.mjs"), Dir: "console", SkipIfMissing: "compound", ProofRef: "console-attention-consistency-smoke"},
+		{Name: "console-work-language-smoke", Command: consoleBunSmokeCommand("scripts/work-language-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-language-smoke"},
 		{Name: "bun-tools-test", Command: []string{"bun", "test", "<tools/*.test.ts>"}, SkipIfMissing: "bun", ProofRef: "bun-tools-test"},
 		{Name: "architecture-doctor", Command: []string{exe, "architecture", "doctor", "--strict"}, ProofRef: "architecture-doctor-strict"},
 		{Name: "profiles-check", Command: []string{exe, "profiles", "check", "--installed-only"}, ProofRef: "profiles-check-installed-only"},
@@ -229,7 +231,8 @@ func runProofCheckStep(repo string, step proofCheckStep, baseRef string) proofCh
 	if step.SkipIfMissing != "" {
 		if _, lookErr := exec.LookPath(step.SkipIfMissing); lookErr != nil {
 			result.Status = "skipped"
-			result.OutputTail = fmt.Sprintf("%s missing; skipped %s\n", step.SkipIfMissing, step.Name)
+			result.SkipReason = fmt.Sprintf("required executable %s not found", step.SkipIfMissing)
+			result.OutputTail = result.SkipReason + "; skipped " + step.Name + "\n"
 			result.DurationMS = time.Since(start).Milliseconds()
 			return result
 		}
@@ -472,6 +475,9 @@ func printProofCheck(report proofCheckReport) {
 	fmt.Printf("- dry_run: %t\n", report.DryRun)
 	for _, step := range report.Steps {
 		fmt.Printf("- step: %s status=%s proof=%s command=%s\n", step.Name, step.Status, step.ProofRef, strings.Join(step.Command, " "))
+		if step.SkipReason != "" {
+			fmt.Printf("  skip_reason: %s\n", step.SkipReason)
+		}
 	}
 	if len(report.ProofRefs) > 0 {
 		fmt.Printf("- proof_refs: %s\n", strings.Join(report.ProofRefs, ","))

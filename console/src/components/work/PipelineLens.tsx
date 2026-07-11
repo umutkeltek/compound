@@ -8,13 +8,12 @@ import { WorkBoardCard } from "@/components/work/WorkBoardCard";
 import type { PipelineStageModel } from "@/lib/work-pipeline";
 
 /**
- * Pipeline lens (DESIGN.md board doctrine + redesign plan Part 3): the seven
- * envelope stages as one horizontal board — Signal → Propose → Admit → Claim →
- * Execute → Receipt → Learn. `minmax(178px, 1fr)` columns that grow to fill on
+ * Pipeline lens: seven work stages as one horizontal board — Signal → Suggest →
+ * Add to work → Start → Run → Proof → Learn. `minmax(178px, 1fr)` columns that grow to fill on
  * wide screens and scroll horizontally when they can't. The row of stage nodes
- * over a continuous hairline is the envelope-spine motif at board scale
- * (signature moment A); the Execute node beats while work is genuinely running,
- * the Admit node wears the amber seat. Stage headers carry plain-language
+ * over a continuous hairline is the progress motif at board scale; the Run node
+ * beats while work is genuinely running, and Add to work wears the amber seat.
+ * Stage headers carry plain-language
  * tooltips explaining each stage (Radix Tooltip — a11y we would hand-roll wrong).
  */
 

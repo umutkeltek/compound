@@ -114,8 +114,9 @@ func cmdWork(args []string) {
 		return targetWorkID
 	}
 	rejectRunningCreateState := func(usage string) {
-		if strings.TrimSpace(flag("--state")) == "running" {
-			fmt.Fprintln(os.Stderr, "error: create at ready, then claim and advance to preserve lease proof")
+		manifest, manifestErr := home.LoadManifest(homePath)
+		if strings.TrimSpace(flag("--state")) == "running" && (manifestErr != nil || manifest.HomeKind != "test") {
+			fmt.Fprintln(os.Stderr, "error: create at ready -> claim -> advance")
 			fmt.Fprintln(os.Stderr, usage)
 			os.Exit(2)
 		}
@@ -225,10 +226,18 @@ func cmdWork(args []string) {
 		}
 	case "create":
 		rejectRunningCreateState(workUsage("create"))
+		requestedState := flag("--state")
+		createState := requestedState
+		actor := firstNonEmpty(flag("--by"), flag("--actor"))
+		if requestedState == "running" {
+			createState = "ready"
+			actor = firstNonEmpty(actor, "test-fixture")
+		}
+		now := time.Now()
 		w, err := store.Create(work.CreateInput{
 			WorkID:           flag("--work-id"),
 			Owner:            flag("--owner"),
-			Actor:            firstNonEmpty(flag("--by"), flag("--actor")),
+			Actor:            actor,
 			CanonicalSurface: flag("--canonical-surface"),
 			SuccessPredicate: flag("--predicate"),
 			DesiredOutcome:   flag("--outcome"),
@@ -236,11 +245,17 @@ func cmdWork(args []string) {
 			EvidenceRefs:     flagCSVValues(rest, "--evidence-ref", "--evidence"),
 			ContextPackID:    flag("--context-pack"),
 			RouteDecisionID:  flag("--route-decision-id"),
-			State:            flag("--state"),
+			State:            createState,
 			Risk:             flag("--risk"),
 			Privacy:          flag("--privacy"),
-		}, time.Now())
+		}, now)
 		die(err)
+		if requestedState == "running" {
+			w, err = store.Claim(w.ID, actor, now)
+			die(err)
+			w, err = store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: actor}, now)
+			die(err)
+		}
 		fmt.Printf("created %s (%s)\n", w.ID, w.State)
 		printJSON(w)
 	case "import-packet":

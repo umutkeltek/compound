@@ -4,10 +4,9 @@ import type { PipelineStage } from "@/lib/briefing";
 import type { StateTone } from "@/components/kit";
 
 /**
- * The envelope spine at board scale (DESIGN.md §5 signature moment A): the 7
- * stages Signal → Propose → Admit → Claim → Execute → Receipt → Learn, live
- * counts from the workbench projection, exactly one node beating (the executing
- * stage). Read-only — the Work screen owns the governed moves; this is the map.
+ * Seven work stages at board scale: Signal → Suggest → Add to work → Start →
+ * Run → Proof → Learn, with live counts and one beating node while work runs.
+ * Read-only — the Work screen owns the actions; this is the map.
  */
 
 const NODE: Record<StateTone, string> = {

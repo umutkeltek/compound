@@ -113,6 +113,34 @@ func TestBakeoffRunFailsOnNondeterministicRankOrder(t *testing.T) {
 	}
 }
 
+func TestBakeoffClinicClassifiesMissesAndRanksTopThreeCauses(t *testing.T) {
+	claims := map[string]Claim{
+		"private":  {ID: "private", Visibility: "private"},
+		"volatile": {ID: "volatile", Visibility: "volatile"},
+		"ranked":   {ID: "ranked", Entity: "e"},
+		"twin":     {ID: "twin", Supersedes: "older"},
+		"entity":   {ID: "entity"},
+		"lane":     {ID: "lane", Entity: "e", ProvenanceLane: "semantic"},
+		"gated":    {ID: "gated", Entity: "e"},
+		"noise":    {ID: "noise", Entity: "e"},
+		"alias":    {ID: "alias", Qualifiers: map[string]string{"clinic_cause": "alias"}},
+		"id":       {ID: "id", Qualifiers: map[string]string{"clinic_cause": "id"}},
+	}
+	query := BakeoffQueryReport{Lane: "lexical", ReferenceClaimIDs: []string{"private", "volatile", "ranked", "twin", "entity", "lane", "noise", "alias", "id"}, CandidateRankedClaimIDs: append(make([]string, 10), "ranked")}
+	want := map[string]string{"absent": "absent", "private": "privacy", "volatile": "volatile", "ranked": "rank", "twin": "twin", "entity": "entity", "lane": "lane", "gated": "gated", "noise": "noise", "alias": "alias", "id": "id"}
+	for id, cause := range want {
+		if got := classifyBakeoffMiss(query, id, claims); got != cause {
+			t.Errorf("%s cause=%s want=%s", id, got, cause)
+		}
+	}
+
+	s := newStore(t)
+	report := s.buildBakeoffClinic([]BakeoffQueryReport{{ID: "q", MissingExpectedClaimIDs: []string{"a", "b", "c", "d"}}})
+	if len(report.TopCauses) != 1 || report.TopCauses[0].Cause != "absent" || report.TopCauses[0].Count != 4 || len(report.RecommendedFixes) != 1 {
+		t.Fatalf("clinic summary: %+v", report)
+	}
+}
+
 func seedBakeoffClaims(t *testing.T, s *Store) {
 	t.Helper()
 	claims := []Claim{

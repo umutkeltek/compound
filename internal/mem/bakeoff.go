@@ -64,7 +64,25 @@ type BakeoffReport struct {
 	Determinism           BakeoffDeterminism   `json:"determinism"`
 	Metrics               BakeoffMetrics       `json:"metrics"`
 	Queries               []BakeoffQueryReport `json:"queries"`
+	Clinic                BakeoffClinicReport  `json:"clinic"`
 	ReportPath            string               `json:"report_path,omitempty"`
+}
+
+type BakeoffClinicReport struct {
+	Misses           []BakeoffClinicMiss  `json:"misses,omitempty"`
+	TopCauses        []BakeoffClinicCause `json:"top_causes,omitempty"`
+	RecommendedFixes []string             `json:"recommended_fixes,omitempty"`
+}
+
+type BakeoffClinicMiss struct {
+	QueryID string `json:"query_id"`
+	ClaimID string `json:"claim_id"`
+	Cause   string `json:"cause"`
+}
+
+type BakeoffClinicCause struct {
+	Cause string `json:"cause"`
+	Count int    `json:"count"`
 }
 
 type BakeoffDeterminism struct {
@@ -207,6 +225,7 @@ func (s *Store) RunBakeoff(opts BakeoffRunOptions) (BakeoffReport, error) {
 	}
 	report.Determinism = compareBakeoffPasses(first.queries, second.queries)
 	report.Metrics = bakeoffMetrics(first.queries)
+	report.Clinic = s.buildBakeoffClinic(first.queries)
 	report.Status = "recorded"
 	if card, err := OperatorCardForBakeoffReport(report); err == nil {
 		report.OperatorCard = card
@@ -235,6 +254,95 @@ func (s *Store) RunBakeoff(opts BakeoffRunOptions) (BakeoffReport, error) {
 		return report, errors.New(strings.Join(errs, "; "))
 	}
 	return report, nil
+}
+
+var bakeoffClinicFix = map[string]string{
+	"absent": "ingest or restore the missing claim", "gated": "repair the visibility or allowlist gate",
+	"twin": "retire or merge the duplicate claim", "entity": "repair canonical entity resolution",
+	"alias": "add the missing query alias", "lane": "route the query through the capable lane",
+	"rank": "improve ranking for the present claim", "privacy": "keep private recall in an authorized scope",
+	"volatile": "refresh or retire the expired claim", "id": "repair the golden claim identifier",
+	"noise": "remove noisy candidates or sharpen the query",
+}
+
+func (s *Store) buildBakeoffClinic(queries []BakeoffQueryReport) BakeoffClinicReport {
+	claims, _ := s.loadClaimsRaw()
+	byID := map[string]Claim{}
+	for _, claim := range claims {
+		byID[claim.ID] = claim
+	}
+	var report BakeoffClinicReport
+	counts := map[string]int{}
+	for _, query := range queries {
+		for _, id := range query.MissingExpectedClaimIDs {
+			cause := classifyBakeoffMiss(query, id, byID)
+			report.Misses = append(report.Misses, BakeoffClinicMiss{QueryID: query.ID, ClaimID: id, Cause: cause})
+			counts[cause]++
+		}
+	}
+	for cause, count := range counts {
+		report.TopCauses = append(report.TopCauses, BakeoffClinicCause{Cause: cause, Count: count})
+	}
+	sort.Slice(report.TopCauses, func(i, j int) bool {
+		if report.TopCauses[i].Count != report.TopCauses[j].Count {
+			return report.TopCauses[i].Count > report.TopCauses[j].Count
+		}
+		return report.TopCauses[i].Cause < report.TopCauses[j].Cause
+	})
+	if len(report.TopCauses) > 3 {
+		report.TopCauses = report.TopCauses[:3]
+	}
+	for _, cause := range report.TopCauses {
+		report.RecommendedFixes = append(report.RecommendedFixes, bakeoffClinicFix[cause.Cause])
+	}
+	return report
+}
+
+func classifyBakeoffMiss(query BakeoffQueryReport, id string, claims map[string]Claim) string {
+	claim, ok := claims[id]
+	if !ok {
+		if strings.Contains(strings.ToLower(id), "alias") {
+			return "alias"
+		}
+		return "absent"
+	}
+	if cause := strings.ToLower(claim.Qualifiers["clinic_cause"]); bakeoffClinicFix[cause] != "" {
+		return cause
+	}
+	if claim.Visibility == "private" {
+		return "privacy"
+	}
+	if claim.Visibility == "volatile" || claim.ExpiresAt != "" {
+		return "volatile"
+	}
+	if claim.Supersedes != "" {
+		return "twin"
+	}
+	if bakeoffContainsString(query.CandidateRankedClaimIDs[10:], id) {
+		return "rank"
+	}
+	if !bakeoffContainsString(query.ReferenceClaimIDs, id) {
+		return "gated"
+	}
+	if strings.TrimSpace(claim.Entity) == "" {
+		return "entity"
+	}
+	if claim.ProvenanceLane != "" && query.Lane != "" && claim.ProvenanceLane != query.Lane {
+		return "lane"
+	}
+	if strings.Contains(strings.ToLower(id), "stale") || strings.Contains(strings.ToLower(id), "missing") {
+		return "id"
+	}
+	return "noise"
+}
+
+func bakeoffContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type bakeoffPass struct {
