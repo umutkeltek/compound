@@ -108,6 +108,18 @@ type osEvent struct {
 	Project         string         `json:"project"`
 	Artifact        string         `json:"artifact"`
 	Actor           string         `json:"actor"`
+	// agent-run stream shape (umut-os/events/agent-runs.ndjson): identity is
+	// task_id, timestamp is started_at, class is task_class, evidence is a
+	// string (or []string) ref list rather than {kind,value} objects.
+	TaskID          string `json:"task_id"`
+	StartedAt       string `json:"started_at"`
+	TaskClass       string `json:"task_class"`
+	Agent           string `json:"agent"`
+	Lane            string `json:"lane"`
+	Packet          string `json:"packet"`
+	AuthorityOwner  string `json:"authority_owner"`
+	PromotionTarget string `json:"promotion_target"`
+	Status          string `json:"status"`
 }
 
 type objectMap map[string]any
@@ -148,24 +160,99 @@ func (l *osEvidenceList) UnmarshalJSON(data []byte) error {
 		*l = nil
 		return nil
 	}
-	if strings.HasPrefix(raw, "[") {
-		var rows []osEvidence
-		if err := json.Unmarshal(data, &rows); err != nil {
+	switch raw[0] {
+	case '[':
+		// A list element may be a {kind,value} object (control-events) or a
+		// bare ref string (agent-runs) — decode per element so a string array
+		// no longer aborts the whole import.
+		var elems []json.RawMessage
+		if err := json.Unmarshal(data, &elems); err != nil {
 			return err
+		}
+		rows := make([]osEvidence, 0, len(elems))
+		for _, elem := range elems {
+			row, ok, err := decodeEvidenceElement(elem)
+			if err != nil {
+				return err
+			}
+			if ok {
+				rows = append(rows, row)
+			}
 		}
 		*l = rows
 		return nil
+	case '{':
+		var obj map[string]any
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return err
+		}
+		rows := make([]osEvidence, 0, len(obj))
+		for key, value := range obj {
+			rows = append(rows, osEvidence{Kind: key, Value: evidenceValueString(value)})
+		}
+		*l = rows
+		return nil
+	default:
+		// Scalar evidence (a single ref string, or a number/bool coerced).
+		row, ok, err := decodeEvidenceElement(data)
+		if err != nil {
+			return err
+		}
+		if ok {
+			*l = osEvidenceList{row}
+		} else {
+			*l = nil
+		}
+		return nil
 	}
-	var obj map[string]any
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return err
+}
+
+// decodeEvidenceElement turns one JSON evidence element — object, string, or
+// scalar — into an osEvidence row. ok=false means the element was empty/null.
+func decodeEvidenceElement(elem json.RawMessage) (osEvidence, bool, error) {
+	raw := strings.TrimSpace(string(elem))
+	if raw == "" || raw == "null" {
+		return osEvidence{}, false, nil
 	}
-	rows := make([]osEvidence, 0, len(obj))
-	for key, value := range obj {
-		rows = append(rows, osEvidence{Kind: key, Value: evidenceValueString(value)})
+	switch raw[0] {
+	case '{':
+		var row osEvidence
+		if err := json.Unmarshal(elem, &row); err != nil {
+			return osEvidence{}, false, err
+		}
+		return row, true, nil
+	case '"':
+		var s string
+		if err := json.Unmarshal(elem, &s); err != nil {
+			return osEvidence{}, false, err
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return osEvidence{}, false, nil
+		}
+		return osEvidence{Kind: evidenceRefKind(s), Value: s}, true, nil
+	default:
+		var value any
+		if err := json.Unmarshal(elem, &value); err != nil {
+			return osEvidence{}, false, err
+		}
+		v := evidenceValueString(value)
+		if v == "" {
+			return osEvidence{}, false, nil
+		}
+		return osEvidence{Kind: "ref", Value: v}, true, nil
 	}
-	*l = rows
-	return nil
+}
+
+// evidenceRefKind classifies a bare ref string so filesystem paths land in
+// files_touched while logical refs (repo://, urls) stay generic evidence.
+func evidenceRefKind(s string) string {
+	switch {
+	case strings.HasPrefix(s, "/"), strings.HasPrefix(s, "./"), strings.HasPrefix(s, "~/"):
+		return "path"
+	default:
+		return "ref"
+	}
 }
 
 func ImportOSEvents(homePath, path string, opts ImportOptions, now time.Time) (ImportReport, error) {
@@ -342,6 +429,28 @@ func normalizeOSEvent(ev osEvent) osEvent {
 		(strings.TrimSpace(ev.Kind) != "" && strings.TrimSpace(ev.TS) != "")) {
 		ev.SchemaVersion = 1
 	}
+	// agent-run shape promotion: map task_id/started_at/task_class into the
+	// generic identity/timestamp/kind the trace builder reads, so agent-runs
+	// events become stable, reachable traces (identity = task_id).
+	if strings.TrimSpace(ev.ID) == "" && strings.TrimSpace(ev.TaskID) != "" {
+		ev.ID = ev.TaskID
+	}
+	if strings.TrimSpace(ev.TS) == "" && strings.TrimSpace(ev.StartedAt) != "" {
+		ev.TS = ev.StartedAt
+	}
+	if strings.TrimSpace(ev.Kind) == "" && strings.TrimSpace(ev.TaskClass) != "" {
+		ev.Kind = ev.TaskClass
+	}
+	if strings.TrimSpace(ev.EventClass) == "" && strings.TrimSpace(ev.TaskClass) != "" {
+		ev.EventClass = "agent_run"
+	}
+	if strings.TrimSpace(ev.Summary) == "" && strings.TrimSpace(ev.TaskID) != "" {
+		label := strings.TrimSpace(ev.TaskClass + " " + ev.Status)
+		if label == "" {
+			label = "agent run"
+		}
+		ev.Summary = ev.TaskID + ": " + label
+	}
 	if strings.TrimSpace(ev.Kind) == "" {
 		ev.Kind = firstNonEmpty(ev.Type, ev.Event)
 	}
@@ -368,6 +477,12 @@ func normalizeOSEvent(ev osEvent) osEvent {
 	if _, ok := ev.Producer["agent"]; !ok && strings.TrimSpace(ev.Actor) != "" {
 		ev.Producer["agent"] = ev.Actor
 	}
+	if _, ok := ev.Producer["agent"]; !ok && strings.TrimSpace(ev.Agent) != "" {
+		ev.Producer["agent"] = ev.Agent
+	}
+	if _, ok := ev.Producer["caller"]; !ok && strings.TrimSpace(ev.Lane) != "" {
+		ev.Producer["caller"] = ev.Lane
+	}
 	if ev.Subject == nil {
 		ev.Subject = objectMap{}
 	}
@@ -376,6 +491,9 @@ func normalizeOSEvent(ev osEvent) osEvent {
 	}
 	if _, ok := ev.Subject["path"]; !ok && strings.TrimSpace(ev.Artifact) != "" {
 		ev.Subject["path"] = ev.Artifact
+	}
+	if _, ok := ev.Subject["path"]; !ok && strings.TrimSpace(ev.Packet) != "" {
+		ev.Subject["path"] = ev.Packet
 	}
 	if _, ok := ev.Subject["provider"]; !ok && strings.TrimSpace(ev.Provider) != "" {
 		ev.Subject["provider"] = ev.Provider

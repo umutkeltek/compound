@@ -297,6 +297,57 @@ func TestListTracesFiltersByStream(t *testing.T) {
 	}
 }
 
+// TestImportOSEventsAcceptsAgentRunShape proves the agent-runs stream shape
+// imports: identity is task_id, timestamp is started_at, and evidence is a
+// string list (or bare string) rather than {kind,value} objects. Before this
+// fix the string evidence aborted the parse and the whole stream was
+// unreachable from compound (the §c falsifier).
+func TestImportOSEventsAcceptsAgentRunShape(t *testing.T) {
+	home := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-agent-runs.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	report, err := ImportOSEvents(home, fixture, ImportOptions{Stream: "os-agent-runs"}, now)
+	if err != nil {
+		t.Fatalf("agent-run import must not abort on string evidence: %v", err)
+	}
+	// 2 distinct task_ids imported; the duplicate task_id is deduped (skipped).
+	if report.Imported != 2 || report.Skipped != 1 {
+		t.Fatalf("agent-run import = %+v (want imported=2 skipped=1)", report)
+	}
+
+	// Identity is task_id → the trace is reachable by its derived id.
+	want := idFor("trace_", "synthetic-run-001")
+	detail, err := ShowTrace(home, want)
+	if err != nil {
+		t.Fatalf("agent-run trace unreachable: %v", err)
+	}
+	if detail.Source.SourceID != "synthetic-run-001" {
+		t.Fatalf("source id = %q, want synthetic-run-001", detail.Source.SourceID)
+	}
+	if detail.Trace.CreatedAt != "2026-06-04T04:36:18+03:00" {
+		t.Fatalf("started_at must become created_at, got %q", detail.Trace.CreatedAt)
+	}
+	if detail.Source.SourceKind != "architecture" || detail.Source.EventClass != "agent_run" {
+		t.Fatalf("task_class must map to kind/event_class, got %+v", detail.Source)
+	}
+	if !contains(detail.Trace.Outputs, "ref:repo://control/state/runs/synthetic-run-001/spine-check.txt") {
+		t.Fatalf("string evidence must survive as refs, got %v", detail.Trace.Outputs)
+	}
+	if detail.Trace.Summary == "" || !strings.Contains(detail.Trace.Summary, "synthetic-run-001") {
+		t.Fatalf("summary must be synthesized from task_id, got %q", detail.Trace.Summary)
+	}
+
+	// The bare-string evidence row also imported and carries its ref.
+	beta, err := ShowTrace(home, idFor("trace_", "synthetic-run-002"))
+	if err != nil {
+		t.Fatalf("bare-string evidence row unreachable: %v", err)
+	}
+	if !contains(beta.Trace.Outputs, "ref:repo://control/audits/2026-06-04/parking-manifest.md") {
+		t.Fatalf("bare string evidence must survive, got %v", beta.Trace.Outputs)
+	}
+}
+
 func readJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	b, err := os.ReadFile(path)
