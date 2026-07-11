@@ -14,6 +14,7 @@ import (
 	"compound/internal/envelope"
 	"compound/internal/home"
 	"compound/internal/policy"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -300,7 +301,10 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 		t.Fatalf("Compound-only os capability projection should be machine-proven: %+v", got)
 	}
 	for _, want := range []string{
+		"contract://capability-task-classifier",
+		"sha256:" + repeatHex("b", 64),
 		"compound://registries/capability-graph",
+		"sha256:" + repeatHex("c", 12),
 		"compound://registries/model-router",
 		"shim_sha256:",
 		"entrypoint_sha256:",
@@ -311,6 +315,17 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 		if !strings.Contains(got.ProofRef, want) {
 			t.Fatalf("proof ref %q missing %q", got.ProofRef, want)
 		}
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRequiresClassifierEvidence(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{
+		disabledAuthorityRefs: []string{capgraph.CapabilityGraphAuthorityRef, routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "authority refs") {
+		t.Fatalf("disabled output without classifier authority must fail: %+v", got)
 	}
 }
 
@@ -347,6 +362,28 @@ func TestOSAbsorptionOSCapabilityProofRequiresProductionDispatch(t *testing.T) {
 
 	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "production dispatch") {
 		t.Fatalf("dead projection module must not prove the production CLI: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentResolverSource(t *testing.T) {
+	for _, source := range []string{
+		`import { classifyCapability } from "./classify-capability";`,
+		`import { resolve as resolveCapabilityIntent } from "../scripts/resolve_capability";`,
+		`async function runCapability() {}`,
+		`function writeCapabilityContextPacket() {}`,
+		`function collectLoopTriggerFires() {}`,
+		`function appendLoopTriggerFireReceipts() {}`,
+		`const TOOL_HINTS = [];`,
+		`const OS_CAPABILITY_FIRES_PATH = "forged";`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{entrypointPoison: source})
+			got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+			if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "dormant independent resolver") {
+				t.Fatalf("dormant resolver source must fail: %+v", got)
+			}
+		})
 	}
 }
 
