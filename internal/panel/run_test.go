@@ -270,6 +270,74 @@ func TestExecuteDryRunChargesPersistedRouteTokensBeforeResume(t *testing.T) {
 	}
 }
 
+func TestBuildPlanRejectsNegativeBudgetFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		budget Budget
+	}{
+		{name: "items", budget: Budget{MaxItems: -1}},
+		{name: "tokens", budget: Budget{MaxTotalTokens: -1}},
+		{name: "usd", budget: Budget{MaxUSDMicros: -1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setupPanelPlanHome(t)
+			writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+			if _, err := BuildPlan(home, PlanInput{
+				TargetKind:            "memory_candidate",
+				TargetRefs:            []string{"mcand_example_api_clean"},
+				States:                []string{"parked"},
+				PrivacyOverrideReason: "synthetic fixtures",
+				Budget:                tc.budget,
+			}, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "must be non-negative") {
+				t.Fatalf("negative %s budget was accepted: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestExecuteDryRunRejectsPersistedNegativeBudgetBeforeSpend(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	run.Budget = Budget{MaxUSDMicros: 1, MaxTotalTokens: -1}
+	data, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "panel-runs", run.ID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     requestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.lens",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.LensLane.ModelID,
+		Usage:         routeevidence.Usage{TotalTokens: 7},
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "must be non-negative") {
+		t.Fatalf("persisted negative budget did not fail validation: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("persisted negative budget was rejected only after %d provider call(s)", caller.calls)
+	}
+}
+
 func TestExecuteDryRunRejectsLegacyUnknownSpendBeforeResume(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
