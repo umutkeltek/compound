@@ -100,6 +100,86 @@ func TestContinueLeavesOperatorAdmissionPreviewWaiting(t *testing.T) {
 	}
 }
 
+func TestContinuePrepareRefusesOperatorRequiredWork(t *testing.T) {
+	s := newStore(t)
+	// An operator-required proposal that has already been admitted into a real
+	// proposed envelope (its action-context snapshot rides along). The autonomous
+	// continue loop must not silently prepare it to ready: the admit path already
+	// refuses operator-required work, and the prepare-candidate path must enforce
+	// the same admission gate rather than advancing purely because policy allows.
+	operatorPlan, err := s.CreatePlan(CreateInput{
+		WorkID:           "work_continue_prepare_operator",
+		Owner:            "compound-core",
+		Actor:            "codex",
+		State:            "proposed",
+		SuccessPredicate: "operator input remains a needs-me gate",
+	}, fixedNow, CreatePlanOptions{
+		Record:        true,
+		Capability:    "product.action_review",
+		Action:        "plan_work_from_private_config",
+		TargetKind:    "private_config",
+		TargetID:      "asc",
+		MutationClass: "local_reversible",
+		Reversibility: "easy",
+		BlastRadius:   "local",
+		ActionContext: &WorkActionContext{
+			Kind:             "workbench_review_card",
+			Title:            "ASC private config",
+			ActionSummary:    "operator supplies private config",
+			RequiresOperator: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AdmitCreatePlanPath(operatorPlan.PlanPath, fixedNow, AdmitCreatePlanOptions{Actor: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An ordinary proposal with no operator gate: the prepare-candidate path must
+	// still advance this one, proving the guard is targeted, not a blanket halt.
+	ordinary, err := s.Create(CreateInput{Owner: "compound-core", State: "proposed", SuccessPredicate: "ordinary proposed work"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	operatorStep, err := s.Continue(fixedNow.Add(time.Minute), ContinueOptions{Actor: "codex", ExpectWorkID: operatorPlan.WorkID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operatorStep.Action == "prepare" {
+		t.Fatalf("operator-required work must not be prepared, got action=%q status=%q", operatorStep.Action, operatorStep.Status)
+	}
+	operatorAfter, err := s.Get(operatorPlan.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operatorAfter.State != "proposed" {
+		t.Fatalf("operator-required work should stay proposed, got %q", operatorAfter.State)
+	}
+	if operatorStep.CanContinue {
+		t.Fatalf("operator-required work must not report can-continue (would busy-loop ContinueRun)")
+	}
+	if !contains(operatorStep.BlockedOn, "work.ready_state:"+operatorPlan.WorkID) {
+		t.Fatalf("operator-required work should report its ready-state block, got blocked_on=%+v", operatorStep.BlockedOn)
+	}
+
+	ordinaryStep, err := s.Continue(fixedNow.Add(2*time.Minute), ContinueOptions{Actor: "codex", ExpectWorkID: ordinary.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinaryStep.Action != "prepare" || ordinaryStep.WorkID != ordinary.ID {
+		t.Fatalf("ordinary proposed work should be prepared, got %+v", ordinaryStep)
+	}
+	ordinaryAfter, err := s.Get(ordinary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ordinaryAfter.State != "ready" {
+		t.Fatalf("ordinary proposed work should advance to ready, got %q", ordinaryAfter.State)
+	}
+}
+
 func TestContinueExpectWorkPinsPrepareTarget(t *testing.T) {
 	s := newStore(t)
 	first, err := s.Create(CreateInput{Owner: "compound-core", State: "proposed", SuccessPredicate: "first proposed work"}, fixedNow)

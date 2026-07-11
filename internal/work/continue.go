@@ -268,6 +268,14 @@ func (s *Store) continuePrepareCandidate(now time.Time, report WorkbenchReport, 
 		if item.State != "proposed" && item.State != "admitted" {
 			continue
 		}
+		// Enforce the same admission gate as continueAdmissionPreview: a candidate
+		// whose action context requires operator inputs must not be advanced to
+		// ready by the autonomous loop, even when policy allows the local advance.
+		// Otherwise proposed->ready would bypass the operator-owned admission gate.
+		if workActionContextRequiresOperator(item.ActionContext) {
+			blocked = append(blocked, "work.ready_state:"+item.WorkID)
+			continue
+		}
 		plan, err := s.AdvancePlan(item.WorkID, now, AdvancePlanOptions{Actor: actor, To: "ready"})
 		if err != nil {
 			blocked = append(blocked, "work.ready_state:"+item.WorkID)
@@ -304,6 +312,13 @@ func continueCanContinue(report WorkbenchReport, actor, expectWorkID string) (bo
 	}
 	for _, item := range report.Open {
 		if continueMatchesExpected(expectWorkID, item.WorkID) && (item.State == "proposed" || item.State == "admitted") {
+			// Operator-required proposed/admitted work cannot be safely prepared
+			// (see continuePrepareCandidate), so it is not a continuation target;
+			// treating it as one would spin ContinueRun to max_steps. This mirrors
+			// the operator-required filtering continueAdmissionPreview applies below.
+			if workActionContextRequiresOperator(item.ActionContext) {
+				continue
+			}
 			return true, continueCommand(actor, expectWorkID, false, 0)
 		}
 	}
