@@ -142,7 +142,7 @@ func TestWorkbenchOperatorModeTranslatesEnvelopeIntoOperatorLanguage(t *testing.
 		"Integrated",
 		"Authority: Free to act",
 		"Authority: Review before landing",
-		"Authority: Needs Umut",
+		"Authority: Needs operator",
 		ready.ID,
 		proving.ID,
 		held.ID,
@@ -439,8 +439,8 @@ func TestWorkbenchHeadlineUsesAttentionProjection(t *testing.T) {
 	if err := json.Unmarshal([]byte(attentionJSON), &attentionReport); err != nil {
 		t.Fatalf("parse attention JSON: %v\n%s", err, attentionJSON)
 	}
-	if attentionReport.Counts.NeedsYou != 2 {
-		t.Fatalf("fixture attention needs_you = %d, want 2", attentionReport.Counts.NeedsYou)
+	if attentionReport.Counts.NeedsYou != 1 || attentionReport.Counts.Watching != 1 {
+		t.Fatalf("fixture attention counts = %+v, want one review needs_you and one safe work item watching", attentionReport.Counts)
 	}
 
 	workbenchJSON := captureStdout(t, func() {

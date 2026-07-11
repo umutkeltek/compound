@@ -203,29 +203,34 @@ func groupsFromReviews(report reviewartifact.QueueReport, now time.Time) []Group
 func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 	freshness := Freshness{GeneratedAt: firstNonEmpty(report.GeneratedAt, now.UTC().Format(time.RFC3339)), Source: SourceWorkbench}
 	var out []Group
-	needsClaim := filterWorkbenchItems(report.Open, func(item work.WorkbenchItem) bool {
-		return item.State == "ready" || item.State == "admitted" || item.State == "proposed"
+	canMove := filterWorkbenchItems(report.Open, func(item work.WorkbenchItem) bool {
+		return workbenchItemCanMove(item) && !workbenchItemNeedsOperator(item)
 	})
-	if len(needsClaim) > 0 {
+	if len(canMove) > 0 {
+		var action *Action
+		if workbenchItemsContain(canMove, report.DispatchNext.WorkID) {
+			action = actionFromWorkbenchDispatch(report.DispatchNext)
+		}
 		out = append(out, Group{
-			Key:             "workbench:needs-claim",
+			Key:             "workbench:can-move",
 			Area:            "workbench-needs-claim",
-			Band:            BandNeedsYou,
+			Band:            BandWatching,
 			Source:          SourceWorkbench,
 			Kind:            KindAdvance,
-			Count:           len(needsClaim),
-			OperatorSummary: plural(len(needsClaim), "open work item needs a claim.", "open work items need claims."),
-			OperatorUnlock:  "Claim or dispatch the next ready item.",
-			OldestCreatedAt: oldestWorkbenchItemTime(needsClaim, freshness.GeneratedAt),
-			Action:          actionFromWorkbenchDispatch(report.DispatchNext),
-			ItemIDs:         workbenchItemIDs(needsClaim),
+			Count:           len(canMove),
+			OperatorSummary: plural(len(canMove), "safe open work item can move.", "safe open work items can move."),
+			OperatorUnlock:  "Executors can claim or advance this work inside the admitted envelope.",
+			OldestCreatedAt: oldestWorkbenchItemTime(canMove, freshness.GeneratedAt),
+			Action:          action,
+			ItemIDs:         workbenchItemIDs(canMove),
 			Freshness:       freshness,
 		})
 	}
 	blocked := filterWorkbenchItems(report.Open, func(item work.WorkbenchItem) bool {
-		return item.State == "held" || item.State == "blocked"
+		return item.State == "held" || item.State == "blocked" || (workbenchItemCanMove(item) && workbenchItemNeedsOperator(item))
 	})
 	if len(blocked) > 0 {
+		blastRadius, reversibility := workbenchGateRisk(blocked)
 		out = append(out, Group{
 			Key:             "workbench:blocked-on-you",
 			Area:            "workbench-blocked-on-you",
@@ -235,13 +240,15 @@ func groupsFromWorkbench(report work.WorkbenchReport, now time.Time) []Group {
 			Count:           len(blocked),
 			OperatorSummary: plural(len(blocked), "open work item is blocked on operator review.", "open work items are blocked on operator review."),
 			OperatorUnlock:  "Resolve the hold before executors can continue.",
+			BlastRadius:     blastRadius,
+			Reversibility:   reversibility,
 			OldestCreatedAt: oldestWorkbenchItemTime(blocked, freshness.GeneratedAt),
 			TerminalReason:  firstWorkbenchReason(blocked),
 			ItemIDs:         workbenchItemIDs(blocked),
 			Freshness:       freshness,
 		})
 	}
-	if strings.TrimSpace(report.DispatchNext.WaitReason) != "" || strings.TrimSpace(report.DispatchNext.Reason) != "" {
+	if !report.DispatchNext.CanRun && (strings.TrimSpace(report.DispatchNext.WaitReason) != "" || strings.TrimSpace(report.DispatchNext.Reason) != "") {
 		out = append(out, Group{
 			Key:             "workbench:dispatch-next",
 			Area:            "workbench-dispatch-next",
@@ -265,12 +272,9 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 	freshness := Freshness{GeneratedAt: firstNonEmpty(report.GeneratedAt, now.UTC().Format(time.RFC3339)), Source: SourceExecutor}
 	var out []Group
 	for _, row := range report.Executors {
-		if row.NeedsMeCount <= 0 && row.StaleLeaseCount <= 0 && len(row.StalledJobs) == 0 {
+		count, itemIDs := executorOwnedBurden(row)
+		if count <= 0 {
 			continue
-		}
-		count := row.NeedsMeCount
-		if count == 0 {
-			count = row.StaleLeaseCount + len(row.StalledJobs)
 		}
 		summary := row.Label
 		if strings.TrimSpace(summary) == "" {
@@ -288,7 +292,7 @@ func groupsFromExecutors(report work.ExecutorsProjection, now time.Time) []Group
 			OperatorUnlock:  firstNonEmpty(row.WaitReason, row.ProjectionNote),
 			OldestCreatedAt: oldestExecutorTime(row, freshness.GeneratedAt, now),
 			TerminalReason:  firstNonEmpty(row.WaitReason, row.ProjectionNote),
-			ItemIDs:         executorItemIDs(row),
+			ItemIDs:         itemIDs,
 			Freshness:       freshness,
 		})
 	}
@@ -630,6 +634,94 @@ func filterWorkbenchItems(items []work.WorkbenchItem, keep func(work.WorkbenchIt
 	return out
 }
 
+func workbenchItemCanMove(item work.WorkbenchItem) bool {
+	switch strings.TrimSpace(item.State) {
+	case "ready", "admitted", "proposed":
+		return true
+	default:
+		return false
+	}
+}
+
+func workbenchItemNeedsOperator(item work.WorkbenchItem) bool {
+	if item.State == "held" || item.State == "blocked" {
+		return true
+	}
+	if item.ActionContext != nil && item.ActionContext.RequiresOperator {
+		return true
+	}
+	for _, card := range item.ReviewCards {
+		if card.RequiresOperator {
+			return true
+		}
+	}
+	text := workbenchItemRiskText(item)
+	if strings.Contains(text, "conflict") || strings.Contains(text, "operator required") || strings.Contains(text, "requires operator") {
+		return true
+	}
+	blast := deriveBlastRadius(Group{OperatorSummary: text}, BlastLocalReversible)
+	return blast == BlastExternalSideEffect || highBlast(blast)
+}
+
+func workbenchGateRisk(items []work.WorkbenchItem) (string, string) {
+	blast := BlastLocalReversible
+	reversibility := Reversible
+	for _, item := range items {
+		candidate := deriveBlastRadius(Group{OperatorSummary: workbenchItemRiskText(item)}, BlastLocalReversible)
+		if blastSeverity(candidate) > blastSeverity(blast) {
+			blast = candidate
+		}
+		if deriveReversibility(Group{BlastRadius: candidate, OperatorSummary: workbenchItemRiskText(item)}, Reversible) == Irreversible {
+			reversibility = Irreversible
+		}
+	}
+	return blast, reversibility
+}
+
+func workbenchItemRiskText(item work.WorkbenchItem) string {
+	// Read only the action-bearing fields. Boundaries, stop conditions, and
+	// success predicates commonly name forbidden public/external actions (for
+	// example "do not publish") and must not turn safe work into a false gate.
+	parts := []string{item.CanonicalSurface, item.ReviewTrigger, item.NextAction, item.OpenReason}
+	if item.ActionContext != nil {
+		ctx := item.ActionContext
+		parts = append(parts, ctx.Kind, ctx.SourceRef, ctx.SourceID, ctx.Title, ctx.ActionSummary)
+		parts = append(parts, ctx.Command...)
+	}
+	for _, card := range item.ReviewCards {
+		parts = append(parts, card.Kind, card.Title, card.NextAction, card.GateID, card.SourceKind)
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func blastSeverity(blast string) int {
+	switch blast {
+	case BlastSecurity:
+		return 6
+	case BlastFinancial:
+		return 5
+	case BlastDestructive:
+		return 4
+	case BlastPublic:
+		return 3
+	case BlastExternalSideEffect:
+		return 2
+	case BlastLocalReversible:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func workbenchItemsContain(items []work.WorkbenchItem, workID string) bool {
+	for _, item := range items {
+		if item.WorkID == workID {
+			return true
+		}
+	}
+	return false
+}
+
 func workbenchItemIDs(items []work.WorkbenchItem) []string {
 	out := make([]string, 0, len(items))
 	for _, item := range items {
@@ -638,18 +730,31 @@ func workbenchItemIDs(items []work.WorkbenchItem) []string {
 	return out
 }
 
-func executorItemIDs(row work.ExecutorRow) []string {
+func executorOwnedBurden(row work.ExecutorRow) (int, []string) {
+	workbenchHeld := 0
 	var out []string
 	for _, ref := range row.CurrentWork {
-		out = append(out, ref.WorkID)
+		if ref.State == "held" || ref.State == "blocked" {
+			workbenchHeld++
+			continue
+		}
+		if strings.TrimSpace(ref.NeedsMe) != "" {
+			out = append(out, ref.WorkID)
+		}
+	}
+	executorNeeds := row.NeedsMeCount - workbenchHeld
+	if executorNeeds < 0 {
+		executorNeeds = 0
 	}
 	for _, lease := range row.Leases {
-		out = append(out, lease.WorkID)
+		if row.StaleLeaseCount > 0 {
+			out = append(out, lease.WorkID)
+		}
 	}
 	for _, job := range row.StalledJobs {
 		out = append(out, firstNonEmpty(job.WorkID, job.JobID))
 	}
-	return uniqueStrings(out)
+	return executorNeeds + row.StaleLeaseCount + len(row.StalledJobs), uniqueStrings(out)
 }
 
 func firstWorkbenchReason(items []work.WorkbenchItem) string {

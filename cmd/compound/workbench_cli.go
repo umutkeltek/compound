@@ -860,7 +860,7 @@ func operatorStatusForItem(item work.WorkbenchItem) string {
 
 func operatorAuthorityForItem(item work.WorkbenchItem) string {
 	if operatorItemNeedsUmut(item) {
-		return "Needs Umut"
+		return "Needs operator"
 	}
 	if strings.TrimSpace(item.State) == "verifying" ||
 		strings.TrimSpace(item.ReviewTrigger) != "" ||

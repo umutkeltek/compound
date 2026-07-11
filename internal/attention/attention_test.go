@@ -6,7 +6,122 @@ import (
 	"time"
 
 	"compound/internal/reviewartifact"
+	"compound/internal/work"
 )
+
+func TestWorkbenchSafeWorkWatchesWhileOperatorGatesStillNeedYou(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	safeIDs := []string{"work_ready", "work_admitted", "work_proposed"}
+	report := Build(Inputs{Workbench: &work.WorkbenchReport{
+		GeneratedAt: now.Format(time.RFC3339),
+		Open: []work.WorkbenchItem{
+			{WorkID: safeIDs[0], State: "ready", SuccessPredicate: "run a local reversible check without publishing", ActionContext: &work.WorkActionContext{Boundary: "stop before public or external side effects"}},
+			{WorkID: safeIDs[1], State: "admitted", SuccessPredicate: "prepare admitted local work"},
+			{WorkID: safeIDs[2], State: "proposed", SuccessPredicate: "prepare proposed local work"},
+			{WorkID: "work_held", State: "held", OpenReason: "operator decision required"},
+			{WorkID: "work_blocked", State: "blocked", OpenReason: "conflict requires resolution"},
+			{WorkID: "work_conflict", State: "ready", OpenReason: "merge conflict requires resolution"},
+			{WorkID: "work_explicit_gate", State: "ready", ActionContext: &work.WorkActionContext{RequiresOperator: true}},
+			{WorkID: "work_review_card_gate", State: "proposed", ReviewCards: []work.WorkbenchReviewCard{{RequiresOperator: true}}},
+			{WorkID: "work_public", State: "ready", ActionContext: &work.WorkActionContext{ActionSummary: "publish the public release"}},
+			{WorkID: "work_external", State: "admitted", ActionContext: &work.WorkActionContext{ActionSummary: "send an external submission"}},
+			{WorkID: "work_destructive", State: "proposed", ActionContext: &work.WorkActionContext{ActionSummary: "delete production records"}},
+			{WorkID: "work_financial", State: "ready", ActionContext: &work.WorkActionContext{ActionSummary: "approve financial spend"}},
+			{WorkID: "work_security", State: "admitted", ActionContext: &work.WorkActionContext{ActionSummary: "rotate a security credential"}},
+		},
+		DispatchNext: work.WorkbenchDispatchNext{
+			CanRun: true, Action: "claim", WorkID: safeIDs[0],
+			Command: []string{"compound", "work", "continue", "--expect-work", safeIDs[0]},
+		},
+	}}, now)
+
+	watching := groupByKey(t, report, "workbench:can-move")
+	if watching.Band != BandWatching || watching.Count != len(safeIDs) || !sameStringSet(watching.ItemIDs, safeIDs) {
+		t.Fatalf("safe work = band %q count %d ids %v, want %q %d %v", watching.Band, watching.Count, watching.ItemIDs, BandWatching, len(safeIDs), safeIDs)
+	}
+	if watching.Action == nil || watching.Action.ID != "workbench.dispatch_next" || watching.Action.RequiresConfirmation {
+		t.Fatalf("safe work must expose the runnable can-move action without operator confirmation: %+v", watching.Action)
+	}
+
+	needsYou := groupByKey(t, report, "workbench:blocked-on-you")
+	wantNeedsYou := []string{"work_held", "work_blocked", "work_conflict", "work_explicit_gate", "work_review_card_gate", "work_public", "work_external", "work_destructive", "work_financial", "work_security"}
+	if needsYou.Band != BandNeedsYou || needsYou.Count != len(wantNeedsYou) || !sameStringSet(needsYou.ItemIDs, wantNeedsYou) {
+		t.Fatalf("operator-gated work = band %q count %d ids %v, want %q %d %v", needsYou.Band, needsYou.Count, needsYou.ItemIDs, BandNeedsYou, len(wantNeedsYou), wantNeedsYou)
+	}
+	if needsYou.BlastRadius != BlastSecurity || needsYou.Reversibility != Irreversible {
+		t.Fatalf("highest gate risk = %q/%q, want %q/%q", needsYou.BlastRadius, needsYou.Reversibility, BlastSecurity, Irreversible)
+	}
+	if report.Counts.NeedsYou != len(wantNeedsYou) || report.Counts.Watching != len(safeIDs) || report.Counts.BlockedOnYou != len(wantNeedsYou) {
+		t.Fatalf("counts = %+v, want needs_you=%d watching=%d blocked_on_you=%d", report.Counts, len(wantNeedsYou), len(safeIDs), len(wantNeedsYou))
+	}
+}
+
+func TestExecutorProjectionDoesNotRepeatWorkbenchHeldBurden(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	report := Build(Inputs{
+		Workbench: &work.WorkbenchReport{GeneratedAt: now.Format(time.RFC3339), Open: []work.WorkbenchItem{{WorkID: "work_held", State: "held"}}},
+		Executors: &work.ExecutorsProjection{GeneratedAt: now.Format(time.RFC3339), Executors: []work.ExecutorRow{{
+			ID: "codex", Label: "Codex", NeedsMeCount: 1,
+			CurrentWork: []work.ExecutorWorkRef{{WorkID: "work_held", State: "held"}},
+		}}},
+	}, now)
+
+	if len(report.Groups) != 1 || report.Groups[0].Key != "workbench:blocked-on-you" {
+		t.Fatalf("held work must appear once from its owning projection, got %+v", report.Groups)
+	}
+	if report.Counts.NeedsYou != 1 || report.Counts.NeedsYouGroups != 1 || report.Counts.BlockedOnYou != 1 {
+		t.Fatalf("duplicate executor burden inflated counts: %+v", report.Counts)
+	}
+}
+
+func TestExecutorProjectionKeepsIndependentDeadExecutorBurden(t *testing.T) {
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	report := Build(Inputs{
+		Workbench: &work.WorkbenchReport{GeneratedAt: now.Format(time.RFC3339), Open: []work.WorkbenchItem{{WorkID: "work_held", State: "held"}}},
+		Executors: &work.ExecutorsProjection{GeneratedAt: now.Format(time.RFC3339), Executors: []work.ExecutorRow{{
+			ID: "codex", Label: "Codex", NeedsMeCount: 2,
+			CurrentWork: []work.ExecutorWorkRef{
+				{WorkID: "work_held", State: "held"},
+				{WorkID: "work_dead_executor", State: "running", NeedsMe: "executor process is not alive"},
+			},
+		}}},
+	}, now)
+
+	executor := groupByKey(t, report, "executor:codex")
+	if executor.Count != 1 || !sameStringSet(executor.ItemIDs, []string{"work_dead_executor"}) {
+		t.Fatalf("independent executor burden = count %d ids %v, want the dead executor only", executor.Count, executor.ItemIDs)
+	}
+	if report.Counts.NeedsYou != 2 || report.Counts.NeedsYouGroups != 2 {
+		t.Fatalf("independent workbench and executor burdens must both remain visible: %+v", report.Counts)
+	}
+}
+
+func groupByKey(t *testing.T, report Report, key string) Group {
+	t.Helper()
+	for _, group := range report.Groups {
+		if group.Key == key {
+			return group
+		}
+	}
+	t.Fatalf("group %q missing from %+v", key, report.Groups)
+	return Group{}
+}
+
+func sameStringSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := make(map[string]bool, len(got))
+	for _, value := range got {
+		seen[value] = true
+	}
+	for _, value := range want {
+		if !seen[value] {
+			return false
+		}
+	}
+	return true
+}
 
 func TestClassAGateOutranksHighVolumeClassB(t *testing.T) {
 	now := time.Date(2026, 7, 9, 12, 0, 0, 0, time.UTC)
