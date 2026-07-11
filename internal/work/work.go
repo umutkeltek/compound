@@ -496,9 +496,11 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
+	stagedWork, err := s.stageJSON(s.workPath(workID), &w)
+	if err != nil {
 		return w, err
 	}
+	defer os.Remove(stagedWork)
 	note := strings.TrimSpace(in.Note)
 	if note == "" {
 		note = "advanced (policy " + plan.Policy.Outcome + ")"
@@ -506,7 +508,13 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		note += " (policy " + plan.Policy.Outcome + ")"
 	}
 	event := Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: note, Attached: attached}
-	return w, s.appendEvent(event)
+	if err := s.appendEvent(event); err != nil {
+		return w, err
+	}
+	if err := commitStagedJSON(stagedWork, s.workPath(workID)); err != nil {
+		return w, err
+	}
+	return w, nil
 }
 
 // --- act (governed mutation) ---
@@ -815,6 +823,53 @@ func (s *Store) writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func (s *Store) stageJSON(path string, v any) (string, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".stage-")
+	if err != nil {
+		return "", err
+	}
+	stagedPath := file.Name()
+	cleanup := func(cause error) (string, error) {
+		_ = file.Close()
+		_ = os.Remove(stagedPath)
+		return "", cause
+	}
+	if err := file.Chmod(0o644); err != nil {
+		return cleanup(err)
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		return cleanup(err)
+	}
+	if err := file.Sync(); err != nil {
+		return cleanup(err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(stagedPath)
+		return "", err
+	}
+	return stagedPath, nil
+}
+
+func commitStagedJSON(stagedPath, targetPath string) error {
+	if err := os.Rename(stagedPath, targetPath); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(targetPath))
+	if err != nil {
+		return err
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return syncErr
+	}
+	return closeErr
 }
 
 func workEnvelopeSHA256(work envelope.WorkEnvelope) (string, error) {
@@ -1150,7 +1205,7 @@ func (s *Store) appendEvent(e Event) error {
 		if err != nil {
 			return err
 		}
-		return nil
+		return f.Sync()
 	})
 }
 
