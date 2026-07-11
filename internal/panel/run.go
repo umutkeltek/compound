@@ -46,6 +46,7 @@ type verdictArtifactPayload struct {
 // a fresh row, allocating :resumeN when a prior matching attempt exists.
 func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCaller, now func() time.Time) (Run, error) {
 	result := run
+	invocationEvidenceRefs := append([]string(nil), run.EvidenceRefs...)
 	err := withPanelRunLock(homePath, run.ID, func() error {
 		store, err := Open(homePath)
 		if err != nil {
@@ -57,10 +58,14 @@ func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCal
 		} else if !os.IsNotExist(err) {
 			return err
 		}
-		result = run
 		if panelRunExecutionTerminal(run.Status) {
+			result = run
 			return nil
 		}
+		for _, ref := range invocationEvidenceRefs {
+			run.EvidenceRefs = appendUniqueString(run.EvidenceRefs, ref)
+		}
+		result = run
 		result, err = executeDryRunLocked(ctx, homePath, store, run, caller, now)
 		return err
 	})
