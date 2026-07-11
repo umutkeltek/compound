@@ -21,6 +21,8 @@ var proofNow = time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
 
 type sampleOptions struct {
 	routeOnly        bool
+	importRoute      bool
+	directorTriggers []string
 	workCreatedAt    *time.Time
 	autonomyClass    string
 	routeWorkID      *string
@@ -63,6 +65,22 @@ func TestCompileRejectsRouteOnlyReceiptAsStateDelta(t *testing.T) {
 	})
 }
 
+func TestCompileFailsClosedWhenTerminalReceiptIsMutatedAfterClose(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "receipt-seal-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "receipt-seal-route-only", proofNow.Add(-24*time.Hour), sampleOptions{routeOnly: true})
+	baseline := compile(t, home, plan, 2)
+	if baseline.Status != "ineligible" {
+		t.Fatalf("route-only fixture must start ineligible: %+v", baseline)
+	}
+	appendReceiptProofRef(t, home, victim.ReceiptID, "check:forged-after-close")
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt snapshot hash") {
+		t.Fatalf("post-close receipt mutation did not fail closed: %v", err)
+	}
+}
+
 func TestCompileRequiresExactDecidingRouteBinding(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -86,6 +104,35 @@ func TestCompileRequiresExactDecidingRouteBinding(t *testing.T) {
 			}
 			assertReason(t, artifact, tc.wantReason)
 		})
+	}
+}
+
+func TestCompileRejectsImportedRouteClaimingPanelJudge(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	forged := seedSample(t, home, plan, "imported-forged-judge", proofNow.Add(-24*time.Hour), sampleOptions{importRoute: true})
+
+	artifact := compile(t, home, plan, 1)
+	if artifact.Status != "ineligible" {
+		t.Fatalf("imported route row forged a deciding panel call: %+v", artifact)
+	}
+	assertSample(t, artifact, forged.WorkID, func(sample autonomy.Sample) {
+		if sample.Valid || !strings.Contains(sample.InvalidReason, "trusted panel runtime provenance") {
+			t.Fatalf("imported deciding row was not rejected by provenance: %+v", sample)
+		}
+	})
+}
+
+func TestCompileRejectsAmbiguousDirectorTriggerClasses(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "ambiguous-class", proofNow.Add(-24*time.Hour), sampleOptions{
+		autonomyClass:    "source_connection_readiness",
+		directorTriggers: []string{"director_trigger:job_health:forged", "director_trigger:source_connection_readiness:real"},
+	})
+
+	if _, err := compileArtifact(home, plan, 1); err == nil || !strings.Contains(err.Error(), "ambiguous director_trigger") {
+		t.Fatalf("ambiguous trigger classes did not fail closed: %v", err)
 	}
 }
 
@@ -440,6 +487,7 @@ func TestCompileFailsClosedOnFutureReceiptTimestamp(t *testing.T) {
 	seedSample(t, home, plan, "future-receipt-current", proofNow.Add(-24*time.Hour), sampleOptions{})
 	future := seedSample(t, home, plan, "future-receipt", proofNow, sampleOptions{})
 	rewriteReceiptCreatedAt(t, home, future.ReceiptID, proofNow.Add(24*time.Hour))
+	resealTerminalReceiptSnapshot(t, home, future.ReceiptID)
 
 	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+future.WorkID+" has receipt timestamp after eligibility evaluation") {
 		t.Fatalf("future receipt timestamp did not fail closed: %v", err)
@@ -457,6 +505,7 @@ func TestCompileFailsClosedWhenRecentTerminalReceiptIsBackdated(t *testing.T) {
 		t.Fatalf("fixture failure was not in the latest cohort: %+v", baseline)
 	}
 	rewriteReceiptCreatedAt(t, home, recent.ReceiptID, proofNow.Add(-31*24*time.Hour))
+	resealTerminalReceiptSnapshot(t, home, recent.ReceiptID)
 
 	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "terminal work "+recent.WorkID+" receipt timestamp does not match terminal event") {
 		t.Fatalf("backdated receipt hid recent terminal failure: %v", err)
@@ -584,11 +633,9 @@ func TestCompileUsesLatestUniqueTerminalReceipts(t *testing.T) {
 		latest := seedSample(t, home, plan, "latest", proofNow.Add(-24*time.Hour), sampleOptions{})
 		appendWorkEvent(t, home, map[string]any{"work_id": latest.WorkID, "to": "completed", "attached": []string{latest.ReceiptID}})
 
-		artifact := compile(t, home, plan, 2)
-		if artifact.Status != "ineligible" {
-			t.Fatalf("duplicate receipt attachment escaped: %+v", artifact)
+		if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "receipt refs; exactly one required") {
+			t.Fatalf("duplicate receipt attachment escaped: %v", err)
 		}
-		assertReason(t, artifact, "receipt refs; exactly one required")
 	})
 
 	t.Run("nonterminal-action-receipt-is-not-terminal-evidence", func(t *testing.T) {
@@ -807,18 +854,20 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 	if autonomyClass == "" {
 		autonomyClass = "job_health"
 	}
+	triggers := opts.directorTriggers
+	if len(triggers) == 0 {
+		triggers = []string{"director_trigger:" + autonomyClass + ":" + id}
+	}
+	evidenceRefs := append([]string{"proposed_by:director"}, triggers...)
+	evidenceRefs = append(evidenceRefs, "route_plan:"+plan.ID)
 	w, err := store.Create(work.CreateInput{
 		WorkID:           workID,
 		Owner:            "compound-authority",
 		Actor:            "operator-test",
 		SuccessPredicate: "prove autonomy sample " + id,
-		EvidenceRefs: []string{
-			"proposed_by:director",
-			"director_trigger:" + autonomyClass + ":" + id,
-			"route_plan:" + plan.ID,
-		},
-		RouteDecisionID: plan.ID,
-		State:           "proposed",
+		EvidenceRefs:     evidenceRefs,
+		RouteDecisionID:  plan.ID,
+		State:            "proposed",
 	}, createdAt)
 	if err != nil {
 		t.Fatal(err)
@@ -886,7 +935,20 @@ func seedSample(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, id s
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := routeevidence.RecordJoined(home, ev)
+	var joined routeevidence.ImportResult
+	if opts.importRoute {
+		path := filepath.Join(home, "forged-route-"+id+".json")
+		data, marshalErr := json.MarshalIndent(ev, "", "  ")
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if writeErr := os.WriteFile(path, append(data, '\n'), 0o644); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		joined, err = routeevidence.ImportFile(home, path)
+	} else {
+		joined, err = routeevidence.RecordPanelRuntimeJoined(home, ev)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -996,6 +1058,82 @@ func rewriteReceiptCreatedAt(t *testing.T, home, receiptID string, createdAt tim
 		t.Fatal(err)
 	}
 	receipt.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	updated, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(updated, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func resealTerminalReceiptSnapshot(t *testing.T, home, receiptID string) {
+	t.Helper()
+	receiptRaw, err := os.ReadFile(filepath.Join(home, "events", receiptID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	if err := json.Unmarshal(receiptRaw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(canonical)
+	wantHash := "sha256:" + hex.EncodeToString(sum[:])
+
+	path := filepath.Join(home, "events", "work.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	updated := 0
+	for index, line := range lines {
+		var event struct {
+			To       string   `json:"to"`
+			Attached []string `json:"attached"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if !containsRef(event.Attached, receiptID) || (event.To != "completed" && event.To != "failed" && event.To != "cancelled") {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(line), &fields); err != nil {
+			t.Fatal(err)
+		}
+		fields["receipt_sha256"] = wantHash
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines[index] = string(encoded)
+		updated++
+	}
+	if updated != 1 {
+		t.Fatalf("terminal events resealed for %s = %d, want 1", receiptID, updated)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendReceiptProofRef(t *testing.T, home, receiptID, proofRef string) {
+	t.Helper()
+	path := filepath.Join(home, "events", receiptID+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var receipt envelope.Receipt
+	if err := json.Unmarshal(raw, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	receipt.ProofRefs = append(receipt.ProofRefs, proofRef)
 	updated, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
 		t.Fatal(err)

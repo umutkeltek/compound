@@ -10,7 +10,8 @@ import (
 
 // TestKillSwitchHaltsDirectorAutoAdmit wires the halt to the real typed
 // job_health path: even a threshold-met class grant stays proposed while the
-// halt is engaged, then the same sealed eligibility admits after it is cleared.
+// halt is engaged, then a fresh evaluation at the clearing instant reconsiders
+// and admits the same proposed WorkEnvelope.
 func TestKillSwitchHaltsDirectorAutoAdmit(t *testing.T) {
 	home := seededDirectorHome(t)
 	now := directorTestNow.Add(96 * time.Hour)
@@ -42,13 +43,18 @@ func TestKillSwitchHaltsDirectorAutoAdmit(t *testing.T) {
 		t.Fatalf("halted director work must stay proposed, got %q", got.State)
 	}
 
-	// Halt cleared: the same eligible auto-admit now proceeds to admitted.
+	// Halt cleared: Director recompiles eligibility at the new instant and
+	// reconsiders the same proposed WorkEnvelope.
 	if err := policy.WriteAutonomyHalt(home, policy.AutonomyHalt{}); err != nil {
 		t.Fatalf("clear halt: %v", err)
 	}
-	admitted, err := store.AdmitAuto(proposal.WorkID, *proposal.AutoAdmit, now.Add(time.Minute))
-	if err != nil || !admitted.Admitted {
-		t.Fatalf("cleared halt must let director auto-admit proceed: err=%v res=%+v", err, admitted)
+	reconsidered, err := Propose(home, Options{Apply: true, Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := findProposalByKind(reconsidered, "job_health")
+	if admitted == nil || admitted.WorkID != proposal.WorkID || admitted.AutoAdmitResult == nil || !admitted.AutoAdmitResult.Admitted {
+		t.Fatalf("cleared halt must let director auto-admit proceed on the same work: first=%+v second=%+v report=%+v", proposal, admitted, reconsidered)
 	}
 	if got, _ := store.Get(proposal.WorkID); got.State != "admitted" {
 		t.Fatalf("director work should be admitted after clearing halt, got %q", got.State)

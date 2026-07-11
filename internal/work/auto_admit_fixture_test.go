@@ -134,6 +134,7 @@ func seedTypedAutonomySample(t *testing.T, s *Store, plan autonomyproof.RoutePla
 		"work_id":        w.ID,
 		"client_profile": "compound.panel.judge",
 		"protocol":       "panel-lane",
+		"recorded_via":   "trusted_panel_runtime",
 		"selected_target": map[string]any{
 			"provider": "compound-route-plan",
 			"model":    "auto/judge",

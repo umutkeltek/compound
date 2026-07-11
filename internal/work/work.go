@@ -72,14 +72,15 @@ func (s *Store) envPath(id string) string   { return filepath.Join(s.home, "even
 
 // Event is one append-only lifecycle record.
 type Event struct {
-	TS         string   `json:"ts"`
-	WorkID     string   `json:"work_id"`
-	From       string   `json:"from"`
-	To         string   `json:"to"`
-	By         string   `json:"by,omitempty"`
-	Note       string   `json:"note,omitempty"`
-	Attached   []string `json:"attached,omitempty"`
-	WorkSHA256 string   `json:"work_sha256,omitempty"`
+	TS            string   `json:"ts"`
+	WorkID        string   `json:"work_id"`
+	From          string   `json:"from"`
+	To            string   `json:"to"`
+	By            string   `json:"by,omitempty"`
+	Note          string   `json:"note,omitempty"`
+	Attached      []string `json:"attached,omitempty"`
+	WorkSHA256    string   `json:"work_sha256,omitempty"`
+	ReceiptSHA256 string   `json:"receipt_sha256,omitempty"`
 }
 
 // Lease records who holds a claimed work (claim-before-you-touch / D7).
@@ -795,7 +796,11 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	if err != nil {
 		return res, err
 	}
-	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, WorkSHA256: workSHA256}); err != nil {
+	receiptSHA256, err := receiptEnvelopeSHA256(rec)
+	if err != nil {
+		return res, err
+	}
+	if err := s.appendEvent(Event{TS: ts(now), WorkID: workID, From: from, To: in.Outcome, Note: "closed: " + in.MoveType + " (policy " + plan.Policy.Outcome + ")", Attached: []string{plan.ActionIntent.ID, plan.Decision.ID, rec.ID, tr.ID}, WorkSHA256: workSHA256, ReceiptSHA256: receiptSHA256}); err != nil {
 		return res, err
 	}
 	return CloseResult{Work: w, Receipt: rec, Transition: tr}, nil
@@ -812,7 +817,15 @@ func (s *Store) writeJSON(path string, v any) error {
 }
 
 func workEnvelopeSHA256(work envelope.WorkEnvelope) (string, error) {
-	data, err := json.Marshal(work)
+	return canonicalEnvelopeSHA256(work)
+}
+
+func receiptEnvelopeSHA256(receipt envelope.Receipt) (string, error) {
+	return canonicalEnvelopeSHA256(receipt)
+}
+
+func canonicalEnvelopeSHA256(value any) (string, error) {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}

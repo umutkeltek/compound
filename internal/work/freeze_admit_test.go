@@ -136,7 +136,7 @@ func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
 
 	// A new-organ/absorption-shaped proposal matches the freeze keyword and is denied.
 	frozen := makeProposedDirectorWork(t, s, "absorption_debt", "work_freeze_a", fixedNow)
-	res, err := s.AdmitAuto(frozen, eligible, fixedNow.Add(1*time.Minute))
+	res, err := s.AdmitAuto(frozen, eligible, fixedNow)
 	if err == nil || res.Admitted {
 		t.Fatalf("frozen scope must deny auto-admit: err=%v res=%+v", err, res)
 	}
@@ -149,7 +149,7 @@ func TestFreezeGatesAutoAdmitByKeyword(t *testing.T) {
 
 	// A smoothness/wiring proposal (different class, no keyword hit) passes untouched.
 	wiring := makeProposedDirectorWork(t, s, "job_health", "work_freeze_b", fixedNow)
-	resB, err := s.AdmitAuto(wiring, eligible, fixedNow.Add(2*time.Minute))
+	resB, err := s.AdmitAuto(wiring, eligible, fixedNow)
 	if err != nil || !resB.Admitted {
 		t.Fatalf("non-matching proposal must pass the freeze: err=%v res=%+v", err, resB)
 	}
@@ -175,7 +175,7 @@ func TestFreezeGatesAutoAdmitByOwnerGlob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create proposed work: %v", err)
 	}
-	res, err := s.AdmitAuto(w.ID, eligible, fixedNow.Add(1*time.Minute))
+	res, err := s.AdmitAuto(w.ID, eligible, fixedNow)
 	if err == nil || res.Admitted {
 		t.Fatalf("owner-glob match must deny auto-admit: err=%v res=%+v", err, res)
 	}
@@ -226,7 +226,7 @@ func TestFreezeAbsentMeansNothingFrozen(t *testing.T) {
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_freeze_none", fixedNow)
 
-	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(1*time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
 	if err != nil || !res.Admitted {
 		t.Fatalf("no freeze records must never block admission: err=%v res=%+v", err, res)
 	}
@@ -242,7 +242,7 @@ func TestFreezeUndoneRecordNoLongerBlocks(t *testing.T) {
 	seedFreezeUndo(t, s, "direction-freeze-2026-07-10-lifted", "direction-freeze-2026-07-10", fixedNow.Add(time.Minute))
 
 	id := makeProposedDirectorWork(t, s, "job_health", "work_freeze_lifted", fixedNow)
-	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(2*time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
 	if err != nil || !res.Admitted {
 		t.Fatalf("lifted freeze must no longer block admission: err=%v res=%+v", err, res)
 	}

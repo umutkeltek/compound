@@ -1,5 +1,17 @@
 # Epistemics Contract
 
+**Binding autonomy status.** The `job_health` path below is implemented but
+bench-only. Imported, generic, fixture, and legacy route rows remain review
+evidence and cannot decide; no production caller currently mints
+`trusted_panel_runtime`. A qualifying terminal event seals canonical hashes
+for one WorkEnvelope and exactly one Receipt, with exactly one well-formed
+`director_trigger:<class>:<identity>`. Eligibility `generated_at` must
+equal the admission instant, so earlier artifacts are audit evidence rather
+than reusable authority. Finally, `operator:*`/`human:*` is currently
+caller-supplied provenance, not authenticated OS/user identity. Protected
+record shape prevents generic-memory shadowing but does not make rented
+executors safe grant minters.
+
 Compound treats epistemic doctrine as an enforced contract, not ambient prose. The rows below are deliberately machine-parseable by `compound architecture doctor --strict`: each principle names the existing implementing object family and at least one CLI verb that proves the branch is observable.
 
 | n | principle | implementing_object | proof_command |

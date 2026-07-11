@@ -27,9 +27,10 @@ import (
 )
 
 const (
-	SchemaVersion              = "compound.autonomy_eligibility.v0.1"
-	AuthorityRef               = "compound://artifacts/autonomy-eligibility"
-	terminalSampleLookbackDays = 30
+	SchemaVersion               = "compound.autonomy_eligibility.v0.1"
+	AuthorityRef                = "compound://artifacts/autonomy-eligibility"
+	terminalSampleLookbackDays  = 30
+	trustedPanelRuntimeRecorder = "trusted_panel_runtime"
 )
 
 type GrantSnapshot struct {
@@ -134,6 +135,7 @@ type routeRow struct {
 	ClientProfile  string `json:"client_profile"`
 	Protocol       string `json:"protocol"`
 	Status         string `json:"status"`
+	RecordedVia    string `json:"recorded_via"`
 	SelectedTarget struct {
 		Provider string `json:"provider"`
 		Model    string `json:"model"`
@@ -157,8 +159,9 @@ type receiptEvidence struct {
 }
 
 type terminalEvidence struct {
-	At         string
-	WorkSHA256 string
+	At            string
+	WorkSHA256    string
+	ReceiptSHA256 string
 }
 
 type decidingRouteBinding struct {
@@ -266,7 +269,7 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 	if err != nil {
 		return Artifact{}, err
 	}
-	if err := reconcileRecentTerminalSnapshots(works, receipts, artifact.Class, lookbackStart, evaluatedAt); err != nil {
+	if err := reconcileRecentTerminalSnapshots(homePath, works, receipts, artifact.Class, lookbackStart, evaluatedAt); err != nil {
 		return Artifact{}, err
 	}
 	routes, err := loadRouteRows(homePath)
@@ -276,7 +279,14 @@ func Compile(homePath string, grant GrantSnapshot, plan RoutePlanSnapshot, now t
 
 	var candidates []Sample
 	for _, ws := range works {
-		if autonomyClassOf(ws.Work) != artifact.Class || !terminalWorkState(ws.Work.State) {
+		class, classErr := autonomyClassOf(ws.Work)
+		if classErr != nil {
+			if terminalWorkState(ws.Work.State) && autonomyTriggerMentionsClass(ws.Work, artifact.Class) {
+				return Artifact{}, classErr
+			}
+			continue
+		}
+		if class != artifact.Class || !terminalWorkState(ws.Work.State) {
 			continue
 		}
 		sample := buildSample(homePath, ws, receipts[ws.Work.ID], routes, artifact.Class, plan)
@@ -555,6 +565,16 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	if err := receipt.Validate(); err != nil {
 		return invalid("receipt invalid: " + err.Error())
 	}
+	if len(receiptEvidence.Terminals) != 1 || strings.TrimSpace(receiptEvidence.Terminals[0].ReceiptSHA256) == "" {
+		return invalid("terminal event receipt snapshot hash is required")
+	}
+	receiptCanonical, err := json.Marshal(receipt)
+	if err != nil {
+		return invalid("receipt snapshot hash unavailable: " + err.Error())
+	}
+	if receiptEvidence.Terminals[0].ReceiptSHA256 != "sha256:"+shaHex(receiptCanonical) {
+		return invalid("receipt snapshot hash does not match terminal event")
+	}
 	sample.ReceiptID = receipt.ID
 	sample.ReceiptSHA256 = "sha256:" + shaHex(receiptRaw)
 	sample.ReceiptCreatedAt = receipt.CreatedAt
@@ -679,6 +699,9 @@ func buildSample(homePath string, ws workSnapshot, receiptEvidence receiptEviden
 	}
 	if chosen.row.Row.SchemaVersion != "compound.execution_route_evidence.v0.1" {
 		return invalid("route evidence schema_version is not compound.execution_route_evidence.v0.1")
+	}
+	if strings.TrimSpace(chosen.row.Row.RecordedVia) != trustedPanelRuntimeRecorder {
+		return invalid("deciding route evidence requires trusted panel runtime provenance")
 	}
 	if strings.TrimSpace(chosen.row.Row.RequestID) == "" {
 		return invalid("route evidence request_id is required")
@@ -810,13 +833,20 @@ func loadWorks(homePath string) ([]workSnapshot, error) {
 	return out, nil
 }
 
-func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) error {
+func reconcileRecentTerminalSnapshots(homePath string, works []workSnapshot, receipts map[string]receiptEvidence, cohortClass string, lookbackStart, lookbackEnd time.Time) error {
 	byID := map[string][]workSnapshot{}
 	for _, work := range works {
 		byID[work.Work.ID] = append(byID[work.Work.ID], work)
 	}
 	for _, work := range works {
-		if autonomyClassOf(work.Work) != cohortClass || !terminalWorkState(work.Work.State) {
+		class, classErr := autonomyClassOf(work.Work)
+		if classErr != nil {
+			if terminalWorkState(work.Work.State) && autonomyTriggerMentionsClass(work.Work, cohortClass) {
+				return classErr
+			}
+			continue
+		}
+		if class != cohortClass || !terminalWorkState(work.Work.State) {
 			continue
 		}
 		if len(receipts[work.Work.ID].Terminals) == 0 {
@@ -862,8 +892,36 @@ func reconcileRecentTerminalSnapshots(works []workSnapshot, receipts map[string]
 		if evidence.Terminals[0].WorkSHA256 != "sha256:"+shaHex(data) {
 			return fmt.Errorf("recent terminal work %s snapshot hash does not match terminal event", workID)
 		}
-		if autonomyClassOf(snapshots[0].Work) != cohortClass {
+		class, classErr := autonomyClassOf(snapshots[0].Work)
+		if classErr != nil {
+			if autonomyTriggerMentionsClass(snapshots[0].Work, cohortClass) {
+				return classErr
+			}
 			continue
+		}
+		if class != cohortClass {
+			continue
+		}
+		if strings.TrimSpace(evidence.Terminals[0].ReceiptSHA256) == "" {
+			return fmt.Errorf("terminal work %s receipt snapshot hash is required", workID)
+		}
+		if len(evidence.Refs) != 1 {
+			return fmt.Errorf("terminal work %s has %d receipt refs; exactly one required", workID, len(evidence.Refs))
+		}
+		receiptRaw, err := os.ReadFile(filepath.Join(homePath, "events", evidence.Refs[0]+".json"))
+		if err != nil {
+			return fmt.Errorf("terminal work %s receipt unreadable: %w", workID, err)
+		}
+		var receipt envelope.Receipt
+		if err := json.Unmarshal(receiptRaw, &receipt); err != nil {
+			return fmt.Errorf("terminal work %s receipt invalid: %w", workID, err)
+		}
+		receiptCanonical, err := json.Marshal(receipt)
+		if err != nil {
+			return err
+		}
+		if evidence.Terminals[0].ReceiptSHA256 != "sha256:"+shaHex(receiptCanonical) {
+			return fmt.Errorf("terminal work %s receipt snapshot hash does not match terminal event", workID)
 		}
 		if terminalTimes[0].After(lookbackEnd) {
 			return fmt.Errorf("terminal work %s has terminal timestamp after eligibility evaluation: %q is after lookback end %q", workID, evidence.Terminals[0].At, lookbackEnd.UTC().Format(time.RFC3339))
@@ -887,11 +945,12 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		var event struct {
-			TS         string   `json:"ts"`
-			WorkID     string   `json:"work_id"`
-			To         string   `json:"to"`
-			Attached   []string `json:"attached"`
-			WorkSHA256 string   `json:"work_sha256,omitempty"`
+			TS            string   `json:"ts"`
+			WorkID        string   `json:"work_id"`
+			To            string   `json:"to"`
+			Attached      []string `json:"attached"`
+			WorkSHA256    string   `json:"work_sha256,omitempty"`
+			ReceiptSHA256 string   `json:"receipt_sha256,omitempty"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			return nil, err
@@ -899,7 +958,11 @@ func receiptEvidenceByWork(homePath string) (map[string]receiptEvidence, error) 
 		evidence := out[event.WorkID]
 		terminal := terminalWorkState(event.To)
 		if terminal && strings.TrimSpace(event.TS) != "" {
-			evidence.Terminals = append(evidence.Terminals, terminalEvidence{At: normalizedEvidenceTime(event.TS), WorkSHA256: strings.TrimSpace(event.WorkSHA256)})
+			evidence.Terminals = append(evidence.Terminals, terminalEvidence{
+				At:            normalizedEvidenceTime(event.TS),
+				WorkSHA256:    strings.TrimSpace(event.WorkSHA256),
+				ReceiptSHA256: strings.TrimSpace(event.ReceiptSHA256),
+			})
 		}
 		if terminal {
 			for _, ref := range event.Attached {
@@ -1210,17 +1273,37 @@ func invalidLaneResolutionReason(resolution LaneResolution) string {
 	return ""
 }
 
-func autonomyClassOf(work envelope.WorkEnvelope) string {
+func autonomyClassOf(work envelope.WorkEnvelope) (string, error) {
+	var triggers []string
 	for _, ref := range work.EvidenceRefs {
+		ref = strings.TrimSpace(ref)
 		if !strings.HasPrefix(ref, "director_trigger:") {
 			continue
 		}
-		rest := strings.TrimPrefix(ref, "director_trigger:")
-		if index := strings.Index(rest, ":"); index > 0 {
-			return rest[:index]
+		triggers = append(triggers, ref)
+	}
+	if len(triggers) == 0 {
+		return "", nil
+	}
+	if len(triggers) != 1 {
+		return "", fmt.Errorf("terminal work %s has ambiguous director_trigger identity (%d refs)", work.ID, len(triggers))
+	}
+	rest := strings.TrimPrefix(triggers[0], "director_trigger:")
+	index := strings.Index(rest, ":")
+	if index <= 0 || index == len(rest)-1 {
+		return "", fmt.Errorf("terminal work %s has invalid director_trigger %q", work.ID, triggers[0])
+	}
+	return rest[:index], nil
+}
+
+func autonomyTriggerMentionsClass(work envelope.WorkEnvelope, class string) bool {
+	prefix := "director_trigger:" + strings.TrimSpace(class) + ":"
+	for _, ref := range work.EvidenceRefs {
+		if strings.HasPrefix(strings.TrimSpace(ref), prefix) {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func terminalWorkState(state string) bool {

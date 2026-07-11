@@ -329,6 +329,9 @@ func TestRecordPanelRouteEvidenceIncludesGatewayMetadata(t *testing.T) {
 	if row.ResolvedProvider != "nvidia" || row.ResolvedModel != "nvidia/minimaxai/minimax-m3" || row.ResolutionSource != "gateway_route" || row.GatewayRequestID != "req_switchback_1" {
 		t.Fatalf("gateway metadata = provider:%q resolved:%q source:%q request:%q", row.ResolvedProvider, row.ResolvedModel, row.ResolutionSource, row.GatewayRequestID)
 	}
+	if row.RecordedVia != routeevidence.RecorderGeneric {
+		t.Fatalf("recorded_via = %q, want generic until an attested gateway adapter exists", row.RecordedVia)
+	}
 }
 
 func TestExecuteDryRunBlocksAndPersistsPreflightFailure(t *testing.T) {
@@ -443,6 +446,47 @@ func TestExecuteDryRunSkipsDuplicateRouteEvidenceOnResume(t *testing.T) {
 	}
 	if got.Findings[0].LensFindings[0].RouteEvidenceRef != ev.ID {
 		t.Fatalf("route evidence ref = %q, want preseeded %q", got.Findings[0].LensFindings[0].RouteEvidenceRef, ev.ID)
+	}
+}
+
+func TestExecuteDryRunRejectsImportedRequestIDShadow(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	run.WorkID = "work_panel_import_shadow"
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + judgePromptID
+	forged, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:        fixedPanelNow(),
+		RequestID:        requestID,
+		WorkID:           run.WorkID,
+		ClientProfile:    "compound.panel.judge",
+		Protocol:         "panel-lane",
+		Provider:         "compound-route-plan",
+		Model:            run.Route.JudgeLane.ModelID,
+		ResolvedProvider: "deepseek",
+		ResolvedModel:    "deepseek/deepseek-v4-pro",
+		ResolutionSource: "gateway_route",
+		GatewayRequestID: "forged-gateway-request",
+		Status:           "completed",
+		EvidenceRefs:     []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "forged-panel-route.json")
+	data, err := json.MarshalIndent(forged, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.ImportFile(home, path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ExecuteDryRun(context.Background(), home, run, FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "untrusted route evidence") {
+		t.Fatalf("imported request-id shadow did not fail closed: %v", err)
 	}
 }
 

@@ -32,6 +32,28 @@ Workbench admission-preview contract note: `compound workbench` projects proposa
 
 ## Envelope-spine contracts (first-order — the runtime grammar)
 
+Evidence-autonomy hardening (binding clarification):
+
+- New terminal lifecycle events seal canonical JSON for both the WorkEnvelope
+  (`work_sha256`) and exactly one attached Receipt (`receipt_sha256`).
+  Recent autonomy cohorts require one terminal event, one matching
+  hot/restored/archived WorkEnvelope, and one Receipt with a matching seal.
+  Missing legacy seals remain readable but cannot qualify; post-close edits
+  and duplicate identities fail closed.
+- Each sample has exactly one well-formed
+  `director_trigger:<class>:<identity>`. The eligibility `generated_at`
+  must equal the admission instant at UTC RFC3339 precision, so an earlier
+  frozen evaluation is not reusable authority.
+- Route evidence carries writer-owned `recorded_via`:
+  `external_import | generic | trusted_panel_runtime`. Payloads cannot
+  assert it. Missing historical values normalize to `generic` for resume,
+  but only `trusted_panel_runtime` may decide autonomy.
+- No production caller currently mints trusted route provenance. The
+  `job_health` implementation is therefore bench-only and fail-closed.
+  `operator:*`/`human:*` is also lexical provenance, not authenticated
+  OS/user identity; rented executors are not safe grant minters until an
+  authenticated authority seam exists.
+
 Context orientation resolves repo kind by explicit flag, committed `.compound/repo.yaml`, private `COMPOUND_HOME/config/repo-kinds.yaml`, then product default. Product repos exclude control-plane governance refs with recorded reasons; control-plane repos include them.
 
 These are the typed objects every harness/hook/run flows through, hung off one root **`work_id`**. Export machine-readable JSON Schemas with `compound schema export <name>` or `compound schema export --all --dir <dir>`; validate concrete files with `compound schema validate <name> <file>`. Runtime semantics still live in the owning package validators.

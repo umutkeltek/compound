@@ -18,6 +18,12 @@ import (
 
 const SchemaVersion = "compound.execution_route_evidence.v0.1"
 
+const (
+	RecorderGeneric             = "generic"
+	RecorderExternalImport      = "external_import"
+	RecorderTrustedPanelRuntime = "trusted_panel_runtime"
+)
+
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
@@ -56,6 +62,7 @@ type Evidence struct {
 	LatencyMS        int64            `json:"latency_ms,omitempty"`
 	Status           string           `json:"status"`
 	EvidenceRefs     []string         `json:"evidence_refs,omitempty"`
+	RecordedVia      string           `json:"recorded_via"`
 }
 
 type BuildInput struct {
@@ -112,6 +119,7 @@ func Build(in BuildInput) (Evidence, error) {
 		LatencyMS:        in.LatencyMS,
 		Status:           status,
 		EvidenceRefs:     dedupeRefs(in.EvidenceRefs),
+		RecordedVia:      RecorderGeneric,
 	}
 	ev.ID = idFor("route_", ev.RequestID, ev.CreatedAt, ev.SelectedTarget.Provider, ev.SelectedTarget.Model, ev.Status)
 	if err := Validate(ev); err != nil {
@@ -166,6 +174,9 @@ func LookupRequestID(homePath, requestID string) (Evidence, bool, error) {
 			return Evidence{}, false, fmt.Errorf("parse execution route evidence line %d: %w", i+1, err)
 		}
 		if ev.RequestID == requestID {
+			if strings.TrimSpace(ev.RecordedVia) == "" {
+				ev.RecordedVia = RecorderGeneric
+			}
 			return ev, true, nil
 		}
 	}
@@ -186,15 +197,24 @@ func ImportFile(homePath, path string) (ImportResult, error) {
 	if err != nil {
 		return ImportResult{}, err
 	}
-	return RecordJoined(homePath, ev)
+	return recordJoinedVia(homePath, ev, RecorderExternalImport)
 }
 
 func RecordJoined(homePath string, ev Evidence) (ImportResult, error) {
+	return recordJoinedVia(homePath, ev, RecorderGeneric)
+}
+
+func RecordPanelRuntimeJoined(homePath string, ev Evidence) (ImportResult, error) {
+	return recordJoinedVia(homePath, ev, RecorderTrustedPanelRuntime)
+}
+
+func recordJoinedVia(homePath string, ev Evidence, recorder string) (ImportResult, error) {
+	ev.RecordedVia = normalizedRecorder(recorder)
 	ev, tr, err := JoinTransition(ev)
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if err := RecordEvidence(homePath, ev); err != nil {
+	if err := recordEvidence(homePath, ev); err != nil {
 		return ImportResult{}, err
 	}
 	if err := RecordTransition(homePath, tr); err != nil {
@@ -268,6 +288,11 @@ func BuildTransition(ev Evidence) (envelope.Transition, error) {
 }
 
 func RecordEvidence(homePath string, ev Evidence) error {
+	ev.RecordedVia = RecorderGeneric
+	return recordEvidence(homePath, ev)
+}
+
+func recordEvidence(homePath string, ev Evidence) error {
 	if err := Validate(ev); err != nil {
 		return err
 	}
@@ -326,6 +351,11 @@ func Validate(ev Evidence) error {
 	req("selected_target.model", ev.SelectedTarget.Model)
 	req("selected_target.protocol", ev.SelectedTarget.Protocol)
 	req("status", ev.Status)
+	switch ev.RecordedVia {
+	case "", RecorderGeneric, RecorderExternalImport, RecorderTrustedPanelRuntime:
+	default:
+		errs = append(errs, fmt.Sprintf("recorded_via=%q is not recognized", ev.RecordedVia))
+	}
 	if ev.ResolutionSource != "" && ev.ResolutionSource != "gateway_route" && ev.ResolutionSource != "response_body" {
 		errs = append(errs, fmt.Sprintf("resolution_source=%q, want gateway_route or response_body", ev.ResolutionSource))
 	}
@@ -380,3 +410,14 @@ func idFor(prefix string, parts ...string) string {
 }
 
 func rfc3339(now time.Time) string { return now.UTC().Format(time.RFC3339) }
+
+func normalizedRecorder(value string) string {
+	switch strings.TrimSpace(value) {
+	case RecorderExternalImport:
+		return RecorderExternalImport
+	case RecorderTrustedPanelRuntime:
+		return RecorderTrustedPanelRuntime
+	default:
+		return RecorderGeneric
+	}
+}

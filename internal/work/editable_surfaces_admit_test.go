@@ -42,7 +42,7 @@ func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 
 	// Phase A — registry ABSENT: fail-closed, the surface proposal is denied and stays proposed.
 	a := makeSurfaceDirectorWork(t, s, "skill_descriptions", "work_surf_a", fixedNow)
-	resA, err := s.AdmitAuto(a, eligible, fixedNow.Add(1*time.Minute))
+	resA, err := s.AdmitAuto(a, eligible, fixedNow)
 	if err == nil || resA.Admitted {
 		t.Fatalf("absent registry must deny a targeted surface proposal: err=%v res=%+v", err, resA)
 	}
@@ -60,7 +60,7 @@ func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 		t.Fatalf("whitelist surface: %v", err)
 	}
 	b := makeSurfaceDirectorWork(t, s, "skill_descriptions", "work_surf_b", fixedNow)
-	resB, err := s.AdmitAuto(b, eligible, fixedNow.Add(2*time.Minute))
+	resB, err := s.AdmitAuto(b, eligible, fixedNow)
 	if err != nil || !resB.Admitted {
 		t.Fatalf("actively whitelisted surface must admit: err=%v res=%+v", err, resB)
 	}
@@ -75,7 +75,7 @@ func TestEditableSurfaceGatesSystemProposal(t *testing.T) {
 		t.Fatalf("retire surface: %v", err)
 	}
 	c := makeSurfaceDirectorWork(t, s, "skill_descriptions", "work_surf_c", fixedNow)
-	resC, err := s.AdmitAuto(c, eligible, fixedNow.Add(3*time.Minute))
+	resC, err := s.AdmitAuto(c, eligible, fixedNow)
 	if err == nil || resC.Admitted {
 		t.Fatalf("retired surface must deny again: err=%v res=%+v", err, resC)
 	}
@@ -103,7 +103,7 @@ func TestEditableSurfaceHaltWins(t *testing.T) {
 	}
 
 	id := makeSurfaceDirectorWork(t, s, "skill_descriptions", "work_surf_halt", fixedNow)
-	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(1*time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
 	if err == nil || res.Admitted {
 		t.Fatalf("halt must deny even a whitelisted surface proposal: err=%v res=%+v", err, res)
 	}
@@ -123,7 +123,7 @@ func TestEditableSurfaceIgnoresProposalsWithoutTargetSurface(t *testing.T) {
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_no_surface", fixedNow)
-	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(1*time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
 	if err != nil || !res.Admitted {
 		t.Fatalf("ordinary proposal (no target_surface) must be unaffected by the registry: err=%v res=%+v", err, res)
 	}

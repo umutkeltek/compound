@@ -47,7 +47,7 @@ func TestKillSwitchHaltsAutoAdmit(t *testing.T) {
 
 	// Phase A — halt UNSET: an eligible auto-admit proceeds to admitted.
 	jobA := makeProposedDirectorWork(t, s, "job_health", "work_kill_a", fixedNow)
-	resA, err := s.AdmitAuto(jobA, eligible, fixedNow.Add(1*time.Minute))
+	resA, err := s.AdmitAuto(jobA, eligible, fixedNow)
 	if err != nil {
 		t.Fatalf("unset halt must let eligible auto-admit proceed: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestKillSwitchHaltsAutoAdmit(t *testing.T) {
 		t.Fatalf("engage global halt: %v", err)
 	}
 	jobB := makeProposedDirectorWork(t, s, "job_health", "work_kill_b", fixedNow)
-	resB, err := s.AdmitAuto(jobB, eligible, fixedNow.Add(2*time.Minute))
+	resB, err := s.AdmitAuto(jobB, eligible, fixedNow)
 	if err == nil {
 		t.Fatalf("global halt must deny an eligible auto-admit")
 	}
@@ -85,7 +85,7 @@ func TestKillSwitchHaltsAutoAdmit(t *testing.T) {
 	jobC := makeProposedDirectorWork(t, s, "job_health", "work_kill_c", fixedNow)
 	srcC := makeProposedDirectorWork(t, s, "source_connection_readiness", "work_kill_src", fixedNow)
 
-	resC, err := s.AdmitAuto(jobC, eligible, fixedNow.Add(3*time.Minute))
+	resC, err := s.AdmitAuto(jobC, eligible, fixedNow)
 	if err == nil || resC.Admitted {
 		t.Fatalf("per-class disable must block its own class: err=%v res=%+v", err, resC)
 	}
@@ -93,7 +93,7 @@ func TestKillSwitchHaltsAutoAdmit(t *testing.T) {
 		t.Fatalf("disabled class must stay proposed, got %q", got.State)
 	}
 
-	resSrc, err := s.AdmitAuto(srcC, eligible, fixedNow.Add(4*time.Minute))
+	resSrc, err := s.AdmitAuto(srcC, eligible, fixedNow)
 	if err == nil || resSrc.Admitted || !strings.Contains(err.Error(), "no enabled evidence-autonomy slice") {
 		t.Fatalf("job_health eligibility must not admit a sibling class: err=%v res=%+v", err, resSrc)
 	}
@@ -159,6 +159,36 @@ func TestAutoAdmitRequiresEligibilityGrant(t *testing.T) {
 	}
 }
 
+func TestAutoAdmitRejectsAmbiguousDirectorTriggerIdentity(t *testing.T) {
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	plan := ensureJobHealthAutonomyPlan(t, s)
+	w, err := s.Create(CreateInput{
+		WorkID:           "work_ambiguous_director_trigger",
+		Owner:            "compound-authority",
+		Actor:            "director",
+		SuccessPredicate: "ambiguous trigger identity must not select an autonomy class",
+		State:            "proposed",
+		RouteDecisionID:  plan.ID,
+		EvidenceRefs: []string{
+			"proposed_by:director",
+			"director_trigger:job_health:claimed",
+			"director_trigger:source_connection_readiness:actual",
+			"route_plan:" + plan.ID,
+		},
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.AdmitAuto(w.ID, eligible, fixedNow)
+	if err == nil || result.Admitted || !strings.Contains(err.Error(), "ambiguous director_trigger") {
+		t.Fatalf("ambiguous trigger identity escaped: err=%v result=%+v", err, result)
+	}
+	if got, _ := s.Get(w.ID); got.State != "proposed" {
+		t.Fatalf("ambiguous trigger identity changed work state: %q", got.State)
+	}
+}
+
 func TestAutoAdmitRejectsCallerAssertedEligibilityString(t *testing.T) {
 	s := newStore(t)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_asserted_eligibility", fixedNow)
@@ -214,7 +244,7 @@ func TestAutoAdmitOperatorOnlyRiskFrontierAlwaysWins(t *testing.T) {
 			if err := s.writeJSON(s.envPath(action.ID), &action); err != nil {
 				t.Fatal(err)
 			}
-			res, err := s.AdmitAuto(id, eligible, fixedNow.Add(time.Minute))
+			res, err := s.AdmitAuto(id, eligible, fixedNow)
 			if err == nil || res.Admitted || !strings.Contains(err.Error(), "operator-only") {
 				t.Fatalf("operator-only risk escaped: err=%v res=%+v", err, res)
 			}
@@ -232,7 +262,7 @@ func TestAutoAdmitRevalidatesGrantAtAdmission(t *testing.T) {
 		"supersedes": "job-health-autonomy-test",
 	}, fixedNow.Add(-time.Hour))
 	id := makeProposedDirectorWork(t, s, "job_health", "work_revoked_at_admit", fixedNow)
-	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
 	if err == nil || res.Admitted || !strings.Contains(err.Error(), "missing or ambiguous") {
 		t.Fatalf("revoked grant escaped admission revalidation: err=%v res=%+v", err, res)
 	}
@@ -263,12 +293,26 @@ func TestAutoAdmitRejectsTamperedEligibilityArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	workID := makeProposedDirectorWork(t, s, "job_health", "work_tampered_eligibility", fixedNow)
-	res, err := s.AdmitAuto(workID, eligible, fixedNow.Add(time.Minute))
+	res, err := s.AdmitAuto(workID, eligible, fixedNow)
 	if err == nil || res.Admitted || !strings.Contains(err.Error(), "content digest mismatch") {
 		t.Fatalf("tampered eligibility escaped: err=%v res=%+v", err, res)
 	}
 	if got, _ := s.Get(workID); got.State != "proposed" {
 		t.Fatalf("tampered eligibility changed work state: %q", got.State)
+	}
+}
+
+func TestAutoAdmitRejectsEligibilityFromEarlierEvaluationInstant(t *testing.T) {
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	workID := makeProposedDirectorWork(t, s, "job_health", "work_stale_evaluation", fixedNow)
+
+	res, err := s.AdmitAuto(workID, eligible, fixedNow.Add(31*24*time.Hour))
+	if err == nil || res.Admitted || !strings.Contains(err.Error(), "eligibility evaluation instant") {
+		t.Fatalf("stale evaluation instant escaped: err=%v res=%+v", err, res)
+	}
+	if got, _ := s.Get(workID); got.State != "proposed" {
+		t.Fatalf("stale evaluation changed work state: %q", got.State)
 	}
 }
 
@@ -292,7 +336,7 @@ func TestAutoAdmitSerializesConcurrentHaltAtCommit(t *testing.T) {
 	}
 	admitDone := make(chan admitOutcome, 1)
 	go func() {
-		result, err := s.AdmitAuto(workID, eligible, fixedNow.Add(time.Minute))
+		result, err := s.AdmitAuto(workID, eligible, fixedNow)
 		admitDone <- admitOutcome{result: result, err: err}
 	}()
 	<-entered
@@ -319,7 +363,7 @@ func TestAutoAdmitSerializesConcurrentHaltAtCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := makeProposedDirectorWork(t, s, "job_health", "work_after_concurrent_halt", fixedNow)
-	if result, err := s.AdmitAuto(second, eligible, fixedNow.Add(2*time.Minute)); err == nil || result.Admitted || !result.Halted {
+	if result, err := s.AdmitAuto(second, eligible, fixedNow); err == nil || result.Admitted || !result.Halted {
 		t.Fatalf("halt must govern the next admission after it linearizes: err=%v result=%+v", err, result)
 	}
 }
@@ -338,7 +382,7 @@ func TestAutoAdmitConcurrentAttemptsCommitExactlyOnce(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() {
 			<-start
-			result, err := s.AdmitAuto(workID, eligible, fixedNow.Add(time.Minute))
+			result, err := s.AdmitAuto(workID, eligible, fixedNow)
 			outcomes <- admitOutcome{result: result, err: err}
 		}()
 	}
@@ -398,7 +442,7 @@ func TestStaleCreatePlanCannotOverwriteAdmittedWork(t *testing.T) {
 	if _, err := s.admitWork(stale, fixedNow, "created", nil); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := s.AdmitAuto(workID, eligible, fixedNow.Add(time.Minute)); err != nil || !result.Admitted {
+	if result, err := s.AdmitAuto(workID, eligible, fixedNow); err != nil || !result.Admitted {
 		t.Fatalf("setup admission failed: err=%v result=%+v", err, result)
 	}
 	if _, err := s.admitWork(stale, fixedNow.Add(2*time.Minute), "stale replay", nil); err == nil || !strings.Contains(err.Error(), "refusing stale create-plan") {
@@ -459,7 +503,7 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 	}
 	admitDone := make(chan admitOutcome, 1)
 	go func() {
-		result, err := s.AdmitAuto(workID, eligible, fixedNow.Add(time.Minute))
+		result, err := s.AdmitAuto(workID, eligible, fixedNow)
 		admitDone <- admitOutcome{result: result, err: err}
 	}()
 	<-entered
@@ -511,7 +555,7 @@ func TestAutoAdmitSerializesConcurrentTerminalCreation(t *testing.T) {
 
 	autoAdmitBeforeCommit = previousHook
 	next := makeProposedDirectorWork(t, s, "job_health", "work_after_terminal_sample", fixedNow.Add(2*time.Minute))
-	if result, err := s.AdmitAuto(next, eligible, fixedNow.Add(3*time.Minute)); err == nil || result.Admitted || !strings.Contains(err.Error(), "stale or source evidence changed") {
+	if result, err := s.AdmitAuto(next, eligible, fixedNow); err == nil || result.Admitted || !strings.Contains(err.Error(), "stale or source evidence changed") {
 		t.Fatalf("new terminal evidence must invalidate the old artifact: err=%v result=%+v", err, result)
 	}
 }

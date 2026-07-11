@@ -59,6 +59,25 @@ doctor` asserts: generated state inside home, **not** in repo source.
 
 ## 2. The envelope spine (the typed grammar everything runs through)
 
+Current evidence-autonomy status:
+
+- `job_health` is the sole implemented class, not a live production
+  consumer. No public path binds a running Director WorkID to a job-health
+  Panel target, runs an attested non-fixture gateway, records a trusted judge
+  row, and closes that same envelope with a genuine delta.
+- Current Panel and arbitrary OpenAI-compatible calls record
+  `recorded_via=generic`; public imports record `external_import`.
+  `trusted_panel_runtime` is reserved for a future attested adapter and has
+  no production caller. Missing legacy provenance is generic for resume,
+  never trusted.
+- New terminal events seal canonical Work and Receipt hashes. A deciding work
+  has exactly one canonical Director trigger, and eligibility
+  `generated_at` must equal the admission instant.
+- Current `operator:*`/`human:*` checks prove lexical provenance, not
+  authenticated identity. Until authenticated operator authority and an
+  attested same-WorkID Panel feeder exist, production eligibility has no
+  legitimate sample and remains fail closed.
+
 Hung off one root `work_id`. The header matters more than any body — it prevents *retrieved ≠ relevant ≠
 authoritative ≠ current*.
 

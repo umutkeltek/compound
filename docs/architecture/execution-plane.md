@@ -27,6 +27,14 @@ memory/product/skill/taste it becomes a generic router pretending to understand 
 
 > A gateway `RouteDecision` is **execution-route evidence, NOT proof of task success.**
 
+Recorder provenance is assigned at ingress, not accepted from payloads.
+Public imports are `external_import`; ordinary producers, including current
+Panel/OpenAI-compatible callers, are `generic`; missing historical values
+normalize to generic for resume. The reserved `trusted_panel_runtime` value
+has no production caller until an attested adapter exists. Imported, generic,
+fixture, and legacy rows remain reviewable metadata but cannot decide
+autonomy or shadow a differently bound Panel request id.
+
 It becomes one projection inside a compound `Transition` (the cost/routing projection), joined with
 the harness receipt and the real state delta:
 

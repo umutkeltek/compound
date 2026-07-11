@@ -402,20 +402,38 @@ func isJSONFenceOpener(line string) bool {
 }
 
 func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requestID, clientProfile string, lane LaneRef, result CallResult, status string) (string, error) {
-	if existing, ok, err := routeevidence.LookupRequestID(homePath, requestID); err != nil {
-		return "", err
-	} else if ok {
-		return existing.ID, nil
-	}
 	ev, err := routeevidence.Build(routeevidence.BuildInput{CreatedAt: createdAt, RequestID: requestID, WorkID: workID, ClientProfile: clientProfile, Protocol: "panel-lane", Provider: "compound-route-plan", Model: lane.ModelID, ResolvedProvider: result.ResolvedProvider, ResolvedModel: result.ResolvedModel, ResolutionSource: result.ResolutionSource, GatewayRequestID: result.GatewayRequestID, Usage: routeevidence.Usage{TotalTokens: result.TotalTokens}, LatencyMS: result.LatencyMS, Status: status, EvidenceRefs: []string{routeevidence.ModelCapabilitiesAuthorityRef}})
 	if err != nil {
 		return "", err
+	}
+	if existing, ok, err := routeevidence.LookupRequestID(homePath, requestID); err != nil {
+		return "", err
+	} else if ok {
+		if existing.RecordedVia != routeevidence.RecorderGeneric {
+			return "", fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
+		}
+		if !samePanelRouteRequest(existing, ev) {
+			return "", fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
+		}
+		return existing.ID, nil
 	}
 	recorded, err := routeevidence.RecordJoined(homePath, ev)
 	if err != nil {
 		return "", err
 	}
 	return recorded.Evidence.ID, nil
+}
+
+func samePanelRouteRequest(existing, expected routeevidence.Evidence) bool {
+	if existing.RequestID != expected.RequestID || existing.WorkID != expected.WorkID ||
+		existing.ClientProfile != expected.ClientProfile || existing.Protocol != expected.Protocol ||
+		existing.SelectedTarget != expected.SelectedTarget || existing.Status != expected.Status {
+		return false
+	}
+	return existing.ResolvedProvider == expected.ResolvedProvider &&
+		existing.ResolvedModel == expected.ResolvedModel &&
+		existing.ResolutionSource == expected.ResolutionSource &&
+		existing.GatewayRequestID == expected.GatewayRequestID
 }
 
 func loadRunTargetInput(homePath, targetKind, ref string) (TargetInput, error) {

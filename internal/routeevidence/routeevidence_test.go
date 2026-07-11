@@ -2,6 +2,8 @@ package routeevidence
 
 import (
 	"encoding/json"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,6 +80,9 @@ func TestImportFileRecordsEvidenceAndTransition(t *testing.T) {
 	if row.ID != ev.ID || row.TransitionID != result.Transition.ID {
 		t.Fatalf("row = %+v", row)
 	}
+	if row.RecordedVia != RecorderExternalImport {
+		t.Fatalf("recorded_via = %q, want external import", row.RecordedVia)
+	}
 	var tr envelope.Transition
 	data := readFile(t, filepath.Join(home, "events", result.Transition.ID+".json"))
 	if err := json.Unmarshal(data, &tr); err != nil {
@@ -85,6 +90,114 @@ func TestImportFileRecordsEvidenceAndTransition(t *testing.T) {
 	}
 	if tr.Projections.Routing[0] != ev.ID || tr.SecondOrder.FutureBehaviorChanged {
 		t.Fatalf("transition = %+v", tr)
+	}
+}
+
+func TestRecordersOwnProvenance(t *testing.T) {
+	tests := []struct {
+		name   string
+		want   string
+		record func(string, Evidence) (Evidence, error)
+	}{
+		{
+			name: "generic joined",
+			want: RecorderGeneric,
+			record: func(home string, ev Evidence) (Evidence, error) {
+				result, err := RecordJoined(home, ev)
+				return result.Evidence, err
+			},
+		},
+		{
+			name: "generic direct",
+			want: RecorderGeneric,
+			record: func(home string, ev Evidence) (Evidence, error) {
+				if err := RecordEvidence(home, ev); err != nil {
+					return Evidence{}, err
+				}
+				recorded, _, err := LookupRequestID(home, ev.RequestID)
+				return recorded, err
+			},
+		},
+		{
+			name: "trusted synthetic seam",
+			want: RecorderTrustedPanelRuntime,
+			record: func(home string, ev Evidence) (Evidence, error) {
+				result, err := RecordPanelRuntimeJoined(home, ev)
+				return result.Evidence, err
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			ev := fixtureEvidence()
+			ev.RecordedVia = RecorderExternalImport
+			recorded, err := tc.record(home, ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if recorded.RecordedVia != tc.want {
+				t.Fatalf("recorded_via = %q, want %q", recorded.RecordedVia, tc.want)
+			}
+		})
+	}
+}
+
+func TestLookupRequestIDTreatsLegacyRecorderAsGeneric(t *testing.T) {
+	home := t.TempDir()
+	ev := fixtureEvidence()
+	ev.RecordedVia = ""
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recorded, ok, err := LookupRequestID(home, ev.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || recorded.RecordedVia != RecorderGeneric {
+		t.Fatalf("legacy lookup = ok:%v recorded_via:%q, want generic", ok, recorded.RecordedVia)
+	}
+}
+
+func TestTrustedPanelRuntimeRecorderHasNoProductionCallers(t *testing.T) {
+	var callers []string
+	for _, root := range []string{"..", filepath.Join("..", "..", "cmd")} {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			body, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for lineNumber, line := range strings.Split(string(body), "\n") {
+				if !strings.Contains(line, "RecordPanelRuntimeJoined(") {
+					continue
+				}
+				if filepath.Base(path) == "routeevidence.go" && strings.Contains(line, "func RecordPanelRuntimeJoined(") {
+					continue
+				}
+				callers = append(callers, fmt.Sprintf("%s:%d", path, lineNumber+1))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(callers) != 0 {
+		t.Fatalf("trusted panel runtime recorder has production callers before an attested adapter exists: %v", callers)
 	}
 }
 

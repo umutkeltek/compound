@@ -78,7 +78,10 @@ func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time)
 	if !directorProposedWork(w) {
 		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State}, fmt.Errorf("auto-admit only applies to director-proposed work")
 	}
-	class := autonomyClassOf(w)
+	class, err := autonomyClassOf(w)
+	if err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State, Class: "director", Reason: err.Error()}, err
+	}
 	actor := autoAdmitActor(in.By)
 
 	// 1. Kill-switch (W9-J4): a halt overrides any eligibility. Records a deny, stays proposed.
@@ -152,6 +155,15 @@ func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time)
 		EligibilityRef: eligibility.Ref(),
 		GrantRef:       eligibility.Grant.GrantRef,
 		EvidenceRefs:   append([]string{}, refs...),
+	}
+	admissionInstant := now.UTC().Format(time.RFC3339)
+	if eligibility.GeneratedAt != admissionInstant {
+		reason := fmt.Sprintf("eligibility evaluation instant %q does not match admission instant %q", eligibility.GeneratedAt, admissionInstant)
+		resultBase.Reason = reason
+		if recErr := s.recordAutonomyEligibilityDeny(w, actor, "admitted", reason, refs, now); recErr != nil {
+			return resultBase, recErr
+		}
+		return resultBase, fmt.Errorf("auto-admit not eligible for class %q: %s", class, reason)
 	}
 	if err := s.validateActiveAutonomyGrant(eligibility); err != nil {
 		resultBase.Reason = err.Error()
@@ -308,7 +320,10 @@ func (s *Store) autonomyHaltGuard(w envelope.WorkEnvelope, to, actor string, now
 	if !isAutonomousAdmission(w, to, actor) {
 		return nil
 	}
-	class := autonomyClassOf(w)
+	class, err := autonomyClassOf(w)
+	if err != nil {
+		return err
+	}
 	halted, reason, err := policy.AutonomyHalted(s.home, class)
 	if err != nil {
 		return err
@@ -418,21 +433,27 @@ func isAutonomousAdmission(w envelope.WorkEnvelope, to, actor string) bool {
 // autonomyClassOf derives the autonomy class of a director-proposed work from its
 // director_trigger evidence ref (e.g. director_trigger:job_health:<digest> -> job_health).
 // Director work without a trigger ref falls back to the generic class "director".
-func autonomyClassOf(w envelope.WorkEnvelope) string {
+func autonomyClassOf(w envelope.WorkEnvelope) (string, error) {
+	var triggers []string
 	for _, ref := range w.EvidenceRefs {
 		ref = strings.TrimSpace(ref)
 		if !strings.HasPrefix(ref, "director_trigger:") {
 			continue
 		}
-		rest := strings.TrimPrefix(ref, "director_trigger:")
-		if i := strings.Index(rest, ":"); i > 0 {
-			return rest[:i]
-		}
-		if rest != "" {
-			return rest
-		}
+		triggers = append(triggers, ref)
 	}
-	return "director"
+	if len(triggers) == 0 {
+		return "director", nil
+	}
+	if len(triggers) != 1 {
+		return "", fmt.Errorf("work %s has ambiguous director_trigger identity (%d refs)", w.ID, len(triggers))
+	}
+	rest := strings.TrimPrefix(triggers[0], "director_trigger:")
+	index := strings.Index(rest, ":")
+	if index <= 0 || index == len(rest)-1 {
+		return "", fmt.Errorf("work %s has invalid director_trigger %q", w.ID, triggers[0])
+	}
+	return rest[:index], nil
 }
 
 // autoAdmitActor stamps an autonomous-admission provenance so the actor is never mistaken

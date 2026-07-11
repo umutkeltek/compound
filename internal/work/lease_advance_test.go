@@ -9,7 +9,6 @@ package work
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // Falsifier 1 (RED-first): a work claimed by one actor is advanceable by a different actor
@@ -194,7 +193,7 @@ func TestAdvanceAutoAdmitBypassesLeaseGateByDesign(t *testing.T) {
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
 	id := makeProposedDirectorWork(t, s, "job_health", "work_lease_gate_bypass", fixedNow)
-	res, err := s.AdmitAuto(id, eligible, fixedNow.Add(time.Minute))
+	res, err := s.AdmitAuto(id, eligible, fixedNow)
 	if err != nil {
 		t.Fatalf("AdmitAuto must not be gated by the advance lease gate: %v", err)
 	}

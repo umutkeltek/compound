@@ -105,7 +105,7 @@ func seedJobHealthAutonomySample(t *testing.T, home, id string, closedAt time.Ti
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := routeevidence.RecordJoined(home, ev)
+	joined, err := routeevidence.RecordPanelRuntimeJoined(home, ev)
 	if err != nil {
 		t.Fatal(err)
 	}
