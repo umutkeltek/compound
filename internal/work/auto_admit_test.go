@@ -389,6 +389,204 @@ func TestAutoAdmitEventFailureLeavesWorkProposed(t *testing.T) {
 	}
 }
 
+func TestAutoAdmitRejectsTruncatedEventTailWithoutMutatingWork(t *testing.T) {
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	workID := makeProposedDirectorWork(t, s, "job_health", "work_truncated_event_tail", fixedNow)
+
+	workPath := s.workPath(workID)
+	before, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsBefore, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelopesBefore, err := os.ReadDir(filepath.Join(s.home, "events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const truncatedTail = `{"ts":"torn"`
+
+	previousHook := autoAdmitBeforeCommit
+	autoAdmitBeforeCommit = func() {
+		log, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := log.WriteString(truncatedTail); err != nil {
+			_ = log.Close()
+			t.Fatal(err)
+		}
+		if err := log.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { autoAdmitBeforeCommit = previousHook }()
+
+	result, err := s.AdmitAuto(workID, eligible, fixedNow)
+	if err == nil || result.Admitted || !strings.Contains(err.Error(), "incomplete trailing record") {
+		t.Fatalf("truncated lifecycle tail did not fail closed: err=%v result=%+v", err, result)
+	}
+	after, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("truncated lifecycle tail mutated work:\nbefore=%s\nafter=%s", before, after)
+	}
+	eventsAfter, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(eventsAfter), string(eventsBefore)+truncatedTail; got != want {
+		t.Fatalf("truncated lifecycle tail was appended through:\nwant=%s\ngot=%s", want, got)
+	}
+	envelopesAfter, err := os.ReadDir(filepath.Join(s.home, "events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envelopesAfter) != len(envelopesBefore) {
+		t.Fatalf("malformed lifecycle log created %d envelope side effects, want none", len(envelopesAfter)-len(envelopesBefore))
+	}
+	if _, err := s.eventsFor(workID); err == nil || !strings.Contains(err.Error(), "incomplete trailing record") {
+		t.Fatalf("lifecycle reader silently skipped malformed tail: %v", err)
+	}
+}
+
+func TestAutoAdmitRetryFinalizesDurableEventExactlyOnce(t *testing.T) {
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	workID := makeProposedDirectorWork(t, s, "job_health", "work_retry_durable_event", fixedNow)
+
+	workPath := s.workPath(workID)
+	workBackup := workPath + ".before-rename-failure"
+	before, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeWork, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeHash, err := workEnvelopeSHA256(beforeWork)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sabotaged := false
+	restoreWork := func() {
+		t.Helper()
+		if !sabotaged {
+			return
+		}
+		if err := os.RemoveAll(workPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(workBackup, workPath); err != nil {
+			t.Fatal(err)
+		}
+		sabotaged = false
+	}
+	defer restoreWork()
+
+	previousHook := advanceBeforeWorkCommit
+	defer func() { advanceBeforeWorkCommit = previousHook }()
+	advanceBeforeWorkCommit = func() {
+		if err := os.Rename(workPath, workBackup); err != nil {
+			t.Fatal(err)
+		}
+		sabotaged = true
+		if err := os.Mkdir(workPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := s.AdmitAuto(workID, eligible, fixedNow)
+	advanceBeforeWorkCommit = previousHook
+	if err == nil || result.Admitted {
+		t.Fatalf("rename failure unexpectedly admitted work: err=%v result=%+v", err, result)
+	}
+	restoreWork()
+	afterFailure, err := os.ReadFile(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterFailure) != string(before) {
+		t.Fatalf("failed rename changed persisted work:\nbefore=%s\nafter=%s", before, afterFailure)
+	}
+
+	type durableAdmissionEvent struct {
+		WorkID             string `json:"work_id"`
+		From               string `json:"from"`
+		To                 string `json:"to"`
+		PreviousWorkSHA256 string `json:"previous_work_sha256"`
+		WorkSHA256         string `json:"work_sha256"`
+	}
+	eventBytes, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var durableEvents []durableAdmissionEvent
+	for _, line := range strings.Split(strings.TrimSpace(string(eventBytes)), "\n") {
+		var event durableAdmissionEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.WorkID == workID && event.From == "proposed" && event.To == "admitted" {
+			durableEvents = append(durableEvents, event)
+		}
+	}
+	if len(durableEvents) != 1 {
+		t.Fatalf("first attempt persisted %d admission events, want exactly one: %+v", len(durableEvents), durableEvents)
+	}
+	durableEvent := durableEvents[0]
+	if durableEvent.PreviousWorkSHA256 != beforeHash || durableEvent.WorkSHA256 == "" {
+		t.Fatalf("durable admission did not bind both WorkEnvelope versions: before=%q want=%q after=%q", durableEvent.PreviousWorkSHA256, beforeHash, durableEvent.WorkSHA256)
+	}
+	pendingPath := workPath + ".advance-pending"
+	pendingBody, err := os.ReadFile(pendingPath)
+	if err != nil {
+		t.Fatalf("durable admission lost its pending WorkEnvelope: %v", err)
+	}
+	var pending envelope.WorkEnvelope
+	if err := json.Unmarshal(pendingBody, &pending); err != nil {
+		t.Fatal(err)
+	}
+	pendingHash, err := workEnvelopeSHA256(pending)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pendingHash != durableEvent.WorkSHA256 {
+		t.Fatalf("pending WorkEnvelope hash %q does not match durable event %q", pendingHash, durableEvent.WorkSHA256)
+	}
+
+	result, err = s.AdmitAuto(workID, eligible, fixedNow.Add(time.Minute))
+	if err != nil || !result.Admitted || result.WorkState != "admitted" {
+		t.Fatalf("retry did not finalize the durable admission: err=%v result=%+v", err, result)
+	}
+	recovered, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredHash, err := workEnvelopeSHA256(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredHash != durableEvent.WorkSHA256 {
+		t.Fatalf("recovered WorkEnvelope hash %q does not match durable event %q", recoveredHash, durableEvent.WorkSHA256)
+	}
+	if _, err := os.Stat(pendingPath); !os.IsNotExist(err) {
+		t.Fatalf("recovered admission left pending WorkEnvelope behind: %v", err)
+	}
+	afterEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterEvents) != string(eventBytes) {
+		t.Fatalf("recovery appended a duplicate lifecycle event:\nbefore=%s\nafter=%s", eventBytes, afterEvents)
+	}
+}
+
 func TestAutoAdmitSerializesConcurrentHaltAtCommit(t *testing.T) {
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)

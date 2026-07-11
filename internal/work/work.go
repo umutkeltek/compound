@@ -453,6 +453,10 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 // applyAdvance performs the state write for a legal, gate-cleared advance. It is shared
 // by Advance (after its provenance/halt guards) and AdmitAuto (after its kill-switch and
 // eligibility gates) so both mutate through one audited path.
+// advanceBeforeWorkCommit is a test synchronization seam for the crash window
+// after the lifecycle event is durable and before the WorkEnvelope rename.
+var advanceBeforeWorkCommit = func() {}
+
 func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	workID := w.ID
 	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
@@ -511,6 +515,7 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	if err := s.appendEvent(event); err != nil {
 		return w, err
 	}
+	advanceBeforeWorkCommit()
 	if err := commitStagedJSON(stagedWork, s.workPath(workID)); err != nil {
 		return w, err
 	}
