@@ -517,7 +517,7 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 	if err != nil {
 		return "", err
 	}
-	if existing, ok, err := routeevidence.LookupRequestID(homePath, requestID); err != nil {
+	if existing, ok, err := panelRouteEvidenceForRequest(homePath, requestID); err != nil {
 		return "", err
 	} else if ok {
 		if existing.RecordedVia != routeevidence.RecorderGeneric {
@@ -543,7 +543,7 @@ func nextPanelRouteRequestID(homePath string, run Run, targetRef, baseRequestID,
 		} else if ok {
 			continue
 		}
-		existing, ok, err := routeevidence.LookupRequestID(homePath, requestID)
+		existing, ok, err := panelRouteEvidenceForRequest(homePath, requestID)
 		if err != nil {
 			return "", err
 		}

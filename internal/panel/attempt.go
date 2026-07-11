@@ -148,7 +148,7 @@ func inspectPanelCallAttempt(homePath string, run Run, targetRef, requestID, cli
 		return routeevidence.Evidence{}, false, err
 	}
 
-	existing, ok, err := routeevidence.LookupRequestID(homePath, requestID)
+	existing, ok, err := panelRouteEvidenceForRequest(homePath, requestID)
 	if err != nil {
 		return routeevidence.Evidence{}, false, err
 	}
@@ -285,6 +285,41 @@ func writePanelAttemptExclusive(path string, attempt panelAttempt) (bool, error)
 
 func panelStringRef(value string) *string {
 	return &value
+}
+
+func panelRouteEvidenceForRequest(homePath, requestID string) (routeevidence.Evidence, bool, error) {
+	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return routeevidence.Evidence{}, false, nil
+		}
+		return routeevidence.Evidence{}, false, err
+	}
+	var match routeevidence.Evidence
+	matches := 0
+	for i, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		var row routeevidence.Evidence
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return routeevidence.Evidence{}, false, fmt.Errorf("parse execution route evidence line %d: %w", i+1, err)
+		}
+		if row.RequestID != requestID {
+			continue
+		}
+		if strings.TrimSpace(row.RecordedVia) == "" {
+			row.RecordedVia = routeevidence.RecorderGeneric
+		}
+		match = row
+		matches++
+	}
+	if matches > 1 {
+		return routeevidence.Evidence{}, false, fmt.Errorf("ambiguous panel request %s has %d route evidence rows", requestID, matches)
+	}
+	return match, matches == 1, nil
 }
 
 func readPanelAttempt(path string) (panelAttempt, error) {
