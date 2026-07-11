@@ -231,6 +231,36 @@ func TestRecordJoinedIsIdempotentForIdenticalRequestEvidence(t *testing.T) {
 	}
 }
 
+func TestRecordJoinedIsIdempotentAfterEmptySliceRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	ev, err := Build(BuildInput{
+		CreatedAt:     t0,
+		RequestID:     "gateway:req_empty_optional_slices",
+		WorkID:        "work_empty_optional_slices",
+		ClientProfile: "gateway.ingress",
+		Protocol:      "openai-chat-completions",
+		Provider:      "fixture-provider",
+		Model:         "fixture-model",
+		Status:        "completed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.EvidenceRefs == nil {
+		t.Fatal("fixture must carry a non-nil empty optional slice before JSON round-trip")
+	}
+	if _, err := RecordJoined(home, ev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordJoined(home, ev); err != nil {
+		t.Fatalf("exact evidence replay after JSON round-trip was rejected: %v", err)
+	}
+	rows := strings.Split(strings.TrimSpace(string(readFile(t, filepath.Join(home, "ledger", "execution-route-evidence.jsonl")))), "\n")
+	if len(rows) != 1 {
+		t.Fatalf("exact empty-slice replay persisted %d rows, want 1", len(rows))
+	}
+}
+
 func TestLookupRequestIDTreatsLegacyRecorderAsGeneric(t *testing.T) {
 	home := t.TempDir()
 	ev := fixtureEvidence()
