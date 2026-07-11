@@ -264,6 +264,12 @@ func TestParseOSCapabilityResolutionRejectsUnboundNestedAuthorities(t *testing.T
 		{name: "missing classifier top ref", mutate: func(report map[string]any) {
 			report["authority_refs"] = []string{capgraph.CapabilityGraphAuthorityRef, routeevidence.ModelCapabilitiesAuthorityRef}
 		}},
+		{name: "missing graph top ref", mutate: func(report map[string]any) {
+			report["authority_refs"] = []string{routeevidence.CapabilityTaskClassifierAuthorityRef, routeevidence.ModelCapabilitiesAuthorityRef}
+		}},
+		{name: "missing router top ref", mutate: func(report map[string]any) {
+			report["authority_refs"] = []string{routeevidence.CapabilityTaskClassifierAuthorityRef, capgraph.CapabilityGraphAuthorityRef}
+		}},
 		{name: "classifier schema", mutate: func(report map[string]any) { report["classification"].(map[string]any)["schema_version"] = "forged" }},
 		{name: "classifier ref", mutate: func(report map[string]any) { report["classification"].(map[string]any)["authority_ref"] = "forged" }},
 		{name: "classifier revision", mutate: func(report map[string]any) {
