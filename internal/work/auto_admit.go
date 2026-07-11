@@ -67,7 +67,7 @@ func (s *Store) AdmitAuto(workID string, in AutoAdmitInput, now time.Time) (Auto
 }
 
 func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time) (AutoAdmitResult, error) {
-	w, err := s.Get(workID)
+	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return AutoAdmitResult{}, err
 	}

@@ -105,9 +105,28 @@ type Event struct {
 
 // Lease records who holds a claimed work (claim-before-you-touch / D7).
 type Lease struct {
-	WorkID  string `json:"work_id"`
-	By      string `json:"by"`
-	ClaimAt string `json:"claimed_at"`
+	WorkID     string `json:"work_id"`
+	By         string `json:"by"`
+	ClaimAt    string `json:"claimed_at"`
+	WorkSHA256 string `json:"work_sha256,omitempty"`
+}
+
+const claimPendingSchemaVersion = "compound.work_claim_pending.v0.1"
+
+// claimPending is the durable transaction intent for a claim. It binds the
+// pre/post WorkEnvelope versions, exact lease, exact lifecycle event, and the
+// action/policy identities before any authoritative claim publication.
+type claimPending struct {
+	SchemaVersion      string                `json:"schema_version"`
+	WorkID             string                `json:"work_id"`
+	Actor              string                `json:"actor"`
+	PreviousWorkSHA256 string                `json:"previous_work_sha256"`
+	ClaimedWork        envelope.WorkEnvelope `json:"claimed_work"`
+	ClaimedWorkSHA256  string                `json:"claimed_work_sha256"`
+	Lease              Lease                 `json:"lease"`
+	ActionIntentID     string                `json:"action_intent_id"`
+	PolicyDecisionID   string                `json:"policy_decision_id"`
+	Event              Event                 `json:"event"`
 }
 
 // --- create ---
@@ -331,14 +350,28 @@ func (s *Store) claimLocked(workID, by string, now time.Time) (envelope.WorkEnve
 	if err != nil {
 		return w, err
 	}
-	if strings.TrimSpace(by) == "" {
+	by = strings.TrimSpace(by)
+	if by == "" {
 		return w, fmt.Errorf("claim requires --by <actor>")
 	}
-	if w.State == "claimed" {
-		if l, err := s.readLease(workID); err == nil && l.By != by {
-			return w, fmt.Errorf("work %s already claimed by %q", workID, l.By)
+	if recovered, ok, err := s.recoverPendingClaim(w); err != nil {
+		return w, err
+	} else if ok {
+		holder := recovered.Authority.Owner
+		if holder != by {
+			return recovered, fmt.Errorf("work %s already claimed by %q", workID, holder)
 		}
-		return w, nil // idempotent re-claim by same actor
+		return recovered, nil
+	}
+	if w.State == "claimed" {
+		holder, err := s.validateClaimAuthority(w, false)
+		if err != nil {
+			return w, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
+		}
+		if holder != by {
+			return w, fmt.Errorf("work %s already claimed by %q", workID, holder)
+		}
+		return w, nil
 	}
 	if !canTransition(w.State, "claimed") {
 		return w, fmt.Errorf("cannot claim from state %q (must be ready)", w.State)
@@ -350,9 +383,13 @@ func (s *Store) claimLocked(workID, by string, now time.Time) (envelope.WorkEnve
 	if !plan.Policy.Allowed {
 		return w, fmt.Errorf("cannot claim work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
 	}
+	previousWorkSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
+		return w, err
+	}
 	from := w.State
 	w.State = "claimed"
-	w.Authority.Owner = by
+	w.Authority.Owner = plan.Actor
 	w.RunIDs = append(w.RunIDs, plan.ActionIntent.ID)
 	w.PolicyDecisionID = plan.Decision.ID
 	if err := s.writeJSON(s.envPath(plan.ActionIntent.ID), &plan.ActionIntent); err != nil {
@@ -361,21 +398,343 @@ func (s *Store) claimLocked(workID, by string, now time.Time) (envelope.WorkEnve
 	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.workPath(workID), &w); err != nil {
+	claimedWorkSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
 		return w, err
 	}
-	if err := s.writeJSON(s.leasePath(workID), &Lease{WorkID: workID, By: by, ClaimAt: ts(now)}); err != nil {
+	lease := Lease{WorkID: workID, By: plan.Actor, ClaimAt: ts(now), WorkSHA256: claimedWorkSHA256}
+	event := Event{
+		TS:                 lease.ClaimAt,
+		WorkID:             workID,
+		From:               from,
+		To:                 "claimed",
+		By:                 plan.Actor,
+		Note:               "claimed (policy " + plan.Policy.Outcome + ")",
+		Attached:           []string{plan.ActionIntent.ID, plan.Decision.ID},
+		PreviousWorkSHA256: previousWorkSHA256,
+		WorkSHA256:         claimedWorkSHA256,
+	}
+	pending := claimPending{
+		SchemaVersion:      claimPendingSchemaVersion,
+		WorkID:             workID,
+		Actor:              plan.Actor,
+		PreviousWorkSHA256: previousWorkSHA256,
+		ClaimedWork:        w,
+		ClaimedWorkSHA256:  claimedWorkSHA256,
+		Lease:              lease,
+		ActionIntentID:     plan.ActionIntent.ID,
+		PolicyDecisionID:   plan.Decision.ID,
+		Event:              event,
+	}
+	if err := s.validatePendingClaim(pending); err != nil {
 		return w, err
 	}
-	return w, s.appendEvent(Event{
-		TS:       ts(now),
-		WorkID:   workID,
-		From:     from,
-		To:       "claimed",
-		By:       by,
-		Note:     "claimed (policy " + plan.Policy.Outcome + ")",
-		Attached: []string{plan.ActionIntent.ID, plan.Decision.ID},
+	pendingPath := s.claimPendingPath(workID)
+	stagedPending, err := s.stageJSON(pendingPath, &pending)
+	if err != nil {
+		return w, err
+	}
+	if err := commitStagedJSONExclusive(stagedPending, pendingPath); err != nil {
+		_ = os.Remove(stagedPending)
+		return w, err
+	}
+	return s.completePendingClaim(pending, true)
+}
+
+// These synchronization seams model process death after each authoritative
+// file publication. Production leaves them as no-ops.
+var claimAfterWorkPublish = func() {}
+var claimAfterLeasePublish = func() {}
+
+func (s *Store) claimPendingPath(workID string) string {
+	return s.workPath(workID) + ".claim-pending"
+}
+
+func (s *Store) recoverPendingClaim(current envelope.WorkEnvelope) (envelope.WorkEnvelope, bool, error) {
+	var pending claimPending
+	if err := s.readJSON(s.claimPendingPath(current.ID), &pending); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return current, false, nil
+		}
+		return current, false, fmt.Errorf("read pending claim for %s: %w", current.ID, err)
+	}
+	if err := s.validatePendingClaim(pending); err != nil {
+		return current, false, fmt.Errorf("pending claim for %s invalid: %w", current.ID, err)
+	}
+	currentSHA256, err := workEnvelopeSHA256(current)
+	if err != nil {
+		return current, false, err
+	}
+	if currentSHA256 != pending.PreviousWorkSHA256 && currentSHA256 != pending.ClaimedWorkSHA256 {
+		return current, false, fmt.Errorf("pending claim for %s matches neither current nor claimed WorkEnvelope", current.ID)
+	}
+	recovered, err := s.completePendingClaim(pending, false)
+	if err != nil {
+		return current, false, err
+	}
+	return recovered, true, nil
+}
+
+func (s *Store) recoverPendingClaimBeforeMutation(workID string) (envelope.WorkEnvelope, error) {
+	current, err := s.Get(workID)
+	if err != nil {
+		return current, err
+	}
+	recovered, ok, err := s.recoverPendingClaim(current)
+	if err != nil {
+		return current, err
+	}
+	if ok {
+		current = recovered
+	}
+	if current.State == "claimed" {
+		if _, err := s.validateClaimAuthority(current, true); err != nil {
+			return current, fmt.Errorf("work %s claimed authority is inconsistent: %w", workID, err)
+		}
+	}
+	return current, nil
+}
+
+func (s *Store) completePendingClaim(pending claimPending, runCrashSeams bool) (envelope.WorkEnvelope, error) {
+	if err := s.validatePendingClaim(pending); err != nil {
+		return pending.ClaimedWork, fmt.Errorf("pending claim for %s invalid: %w", pending.WorkID, err)
+	}
+	err := s.withWorkEventLock(func() error {
+		if err := s.ensureExactClaimEventUnlocked(pending); err != nil {
+			return err
+		}
+
+		current, err := s.Get(pending.WorkID)
+		if err != nil {
+			return err
+		}
+		currentSHA256, err := workEnvelopeSHA256(current)
+		if err != nil {
+			return err
+		}
+		switch currentSHA256 {
+		case pending.PreviousWorkSHA256:
+			if current.State != pending.Event.From {
+				return fmt.Errorf("pending claim for %s previous state is %q, want %q", pending.WorkID, current.State, pending.Event.From)
+			}
+			if err := s.publishClaimJSON(s.workPath(pending.WorkID), &pending.ClaimedWork); err != nil {
+				return err
+			}
+		case pending.ClaimedWorkSHA256:
+			if !reflect.DeepEqual(current, pending.ClaimedWork) {
+				return fmt.Errorf("pending claim for %s claimed WorkEnvelope bytes disagree", pending.WorkID)
+			}
+		default:
+			return fmt.Errorf("pending claim for %s conflicts with current WorkEnvelope", pending.WorkID)
+		}
+		if runCrashSeams {
+			claimAfterWorkPublish()
+		}
+
+		lease, leaseErr := s.readLease(pending.WorkID)
+		if leaseErr != nil || !reflect.DeepEqual(lease, pending.Lease) {
+			if err := s.publishClaimJSON(s.leasePath(pending.WorkID), &pending.Lease); err != nil {
+				return err
+			}
+		}
+		lease, err = s.readLease(pending.WorkID)
+		if err != nil {
+			return fmt.Errorf("read published claim lease for %s: %w", pending.WorkID, err)
+		}
+		if !reflect.DeepEqual(lease, pending.Lease) {
+			return fmt.Errorf("published claim lease for %s does not match pending transaction", pending.WorkID)
+		}
+		if runCrashSeams {
+			claimAfterLeasePublish()
+		}
+		if err := removeFileAndSyncDir(s.claimPendingPath(pending.WorkID)); err != nil {
+			return err
+		}
+		return nil
 	})
+	if err != nil {
+		return pending.ClaimedWork, err
+	}
+	return pending.ClaimedWork, nil
+}
+
+func (s *Store) ensureExactClaimEventUnlocked(pending claimPending) error {
+	events, err := s.readEventsStrictUnlocked(pending.WorkID)
+	if err != nil {
+		return err
+	}
+	exact := 0
+	for _, event := range events {
+		if event.To != "claimed" || event.WorkSHA256 != pending.ClaimedWorkSHA256 {
+			continue
+		}
+		if !reflect.DeepEqual(event, pending.Event) {
+			return fmt.Errorf("pending claim for %s conflicts with durable claim event", pending.WorkID)
+		}
+		exact++
+	}
+	if exact > 1 {
+		return fmt.Errorf("pending claim for %s has %d exact durable events, want one", pending.WorkID, exact)
+	}
+	if exact == 0 {
+		before := len(events)
+		if err := s.appendEventControlledUnlocked(pending.Event, nil, nil); err != nil {
+			return err
+		}
+		events, err = s.readEventsStrictUnlocked(pending.WorkID)
+		if err != nil {
+			return err
+		}
+		if len(events) != before+1 || !reflect.DeepEqual(events[len(events)-1], pending.Event) {
+			return fmt.Errorf("work event log did not preserve the exact claim event for %s", pending.WorkID)
+		}
+	}
+	return nil
+}
+
+func (s *Store) publishClaimJSON(path string, value any) error {
+	staged, err := s.stageJSON(path, value)
+	if err != nil {
+		return err
+	}
+	if err := commitStagedJSON(staged, path); err != nil {
+		_ = os.Remove(staged)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) validatePendingClaim(pending claimPending) error {
+	if pending.SchemaVersion != claimPendingSchemaVersion {
+		return fmt.Errorf("schema_version must be %q", claimPendingSchemaVersion)
+	}
+	if strings.TrimSpace(pending.WorkID) == "" || pending.ClaimedWork.ID != pending.WorkID {
+		return fmt.Errorf("pending Work identity mismatch")
+	}
+	if strings.TrimSpace(pending.Actor) == "" || pending.ClaimedWork.State != "claimed" || pending.ClaimedWork.Authority.Owner != pending.Actor {
+		return fmt.Errorf("pending claimed Work owner/state mismatch")
+	}
+	if err := pending.ClaimedWork.Validate(); err != nil {
+		return fmt.Errorf("claimed WorkEnvelope invalid: %w", err)
+	}
+	claimedSHA256, err := workEnvelopeSHA256(pending.ClaimedWork)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(pending.PreviousWorkSHA256) == "" || pending.ClaimedWorkSHA256 != claimedSHA256 {
+		return fmt.Errorf("pending WorkEnvelope hashes do not bind the claimed Work")
+	}
+	if pending.Lease.WorkID != pending.WorkID || pending.Lease.By != pending.Actor || strings.TrimSpace(pending.Lease.ClaimAt) == "" ||
+		pending.Lease.WorkSHA256 != pending.ClaimedWorkSHA256 {
+		return fmt.Errorf("pending lease identity mismatch")
+	}
+	if strings.TrimSpace(pending.ActionIntentID) == "" || strings.TrimSpace(pending.PolicyDecisionID) == "" {
+		return fmt.Errorf("pending claim must bind action and policy ids")
+	}
+	event := pending.Event
+	if event.WorkID != pending.WorkID || !canTransition(event.From, "claimed") || event.To != "claimed" || event.By != pending.Actor ||
+		event.TS != pending.Lease.ClaimAt || event.PreviousWorkSHA256 != pending.PreviousWorkSHA256 || event.WorkSHA256 != pending.ClaimedWorkSHA256 ||
+		!reflect.DeepEqual(event.Attached, []string{pending.ActionIntentID, pending.PolicyDecisionID}) {
+		return fmt.Errorf("pending lifecycle event does not bind exact claim transaction")
+	}
+	if len(pending.ClaimedWork.RunIDs) == 0 ||
+		pending.ClaimedWork.RunIDs[len(pending.ClaimedWork.RunIDs)-1] != pending.ActionIntentID ||
+		pending.ClaimedWork.PolicyDecisionID != pending.PolicyDecisionID {
+		return fmt.Errorf("pending claimed Work does not bind exact action and policy")
+	}
+	return s.validateClaimEventArtifacts(event, pending.ClaimedWork)
+}
+
+func (s *Store) validateClaimAuthority(claimed envelope.WorkEnvelope, allowLegacy bool) (string, error) {
+	if err := claimed.Validate(); err != nil {
+		return "", fmt.Errorf("claimed WorkEnvelope invalid: %w", err)
+	}
+	holder := strings.TrimSpace(claimed.Authority.Owner)
+	if claimed.State != "claimed" || holder == "" {
+		return "", fmt.Errorf("claimed WorkEnvelope has no exact authority owner")
+	}
+	lease, err := s.readLease(claimed.ID)
+	if err != nil {
+		return "", fmt.Errorf("read exact claim lease: %w", err)
+	}
+	events, err := s.eventsFor(claimed.ID)
+	if err != nil {
+		return "", err
+	}
+	matches := make([]Event, 0, 1)
+	if strings.TrimSpace(lease.WorkSHA256) == "" {
+		if !allowLegacy {
+			return "", fmt.Errorf("lease does not bind a claimed WorkEnvelope hash")
+		}
+		for _, event := range events {
+			if event.To == "claimed" && canTransition(event.From, "claimed") && event.TS == lease.ClaimAt &&
+				event.WorkSHA256 == "" && event.PreviousWorkSHA256 == "" {
+				matches = append(matches, event)
+			}
+		}
+	} else {
+		for _, event := range events {
+			if event.To == "claimed" && event.WorkSHA256 == lease.WorkSHA256 {
+				matches = append(matches, event)
+			}
+		}
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("found %d durable events for current claimed WorkEnvelope, want exactly one", len(matches))
+	}
+	event := matches[0]
+	if event.WorkID != claimed.ID || !canTransition(event.From, "claimed") ||
+		event.TS != lease.ClaimAt || event.By != holder {
+		return "", fmt.Errorf("durable claim event identity mismatch")
+	}
+	if lease.WorkSHA256 != "" && strings.TrimSpace(event.PreviousWorkSHA256) == "" {
+		return "", fmt.Errorf("durable claim event does not bind the previous WorkEnvelope")
+	}
+	if lease.WorkID != claimed.ID || lease.By != holder {
+		return "", fmt.Errorf("lease does not agree with claimed Work and event")
+	}
+	if err := s.validateClaimEventArtifacts(event, claimed); err != nil {
+		return "", err
+	}
+	return holder, nil
+}
+
+func (s *Store) validateClaimEventArtifacts(event Event, claimed envelope.WorkEnvelope) error {
+	if len(event.Attached) != 2 {
+		return fmt.Errorf("claim event must bind exactly one action and policy")
+	}
+	actionID, policyID := event.Attached[0], event.Attached[1]
+	var action envelope.ActionIntent
+	if err := s.readJSON(s.envPath(actionID), &action); err != nil {
+		return fmt.Errorf("read claim action %s: %w", actionID, err)
+	}
+	if err := action.Validate(); err != nil {
+		return fmt.Errorf("claim action %s invalid: %w", actionID, err)
+	}
+	var decision envelope.PolicyDecision
+	if err := s.readJSON(s.envPath(policyID), &decision); err != nil {
+		return fmt.Errorf("read claim policy %s: %w", policyID, err)
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("claim policy %s invalid: %w", policyID, err)
+	}
+	if action.ID != actionID || action.IDs.WorkID != claimed.ID || action.Actor != event.By ||
+		action.Capability != "work.claim" || action.Action != "claim_work" ||
+		action.Target.Kind != "work" || action.Target.ID != claimed.ID ||
+		filepath.Clean(action.Target.Path) != filepath.Clean(s.workPath(claimed.ID)) {
+		return fmt.Errorf("claim action %s conflicts with Work/event identity", actionID)
+	}
+	if decision.ID != policyID || decision.IDs.WorkID != claimed.ID || decision.ActionIntentID != actionID ||
+		(decision.Outcome != "allow" && decision.Outcome != "allow_with_obligations") {
+		return fmt.Errorf("claim policy %s conflicts with Work/event identity", policyID)
+	}
+	if !oneOf(actionID, claimed.RunIDs) {
+		return fmt.Errorf("claimed Work does not retain its claim action")
+	}
+	if event.Note != "claimed (policy "+decision.Outcome+")" {
+		return fmt.Errorf("claim event policy outcome note mismatch")
+	}
+	return nil
 }
 
 // --- advance ---
@@ -413,7 +772,7 @@ func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope
 }
 
 func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
-	w, err := s.Get(workID)
+	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return w, err
 	}
@@ -743,7 +1102,7 @@ func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelop
 }
 
 func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) (envelope.WorkEnvelope, error) {
-	w, err := s.Get(workID)
+	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return w, err
 	}
@@ -850,7 +1209,7 @@ func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult,
 
 func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseResult, error) {
 	var res CloseResult
-	w, err := s.Get(workID)
+	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return res, err
 	}
@@ -1451,65 +1810,69 @@ func (s *Store) appendEventUnlocked(e Event) error {
 // tail. beforePublish runs after the temp file is durable but before rename;
 // afterPublish runs after rename and directory sync.
 func (s *Store) appendEventControlled(e Event, beforePublish, afterPublish func() error) error {
+	return s.withWorkEventLock(func() error {
+		return s.appendEventControlledUnlocked(e, beforePublish, afterPublish)
+	})
+}
+
+func (s *Store) appendEventControlledUnlocked(e Event, beforePublish, afterPublish func() error) error {
 	b, err := marshalWorkEvent(e)
 	if err != nil {
 		return err
 	}
-	return s.withWorkEventLock(func() error {
-		current, err := os.ReadFile(s.eventsLog())
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if _, err := decodeAdmissionEvents(current, ""); err != nil {
-			return err
-		}
+	current, err := os.ReadFile(s.eventsLog())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := decodeAdmissionEvents(current, ""); err != nil {
+		return err
+	}
 
-		dir := filepath.Dir(s.eventsLog())
-		tmp, err := os.CreateTemp(dir, "."+filepath.Base(s.eventsLog())+".tmp-*")
-		if err != nil {
+	dir := filepath.Dir(s.eventsLog())
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(s.eventsLog())+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := writeWorkEventPrefix(tmp, current); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	n, writeErr := writeWorkEvent(tmp, b)
+	if writeErr == nil && n != len(b) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr != nil {
+		_ = tmp.Close()
+		return writeErr
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if beforePublish != nil {
+		if err := beforePublish(); err != nil {
 			return err
 		}
-		tmpPath := tmp.Name()
-		defer os.Remove(tmpPath)
-		if err := tmp.Chmod(0o644); err != nil {
-			_ = tmp.Close()
-			return err
-		}
-		if err := writeWorkEventPrefix(tmp, current); err != nil {
-			_ = tmp.Close()
-			return err
-		}
-		n, writeErr := writeWorkEvent(tmp, b)
-		if writeErr == nil && n != len(b) {
-			writeErr = io.ErrShortWrite
-		}
-		if writeErr != nil {
-			_ = tmp.Close()
-			return writeErr
-		}
-		if err := tmp.Sync(); err != nil {
-			_ = tmp.Close()
-			return err
-		}
-		if err := tmp.Close(); err != nil {
-			return err
-		}
-		if beforePublish != nil {
-			if err := beforePublish(); err != nil {
-				return err
-			}
-		}
-		if err := os.Rename(tmpPath, s.eventsLog()); err != nil {
-			return err
-		}
-		if err := syncReceiptedActionDir(dir); err != nil {
-			return err
-		}
-		if afterPublish != nil {
-			return afterPublish()
-		}
-		return nil
-	})
+	}
+	if err := os.Rename(tmpPath, s.eventsLog()); err != nil {
+		return err
+	}
+	if err := syncReceiptedActionDir(dir); err != nil {
+		return err
+	}
+	if afterPublish != nil {
+		return afterPublish()
+	}
+	return nil
 }
 
 func marshalWorkEvent(e Event) ([]byte, error) {

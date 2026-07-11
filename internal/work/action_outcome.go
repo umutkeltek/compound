@@ -82,7 +82,7 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if now.IsZero() {
 		now = time.Now()
 	}
-	w, err := s.Get(workID)
+	w, err := s.recoverPendingClaimBeforeMutation(workID)
 	if err != nil {
 		return out, err
 	}
