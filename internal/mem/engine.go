@@ -3,6 +3,7 @@ package mem
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -16,6 +17,7 @@ var (
 	ErrEngineUnavailable = errors.New("breadth engine unavailable (transport down) — ledger answers exact/as-of")
 	ErrEmbedderMismatch  = errors.New("engine embedder does not match the indexed embedder (refusing breadth, not degrading)")
 	ErrProtocolVersion   = errors.New("engine protocol version skew (refusing breadth, not degrading)")
+	ErrEngineAhead       = errors.New("breadth engine generation is ahead of owned ledger (refusing backward rebuild)")
 )
 
 // Gate decouples the visibility decision from the allowlist CONTENTS. GateList honors the
@@ -131,7 +133,11 @@ func (s *Store) QueryBreadth(text string, k int, eng Engine) ([]Claim, error) {
 		return nil, err
 	}
 	gen := s.currentGen()
-	if eng.Capabilities().CorpusGen != gen {
+	engineGen := eng.Capabilities().CorpusGen
+	if engineGen > gen {
+		return nil, fmt.Errorf("%w: engine_gen=%d ledger_gen=%d", ErrEngineAhead, engineGen, gen)
+	}
+	if engineGen < gen {
 		if ceng, ok := eng.(contextIndexEngine); ok {
 			edges, err := s.visibleWireEdges(cur, 0.5)
 			if err != nil {

@@ -75,14 +75,16 @@ type BakeoffClinicReport struct {
 }
 
 type BakeoffClinicMiss struct {
-	QueryID string `json:"query_id"`
-	ClaimID string `json:"claim_id"`
-	Cause   string `json:"cause"`
+	QueryID  string `json:"query_id"`
+	ClaimID  string `json:"claim_id"`
+	Cause    string `json:"cause"`
+	Evidence string `json:"evidence"`
 }
 
 type BakeoffClinicCause struct {
-	Cause string `json:"cause"`
-	Count int    `json:"count"`
+	Cause        string   `json:"cause"`
+	Count        int      `json:"count"`
+	EvidenceRefs []string `json:"evidence_refs"`
 }
 
 type BakeoffDeterminism struct {
@@ -116,6 +118,8 @@ type BakeoffQueryReport struct {
 	LatencyMS                float64             `json:"latency_ms"`
 	Compare                  EngineCompareReport `json:"compare"`
 }
+
+const bakeoffClinicRankDepth = 50
 
 func WriteDefaultBakeoffQueries(path string, force bool) (BakeoffInitReport, error) {
 	if strings.TrimSpace(path) == "" {
@@ -257,12 +261,19 @@ func (s *Store) RunBakeoff(opts BakeoffRunOptions) (BakeoffReport, error) {
 }
 
 var bakeoffClinicFix = map[string]string{
-	"absent": "ingest or restore the missing claim", "gated": "repair the visibility or allowlist gate",
-	"twin": "retire or merge the duplicate claim", "entity": "repair canonical entity resolution",
-	"alias": "add the missing query alias", "lane": "route the query through the capable lane",
-	"rank": "improve ranking for the present claim", "privacy": "keep private recall in an authorized scope",
-	"volatile": "refresh or retire the expired claim", "id": "repair the golden claim identifier",
-	"noise": "remove noisy candidates or sharpen the query",
+	"absent_claim": "ingest or restore the missing claim", "held_by_review_gate": "review the held claim; do not bypass the gate",
+	"duplicate_twin": "retire or merge the duplicate claim", "wrong_entity": "repair canonical entity resolution",
+	"synonym_alias_missing": "add the missing query alias", "semantic_lane_inactive": "activate or route through the configured semantic lane",
+	"rank_miss": "improve ranking for the present claim", "privacy_filter": "keep private recall in an authorized scope",
+	"stale_or_volatile_claim": "refresh or retire the expired claim", "expected_id_wrong": "repair the golden claim identifier",
+	"noisy_claim_pollution": "remove noisy candidates or sharpen the query",
+}
+
+var legacyBakeoffClinicCause = map[string]string{
+	"absent": "absent_claim", "gated": "held_by_review_gate", "twin": "duplicate_twin",
+	"entity": "wrong_entity", "alias": "synonym_alias_missing", "lane": "semantic_lane_inactive",
+	"rank": "rank_miss", "privacy": "privacy_filter", "volatile": "stale_or_volatile_claim",
+	"id": "expected_id_wrong", "noise": "noisy_claim_pollution",
 }
 
 func (s *Store) buildBakeoffClinic(queries []BakeoffQueryReport) BakeoffClinicReport {
@@ -273,15 +284,18 @@ func (s *Store) buildBakeoffClinic(queries []BakeoffQueryReport) BakeoffClinicRe
 	}
 	var report BakeoffClinicReport
 	counts := map[string]int{}
+	evidenceRefs := map[string][]string{}
 	for _, query := range queries {
 		for _, id := range query.MissingExpectedClaimIDs {
-			cause := classifyBakeoffMiss(query, id, byID)
-			report.Misses = append(report.Misses, BakeoffClinicMiss{QueryID: query.ID, ClaimID: id, Cause: cause})
-			counts[cause]++
+			classification := classifyBakeoffMiss(query, id, byID)
+			report.Misses = append(report.Misses, BakeoffClinicMiss{QueryID: query.ID, ClaimID: id, Cause: classification.Cause, Evidence: classification.Evidence})
+			counts[classification.Cause]++
+			evidenceRefs[classification.Cause] = append(evidenceRefs[classification.Cause], query.ID+":"+id)
 		}
 	}
 	for cause, count := range counts {
-		report.TopCauses = append(report.TopCauses, BakeoffClinicCause{Cause: cause, Count: count})
+		sort.Strings(evidenceRefs[cause])
+		report.TopCauses = append(report.TopCauses, BakeoffClinicCause{Cause: cause, Count: count, EvidenceRefs: evidenceRefs[cause]})
 	}
 	sort.Slice(report.TopCauses, func(i, j int) bool {
 		if report.TopCauses[i].Count != report.TopCauses[j].Count {
@@ -298,42 +312,81 @@ func (s *Store) buildBakeoffClinic(queries []BakeoffQueryReport) BakeoffClinicRe
 	return report
 }
 
-func classifyBakeoffMiss(query BakeoffQueryReport, id string, claims map[string]Claim) string {
+type bakeoffMissClassification struct {
+	Cause    string
+	Evidence string
+}
+
+func classifyBakeoffMiss(query BakeoffQueryReport, id string, claims map[string]Claim) bakeoffMissClassification {
 	claim, ok := claims[id]
 	if !ok {
-		if strings.Contains(strings.ToLower(id), "alias") {
-			return "alias"
+		if replacement := bakeoffExpectedIDReplacement(id, claims); replacement != "" {
+			return bakeoffMissClassification{"expected_id_wrong", "expected id resolves through decision_id to current claim " + replacement}
 		}
-		return "absent"
+		if strings.Contains(strings.ToLower(id), "alias") {
+			return bakeoffMissClassification{"synonym_alias_missing", "expected id is absent and names an alias expectation"}
+		}
+		return bakeoffMissClassification{"absent_claim", "expected claim id is absent from the owned ledger"}
 	}
-	if cause := strings.ToLower(claim.Qualifiers["clinic_cause"]); bakeoffClinicFix[cause] != "" {
-		return cause
+	if cause := normalizeBakeoffClinicCause(claim.Qualifiers["clinic_cause"]); cause != "" {
+		return bakeoffMissClassification{cause, "claim qualifier clinic_cause=" + cause}
 	}
 	if claim.Visibility == "private" {
-		return "privacy"
+		return bakeoffMissClassification{"privacy_filter", "claim visibility is private"}
 	}
 	if claim.Visibility == "volatile" || claim.ExpiresAt != "" {
-		return "volatile"
-	}
-	if claim.Supersedes != "" {
-		return "twin"
-	}
-	if bakeoffContainsString(query.CandidateRankedClaimIDs[10:], id) {
-		return "rank"
+		return bakeoffMissClassification{"stale_or_volatile_claim", "claim is volatile or has an expiry"}
 	}
 	if !bakeoffContainsString(query.ReferenceClaimIDs, id) {
-		return "gated"
+		return bakeoffMissClassification{"held_by_review_gate", "claim exists in the ledger but is absent from the visible reference set"}
+	}
+	if claim.Supersedes != "" || bakeoffClaimIsSuperseded(id, claims) {
+		return bakeoffMissClassification{"duplicate_twin", "claim has a supersession twin in the owned ledger"}
+	}
+	if len(query.CandidateRankedClaimIDs) > 10 && bakeoffContainsString(query.CandidateRankedClaimIDs[10:], id) {
+		return bakeoffMissClassification{"rank_miss", "claim is present below rank 10 in candidate results"}
 	}
 	if strings.TrimSpace(claim.Entity) == "" {
-		return "entity"
+		return bakeoffMissClassification{"wrong_entity", "claim has no canonical entity"}
 	}
 	if claim.ProvenanceLane != "" && query.Lane != "" && claim.ProvenanceLane != query.Lane {
-		return "lane"
+		return bakeoffMissClassification{"semantic_lane_inactive", fmt.Sprintf("claim lane %s differs from query lane %s", claim.ProvenanceLane, query.Lane)}
 	}
 	if strings.Contains(strings.ToLower(id), "stale") || strings.Contains(strings.ToLower(id), "missing") {
-		return "id"
+		return bakeoffMissClassification{"expected_id_wrong", "expected id is marked stale or missing"}
 	}
-	return "noise"
+	return bakeoffMissClassification{"noisy_claim_pollution", "claim is visible but absent from the candidate ranking without a narrower structural cause"}
+}
+
+func bakeoffExpectedIDReplacement(id string, claims map[string]Claim) string {
+	var replacements []string
+	for _, claim := range claims {
+		if strings.EqualFold(strings.TrimSpace(claim.Qualifiers["decision_id"]), strings.TrimSpace(id)) {
+			replacements = append(replacements, claim.ID)
+		}
+	}
+	sort.Strings(replacements)
+	if len(replacements) == 0 {
+		return ""
+	}
+	return replacements[0]
+}
+
+func normalizeBakeoffClinicCause(raw string) string {
+	cause := strings.ToLower(strings.TrimSpace(raw))
+	if bakeoffClinicFix[cause] != "" {
+		return cause
+	}
+	return legacyBakeoffClinicCause[cause]
+}
+
+func bakeoffClaimIsSuperseded(id string, claims map[string]Claim) bool {
+	for _, claim := range claims {
+		if claim.Supersedes == id {
+			return true
+		}
+	}
+	return false
 }
 
 func bakeoffContainsString(values []string, want string) bool {
@@ -357,8 +410,15 @@ func (s *Store) runBakeoffPass(queries []BakeoffQuery, opts BakeoffRunOptions) (
 		if err != nil {
 			return bakeoffPass{}, err
 		}
-		latency := time.Since(start)
 		ranked := doctorRankedClaimIDs(compare.Candidate.Hits)
+		if len(missingWithinK(q.ExpectedClaimIDs, ranked, 10)) > 0 && opts.K < bakeoffClinicRankDepth {
+			clinicCandidate, err := s.EngineDoctor(q.Query, bakeoffClinicRankDepth, opts.Candidate)
+			if err != nil {
+				return bakeoffPass{}, err
+			}
+			ranked = doctorRankedClaimIDs(clinicCandidate.Hits)
+		}
+		latency := time.Since(start)
 		qr := BakeoffQueryReport{
 			ID:                       q.ID,
 			Lane:                     q.Lane,

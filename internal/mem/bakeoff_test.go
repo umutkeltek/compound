@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,21 +125,89 @@ func TestBakeoffClinicClassifiesMissesAndRanksTopThreeCauses(t *testing.T) {
 		"lane":     {ID: "lane", Entity: "e", ProvenanceLane: "semantic"},
 		"gated":    {ID: "gated", Entity: "e"},
 		"noise":    {ID: "noise", Entity: "e"},
-		"alias":    {ID: "alias", Qualifiers: map[string]string{"clinic_cause": "alias"}},
-		"id":       {ID: "id", Qualifiers: map[string]string{"clinic_cause": "id"}},
+		"alias":    {ID: "alias", Qualifiers: map[string]string{"clinic_cause": "synonym_alias_missing"}},
+		"id":       {ID: "id", Qualifiers: map[string]string{"clinic_cause": "expected_id_wrong"}},
 	}
 	query := BakeoffQueryReport{Lane: "lexical", ReferenceClaimIDs: []string{"private", "volatile", "ranked", "twin", "entity", "lane", "noise", "alias", "id"}, CandidateRankedClaimIDs: append(make([]string, 10), "ranked")}
-	want := map[string]string{"absent": "absent", "private": "privacy", "volatile": "volatile", "ranked": "rank", "twin": "twin", "entity": "entity", "lane": "lane", "gated": "gated", "noise": "noise", "alias": "alias", "id": "id"}
+	want := map[string]string{
+		"absent": "absent_claim", "private": "privacy_filter", "volatile": "stale_or_volatile_claim",
+		"ranked": "rank_miss", "twin": "duplicate_twin", "entity": "wrong_entity",
+		"lane": "semantic_lane_inactive", "gated": "held_by_review_gate", "noise": "noisy_claim_pollution",
+		"alias": "synonym_alias_missing", "id": "expected_id_wrong",
+	}
 	for id, cause := range want {
-		if got := classifyBakeoffMiss(query, id, claims); got != cause {
-			t.Errorf("%s cause=%s want=%s", id, got, cause)
+		got := classifyBakeoffMiss(query, id, claims)
+		if got.Cause != cause {
+			t.Errorf("%s cause=%s want=%s", id, got.Cause, cause)
+		}
+		if got.Evidence == "" {
+			t.Errorf("%s missing classification evidence", id)
 		}
 	}
 
 	s := newStore(t)
 	report := s.buildBakeoffClinic([]BakeoffQueryReport{{ID: "q", MissingExpectedClaimIDs: []string{"a", "b", "c", "d"}}})
-	if len(report.TopCauses) != 1 || report.TopCauses[0].Cause != "absent" || report.TopCauses[0].Count != 4 || len(report.RecommendedFixes) != 1 {
+	if len(report.TopCauses) != 1 || report.TopCauses[0].Cause != "absent_claim" || report.TopCauses[0].Count != 4 || len(report.TopCauses[0].EvidenceRefs) != 4 || len(report.RecommendedFixes) != 1 {
 		t.Fatalf("clinic summary: %+v", report)
+	}
+}
+
+func TestBakeoffClinicTopThreeAreMeasuredAndDeterministic(t *testing.T) {
+	s := newStore(t)
+	claims := []Claim{
+		{ID: "gate-a", Seq: 1, Entity: "decision-a"},
+		{ID: "gate-b", Seq: 2, Entity: "decision-b"},
+		{ID: "twin-a", Seq: 3, Entity: "decision-c", Supersedes: "older-a"},
+		{ID: "rank-a", Seq: 4, Entity: "product-a"},
+	}
+	for _, claim := range claims {
+		if err := appendJSONL(s.claimsLog(), claim); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ranked := append(make([]string, 10), "rank-a")
+	report := s.buildBakeoffClinic([]BakeoffQueryReport{{
+		ID: "live-shaped", Lane: "lexical",
+		ReferenceClaimIDs:       []string{"twin-a", "rank-a"},
+		CandidateRankedClaimIDs: ranked,
+		MissingExpectedClaimIDs: []string{"gate-a", "gate-b", "twin-a", "rank-a", "absent-a"},
+	}})
+	want := []BakeoffClinicCause{
+		{Cause: "held_by_review_gate", Count: 2, EvidenceRefs: []string{"live-shaped:gate-a", "live-shaped:gate-b"}},
+		{Cause: "absent_claim", Count: 1, EvidenceRefs: []string{"live-shaped:absent-a"}},
+		{Cause: "duplicate_twin", Count: 1, EvidenceRefs: []string{"live-shaped:twin-a"}},
+	}
+	if !reflect.DeepEqual(report.TopCauses, want) {
+		t.Fatalf("top causes = %+v, want %+v", report.TopCauses, want)
+	}
+}
+
+func TestBakeoffClinicShortRankingDoesNotPanic(t *testing.T) {
+	claims := map[string]Claim{"present": {ID: "present", Entity: "project-a"}}
+	got := classifyBakeoffMiss(BakeoffQueryReport{ReferenceClaimIDs: []string{"present"}}, "present", claims)
+	if got.Cause != "noisy_claim_pollution" {
+		t.Fatalf("short ranking cause = %s", got.Cause)
+	}
+}
+
+func TestBakeoffClinicReviewGateIsPrimaryOverTwinShape(t *testing.T) {
+	claims := map[string]Claim{"held-twin": {ID: "held-twin", Entity: "decision-a", Supersedes: "older"}}
+	got := classifyBakeoffMiss(BakeoffQueryReport{}, "held-twin", claims)
+	if got.Cause != "held_by_review_gate" {
+		t.Fatalf("held twin cause = %s, want review gate as failed transition", got.Cause)
+	}
+}
+
+func TestBakeoffClinicFindsExpectedIDReplacement(t *testing.T) {
+	claims := map[string]Claim{
+		"claim-current": {
+			ID: "claim-current", Entity: "decisions",
+			Qualifiers: map[string]string{"decision_id": "DEC-EXPECTED"},
+		},
+	}
+	got := classifyBakeoffMiss(BakeoffQueryReport{}, "DEC-EXPECTED", claims)
+	if got.Cause != "expected_id_wrong" || !strings.Contains(got.Evidence, "claim-current") {
+		t.Fatalf("replacement classification = %+v", got)
 	}
 }
 

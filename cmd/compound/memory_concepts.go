@@ -206,12 +206,7 @@ func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem
 		fmt.Printf("- latency_p95_ms: %.3f\n", report.Metrics.LatencyP95MS)
 		fmt.Printf("- ledger_digest_unchanged: %t\n", report.LedgerDigestUnchanged)
 		fmt.Printf("- determinism: %t\n", report.Determinism.Passed)
-		for i, cause := range report.Clinic.TopCauses {
-			fmt.Printf("- clinic_cause_%d: %s (%d)\n", i+1, cause.Cause, cause.Count)
-		}
-		for _, fix := range report.Clinic.RecommendedFixes {
-			fmt.Printf("- recommended_fix: %s\n", fix)
-		}
+		printMemoryBakeoffClinic(report.Clinic)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "memory bakeoff:", err)
 			os.Exit(1)
@@ -219,6 +214,16 @@ func cmdMemoryBakeoff(store *mem.Store, args []string, engineFactory func() (mem
 	default:
 		fmt.Fprintln(os.Stderr, "usage: compound memory bakeoff <init|run --queries file>")
 		os.Exit(2)
+	}
+}
+
+func printMemoryBakeoffClinic(clinic mem.BakeoffClinicReport) {
+	for i, cause := range clinic.TopCauses {
+		fmt.Printf("- clinic_cause_%d: %s (%d)\n", i+1, cause.Cause, cause.Count)
+		fmt.Printf("- clinic_evidence_%d: %s\n", i+1, strings.Join(cause.EvidenceRefs, ","))
+	}
+	for _, fix := range clinic.RecommendedFixes {
+		fmt.Printf("- recommended_fix: %s\n", fix)
 	}
 }
 

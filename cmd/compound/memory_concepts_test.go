@@ -97,3 +97,24 @@ func TestMemoryConceptCLIVerbs(t *testing.T) {
 		t.Fatalf("recall result = %+v", recall)
 	}
 }
+
+func TestMemoryBakeoffExistingCommandPrintsClinicEvidence(t *testing.T) {
+	out := captureStdout(t, func() {
+		printMemoryBakeoffClinic(mem.BakeoffClinicReport{
+			TopCauses: []mem.BakeoffClinicCause{{
+				Cause: "held_by_review_gate", Count: 2,
+				EvidenceRefs: []string{"casual:claim-a", "exact:claim-b"},
+			}},
+			RecommendedFixes: []string{"review the held claim; do not bypass the gate"},
+		})
+	})
+	for _, want := range []string{
+		"clinic_cause_1: held_by_review_gate (2)",
+		"clinic_evidence_1: casual:claim-a,exact:claim-b",
+		"recommended_fix: review the held claim; do not bypass the gate",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("existing bakeoff command output missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -1992,10 +1992,13 @@ func cmdMemory(args []string) {
 		fmt.Printf("- query: %s\n", report.Query)
 		fmt.Printf("- engine: %s\n", report.Engine.Name)
 		fmt.Printf("- ledger_gen: %d\n", report.LedgerGen)
+		fmt.Printf("- ledger_gen_after: %d\n", report.LedgerGenAfter)
 		fmt.Printf("- engine_gen: %d\n", report.Engine.CorpusGen)
 		fmt.Printf("- ledger_before: %s\n", report.LedgerHashBefore)
 		fmt.Printf("- ledger_after: %s\n", report.LedgerHashAfter)
 		fmt.Printf("- ledger_unchanged: %t\n", report.LedgerUnchanged)
+		fmt.Printf("- owner_ledger_advanced: %t\n", report.OwnerLedgerAdvanced)
+		fmt.Printf("- retry_count: %d\n", report.RetryCount)
 		if report.Degraded {
 			fmt.Printf("- degraded: %s\n", report.Error)
 		}

@@ -284,7 +284,9 @@ core a single pure-Go binary and the engine genuinely swappable.
   re-embeds the whole corpus per query.
 - **Engine ownership is mechanically checked.** `compound memory engine-doctor <query>` hashes
   `COMPOUND_HOME/ledger` before/after a breadth query, reports engine/ledger generation, and fails if
-  a rented engine mutates owned ledger bytes.
+  a rented engine mutates owned ledger bytes. A generation-correlated owned-ledger advance during
+  the probe gets one stable retry instead of being blamed on the engine; an engine generation truly
+  ahead of the ledger is refused and is never rebuilt backward.
 - **Configured engine health is part of the normal memory chain.** `compound memory doctor` leaves
   `sync/embedding` skipped when no sidecar is configured; when `COMPOUND_MEM_ENGINE_BIN` is set, the
   same hop probes the configured sidecar, reports engine generation/hits and ledger immutability, and
@@ -296,6 +298,11 @@ ledger-gated query, and fails if ledger bytes change. Exact mode fails if hydrat
 covered, degraded sidecars still fail, and extra allowlisted current claims are reported as
 `expansion`, not `match` or authority. This is the acceptance gate for legacy/vector sidecar adapters
 before they are trusted as rented breadth.
+- **Bake-off misses are clinic evidence, not one undifferentiated failure.** `compound memory bakeoff
+  run` records every miss as one of `absent_claim`, `held_by_review_gate`, `duplicate_twin`,
+  `wrong_entity`, `synonym_alias_missing`, `semantic_lane_inactive`, `rank_miss`, `privacy_filter`,
+  `stale_or_volatile_claim`, `expected_id_wrong`, or `noisy_claim_pollution`, then emits the measured
+  top three with query/claim evidence refs and bounded owner fixes.
 - **Identity guard, fail-closed.** compound records the embedder it indexed with; if the sidecar
   reports a different one, breadth is **refused** (`ErrEmbedderMismatch`), never silently degraded —
   a silent model swap would wreck recall invisibly. A down sidecar degrades to `ErrEngineUnavailable`

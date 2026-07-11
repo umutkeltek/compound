@@ -51,6 +51,33 @@ func TestEngineDoctorDegradesExplicitlyWhenUnavailable(t *testing.T) {
 	}
 }
 
+func TestEngineDoctorRetriesWhenOwnedLedgerAdvancesDuringProbe(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	eng := &ownerAdvancingEngine{store: s}
+	report, err := s.EngineDoctor("ledger", 10, eng)
+	if err != nil {
+		t.Fatalf("owner advancement must not be blamed on rented engine: %v; report=%+v", err, report)
+	}
+	if !report.LedgerUnchanged || report.RetryCount != 1 || !report.OwnerLedgerAdvanced {
+		t.Fatalf("expected one stable-snapshot retry after owner advancement: %+v", report)
+	}
+	if report.Engine.CorpusGen != report.LedgerGen || report.LedgerGenAfter != report.LedgerGen {
+		t.Fatalf("stable report generations differ: %+v", report)
+	}
+}
+
+func TestQueryBreadthRefusesEngineGenerationAheadOfOwnedLedger(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	eng := &aheadEngine{gen: s.currentGen() + 1}
+	_, err := s.QueryBreadth("ledger", 10, eng)
+	if !errors.Is(err, ErrEngineAhead) {
+		t.Fatalf("expected engine-ahead refusal, got %v", err)
+	}
+	if eng.indexed {
+		t.Fatal("owner boundary must not rebuild an ahead engine backwards")
+	}
+}
+
 type mutatingEngine struct {
 	s *Store
 }
@@ -80,3 +107,52 @@ func (unavailableEngine) Index([]Claim, int64) error {
 func (unavailableEngine) Query(string, string, []string, int) ([]Hit, error) {
 	return nil, errors.New("should not query after unavailable index")
 }
+
+type ownerAdvancingEngine struct {
+	store    *Store
+	base     LexicalEngine
+	advanced bool
+}
+
+func (e *ownerAdvancingEngine) Capabilities() EngineCapabilities {
+	caps := e.base.Capabilities()
+	caps.Name = "owner-advancement-fixture"
+	return caps
+}
+
+func (e *ownerAdvancingEngine) Index(claims []Claim, gen int64) error {
+	return e.base.Index(claims, gen)
+}
+
+func (e *ownerAdvancingEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
+	if !e.advanced {
+		e.advanced = true
+		err := e.store.withLock(func() error {
+			seq, err := e.store.nextSeq()
+			if err != nil {
+				return err
+			}
+			return appendJSONL(e.store.claimsLog(), Claim{
+				ID: "claim_owner_advanced", Seq: seq, Entity: "owner", Predicate: "advanced",
+				Object: "concurrent legitimate write", ValidFrom: t0.Format("2006-01-02T15:04:05Z07:00"),
+				Confidence: 1, Derivation: "deterministic", Visibility: "operational",
+			})
+		})
+		if err != nil {
+			return nil, err
+		}
+		_ = e.base.Index(append(e.base.claims, Claim{ID: "claim_owner_advanced"}), e.store.currentGen())
+	}
+	return e.base.Query(text, gate, allowlist, k)
+}
+
+type aheadEngine struct {
+	gen     int64
+	indexed bool
+}
+
+func (e *aheadEngine) Capabilities() EngineCapabilities {
+	return EngineCapabilities{Name: "ahead", Breadth: true, CorpusGen: e.gen}
+}
+func (e *aheadEngine) Index([]Claim, int64) error                         { e.indexed = true; return nil }
+func (e *aheadEngine) Query(string, string, []string, int) ([]Hit, error) { return nil, nil }

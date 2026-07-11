@@ -10,21 +10,25 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 // EngineDoctorReport proves the rented breadth engine can serve recall without
 // becoming a ledger owner. Engines may build private indexes; they may not mutate
 // COMPOUND_HOME/ledger.
 type EngineDoctorReport struct {
-	Query            string             `json:"query"`
-	Engine           EngineCapabilities `json:"engine"`
-	LedgerGen        int64              `json:"ledger_gen"`
-	LedgerHashBefore string             `json:"ledger_hash_before"`
-	LedgerHashAfter  string             `json:"ledger_hash_after"`
-	LedgerUnchanged  bool               `json:"ledger_unchanged"`
-	Hits             []EngineDoctorHit  `json:"hits,omitempty"`
-	Degraded         bool               `json:"degraded,omitempty"`
-	Error            string             `json:"error,omitempty"`
+	Query               string             `json:"query"`
+	Engine              EngineCapabilities `json:"engine"`
+	LedgerGen           int64              `json:"ledger_gen"`
+	LedgerGenAfter      int64              `json:"ledger_gen_after"`
+	LedgerHashBefore    string             `json:"ledger_hash_before"`
+	LedgerHashAfter     string             `json:"ledger_hash_after"`
+	LedgerUnchanged     bool               `json:"ledger_unchanged"`
+	Hits                []EngineDoctorHit  `json:"hits,omitempty"`
+	Degraded            bool               `json:"degraded,omitempty"`
+	Error               string             `json:"error,omitempty"`
+	RetryCount          int                `json:"retry_count,omitempty"`
+	OwnerLedgerAdvanced bool               `json:"owner_ledger_advanced,omitempty"`
 }
 
 type EngineDoctorHit struct {
@@ -46,14 +50,29 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 	if k <= 0 {
 		k = 10
 	}
-	before, err := s.LedgerDigest()
+	report, err := s.engineDoctorAttempt(query, k, eng)
+	if err == nil || report.LedgerUnchanged {
+		return report, err
+	}
+	afterGen := report.LedgerGenAfter
+	if afterGen > report.LedgerGen && report.Engine.CorpusGen == afterGen {
+		retry, retryErr := s.engineDoctorAttempt(query, k, eng)
+		retry.RetryCount = 1
+		retry.OwnerLedgerAdvanced = true
+		return retry, retryErr
+	}
+	return report, err
+}
+
+func (s *Store) engineDoctorAttempt(query string, k int, eng Engine) (EngineDoctorReport, error) {
+	before, err := s.ledgerDoctorSnapshot()
 	if err != nil {
 		return EngineDoctorReport{}, err
 	}
 	report := EngineDoctorReport{
 		Query:            query,
-		LedgerGen:        s.currentGen(),
-		LedgerHashBefore: before,
+		LedgerGen:        before.gen,
+		LedgerHashBefore: before.digest,
 	}
 	claims, qerr := s.QueryBreadth(query, k, eng)
 	report.Engine = eng.Capabilities()
@@ -66,12 +85,13 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 			Seq:       c.Seq,
 		})
 	}
-	after, derr := s.LedgerDigest()
+	after, derr := s.ledgerDoctorSnapshot()
 	if derr != nil {
 		return report, derr
 	}
-	report.LedgerHashAfter = after
-	report.LedgerUnchanged = before == after
+	report.LedgerGenAfter = after.gen
+	report.LedgerHashAfter = after.digest
+	report.LedgerUnchanged = before.digest == after.digest
 	if qerr != nil {
 		report.Error = qerr.Error()
 		if errors.Is(qerr, ErrUnsupported) || errors.Is(qerr, ErrEngineUnavailable) {
@@ -84,6 +104,35 @@ func (s *Store) EngineDoctor(query string, k int, eng Engine) (EngineDoctorRepor
 		return report, fmt.Errorf("rented engine mutated owned ledger")
 	}
 	return report, nil
+}
+
+type ledgerDoctorSnapshot struct {
+	gen    int64
+	digest string
+}
+
+// ledgerDoctorSnapshot pairs generation and bytes under the ledger owner's
+// shared lock. The rented query runs outside this lock; only the two observations
+// are stabilized so a real owner writer cannot advance between gen and digest.
+func (s *Store) ledgerDoctorSnapshot() (ledgerDoctorSnapshot, error) {
+	lockPath := filepath.Join(s.home, "lock", "mem.lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return ledgerDoctorSnapshot{}, err
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return ledgerDoctorSnapshot{}, err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		return ledgerDoctorSnapshot{}, err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	digest, err := s.LedgerDigest()
+	if err != nil {
+		return ledgerDoctorSnapshot{}, err
+	}
+	return ledgerDoctorSnapshot{gen: s.currentGen(), digest: digest}, nil
 }
 
 // LedgerDigest hashes every file under COMPOUND_HOME/ledger with stable relative
