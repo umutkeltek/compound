@@ -146,10 +146,28 @@ func TestLoadRuntimeSourcesRejectsBrokenClosedWork(t *testing.T) {
 	w, err := workStore.Create(work.CreateInput{
 		Owner:            "codex",
 		SuccessPredicate: "broken close chain is rejected",
-		State:            "completed",
 	}, t0)
 	if err != nil {
 		t.Fatalf("create work: %v", err)
+	}
+	if _, err := workStore.Claim(w.ID, "codex", t0); err != nil {
+		t.Fatalf("claim work: %v", err)
+	}
+	if _, err := workStore.Advance(w.ID, work.AdvanceInput{Actor: "codex", To: "running"}, t0); err != nil {
+		t.Fatalf("advance work: %v", err)
+	}
+	closed, err := workStore.Close(w.ID, work.CloseInput{Actor: "codex", Outcome: "completed", MoveType: "audit_only", Summary: "closed before corruption"}, t0)
+	if err != nil {
+		t.Fatalf("close work: %v", err)
+	}
+	w = closed.Work
+	w.IDs.TransitionID = ""
+	data, err := json.MarshalIndent(&w, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal broken work: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homePath, "work", "work", w.ID+".json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("write broken work: %v", err)
 	}
 	_, err = LoadRuntimeSources(homePath, w.ID)
 	if err == nil || !strings.Contains(err.Error(), "missing transition_id") {

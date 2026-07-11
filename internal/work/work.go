@@ -40,6 +40,10 @@ var transitions = map[string][]string{
 // terminalStates may not advance further; close lands a work in one of them.
 var terminalStates = map[string]bool{"completed": true, "failed": true, "cancelled": true}
 
+func terminalStateRequiresClose(action, state string) error {
+	return fmt.Errorf("%s cannot enter terminal state %q; use Close so Receipt and Transition proof are emitted", action, state)
+}
+
 func canTransition(from, to string) bool {
 	for _, s := range transitions[from] {
 		if s == to {
@@ -400,6 +404,9 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if in.To == "" {
 		return w, fmt.Errorf("advance requires --to <state>")
 	}
+	if terminalStates[in.To] {
+		return w, terminalStateRequiresClose("advance", in.To)
+	}
 	if in.To != w.State && !canTransition(w.State, in.To) {
 		return w, fmt.Errorf("illegal transition %s -> %s (allowed: %s)", w.State, in.To, strings.Join(transitions[w.State], ", "))
 	}
@@ -499,12 +506,6 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		note += " (policy " + plan.Policy.Outcome + ")"
 	}
 	event := Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: note, Attached: attached}
-	if terminalStates[in.To] {
-		event.WorkSHA256, err = workEnvelopeSHA256(w)
-		if err != nil {
-			return w, err
-		}
-	}
 	return w, s.appendEvent(event)
 }
 

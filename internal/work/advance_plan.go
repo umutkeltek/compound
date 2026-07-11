@@ -81,6 +81,9 @@ func (s *Store) AdvancePlan(workID string, now time.Time, opts AdvancePlanOption
 	if err != nil {
 		return AdvancePlan{}, err
 	}
+	if terminalStates[to] {
+		return AdvancePlan{}, terminalStateRequiresClose("advance-plan", to)
+	}
 	actor := strings.TrimSpace(opts.Actor)
 	if actor == "" {
 		actor = "codex"

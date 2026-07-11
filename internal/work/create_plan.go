@@ -299,6 +299,9 @@ func validateCreatePlanForAdmission(plan CreatePlan) error {
 	if strings.TrimSpace(plan.WorkState) != "" && plan.Work.State != plan.WorkState {
 		return fmt.Errorf("create-plan %s work.state %q does not match work_state %q", plan.ID, plan.Work.State, plan.WorkState)
 	}
+	if terminalStates[plan.Work.State] {
+		return fmt.Errorf("create-plan %s: %w", plan.ID, terminalStateRequiresClose("create-plan admission", plan.Work.State))
+	}
 	if err := plan.Work.Validate(); err != nil {
 		return fmt.Errorf("create-plan %s work invalid: %w", plan.ID, err)
 	}
@@ -373,6 +376,9 @@ func sameStringSlice(a, b []string) bool {
 }
 
 func (s *Store) createPlanForWork(w envelope.WorkEnvelope, now time.Time, opts CreatePlanOptions) (CreatePlan, error) {
+	if terminalStates[w.State] {
+		return CreatePlan{}, terminalStateRequiresClose("create", w.State)
+	}
 	if err := w.Validate(); err != nil {
 		return CreatePlan{}, err
 	}
@@ -462,6 +468,9 @@ func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAtta
 
 func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, extraAttached []string) (envelope.WorkEnvelope, error) {
 	w := plan.Work
+	if terminalStates[w.State] {
+		return w, terminalStateRequiresClose("create-plan admission", w.State)
+	}
 	if err := validateDirectorProposalInitialState(w); err != nil {
 		return w, err
 	}
@@ -505,12 +514,6 @@ func (s *Store) admitWorkLocked(plan CreatePlan, now time.Time, note string, ext
 		note = "created"
 	}
 	event := Event{TS: ts(now), WorkID: w.ID, From: "", To: state, Note: note, Attached: attached}
-	if terminalStates[state] {
-		event.WorkSHA256, err = workEnvelopeSHA256(w)
-		if err != nil {
-			return w, err
-		}
-	}
 	if err := s.appendEvent(event); err != nil {
 		return w, err
 	}
