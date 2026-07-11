@@ -425,6 +425,57 @@ func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
 	}
 }
 
+func TestExecuteDryRunRejectsLaterUnresolvedJudgeReservationBeforeAnyProviderCall(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	const targetRef = "mcand_example_api_clean"
+	writePanelFixtureTarget(t, home, targetRef)
+	run := buildRunnablePlan(t, home, []string{targetRef}, Budget{MaxTotalTokens: 4000})
+	if _, err := reservePanelTargetAttempt(home, run, targetRef, fixedPanelNow()); err != nil {
+		t.Fatal(err)
+	}
+
+	lensRef := run.LensSet.Included[0].Ref
+	lensRequestID := "panel:" + run.ID + ":" + targetDigest(targetRef) + ":" + lensRef
+	if err := reservePanelCallAttempt(home, run, targetRef, lensRequestID, "compound.panel.lens", lensRef, run.Route.LensLane, fixedPanelNow()); err != nil {
+		t.Fatal(err)
+	}
+	lensRoute, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     lensRequestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.lens",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.LensLane.ModelID,
+		Usage:         routeevidence.Usage{TotalTokens: 7},
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := routeevidence.RecordJoined(home, lensRoute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := completePanelCallAttempt(home, run, targetRef, lensRequestID, "compound.panel.lens", lensRef, run.Route.LensLane, joined.Evidence.ID, true, fixedPanelNow()); err != nil {
+		t.Fatal(err)
+	}
+
+	judgeRequestID := "panel:" + run.ID + ":" + targetDigest(targetRef) + ":" + judgePromptID
+	if err := reservePanelCallAttempt(home, run, targetRef, judgeRequestID, "compound.panel.judge", judgePromptID, run.Route.JudgeLane, fixedPanelNow()); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "unresolved route attempt") {
+		t.Fatalf("later unresolved judge reservation did not fail closed: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("later unresolved judge reservation was detected only after %d provider call(s)", caller.calls)
+	}
+}
+
 func TestExecuteDryRunGenericRouteCannotResolveCallReservation(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
