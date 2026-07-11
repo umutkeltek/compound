@@ -1405,6 +1405,103 @@ func removeWorkEvidenceRefPrefix(t *testing.T, home, workID, prefix string) {
 	}
 }
 
+func TestCompileFailsClosedOnSymlinkedHotWorkAncestor(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "hot-ancestor-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "hot-ancestor", proofNow.Add(-24*time.Hour), sampleOptions{})
+	replaceWithSymlink(t, filepath.Join(home, "work", "work"))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "work path must not contain symlink beneath compound home") {
+		t.Fatalf("symlinked hot work ancestor did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedArchivedWorkAncestor(t *testing.T) {
+	home := t.TempDir()
+	if err := homepkg.Init(home, "local", proofNow.Add(-72*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "archive-ancestor-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	victim := seedSample(t, home, plan, "archive-ancestor", proofNow.Add(-24*time.Hour), sampleOptions{})
+	archiveAutonomyWork(t, home, victim.WorkID)
+	replaceWithSymlink(t, filepath.Join(homepkg.OperationalArchiveFilesRoot(home), "work", "work"))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "archive path must not contain symlink beneath compound home") {
+		t.Fatalf("symlinked archived work ancestor did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedEventsAncestor(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "events-ancestor-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "events-ancestor", proofNow.Add(-24*time.Hour), sampleOptions{})
+	replaceWithSymlink(t, filepath.Join(home, "events"))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "work event ledger path must not contain symlink beneath compound home") {
+		t.Fatalf("symlinked events ancestor did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedWorkEventLedger(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "work-ledger-symlink-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "work-ledger-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
+	replaceWithSymlink(t, filepath.Join(home, "events", "work.jsonl"))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "work event ledger file must be a regular file") {
+		t.Fatalf("symlinked work event ledger did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnSymlinkedRouteEvidenceLedger(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "route-ledger-symlink-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "route-ledger-symlink", proofNow.Add(-24*time.Hour), sampleOptions{})
+	replaceWithSymlink(t, filepath.Join(home, "ledger", "execution-route-evidence.jsonl"))
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "route evidence ledger file must be a regular file") {
+		t.Fatalf("symlinked route evidence ledger did not fail closed: %v", err)
+	}
+}
+
+func TestCompileFailsClosedOnRouteEvidenceLedgerWithoutFinalNewline(t *testing.T) {
+	home := t.TempDir()
+	plan := installPlan(t, home, false)
+	seedSample(t, home, plan, "route-framing-clean", proofNow.Add(-48*time.Hour), sampleOptions{})
+	seedSample(t, home, plan, "route-framing-final", proofNow.Add(-24*time.Hour), sampleOptions{})
+	path := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		t.Fatalf("route evidence fixture was not newline framed")
+	}
+	if err := os.WriteFile(path, raw[:len(raw)-1], 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := compileArtifact(home, plan, 2); err == nil || !strings.Contains(err.Error(), "route evidence ledger must end with newline") {
+		t.Fatalf("valid final route row without newline did not fail closed: %v", err)
+	}
+}
+
+func replaceWithSymlink(t *testing.T, path string) {
+	t.Helper()
+	target := filepath.Join(t.TempDir(), filepath.Base(path))
+	if err := os.Rename(path, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func archiveAutonomyWork(t *testing.T, home, workID string) homepkg.OperationalArchiveEntry {
 	t.Helper()
 	rel := filepath.ToSlash(filepath.Join("work", "work", workID+".json"))
