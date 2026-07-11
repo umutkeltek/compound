@@ -2,10 +2,90 @@
 
 Local-first, agent-agnostic meaning + execution substrate.
 
-Compound owns the spine: context, decisions, work, policy, evidence,
-receipts, transitions, memory, capabilities, products, routes, and runtime
-bindings. Executors are rented edges. Search is not truth. Model output is not
-canon. Mutation requires an envelope and proof.
+Agent sessions are amnesiac by default: whatever an agent learned, decided, or
+broke evaporates when the context window closes. Compound is the substrate that
+makes agent work accumulate instead — every session leaves claims, receipts,
+and lenses behind, and the next session starts smarter because of them. Across
+any harness, any model, any vendor.
+
+Compound owns the spine: context, decisions, work, policy, evidence, receipts,
+transitions, memory, capabilities, products, routes, and runtime bindings.
+Executors are rented edges. Search is not truth. Model output is not canon.
+Mutation requires an envelope and proof.
+
+## Why
+
+Four failure classes eat agent-assisted work, and most stacks have no organ
+against any of them:
+
+- **The rediscovery tax.** An agent burns rounds re-deriving what the system
+  already knew, because knowledge existed but nothing served it at the moment
+  of need.
+- **Landed is not working.** A change merges, a status doc says done, and the
+  behavior never actually changed. Reports are trusted; flows are not exercised.
+- **The blind cron.** Scheduled automation asserts effects on a schedule,
+  exits 0 while broken, and nothing consumes its absence-of-effect as a signal.
+  A blind cron is a liar with a schedule.
+- **Decision homework.** Every judgment reaches the human as a CLI incantation
+  or a wall of context to reverse-engineer, instead of a plain-language card
+  with one honest act.
+
+Compound closes these as loops, not as features: evidence comes in, receipts go
+out, and the system's next behavior provably differs. When it doesn't, that gap
+is itself recorded as a failure class — and compiled into a lens that fires the
+next time the same shape appears.
+
+## One night, end to end
+
+A real sequence from building this system (details sanitized; the mechanics are
+exactly what this repo ships):
+
+An operator's work sat blocked on a host everyone believed was on. A network
+probe said it was dead; a second look inverted the probe — it was the overlay
+network's plane that had failed, and no single observation had the authority to
+say so. The moment compiled into a lens: *every single-plane observation is a
+hypothesis — assertions and probes alike.* It now fires at orientation whenever
+work depends on a host.
+
+The operator then ruled, in one sentence, that the system should self-heal
+rather than run blind cron jobs. By morning the ruling was runtime: divergence
+observations (`expected_state != observed_state`) surface immediately as cards,
+a director proposes remediation envelopes from them, and evidence-thresholded
+grants let a proven work class admit itself — while anything external,
+destructive, or irreversible stays with the human by construction, not by
+policy prose.
+
+Then the punchline: a decision the operator kept being handed as homework
+turned out to have been made days earlier. Nothing could say so until an organ
+owned that state. The card built to *ask* the question instead correctly
+reported there was nothing to ask.
+
+Feeling → compiled lens → landed code → live proof, each step with a receipt.
+The loop this repo exists to make ordinary.
+
+## Principles
+
+- **Discover reality before acting.** Probe first; the map is never the
+  territory, including the system's own map of itself.
+- **Own the spine; rent the executors.** Meaning, policy, and proof are owned;
+  models, engines, and harnesses are replaceable edges.
+- **Store evidence, not truth.** Every claim carries provenance and a
+  falsifier; supersession is a record, never a prose edit.
+- **Recall only what is relevant.** Context is served in task-scoped slices,
+  not preambles.
+- **Keep humans on irreversible decisions** — by setting envelopes and standing
+  grants, not by being paged. A nagging agent violates this rule; it does not
+  enforce it.
+- **Prove the change; don't trust the report.** A close without a live-flow
+  observation is a claim, not a fact.
+- **Convert repetition into infrastructure.** Repetition count — not idea
+  elegance — is what earns a new organ.
+- **Subtract by default.** Everything created is either enforcement (compiled
+  from a receipted ruling, blocks silently, carries undo) or evidence (names
+  its consumer, or decays). Anything else is not built.
+- **Articulate boldly, hold falsifiably.** Even a wrong articulation is a kind
+  of sense: a specific claim gets corrected with one line and a receipt, while
+  unarticulated sense stays mush — and mush cannot compound.
 
 ## What It Is
 
@@ -208,6 +288,20 @@ tools, analytics APIs, and sidecars are replaceable edge adapters. They may
 broaden retrieval or execute work; they do not own promotion, visibility,
 supersession, policy, or truth. The ledger is authority. Engines are rebuildable
 views.
+
+## Direction
+
+The maturity ladder this substrate is built to climb, in order:
+
+1. Reduce its operator's cognitive overhead.
+2. Orchestrate many specialized agents reliably.
+3. Run parts of a real business under human oversight.
+4. Serve as a research instrument that generates and tests genuinely new ideas.
+5. Evolve because of the work done with it, not because it keeps being
+   redesigned.
+
+This is direction, not commitment; sequencing lives with the operator and is
+decided by evidence, one receipted step at a time.
 
 ## Status
 
