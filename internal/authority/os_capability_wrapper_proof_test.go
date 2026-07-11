@@ -1,10 +1,15 @@
 package authority
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,13 +19,18 @@ import (
 )
 
 type osCapabilityProofFixture struct {
-	disabledExitZero      bool
-	disabledAuthorityRefs []string
-	projectionPoison      string
-	entrypointPoison      string
-	wrapperOfferID        string
-	legacyDispatch        bool
-	resolutionMutator     func(map[string]any)
+	disabledExitZero          bool
+	secondaryDisabledExitZero bool
+	disabledAuthorityRefs     []string
+	projectionPoison          string
+	entrypointPoison          string
+	shimPoison                string
+	wrapperOfferID            string
+	nonceWrapperOfferID       string
+	legacyDispatch            bool
+	mutateEntrypoint          bool
+	mutateCompoundBinary      bool
+	resolutionMutator         func(map[string]any)
 }
 
 type installedOSCapabilityProofFixture struct {
@@ -68,6 +78,7 @@ export async function runCapabilityProxy() {
 	writeExecutableFixture(t, filepath.Join(execLane, "os-capability-proxy.ts"), projection)
 
 	shim := `#!/bin/sh
+` + opts.shimPoison + `
 exec "${HOME}/.bun/bin/bun" "${HOME}/Projects/operating-system/umut-os/exec-lane/os.ts" "$@"
 `
 	writeExecutableFixture(t, filepath.Join(userHome, ".local", "bin", "os"), shim)
@@ -78,9 +89,16 @@ exec "${HOME}/.bun/bin/bun" "${HOME}/Projects/operating-system/umut-os/exec-lane
 		wrapperOfferID = "tool:compound.proof-check"
 	}
 	wrapper := osCapabilityResolutionFixture(wrapperOfferID)
+	secondaryDirect := osCapabilityResolutionFixtureForTask(osCapabilitySecondaryProbeTask, "judge-critique", "tool:compound.proof-check")
+	secondaryWrapperOfferID := "tool:compound.proof-check"
+	if opts.nonceWrapperOfferID != "" {
+		secondaryWrapperOfferID = opts.nonceWrapperOfferID
+	}
+	secondaryWrapper := osCapabilityResolutionFixtureForTask(osCapabilitySecondaryProbeTask, "judge-critique", secondaryWrapperOfferID)
 	if opts.resolutionMutator != nil {
-		opts.resolutionMutator(direct)
-		opts.resolutionMutator(wrapper)
+		for _, report := range []map[string]any{direct, wrapper, secondaryDirect, secondaryWrapper} {
+			opts.resolutionMutator(report)
+		}
 	}
 	directBody, err := json.Marshal(direct)
 	if err != nil {
@@ -90,23 +108,45 @@ exec "${HOME}/.bun/bin/bun" "${HOME}/Projects/operating-system/umut-os/exec-lane
 	if err != nil {
 		t.Fatal(err)
 	}
+	secondaryDirectBody, err := json.Marshal(secondaryDirect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondaryWrapperBody, err := json.Marshal(secondaryWrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
 
+	const taskPlaceholder = "__OS_CAPABILITY_PROOF_TASK__"
+	compoundMutation := ""
+	if opts.mutateEntrypoint {
+		compoundMutation += fmt.Sprintf("printf '\\n// mutated during proof\\n' >> %q\n", filepath.Join(execLane, "os.ts"))
+	}
+	if opts.mutateCompoundBinary {
+		compoundMutation += "printf '\\n# mutated during proof\\n' >> \"$0\"\n"
+	}
 	compoundScript := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "version" ]; then
   echo "compound 0.1.0 (build abc1234)"
   exit 0
 fi
 if [ "$1" = "capability" ] && [ "$2" = "resolve" ]; then
+%s
+  if [ "$4" = %q ]; then
+    cat <<'JSON'
+%s
+JSON
+    exit 0
+  fi
   cat <<'JSON'
 %s
 JSON
   exit 0
 fi
 exit 2
-`, directBody)
+`, compoundMutation, osCapabilitySecondaryProbeTask, secondaryDirectBody, directBody)
 	writeExecutableFixture(t, filepath.Join(binDir, "compound"), compoundScript)
 
-	disabledExit := 2
 	disabledAuthorityRefs := opts.disabledAuthorityRefs
 	if disabledAuthorityRefs == nil {
 		disabledAuthorityRefs = []string{
@@ -126,23 +166,49 @@ exit 2
 	if err != nil {
 		t.Fatal(err)
 	}
-	disabledBody := string(disabledBytes)
+	disabledBody := strings.ReplaceAll(string(disabledBytes), osCapabilityProbeTask, taskPlaceholder)
+	disabledBranch := fmt.Sprintf(`cat <<'JSON' | sed "s|%s|$3|g"
+%s
+JSON
+exit 2`, taskPlaceholder, disabledBody)
 	if opts.disabledExitZero {
-		disabledExit = 0
-		disabledBody = string(wrapperBody)
-	}
-	bunScript := fmt.Sprintf(`#!/bin/sh
-if [ "${OS_COMPOUND_CLI:-}" = "off" ]; then
+		disabledBranch = fmt.Sprintf(`if [ "$3" = %q ]; then
   cat <<'JSON'
 %s
 JSON
-  exit %d
+  exit 0
+fi
+cat <<'JSON'
+%s
+JSON
+exit 0`, osCapabilitySecondaryProbeTask, secondaryWrapperBody, wrapperBody)
+	} else if opts.secondaryDisabledExitZero {
+		disabledBranch = fmt.Sprintf(`if [ "$3" = %q ]; then
+  cat <<'JSON'
+%s
+JSON
+  exit 0
+fi
+cat <<'JSON' | sed "s|%s|$3|g"
+%s
+JSON
+exit 2`, osCapabilitySecondaryProbeTask, secondaryWrapperBody, taskPlaceholder, disabledBody)
+	}
+	bunScript := fmt.Sprintf(`#!/bin/sh
+if [ "${OS_COMPOUND_CLI:-}" = "off" ]; then
+%s
+fi
+if [ "$3" = %q ]; then
+  cat <<'JSON'
+%s
+JSON
+  exit 0
 fi
 cat <<'JSON'
 %s
 JSON
 exit 0
-`, disabledBody, disabledExit, wrapperBody)
+`, disabledBranch, osCapabilitySecondaryProbeTask, secondaryWrapperBody, wrapperBody)
 	writeExecutableFixture(t, filepath.Join(userHome, ".bun", "bin", "bun"), bunScript)
 
 	t.Setenv("HOME", userHome)
@@ -151,6 +217,10 @@ exit 0
 }
 
 func doctorOSCapabilityRow(t *testing.T, homePath string) OSAbsorptionDoctorRow {
+	return doctorOSCapabilityRowWithEvidence(t, homePath, osCapabilityFixtureSourceDigestRefs(t))
+}
+
+func doctorOSCapabilityRowWithEvidence(t *testing.T, homePath string, sourceEvidenceRefs []string) OSAbsorptionDoctorRow {
 	t.Helper()
 	matrixRow := row("os_source_os_capability_cli", "cli:os capability", "wrapper", capgraph.CapabilityGraphAuthorityRef, "os capability wrapper and compound capability resolve", "")
 	matrixRow.SourceKind = "compatibility_cli"
@@ -161,6 +231,7 @@ func doctorOSCapabilityRow(t *testing.T, homePath string) OSAbsorptionDoctorRow 
 		capgraph.CapabilityGraphAuthorityRef,
 		routeevidence.ModelCapabilitiesAuthorityRef,
 	}
+	matrixRow.EvidenceRefs = append(matrixRow.EvidenceRefs, sourceEvidenceRefs...)
 	matrixRow.RetirementGate = "os capability performs no independent authority read"
 	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
 	writeJSONFixture(t, matrixPath, OSAbsorptionSourceMatrix{SchemaVersion: OSAbsorptionMatrixSchema, Rows: []OSAbsorptionMatrixRow{matrixRow}})
@@ -177,8 +248,33 @@ func doctorOSCapabilityRow(t *testing.T, homePath string) OSAbsorptionDoctorRow 
 	return report.Rows[0]
 }
 
+func osCapabilityFixtureSourceDigestRefs(t *testing.T) []string {
+	t.Helper()
+	homePath := os.Getenv("HOME")
+	paths := []struct {
+		prefix string
+		path   string
+	}{
+		{prefix: osCapabilityShimDigestRef, path: filepath.Join(homePath, ".local", "bin", "os")},
+		{prefix: osCapabilityEntrypointDigestRef, path: filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")},
+		{prefix: osCapabilityProjectionDigestRef, path: filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os-capability-proxy.ts")},
+	}
+	refs := make([]string, 0, len(paths))
+	for _, item := range paths {
+		body, err := os.ReadFile(item.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs = append(refs, item.prefix+digestBytes(body))
+	}
+	return refs
+}
+
 func osCapabilityResolutionFixture(offerID string) map[string]any {
-	const task = "implement a bounded Go authority proof"
+	return osCapabilityResolutionFixtureForTask(osCapabilityProbeTask, "build-implement", offerID)
+}
+
+func osCapabilityResolutionFixtureForTask(task, capabilityClass, offerID string) map[string]any {
 	return map[string]any{
 		"schema_version":    "compound.capability_resolution.v0.1",
 		"status":            "ok",
@@ -188,8 +284,8 @@ func osCapabilityResolutionFixture(offerID string) map[string]any {
 			"schema_version":      routeevidence.CapabilityTaskClassifierSchemaVersion,
 			"authority_ref":       routeevidence.CapabilityTaskClassifierAuthorityRef,
 			"authority_revision":  "sha256:" + repeatHex("b", 64),
-			"rule_id":             "build-implement",
-			"capability_class":    "build-implement",
+			"rule_id":             capabilityClass,
+			"capability_class":    capabilityClass,
 			"deterministic_first": "reproduce/run tests before LLM code work",
 			"evaluation_method":   "tests + diff + runtime verification",
 		},
@@ -218,11 +314,11 @@ func osCapabilityResolutionFixture(offerID string) map[string]any {
 			"status":              "planned",
 			"authority_ref":       routeevidence.ModelCapabilitiesAuthorityRef,
 			"authority_path":      "/synthetic/model-capabilities.yaml",
-			"source_authority_id": "mrcsrc_fixture",
+			"source_authority_id": "mrcsrc_aaaaaaaaaaaa",
 			"source_revision":     "sha256:" + repeatHex("a", 64),
-			"capability_class":    "build-implement",
+			"capability_class":    capabilityClass,
 			"privacy_sensitive":   false,
-			"routing_rule":        "routing_defaults[build-implement]",
+			"routing_rule":        "routing_defaults[" + capabilityClass + "]",
 			"lane_justification":  []string{"fixture"},
 			"chain": []any{map[string]any{
 				"position": 0, "model_id": "codex", "lane": "codex", "tier": "premium", "claim_level": "capable", "gate_role": "eligible", "justification": "fixture",
@@ -251,7 +347,7 @@ func TestParseOSCapabilityResolutionAcceptsAdditiveReorderedAuthorityEvidence(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parseOSCapabilityResolution(body); err != nil {
+	if _, err := parseOSCapabilityResolution(body, osCapabilityProbeTask, "build-implement"); err != nil {
 		t.Fatalf("additive reordered authority evidence should parse: %v", err)
 	}
 }
@@ -288,6 +384,21 @@ func TestParseOSCapabilityResolutionRejectsUnboundNestedAuthorities(t *testing.T
 		{name: "router schema", mutate: func(report map[string]any) { report["route_plan"].(map[string]any)["schema_version"] = "forged" }},
 		{name: "router ref", mutate: func(report map[string]any) { report["route_plan"].(map[string]any)["authority_ref"] = "forged" }},
 		{name: "router source id", mutate: func(report map[string]any) { report["route_plan"].(map[string]any)["source_authority_id"] = "" }},
+		{name: "router source id delimiter", mutate: func(report map[string]any) {
+			report["route_plan"].(map[string]any)["source_authority_id"] = "mrcsrc_aaaaaaaaaaaa;projection_sha256:forged"
+		}},
+		{name: "router source id slash", mutate: func(report map[string]any) {
+			report["route_plan"].(map[string]any)["source_authority_id"] = "mrcsrc_aaaaaaaaaaaa/forged"
+		}},
+		{name: "router source id newline", mutate: func(report map[string]any) {
+			report["route_plan"].(map[string]any)["source_authority_id"] = "mrcsrc_aaaaaaaaaaaa\nforged"
+		}},
+		{name: "router source id wrong prefix", mutate: func(report map[string]any) {
+			report["route_plan"].(map[string]any)["source_authority_id"] = "source_aaaaaaaaaaaa"
+		}},
+		{name: "router source id oversized", mutate: func(report map[string]any) {
+			report["route_plan"].(map[string]any)["source_authority_id"] = "mrcsrc_" + strings.Repeat("a", 256)
+		}},
 		{name: "router revision", mutate: func(report map[string]any) { report["route_plan"].(map[string]any)["source_revision"] = "sha256:short" }},
 		{name: "router status", mutate: func(report map[string]any) { report["route_plan"].(map[string]any)["status"] = "draft" }},
 		{name: "router class mismatch", mutate: func(report map[string]any) {
@@ -311,10 +422,112 @@ func TestParseOSCapabilityResolutionRejectsUnboundNestedAuthorities(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := parseOSCapabilityResolution(body); err == nil {
+			if _, err := parseOSCapabilityResolution(body, osCapabilityProbeTask, "build-implement"); err == nil {
 				t.Fatal("malformed authority binding should fail")
 			}
 		})
+	}
+}
+
+func TestRunOSCapabilityCommandActivelyBoundsOutputAndKillsProcessGroup(t *testing.T) {
+	root := t.TempDir()
+	script := filepath.Join(root, "flood")
+	childPIDPath := filepath.Join(root, "child.pid")
+	writeExecutableFixture(t, script, `#!/bin/sh
+sleep 30 &
+printf '%s' "$!" > "$PID_FILE"
+while :; do
+  printf '0123456789abcdef0123456789abcdef'
+done
+`)
+
+	result, err := runOSCapabilityCommandWithLimits(script, nil, map[string]string{"PID_FILE": childPIDPath}, 3*time.Second, 1024)
+	if !errors.Is(err, errOSCapabilityOutputLimit) {
+		t.Fatalf("flood command error = %v, want %v", err, errOSCapabilityOutputLimit)
+	}
+	if got := len(result.stdout) + len(result.stderr); got > 1024 {
+		t.Fatalf("retained output = %d bytes, want <= 1024", got)
+	}
+	pidBody, err := os.ReadFile(childPIDPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBody)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("flood command child process %d survived process-group cancellation: %v", pid, err)
+	}
+}
+
+func TestRunOSCapabilityCommandLimitsAreActiveAndTimeoutIsDistinct(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		limit     int64
+		wantError error
+		wantBytes int
+	}{
+		{name: "exact stdout limit", body: `printf '12345678'`, limit: 8, wantBytes: 8},
+		{name: "stdout overflow", body: `printf '123456789'`, limit: 8, wantError: errOSCapabilityOutputLimit, wantBytes: 8},
+		{name: "stderr overflow", body: `printf '123456789' >&2`, limit: 8, wantError: errOSCapabilityOutputLimit, wantBytes: 8},
+		{name: "combined overflow", body: `printf '12345'; printf '6789' >&2`, limit: 8, wantError: errOSCapabilityOutputLimit, wantBytes: 8},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := runOSCapabilityCommandWithLimits("/bin/sh", []string{"-c", tc.body}, nil, 3*time.Second, tc.limit)
+			if !errors.Is(err, tc.wantError) {
+				t.Fatalf("error = %v, want %v", err, tc.wantError)
+			}
+			if got := len(result.stdout) + len(result.stderr); got != tc.wantBytes {
+				t.Fatalf("retained output = %d, want %d", got, tc.wantBytes)
+			}
+		})
+	}
+
+	_, err := runOSCapabilityCommandWithLimits("/bin/sh", []string{"-c", "sleep 30"}, nil, 20*time.Millisecond, 1024)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errOSCapabilityOutputLimit) {
+		t.Fatalf("timeout error = %v, want deadline exceeded distinct from output limit", err)
+	}
+}
+
+func TestOSCapabilityExpectedSourceDigestsRequireReviewedExactBytes(t *testing.T) {
+	snapshot := osCapabilitySourceSnapshot{
+		shim: []byte("shim"), entrypoint: []byte("entrypoint"), projection: []byte("projection"),
+	}
+	refs := []string{
+		osCapabilityShimDigestRef + digestBytes(snapshot.shim),
+		osCapabilityEntrypointDigestRef + digestBytes(snapshot.entrypoint),
+		osCapabilityProjectionDigestRef + digestBytes(snapshot.projection),
+	}
+	expected, err := expectedOSCapabilitySourceDigests(refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.matchesExpected(expected); err != nil {
+		t.Fatalf("reviewed bytes should match: %v", err)
+	}
+
+	if _, err := expectedOSCapabilitySourceDigests(refs[:2]); err == nil {
+		t.Fatal("missing projection digest must fail")
+	}
+	malformed := append([]string(nil), refs...)
+	malformed[0] = osCapabilityShimDigestRef + "short"
+	if _, err := expectedOSCapabilitySourceDigests(malformed); err == nil {
+		t.Fatal("malformed reviewed digest must fail")
+	}
+	conflicting := append(append([]string(nil), refs...), osCapabilityShimDigestRef+strings.Repeat("a", 64))
+	if _, err := expectedOSCapabilitySourceDigests(conflicting); err == nil {
+		t.Fatal("conflicting reviewed digests must fail")
+	}
+	expected.entrypoint = strings.Repeat("0", 64)
+	if err := snapshot.matchesExpected(expected); err == nil {
+		t.Fatal("installed bytes that diverge from reviewed digest must fail")
 	}
 }
 

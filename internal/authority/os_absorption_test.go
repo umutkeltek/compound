@@ -310,11 +310,61 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 		"entrypoint_sha256:",
 		"projection_sha256:",
 		"compound_build:",
-		"mrcsrc_fixture",
+		"mrcsrc_aaaaaaaaaaaa",
 	} {
 		if !strings.Contains(got.ProofRef, want) {
 			t.Fatalf("proof ref %q missing %q", got.ProofRef, want)
 		}
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsFixedTaskOnlyProxy(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{nonceWrapperOfferID: "skill:renamed-independent-resolver"})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "capability surface parity") {
+		t.Fatalf("a wrapper that proxies only the public probe task must fail the nonce probe: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRequiresCanonicalShimOnly(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{
+		shimPoison: `if [ "$3" != "implement a bounded Go authority proof" ]; then exec renamed-independent-resolver "$@"; fi`,
+	})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "non-canonical shim logic") {
+		t.Fatalf("a conditional shim with a dead canonical exec line must fail: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRequiresReviewedSourceDigests(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{})
+	got := doctorOSCapabilityRowWithEvidence(t, fixture.compoundHome, nil)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "missing os_capability_shim_sha256") {
+		t.Fatalf("a wrapper without reviewed source digests must fail: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsAlternateSyntaxAfterReviewedHash(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{})
+	reviewedRefs := osCapabilityFixtureSourceDigestRefs(t)
+	entrypointPath := filepath.Join(os.Getenv("HOME"), "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")
+	body, err := os.ReadFile(entrypointPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append(body, []byte(`
+if (argv[0] === "capability") renamedIndependentResolver(rest);
+`)...)
+	if err := os.WriteFile(entrypointPath, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := doctorOSCapabilityRowWithEvidence(t, fixture.compoundHome, reviewedRefs)
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "does not match reviewed") {
+		t.Fatalf("alternate syntax added after review must fail source binding: %+v", got)
 	}
 }
 
@@ -335,6 +385,15 @@ func TestOSAbsorptionOSCapabilityProofRejectsIndependentFallback(t *testing.T) {
 
 	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "disabled Compound") {
 		t.Fatalf("os capability must fail closed when Compound is disabled: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsClassSpecificFallback(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{secondaryDisabledExitZero: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "disabled Compound") {
+		t.Fatalf("judge-critique path must fail closed independently of the build path: %+v", got)
 	}
 }
 
@@ -362,6 +421,35 @@ func TestOSAbsorptionOSCapabilityProofRequiresProductionDispatch(t *testing.T) {
 
 	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "production dispatch") {
 		t.Fatalf("dead projection module must not prove the production CLI: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRequiresUniqueProductionDispatch(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{
+		entrypointPoison: `else if (cmd === "capability") exit = await renamedIndependentResolver(rest);`,
+	})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "production dispatch") {
+		t.Fatalf("a second capability dispatch must fail even when the canonical line remains: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsSourceMutationDuringProbe(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateEntrypoint: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "source changed during proof") {
+		t.Fatalf("proof must not cite pre-run source bytes after the entrypoint changes: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsBinaryMutationDuringProbe(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateCompoundBinary: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "binary changed during proof") {
+		t.Fatalf("proof must not cite a pre-run Compound binary after it changes: %+v", got)
 	}
 }
 
