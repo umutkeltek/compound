@@ -542,15 +542,7 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 	if err != nil {
 		return "", err
 	}
-	if existing, ok, err := panelRouteEvidenceForRequest(homePath, requestID); err != nil {
-		return "", err
-	} else if ok {
-		if existing.RecordedVia != routeevidence.RecorderGeneric {
-			return "", fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
-		}
-		return "", fmt.Errorf("panel request %s already has route evidence %s; refusing to reuse it for a new provider call", requestID, existing.ID)
-	}
-	recorded, err := routeevidence.RecordJoined(homePath, ev)
+	recorded, err := routeevidence.RecordJoinedUniqueRequestID(homePath, ev)
 	if err != nil {
 		return "", err
 	}

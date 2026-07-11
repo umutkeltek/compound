@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -204,6 +205,14 @@ func RecordJoined(homePath string, ev Evidence) (ImportResult, error) {
 	return recordJoinedVia(homePath, ev, RecorderGeneric)
 }
 
+// RecordJoinedUniqueRequestID names the strict writer contract used by callers
+// whose provider-call identity depends on request_id uniqueness. All canonical
+// recorders share the same atomic uniqueness gate so a generic writer cannot
+// race around this entry point.
+func RecordJoinedUniqueRequestID(homePath string, ev Evidence) (ImportResult, error) {
+	return recordJoinedVia(homePath, ev, RecorderGeneric)
+}
+
 func RecordPanelRuntimeJoined(homePath string, ev Evidence) (ImportResult, error) {
 	return recordJoinedVia(homePath, ev, RecorderTrustedPanelRuntime)
 }
@@ -214,13 +223,14 @@ func recordJoinedVia(homePath string, ev Evidence, recorder string) (ImportResul
 	if err != nil {
 		return ImportResult{}, err
 	}
-	if err := recordEvidence(homePath, ev); err != nil {
+	recorded, err := recordEvidenceUniqueRequestID(homePath, ev)
+	if err != nil {
 		return ImportResult{}, err
 	}
 	if err := RecordTransition(homePath, tr); err != nil {
 		return ImportResult{}, err
 	}
-	return ImportResult{Evidence: ev, Transition: tr}, nil
+	return ImportResult{Evidence: recorded, Transition: tr}, nil
 }
 
 func JoinTransition(ev Evidence) (Evidence, envelope.Transition, error) {
@@ -289,16 +299,67 @@ func BuildTransition(ev Evidence) (envelope.Transition, error) {
 
 func RecordEvidence(homePath string, ev Evidence) error {
 	ev.RecordedVia = RecorderGeneric
-	return recordEvidence(homePath, ev)
+	_, err := recordEvidenceUniqueRequestID(homePath, ev)
+	return err
 }
 
-func recordEvidence(homePath string, ev Evidence) error {
+func recordEvidenceUniqueRequestID(homePath string, ev Evidence) (Evidence, error) {
 	if err := Validate(ev); err != nil {
-		return err
+		return Evidence{}, err
 	}
-	return homepkg.WithAutonomyAdmissionLock(homePath, func() error {
-		return recordEvidenceLocked(homePath, ev)
+	var recorded Evidence
+	err := homepkg.WithAutonomyAdmissionLock(homePath, func() error {
+		existing, ok, err := uniqueEvidenceForRequestID(homePath, ev.RequestID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			existing.RecordedVia = normalizedRecorder(existing.RecordedVia)
+			if !reflect.DeepEqual(existing, ev) {
+				return fmt.Errorf("execution route evidence request_id %q already recorded as %s", ev.RequestID, existing.ID)
+			}
+			recorded = existing
+			return nil
+		}
+		if err := recordEvidenceLocked(homePath, ev); err != nil {
+			return err
+		}
+		recorded = ev
+		return nil
 	})
+	return recorded, err
+}
+
+func uniqueEvidenceForRequestID(homePath, requestID string) (Evidence, bool, error) {
+	path := filepath.Join(homePath, "ledger", "execution-route-evidence.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return Evidence{}, false, nil
+		}
+		return Evidence{}, false, err
+	}
+	var match Evidence
+	matches := 0
+	for i, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		var existing Evidence
+		if err := json.Unmarshal([]byte(line), &existing); err != nil {
+			return Evidence{}, false, fmt.Errorf("parse execution route evidence line %d: %w", i+1, err)
+		}
+		if existing.RequestID != requestID {
+			continue
+		}
+		match = existing
+		matches++
+	}
+	if matches > 1 {
+		return Evidence{}, false, fmt.Errorf("execution route evidence request_id %q is ambiguous across %d rows", requestID, matches)
+	}
+	return match, matches == 1, nil
 }
 
 func recordEvidenceLocked(homePath string, ev Evidence) error {

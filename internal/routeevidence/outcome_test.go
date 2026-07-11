@@ -224,6 +224,7 @@ func TestResolveOutcomeReviewInputsRejectsAmbiguousReceiptProofRefs(t *testing.T
 	for _, id := range rec.ProofRefs {
 		ev := fixtureEvidence()
 		ev.ID = id
+		ev.RequestID += ":" + id
 		ev.WorkID = ""
 		if err := RecordEvidence(home, ev); err != nil {
 			t.Fatal(err)
@@ -243,6 +244,7 @@ func TestResolveOutcomeReviewInputsRejectsAmbiguousRouteEvidence(t *testing.T) {
 	for _, id := range []string{"route_first", "route_second"} {
 		ev := fixtureEvidence()
 		ev.ID = id
+		ev.RequestID += ":" + id
 		ev.WorkID = ""
 		ev.EvidenceRefs = append(ev.EvidenceRefs, rec.ID)
 		if err := RecordEvidence(home, ev); err != nil {
