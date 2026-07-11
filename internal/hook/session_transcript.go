@@ -123,6 +123,70 @@ type OperatorUtterance struct {
 	LineNo    int    `json:"line_no"`
 }
 
+// BlockingAsk is the last assistant question in a transcript plus the nearest
+// preceding operator utterance as minimal context. It shares this reader so
+// ask-triage does not grow a second transcript/extraction organ.
+type BlockingAsk struct {
+	Text, Context, Timestamp string
+	LineNo                   int
+}
+
+func LastBlockingAsk(path string) (BlockingAsk, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return BlockingAsk{}, err
+	}
+	defer f.Close()
+	reader := bufio.NewReaderSize(f, 64*1024)
+	lineNo := 0
+	context := ""
+	var last BlockingAsk
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			lineNo++
+			entry, parseErr := parseTranscriptEntry([]byte(strings.TrimSpace(string(line))))
+			if parseErr != nil {
+				return BlockingAsk{}, parseErr
+			}
+			role, content := strings.TrimSpace(entry.Role), entry.Content
+			if entry.Message != nil {
+				role = firstNonEmpty(entry.Message.Role, role)
+				if len(entry.Message.Content) > 0 {
+					content = entry.Message.Content
+				}
+			}
+			text := strings.TrimSpace(textOfContent(content))
+			if role == "user" {
+				cleaned := cleanTranscriptUserText(text)
+				if isOperatorUtterance(cleaned) {
+					context = cleaned
+				}
+			}
+			if role == "assistant" && strings.Contains(text, "?") {
+				last = BlockingAsk{Text: lastQuestion(text), Context: context, Timestamp: firstNonEmpty(entry.Timestamp, entry.TS), LineNo: lineNo}
+			}
+		}
+		if readErr == nil {
+			continue
+		}
+		if readErr == io.EOF {
+			break
+		}
+		return BlockingAsk{}, readErr
+	}
+	return last, nil
+}
+
+func lastQuestion(text string) string {
+	end := strings.LastIndex(text, "?")
+	if end < 0 {
+		return ""
+	}
+	start := strings.LastIndexAny(text[:end], "\n.!?")
+	return strings.TrimSpace(text[start+1 : end+1])
+}
+
 // OperatorUtterances streams a session transcript and returns every genuine
 // operator (human) utterance with attribution. It reuses the SAME streaming,
 // entry parsing (parseTranscriptEntry), content extraction (textOfContent) and

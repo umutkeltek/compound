@@ -10,7 +10,7 @@
  */
 
 /** DESIGN.md / plan Part 3: a lease older than this (and no projection-supplied
- *  threshold) is stale — the amber "needs you" hygiene class. 48h in seconds. */
+ *  threshold) is stale — a lane-health hygiene class. 48h in seconds. */
 export const LEASE_STALE_AFTER_SECONDS = 48 * 60 * 60;
 
 export interface ExecutorLease {

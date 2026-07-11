@@ -8,7 +8,7 @@ import { durationLabel, type HygieneSummary } from "./executor-model";
 
 /**
  * Lease-hygiene band — THE operator win of the Agents screen (plan Part 3,
- * "the 74-stale-leases fix"). Stale/dead leases are a needs-you class, so when
+ * "the 74-stale-leases fix"). Stale/dead leases are a lane-health class, so when
  * present this pins to the top of the screen with the DESIGN.md §0 admission
  * seam (3px amber left seam + amber wash) — scanning that edge answers "is
  * anything stuck?". When the fleet is clean it collapses to a quiet green
@@ -62,7 +62,7 @@ export function HygieneBand({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-good" aria-hidden />
-            <p className="text-sm font-semibold text-good">Clean seam. No stale leases waiting on you.</p>
+            <p className="text-sm font-semibold text-good">Lane health is clean. No stale leases.</p>
           </div>
           <FreshnessChip generatedAt={generatedAt} source="compound executors --json" />
         </div>

@@ -285,7 +285,7 @@ export function ExecutorTable({
             <th className="px-2 py-2.5 text-right text-2xs font-bold uppercase tracking-wide text-faint">Run</th>
             <th className="px-2 py-2.5 text-right text-2xs font-bold uppercase tracking-wide text-faint">Ready</th>
             <th className="px-2 py-2.5 text-right text-2xs font-bold uppercase tracking-wide text-faint">Assg</th>
-            <th className="px-2 py-2.5 text-right text-2xs font-bold uppercase tracking-wide text-seam">Needs you</th>
+            <th className="px-2 py-2.5 text-right text-2xs font-bold uppercase tracking-wide text-faint">Paused</th>
             <th className="px-2 py-2.5 text-2xs font-bold uppercase tracking-wide text-faint">Current work</th>
             <th className="px-2 py-2.5 text-right text-2xs font-bold uppercase tracking-wide text-faint">Lease age</th>
           </tr>
