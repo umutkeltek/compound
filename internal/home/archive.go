@@ -541,7 +541,7 @@ func restoreOperationalArchiveLocked(homePath string, opts OperationalRestoreOpt
 var operationalArchiveBeforeIndexCommit = func(_ string, _ []OperationalArchiveEntry) {}
 
 // operationalArchiveBeforeIndexReplace is a deterministic test seam after the
-// replacement file is durable but before it replaces the canonical index.
+// canonical preimage has been validated but before publication.
 var operationalArchiveBeforeIndexReplace = func(_ string) {}
 
 func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions, now time.Time) ([]operationalCandidate, error) {
@@ -1738,10 +1738,10 @@ func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []
 		_ = root.Remove(tempName)
 		return nil, false, err
 	}
-	operationalArchiveBeforeIndexReplace(purpose)
 	if err := validateOperationalArchiveRootFilePreimage(root, name, expectedData, expectedInfo); err != nil {
 		return cleanup(err)
 	}
+	operationalArchiveBeforeIndexReplace(purpose)
 	if err := root.Rename(tempName, name); err != nil {
 		_ = root.Remove(tempName)
 		return nil, false, err

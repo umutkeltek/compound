@@ -171,7 +171,7 @@ func TestOperationalArchiveIndexPublishRejectsSymlinkSwapAndRollsBack(t *testing
 	}
 }
 
-func TestOperationalArchiveIndexPublishRejectsConcurrentInPlaceAppendAndRollsBack(t *testing.T) {
+func TestOperationalArchiveIndexPublishRejectsPostCompareInPlaceAppendAndRollsBack(t *testing.T) {
 	operations := []struct {
 		name string
 	}{
