@@ -240,6 +240,108 @@ func TestRequestClaimExcludesOtherWritersAndIsConsumedByOwner(t *testing.T) {
 	}
 }
 
+func TestRecordClaimedJoinedRetainsRequestClaimUntilLedgerPublicationIsDurable(t *testing.T) {
+	fault := errors.New("injected route evidence publication failure")
+	faults := []string{"short write", "sync", "close"}
+	ledgerStates := []struct {
+		name string
+		seed bool
+	}{
+		{name: "empty ledger"},
+		{name: "existing ledger", seed: true},
+	}
+
+	for _, faultName := range faults {
+		t.Run(faultName, func(t *testing.T) {
+			for _, ledgerState := range ledgerStates {
+				t.Run(ledgerState.name, func(t *testing.T) {
+					home := t.TempDir()
+					ledgerPath := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+					if ledgerState.seed {
+						seed, err := Build(BuildInput{
+							CreatedAt:     t0.Add(-time.Minute),
+							RequestID:     "gateway:req_durable_seed",
+							WorkID:        "work_durable_seed",
+							ClientProfile: "gateway.ingress",
+							Protocol:      "openai-chat-completions",
+							Provider:      "fixture-provider",
+							Model:         "fixture-model",
+							Status:        "completed",
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if _, err := RecordJoined(home, seed); err != nil {
+							t.Fatalf("seed route evidence: %v", err)
+						}
+					}
+					before, beforeErr := os.ReadFile(ledgerPath)
+					if beforeErr != nil && !errors.Is(beforeErr, os.ErrNotExist) {
+						t.Fatal(beforeErr)
+					}
+
+					ev := fixtureEvidence()
+					claim, err := BuildRequestClaim(ev.RequestID, ev.WorkID, ev.ClientProfile, ev.Protocol, ev.SelectedTarget)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := ClaimRequestID(home, claim); err != nil {
+						t.Fatalf("claim request id: %v", err)
+					}
+
+					previousWrite := writeRouteEvidenceFile
+					previousSync := syncRouteEvidenceFile
+					previousClose := closeRouteEvidenceFile
+					defer func() {
+						writeRouteEvidenceFile = previousWrite
+						syncRouteEvidenceFile = previousSync
+						closeRouteEvidenceFile = previousClose
+					}()
+					switch faultName {
+					case "short write":
+						writeRouteEvidenceFile = func(file *os.File, data []byte) (int, error) {
+							short := len(data) / 2
+							if short == 0 {
+								short = 1
+							}
+							return file.Write(data[:short])
+						}
+					case "sync":
+						syncRouteEvidenceFile = func(*os.File) error { return fault }
+					case "close":
+						closeRouteEvidenceFile = func(file *os.File) error {
+							if err := file.Close(); err != nil {
+								return err
+							}
+							return fault
+						}
+					}
+
+					if _, err := RecordClaimedJoined(home, ev, claim); err == nil {
+						t.Error("claimed recorder succeeded without a durable ledger publication")
+					}
+					after, afterErr := os.ReadFile(ledgerPath)
+					if errors.Is(beforeErr, os.ErrNotExist) {
+						if !errors.Is(afterErr, os.ErrNotExist) {
+							t.Errorf("failed first publication left a canonical ledger: err=%v body=%q", afterErr, after)
+						}
+					} else if afterErr != nil {
+						t.Errorf("read canonical ledger after failure: %v", afterErr)
+					} else if string(after) != string(before) {
+						t.Errorf("failed publication changed canonical ledger\nbefore: %q\nafter:  %q", before, after)
+					}
+					if _, ok, err := LookupRequestID(home, ev.RequestID); err != nil || ok {
+						t.Errorf("failed publication exposed request evidence: ok=%v err=%v", ok, err)
+					}
+					if _, err := os.Stat(requestClaimPath(home, ev.RequestID)); err != nil {
+						t.Errorf("failed publication did not retain durable request claim: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestRecordJoinedIsIdempotentForIdenticalRequestEvidence(t *testing.T) {
 	home := t.TempDir()
 	ev := fixtureEvidence()

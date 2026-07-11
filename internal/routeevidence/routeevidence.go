@@ -24,6 +24,10 @@ const (
 	RecorderTrustedPanelRuntime = "trusted_panel_runtime"
 )
 
+var writeRouteEvidenceFile = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
+var syncRouteEvidenceFile = func(file *os.File) error { return file.Sync() }
+var closeRouteEvidenceFile = func(file *os.File) error { return file.Close() }
+
 type Usage struct {
 	PromptTokens     int `json:"prompt_tokens,omitempty"`
 	CompletionTokens int `json:"completion_tokens,omitempty"`
@@ -402,12 +406,12 @@ func recordEvidenceLocked(homePath string, ev Evidence) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer closeRouteEvidenceFile(f)
 	b, err := json.Marshal(&ev)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(append(b, '\n'))
+	_, err = writeRouteEvidenceFile(f, append(b, '\n'))
 	return err
 }
 
