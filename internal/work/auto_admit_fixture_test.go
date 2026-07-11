@@ -39,7 +39,6 @@ func ensureJobHealthAutonomyPlan(t *testing.T, s *Store) autonomyproof.RoutePlan
 			{ModelID: "auto/judge", ProviderRoute: "auto/judge", Resolution: autonomyproof.LaneResolution{Mode: "adaptive"}, Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
 			{ModelID: "deepseek/deepseek-v4-pro", ProviderRoute: "deepseek/deepseek-v4-pro", Resolution: autonomyproof.LaneResolution{Mode: "direct", Targets: []autonomyproof.ResolvedTarget{{Provider: "deepseek", Model: "deepseek/deepseek-v4-pro"}}}, Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
 			{ModelID: "scout/chat", ProviderRoute: "scout/chat", Resolution: autonomyproof.LaneResolution{Mode: "direct", Targets: []autonomyproof.ResolvedTarget{{Provider: "scout", Model: "scout/chat"}}}, Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
-			{ModelID: "mac/qwen-fixture", ProviderRoute: "direct", Resolution: autonomyproof.LaneResolution{Mode: "direct", Targets: []autonomyproof.ResolvedTarget{{Provider: "lmstudio", Model: "qwen-fixture-served"}}}, Tier: "local-batch", ClaimLevel: "primary", GateRole: "eligible"},
 		},
 	}
 }
