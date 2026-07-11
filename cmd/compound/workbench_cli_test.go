@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"compound/internal/attention"
 	"compound/internal/home"
@@ -212,6 +214,114 @@ func TestWorkbenchOperatorDefaultIsBoundedGroupedAndJSONStable(t *testing.T) {
 	if !reflect.DeepEqual(base, withOperator) {
 		t.Fatalf("--operator changed JSON contract\nbase=%+v\noperator=%+v", base, withOperator)
 	}
+}
+
+func TestWorkbenchOperatorDefaultScannablePrivateProofsAndDecisionPriority(t *testing.T) {
+	newPrivateProofOperatorWorkbenchFixture(t)
+
+	operator := captureStdout(t, func() {
+		cmdWorkbench([]string{"--operator", "--recent", "10"})
+	})
+	operatorAdvanced := captureStdout(t, func() {
+		cmdWorkbench([]string{"--operator", "--operator-advanced", "--recent", "10"})
+	})
+
+	if !utf8.ValidString(operator) {
+		t.Fatalf("default operator output must remain valid UTF-8 after truncation:\n%x", operator)
+	}
+	if got := len([]rune(operator)); got > 3200 {
+		t.Fatalf("default operator output too large: chars=%d\n%s", got, operator)
+	}
+	for _, forbidden := range []string{
+		"/example/compound/private-asc-config.json",
+		"/example/compound/source-control/live-policy.json",
+		"act_live_product_review_123",
+		"pol_live_product_review_123",
+		"act_live_tool_write_",
+		"pol_live_tool_write_",
+	} {
+		if strings.Contains(operator, forbidden) {
+			t.Fatalf("default operator output exposed private/opaque token %q:\n%s", forbidden, operator)
+		}
+		if !strings.Contains(operatorAdvanced, forbidden) {
+			t.Fatalf("operator advanced output should retain raw detail %q:\n%s", forbidden, operatorAdvanced)
+		}
+	}
+	if regexp.MustCompile(`\b(?:act|pol)_[A-Za-z0-9_:-]+`).MatchString(operator) {
+		t.Fatalf("default operator output exposed raw action/policy id:\n%s", operator)
+	}
+	if strings.Contains(operator, "\uFFFD") {
+		t.Fatalf("default operator output contains replacement runes after truncation:\n%s", operator)
+	}
+	if !strings.Contains(operator, "governed action/policy proof recorded") {
+		t.Fatalf("summary/proof should use a human proof phrase, not an opaque id:\n%s", operator)
+	}
+	productIdx := strings.Index(operator, "Review product pricing experiment")
+	gateIdx := strings.Index(operator, "held source-control tool-write gates")
+	if productIdx < 0 || gateIdx < 0 {
+		t.Fatalf("default operator output missing product decision or grouped source-control gate:\n%s", operator)
+	}
+	if productIdx > gateIdx {
+		t.Fatalf("meaningful product/review decision should outrank repetitive tool-write holds:\n%s", operator)
+	}
+	if !strings.Contains(operator, "held source-control tool-write gates (+11 similar)") {
+		t.Fatalf("repetitive source-control gates should render as one honest grouped count:\n%s", operator)
+	}
+	for _, line := range strings.Split(operator, "\n") {
+		if strings.Contains(line, "Review product pricing experiment") && len([]rune(line)) > 260 {
+			t.Fatalf("visible Opportunity/Mission text should be capped on a UTF-8 boundary: chars=%d line=%s", len([]rune(line)), line)
+		}
+	}
+}
+
+func newPrivateProofOperatorWorkbenchFixture(t *testing.T) string {
+	t.Helper()
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	if err := home.Init(homePath, "test", cliTestNow); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatalf("open work store: %v", err)
+	}
+
+	for i := 0; i < 12; i++ {
+		if _, err := store.Create(work.CreateInput{
+			WorkID:           fmt.Sprintf("work_00_tool_write_hold_%02d", i),
+			Owner:            "compound-core",
+			State:            "held",
+			CanonicalSurface: "source-control:tool-write-policy-gate",
+			SuccessPredicate: fmt.Sprintf("historical source-control policy-gate hold from tool-write %02d waits on /example/compound/source-control/live-policy.json", i),
+			DesiredOutcome:   fmt.Sprintf("tool-write hold %02d stays visible without dominating product review decisions", i),
+			EvidenceRefs: []string{
+				fmt.Sprintf("act_live_tool_write_%02d", i),
+				fmt.Sprintf("pol_live_tool_write_%02d", i),
+				"/example/compound/source-control/live-policy.json",
+			},
+		}, cliTestNow.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("create source-control hold %d: %v", i, err)
+		}
+	}
+
+	longUTF8Tail := strings.Repeat(" ürün doğrulama kararını bozmadan ", 16)
+	if _, err := store.Create(work.CreateInput{
+		WorkID:           "work_zz_product_review_decision",
+		Owner:            "growth-review",
+		State:            "held",
+		CanonicalSurface: "product:pricing-review",
+		SuccessPredicate: "Review product pricing experiment before release " + longUTF8Tail + "/example/compound/private-asc-config.json",
+		DesiredOutcome:   "Choose whether this review changes launch pricing " + longUTF8Tail + "act_live_product_review_123 pol_live_product_review_123",
+		EvidenceRefs: []string{
+			"act_live_product_review_123",
+			"pol_live_product_review_123",
+			"/example/compound/private-asc-config.json",
+		},
+	}, cliTestNow.Add(30*time.Minute)); err != nil {
+		t.Fatalf("create product decision: %v", err)
+	}
+
+	return homePath
 }
 
 func newVerboseOperatorWorkbenchFixture(t *testing.T, duplicateHolds int) string {
