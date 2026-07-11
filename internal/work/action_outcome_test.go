@@ -310,6 +310,154 @@ func TestRecordReceiptedActionBlocksNewActionUntilIncompletePrefixRecovers(t *te
 	}
 }
 
+func TestPendingReceiptedActionExcludesCanonicalLifecycleWriters(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(*Store, envelope.WorkEnvelope, envelope.ActionIntent, envelope.PolicyDecision, time.Time) error
+	}{
+		{name: "record action", run: func(s *Store, w envelope.WorkEnvelope, ai envelope.ActionIntent, pd envelope.PolicyDecision, at time.Time) error {
+			_, err := s.RecordAction(w.ID, ai, pd, at)
+			return err
+		}},
+		{name: "advance", run: func(s *Store, w envelope.WorkEnvelope, _ envelope.ActionIntent, _ envelope.PolicyDecision, at time.Time) error {
+			_, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, at)
+			return err
+		}},
+		{name: "close", run: func(s *Store, w envelope.WorkEnvelope, _ envelope.ActionIntent, _ envelope.PolicyDecision, at time.Time) error {
+			_, err := s.Close(w.ID, CloseInput{Outcome: "failed", MoveType: "audit_only", Actor: "codex", Summary: "blocked close"}, at)
+			return err
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			w := receiptedActionRunningWork(t, s)
+			claimID := receiptedActionRuling(t, s, "receipted-action-lifecycle-exclusion-"+strings.ReplaceAll(tc.name, " ", "-"), "", fixedNow)
+			aInput := receiptedActionTestInput(w, claimID, "act_receipted_lifecycle_pending_"+strings.ReplaceAll(tc.name, " ", "_"), "recover before any other lifecycle write", fixedNow.Add(time.Minute))
+
+			injected := errors.New("injected before work publication")
+			previousBeforeHook := receiptedActionBeforePublish
+			failed := false
+			receiptedActionBeforePublish = func(boundary string) error {
+				if boundary == "work" && !failed {
+					failed = true
+					return injected
+				}
+				return nil
+			}
+			defer func() { receiptedActionBeforePublish = previousBeforeHook }()
+			if result, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute)); !errors.Is(err, injected) || result.Replayed {
+				t.Fatalf("action A did not stop before work publication: err=%v result=%+v", err, result)
+			}
+			receiptedActionBeforePublish = previousBeforeHook
+
+			beforeWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeEvents, err := os.ReadFile(s.eventsLog())
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforePending, err := os.ReadFile(receiptedActionPendingTestPath(s, w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeEventNames := receiptedActionEventEntryNames(t, s)
+			genericAction := receiptedActionIntent(w, "act_record_action_blocked_by_pending", fixedNow.Add(2*time.Minute))
+			genericDecision := envelope.PolicyDecision{
+				Header:         newHeader(envelope.SVPolicyDecision, "pol_record_action_blocked_by_pending", fixedNow.Add(2*time.Minute), w.ID, w.IDs.ContextPackID, w.Privacy, w.Risk),
+				ActionIntentID: genericAction.ID,
+				Outcome:        "allow",
+				Obligations:    []string{},
+			}
+
+			err = tc.run(s, w, genericAction, genericDecision, fixedNow.Add(2*time.Minute))
+			if err == nil || !strings.Contains(err.Error(), "pending receipted action "+aInput.Action.ID) {
+				t.Fatalf("%s crossed pending action A: %v", tc.name, err)
+			}
+			afterWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterEvents, err := os.ReadFile(s.eventsLog())
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterPending, err := os.ReadFile(receiptedActionPendingTestPath(s, w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterWork) != string(beforeWork) || string(afterEvents) != string(beforeEvents) || string(afterPending) != string(beforePending) {
+				t.Fatalf("blocked %s changed work, event chronology, or pending ownership", tc.name)
+			}
+			if afterEventNames := receiptedActionEventEntryNames(t, s); !slices.Equal(afterEventNames, beforeEventNames) {
+				t.Fatalf("blocked %s left event artifacts: before=%v after=%v", tc.name, beforeEventNames, afterEventNames)
+			}
+
+			retryA := aInput
+			retryA.Action.CreatedAt = fixedNow.Add(3 * time.Minute).UTC().Format(time.RFC3339)
+			recoveredA, err := s.RecordReceiptedAction(w.ID, retryA, fixedNow.Add(3*time.Minute))
+			if err != nil || !recoveredA.Replayed {
+				t.Fatalf("action A did not recover: err=%v result=%+v", err, recoveredA)
+			}
+			assertReceiptedActionConverged(t, s, w.ID, recoveredA)
+			recorded, err := s.RecordAction(w.ID, genericAction, genericDecision, fixedNow.Add(4*time.Minute))
+			if err != nil || !contains(recorded.RunIDs, genericAction.ID) || recorded.PolicyDecisionID != genericDecision.ID {
+				t.Fatalf("record action did not resume after action A converged: err=%v work=%+v", err, recorded)
+			}
+			advanced, err := s.Advance(w.ID, AdvanceInput{To: "verifying", Actor: "codex"}, fixedNow.Add(5*time.Minute))
+			if err != nil || advanced.State != "verifying" {
+				t.Fatalf("advance did not resume after action A converged: err=%v work=%+v", err, advanced)
+			}
+			closed, err := s.Close(w.ID, CloseInput{Outcome: "failed", MoveType: "audit_only", Actor: "codex", Summary: "lifecycle resumed"}, fixedNow.Add(6*time.Minute))
+			if err != nil || closed.Work.State != "failed" {
+				t.Fatalf("close did not resume after action A converged: err=%v result=%+v", err, closed)
+			}
+		})
+	}
+}
+
+func TestRecordReceiptedActionRejectsReadyWorkBeforeWriting(t *testing.T) {
+	s := newStore(t)
+	w, err := s.Create(CreateInput{Owner: "codex", SuccessPredicate: "receipted action requires active execution", Risk: "tier1", Privacy: "private"}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimID := receiptedActionRuling(t, s, "receipted-action-ready-state", "", fixedNow)
+	in := receiptedActionTestInput(w, claimID, "act_receipted_ready_rejected", "do not act before claim", fixedNow.Add(time.Minute))
+	in.ExpectedWorkState = "ready"
+	beforeWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.RecordReceiptedAction(w.ID, in, fixedNow.Add(time.Minute))
+	if err == nil || result.Replayed || !strings.Contains(err.Error(), "require state claimed|running|verifying") {
+		t.Fatalf("ready work crossed receipted-action state gate: err=%v result=%+v", err, result)
+	}
+	afterWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterWork) != string(beforeWork) || string(afterEvents) != string(beforeEvents) {
+		t.Fatal("ready-state rejection changed work or event chronology")
+	}
+	if _, err := os.Stat(s.envPath(in.Action.ID)); !os.IsNotExist(err) {
+		t.Fatalf("ready-state rejection left action artifact: %v", err)
+	}
+	if _, err := os.Stat(receiptedActionPendingTestPath(s, w.ID)); !os.IsNotExist(err) {
+		t.Fatalf("ready-state rejection left pending marker: %v", err)
+	}
+}
+
 func TestRecordReceiptedActionRejectsMalformedPendingRecord(t *testing.T) {
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
@@ -1131,6 +1279,19 @@ func receiptedActionArtifactIDs(workID, actionID, claimID string) []string {
 
 func receiptedActionPendingTestPath(s *Store, workID string) string {
 	return filepath.Join(s.home, "work", "receipted-actions", workID+".json")
+}
+
+func receiptedActionEventEntryNames(t *testing.T, s *Store) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(s.eventsLog()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 func TestRecordReceiptedActionSerializesDecisionRevocation(t *testing.T) {

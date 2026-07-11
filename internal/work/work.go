@@ -385,6 +385,13 @@ func (s *Store) advanceLocked(workID string, in AdvanceInput, now time.Time) (en
 	if err != nil {
 		return w, err
 	}
+	pendingActionID, err := s.pendingReceiptedActionID(workID)
+	if err != nil {
+		return w, err
+	}
+	if pendingActionID != "" {
+		return w, fmt.Errorf("work %s has pending receipted action %s; recover it before another lifecycle mutation", workID, pendingActionID)
+	}
 	if terminalStates[w.State] {
 		return w, fmt.Errorf("work %s is %s (terminal); cannot advance", workID, w.State)
 	}
@@ -514,6 +521,13 @@ func (s *Store) recordActionLocked(workID string, ai envelope.ActionIntent, pd e
 	if err != nil {
 		return w, err
 	}
+	pendingActionID, err := s.pendingReceiptedActionID(workID)
+	if err != nil {
+		return w, err
+	}
+	if pendingActionID != "" {
+		return w, fmt.Errorf("work %s has pending receipted action %s; recover it before another lifecycle mutation", workID, pendingActionID)
+	}
 	if terminalStates[w.State] {
 		return w, fmt.Errorf("work %s is %s (terminal); cannot record an action", workID, w.State)
 	}
@@ -613,6 +627,13 @@ func (s *Store) closeLocked(workID string, in CloseInput, now time.Time) (CloseR
 	w, err := s.Get(workID)
 	if err != nil {
 		return res, err
+	}
+	pendingActionID, err := s.pendingReceiptedActionID(workID)
+	if err != nil {
+		return res, err
+	}
+	if pendingActionID != "" {
+		return res, fmt.Errorf("work %s has pending receipted action %s; recover it before another lifecycle mutation", workID, pendingActionID)
 	}
 	if !terminalStates[in.Outcome] {
 		return res, fmt.Errorf("close --outcome must be completed|failed|cancelled, got %q", in.Outcome)

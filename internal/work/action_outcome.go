@@ -21,9 +21,10 @@ import (
 	"compound/internal/policy"
 )
 
-// ReceiptedActionInput describes one bounded action outcome on an open
-// WorkEnvelope. The action may advance the run without claiming terminal task
-// success; work close remains the only writer of WorkEnvelope.ids.transition_id.
+// ReceiptedActionInput describes one bounded action outcome on a claimed,
+// running, or verifying WorkEnvelope. The action may advance the run without
+// claiming terminal task success; work close remains the only writer of
+// WorkEnvelope.ids.transition_id.
 type ReceiptedActionInput struct {
 	Action                     envelope.ActionIntent
 	OperationalDecisionClaimID string
@@ -43,6 +44,8 @@ type ReceiptedActionResult struct {
 }
 
 const receiptedActionPendingSchemaVersion = "compound.receipted_action_pending.v0.1"
+
+var receiptedActionEligibleStates = map[string]bool{"claimed": true, "running": true, "verifying": true}
 
 // receiptedActionPending is the direct-addressed stage zero that prevents a
 // later action from overtaking an incomplete same-work transaction.
@@ -86,8 +89,8 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err := w.Validate(); err != nil {
 		return out, fmt.Errorf("work envelope invalid: %w", err)
 	}
-	if terminalStates[w.State] {
-		return out, fmt.Errorf("work %s is %s (terminal); cannot record a receipted action", workID, w.State)
+	if !receiptedActionEligibleStates[w.State] {
+		return out, fmt.Errorf("work %s is %s; receipted actions require state claimed|running|verifying", workID, w.State)
 	}
 	if expected := strings.TrimSpace(in.ExpectedWorkState); expected != "" && w.State != expected {
 		return out, fmt.Errorf("work %s state %q no longer matches expected state %q", workID, w.State, expected)
@@ -408,6 +411,17 @@ func (s *Store) preflightReceiptedActionPending(workID string) (receiptedActionP
 		return pending, false, path, fmt.Errorf("work %s pending receipted action belongs to %s", workID, pending.WorkID)
 	}
 	return pending, true, path, nil
+}
+
+func (s *Store) pendingReceiptedActionID(workID string) (string, error) {
+	pending, present, _, err := s.preflightReceiptedActionPending(workID)
+	if err != nil {
+		return "", err
+	}
+	if !present {
+		return "", nil
+	}
+	return pending.ActionID, nil
 }
 
 func (p receiptedActionPending) validate() error {
