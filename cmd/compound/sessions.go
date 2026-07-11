@@ -109,6 +109,8 @@ func cmdSessions(args []string) {
 		cmdSessionsMine(args[1:])
 	case "harvest":
 		cmdSessionsHarvest(args[1:])
+	case "backfill":
+		cmdSessionsBackfill(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, sessionsUsage())
 		os.Exit(2)
@@ -118,7 +120,107 @@ func cmdSessions(args []string) {
 func sessionsUsage() string {
 	return "usage:\n" +
 		"  compound sessions mine [--dry-run|--apply] [--since 24h] [--json]\n" +
-		"  compound sessions harvest --transcript <path> [--dry-run] [--json]"
+		"  compound sessions harvest --transcript <path> [--dry-run] [--json]\n" +
+		"  compound sessions backfill --ledger-dir <dir> [--dry-run|--apply] [--limit N] [--json]"
+}
+
+// cmdSessionsBackfill runs the ruling harvester BACKWARDS over the historical
+// decision ledgers: it parses every decision-ledger.generated.md into candidate
+// rows, routes each (system ruling / product decision / ephemeral one-off),
+// reconciles system rulings against the accepted decision records FIRST
+// (restatements corroborate, reversals conflict, novel rulings cluster among
+// themselves), and emits ONE parked candidate per novel cluster up to --limit.
+// --dry-run is read-only (the live-proof path for falsifier f); --apply appends
+// corroboration evidence + writes parked candidates and per-product reports.
+func cmdSessionsBackfill(args []string) {
+	ledgerDir := ""
+	jsonOut := false
+	dryRun := false
+	apply := false
+	limit := harvest.DefaultNovelCap
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--ledger-dir":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, sessionsUsage())
+				os.Exit(2)
+			}
+			ledgerDir = args[i+1]
+			i++
+		case "--limit":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, sessionsUsage())
+				os.Exit(2)
+			}
+			if _, err := fmt.Sscanf(args[i+1], "%d", &limit); err != nil || limit < 0 {
+				fmt.Fprintln(os.Stderr, "sessions backfill: --limit must be a non-negative integer")
+				os.Exit(2)
+			}
+			i++
+		case "--dry-run":
+			dryRun = true
+		case "--apply":
+			apply = true
+		case "--json":
+			jsonOut = true
+		default:
+			fmt.Fprintln(os.Stderr, sessionsUsage())
+			os.Exit(2)
+		}
+	}
+	if dryRun && apply {
+		fmt.Fprintln(os.Stderr, "sessions backfill: choose --dry-run or --apply")
+		os.Exit(2)
+	}
+	// Default is read-only: applying side effects requires an explicit --apply.
+	if !apply {
+		dryRun = true
+	}
+	if strings.TrimSpace(ledgerDir) == "" {
+		fmt.Fprintln(os.Stderr, "sessions backfill: --ledger-dir <dir> required")
+		os.Exit(2)
+	}
+	homePath, err := home.Resolve("")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+		os.Exit(1)
+	}
+	store, err := mem.Open(homePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sessions backfill:", err)
+		os.Exit(1)
+	}
+	report, err := harvest.Backfill(store, homePath, harvest.BackfillOptions{
+		LedgerDir: ledgerDir,
+		DryRun:    dryRun,
+		NovelCap:  limit,
+		Now:       time.Now(),
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sessions backfill:", err)
+		os.Exit(1)
+	}
+	if jsonOut {
+		printJSON(report)
+		return
+	}
+	fmt.Printf("# session ruling backfill%s\n\n", map[bool]string{true: " (dry-run)"}[report.DryRun])
+	fmt.Printf("- status: %s\n", report.Status)
+	fmt.Printf("- ledger_dir: %s\n", report.LedgerDir)
+	fmt.Printf("- files_parsed: %d\n", report.FilesParsed)
+	fmt.Printf("- entries_total: %d\n", report.EntriesTotal)
+	fmt.Printf("- accepted_records: %d\n", report.AcceptedRecords)
+	fmt.Printf("- route[system/product/ephemeral]: %d / %d / %d\n", report.RouteCounts.System, report.RouteCounts.Product, report.RouteCounts.Ephemeral)
+	fmt.Printf("- corroborated_records: %d\n", len(report.Corroborations))
+	fmt.Printf("- conflicts: %d\n", len(report.Conflicts))
+	fmt.Printf("- novel_clusters_found: %d (emitted %d, skipped_by_cap %d)\n", report.NovelClustersFound, report.NovelEmitted, report.NovelSkippedByCap)
+	fmt.Printf("- parse_issues: %d\n", report.ParseIssueCount)
+	for _, cr := range report.Corroborations {
+		fmt.Printf("- corroboration [%s via %s] %s x%d\n", cr.ClaimID, cr.Via, cr.DecisionID, cr.Count)
+	}
+	for i, c := range report.NovelSamples {
+		fmt.Printf("- novel#%d (x%d) %s\n", i+1, c.CorroborationCount, clipHarvestQuote(c.Head))
+	}
 }
 
 // cmdSessionsHarvest turns operator utterances in one session transcript into
