@@ -2,6 +2,7 @@ package arch
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,6 +134,117 @@ func TestPrivateSourceBodyContractExemptsTestFiles(t *testing.T) {
 	for _, f := range findings {
 		if f.Severity == Fail {
 			t.Fatalf("expected _test.go files to be exempt, got %+v", findings)
+		}
+	}
+}
+
+// TestScanPrivateSourceBodySignatures is the pure (no-git) unit falsifier for the
+// J16 signature set: each new marker/path shape must produce a Fail, and the
+// deliberately-excluded shapes (compound's own public ~/.compound home, bare
+// ~/brain pointer references, compound.gbrain_db_export schema naming) must NOT —
+// precision over recall, so the doctor stays green on legitimate content.
+func TestScanPrivateSourceBodySignatures(t *testing.T) {
+	fails := func(content string) int {
+		n := 0
+		for _, f := range scanPrivateSourceBody("x.md", []byte(content)) {
+			if f.Severity == Fail {
+				n++
+			}
+		}
+		return n
+	}
+	// MUST flag (copied-body signatures across brain / operating-system / gbrain / infra).
+	mustFail := map[string]int{
+		"source_of_truth: brain\n":                     1,
+		"source_of_truth: operating-system\n":          1,
+		"source_of_truth: decisions\n":                 1,
+		"source_of_truth: infra\n":                     1,
+		"  source_of_truth:   gbrain\n":                1,
+		"/Users/faketester/brain/note.md\n":            1,
+		"/Users/faketester/operating-system/dec.md\n":  1,
+		"/Users/faketester/.gbrain/corpus.jsonl\n":     1,
+		"ref ~/.gbrain/export.json here\n":             1,
+		"see ~/Projects/operating-system/decisions/\n": 1,
+	}
+	for content, want := range mustFail {
+		if got := fails(content); got != want {
+			t.Errorf("scanPrivateSourceBody(%q) fails=%d, want %d", content, got, want)
+		}
+	}
+	// MUST NOT flag (legitimate public references — the precision line).
+	mustPass := []string{
+		"COMPOUND_HOME defaults to ~/.compound\n",         // compound's own public home
+		"private ids under ~/.compound/bench-suites/\n",   // ditto, subpath
+		"const V = \"compound.gbrain_db_export.v0.1\"\n",  // compound's own gbrain-export schema, not a ~/.gbrain path
+		"carry the source_of_truth handoff into memory\n", // mid-prose mention, not a frontmatter marker
+		"meaning_store path is ~/brain for the fixture\n", // bare ~/brain pointer, deliberately not matched
+	}
+	for _, content := range mustPass {
+		if got := fails(content); got != 0 {
+			t.Errorf("scanPrivateSourceBody(%q) fails=%d, want 0 (false positive)", content, got)
+		}
+	}
+}
+
+// TestPrivateSourceBodyContractScopesToTrackedFiles is J16's end-to-end
+// falsifier: a body-copy planted in a TRACKED file makes the doctor red, the
+// SAME shape left UNTRACKED stays invisible (proving the scope is git ls-files,
+// not the worktree), and removing the tracked file returns green.
+func TestPrivateSourceBodyContractScopesToTrackedFiles(t *testing.T) {
+	repo := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@example.invalid")
+	runGit("config", "user.name", "test")
+
+	srcDir := filepath.Join(repo, "internal", "absorb")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	trackedRel := filepath.Join("internal", "absorb", "pasted.md")
+	body := "source_of_truth: brain\n/Users/faketester/.gbrain/corpus.md\nref ~/.gbrain/export.json\n"
+	if err := os.WriteFile(filepath.Join(repo, trackedRel), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", trackedRel)
+
+	// Same violation shape, but NEVER git-added: an untracked private body is
+	// local scratch, not a public leak, and must stay invisible to the guard.
+	untrackedRel := filepath.Join("internal", "absorb", "untracked.md")
+	if err := os.WriteFile(filepath.Join(repo, untrackedRel), []byte("source_of_truth: brain\n/Users/faketester/.gbrain/x.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var fails []Finding
+	for _, f := range checkPrivateSourceBodyContract(repo) {
+		if f.Severity == Fail {
+			fails = append(fails, f)
+		}
+	}
+	if len(fails) == 0 {
+		t.Fatalf("expected the tracked body-copy to fail the doctor, got green")
+	}
+	for _, f := range fails {
+		if !strings.Contains(f.Message, "pasted.md") {
+			t.Fatalf("a failure named a file other than the tracked plant (scope leak): %+v", f)
+		}
+		if strings.Contains(f.Message, "untracked.md") {
+			t.Fatalf("untracked file was flagged — scope is not tracked-only: %+v", f)
+		}
+	}
+
+	// Remove the tracked plant → green, even though the untracked violation
+	// still sits in the worktree (proves git ls-files scope, not a walk).
+	runGit("rm", "-f", trackedRel)
+	for _, f := range checkPrivateSourceBodyContract(repo) {
+		if f.Severity == Fail {
+			t.Fatalf("expected green after removing the tracked plant, got %+v", f)
 		}
 	}
 }

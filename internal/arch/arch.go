@@ -6,11 +6,14 @@
 package arch
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"compound/internal/candidates"
 	"compound/internal/home"
@@ -422,30 +425,56 @@ func leakScanFile(path string) bool {
 	}
 }
 
-// privateSourceBodyMarker matches a `source_of_truth: brain` (or similar)
+// privateSourceBodyMarker matches a `source_of_truth: <private-source>`
 // frontmatter/marker line — the semantic signature of a page whose BODY was
-// authored as a brain/decisions page and copied in verbatim. checkDocLeak has
-// no concept of this marker at all (it only matches path/email SHAPES and an
-// operator-configured literal token list), so this closes a distinct gap.
-var privateSourceBodyMarker = regexp.MustCompile(`(?i)^\s*source_of_truth\s*:\s*brain\b`)
+// authored as a private brain / operating-system decision / infra page and
+// copied in verbatim. The value alternation covers the private source families
+// W5 absorbs (brain pages, operating-system decisions, infra YAML). checkDocLeak
+// has no concept of this marker (it only matches path/email SHAPES and an
+// operator-configured literal token list), so this closes a distinct gap. The
+// `^\s*` anchor is load-bearing: this guard's OWN regex/comment literals in
+// arch.go carry the substring `source_of_truth: brain`, but never at line-start,
+// so the doctor never flags its own source. (A prose mention like
+// "...carry the source_of_truth handoff..." mid-sentence is likewise unmatched.)
+var privateSourceBodyMarker = regexp.MustCompile(`(?i)^\s*source_of_truth\s*:\s*(brain|operating-system|decisions|infra|gbrain)\b`)
 
-// privateSourceBodyPathPrefix matches an absolute macOS home-directory path
-// literal that descends into either private source tree by name (the brain
-// notes tree, or the operating-system control-plane tree) — proof a private
-// source tree's actual on-disk LOCATION (not just a name) was copied into a
-// tracked file. This is NARROWER than checkDocLeak's genericLeak
-// (`/Users/[a-z]`), which matches ANY home-directory path, but checkDocLeak
-// only applies that generic scan to docs/;
-// it never reaches internal/cmd/fixtures/tools/console (its source-dir pass
-// only checks a configured literal token list, never a path shape). This
-// guard's distinct job is catching the brain/operating-system path SHAPE
-// specifically, wherever it lands outside docs/ and test fixtures.
-var privateSourceBodyPathPrefix = regexp.MustCompile(`(?i)/Users/[^\s"']+?/(brain|operating-system)(/|$)`)
+// privateSourceBodyPathPrefix matches an ABSOLUTE macOS home-directory path
+// literal that descends into a private source tree by name — the brain notes
+// tree, the operating-system control-plane tree, or the gbrain corpus tree
+// (`.gbrain`) — proof a private source tree's actual on-disk LOCATION (not just
+// a name) was copied into a tracked file. The absolute `/Users/<user>/` form is
+// the reliable body-copy tell because it leaks the operator's real home layout;
+// `.compound` is deliberately EXCLUDED because it is compound's OWN home and is
+// documented publicly across the repo (`~/.compound` appears legitimately in
+// README/console/runtime docs). This is NARROWER than checkDocLeak's genericLeak
+// (`/Users/[a-z]`, which matches ANY home path but runs only over docs/); this
+// guard catches the brain/operating-system/gbrain path SHAPE wherever it lands
+// outside test fixtures. The `[^\s"']` class also spares arch.go's own regex
+// literal (the `"'` in the class text stops the match before it can span the
+// literal), so the guard never trips over its own source.
+var privateSourceBodyPathPrefix = regexp.MustCompile(`(?i)/Users/[^\s"']+?/(brain|operating-system|\.gbrain)(/|$)`)
 
-// privateSourceBodySkipDirs are never walked: .git/node_modules are noise,
-// docs_private is the gitignored private overlay this guard must not police
-// (it is source material, not a leak target), and the rest mirror .gitignore
-// top-level entries that hold no tracked source.
+// privateSourceBodyTildePrefix matches the TILDE home form (`~/…`) of private
+// source trees that have ZERO legitimate reference use anywhere in the public
+// tree — the gbrain corpus tree (`~/.gbrain`) and the operating-system
+// control-plane repo (`~/Projects/operating-system`). Both are verified absent
+// from tracked files, so matching them is high-precision. Deliberately NOT
+// matched: bare `~/brain` (legitimately used as a generic pointer in
+// retirement-narration archives and as example config in synthetic path-authority
+// fixtures — a reference, not a copied body) and `~/.compound` (compound's own
+// public home). Precision over recall: this catches gbrain/os body-copies that
+// carry a tilde path header without turning the doctor red on legitimate
+// pointer references. `~/.gbrain` requires the `~/` prefix, so it never collides
+// with compound's own `compound.gbrain_db_export` schema naming.
+var privateSourceBodyTildePrefix = regexp.MustCompile(`(?i)~/(?:\.gbrain|Projects/operating-system)(?:/|$)`)
+
+// privateSourceBodySkipDirs are the fallback-walk skip set used ONLY when
+// repoRoot is not a git worktree (temp-dir unit tests, tarball clones). The
+// primary scope is `git ls-files` (tracked files — what actually ships), which
+// excludes docs_private/ and every other gitignored path BY CONSTRUCTION, so no
+// skip list is needed there. .git/node_modules are noise; docs_private is the
+// gitignored private overlay this guard must not police (source material, not a
+// leak target); the rest mirror .gitignore top-level entries with no tracked source.
 var privateSourceBodySkipDirs = map[string]bool{
 	".git":         true,
 	"node_modules": true,
@@ -457,57 +486,117 @@ var privateSourceBodySkipDirs = map[string]bool{
 	"home":         true,
 }
 
-// checkPrivateSourceBodyContract fails --strict (indeed, fails outright: it
-// is a Fail-severity finding regardless of strict) when a tracked repo file
-// carries evidence that a private brain/decisions/operating-system source
-// BODY was copied in — not just a leaked path or product name (checkDocLeak's
-// job), but the two structural signatures of a wholesale body-copy: a
-// `source_of_truth: brain` marker line, or a literal /Users/.../brain|
-// operating-system/ path prefix landing outside docs/ and test fixtures
-// (where checkDocLeak's generic path/email scan does not reach). Both checks
-// exempt _test.go files by design: this guard's own tests plant synthetic
-// sentinel fixtures (as Go string literals) to prove detection, and excluding
-// _test.go keeps those plants from ever being live evidence against the real
-// repo when the real doctor scans internal/arch/arch_test.go itself — the
-// guard proves itself via direct unit calls on synthetic temp repos, not by
-// tripping over its own test source.
+// checkPrivateSourceBodyContract fails --strict (indeed, fails outright: it is a
+// Fail-severity finding regardless of strict) when a TRACKED repo file carries
+// evidence that a private brain / operating-system decision / infra / gbrain
+// source BODY was copied in — enforcing W5 non_goal #1 ("source-in-place only;
+// never copy private bodies into the repo") and the repo TL;DR ("never write a
+// personal path into a tracked file"). Not a leaked product name (checkDocLeak's
+// job), but the structural signatures of a wholesale body-copy: a
+// `source_of_truth: <private-source>` frontmatter marker, an absolute
+// /Users/.../{brain,operating-system,.gbrain}/ path prefix, or a tilde
+// ~/{.gbrain,Projects/operating-system}/ home path.
+//
+// SCOPE is `git ls-files` (tracked files only — exactly what ships publicly);
+// docs_private/ is gitignored so it is excluded by construction, and every other
+// gitignored path (generated COMPOUND_HOME state, *.private.md, .compound-private/)
+// is excluded too — no hand-maintained skip list can drift out of sync with
+// .gitignore. When repoRoot is not a git worktree (temp-dir unit tests, tarball
+// clones) the check falls back to a filesystem walk with privateSourceBodySkipDirs;
+// the walk is a strict superset of the tracked set, so the fallback is more
+// conservative, never blind.
+//
+// Both checks exempt _test.go files by design: this guard's own tests plant
+// synthetic sentinel fixtures (as Go string literals) to prove detection, and
+// excluding _test.go keeps those plants from ever being live evidence against the
+// real repo when the doctor scans internal/arch/arch_test.go itself — the guard
+// proves itself via unit calls and a real synthetic git repo, not by tripping
+// over its own test source.
 func checkPrivateSourceBodyContract(repoRoot string) []Finding {
 	var f []Finding
-	_ = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if path != repoRoot && privateSourceBodySkipDirs[d.Name()] {
-				return filepath.SkipDir
+	if tracked, err := gitTrackedFiles(repoRoot); err == nil {
+		// Authoritative tracked scope. Even an empty tracked set is trusted (a
+		// real git repo with nothing staged scans nothing) — the walk fallback
+		// fires only when repoRoot is not a git worktree at all.
+		for _, rel := range tracked {
+			if !leakScanFile(rel) || strings.HasSuffix(rel, "_test.go") {
+				continue
 			}
-			return nil
-		}
-		if !leakScanFile(path) || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		rel, relErr := filepath.Rel(repoRoot, path)
-		if relErr != nil {
-			rel = path
-		}
-		for i, line := range strings.Split(string(b), "\n") {
-			if privateSourceBodyMarker.MatchString(line) {
-				f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a source_of_truth: brain marker — a private source BODY was copied into a tracked file"})
+			b, readErr := os.ReadFile(filepath.Join(repoRoot, rel))
+			if readErr != nil {
+				continue
 			}
-			if m := privateSourceBodyPathPrefix.FindString(line); m != "" {
-				f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a private source path prefix " + strconv(m)})
-			}
+			f = append(f, scanPrivateSourceBody(rel, b)...)
 		}
-		return nil
-	})
+	} else {
+		_ = filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			if d.IsDir() {
+				if path != repoRoot && privateSourceBodySkipDirs[d.Name()] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !leakScanFile(path) || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			b, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil
+			}
+			rel, relErr := filepath.Rel(repoRoot, path)
+			if relErr != nil {
+				rel = path
+			}
+			f = append(f, scanPrivateSourceBody(rel, b)...)
+			return nil
+		})
+	}
 	if len(f) == 0 {
-		f = append(f, Finding{"private-source-body", Info, "no tracked file carries a source_of_truth: brain marker or a private brain/operating-system path-prefix body copy"})
+		f = append(f, Finding{"private-source-body", Info, "no tracked file carries a source_of_truth private-source marker or a brain/operating-system/gbrain path-prefix body copy"})
 	}
 	return f
+}
+
+// scanPrivateSourceBody is the pure per-file scan (no filesystem/process access),
+// so the detection logic is unit-testable without a git repo. It emits one Fail
+// per matched line per signature.
+func scanPrivateSourceBody(rel string, content []byte) []Finding {
+	var f []Finding
+	for i, line := range strings.Split(string(content), "\n") {
+		if privateSourceBodyMarker.MatchString(line) {
+			f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a source_of_truth private-source marker — a private source BODY was copied into a tracked file"})
+		}
+		if m := privateSourceBodyPathPrefix.FindString(line); m != "" {
+			f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a private source path prefix " + strconv(m)})
+		}
+		if m := privateSourceBodyTildePrefix.FindString(line); m != "" {
+			f = append(f, Finding{"private-source-body", Fail, rel + ":" + itoa(i+1) + " carries a private source home path " + strconv(m)})
+		}
+	}
+	return f
+}
+
+// gitTrackedFiles returns the repo-relative paths of every tracked file (`git
+// ls-files`), the authoritative set of what ships publicly. A non-git repoRoot
+// (or missing git) returns an error so the caller falls back to a filesystem
+// walk. Bounded by a timeout so the doctor can never hang on a wedged git.
+func gitTrackedFiles(repoRoot string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "ls-files", "-z").Output()
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel != "" {
+			files = append(files, rel)
+		}
+	}
+	return files, nil
 }
 
 // checkRetiredSurfaceReferences keeps proven-retired public surfaces from
