@@ -147,6 +147,9 @@ func executeDryRunLocked(ctx context.Context, homePath string, store *Store, run
 	if err != nil {
 		return failDryRun(store, run, "route-budget", err)
 	}
+	if err := preflightPanelCallAttempts(homePath, run); err != nil {
+		return failDryRun(store, run, "attempt-ledger", err)
+	}
 	tokensUsed := totalRunTokens(run)
 	if persistedTokens > tokensUsed {
 		tokensUsed = persistedTokens

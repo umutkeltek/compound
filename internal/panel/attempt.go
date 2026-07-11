@@ -295,6 +295,100 @@ func panelTargetAttemptRefs(homePath string, run Run) (map[string]bool, error) {
 	return refs, nil
 }
 
+func preflightPanelCallAttempts(homePath string, run Run) error {
+	dir := panelAttemptDir(homePath, run.ID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	allowedTargets := map[string]bool{}
+	for _, target := range run.Targets {
+		allowedTargets[target.Ref] = true
+	}
+	var calls []panelAttempt
+	var completions []panelAttempt
+	callIDs := map[string]bool{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		kind := ""
+		expectedPath := ""
+		switch {
+		case strings.HasPrefix(entry.Name(), "call-"):
+			kind = "call"
+		case strings.HasPrefix(entry.Name(), "complete-"):
+			kind = "call_completion"
+		default:
+			continue
+		}
+		attempt, err := readPanelAttempt(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return err
+		}
+		if kind == "call" {
+			expectedPath = panelCallAttemptPath(homePath, run.ID, attempt.RequestID)
+		} else {
+			expectedPath = panelCallCompletionPath(homePath, run.ID, attempt.RequestID)
+		}
+		if filepath.Base(expectedPath) != entry.Name() {
+			return fmt.Errorf("panel %s attempt path conflicts with request identity %s", kind, attempt.RequestID)
+		}
+		if !allowedTargets[attempt.TargetRef] {
+			return fmt.Errorf("panel %s attempt target %s is outside run %s", kind, attempt.TargetRef, run.ID)
+		}
+		clientProfile, callRole, lane, err := expectedPanelCallIdentity(run, attempt)
+		if err != nil {
+			return err
+		}
+		if err := validatePanelAttemptCore(attempt, kind, run, attempt.TargetRef, attempt.RequestID); err != nil {
+			return err
+		}
+		if err := validatePanelCallAttemptIdentity(attempt, run, attempt.RequestID, clientProfile, callRole, lane); err != nil {
+			return err
+		}
+		if kind == "call" {
+			calls = append(calls, attempt)
+			callIDs[attempt.RequestID] = true
+		} else {
+			completions = append(completions, attempt)
+		}
+	}
+	for _, attempt := range calls {
+		clientProfile, callRole, lane, err := expectedPanelCallIdentity(run, attempt)
+		if err != nil {
+			return err
+		}
+		if _, _, err := inspectPanelCallAttempt(homePath, run, attempt.TargetRef, attempt.RequestID, clientProfile, callRole, lane); err != nil {
+			return err
+		}
+	}
+	for _, completion := range completions {
+		if !callIDs[completion.RequestID] {
+			return fmt.Errorf("panel route completion %s has no call reservation", completion.RequestID)
+		}
+	}
+	return nil
+}
+
+func expectedPanelCallIdentity(run Run, attempt panelAttempt) (string, string, LaneRef, error) {
+	if attempt.WorkID == nil || strings.TrimSpace(attempt.ClientProfile) == "" || strings.TrimSpace(attempt.CallRole) == "" || attempt.Lane == nil {
+		return "", "", LaneRef{}, fmt.Errorf("incomplete panel call attempt identity for %s", attempt.RequestID)
+	}
+	if attempt.CallRole == judgePromptID {
+		return "compound.panel.judge", judgePromptID, run.Route.JudgeLane, nil
+	}
+	for _, lens := range run.LensSet.Included {
+		if attempt.CallRole == lens.Ref {
+			return "compound.panel.lens", lens.Ref, run.Route.LensLane, nil
+		}
+	}
+	return "", "", LaneRef{}, fmt.Errorf("panel route attempt %s has call role %q outside run %s", attempt.RequestID, attempt.CallRole, run.ID)
+}
+
 func validatePanelAttemptCore(attempt panelAttempt, kind string, run Run, targetRef, requestID string) error {
 	if attempt.SchemaVersion != panelAttemptSchemaVersion {
 		return fmt.Errorf("panel attempt schema_version must be %s", panelAttemptSchemaVersion)

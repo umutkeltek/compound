@@ -35,6 +35,16 @@ has no production caller until an attested adapter exists. Imported, generic,
 fixture, and legacy rows remain reviewable metadata but cannot decide
 autonomy or shadow a differently bound Panel request id.
 
+Panel call reservations and completions under
+`panel-runs/attempts/<run-digest>/` are durable recovery evidence owned by
+`internal/panel`. A resumed run validates every persisted call reservation
+and completion before another model call; unresolved reservations remain
+`unknown_spend` and fail closed rather than replaying earlier lenses. Keep
+attempts with their run until a Panel-owned recovery or retirement action can
+disposition them. Generic home cleanup and doctors do not delete or repair
+this evidence, and no automatic retry may infer that an unresolved call was
+free.
+
 It becomes one projection inside a compound `Transition` (the cost/routing projection), joined with
 the harness receipt and the real state delta:
 
