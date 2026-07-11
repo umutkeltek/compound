@@ -143,6 +143,94 @@ func TestRecordersOwnProvenance(t *testing.T) {
 	}
 }
 
+func TestRecordJoinedUniqueRequestIDSerializesGenericWriter(t *testing.T) {
+	home := t.TempDir()
+	build := func(createdAt time.Time, status string) Evidence {
+		t.Helper()
+		ev, err := Build(BuildInput{
+			CreatedAt:     createdAt,
+			RequestID:     "panel:prun_atomic:target:lens",
+			WorkID:        "work_atomic",
+			ClientProfile: "compound.panel.lens",
+			Protocol:      "panel-lane",
+			Provider:      "compound-route-plan",
+			Model:         "fixture-model",
+			Usage:         Usage{TotalTokens: 7},
+			Status:        status,
+			EvidenceRefs:  []string{ModelCapabilitiesAuthorityRef},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	panelEvidence := build(t0, "completed")
+	genericEvidence := build(t0.Add(time.Second), "failed")
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		<-start
+		_, err := RecordJoinedUniqueRequestID(home, panelEvidence)
+		results <- err
+	}()
+	go func() {
+		<-start
+		_, err := RecordJoined(home, genericEvidence)
+		results <- err
+	}()
+	close(start)
+
+	successes := 0
+	conflicts := 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			successes++
+			continue
+		}
+		if strings.Contains(err.Error(), "request_id") {
+			conflicts++
+			continue
+		}
+		t.Fatalf("unexpected concurrent record error: %v", err)
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("concurrent request-id writes = successes:%d conflicts:%d, want 1/1", successes, conflicts)
+	}
+	rows := strings.Split(strings.TrimSpace(string(readFile(t, filepath.Join(home, "ledger", "execution-route-evidence.jsonl")))), "\n")
+	if len(rows) != 1 {
+		t.Fatalf("concurrent request-id writes persisted %d rows, want 1", len(rows))
+	}
+	events, err := os.ReadDir(filepath.Join(home, "events"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("concurrent request-id writes persisted %d transitions, want 1", len(events))
+	}
+}
+
+func TestRecordJoinedIsIdempotentForIdenticalRequestEvidence(t *testing.T) {
+	home := t.TempDir()
+	ev := fixtureEvidence()
+	first, err := RecordJoined(home, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := RecordJoined(home, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Evidence.ID != first.Evidence.ID || second.Transition.ID != first.Transition.ID {
+		t.Fatalf("idempotent record changed identity: first=%+v second=%+v", first, second)
+	}
+	rows := strings.Split(strings.TrimSpace(string(readFile(t, filepath.Join(home, "ledger", "execution-route-evidence.jsonl")))), "\n")
+	if len(rows) != 1 {
+		t.Fatalf("identical request evidence persisted %d rows, want 1", len(rows))
+	}
+}
+
 func TestLookupRequestIDTreatsLegacyRecorderAsGeneric(t *testing.T) {
 	home := t.TempDir()
 	ev := fixtureEvidence()
