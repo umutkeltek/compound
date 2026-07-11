@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"compound/internal/envelope"
@@ -33,8 +32,8 @@ var writeRouteEvidenceFile = func(file *os.File, data []byte) (int, error) { ret
 var syncRouteEvidenceFile = func(file *os.File) error { return file.Sync() }
 var closeRouteEvidenceFile = func(file *os.File) error { return file.Close() }
 
-// routeEvidenceBeforeLedgerReplace is a deterministic test seam after the
-// canonical preimage has been validated but before publication.
+// routeEvidenceBeforeLedgerReplace is a deterministic test seam immediately
+// before atomic CAS publication of the prepared postimage.
 var routeEvidenceBeforeLedgerReplace = func() {}
 
 type Usage struct {
@@ -424,7 +423,14 @@ func recordEvidenceLocked(homePath string, ev Evidence) error {
 	after = append(after, '\n')
 
 	digest := sha256.Sum256(after)
-	tempName := fmt.Sprintf(".%s.%d.%s.tmp", executionRouteEvidenceLedger, os.Getpid(), hex.EncodeToString(digest[:])[:12])
+	preimageDigest := sha256.Sum256(current)
+	tempName := fmt.Sprintf(
+		".%s.%d.%s.%s.swap",
+		executionRouteEvidenceLedger,
+		os.Getpid(),
+		hex.EncodeToString(preimageDigest[:])[:12],
+		hex.EncodeToString(digest[:])[:12],
+	)
 	file, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -455,26 +461,33 @@ func recordEvidenceLocked(homePath string, ev Evidence) error {
 	if !bytes.Equal(tempData, after) {
 		return cleanup(fmt.Errorf("execution route evidence temporary publication changed before commit"))
 	}
-	observed, observedInfo, err := readRouteEvidenceLedgerSnapshot(root, executionRouteEvidenceLedger)
-	if err != nil {
-		return cleanup(err)
-	}
-	if !sameRouteEvidenceLedgerSnapshot(current, currentInfo, observed, observedInfo) {
-		return cleanup(fmt.Errorf("execution route evidence ledger changed after snapshot"))
-	}
 	routeEvidenceBeforeLedgerReplace()
-	if err := root.Rename(tempName, executionRouteEvidenceLedger); err != nil {
-		_ = root.Remove(tempName)
+	publication, err := homepkg.BeginRootedFileCAS(
+		root,
+		executionRouteEvidenceLedger,
+		tempName,
+		current,
+		currentInfo,
+		after,
+		tempInfo,
+	)
+	if err != nil {
+		if publication == nil || publication.State() == homepkg.RootedFileCASNotPublished {
+			_ = root.Remove(tempName)
+		}
 		return err
 	}
 	published, publishedInfo, err := readRouteEvidenceLedgerFile(root, executionRouteEvidenceLedger)
 	if err != nil {
-		return err
+		return errors.Join(err, publication.Rollback())
 	}
 	if !os.SameFile(tempInfo, publishedInfo) || !bytes.Equal(published, after) {
-		return fmt.Errorf("execution route evidence ledger does not match committed postimage")
+		return errors.Join(
+			fmt.Errorf("execution route evidence ledger does not match committed postimage"),
+			publication.Rollback(),
+		)
 	}
-	return syncRouteEvidenceLedgerDirectory(root)
+	return publication.Commit()
 }
 
 func openRouteEvidenceLedgerRoot(homePath string) (*os.Root, error) {
@@ -566,13 +579,6 @@ func sameRouteEvidenceLedgerVersion(left, right os.FileInfo) bool {
 	return os.SameFile(left, right) && left.Size() == right.Size() && left.ModTime().Equal(right.ModTime())
 }
 
-func sameRouteEvidenceLedgerSnapshot(expected []byte, expectedInfo os.FileInfo, actual []byte, actualInfo os.FileInfo) bool {
-	if expectedInfo == nil || actualInfo == nil {
-		return expectedInfo == nil && actualInfo == nil
-	}
-	return os.SameFile(expectedInfo, actualInfo) && bytes.Equal(expected, actual)
-}
-
 func writeRouteEvidenceChunk(file *os.File, data []byte) error {
 	n, err := writeRouteEvidenceFile(file, data)
 	if err != nil {
@@ -582,19 +588,6 @@ func writeRouteEvidenceChunk(file *os.File, data []byte) error {
 		return io.ErrShortWrite
 	}
 	return nil
-}
-
-func syncRouteEvidenceLedgerDirectory(root *os.Root) error {
-	dir, err := root.Open(".")
-	if err != nil {
-		return err
-	}
-	syncErr := dir.Sync()
-	closeErr := dir.Close()
-	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
-		return syncErr
-	}
-	return closeErr
 }
 
 func RecordTransition(homePath string, tr envelope.Transition) error {
