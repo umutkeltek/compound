@@ -316,6 +316,79 @@ func TestAutoAdmitRejectsEligibilityFromEarlierEvaluationInstant(t *testing.T) {
 	}
 }
 
+func TestAutoAdmitEventFailureLeavesWorkProposed(t *testing.T) {
+	s := newStore(t)
+	eligible := typedJobHealthEligibility(t, s, fixedNow)
+	workID := makeProposedDirectorWork(t, s, "job_health", "work_event_failure", fixedNow)
+	before, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventPath := s.eventsLog()
+	eventBackup := eventPath + ".backup"
+	eventBefore, err := os.ReadFile(eventPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sabotaged := false
+	restoreEvents := func() {
+		t.Helper()
+		if !sabotaged {
+			return
+		}
+		if err := os.RemoveAll(eventPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(eventBackup, eventPath); err != nil {
+			t.Fatal(err)
+		}
+		sabotaged = false
+	}
+
+	previousHook := autoAdmitBeforeCommit
+	autoAdmitBeforeCommit = func() {
+		if err := os.Rename(eventPath, eventBackup); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(eventPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sabotaged = true
+	}
+	defer func() {
+		autoAdmitBeforeCommit = previousHook
+		restoreEvents()
+	}()
+	result, err := s.AdmitAuto(workID, eligible, fixedNow)
+	autoAdmitBeforeCommit = previousHook
+	restoreEvents()
+	if err == nil || result.Admitted || !strings.Contains(err.Error(), "is a directory") {
+		t.Fatalf("event persistence failure admitted work: err=%v result=%+v", err, result)
+	}
+	after, err := s.Get(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterJSON) != string(beforeJSON) {
+		t.Fatalf("event persistence failure mutated work:\nbefore=%s\nafter=%s", beforeJSON, afterJSON)
+	}
+	eventAfter, err := os.ReadFile(eventPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(eventAfter) != string(eventBefore) {
+		t.Fatalf("event persistence failure changed lifecycle log:\nbefore=%s\nafter=%s", eventBefore, eventAfter)
+	}
+}
+
 func TestAutoAdmitSerializesConcurrentHaltAtCommit(t *testing.T) {
 	s := newStore(t)
 	eligible := typedJobHealthEligibility(t, s, fixedNow)
