@@ -1283,6 +1283,80 @@ func TestSessionEndWithWorkIDDoesNotCloseWithoutExplicitOutcomeAndMoveType(t *te
 	}
 }
 
+func TestHandledOrActiveStopWithWorkIDSuppressesSessionClose(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		active      bool
+		triaged     bool
+		sideEffects []string
+	}{
+		{
+			name:        "triage handled",
+			triaged:     true,
+			sideEffects: []string{"events/act_stop.json", "events/pol_stop.json", "events/rec_stop.json", "events/tr_stop.json"},
+		},
+		{
+			name:   "active replay",
+			active: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := work.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			w, err := store.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "p"}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Claim(w.ID, "codex", fixedNow); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, fixedNow); err != nil {
+				t.Fatal(err)
+			}
+
+			deps := baseDeps()
+			deps.Store = store
+			res, err := Run(Fixture{
+				Hook:               "stop",
+				Harness:            "codex",
+				SessionID:          "sess_bound_stop",
+				TurnID:             "turn_bound_stop",
+				WorkID:             w.ID,
+				Summary:            "turn stopped after adapter handling",
+				StopHookActive:     tc.active,
+				StopTriageHandled:  tc.triaged,
+				AdapterSideEffects: tc.sideEffects,
+			}, deps, fixedNow)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if got := kinds(res.Produced); len(got) != 0 {
+				t.Fatalf("produced = %v, want no terminal receipt/transition", got)
+			}
+			if !strings.Contains(res.Summary, "handled Stop") || strings.Contains(res.Summary, "explicit outcome and move_type required") {
+				t.Fatalf("summary = %q, want handled Stop suppression", res.Summary)
+			}
+			if res.Event.IDs.WorkID != w.ID || res.Event.IDs.SessionID != "sess_bound_stop" {
+				t.Fatalf("handled Stop event lost binding: %+v", res.Event.IDs)
+			}
+			for _, ref := range tc.sideEffects {
+				if !containsString(res.Event.SideEffects, ref) {
+					t.Fatalf("handled Stop event side effects = %v, want %q", res.Event.SideEffects, ref)
+				}
+			}
+			after, err := store.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.State != "running" {
+				t.Fatalf("handled Stop closed parent work: %+v", after)
+			}
+		})
+	}
+}
+
 // codex has no native SessionEnd event (Stop, via JSON block/continuation, is its only
 // end-of-turn hook); claude_code has both. TestSessionEndCapabilityAware proves the
 // registry split is actually consulted end-to-end through hook.Run, mirroring the

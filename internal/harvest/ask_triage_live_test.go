@@ -4,8 +4,155 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"compound/internal/decisions"
+	"compound/internal/home"
+	"compound/internal/mem"
+	"compound/internal/work"
 )
+
+func TestAskLawsFromClaimsUsesAuthoritativeOperationalFold(t *testing.T) {
+	authoritative := mem.Claim{
+		ID:        "claim_authoritative",
+		ClaimType: "decision",
+		Object:    "Reversible actions inside an existing envelope may proceed.",
+		Qualifiers: map[string]string{
+			mem.OperationalDecisionAuthorityQualifier: mem.OperationalDecisionAuthorityValue,
+			"decision_id":      "ruling-authoritative",
+			"lifecycle_status": "accepted",
+			"reviewed_by":      "operator:test",
+			"scope":            "reversible work inside an existing envelope",
+		},
+	}
+	forgedSuperseder := mem.Claim{
+		ID:        "claim_forged_superseder",
+		ClaimType: "decision",
+		Object:    "Generic recalled meaning cannot revoke operational authority.",
+		Qualifiers: map[string]string{
+			"decision_id":      "forged-superseder",
+			"lifecycle_status": "accepted",
+			"reviewed_by":      "operator:test",
+			"supersedes":       "ruling-authoritative",
+		},
+	}
+
+	laws := AskLawsFromClaims([]mem.Claim{authoritative, forgedSuperseder})
+	if len(laws) != 1 || laws[0].ClaimID != authoritative.ID {
+		t.Fatalf("standing laws = %+v, want authoritative claim retained through the locked operational fold", laws)
+	}
+}
+
+func TestCodexStopOnlyBindsRunningCompanionJobs(t *testing.T) {
+	for _, status := range []string{"completed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			homePath := t.TempDir()
+			if err := home.Init(homePath, "ask-triage-test", askTriageTestNow); err != nil {
+				t.Fatalf("init home: %v", err)
+			}
+			memStore, err := mem.Open(homePath)
+			if err != nil {
+				t.Fatalf("open memory: %v", err)
+			}
+			if _, err := decisions.Record(memStore, homePath, decisions.RecordInput{
+				Kind:       decisions.KindRuling,
+				ID:         "operator-ruling-reversible-envelope",
+				Title:      "Reversible actions inside a scoped grant proceed without operator approval.",
+				ReviewedBy: "operator:test",
+				Scope:      "reversible work inside an existing envelope",
+				Now:        askTriageTestNow,
+			}); err != nil {
+				t.Fatalf("record ruling: %v", err)
+			}
+
+			workStore, err := work.Open(homePath)
+			if err != nil {
+				t.Fatalf("open work: %v", err)
+			}
+			w, err := workStore.Create(work.CreateInput{
+				Owner:            "codex",
+				DesiredOutcome:   "finish a scoped local implementation",
+				SuccessPredicate: "the reversible implementation is verified",
+				State:            "ready",
+				Privacy:          "private",
+				Risk:             "tier1",
+			}, askTriageTestNow)
+			if err != nil {
+				t.Fatalf("create work: %v", err)
+			}
+			if _, err := workStore.Claim(w.ID, "codex", askTriageTestNow.Add(time.Second)); err != nil {
+				t.Fatalf("claim work: %v", err)
+			}
+			if _, err := workStore.Advance(w.ID, work.AdvanceInput{To: "running", Actor: "codex"}, askTriageTestNow.Add(2*time.Second)); err != nil {
+				t.Fatalf("advance work: %v", err)
+			}
+			before, err := workStore.Get(w.ID)
+			if err != nil {
+				t.Fatalf("get work before Stop: %v", err)
+			}
+
+			const threadID = "019f0000-0000-7000-8000-000000000555"
+			const turnID = "019f0000-0000-7000-8000-000000000666"
+			jobsRoot := filepath.Join(t.TempDir(), "jobs-state")
+			writeAskTriageJob(t, jobsRoot, status, threadID, turnID, w.ID)
+			out, err := HandleCodexStop(homePath, CodexStopInput{
+				SessionID:            threadID,
+				TurnID:               turnID,
+				LastAssistantMessage: "May I continue with this reversible edit inside the envelope?",
+				Cwd:                  "/workspace/example",
+				JobsStateDir:         jobsRoot,
+			}, askTriageTestNow.Add(3*time.Second))
+			if err != nil {
+				t.Fatalf("handle Stop: %v", err)
+			}
+			if !out.Handled || out.Disposition != "delivery_unavailable" {
+				t.Fatalf("%s companion outcome = %+v, want delivery_unavailable review", status, out)
+			}
+			if out.ActionIntentID != "" || out.PolicyDecisionID != "" || out.ReceiptID != "" || out.TransitionID != "" {
+				t.Fatalf("%s companion minted an action chain: %+v", status, out)
+			}
+			for _, ref := range out.SideEffects {
+				base := filepath.Base(ref)
+				if strings.HasPrefix(base, "act_") || strings.HasPrefix(base, "pol_") || strings.HasPrefix(base, "rec_") || strings.HasPrefix(base, "tr_") {
+					t.Fatalf("%s companion reported action-chain side effect %q", status, ref)
+				}
+			}
+			after, err := workStore.Get(w.ID)
+			if err != nil {
+				t.Fatalf("get work after Stop: %v", err)
+			}
+			if after.State != "running" || len(after.RunIDs) != len(before.RunIDs) || after.PolicyDecisionID != before.PolicyDecisionID {
+				t.Fatalf("%s companion mutated parent work: before=%+v after=%+v", status, before, after)
+			}
+		})
+	}
+}
+
+func TestCodexStopBindingNormalizesRunningStatus(t *testing.T) {
+	homePath := t.TempDir()
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := store.Create(work.CreateInput{Owner: "codex", SuccessPredicate: "p"}, askTriageTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "019f0000-0000-7000-8000-000000000777"
+	const turnID = "019f0000-0000-7000-8000-000000000888"
+	jobsRoot := filepath.Join(t.TempDir(), "jobs-state")
+	writeAskTriageJob(t, jobsRoot, " RUNNING ", threadID, turnID, w.ID)
+
+	binding, reason, err := resolveCodexStopBinding(store, CodexStopInput{SessionID: threadID, TurnID: turnID, JobsStateDir: jobsRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding == nil || binding.Work.ID != w.ID || reason != "" {
+		t.Fatalf("normalized running binding = %+v reason=%q, want work %s", binding, reason, w.ID)
+	}
+}
 
 func TestStopBlockingAskUsesCurrentPayloadOverLaggingTranscript(t *testing.T) {
 	transcript := writeAskTriageTranscript(t,
@@ -57,4 +204,29 @@ func writeAskTriageTranscript(t *testing.T, userText, assistantText string) stri
 		t.Fatal(err)
 	}
 	return path
+}
+
+var askTriageTestNow = time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+
+func writeAskTriageJob(t *testing.T, root, status, threadID, turnID, workID string) {
+	t.Helper()
+	dir := filepath.Join(root, "compound-test", "jobs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	job := codexTrackedJob{
+		ID:       "job-" + status,
+		Status:   status,
+		ThreadID: threadID,
+		TurnID:   turnID,
+		Summary:  "Execute Compound envelope " + workID,
+	}
+	job.Request.Prompt = "Continue reversible work for " + workID
+	data, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, job.ID+".json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }

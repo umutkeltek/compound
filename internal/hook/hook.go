@@ -597,16 +597,21 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if st == "fail_open" {
 		warn = fmt.Sprintf(" — WARNING: %s has no native %s event; receipt not delivered by the harness", fx.Harness, name)
 	}
-	if fx.WorkID == "" {
-		if strings.TrimSpace(fx.SessionID) == "" {
-			return Result{}, fmt.Errorf("session-end fixture needs work_id or session_id")
+	if strings.TrimSpace(fx.WorkID) == "" && strings.TrimSpace(fx.SessionID) == "" {
+		return Result{}, fmt.Errorf("session-end fixture needs work_id or session_id")
+	}
+	if name == "Stop" && (fx.StopHookActive || fx.StopTriageHandled) {
+		parts := []string{name, fx.SessionID, fx.TurnID, fx.WorkID, fx.Cwd, fx.Summary, fx.Outcome, fx.MoveType}
+		if fx.WorkID == "" {
+			parts = []string{name, fx.SessionID, fx.TurnID, fx.Cwd, fx.Summary, fx.TranscriptPath}
 		}
+		ev := newEvent(name, fx, st, hashStr(strings.Join(parts, "\x00")), fx.AdapterSideEffects, now)
+		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "recorded handled Stop event without replaying a session receipt"}, nil
+	}
+	if fx.WorkID == "" {
 		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.TurnID, fx.Cwd, fx.Summary, fx.TranscriptPath}, "\x00"))
 		ev := newEvent(name, fx, st, inputHash, fx.AdapterSideEffects, now)
 		summary := fmt.Sprintf("recorded %s receipt event for session %s%s", name, fx.SessionID, warn)
-		if name == "Stop" && (fx.StopHookActive || fx.StopTriageHandled) {
-			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "recorded handled Stop event without replaying a session receipt"}, nil
-		}
 		rec, err := buildWorklessSessionReceipt(name, fx, now)
 		if err != nil || rec == nil {
 			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil

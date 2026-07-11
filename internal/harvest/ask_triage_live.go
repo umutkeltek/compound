@@ -101,13 +101,10 @@ type codexStopBinding struct {
 // claims. Generic recalled meaning may inform review, but it can never become
 // permission to continue a lane.
 func AskLawsFromClaims(claims []mem.Claim) []AskLaw {
-	active := decisions.AllActiveDecisions(claims)
+	active := mem.AuthoritativeActiveOperationalDecisions(claims)
 	laws := make([]AskLaw, 0, len(active))
 	for _, claim := range active {
 		lifecycle := decisions.LifecycleFromClaim(claim)
-		if strings.TrimSpace(lifecycle.ReviewedBy) == "" || !mem.HasOperationalDecisionAuthority(claim.Qualifiers) {
-			continue
-		}
 		parts := []string{claim.Object, lifecycle.Scope, claim.Qualifiers["freeze_keywords"], claim.Qualifiers["domain"]}
 		termSet := significantTokens(strings.Join(parts, " "))
 		terms := make([]string, 0, len(termSet))
@@ -245,7 +242,7 @@ func resolveCodexStopBinding(store *work.Store, in CodexStopInput) (*codexStopBi
 			continue
 		}
 		var job codexTrackedJob
-		if json.Unmarshal(data, &job) != nil || strings.TrimSpace(job.ThreadID) != strings.TrimSpace(in.SessionID) || strings.TrimSpace(job.TurnID) != strings.TrimSpace(in.TurnID) {
+		if json.Unmarshal(data, &job) != nil || !strings.EqualFold(strings.TrimSpace(job.Status), "running") || strings.TrimSpace(job.ThreadID) != strings.TrimSpace(in.SessionID) || strings.TrimSpace(job.TurnID) != strings.TrimSpace(in.TurnID) {
 			continue
 		}
 		workIDs := askUniqueStrings(askWorkRefPattern.FindAllString(strings.Join([]string{job.Summary, job.Title, job.Request.Prompt}, " "), -1))
