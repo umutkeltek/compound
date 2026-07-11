@@ -349,6 +349,7 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	ai = normalizeActionTarget(fx, ai)
 	evalCtx := policy.EvaluationContext{}
 	var sourceControl *policy.SourceControlContext
+	targetGitRoot := ""
 	sideEffects := []string(nil)
 	if fx.Placement != nil {
 		evalCtx.Placement = fx.Placement
@@ -364,7 +365,7 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if deps.HomePath != "" && strings.TrimSpace(ai.Target.Path) != "" {
 		var effects []string
 		var err error
-		sourceControl, effects, err = sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
+		sourceControl, targetGitRoot, effects, err = sourceControlContextForAction(deps.HomePath, ai.Target.Path, now)
 		if err != nil {
 			return Result{}, err
 		}
@@ -383,12 +384,18 @@ func preToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	}
 	reviewWorkID := ""
 	if deps.Store != nil && sourceControl != nil && !policy.Allowed(pd) && strings.TrimSpace(sourceControl.Status) == "dirty" {
-		review, err := createHeldGateReview(deps.Store, fx, ai, pd, *sourceControl, now)
+		mint, err := shouldMintGateReview(deps.Store, deps.HomePath, *sourceControl, targetGitRoot)
 		if err != nil {
 			return Result{}, err
 		}
-		reviewWorkID = review.ID
-		sideEffects = append(sideEffects, filepath.Join("work", "work", review.ID+".json"))
+		if mint {
+			review, err := createHeldGateReview(deps.Store, fx, ai, pd, *sourceControl, now)
+			if err != nil {
+				return Result{}, err
+			}
+			reviewWorkID = review.ID
+			sideEffects = append(sideEffects, filepath.Join("work", "work", review.ID+".json"))
+		}
 	}
 
 	// Capability-aware enforcement: a block only counts if the harness can actually block.
@@ -542,29 +549,29 @@ func writeGateArtifacts(homePath string, ai envelope.ActionIntent, pd envelope.P
 	return []string{actionRef, policyRef}, nil
 }
 
-func sourceControlContextForAction(homePath, targetPath string, now time.Time) (*policy.SourceControlContext, []string, error) {
+func sourceControlContextForAction(homePath, targetPath string, now time.Time) (*policy.SourceControlContext, string, []string, error) {
 	memStore, err := mem.Open(homePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	existing, err := memStore.Entities()
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	_, entity, facts, report, err := authority.ImportGitSnapshot(targetPath, existing)
 	if err != nil {
-		return nil, nil, nil
+		return nil, "", nil, nil
 	}
 	if _, err := memStore.RegisterEntity(entity, now); err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	captured, err := memStore.Capture(facts, now)
 	if err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	for _, c := range captured {
 		if _, err := memStore.Adjudicate(c.ID, "promote", "source-control-pre-tool-use", now); err != nil {
-			return nil, nil, err
+			return nil, "", nil, err
 		}
 	}
 	return &policy.SourceControlContext{
@@ -572,11 +579,76 @@ func sourceControlContextForAction(homePath, targetPath string, now time.Time) (
 			Status:       report.Status,
 			ChangedPaths: report.ChangedPaths,
 			EvidenceRefs: []string{report.EvidenceRef},
-		}, []string{
+		}, report.GitRoot, []string{
 			report.EvidenceRef,
 			filepath.Join("ledger", "entities.jsonl"),
 			filepath.Join("ledger", "claims.jsonl"),
 		}, nil
+}
+
+// shouldMintGateReview scopes and dedups the source-control-dirty held gate-review mint.
+// A held operator-review is filed ONLY for compound's OWN governed repo (the git repository
+// that contains COMPOUND_HOME) and ONLY when no OPEN held gate-review already tracks that
+// repo. Edits outside compound's own repo, or repeats while a review is already open, still
+// enforce identically at the Gate + PolicyDecision audit (writeGateArtifacts) — they simply
+// file no additional operator-review ledger work, which no consumer/drain ever existed for.
+func shouldMintGateReview(store *work.Store, homePath string, sc policy.SourceControlContext, targetGitRoot string) (bool, error) {
+	if !targetInCompoundRepo(homePath, targetGitRoot) {
+		return false, nil
+	}
+	exists, err := openGateReviewExists(store, sc)
+	if err != nil {
+		return false, err
+	}
+	return !exists, nil
+}
+
+// targetInCompoundRepo reports whether targetGitRoot is compound's own governed repo — the
+// git repository that contains COMPOUND_HOME. Both roots are derived the same way
+// (`git rev-parse --show-toplevel`), so the equality is symlink-canonical and worktree-consistent.
+// When the home is not inside a git repo (e.g. a global ~/.compound), there is no repo anchor
+// and nothing is minted — a fail-safe: the Gate and PolicyDecision audit still enforce, and no
+// operator debt is filed for repos that cannot be identified as compound's own.
+func targetInCompoundRepo(homePath, targetGitRoot string) bool {
+	targetGitRoot = strings.TrimSpace(targetGitRoot)
+	if strings.TrimSpace(homePath) == "" || targetGitRoot == "" {
+		return false
+	}
+	snap, err := authority.ReadGitSnapshot(homePath)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(snap.GitRoot) != "" && snap.GitRoot == targetGitRoot
+}
+
+// openGateReviewExists reports whether an OPEN (held) gate-review already tracks the same
+// source-control entity (repo). The dedup key is the repo identity (entity ref), not the
+// head-specific evidence ref, so repeated dirty edits to the same repo — across commits —
+// collapse to a single held review instead of minting fresh, orphan-prone operator debt.
+func openGateReviewExists(store *work.Store, sc policy.SourceControlContext) (bool, error) {
+	entity := strings.TrimSpace(sc.EntityRef)
+	if entity == "" {
+		return false, nil
+	}
+	works, err := store.List()
+	if err != nil {
+		return false, err
+	}
+	prefix := "source-control:" + entity + ":"
+	for _, w := range works {
+		if w.State != "held" {
+			continue
+		}
+		if !strings.HasPrefix(w.SuccessPredicate, "review held policy gate") {
+			continue
+		}
+		for _, ref := range w.EvidenceRefs {
+			if strings.HasPrefix(ref, prefix) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func postToolUse(name string, fx Fixture, now time.Time) (Result, error) {

@@ -1052,8 +1052,13 @@ func TestPreToolUseBatchBlocksWhenAnyActionIsHeld(t *testing.T) {
 }
 
 func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
-	homePath := t.TempDir()
+	// Home is workspace-local to the target repo (COMPOUND_HOME under the repo it governs),
+	// so the dirty edit is INSIDE compound's own governed repo and the held review is minted.
 	repo := initHookGitRepo(t)
+	homePath := filepath.Join(repo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	target := filepath.Join(repo, "README.md")
 	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1142,6 +1147,162 @@ func TestPreToolUseImportsSourceControlAndHoldsDirtyMutation(t *testing.T) {
 			t.Fatalf("missing persisted gate artifact %s: %v", ref, err)
 		}
 	}
+}
+
+// T1 (scope): a policy-blocked dirty edit to a path OUTSIDE compound's own repo must NOT
+// mint a held gate-review, yet the Gate must still block and the PolicyDecision audit must
+// still be written. This fails against the unscoped mint (which held for any dirty repo).
+func TestPreToolUseSkipsHeldGateReviewOutsideCompoundRepo(t *testing.T) {
+	// Home governs its own repo (COMPOUND_HOME under ownRepo); the dirty edit targets a
+	// DIFFERENT git repository — an unrelated project or a scratch worktree.
+	ownRepo := initHookGitRepo(t)
+	homePath := filepath.Join(ownRepo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherRepo := initHookGitRepo(t)
+	target := filepath.Join(otherRepo, "README.md")
+	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+
+	ai := newDirtyWriteAction("act_out_of_scope", "work_out_of_scope", target)
+	res, err := Run(Fixture{Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_out_of_scope", Action: ai}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enforcement is byte-identical out of scope: the Gate still blocks the dirty mutation.
+	if res.Event.Status != "blocked" {
+		t.Fatalf("event status = %q, want blocked (enforcement must be unchanged out of scope)", res.Event.Status)
+	}
+	pd := res.Produced[1].(*envelope.PolicyDecision)
+	if pd.Outcome != "hold" {
+		t.Fatalf("policy outcome = %q reasons=%v, want hold", pd.Outcome, pd.Reasons)
+	}
+	// The PolicyDecision audit is persisted independently of any held mint.
+	if !containsString(res.Event.SideEffects, filepath.Join("events", pd.ID+".json")) {
+		t.Fatalf("side effects = %v, want persisted policy decision artifact %s", res.Event.SideEffects, pd.ID)
+	}
+	if _, err := os.Stat(filepath.Join(homePath, "events", pd.ID+".json")); err != nil {
+		t.Fatalf("policy decision artifact not written: %v", err)
+	}
+	// But NO held operator-review debt is filed for a repo that is not compound's own.
+	if n := countHeldGateReviews(t, store); n != 0 {
+		t.Fatalf("held gate-reviews = %d, want 0 for out-of-scope repo", n)
+	}
+}
+
+// T2 (own-repo mint): a policy-blocked dirty edit INSIDE compound's own repo mints exactly
+// one held gate-review.
+func TestPreToolUseMintsExactlyOneHeldGateReviewInsideCompoundRepo(t *testing.T) {
+	repo := initHookGitRepo(t)
+	homePath := filepath.Join(repo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+
+	ai := newDirtyWriteAction("act_in_scope", "work_in_scope", target)
+	res, err := Run(Fixture{Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_in_scope", Action: ai}, deps, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Event.Status != "blocked" {
+		t.Fatalf("event status = %q, want blocked", res.Event.Status)
+	}
+	if n := countHeldGateReviews(t, store); n != 1 {
+		t.Fatalf("held gate-reviews = %d, want exactly 1 inside compound's own repo", n)
+	}
+}
+
+// T3 (dedup): a second policy-blocked dirty edit for the same repo, while an open held
+// gate-review already exists, must NOT mint a second review. This fails against the
+// no-dedup mint (which created a fresh held item on every dirty edit).
+func TestPreToolUseDedupsHeldGateReviewPerRepo(t *testing.T) {
+	repo := initHookGitRepo(t)
+	homePath := filepath.Join(repo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(first, []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.Open(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := baseDeps()
+	deps.HomePath = homePath
+	deps.Store = store
+
+	// First blocked dirty edit mints one held review.
+	firstAI := newDirtyWriteAction("act_dedup_1", "work_dedup_1", first)
+	if _, err := Run(Fixture{Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_dedup_1", Action: firstAI}, deps, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if n := countHeldGateReviews(t, store); n != 1 {
+		t.Fatalf("after first edit: held gate-reviews = %d, want 1", n)
+	}
+
+	// A second blocked dirty edit to the SAME repo, while the review is still open, adds nothing.
+	second := filepath.Join(repo, "SECOND.md")
+	if err := os.WriteFile(second, []byte("second\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secondAI := newDirtyWriteAction("act_dedup_2", "work_dedup_2", second)
+	if _, err := Run(Fixture{Hook: "pre-tool-use", Harness: "claude_code", WorkID: "work_dedup_2", Action: secondAI}, deps, fixedNow); err != nil {
+		t.Fatal(err)
+	}
+	if n := countHeldGateReviews(t, store); n != 1 {
+		t.Fatalf("after second edit: held gate-reviews = %d, want still 1 (deduped per repo)", n)
+	}
+}
+
+func newDirtyWriteAction(id, workID, target string) *envelope.ActionIntent {
+	return &envelope.ActionIntent{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVActionIntent, ID: id, CreatedAt: fixedNow.Format(time.RFC3339),
+			Producer: envelope.Producer{Kind: "hook", Name: "compound"}, IDs: envelope.IDs{WorkID: workID},
+			Authority: envelope.Authority{SourceClass: "runtime"}, Privacy: "private", Risk: "tier1",
+			EvidenceRefs: []string{}, Uncertainty: envelope.Uncertainty{Level: "known"},
+		},
+		Actor: "claude_code", Capability: "filesystem.write", Action: "write_file",
+		Target:        envelope.ActionTarget{Kind: "file", Path: target},
+		MutationClass: "local_reversible", Reversibility: "easy", BlastRadius: "repo",
+	}
+}
+
+func countHeldGateReviews(t *testing.T, store *work.Store) int {
+	t.Helper()
+	works, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, w := range works {
+		if w.State == "held" && strings.HasPrefix(w.SuccessPredicate, "review held policy gate") {
+			n++
+		}
+	}
+	return n
 }
 
 func TestPreToolUseResolvesRelativeTargetAgainstHookCwd(t *testing.T) {
