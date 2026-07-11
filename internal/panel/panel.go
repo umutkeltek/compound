@@ -92,6 +92,23 @@ type Budget struct {
 	MaxUSDMicros   int64 `json:"max_usd_micros"`
 }
 
+func (b Budget) Validate() error {
+	var errs []string
+	if b.MaxItems < 0 {
+		errs = append(errs, "max_items must be non-negative")
+	}
+	if b.MaxTotalTokens < 0 {
+		errs = append(errs, "max_total_tokens must be non-negative")
+	}
+	if b.MaxUSDMicros < 0 {
+		errs = append(errs, "max_usd_micros must be non-negative")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("panel budget invalid: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 type TargetFinding struct {
 	TargetRef       string        `json:"target_ref"`
 	LensFindings    []LensFinding `json:"lens_findings"`
@@ -269,6 +286,9 @@ func (r Run) Validate() error {
 		errs = append(errs, "target_kind required")
 	} else if !has(targetKinds, r.TargetKind) {
 		errs = append(errs, fmt.Sprintf("target_kind must be one of %s", keys(targetKinds)))
+	}
+	if err := r.Budget.Validate(); err != nil {
+		errs = append(errs, err.Error())
 	}
 	for i, finding := range r.Findings {
 		for j, lens := range finding.LensFindings {

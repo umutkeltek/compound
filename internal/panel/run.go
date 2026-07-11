@@ -45,6 +45,9 @@ type verdictArtifactPayload struct {
 // provider call preflights its deterministic route-attempt identity and records
 // a fresh row, allocating :resumeN when a prior matching attempt exists.
 func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCaller, now func() time.Time) (Run, error) {
+	if err := run.Validate(); err != nil {
+		return run, err
+	}
 	result := run
 	invocationEvidenceRefs := append([]string(nil), run.EvidenceRefs...)
 	err := withPanelRunLock(homePath, run.ID, func() error {
@@ -98,7 +101,7 @@ func executeDryRunLocked(ctx context.Context, homePath string, store *Store, run
 	if run.CountsAfter == nil {
 		run.CountsAfter = copyCounts(run.CountsBefore)
 	}
-	if callerRequiresMeteredBudget(caller) && hasMeteredLane(run.Route) && run.Budget.MaxUSDMicros == 0 {
+	if callerRequiresMeteredBudget(caller) && hasMeteredLane(run.Route) && run.Budget.MaxUSDMicros <= 0 {
 		err := fmt.Errorf("budget:metered_lane_requires_max_usd_micros")
 		run.Status = "blocked"
 		run.StoppedReason = err.Error()
@@ -111,7 +114,7 @@ func executeDryRunLocked(ctx context.Context, homePath string, store *Store, run
 	if run.Budget.MaxUSDMicros > 0 {
 		// No lane cost data exists yet, so a USD cap alone cannot be enforced.
 		// Fail closed rather than running an unbounded live batch.
-		if run.Budget.MaxItems == 0 && run.Budget.MaxTotalTokens == 0 {
+		if run.Budget.MaxItems <= 0 && run.Budget.MaxTotalTokens <= 0 {
 			return run, fmt.Errorf("usd budget cap is unenforceable without lane cost data; bound the run with --max-items or --max-tokens")
 		}
 		run.EvidenceRefs = appendUniqueString(run.EvidenceRefs, "cost_unknown")
@@ -352,7 +355,7 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
-		if requestID != baseRequestID && hasMeteredLane(run.Route) && run.Budget.MaxTotalTokens == 0 {
+		if requestID != baseRequestID && hasMeteredLane(run.Route) && run.Budget.MaxTotalTokens <= 0 {
 			return TargetFinding{}, tokensUsed, errPanelMeteredResume
 		}
 		if err := reservePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.lens", included.Ref, run.Route.LensLane, now().UTC()); err != nil {
@@ -446,7 +449,7 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 		if err != nil {
 			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
-		if requestID != baseRequestID && hasMeteredLane(run.Route) && run.Budget.MaxTotalTokens == 0 {
+		if requestID != baseRequestID && hasMeteredLane(run.Route) && run.Budget.MaxTotalTokens <= 0 {
 			return JudgeOutput{}, lastRouteRef, tokens, false, errPanelMeteredResume
 		}
 		if err := reservePanelCallAttempt(homePath, run, target.Ref, requestID, "compound.panel.judge", judgePromptID, run.Route.JudgeLane, now().UTC()); err != nil {

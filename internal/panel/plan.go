@@ -39,6 +39,9 @@ func (e ErrBlockedNoLenses) Error() string {
 }
 
 func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, error) {
+	if err := in.Budget.Validate(); err != nil {
+		return Run{}, err
+	}
 	if nowFn == nil {
 		nowFn = time.Now
 	}
