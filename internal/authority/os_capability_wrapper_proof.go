@@ -14,16 +14,18 @@ import (
 	"time"
 
 	"compound/internal/capgraph"
+	"compound/internal/routeevidence"
 )
 
 const (
-	osCapabilityModelRouterAuthority = "compound://registries/model-router"
-	osCapabilityResolutionSchema     = "compound.capability_resolution.v0.1"
-	osCapabilityProbeTask            = "implement a bounded Go authority proof"
-	maxOSCapabilityShimBytes         = 16 << 10
-	maxOSCapabilityEntrypointBytes   = 2 << 20
-	maxOSCapabilityProjectionBytes   = 256 << 10
-	maxOSCapabilityCommandBytes      = 32 << 20
+	osCapabilityResolutionSchema   = "compound.capability_resolution.v0.1"
+	osCapabilityProbeTask          = "implement a bounded Go authority proof"
+	maxOSCapabilityOffers          = 12
+	maxOSCapabilityRouteLanes      = 16
+	maxOSCapabilityShimBytes       = 16 << 10
+	maxOSCapabilityEntrypointBytes = 2 << 20
+	maxOSCapabilityProjectionBytes = 256 << 10
+	maxOSCapabilityCommandBytes    = 32 << 20
 )
 
 var (
@@ -46,13 +48,21 @@ type osCapabilityCommandResult struct {
 type osCapabilityResolutionProof struct {
 	raw                 map[string]any
 	canonical           []byte
+	classifierRevision  string
+	graphRevision       string
 	routeSourceID       string
 	routeSourceRevision string
 }
 
 func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
-	if !hasExactString(row.EvidenceRefs, capgraph.CapabilityGraphAuthorityRef) || !hasExactString(row.EvidenceRefs, osCapabilityModelRouterAuthority) {
-		return osAbsorptionProofResult{reason: "os capability wrapper requires both Compound authority evidence refs"}
+	for _, required := range []string{
+		routeevidence.CapabilityTaskClassifierAuthorityRef,
+		capgraph.CapabilityGraphAuthorityRef,
+		routeevidence.ModelCapabilitiesAuthorityRef,
+	} {
+		if !hasExactString(row.EvidenceRefs, required) {
+			return osAbsorptionProofResult{reason: "os capability wrapper requires classifier, capability graph, and model-router authority evidence refs"}
+		}
 	}
 	source, osPath, err := resolveInstalledOSCapabilitySource()
 	if err != nil {
@@ -126,13 +136,16 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 	}
 
 	proofRef := fmt.Sprintf(
-		"os_capability_wrapper_authority:shim_sha256:%s;entrypoint_sha256:%s;projection_sha256:%s;compound_build:%s;capability=%s;router=%s@%s/%s",
+		"os_capability_wrapper_authority:shim_sha256:%s;entrypoint_sha256:%s;projection_sha256:%s;compound_build:%s;classifier=%s@%s;capability=%s@%s;router=%s@%s/%s",
 		digestBytes(source.shim),
 		digestBytes(source.entrypoint),
 		digestBytes(source.projection),
 		compoundBuild,
+		routeevidence.CapabilityTaskClassifierAuthorityRef,
+		directProof.classifierRevision,
 		capgraph.CapabilityGraphAuthorityRef,
-		osCapabilityModelRouterAuthority,
+		directProof.graphRevision,
+		routeevidence.ModelCapabilitiesAuthorityRef,
 		directProof.routeSourceID,
 		directProof.routeSourceRevision,
 	)
@@ -171,6 +184,20 @@ func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, e
 		!strings.Contains(entryText, `else if (cmd === "capability") exit = await runCapabilityProxy(rest);`) {
 		return osCapabilitySourceSnapshot{}, "", fmt.Errorf("production dispatch does not reach the Compound-only capability proxy")
 	}
+	for _, forbidden := range []string{
+		`./classify-capability`,
+		`../scripts/resolve_capability`,
+		`async function runCapability(`,
+		`function writeCapabilityContextPacket(`,
+		`function collectLoopTriggerFires(`,
+		`function appendLoopTriggerFireReceipts(`,
+		`TOOL_HINTS`,
+		`OS_CAPABILITY_FIRES_PATH`,
+	} {
+		if strings.Contains(entryText, forbidden) {
+			return osCapabilitySourceSnapshot{}, "", fmt.Errorf("dormant independent resolver source %q remains", forbidden)
+		}
+	}
 	projectionPath := filepath.Join(filepath.Dir(entrypointPath), "os-capability-proxy.ts")
 	projection, err := readRegularBounded(projectionPath, maxOSCapabilityProjectionBytes)
 	if err != nil {
@@ -194,6 +221,7 @@ func validateOSCapabilityProjectionSource(source []byte) error {
 		"skill-manifest", "skills-inventory", "skills-selection-board", "capability-graph.json",
 		"capability-resolver", "model-capabilities.source", "routingdefaults", "free-pool", "loop-map",
 		"resolvecapabilityintent", "searchskillcorpus", "searchcapabilitygraph", "searchmodellane", "collectlooptriggerfires",
+		"appendlooptriggerfirereceipts", "tool_hints", "os_capability_fires_path",
 	} {
 		if strings.Contains(lower, forbidden) {
 			return fmt.Errorf("capability projection reads retired source %q", forbidden)
@@ -275,19 +303,50 @@ func parseOSCapabilityResolution(body []byte) (osCapabilityResolutionProof, erro
 		return osCapabilityResolutionProof{}, fmt.Errorf("invalid resolution header")
 	}
 	authorityRefs, ok := stringSlice(raw["authority_refs"])
-	if !ok || len(authorityRefs) != 2 || authorityRefs[0] != capgraph.CapabilityGraphAuthorityRef || authorityRefs[1] != osCapabilityModelRouterAuthority {
+	if !ok {
 		return osCapabilityResolutionProof{}, fmt.Errorf("invalid authority refs")
 	}
+	for _, required := range []string{
+		routeevidence.CapabilityTaskClassifierAuthorityRef,
+		capgraph.CapabilityGraphAuthorityRef,
+		routeevidence.ModelCapabilitiesAuthorityRef,
+	} {
+		if !hasExactString(authorityRefs, required) {
+			return osCapabilityResolutionProof{}, fmt.Errorf("invalid authority refs")
+		}
+	}
+	classification, ok := raw["classification"].(map[string]any)
+	if !ok ||
+		stringField(classification, "schema_version") != routeevidence.CapabilityTaskClassifierSchemaVersion ||
+		stringField(classification, "authority_ref") != routeevidence.CapabilityTaskClassifierAuthorityRef ||
+		!validSHA256Revision(stringField(classification, "authority_revision")) ||
+		stringField(classification, "rule_id") == "" ||
+		stringField(classification, "capability_class") == "" {
+		return osCapabilityResolutionProof{}, fmt.Errorf("invalid classifier authority")
+	}
+	classifierRevision := stringField(classification, "authority_revision")
+	capabilityClass := stringField(classification, "capability_class")
 	surface, ok := raw["capability_surface"].(map[string]any)
-	if !ok || stringField(surface, "authority_ref") != capgraph.CapabilityGraphAuthorityRef || stringField(surface, "status") != "ok" || stringField(surface, "task") != osCapabilityProbeTask {
+	if !ok ||
+		stringField(surface, "schema_version") != capgraph.SurfaceSchemaVersion ||
+		stringField(surface, "authority_ref") != capgraph.CapabilityGraphAuthorityRef ||
+		!validGraphAuthorityRevision(stringField(surface, "authority_revision")) ||
+		stringField(surface, "status") != "ok" ||
+		stringField(surface, "task") != osCapabilityProbeTask {
 		return osCapabilityResolutionProof{}, fmt.Errorf("invalid capability surface authority")
 	}
+	graphRevision := stringField(surface, "authority_revision")
 	offers, ok := surface["offers"].([]any)
-	if !ok || len(offers) > 12 {
+	if !ok || len(offers) > maxOSCapabilityOffers {
 		return osCapabilityResolutionProof{}, fmt.Errorf("invalid bounded capability offers")
 	}
 	route, ok := raw["route_plan"].(map[string]any)
-	if !ok || stringField(route, "authority_ref") != osCapabilityModelRouterAuthority || stringField(route, "capability_class") == "" {
+	if !ok ||
+		stringField(route, "schema_version") != routeevidence.CapabilityRoutePlanSchemaVersion ||
+		stringField(route, "status") != "planned" ||
+		stringField(route, "authority_ref") != routeevidence.ModelCapabilitiesAuthorityRef ||
+		stringField(route, "capability_class") != capabilityClass ||
+		stringField(route, "created_at") == "" {
 		return osCapabilityResolutionProof{}, fmt.Errorf("invalid route plan authority")
 	}
 	sourceID := stringField(route, "source_authority_id")
@@ -296,7 +355,7 @@ func parseOSCapabilityResolution(body []byte) (osCapabilityResolutionProof, erro
 		return osCapabilityResolutionProof{}, fmt.Errorf("route source authority binding missing")
 	}
 	chain, ok := route["chain"].([]any)
-	if !ok || len(chain) == 0 {
+	if !ok || len(chain) == 0 || len(chain) > maxOSCapabilityRouteLanes {
 		return osCapabilityResolutionProof{}, fmt.Errorf("route plan has no eligible chain")
 	}
 	delete(route, "created_at")
@@ -304,7 +363,14 @@ func parseOSCapabilityResolution(body []byte) (osCapabilityResolutionProof, erro
 	if err != nil {
 		return osCapabilityResolutionProof{}, err
 	}
-	return osCapabilityResolutionProof{raw: raw, canonical: canonical, routeSourceID: sourceID, routeSourceRevision: sourceRevision}, nil
+	return osCapabilityResolutionProof{
+		raw:                 raw,
+		canonical:           canonical,
+		classifierRevision:  classifierRevision,
+		graphRevision:       graphRevision,
+		routeSourceID:       sourceID,
+		routeSourceRevision: sourceRevision,
+	}, nil
 }
 
 func validateDisabledOSCapabilityOutput(body []byte) error {
@@ -314,6 +380,19 @@ func validateDisabledOSCapabilityOutput(body []byte) error {
 	}
 	if stringField(raw, "status") != "unavailable" || stringField(raw, "task") != osCapabilityProbeTask {
 		return fmt.Errorf("must report unavailable for the probe task")
+	}
+	authorityRefs, ok := stringSlice(raw["authority_refs"])
+	if !ok {
+		return fmt.Errorf("invalid authority refs")
+	}
+	for _, required := range []string{
+		routeevidence.CapabilityTaskClassifierAuthorityRef,
+		capgraph.CapabilityGraphAuthorityRef,
+		routeevidence.ModelCapabilitiesAuthorityRef,
+	} {
+		if !hasExactString(authorityRefs, required) {
+			return fmt.Errorf("invalid authority refs")
+		}
 	}
 	for _, forbidden := range []string{"context_packet", "deterministic_resolver", "context_candidates", "capability_graph_matches", "model_lane_matches", "loop_trigger_fires", "source_of_truth"} {
 		if _, ok := raw[forbidden]; ok {
@@ -355,6 +434,18 @@ func hasExactString(values []string, want string) bool {
 
 func validSHA256Revision(value string) bool {
 	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
+		return false
+	}
+	for _, char := range value[len("sha256:"):] {
+		if !strings.ContainsRune("0123456789abcdef", char) {
+			return false
+		}
+	}
+	return true
+}
+
+func validGraphAuthorityRevision(value string) bool {
+	if len(value) != len("sha256:")+12 || !strings.HasPrefix(value, "sha256:") {
 		return false
 	}
 	for _, char := range value[len("sha256:"):] {
