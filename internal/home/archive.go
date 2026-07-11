@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"compound/internal/candidates"
@@ -475,8 +477,7 @@ func archiveOperationalHistoryLocked(homePath string, opts OperationalArchiveOpt
 	}
 	report.ArchivedCount = len(report.Entries)
 	if !opts.DryRun && len(report.Entries) > 0 {
-		operationalArchiveBeforeIndexCommit("archived", report.Entries)
-		if err := appendOperationalArchiveEntries(homePath, report.Entries); err != nil {
+		if err := commitOperationalArchiveTransaction(homePath, report.Entries); err != nil {
 			return OperationalArchiveReport{}, err
 		}
 	}
@@ -526,8 +527,7 @@ func restoreOperationalArchiveLocked(homePath string, opts OperationalRestoreOpt
 	}
 	report.RestoredCount = len(report.Entries)
 	if !opts.DryRun && len(report.Entries) > 0 {
-		operationalArchiveBeforeIndexCommit("restored", report.Entries)
-		if err := appendOperationalArchiveEntries(homePath, report.Entries); err != nil {
+		if err := commitOperationalArchiveTransaction(homePath, report.Entries); err != nil {
 			return OperationalArchiveReport{}, err
 		}
 	}
@@ -1166,25 +1166,17 @@ func candidateTerminal(homePath string, kind candidates.Kind, ref string) (bool,
 	}
 }
 
-func archiveOperationalFile(homePath string, cand operationalCandidate, now time.Time, dryRun bool) (OperationalArchiveEntry, error) {
+func archiveOperationalFile(homePath string, cand operationalCandidate, now time.Time, _ bool) (OperationalArchiveEntry, error) {
 	rel := filepath.ToSlash(cand.OriginalPath)
 	if err := validateArchivePath(rel); err != nil {
 		return OperationalArchiveEntry{}, err
 	}
 	source := filepath.Join(homePath, filepath.FromSlash(rel))
-	info, err := os.Stat(source)
-	if err != nil {
-		return OperationalArchiveEntry{}, err
-	}
-	if info.IsDir() {
-		return OperationalArchiveEntry{}, fmt.Errorf("operational archive source must be file: %s", rel)
-	}
-	hash, err := fileSHA256(source)
+	raw, err := ReadRootedRegularFile(homePath, source, "operational archive source")
 	if err != nil {
 		return OperationalArchiveEntry{}, err
 	}
 	archiveRel := filepath.ToSlash(filepath.Join(OperationalArchiveFilesRel, rel))
-	target := filepath.Join(homePath, filepath.FromSlash(archiveRel))
 	entry := OperationalArchiveEntry{
 		SchemaVersion: OperationalArchiveSchemaVersion,
 		ID:            operationalArchiveID(rel),
@@ -1194,52 +1186,27 @@ func archiveOperationalFile(homePath string, cand operationalCandidate, now time
 		Status:        cand.Status,
 		OriginalPath:  rel,
 		ArchivePath:   archiveRel,
-		Size:          info.Size(),
-		SHA256:        hash,
-	}
-	if dryRun {
-		return entry, nil
-	}
-	if _, err := os.Stat(target); err == nil {
-		return OperationalArchiveEntry{}, fmt.Errorf("operational archive target already exists: %s", archiveRel)
-	} else if !os.IsNotExist(err) {
-		return OperationalArchiveEntry{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return OperationalArchiveEntry{}, err
-	}
-	if err := os.Rename(source, target); err != nil {
-		return OperationalArchiveEntry{}, err
+		Size:          int64(len(raw)),
+		SHA256:        operationalArchiveBytesSHA256(raw),
 	}
 	return entry, nil
 }
 
-func restoreOperationalFile(homePath string, entry OperationalArchiveEntry, now time.Time, dryRun bool) (OperationalArchiveEntry, error) {
+func restoreOperationalFile(homePath string, entry OperationalArchiveEntry, now time.Time, _ bool) (OperationalArchiveEntry, error) {
 	source := filepath.Join(homePath, filepath.FromSlash(entry.ArchivePath))
-	target := filepath.Join(homePath, filepath.FromSlash(entry.OriginalPath))
-	if !isUnderHome(homePath, source) || !isUnderHome(homePath, target) {
+	if !isUnderHome(homePath, source) || !isUnderHome(homePath, filepath.Join(homePath, filepath.FromSlash(entry.OriginalPath))) {
 		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore path escapes home: %s", entry.ID)
 	}
-	if _, err := os.Stat(source); err != nil {
+	raw, err := ReadRootedRegularFile(homePath, source, "operational archive restore source")
+	if err != nil {
 		return OperationalArchiveEntry{}, err
+	}
+	if int64(len(raw)) != entry.Size || operationalArchiveBytesSHA256(raw) != strings.TrimSpace(entry.SHA256) {
+		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore source does not match index entry %s", entry.ID)
 	}
 	restored := entry
 	restored.Operation = "restored"
 	restored.CreatedAt = now.UTC().Format(time.RFC3339)
-	if dryRun {
-		return restored, nil
-	}
-	if _, err := os.Stat(target); err == nil {
-		return OperationalArchiveEntry{}, fmt.Errorf("operational archive restore target already exists: %s", entry.OriginalPath)
-	} else if !os.IsNotExist(err) {
-		return OperationalArchiveEntry{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return OperationalArchiveEntry{}, err
-	}
-	if err := os.Rename(source, target); err != nil {
-		return OperationalArchiveEntry{}, err
-	}
 	return restored, nil
 }
 
@@ -1265,26 +1232,579 @@ func selectOperationalArchiveEntries(entries []OperationalArchiveEntry, opts Ope
 	return out
 }
 
-func appendOperationalArchiveEntries(homePath string, entries []OperationalArchiveEntry) error {
-	path := OperationalArchiveIndexPath(homePath)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+const operationalArchiveIndexName = "index.jsonl"
+
+type operationalArchiveMove struct {
+	entry           OperationalArchiveEntry
+	sourceRel       string
+	destinationRel  string
+	sourceName      string
+	destinationName string
+	sourceRoot      *os.Root
+	destinationRoot *os.Root
+	sourceData      []byte
+	sourceMode      os.FileMode
+	sourceSHA256    string
+	moved           bool
+}
+
+type operationalArchiveTransaction struct {
+	homePath           string
+	operation          string
+	homeRoot           *os.Root
+	parentRoots        map[string]*os.Root
+	parentInfos        map[string][]os.FileInfo
+	moves              []operationalArchiveMove
+	indexParentRel     string
+	indexRoot          *os.Root
+	indexParentInfos   []os.FileInfo
+	indexBefore        []byte
+	indexBeforeInfo    os.FileInfo
+	indexBeforeMode    os.FileMode
+	indexAfter         []byte
+	indexPublished     bool
+	indexPublishedInfo os.FileInfo
+}
+
+// commitOperationalArchiveTransaction is the single mutation seam for an
+// archive/restore batch. It guarantees same-process rollback, including when
+// the canonical archive ancestor is replaced after the moves. It deliberately
+// has no durable journal: a process or power loss before the index commit may
+// leave moved/unindexed state, which existing readers must reject fail-closed
+// and an operator must repair.
+func commitOperationalArchiveTransaction(homePath string, entries []OperationalArchiveEntry) error {
+	tx, err := prepareOperationalArchiveTransaction(homePath, entries)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer tx.close()
+	return tx.commit(entries)
+}
+
+func prepareOperationalArchiveTransaction(homePath string, entries []OperationalArchiveEntry) (*operationalArchiveTransaction, error) {
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("operational archive transaction requires entries")
+	}
+	absHome, err := filepath.Abs(filepath.Clean(homePath))
+	if err != nil {
+		return nil, err
+	}
+	homeRoot, err := os.OpenRoot(absHome)
+	if err != nil {
+		return nil, err
+	}
+	tx := &operationalArchiveTransaction{
+		homePath:        absHome,
+		operation:       entries[0].Operation,
+		homeRoot:        homeRoot,
+		parentRoots:     map[string]*os.Root{},
+		parentInfos:     map[string][]os.FileInfo{},
+		indexParentRel:  filepath.Dir(filepath.FromSlash(OperationalArchiveIndexRel)),
+		indexBeforeMode: 0o644,
+	}
+	fail := func(err error) (*operationalArchiveTransaction, error) {
+		tx.close()
+		return nil, err
+	}
+
+	seenSource := map[string]bool{}
+	seenDestination := map[string]bool{}
 	for _, entry := range entries {
-		data, err := json.Marshal(entry)
+		sourceRel, destinationRel, err := operationalArchiveEntryMovePaths(entry, tx.operation)
 		if err != nil {
-			return err
+			return fail(err)
 		}
-		if _, err := f.Write(append(data, '\n')); err != nil {
+		if seenSource[sourceRel] || seenDestination[destinationRel] {
+			return fail(fmt.Errorf("operational archive transaction has duplicate move %s -> %s", sourceRel, destinationRel))
+		}
+		seenSource[sourceRel] = true
+		seenDestination[destinationRel] = true
+		sourceParentRel := filepath.Dir(sourceRel)
+		sourceRoot, err := tx.pinParent(sourceParentRel, false)
+		if err != nil {
+			return fail(err)
+		}
+		data, mode, _, err := readOperationalArchiveRootFile(sourceRoot, filepath.Base(sourceRel), "operational archive source")
+		if err != nil {
+			return fail(err)
+		}
+		sha := operationalArchiveBytesSHA256(data)
+		if int64(len(data)) != entry.Size || sha != strings.TrimSpace(entry.SHA256) {
+			return fail(fmt.Errorf("operational archive source snapshot does not match entry %s", entry.ID))
+		}
+		tx.moves = append(tx.moves, operationalArchiveMove{
+			entry:           entry,
+			sourceRel:       sourceRel,
+			destinationRel:  destinationRel,
+			sourceName:      filepath.Base(sourceRel),
+			destinationName: filepath.Base(destinationRel),
+			sourceRoot:      sourceRoot,
+			sourceData:      data,
+			sourceMode:      mode,
+			sourceSHA256:    sha,
+		})
+	}
+
+	for i := range tx.moves {
+		move := &tx.moves[i]
+		destinationRoot, err := tx.pinParent(filepath.Dir(move.destinationRel), true)
+		if err != nil {
+			return fail(err)
+		}
+		if _, err := destinationRoot.Lstat(move.destinationName); err == nil {
+			return fail(fmt.Errorf("operational archive destination already exists: %s", move.destinationRel))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fail(err)
+		}
+		move.destinationRoot = destinationRoot
+	}
+
+	indexRoot, err := tx.pinParent(tx.indexParentRel, true)
+	if err != nil {
+		return fail(err)
+	}
+	tx.indexRoot = indexRoot
+	tx.indexParentInfos = append([]os.FileInfo(nil), tx.parentInfos[tx.indexParentRel]...)
+	if err := tx.captureIndex(entries); err != nil {
+		return fail(err)
+	}
+	return tx, nil
+}
+
+func operationalArchiveEntryMovePaths(entry OperationalArchiveEntry, operation string) (string, string, error) {
+	if entry.SchemaVersion != OperationalArchiveSchemaVersion {
+		return "", "", fmt.Errorf("operational archive entry %s has unsupported schema %q", entry.ID, entry.SchemaVersion)
+	}
+	if operation != "archived" && operation != "restored" {
+		return "", "", fmt.Errorf("operational archive transaction operation must be archived|restored, got %q", operation)
+	}
+	if entry.Operation != operation {
+		return "", "", fmt.Errorf("operational archive transaction mixes %q and %q", operation, entry.Operation)
+	}
+	original := filepath.ToSlash(strings.TrimSpace(entry.OriginalPath))
+	archive := filepath.ToSlash(strings.TrimSpace(entry.ArchivePath))
+	if err := validateArchivePath(original); err != nil {
+		return "", "", err
+	}
+	if err := validateArchivePath(archive); err != nil {
+		return "", "", err
+	}
+	wantArchive := filepath.ToSlash(filepath.Join(OperationalArchiveFilesRel, filepath.FromSlash(original)))
+	if archive != wantArchive {
+		return "", "", fmt.Errorf("operational archive entry %s archive path does not match original path", entry.ID)
+	}
+	if entry.ID != operationalArchiveID(original) || strings.TrimSpace(entry.SHA256) == "" || entry.Size < 0 {
+		return "", "", fmt.Errorf("operational archive entry %s has incomplete identity proof", entry.ID)
+	}
+	originalRel := filepath.FromSlash(original)
+	archiveRel := filepath.FromSlash(archive)
+	if operation == "archived" {
+		return originalRel, archiveRel, nil
+	}
+	return archiveRel, originalRel, nil
+}
+
+func (tx *operationalArchiveTransaction) pinParent(relativePath string, create bool) (*os.Root, error) {
+	if root := tx.parentRoots[relativePath]; root != nil {
+		return root, nil
+	}
+	displayPath := filepath.Join(tx.homePath, relativePath)
+	var before []os.FileInfo
+	var err error
+	if create {
+		existing, existingErr := lstatRootedDirectoryPath(tx.homeRoot, relativePath, displayPath, "operational archive transaction", true)
+		if existingErr != nil {
+			return nil, existingErr
+		}
+		before, err = ensureRootedDirectories(tx.homeRoot, relativePath, displayPath, "operational archive transaction", 0o755)
+		if err == nil {
+			err = syncOperationalArchiveCreatedParents(tx.homeRoot, relativePath, len(existing))
+		}
+	} else {
+		before, err = lstatRootedDirectoryPath(tx.homeRoot, relativePath, displayPath, "operational archive transaction", false)
+	}
+	if err != nil {
+		return nil, err
+	}
+	root, err := tx.homeRoot.OpenRoot(relativePath)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	after, err := lstatRootedDirectoryPath(tx.homeRoot, relativePath, displayPath, "operational archive transaction", false)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	if !sameRootedPath(before, after) || !opened.IsDir() || !os.SameFile(after[len(after)-1], opened) {
+		_ = root.Close()
+		return nil, fmt.Errorf("operational archive transaction parent must remain stable beneath compound home: %s", displayPath)
+	}
+	tx.parentRoots[relativePath] = root
+	tx.parentInfos[relativePath] = append([]os.FileInfo(nil), after...)
+	return root, nil
+}
+
+func syncOperationalArchiveCreatedParents(homeRoot *os.Root, relativePath string, existingComponents int) error {
+	components := strings.Split(relativePath, string(filepath.Separator))
+	for index := existingComponents; index < len(components); index++ {
+		parentPath := "."
+		if index > 0 {
+			parentPath = filepath.Join(components[:index]...)
+		}
+		if err := syncRootedDirectory(homeRoot, parentPath, relativePath, "operational archive transaction"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (tx *operationalArchiveTransaction) captureIndex(entries []OperationalArchiveEntry) error {
+	data, mode, info, err := readOperationalArchiveRootFile(tx.indexRoot, operationalArchiveIndexName, "operational archive index")
+	if errors.Is(err, os.ErrNotExist) {
+		data = nil
+		mode = 0o644
+		info = nil
+	} else if err != nil {
+		return err
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		return fmt.Errorf("operational archive index must end with newline")
+	}
+	tx.indexBefore = append([]byte(nil), data...)
+	tx.indexBeforeInfo = info
+	tx.indexBeforeMode = mode
+	tx.indexAfter = append([]byte(nil), data...)
+	for _, entry := range entries {
+		row, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		tx.indexAfter = append(tx.indexAfter, row...)
+		tx.indexAfter = append(tx.indexAfter, '\n')
+	}
+	return nil
+}
+
+func readOperationalArchiveRootFile(root *os.Root, name, kind string) ([]byte, os.FileMode, os.FileInfo, error) {
+	before, err := root.Lstat(name)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, 0, nil, fmt.Errorf("%s file must be a regular file: %s", kind, name)
+	}
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	after, err := root.Lstat(name)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() || !opened.Mode().IsRegular() ||
+		!os.SameFile(before, after) || !os.SameFile(after, opened) {
+		return nil, 0, nil, fmt.Errorf("%s file must remain a stable regular file: %s", kind, name)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	final, err := root.Lstat(name)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if !os.SameFile(opened, final) {
+		return nil, 0, nil, fmt.Errorf("%s file changed while it was read: %s", kind, name)
+	}
+	return data, opened.Mode().Perm(), opened, nil
+}
+
+func operationalArchiveBytesSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func (tx *operationalArchiveTransaction) commit(entries []OperationalArchiveEntry) error {
+	if err := tx.moveAll(); err != nil {
+		return tx.rollbackAfter(err)
+	}
+	operationalArchiveBeforeIndexCommit(tx.operation, entries)
+	if err := tx.validateCanonicalIndex(tx.indexBeforeInfo); err != nil {
+		return tx.rollbackAfter(err)
+	}
+	if err := tx.publishIndex(); err != nil {
+		return tx.rollbackAfter(err)
+	}
+	if err := tx.validateCanonicalIndex(tx.indexPublishedInfo); err != nil {
+		return tx.rollbackAfter(err)
+	}
+	return nil
+}
+
+func (tx *operationalArchiveTransaction) moveAll() error {
+	for i := range tx.moves {
+		move := &tx.moves[i]
+		if err := tx.homeRoot.Rename(move.sourceRel, move.destinationRel); err != nil {
+			return fmt.Errorf("move operational archive file %s -> %s: %w", move.sourceRel, move.destinationRel, err)
+		}
+		move.moved = true
+		data, _, _, err := readOperationalArchiveRootFile(move.destinationRoot, move.destinationName, "moved operational archive")
+		if err != nil {
+			return err
+		}
+		if int64(len(data)) != move.entry.Size || operationalArchiveBytesSHA256(data) != move.sourceSHA256 {
+			return fmt.Errorf("moved operational archive file does not match source snapshot: %s", move.destinationRel)
+		}
+	}
+	return syncOperationalArchiveRoots(tx.moveRoots()...)
+}
+
+func (tx *operationalArchiveTransaction) validateCanonicalIndex(expected os.FileInfo) error {
+	displayPath := OperationalArchiveIndexPath(tx.homePath)
+	parents, err := lstatRootedDirectoryPath(tx.homeRoot, tx.indexParentRel, displayPath, "operational archive index", false)
+	if err != nil {
+		return err
+	}
+	pinned, err := tx.indexRoot.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !sameRootedPath(tx.indexParentInfos, parents) || !os.SameFile(parents[len(parents)-1], pinned) {
+		return fmt.Errorf("operational archive index parent changed before commit: %s", displayPath)
+	}
+	info, err := tx.homeRoot.Lstat(filepath.FromSlash(OperationalArchiveIndexRel))
+	if expected == nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("operational archive index appeared before commit: %s", displayPath)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !os.SameFile(expected, info) {
+		return fmt.Errorf("operational archive index changed before commit: %s", displayPath)
+	}
+	return nil
+}
+
+func (tx *operationalArchiveTransaction) publishIndex() error {
+	info, published, err := atomicRewriteOperationalArchiveRootFile(
+		tx.indexRoot,
+		operationalArchiveIndexName,
+		tx.indexAfter,
+		tx.indexBeforeMode,
+		"commit",
+	)
+	tx.indexPublished = published
+	tx.indexPublishedInfo = info
+	return err
+}
+
+func (tx *operationalArchiveTransaction) restoreIndex() error {
+	if !tx.indexPublished {
+		return nil
+	}
+	if tx.indexBeforeInfo == nil {
+		if err := tx.indexRoot.Remove(operationalArchiveIndexName); err != nil {
+			return err
+		}
+		if err := syncOperationalArchiveRoot(tx.indexRoot); err != nil {
+			return err
+		}
+		tx.indexPublished = false
+		return nil
+	}
+	_, published, err := atomicRewriteOperationalArchiveRootFile(
+		tx.indexRoot,
+		operationalArchiveIndexName,
+		tx.indexBefore,
+		tx.indexBeforeMode,
+		"rollback",
+	)
+	if err != nil {
+		if published {
+			tx.indexPublished = false
+		}
+		return err
+	}
+	tx.indexPublished = false
+	return nil
+}
+
+func (tx *operationalArchiveTransaction) rollbackAfter(cause error) error {
+	indexErr := tx.restoreIndex()
+	moveErr := tx.rollbackMoves()
+	if rollbackErr := errors.Join(indexErr, moveErr); rollbackErr != nil {
+		return fmt.Errorf("operational archive transaction failed and rollback is incomplete: %w", errors.Join(cause, rollbackErr))
+	}
+	return cause
+}
+
+func (tx *operationalArchiveTransaction) rollbackMoves() error {
+	var rollbackErrors []error
+	for i := len(tx.moves) - 1; i >= 0; i-- {
+		move := &tx.moves[i]
+		if !move.moved {
+			continue
+		}
+		if err := writeNewOperationalArchiveRootFile(move.sourceRoot, move.sourceName, move.sourceData, move.sourceMode); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore operational archive source %s: %w", move.sourceRel, err))
+			continue
+		}
+		data, _, _, err := readOperationalArchiveRootFile(move.destinationRoot, move.destinationName, "operational archive rollback destination")
+		if err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+			continue
+		}
+		if int64(len(data)) != move.entry.Size || operationalArchiveBytesSHA256(data) != move.sourceSHA256 {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("refusing to remove changed operational archive rollback destination %s", move.destinationRel))
+			continue
+		}
+		if err := move.destinationRoot.Remove(move.destinationName); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("remove operational archive rollback destination %s: %w", move.destinationRel, err))
+			continue
+		}
+		move.moved = false
+	}
+	if err := syncOperationalArchiveRoots(tx.moveRoots()...); err != nil {
+		rollbackErrors = append(rollbackErrors, err)
+	}
+	return errors.Join(rollbackErrors...)
+}
+
+func (tx *operationalArchiveTransaction) moveRoots() []*os.Root {
+	roots := make([]*os.Root, 0, len(tx.moves)*2)
+	for i := range tx.moves {
+		roots = append(roots, tx.moves[i].sourceRoot, tx.moves[i].destinationRoot)
+	}
+	return roots
+}
+
+func (tx *operationalArchiveTransaction) close() {
+	for path, root := range tx.parentRoots {
+		_ = root.Close()
+		delete(tx.parentRoots, path)
+	}
+	if tx.homeRoot != nil {
+		_ = tx.homeRoot.Close()
+		tx.homeRoot = nil
+	}
+}
+
+func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode, purpose string) (os.FileInfo, bool, error) {
+	digest := operationalArchiveBytesSHA256(data)
+	tempName := fmt.Sprintf(".%s.%d.%s.%s.tmp", name, os.Getpid(), purpose, digest[:12])
+	file, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
+	if err != nil {
+		return nil, false, err
+	}
+	cleanup := func(cause error) (os.FileInfo, bool, error) {
+		_ = file.Close()
+		_ = root.Remove(tempName)
+		return nil, false, cause
+	}
+	if n, err := file.Write(data); err != nil {
+		return cleanup(err)
+	} else if n != len(data) {
+		return cleanup(io.ErrShortWrite)
+	}
+	if err := file.Sync(); err != nil {
+		return cleanup(err)
+	}
+	if err := file.Close(); err != nil {
+		_ = root.Remove(tempName)
+		return nil, false, err
+	}
+	if err := root.Rename(tempName, name); err != nil {
+		_ = root.Remove(tempName)
+		return nil, false, err
+	}
+	info, statErr := root.Lstat(name)
+	if err := syncOperationalArchiveRoot(root); err != nil {
+		return info, true, err
+	}
+	if statErr != nil {
+		return nil, true, statErr
+	}
+	return info, true, nil
+}
+
+func writeNewOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode) error {
+	file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
+	if err != nil {
+		return err
+	}
+	cleanup := func(cause error) error {
+		_ = file.Close()
+		_ = root.Remove(name)
+		return cause
+	}
+	if n, err := file.Write(data); err != nil {
+		return cleanup(err)
+	} else if n != len(data) {
+		return cleanup(io.ErrShortWrite)
+	}
+	if err := file.Sync(); err != nil {
+		return cleanup(err)
+	}
+	if err := file.Close(); err != nil {
+		_ = root.Remove(name)
+		return err
+	}
+	return nil
+}
+
+func syncOperationalArchiveRoots(roots ...*os.Root) error {
+	seen := map[*os.Root]bool{}
+	var syncErrors []error
+	for _, root := range roots {
+		if root == nil || seen[root] {
+			continue
+		}
+		seen[root] = true
+		if err := syncOperationalArchiveRoot(root); err != nil {
+			syncErrors = append(syncErrors, err)
+		}
+	}
+	return errors.Join(syncErrors...)
+}
+
+func syncOperationalArchiveRoot(root *os.Root) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	if info, err := dir.Stat(); err != nil {
+		_ = dir.Close()
+		return err
+	} else if !info.IsDir() {
+		_ = dir.Close()
+		return fmt.Errorf("operational archive transaction sync target is not a directory")
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	// Some supported Darwin filesystems report EINVAL for directory fsync.
+	// Matching the existing home durability seam keeps that platform usable;
+	// on such filesystems crash durability remains best-effort, never claimed
+	// as crash-atomic by this transaction.
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
+		return syncErr
+	}
+	return closeErr
 }
 
 func writeHomeArchive(homePath, targetPath, kind string, excluded []string, now time.Time, include func(string, fs.FileInfo) bool) (ArchiveReport, error) {
@@ -1723,19 +2243,6 @@ func firstNonEmptyString(values ...string) string {
 func operationalArchiveID(originalPath string) string {
 	sum := sha256.Sum256([]byte(filepath.ToSlash(originalPath)))
 	return "oparch_" + hex.EncodeToString(sum[:])[:12]
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 func sortedArchiveEntries(entries []ArchiveEntry) []ArchiveEntry {

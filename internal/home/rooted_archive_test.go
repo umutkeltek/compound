@@ -171,6 +171,90 @@ func TestOperationalArchiveIndexPublishRejectsSymlinkSwapAndRollsBack(t *testing
 	}
 }
 
+func TestOperationalArchiveIndexPublishRollsBackMultipleMoves(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(home, "test", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	work := map[string][]byte{
+		"work/work/work_rooted_multi_a.json": []byte(`{"id":"work_rooted_multi_a","state":"completed"}`),
+		"work/work/work_rooted_multi_b.json": []byte(`{"id":"work_rooted_multi_b","state":"failed"}`),
+	}
+	for rel, raw := range work {
+		if err := os.WriteFile(filepath.Join(home, filepath.FromSlash(rel)), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	previousHook := operationalArchiveBeforeIndexCommit
+	t.Cleanup(func() { operationalArchiveBeforeIndexCommit = previousHook })
+	var swap operationalArchiveIndexSwap
+	operationalArchiveBeforeIndexCommit = func(operation string, entries []OperationalArchiveEntry) {
+		if operation != "archived" || len(entries) != len(work) {
+			t.Fatalf("multi-file index publish gap = operation:%q entries:%+v", operation, entries)
+		}
+		swap = installOperationalArchiveIndexSwap(t, home, "leaf")
+	}
+
+	_, operationErr := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow)
+	operationalArchiveBeforeIndexCommit = previousHook
+	if swap.restore == nil {
+		t.Fatal("multi-file operational archive index swap hook did not run")
+	}
+	swap.restore()
+	if operationErr == nil {
+		t.Fatal("multi-file archive unexpectedly committed through leaf symlink swap")
+	}
+	externalAfter, err := os.ReadFile(swap.externalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(externalAfter, swap.externalRaw) {
+		t.Fatalf("multi-file rollback mutated external index:\n got %q\nwant %q", externalAfter, swap.externalRaw)
+	}
+	for rel, raw := range work {
+		assertOperationalArchiveFileState(t, filepath.Join(home, filepath.FromSlash(rel)), raw, true)
+		assertOperationalArchiveFileState(t, filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(rel)), raw, false)
+	}
+	active, err := LoadOperationalArchiveIndex(home)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("multi-file rollback changed canonical index: active=%+v err=%v", active, err)
+	}
+	retry, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(time.Minute))
+	if err != nil || retry.ArchivedCount != len(work) {
+		t.Fatalf("multi-file archive was not recoverable by clean retry: report=%+v err=%v", retry, err)
+	}
+}
+
+func TestRestoreOperationalArchiveRejectsIndexedMissingFile(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".compound")
+	if err := Init(home, "test", archiveTestNow); err != nil {
+		t.Fatal(err)
+	}
+	rel := "work/work/work_indexed_missing.json"
+	hotPath := filepath.Join(home, filepath.FromSlash(rel))
+	if err := os.WriteFile(hotPath, []byte(`{"id":"work_indexed_missing","state":"completed"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	report, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow)
+	if err != nil || report.ArchivedCount != 1 {
+		t.Fatalf("seed indexed archive: report=%+v err=%v", report, err)
+	}
+	archivePath := filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(rel))
+	if err := os.Remove(archivePath); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := RestoreOperationalArchive(home, OperationalRestoreOptions{All: true}, archiveTestNow.Add(time.Minute)); err == nil {
+		t.Fatal("restore accepted an index row whose archived file is missing")
+	}
+	active, err := LoadOperationalArchiveIndex(home)
+	if err != nil || len(active) != 1 {
+		t.Fatalf("missing indexed file changed archive authority: active=%+v err=%v", active, err)
+	}
+	assertOperationalArchiveFileState(t, hotPath, nil, false)
+}
+
 type operationalArchiveIndexSwap struct {
 	externalPath string
 	externalRaw  []byte
