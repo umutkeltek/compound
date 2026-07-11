@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,15 +77,16 @@ func (s *Store) envPath(id string) string   { return filepath.Join(s.home, "even
 
 // Event is one append-only lifecycle record.
 type Event struct {
-	TS            string   `json:"ts"`
-	WorkID        string   `json:"work_id"`
-	From          string   `json:"from"`
-	To            string   `json:"to"`
-	By            string   `json:"by,omitempty"`
-	Note          string   `json:"note,omitempty"`
-	Attached      []string `json:"attached,omitempty"`
-	WorkSHA256    string   `json:"work_sha256,omitempty"`
-	ReceiptSHA256 string   `json:"receipt_sha256,omitempty"`
+	TS                 string   `json:"ts"`
+	WorkID             string   `json:"work_id"`
+	From               string   `json:"from"`
+	To                 string   `json:"to"`
+	By                 string   `json:"by,omitempty"`
+	Note               string   `json:"note,omitempty"`
+	Attached           []string `json:"attached,omitempty"`
+	PreviousWorkSHA256 string   `json:"previous_work_sha256,omitempty"`
+	WorkSHA256         string   `json:"work_sha256,omitempty"`
+	ReceiptSHA256      string   `json:"receipt_sha256,omitempty"`
 }
 
 // Lease records who holds a claimed work (claim-before-you-touch / D7).
@@ -459,6 +461,11 @@ var advanceBeforeWorkCommit = func() {}
 
 func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	workID := w.ID
+	if recovered, ok, err := s.recoverPendingAdvance(w, in.To); err != nil {
+		return w, err
+	} else if ok {
+		return recovered, nil
+	}
 	plan, err := s.AdvancePlan(workID, now, AdvancePlanOptions{Actor: in.Actor, To: in.To})
 	if err != nil {
 		return w, err
@@ -467,6 +474,10 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 		return w, fmt.Errorf("cannot advance work %s: policy %s (decision %s)", workID, plan.Policy.Outcome, plan.Policy.PolicyDecisionID)
 	}
 	if err := s.validateContextPackRef(in.ContextPackID); err != nil {
+		return w, err
+	}
+	previousWorkSHA256, err := workEnvelopeSHA256(w)
+	if err != nil {
 		return w, err
 	}
 	from := w.State
@@ -500,26 +511,194 @@ func (s *Store) applyAdvance(w envelope.WorkEnvelope, in AdvanceInput, now time.
 	if err := s.writeJSON(s.envPath(plan.Decision.ID), &plan.Decision); err != nil {
 		return w, err
 	}
-	stagedWork, err := s.stageJSON(s.workPath(workID), &w)
+	workSHA256, err := workEnvelopeSHA256(w)
 	if err != nil {
 		return w, err
 	}
-	defer os.Remove(stagedWork)
+	pendingPath := s.advancePendingPath(workID)
+	stagedWork, err := s.stageJSON(pendingPath, &w)
+	if err != nil {
+		return w, err
+	}
+	if err := commitStagedJSONExclusive(stagedWork, pendingPath); err != nil {
+		_ = os.Remove(stagedWork)
+		return w, err
+	}
 	note := strings.TrimSpace(in.Note)
 	if note == "" {
 		note = "advanced (policy " + plan.Policy.Outcome + ")"
 	} else {
 		note += " (policy " + plan.Policy.Outcome + ")"
 	}
-	event := Event{TS: ts(now), WorkID: workID, From: from, To: in.To, Note: note, Attached: attached}
-	if err := s.appendEvent(event); err != nil {
-		return w, err
+	event := Event{
+		TS:                 ts(now),
+		WorkID:             workID,
+		From:               from,
+		To:                 in.To,
+		By:                 plan.Actor,
+		Note:               note,
+		Attached:           attached,
+		PreviousWorkSHA256: previousWorkSHA256,
+		WorkSHA256:         workSHA256,
 	}
-	advanceBeforeWorkCommit()
-	if err := commitStagedJSON(stagedWork, s.workPath(workID)); err != nil {
+	err = s.withWorkEventLock(func() error {
+		before, err := s.readEventsStrictUnlocked(workID)
+		if err != nil {
+			return err
+		}
+		if err := s.appendEventUnlocked(event); err != nil {
+			return err
+		}
+		after, err := s.readEventsStrictUnlocked(workID)
+		if err != nil {
+			return err
+		}
+		if len(after) != len(before)+1 || !reflect.DeepEqual(after[len(after)-1], event) {
+			return fmt.Errorf("work event log did not preserve the exact advance event for %s", workID)
+		}
+		advanceBeforeWorkCommit()
+		return commitStagedJSON(pendingPath, s.workPath(workID))
+	})
+	if err != nil {
 		return w, err
 	}
 	return w, nil
+}
+
+func (s *Store) advancePendingPath(workID string) string {
+	return s.workPath(workID) + ".advance-pending"
+}
+
+func (s *Store) recoverPendingAdvance(current envelope.WorkEnvelope, to string) (envelope.WorkEnvelope, bool, error) {
+	currentSHA256, err := workEnvelopeSHA256(current)
+	if err != nil {
+		return current, false, err
+	}
+	pendingPath := s.advancePendingPath(current.ID)
+	var recovered envelope.WorkEnvelope
+	var didRecover bool
+	err = s.withWorkEventLock(func() error {
+		events, err := s.readEventsStrictUnlocked(current.ID)
+		if err != nil {
+			return err
+		}
+		var pending envelope.WorkEnvelope
+		if err := s.readJSON(pendingPath, &pending); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("read pending advance for %s: %w", current.ID, err)
+			}
+			for _, event := range events {
+				if event.From == current.State && event.PreviousWorkSHA256 == currentSHA256 && event.WorkSHA256 != "" {
+					return fmt.Errorf("work %s has a durable advance event to %s but no pending WorkEnvelope", current.ID, event.To)
+				}
+			}
+			return nil
+		}
+		if err := pending.Validate(); err != nil {
+			return fmt.Errorf("pending advance for %s invalid: %w", current.ID, err)
+		}
+		if pending.ID != current.ID || pending.State != to {
+			return fmt.Errorf("pending advance for %s conflicts with requested transition %s -> %s", current.ID, current.State, to)
+		}
+		pendingSHA256, err := workEnvelopeSHA256(pending)
+		if err != nil {
+			return err
+		}
+		postMatches := make([]Event, 0, 1)
+		exactMatches := make([]Event, 0, 1)
+		for _, event := range events {
+			if event.To != pending.State || event.WorkSHA256 != pendingSHA256 {
+				continue
+			}
+			postMatches = append(postMatches, event)
+			if event.From == current.State && event.PreviousWorkSHA256 == currentSHA256 {
+				exactMatches = append(exactMatches, event)
+			}
+		}
+		if currentSHA256 == pendingSHA256 {
+			if len(postMatches) != 1 {
+				return fmt.Errorf("pending advance for %s has %d matching durable events, want exactly one", current.ID, len(postMatches))
+			}
+			if err := s.validatePendingAdvance(postMatches[0], pending); err != nil {
+				return err
+			}
+			if err := removeFileAndSyncDir(pendingPath); err != nil {
+				return err
+			}
+			recovered = current
+			didRecover = true
+			return nil
+		}
+		switch len(exactMatches) {
+		case 0:
+			if len(postMatches) > 0 {
+				return fmt.Errorf("pending advance for %s does not match the current WorkEnvelope", current.ID)
+			}
+			return removeFileAndSyncDir(pendingPath)
+		case 1:
+			if err := s.validatePendingAdvance(exactMatches[0], pending); err != nil {
+				return err
+			}
+			if err := commitStagedJSON(pendingPath, s.workPath(current.ID)); err != nil {
+				return err
+			}
+			recovered = pending
+			didRecover = true
+			return nil
+		default:
+			return fmt.Errorf("pending advance for %s has %d matching durable events, want exactly one", current.ID, len(exactMatches))
+		}
+	})
+	if err != nil {
+		return current, false, err
+	}
+	return recovered, didRecover, nil
+}
+
+func (s *Store) validatePendingAdvance(event Event, pending envelope.WorkEnvelope) error {
+	if event.PreviousWorkSHA256 == "" || event.WorkSHA256 == "" {
+		return fmt.Errorf("pending advance event for %s does not bind both WorkEnvelope versions", pending.ID)
+	}
+	if event.WorkID != pending.ID || event.To != pending.State {
+		return fmt.Errorf("pending advance event for %s conflicts with WorkEnvelope identity", pending.ID)
+	}
+	if len(event.Attached) < 2 {
+		return fmt.Errorf("pending advance event for %s does not bind action and policy envelopes", pending.ID)
+	}
+	actionID, policyID := event.Attached[0], event.Attached[1]
+	var action envelope.ActionIntent
+	if err := s.readJSON(s.envPath(actionID), &action); err != nil {
+		return fmt.Errorf("read pending advance action %s: %w", actionID, err)
+	}
+	if err := action.Validate(); err != nil {
+		return fmt.Errorf("pending advance action %s invalid: %w", actionID, err)
+	}
+	var decision envelope.PolicyDecision
+	if err := s.readJSON(s.envPath(policyID), &decision); err != nil {
+		return fmt.Errorf("read pending advance policy %s: %w", policyID, err)
+	}
+	if err := decision.Validate(); err != nil {
+		return fmt.Errorf("pending advance policy %s invalid: %w", policyID, err)
+	}
+	if strings.TrimSpace(event.By) == "" || action.ID != actionID || action.IDs.WorkID != pending.ID || action.Actor != event.By {
+		return fmt.Errorf("pending advance action %s conflicts with lifecycle event identity", actionID)
+	}
+	if action.Capability != "work.advance" || action.Action != "advance_work_to_"+event.To ||
+		action.Target.Kind != "work" || action.Target.ID != pending.ID ||
+		filepath.Clean(action.Target.Path) != filepath.Clean(s.workPath(pending.ID)) {
+		return fmt.Errorf("pending advance action %s does not describe transition to %s", actionID, event.To)
+	}
+	if decision.ID != policyID || decision.IDs.WorkID != pending.ID ||
+		decision.ActionIntentID != actionID || pending.PolicyDecisionID != policyID {
+		return fmt.Errorf("pending advance policy %s conflicts with lifecycle event identity", policyID)
+	}
+	if decision.Outcome != "allow" && decision.Outcome != "allow_with_obligations" {
+		return fmt.Errorf("pending advance policy %s does not allow publication", policyID)
+	}
+	if !oneOf(actionID, pending.RunIDs) {
+		return fmt.Errorf("pending WorkEnvelope %s does not attach action %s", pending.ID, actionID)
+	}
+	return nil
 }
 
 // --- act (governed mutation) ---
@@ -865,7 +1044,28 @@ func commitStagedJSON(stagedPath, targetPath string) error {
 	if err := os.Rename(stagedPath, targetPath); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(targetPath))
+	return syncDirectory(filepath.Dir(targetPath))
+}
+
+func commitStagedJSONExclusive(stagedPath, targetPath string) error {
+	if err := os.Link(stagedPath, targetPath); err != nil {
+		return err
+	}
+	if err := os.Remove(stagedPath); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(targetPath))
+}
+
+func removeFileAndSyncDir(path string) error {
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
 	if err != nil {
 		return err
 	}
@@ -1191,27 +1391,34 @@ func (s *Store) ListLeases() ([]Lease, error) {
 var writeWorkEvent = func(file *os.File, data []byte) (int, error) { return file.Write(data) }
 
 func (s *Store) appendEvent(e Event) error {
+	return s.withWorkEventLock(func() error {
+		if _, err := s.readEventsStrictUnlocked(""); err != nil {
+			return err
+		}
+		return s.appendEventUnlocked(e)
+	})
+}
+
+func (s *Store) appendEventUnlocked(e Event) error {
 	b, err := marshalWorkEvent(e)
 	if err != nil {
 		return err
 	}
-	return s.withWorkEventLock(func() error {
-		// Open only after taking the stable sidecar lock. Opening first could
-		// retain an inode that a controlled publication replaces while waiting.
-		f, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		n, err := writeWorkEvent(f, b)
-		if err == nil && n != len(b) {
-			err = io.ErrShortWrite
-		}
-		if err != nil {
-			return err
-		}
-		return f.Sync()
-	})
+	// The caller holds the stable sidecar lock before this open, so a
+	// controlled publication cannot replace the inode while we wait.
+	f, err := os.OpenFile(s.eventsLog(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	n, err := writeWorkEvent(f, b)
+	if err == nil && n != len(b) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // appendEventControlled publishes one JSONL append by atomically replacing the
@@ -1317,24 +1524,24 @@ func writeWorkEventPrefix(file *os.File, data []byte) error {
 }
 
 func (s *Store) eventsFor(workID string) ([]Event, error) {
+	var events []Event
+	err := s.withWorkEventLock(func() error {
+		var err error
+		events, err = s.readEventsStrictUnlocked(workID)
+		return err
+	})
+	return events, err
+}
+
+func (s *Store) readEventsStrictUnlocked(workID string) ([]Event, error) {
 	b, err := os.ReadFile(s.eventsLog())
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	var out []Event
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
-		if line == "" {
-			continue
-		}
-		var e Event
-		if json.Unmarshal([]byte(line), &e) == nil && e.WorkID == workID {
-			out = append(out, e)
-		}
-	}
-	return out, nil
+	return decodeAdmissionEvents(b, workID)
 }
 
 // --- small helpers ---

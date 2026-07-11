@@ -82,6 +82,27 @@ func (s *Store) admitAutoLocked(workID string, in AutoAdmitInput, now time.Time)
 	if err != nil {
 		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State, Class: "director", Reason: err.Error()}, err
 	}
+	if recovered, ok, err := s.recoverPendingAdvance(w, "admitted"); err != nil {
+		return AutoAdmitResult{WorkID: w.ID, WorkState: w.State, Class: class, Reason: err.Error()}, err
+	} else if ok {
+		result := AutoAdmitResult{
+			WorkID:       recovered.ID,
+			WorkState:    recovered.State,
+			Class:        class,
+			Admitted:     true,
+			Reason:       "recovered durable admission",
+			EvidenceRefs: append([]string{}, recovered.EvidenceRefs...),
+		}
+		for _, ref := range recovered.EvidenceRefs {
+			switch {
+			case strings.HasPrefix(ref, "eligibility:"):
+				result.EligibilityRef = ref
+			case strings.HasPrefix(ref, "grant:"):
+				result.GrantRef = ref
+			}
+		}
+		return result, nil
+	}
 	actor := autoAdmitActor(in.By)
 
 	// 1. Kill-switch (W9-J4): a halt overrides any eligibility. Records a deny, stays proposed.

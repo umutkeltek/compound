@@ -210,20 +210,14 @@ func (s *Store) admitCreatePlanLocked(plan CreatePlan, planPath string, now time
 	return report, nil
 }
 
-// admissionEventsFor is stricter than the read projection. Admission may append
-// to the shared JSONL log, so an unterminated or malformed record must stop the
-// write instead of being silently skipped and concatenated with a new event.
+// admissionEventsFor uses the same strict, locked reader as every lifecycle
+// projection so admission cannot append through corruption that readers hide.
 func (s *Store) admissionEventsFor(workID string) ([]Event, error) {
-	b, err := os.ReadFile(s.eventsLog())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return decodeAdmissionEvents(b, workID)
+	return s.eventsFor(workID)
 }
 
+// decodeAdmissionEvents is the single strict parser shared by locked lifecycle
+// readers and the controlled event-log publisher.
 func decodeAdmissionEvents(b []byte, workID string) ([]Event, error) {
 	if len(b) == 0 {
 		return nil, nil
