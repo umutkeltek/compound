@@ -250,6 +250,84 @@ func TestJobHealthEvidenceAutonomyReconsidersExistingProposalAfterNewEvidence(t 
 	}
 }
 
+func TestJobHealthEvidenceAutonomyRejectsTamperedDuplicateActionContext(t *testing.T) {
+	home := seededDirectorHome(t)
+	firstNow := directorTestNow.Add(96 * time.Hour)
+	seedDirectorApplyGrant(t, home, firstNow.Add(-72*time.Hour))
+	seedJobHealthAutonomyGrant(t, home, "job_health", 2, 1, 0, firstNow.Add(-72*time.Hour))
+	seedJobHealthAutonomySample(t, home, "context-a", firstNow.Add(-48*time.Hour), "completed", "auto/judge", true)
+	seedFailingJobHealth(t, home)
+
+	first, err := Propose(home, Options{Apply: true, Now: firstNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJob := findProposalByKind(first, "job_health")
+	if firstJob == nil || firstJob.WorkState != "proposed" {
+		t.Fatalf("insufficient first pass must leave job_health proposed: %+v", firstJob)
+	}
+	store, err := work.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, events, err := store.Show(firstJob.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotID := ""
+	for _, event := range events {
+		for _, ref := range event.Attached {
+			if strings.HasPrefix(ref, "action_context_snapshot:") {
+				snapshotID = strings.TrimPrefix(ref, "action_context_snapshot:")
+			}
+		}
+	}
+	if snapshotID == "" {
+		t.Fatalf("first proposal missing action-context snapshot: %+v", events)
+	}
+	snapshotPath := filepath.Join(home, "work", "action-contexts", snapshotID+".json")
+	data, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	actionContext, ok := snapshot["action_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("snapshot missing action_context: %+v", snapshot)
+	}
+	actionContext["action_summary"] = "run stale attacker-selected semantics"
+	tampered, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshotPath, append(tampered, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	seedJobHealthAutonomySample(t, home, "context-b", firstNow.Add(24*time.Hour), "completed", "auto/judge", true)
+	second, err := Propose(home, Options{Apply: true, Now: firstNow.Add(48 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.Get(firstJob.WorkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "proposed" {
+		t.Fatalf("tampered duplicate action context reached %q, want proposed: %+v", got.State, second)
+	}
+	foundWarning := false
+	for _, warning := range second.Warnings {
+		foundWarning = foundWarning || strings.Contains(warning, "action context")
+	}
+	if !foundWarning {
+		t.Fatalf("tampered duplicate refusal did not name action context: %+v", second)
+	}
+}
+
 func TestJobHealthEvidenceAutonomyWritesOnlyAdmissionSurfaces(t *testing.T) {
 	home := seededDirectorHome(t)
 	now := directorTestNow.Add(96 * time.Hour)
