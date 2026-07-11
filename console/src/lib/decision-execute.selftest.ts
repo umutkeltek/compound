@@ -494,9 +494,52 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
   }
 
   // 17. A one-click Attention action resolves by its sole item id; only a
-  //     genuinely batch-scoped action uses the group key.
+  //     genuinely batch-scoped action uses the group key. Uses "panel-verdicts"
+  //     (still generic-only — no bespoke REGISTRY entry): "job-health" is no
+  //     longer a valid fixture for this check because THIS change gives it a
+  //     bespoke spec (see 17b below and decision-registry.ts's "job-health"
+  //     entry) — seam drift from adding that entry, not a break in this check.
   {
     const base: Omit<AttentionGroup, "action"> = {
+      key: "panel-verdicts|fixture",
+      area: "panel-verdicts",
+      band: "needs_you",
+      source: "reviews",
+      kind: "review",
+      count: 1,
+      operator_summary: "Record this panel verdict.",
+      operator_unlock: "",
+      blast_radius: "local_reversible",
+      reversibility: "reversible",
+      leverage: 1,
+      oldest_created_at: "",
+      terminal_reason: "",
+      item_ids: ["pv_fixture"],
+      freshness: { generated_at: "", source: "fixture" },
+    };
+    const action = {
+      id: "panel_verdict_record_member",
+      label: "Record panel verdict",
+      argv: ["compound", "panel", "verdict-record", "--review", "/tmp/pv_fixture.json", "--reviewed-by", "operator-fixture"],
+      requires_confirmation: true,
+    };
+    const oneClick = headlineAct({ ...base, action: { ...action, kind: "one_click" } });
+    const batch = headlineAct({ ...base, action: { ...action, kind: "batch" } });
+    push(
+      "briefing-generic-action-preserves-owner-scope",
+      oneClick?.itemId === "pv_fixture" && batch?.itemId === base.key,
+      `oneClick=${oneClick?.itemId ?? "null"} batch=${batch?.itemId ?? "null"}`,
+    );
+  }
+
+  // 17b. job-health becoming a bespoke owner (this change) shadows its former
+  //      generic-actions.ts entry from headlineAct's inline card act — the
+  //      same precedence check 15 proves for route-promotions. The
+  //      generic-actions.ts "job-health" entry is left untouched; it just
+  //      stops being reachable here (decision-execute.ts's specFor(area) fork,
+  //      "a bespoke spec always wins").
+  {
+    const headline = headlineAct({
       key: "job-health|fixture",
       area: "job-health",
       band: "needs_you",
@@ -512,19 +555,18 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
       terminal_reason: "",
       item_ids: ["jhp_fixture"],
       freshness: { generated_at: "", source: "fixture" },
-    };
-    const action = {
-      id: "record_job_health_review",
-      label: "Record job-health review",
-      argv: ["compound", "authority", "job-health-review", "/tmp/review.yaml"],
-      requires_confirmation: true,
-    };
-    const oneClick = headlineAct({ ...base, action: { ...action, kind: "one_click" } });
-    const batch = headlineAct({ ...base, action: { ...action, kind: "batch" } });
+      action: {
+        id: "record_job_health_review",
+        label: "Record job-health review",
+        argv: ["compound", "authority", "job-health-review", "/tmp/review.yaml"],
+        kind: "one_click",
+        requires_confirmation: true,
+      },
+    });
     push(
-      "briefing-generic-action-preserves-owner-scope",
-      oneClick?.itemId === "jhp_fixture" && batch?.itemId === base.key,
-      `oneClick=${oneClick?.itemId ?? "null"} batch=${batch?.itemId ?? "null"}`,
+      "job-health-bespoke-shadows-generic-headline-action",
+      headline === null,
+      `headline=${headline?.pathway ?? "null"}`,
     );
   }
 
@@ -665,6 +707,54 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
         pl?.body.startsWith("Anything external, destructive, irreversible, financial, or security-related") === true &&
         pl?.consequences?.hold === "3 job-health items are waiting; each currently needs your click",
       `argv=${argv?.join(" ") ?? "null"} preview=${String(grant?.supportsPreview)} hold=${pl?.consequences?.hold ?? "none"}`,
+    );
+  }
+
+  // 19. job-health (operator-blocking fix, mirrors check 18's shape). The
+  //     bespoke owner reads the draft path from the item's extra_paths,
+  //     builds the EXACT `authority job-health-review <path> --decision
+  //     <enum> --rationale <text> --json` argv, rejects an empty rationale
+  //     and an out-of-enum decision client-side (the Go validator remains the
+  //     real gate), and — because `job-health-review` has no write-free
+  //     --preview — must NOT set supportsPreview.
+  {
+    const jobHealth = specFor("job-health");
+    const item = {
+      id: "jhp_fixture01",
+      area: "job-health",
+      extra_paths: ["/tmp/reviews/job-health/jhp_fixture01.reviewed.json", "/tmp/reviews/job-health/jhp_fixture01.review.yaml"],
+      operator_summary: `The scheduled job "svc-alpha backup" is failing — last ran 2026-07-01. Repair it or park it?`,
+      context_label: "svc-alpha backup",
+      next_action: "review failing scheduled job dependency and decide owner-approved repair or parking",
+    } as Json;
+    const argv = jobHealth?.buildArgv?.({
+      itemId: "jhp_fixture01",
+      item,
+      option: "parked",
+      fields: { rationale: "owner reviewed; keep parked until repair owner acts" },
+    });
+    const wantArgv = [
+      "authority", "job-health-review", "/tmp/reviews/job-health/jhp_fixture01.review.yaml",
+      "--decision", "parked",
+      "--rationale", "owner reviewed; keep parked until repair owner acts",
+      "--json",
+    ];
+    const options = jobHealth?.optionsFor?.(item) ?? [];
+    const pl = jobHealth?.plainLanguage(item);
+    push(
+      "job-health-buildargv-exact-and-rejects-empty-rationale-and-bogus-decision",
+      jobHealth?.requiresConfirmation === true &&
+        jobHealth?.supportsPreview !== true &&
+        jobHealth?.idPattern.test("jhp_fixture01") === true &&
+        jobHealth?.idPattern.test("jhp_") === false &&
+        argv?.join(" ") === wantArgv.join(" ") &&
+        options.map((option) => option.value).sort().join(",") ===
+          ["disabled", "no_action", "owner_action_done", "parked", "repair_required"].join(",") &&
+        jobHealth?.buildArgv?.({ itemId: "jhp_fixture01", item, option: "parked", fields: { rationale: "  " } }) == null &&
+        jobHealth?.buildArgv?.({ itemId: "jhp_fixture01", item, option: "bogus", fields: { rationale: "x" } }) == null &&
+        pl?.headline === item.operator_summary &&
+        pl?.consequences?.hold === "nothing changes; it stays in this queue and the job keeps failing silently",
+      `argv=${argv?.join(" ") ?? "null"} preview=${String(jobHealth?.supportsPreview)} options=${options.map((option) => option.value).join(",")}`,
     );
   }
 

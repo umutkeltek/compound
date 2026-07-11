@@ -251,6 +251,7 @@ function decisionExecutionEffect(area: string, stdout: string, preview: boolean)
   const payload = firstJsonObject(stdout);
   if (!payload) return null;
   if (area === "autonomy-grant-mint") return autonomyGrantMintEffect(payload, preview);
+  if (area === "job-health") return jobHealthReviewEffect(payload, preview);
   if (area !== "capability-lifecycle-proposals") return null;
   const delta = payload.state_delta && typeof payload.state_delta === "object" ? (payload.state_delta as Json) : {};
   const disposition = payload.disposition && typeof payload.disposition === "object" ? (payload.disposition as Json) : {};
@@ -293,6 +294,36 @@ function autonomyGrantMintEffect(payload: Json, preview: boolean): DecisionExecu
     workId: "",
     workState: "",
     decisionId: str(lifecycle.id),
+  };
+}
+
+/**
+ * Renders `authority job-health-review --json` (JobHealthReviewReport:
+ * internal/authority/job_health_review.go) as a plain consequence for the
+ * job-health owner, so DecisionOutcome shows the recorded decision + review
+ * id in plain language instead of raw JSON. `job-health-review` has no
+ * --preview (it fills the draft and writes the record for real), so preview
+ * is never true for this owner in practice — the parameter is kept only for
+ * signature symmetry with the other effect renderers.
+ */
+function jobHealthReviewEffect(payload: Json, preview: boolean): DecisionExecutionEffect {
+  const decision = str(payload.decision);
+  const plain = decision.replace(/_/g, "-");
+  const jobLabel = str(payload.job_name) || str(payload.job_id) || "this job";
+  const status = str(payload.status) || (preview ? "preview" : "recorded");
+  const nextAction = str(payload.next_action);
+  return {
+    kind: decision || "job_health_review",
+    status,
+    changed: !preview && status === "recorded",
+    summary:
+      `${jobLabel}'s job-health review is recorded as ${plain || "reviewed"}.` +
+      (nextAction ? ` Next: ${nextAction}.` : ""),
+    before: "",
+    after: "",
+    workId: "",
+    workState: "",
+    decisionId: str(payload.id),
   };
 }
 

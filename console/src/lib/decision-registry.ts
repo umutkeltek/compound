@@ -431,6 +431,91 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       ];
     },
   },
+  /* ----------------------------------------------------------------------
+   * job-health (operator-blocking fix, 2026-07-11). Modeled directly on the
+   * autonomy-grant-mint entry above — same mechanism, zero Decide component
+   * changes: DecisionCard/DecisionForm are generic over the REGISTRY, so a
+   * bespoke spec here is all that's needed. The broken generic "job-health"
+   * entry in generic-actions.ts stays UNTOUCHED and simply stops being
+   * reachable from the card act ("a bespoke spec always wins" —
+   * decision-execute.ts's specFor(area) fork). Before this entry, the
+   * record command ran against the UNFILLED draft YAML (decision still the
+   * TODO placeholder) because the console collected no decision at all — the
+   * operator could not complete a single job-health review. The Go side
+   * (internal/authority/job_health_review.go FillJobHealthReviewDraft) now
+   * fills the draft from `--decision`/`--rationale` and writes it back to the
+   * SAME path before running the existing validate+record path, so this
+   * owner only has to build that one governed command. `job-health-review`
+   * has no --preview (it writes the review file), so — like grant-mint —
+   * this owner does NOT set supportsPreview; it confirms via
+   * requiresConfirmation instead. The five choices are plain labels over the
+   * Go enum (repair_required|parked|disabled|no_action|owner_action_done);
+   * rationale is a required textarea. Client-side option/rationale checks
+   * mirror the Go validator for immediate feedback — the Go validator
+   * remains the real gate.
+   * -------------------------------------------------------------------- */
+  "job-health": {
+    area: "job-health",
+    title: "Job health review",
+    glyph: "J",
+    accent: "orange",
+    source: "reviews",
+    effectKind: "record",
+    requiresConfirmation: true,
+    argvAllowlist: [["authority", "job-health-review"]],
+    idPattern: /^jhp_[a-z0-9]+$/,
+    options: [],
+    optionsFor: (item) => {
+      // No discoverable review.yaml sidecar ⇒ no compatible workflow for THIS
+      // item (mirrors route-promotions/grant-mint: zero options, not options
+      // with a null argv) — buildArgv could never succeed for any of the five
+      // choices either, so the owner is honestly unavailable rather than
+      // offering dead buttons.
+      const path = jobHealthReviewYAMLPath(item);
+      if (!path) return [];
+      return JOB_HEALTH_DECISIONS.map((choice) => ({
+        value: choice.value,
+        label: choice.label,
+        tone: choice.tone,
+        description: choice.description,
+        argv: ["authority", "job-health-review", path, "--decision", choice.value, "--rationale", "…", "--json"],
+      }));
+    },
+    defaultOption: "parked",
+    plainLanguage: (item) => {
+      const jobLabel = str(item.context_label) || "this scheduled job";
+      return {
+        headline: str(item.operator_summary) || `The scheduled job ${jobLabel} needs a decision.`,
+        body:
+          shortText(str(item.next_action), 200) ||
+          "Choose what happens next for this failing scheduled job.",
+        evidence: arr(item.evidence_refs).map(String).slice(0, 8),
+        chips: [{ label: shortText(jobLabel, 34), tone: "violet" as Accent }],
+        consequences: {
+          approve:
+            str(item.operator_unlock) ||
+            "your decision + rationale become the durable job-health record for this job",
+          hold: "nothing changes; it stays in this queue and the job keeps failing silently",
+        },
+      };
+    },
+    fields: [
+      {
+        name: "rationale",
+        type: "textarea",
+        label: "Rationale",
+        required: true,
+        placeholder: "Why?",
+      },
+    ],
+    buildArgv: (ctx) => {
+      const path = jobHealthReviewYAMLPath(ctx.item);
+      const rationale = str(ctx.fields.rationale).trim();
+      if (!path || !rationale) return null;
+      if (!JOB_HEALTH_DECISIONS.some((choice) => choice.value === ctx.option)) return null;
+      return ["authority", "job-health-review", path, "--decision", ctx.option, "--rationale", rationale, "--json"];
+    },
+  },
   "external-repo-intake": {
     area: "external-repo-intake",
     title: "External repo intake",
@@ -979,6 +1064,26 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
     buildArgv: (ctx) => ["source", "intake-work-plan", "--card", ctx.itemId, "--json"],
   },
 };
+
+/** The five plain-language job-health choices over the Go enum
+ * (internal/authority/job_health_review.go ValidateJobHealthReview) — the
+ * single place decision-registry.ts spells out that enum for the console. */
+const JOB_HEALTH_DECISIONS: { value: string; label: string; tone: Accent; description: string }[] = [
+  { value: "repair_required", label: "Repair it", tone: "orange", description: "File repair work for this job." },
+  { value: "parked", label: "Park it", tone: "gray", description: "Revisit when the job matters again." },
+  { value: "disabled", label: "Disable it", tone: "pink", description: "Confirm the job is intentionally off." },
+  { value: "no_action", label: "No action needed", tone: "green", description: "Nothing to do right now." },
+  { value: "owner_action_done", label: "Already handled", tone: "blue", description: "Verify the owner's fix on the next run." },
+];
+
+/** Read the job-health-review draft YAML path off a queue item's
+ * `extra_paths` (server-verified live shape: `extra_paths[0]` —
+ * internal/authority/job_health_review.go jobHealthReviewYAMLPath mirrors
+ * this same suffix search server-side). Searching by suffix rather than
+ * indexing [0] survives extra_paths gaining or reordering sibling paths. */
+function jobHealthReviewYAMLPath(item: Json): string {
+  return arr(item.extra_paths).map(String).find((path) => path.endsWith(".review.yaml")) ?? "";
+}
 
 /** Recommendation for a route-promotion review, read from its `group_key`
  * (`route-promotions|<recommendation>|<class>`), falling back to an explicit
