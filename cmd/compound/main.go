@@ -7314,6 +7314,41 @@ func cmdDecisions(args []string) {
 		if len(report.Eligible) > 0 && len(report.Missing) > 0 {
 			os.Exit(1)
 		}
+	case "standing-law":
+		// Read-only standing-law view: every ACCEPTED ruling/grant/freeze, its
+		// superseded ancestors, corroboration counts, and parked conflict
+		// candidates. The operator-facing twin of what orient serves agents
+		// (ruling-harvest slice B). Mutates nothing; always exits 0 on success.
+		jsonOut := hasFlag(args[1:], "--json")
+		view, err := decisions.StandingLaw(store, homePath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "decisions standing-law:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", " ")
+			if err := enc.Encode(view); err != nil {
+				fmt.Fprintln(os.Stderr, "decisions standing-law:", err)
+				os.Exit(1)
+			}
+			return
+		}
+		fmt.Printf("# decisions standing-law\n\n")
+		fmt.Printf("- records: %d (rulings %d, grants %d, freezes %d)\n",
+			view.Counts.Records, view.Counts.Rulings, view.Counts.Grants, view.Counts.Freezes)
+		fmt.Printf("- superseded ancestors: %d\n", view.Counts.Superseded)
+		fmt.Printf("- conflicts: %d\n", view.Counts.Conflicts)
+		for _, r := range view.Records {
+			fmt.Printf("- [%s] %s (corroborations %d", r.Kind, r.Title, r.CorroborationCount)
+			if len(r.Supersedes) > 0 {
+				fmt.Printf(", supersedes %d", len(r.Supersedes))
+			}
+			fmt.Printf(")\n")
+		}
+		for _, c := range view.Conflicts {
+			fmt.Printf("- CONFLICT %s: %s (conflicts with %s)\n", c.CandidateID, c.Restatement, c.ConflictsWithClaim)
+		}
 	case "record":
 		jsonOut := hasFlag(args[1:], "--json")
 		minTerminalSamples, err := intFlag(args[1:], "--min-terminal-samples")

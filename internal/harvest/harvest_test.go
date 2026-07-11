@@ -232,3 +232,15 @@ func countAcceptedDecisions(t *testing.T, store *mem.Store) int {
 	}
 	return len(decisions.AllActiveDecisions(claims))
 }
+
+// TestHarvestConflictOutcomeMatches pins decisions.HarvestConflictOutcome (the
+// literal the standing-law view filters parked candidates on) to the harvester's
+// own OutcomeConflict value. They live in two packages because harvest imports
+// decisions (a cycle blocks the reverse import); if a rename split them, the
+// console's contradiction strip would silently go empty — this reds first.
+func TestHarvestConflictOutcomeMatches(t *testing.T) {
+	if decisions.HarvestConflictOutcome != string(harvest.OutcomeConflict) {
+		t.Fatalf("standing-law conflict filter %q != harvest.OutcomeConflict %q — the contradiction strip would silently empty",
+			decisions.HarvestConflictOutcome, string(harvest.OutcomeConflict))
+	}
+}

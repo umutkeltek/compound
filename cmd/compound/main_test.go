@@ -298,6 +298,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-view-registry-smoke",
 		"console-decide-brief-smoke",
 		"console-decision-execute-smoke",
+		"console-standing-law-smoke",
 		"console-attention-consistency-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
@@ -314,7 +315,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
-		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke"
+		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
