@@ -147,6 +147,13 @@ SessionEnd     → same receipt family, telemetry-only — SessionEnd can never 
                                                                   and some harnesses have no SessionEnd at all (capability: SessionEndReceipt)
 ```
 
+For Codex, the live `Stop` adapter is also the stuck/resume consumer. It binds the thread and turn to one
+open WorkEnvelope, extracts only a terminal blocking question from the existing transcript reader, and may
+return `decision: "block"` with a cited continuation only when current operator-provenanced standing law and
+policy both allow it. The continuation is recorded on the same `work_id` as ActionIntent → PolicyDecision →
+Receipt → Transition without closing the parent work. Risk-floor, novel, stale, or unbound asks return no
+continuation and remain paused as an existing DecisionBrief-backed review item.
+
 **Capability-aware by harness — not fantasy-uniform.** Current Claude Code and Codex releases support blocking
 PreToolUse hooks; Codex also layers `AGENTS.md` + skills through progressive disclosure (it sees skill
 name/desc/path and loads full SKILL.md on demand; the initial list is capped). So a

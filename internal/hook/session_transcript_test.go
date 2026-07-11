@@ -183,6 +183,93 @@ func TestSessionEndWorklessTranscriptDetectsConsumedClaim(t *testing.T) {
 	}
 }
 
+func TestLastBlockingAskReadsCodexPayloadMessage(t *testing.T) {
+	home := t.TempDir()
+	path := writeTranscript(t, home, strings.Join([]string{
+		`{"timestamp":"2026-07-11T09:14:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Continue the scoped local implementation using the accepted reversible-action ruling."}]}}`,
+		`{"timestamp":"2026-07-11T09:15:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The next change is local and reversible. May I continue inside the existing work envelope?"}]}}`,
+	}, "\n")+"\n")
+
+	ask, err := LastBlockingAsk(path)
+	if err != nil {
+		t.Fatalf("last blocking ask: %v", err)
+	}
+	if ask.Text != "May I continue inside the existing work envelope?" {
+		t.Fatalf("ask text = %q", ask.Text)
+	}
+	if ask.Context != "Continue the scoped local implementation using the accepted reversible-action ruling." {
+		t.Fatalf("ask context = %q", ask.Context)
+	}
+	if ask.Timestamp != "2026-07-11T09:15:00Z" || ask.LineNo != 2 {
+		t.Fatalf("ask provenance = timestamp %q line %d", ask.Timestamp, ask.LineNo)
+	}
+}
+
+func TestLastBlockingAskIgnoresQuestionBeforeLaterAssistantCompletion(t *testing.T) {
+	path := writeTranscript(t, t.TempDir(), strings.Join([]string{
+		`{"timestamp":"2026-07-11T09:14:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Investigate the scoped implementation and finish when it is verified."}]}}`,
+		`{"timestamp":"2026-07-11T09:15:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Should I inspect the existing test first?"}]}}`,
+		`{"timestamp":"2026-07-11T09:16:00Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The implementation is verified and the task is complete."}]}}`,
+	}, "\n")+"\n")
+
+	ask, err := LastBlockingAsk(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ask.Text != "" {
+		t.Fatalf("completed turn retained stale blocking ask: %+v", ask)
+	}
+}
+
+func TestLastBlockingAskRequiresTerminalGenuineQuestion(t *testing.T) {
+	tests := []struct {
+		name      string
+		assistant string
+		want      string
+	}{
+		{
+			name:      "question answered later in same message",
+			assistant: "Should I inspect the existing test first? I did; tests pass.",
+		},
+		{
+			name:      "optional follow-up offer",
+			assistant: "The implementation is verified. Would you like me to inspect anything else?",
+		},
+		{
+			name:      "optional do-you-want offer",
+			assistant: "The implementation is verified. Do you want me to prepare another report?",
+		},
+		{
+			name:      "genuine terminal blocker",
+			assistant: "The reversible edit is ready. May I continue inside the existing envelope?",
+			want:      "May I continue inside the existing envelope?",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			line, err := json.Marshal(map[string]any{
+				"timestamp": "2026-07-11T09:15:00Z",
+				"type":      "response_item",
+				"payload": map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []map[string]any{{"type": "output_text", "text": tc.assistant}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeTranscript(t, t.TempDir(), string(line)+"\n")
+			ask, err := LastBlockingAsk(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ask.Text != tc.want {
+				t.Fatalf("blocking ask = %q, want %q", ask.Text, tc.want)
+			}
+		})
+	}
+}
+
 func capabilityUsedCount(proj capgraph.CapabilityUsageProjection, ref string) int {
 	for _, item := range proj.Capabilities {
 		if item.Ref == ref {

@@ -2291,7 +2291,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 	})
 	for _, want := range []string{
 		`"authority_ref": "compound://config/installed-hooks"`,
-		`"hook_count": 6`,
+		`"hook_count": 7`,
 		`"imported_via": "contract import-hooks --hook-registration-ts"`,
 	} {
 		if !strings.Contains(importOut, want) {
@@ -2305,7 +2305,7 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 		`"harnesses": [`,
 		`"claude_code"`,
 		`"codex"`,
-		`"hook_count": 6`,
+		`"hook_count": 7`,
 		`"hook_readiness": [`,
 		`"fixture_present": true`,
 		`"live_adapter": true`,
@@ -2351,6 +2351,10 @@ func TestContractImportHookRegistrationFeedsCompile(t *testing.T) {
 	if got := findHookReadiness(authorityReport.HookReadiness, "codex", "PreToolUse"); got == nil ||
 		got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter || len(got.Actions) != 0 {
 		t.Fatalf("codex pre-tool-use runtime readiness not ready: %+v", got)
+	}
+	if got := findHookReadiness(authorityReport.HookReadiness, "codex", "Stop"); got == nil ||
+		got.Status != "ready" || !got.FixturePresent || !got.LiveAdapter || len(got.Actions) != 0 {
+		t.Fatalf("codex Stop runtime readiness not ready: %+v", got)
 	}
 	if got := findHookGateReadiness(authorityReport.PreToolUseReadiness, "codex"); got == nil ||
 		got.Status != "native_blocking" || !got.NativeBlock || !got.Installed || got.AdapterRequired || len(got.Actions) != 0 {

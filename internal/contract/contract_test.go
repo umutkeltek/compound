@@ -1293,7 +1293,7 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import hook registration ts: %v", err)
 	}
-	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 6 {
+	if report.AuthorityRef != InstalledHooksAuthorityRef || report.HookCount != 7 {
 		t.Fatalf("unexpected import report: %+v", report)
 	}
 	if len(report.Harnesses) != 2 || report.Harnesses[0] != "claude_code" || report.Harnesses[1] != "codex" {
@@ -1367,7 +1367,7 @@ func TestImportHookRegistrationTSFeedsRuntimeContract(t *testing.T) {
 	if !contains(codex.ActiveHooks, "hook://codex/PreToolUse") {
 		t.Fatalf("codex effective contract active hooks = %v, want native PreToolUse", codex.ActiveHooks)
 	}
-	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit"} {
+	for _, want := range []string{"hook://codex/SessionStart", "hook://codex/UserPromptSubmit", "hook://codex/Stop"} {
 		if !contains(codex.ActiveHooks, want) {
 			t.Fatalf("codex effective contract active hooks = %v, want %s", codex.ActiveHooks, want)
 		}

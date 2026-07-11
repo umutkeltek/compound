@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"compound/internal/envelope"
+	"compound/internal/harvest"
 	"compound/internal/hook"
 	"compound/internal/policy"
 )
@@ -36,6 +37,9 @@ type claudeLiveHookInput struct {
 	ToolInput      map[string]any `json:"tool_input"`
 	Matcher        string         `json:"matcher"`
 	TranscriptPath string         `json:"transcript_path"`
+	TurnID         string         `json:"turn_id"`
+	StopHookActive bool           `json:"stop_hook_active"`
+	LastAssistant  string         `json:"last_assistant_message"`
 	WorkID         string         `json:"work_id"`
 	CompoundWorkID string         `json:"compound_work_id"`
 }
@@ -59,6 +63,16 @@ type codexLiveHookResponse struct {
 	AdditionalContext  string `json:"additional_context,omitempty"`
 	PermissionDecision string `json:"permission_decision,omitempty"`
 	PermissionReason   string `json:"permission_reason,omitempty"`
+	Decision           string `json:"decision,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+}
+
+type liveStopTriageOutcome struct {
+	Handled     bool
+	Decision    string
+	Reason      string
+	Disposition string
+	ReviewID    string
 }
 
 type liveHookParityRecord struct {
@@ -137,7 +151,10 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 	case "session-end", "stop":
 		fx.WorkID = firstNonEmpty(in.WorkID, in.CompoundWorkID)
 		fx.SessionID = strings.TrimSpace(in.SessionID)
+		fx.TurnID = strings.TrimSpace(in.TurnID)
 		fx.TranscriptPath = strings.TrimSpace(in.TranscriptPath) // scanned for consumed injected claims (claude-code SessionEnd carries it)
+		fx.StopHookActive = in.StopHookActive
+		fx.LastAssistant = strings.TrimSpace(in.LastAssistant)
 		if fx.WorkID == "" && fx.SessionID == "" {
 			return hook.Fixture{}, fmt.Errorf("%s live stdin needs work_id, compound_work_id, or session_id", parsed.HookName)
 		}
@@ -266,7 +283,7 @@ func applyPatchTargetPaths(command string) []string {
 	return paths
 }
 
-func liveHookResponse(harnessName, hookName string, res hook.Result) any {
+func liveHookResponse(harnessName, hookName string, res hook.Result, stopOutcome *liveStopTriageOutcome) any {
 	if normalizeLiveHarness(harnessName) == "codex" {
 		if hookName == "pre-tool-use" {
 			out := claudeHookSpecificOutput{HookEventName: hookEnumName(hookName)}
@@ -283,6 +300,10 @@ func liveHookResponse(harnessName, hookName string, res hook.Result) any {
 			HookName:      hookEnumName(hookName),
 			EventID:       res.Event.Header.ID,
 			Status:        res.Event.Status,
+		}
+		if hookName == "stop" && stopOutcome != nil {
+			out.Decision = stopOutcome.Decision
+			out.Reason = stopOutcome.Reason
 		}
 		switch hookName {
 		case "session-start", "user-prompt-submit":
@@ -306,6 +327,29 @@ func liveHookResponse(harnessName, hookName string, res hook.Result) any {
 		}
 	}
 	return claudeLiveHookResponse{HookSpecificOutput: out}
+}
+
+func prepareLiveStopTriage(parsed hookCommandArgs, homePath string, fx *hook.Fixture, now time.Time) (*liveStopTriageOutcome, error) {
+	if fx == nil || !parsed.Live || parsed.HookName != "stop" || normalizeLiveHarness(parsed.Harness) != "codex" || strings.TrimSpace(homePath) == "" {
+		return nil, nil
+	}
+	out, err := harvest.HandleCodexStop(homePath, harvest.CodexStopInput{
+		SessionID:            fx.SessionID,
+		TurnID:               fx.TurnID,
+		TranscriptPath:       fx.TranscriptPath,
+		LastAssistantMessage: fx.LastAssistant,
+		Cwd:                  fx.Cwd,
+		StopHookActive:       fx.StopHookActive,
+	}, now)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(out.WorkID) != "" {
+		fx.WorkID = out.WorkID
+	}
+	fx.AdapterSideEffects = append([]string{}, out.SideEffects...)
+	fx.StopTriageHandled = out.Handled
+	return &liveStopTriageOutcome{Handled: out.Handled, Decision: out.Decision, Reason: out.Reason, Disposition: out.Disposition, ReviewID: out.ReviewID}, nil
 }
 
 func writeLiveHookParityLog(dir string, res hook.Result, now time.Time) error {

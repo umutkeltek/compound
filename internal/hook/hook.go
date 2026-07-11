@@ -48,28 +48,36 @@ var hookCapability = map[string]string{
 
 // Fixture is one normalized hook invocation (a fixture file, or a live hook's stdin).
 type Fixture struct {
-	Hook           string                        `json:"hook"`
-	Harness        string                        `json:"harness"`
-	Live           bool                          `json:"live,omitempty"`
-	Cwd            string                        `json:"cwd,omitempty"`
-	Task           string                        `json:"task,omitempty"`
-	Mode           string                        `json:"mode,omitempty"`
-	RepoKind       string                        `json:"repo_kind,omitempty"`
-	Topic          string                        `json:"topic,omitempty"`   // optional; narrows ambient recall to this topic's subtree
-	Prompt         string                        `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
-	Action         *envelope.ActionIntent        `json:"action,omitempty"`  // pre-tool-use
-	Actions        []envelope.ActionIntent       `json:"actions,omitempty"` // pre-tool-use tool calls that target several paths
-	SessionID      string                        `json:"session_id,omitempty"`
-	WorkID         string                        `json:"work_id,omitempty"`         // session-end
-	TranscriptPath string                        `json:"transcript_path,omitempty"` // session-end/stop: the harness transcript to scan for consumed injected claims
-	MoveType       string                        `json:"move_type,omitempty"`
-	Outcome        string                        `json:"outcome,omitempty"`
-	Summary        string                        `json:"summary,omitempty"`
-	Used           []string                      `json:"used,omitempty"`
-	Missed         []string                      `json:"missed,omitempty"`
-	FalseTriggered []string                      `json:"false_triggered,omitempty"`
-	Tool           string                        `json:"tool,omitempty"` // post-tool-use
-	Placement      *policy.PlacementGuardContext `json:"placement,omitempty"`
+	Hook              string                        `json:"hook"`
+	Harness           string                        `json:"harness"`
+	Live              bool                          `json:"live,omitempty"`
+	Cwd               string                        `json:"cwd,omitempty"`
+	Task              string                        `json:"task,omitempty"`
+	Mode              string                        `json:"mode,omitempty"`
+	RepoKind          string                        `json:"repo_kind,omitempty"`
+	Topic             string                        `json:"topic,omitempty"`   // optional; narrows ambient recall to this topic's subtree
+	Prompt            string                        `json:"prompt,omitempty"`  // user-prompt-submit; only hashed, never stored raw
+	Action            *envelope.ActionIntent        `json:"action,omitempty"`  // pre-tool-use
+	Actions           []envelope.ActionIntent       `json:"actions,omitempty"` // pre-tool-use tool calls that target several paths
+	SessionID         string                        `json:"session_id,omitempty"`
+	TurnID            string                        `json:"turn_id,omitempty"`
+	WorkID            string                        `json:"work_id,omitempty"`         // session-end
+	TranscriptPath    string                        `json:"transcript_path,omitempty"` // session-end/stop: the harness transcript to scan for consumed injected claims
+	StopHookActive    bool                          `json:"stop_hook_active,omitempty"`
+	StopTriageHandled bool                          `json:"-"`
+	LastAssistant     string                        `json:"last_assistant_message,omitempty"`
+	MoveType          string                        `json:"move_type,omitempty"`
+	Outcome           string                        `json:"outcome,omitempty"`
+	Summary           string                        `json:"summary,omitempty"`
+	Used              []string                      `json:"used,omitempty"`
+	Missed            []string                      `json:"missed,omitempty"`
+	FalseTriggered    []string                      `json:"false_triggered,omitempty"`
+	Tool              string                        `json:"tool,omitempty"` // post-tool-use
+	Placement         *policy.PlacementGuardContext `json:"placement,omitempty"`
+
+	// AdapterSideEffects are governed artifacts prepared by a live harness
+	// adapter before Run persists the HookEvent. Fixture JSON cannot inject them.
+	AdapterSideEffects []string `json:"-"`
 }
 
 // Deps are the services a hook orchestrates.
@@ -593,9 +601,12 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 		if strings.TrimSpace(fx.SessionID) == "" {
 			return Result{}, fmt.Errorf("session-end fixture needs work_id or session_id")
 		}
-		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.Cwd, fx.Summary, fx.TranscriptPath}, "\x00"))
-		ev := newEvent(name, fx, st, inputHash, nil, now)
+		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.TurnID, fx.Cwd, fx.Summary, fx.TranscriptPath}, "\x00"))
+		ev := newEvent(name, fx, st, inputHash, fx.AdapterSideEffects, now)
 		summary := fmt.Sprintf("recorded %s receipt event for session %s%s", name, fx.SessionID, warn)
+		if name == "Stop" && (fx.StopHookActive || fx.StopTriageHandled) {
+			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "recorded handled Stop event without replaying a session receipt"}, nil
+		}
 		rec, err := buildWorklessSessionReceipt(name, fx, now)
 		if err != nil || rec == nil {
 			return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
@@ -613,8 +624,8 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	outcome := strings.TrimSpace(fx.Outcome)
 	moveType := strings.TrimSpace(fx.MoveType)
 	if outcome == "" || moveType == "" {
-		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.WorkID, fx.Cwd, fx.Summary, outcome, moveType}, "\x00"))
-		ev := newEvent(name, fx, st, inputHash, nil, now)
+		inputHash := hashStr(strings.Join([]string{name, fx.SessionID, fx.TurnID, fx.WorkID, fx.Cwd, fx.Summary, outcome, moveType}, "\x00"))
+		ev := newEvent(name, fx, st, inputHash, fx.AdapterSideEffects, now)
 		summary := fmt.Sprintf("recorded %s receipt event for work %s; explicit outcome and move_type required to close work%s", name, fx.WorkID, warn)
 		return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 	}
@@ -640,7 +651,7 @@ func sessionEnd(name string, fx Fixture, deps Deps, now time.Time) (Result, erro
 	if err != nil {
 		return Result{}, err
 	}
-	ev := newEvent(name, fx, st, hashStr(fx.WorkID), []string{res.Receipt.ID, res.Transition.ID}, now)
+	ev := newEvent(name, fx, st, hashStr(fx.WorkID), mergeRefs(fx.AdapterSideEffects, []string{res.Receipt.ID, res.Transition.ID}), now)
 	ev.IDs.ContextPackID = res.Work.IDs.ContextPackID
 	summary := fmt.Sprintf("closed %s: %s, receipt %s, transition %s%s", res.Work.ID, res.Work.State, res.Receipt.ID, res.Transition.ID, warn)
 	return Result{Event: ev, Produced: []envelope.Envelope{&res.Receipt, &res.Transition}, Summary: summary}, nil

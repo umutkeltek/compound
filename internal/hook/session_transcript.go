@@ -47,6 +47,7 @@ type transcriptEntry struct {
 	Role      string             `json:"role"`
 	Content   json.RawMessage    `json:"content"`
 	Message   *transcriptMessage `json:"message"`
+	Payload   *transcriptMessage `json:"payload"`
 }
 
 type transcriptMessage struct {
@@ -149,13 +150,7 @@ func LastBlockingAsk(path string) (BlockingAsk, error) {
 			if parseErr != nil {
 				return BlockingAsk{}, parseErr
 			}
-			role, content := strings.TrimSpace(entry.Role), entry.Content
-			if entry.Message != nil {
-				role = firstNonEmpty(entry.Message.Role, role)
-				if len(entry.Message.Content) > 0 {
-					content = entry.Message.Content
-				}
-			}
+			role, content := transcriptRoleContent(entry)
 			text := strings.TrimSpace(textOfContent(content))
 			if role == "user" {
 				cleaned := cleanTranscriptUserText(text)
@@ -163,8 +158,11 @@ func LastBlockingAsk(path string) (BlockingAsk, error) {
 					context = cleaned
 				}
 			}
-			if role == "assistant" && strings.Contains(text, "?") {
-				last = BlockingAsk{Text: lastQuestion(text), Context: context, Timestamp: firstNonEmpty(entry.Timestamp, entry.TS), LineNo: lineNo}
+			if role == "assistant" && text != "" {
+				last = BlockingAsk{}
+				if question := BlockingQuestion(text); question != "" {
+					last = BlockingAsk{Text: question, Context: context, Timestamp: firstNonEmpty(entry.Timestamp, entry.TS), LineNo: lineNo}
+				}
 			}
 		}
 		if readErr == nil {
@@ -178,13 +176,34 @@ func LastBlockingAsk(path string) (BlockingAsk, error) {
 	return last, nil
 }
 
-func lastQuestion(text string) string {
-	end := strings.LastIndex(text, "?")
-	if end < 0 {
+// BlockingQuestion returns a question only when the latest assistant message
+// genuinely stops on it. Questions answered later in the same message and
+// optional follow-up offers are completions, not operator gates.
+func BlockingQuestion(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.TrimRight(text, "\"'`*_)]}")
+	if !strings.HasSuffix(text, "?") {
 		return ""
 	}
+	end := len(text) - 1
 	start := strings.LastIndexAny(text[:end], "\n.!?")
-	return strings.TrimSpace(text[start+1 : end+1])
+	question := strings.TrimSpace(text[start+1:])
+	lower := strings.ToLower(question)
+	for _, prefix := range []string{
+		"would you like me to ",
+		"do you want me to ",
+		"if you'd like",
+		"if you would like",
+		"should i also ",
+		"shall i also ",
+		"want me to ",
+		"let me know if ",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return ""
+		}
+	}
+	return question
 }
 
 // OperatorUtterances streams a session transcript and returns every genuine
@@ -232,14 +251,7 @@ func OperatorUtterances(path string) ([]OperatorUtterance, error) {
 }
 
 func operatorUtteranceFromEntry(entry transcriptEntry, lineNo int) (OperatorUtterance, bool) {
-	role := strings.TrimSpace(entry.Role)
-	content := entry.Content
-	if entry.Message != nil {
-		role = firstNonEmpty(entry.Message.Role, role)
-		if len(entry.Message.Content) > 0 {
-			content = entry.Message.Content
-		}
-	}
+	role, content := transcriptRoleContent(entry)
 	if role == "" {
 		role = strings.TrimSpace(entry.Type)
 	}
@@ -351,14 +363,7 @@ func (s *sessionTranscriptSummary) applyEntry(entry transcriptEntry, files, skil
 		}
 		s.LastTimestamp = timestamp
 	}
-	role := strings.TrimSpace(entry.Role)
-	content := entry.Content
-	if entry.Message != nil {
-		role = firstNonEmpty(entry.Message.Role, role)
-		if len(entry.Message.Content) > 0 {
-			content = entry.Message.Content
-		}
-	}
+	role, content := transcriptRoleContent(entry)
 	if role == "" {
 		role = strings.TrimSpace(entry.Type)
 	}
@@ -407,11 +412,26 @@ func textOfContent(raw json.RawMessage) string {
 	}
 	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
-		if block.Type == "text" && strings.TrimSpace(block.Text) != "" {
+		if (block.Type == "text" || block.Type == "input_text" || block.Type == "output_text") && strings.TrimSpace(block.Text) != "" {
 			parts = append(parts, strings.TrimSpace(block.Text))
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func transcriptRoleContent(entry transcriptEntry) (string, json.RawMessage) {
+	role := strings.TrimSpace(entry.Role)
+	content := entry.Content
+	for _, nested := range []*transcriptMessage{entry.Message, entry.Payload} {
+		if nested == nil {
+			continue
+		}
+		role = firstNonEmpty(nested.Role, role)
+		if len(nested.Content) > 0 {
+			content = nested.Content
+		}
+	}
+	return role, content
 }
 
 func toolBlocks(raw json.RawMessage) []transcriptContentBlock {

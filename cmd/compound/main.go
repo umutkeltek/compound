@@ -3102,8 +3102,9 @@ func runHookCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	now := time.Now()
 	homePath := ""
-	fx, err := loadHookFixture(parsed, time.Now())
+	fx, err := loadHookFixture(parsed, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
@@ -3122,20 +3123,25 @@ func runHookCommand(args []string) int {
 			defer restoreEngine()
 		}
 	}
+	stopOutcome, err := prepareLiveStopTriage(parsed, homePath, &fx, now)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 
-	res, err := hook.Run(fx, deps, time.Now())
+	res, err := hook.Run(fx, deps, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
 	if parsed.Live && strings.TrimSpace(parsed.ParityLogDir) != "" {
-		if err := writeLiveHookParityLog(parsed.ParityLogDir, res, time.Now()); err != nil {
+		if err := writeLiveHookParityLog(parsed.ParityLogDir, res, now); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
 	}
 	if parsed.Live {
-		printJSON(liveHookResponse(parsed.Harness, parsed.HookName, res))
+		printJSON(liveHookResponse(parsed.Harness, parsed.HookName, res, stopOutcome))
 	} else {
 		printJSON(res)
 	}
@@ -5010,6 +5016,7 @@ func installedHookRuntimeSupport() []contract.HookRuntimeSupport {
 		hookRuntimeSupport("codex", "SessionStart", "fixtures/hooks/session-start.json", true),
 		hookRuntimeSupport("codex", "UserPromptSubmit", "fixtures/hooks/user-prompt-submit.json", true),
 		hookRuntimeSupport("codex", "PreToolUse", "fixtures/hooks/pre-tool-use.codex.json", true),
+		hookRuntimeSupport("codex", "Stop", "fixtures/hooks/stop.codex.json", true),
 	}
 }
 
