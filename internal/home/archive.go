@@ -1269,6 +1269,7 @@ type operationalArchiveTransaction struct {
 	indexAfter         []byte
 	indexPublished     bool
 	indexPublishedInfo os.FileInfo
+	indexPublication   *RootedFileCAS
 }
 
 // commitOperationalArchiveTransaction is the single mutation seam for an
@@ -1548,10 +1549,16 @@ func (tx *operationalArchiveTransaction) commit(entries []OperationalArchiveEntr
 		return tx.rollbackAfter(err)
 	}
 	if err := tx.publishIndex(); err != nil {
+		if tx.indexPublication != nil && tx.indexPublication.State() == RootedFileCASAmbiguous {
+			return fmt.Errorf("operational archive index publication requires manual repair: %w", err)
+		}
 		return tx.rollbackAfter(err)
 	}
 	if err := tx.validateCanonicalIndex(tx.indexPublishedInfo); err != nil {
 		return tx.rollbackAfter(err)
+	}
+	if err := tx.commitIndexPublication(); err != nil {
+		return fmt.Errorf("operational archive index publication requires manual repair: %w", err)
 	}
 	return nil
 }
@@ -1607,7 +1614,7 @@ func (tx *operationalArchiveTransaction) validateCanonicalIndex(expected os.File
 }
 
 func (tx *operationalArchiveTransaction) publishIndex() error {
-	info, published, err := atomicRewriteOperationalArchiveRootFile(
+	info, publication, err := atomicRewriteOperationalArchiveRootFile(
 		tx.indexRoot,
 		operationalArchiveIndexName,
 		tx.indexAfter,
@@ -1616,49 +1623,46 @@ func (tx *operationalArchiveTransaction) publishIndex() error {
 		tx.indexBefore,
 		tx.indexBeforeInfo,
 	)
-	tx.indexPublished = published
+	tx.indexPublication = publication
+	tx.indexPublished = publication != nil && publication.State() == RootedFileCASPublished
 	tx.indexPublishedInfo = info
 	return err
+}
+
+func (tx *operationalArchiveTransaction) commitIndexPublication() error {
+	if !tx.indexPublished || tx.indexPublication == nil {
+		return fmt.Errorf("operational archive index publication is missing")
+	}
+	if err := tx.indexPublication.Commit(); err != nil {
+		return err
+	}
+	tx.indexPublication = nil
+	return nil
 }
 
 func (tx *operationalArchiveTransaction) restoreIndex() error {
 	if !tx.indexPublished {
 		return nil
 	}
-	if tx.indexBeforeInfo == nil {
-		if err := tx.indexRoot.Remove(operationalArchiveIndexName); err != nil {
-			return err
-		}
-		if err := syncOperationalArchiveRoot(tx.indexRoot); err != nil {
-			return err
-		}
-		tx.indexPublished = false
-		return nil
+	if tx.indexPublication == nil {
+		return fmt.Errorf("operational archive index publication cannot be rolled back")
 	}
-	_, published, err := atomicRewriteOperationalArchiveRootFile(
-		tx.indexRoot,
-		operationalArchiveIndexName,
-		tx.indexBefore,
-		tx.indexBeforeMode,
-		"rollback",
-		tx.indexAfter,
-		tx.indexPublishedInfo,
-	)
-	if err != nil {
-		if published {
-			tx.indexPublished = false
-		}
+	if err := tx.indexPublication.Rollback(); err != nil {
 		return err
 	}
 	tx.indexPublished = false
+	tx.indexPublication = nil
 	return nil
 }
 
 func (tx *operationalArchiveTransaction) rollbackAfter(cause error) error {
 	indexErr := tx.restoreIndex()
+	if indexErr != nil {
+		return fmt.Errorf("operational archive transaction failed and index rollback is incomplete; moved files retained for manual repair: %w", errors.Join(cause, indexErr))
+	}
 	moveErr := tx.rollbackMoves()
-	if rollbackErr := errors.Join(indexErr, moveErr); rollbackErr != nil {
-		return fmt.Errorf("operational archive transaction failed and rollback is incomplete: %w", errors.Join(cause, rollbackErr))
+	if moveErr != nil {
+		return fmt.Errorf("operational archive transaction failed and rollback is incomplete: %w", errors.Join(cause, moveErr))
 	}
 	return cause
 }
@@ -1714,17 +1718,17 @@ func (tx *operationalArchiveTransaction) close() {
 	}
 }
 
-func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode, purpose string, expectedData []byte, expectedInfo os.FileInfo) (os.FileInfo, bool, error) {
+func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode, purpose string, expectedData []byte, expectedInfo os.FileInfo) (os.FileInfo, *RootedFileCAS, error) {
 	digest := operationalArchiveBytesSHA256(data)
 	tempName := fmt.Sprintf(".%s.%d.%s.%s.tmp", name, os.Getpid(), purpose, digest[:12])
 	file, err := root.OpenFile(tempName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode.Perm())
 	if err != nil {
-		return nil, false, err
+		return nil, nil, err
 	}
-	cleanup := func(cause error) (os.FileInfo, bool, error) {
+	cleanup := func(cause error) (os.FileInfo, *RootedFileCAS, error) {
 		_ = file.Close()
 		_ = root.Remove(tempName)
-		return nil, false, cause
+		return nil, nil, cause
 	}
 	if n, err := file.Write(data); err != nil {
 		return cleanup(err)
@@ -1736,47 +1740,33 @@ func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []
 	}
 	if err := file.Close(); err != nil {
 		_ = root.Remove(tempName)
-		return nil, false, err
+		return nil, nil, err
 	}
-	if err := validateOperationalArchiveRootFilePreimage(root, name, expectedData, expectedInfo); err != nil {
+	tempData, _, tempInfo, err := readOperationalArchiveRootFile(root, tempName, "operational archive index replacement")
+	if err != nil {
 		return cleanup(err)
 	}
+	if !bytes.Equal(tempData, data) {
+		return cleanup(fmt.Errorf("operational archive index replacement changed before publication: %s", name))
+	}
 	operationalArchiveBeforeIndexReplace(purpose)
-	if err := root.Rename(tempName, name); err != nil {
-		_ = root.Remove(tempName)
-		return nil, false, err
+	publication, err := BeginRootedFileCAS(root, name, tempName, expectedData, expectedInfo, data, tempInfo)
+	if err != nil {
+		if publication == nil || publication.State() == RootedFileCASNotPublished {
+			_ = root.Remove(tempName)
+		}
+		return nil, publication, err
 	}
 	publishedData, _, info, err := readOperationalArchiveRootFile(root, name, "published operational archive index")
 	if err != nil {
-		return nil, true, err
+		rollbackErr := publication.Rollback()
+		return nil, publication, errors.Join(err, rollbackErr)
 	}
 	if !bytes.Equal(publishedData, data) {
-		return info, true, fmt.Errorf("published operational archive index does not match intended postimage: %s", name)
+		rollbackErr := publication.Rollback()
+		return info, publication, errors.Join(fmt.Errorf("published operational archive index does not match intended postimage: %s", name), rollbackErr)
 	}
-	if err := syncOperationalArchiveRoot(root); err != nil {
-		return info, true, err
-	}
-	return info, true, nil
-}
-
-func validateOperationalArchiveRootFilePreimage(root *os.Root, name string, expectedData []byte, expectedInfo os.FileInfo) error {
-	data, _, info, err := readOperationalArchiveRootFile(root, name, "operational archive index preimage")
-	if expectedInfo == nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("operational archive index appeared before replacement: %s", name)
-	}
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(expectedInfo, info) || !bytes.Equal(expectedData, data) {
-		return fmt.Errorf("operational archive index changed before replacement: %s", name)
-	}
-	return nil
+	return info, publication, nil
 }
 
 func writeNewOperationalArchiveRootFile(root *os.Root, name string, data []byte, mode os.FileMode) error {
