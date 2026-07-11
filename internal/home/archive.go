@@ -368,12 +368,15 @@ func LoadOperationalArchiveIndex(homePath string) ([]OperationalArchiveEntry, er
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(OperationalArchiveIndexPath(homePath))
+	data, err := ReadRootedRegularFile(homePath, OperationalArchiveIndexPath(homePath), "operational archive index")
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		return nil, fmt.Errorf("operational archive index must end with newline")
 	}
 	active := map[string]OperationalArchiveEntry{}
 	for i, line := range strings.Split(string(data), "\n") {

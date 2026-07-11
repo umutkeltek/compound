@@ -13,7 +13,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -497,7 +496,7 @@ func validateRoutePlanSnapshot(homePath string, plan RoutePlanSnapshot) (string,
 	if filepath.Clean(plan.AuthorityPath) != filepath.Clean(wantPath) {
 		return "route plan authority path is not the current model-router authority", nil
 	}
-	data, err := os.ReadFile(wantPath)
+	data, err := homepkg.ReadRootedRegularFile(homePath, wantPath, "model-router authority")
 	if err != nil {
 		return "", fmt.Errorf("read model-router authority: %w", err)
 	}
@@ -1034,84 +1033,7 @@ func canonicalLocalSlashPath(raw string) (string, bool) {
 }
 
 func readRegularFile(homePath, path, kind string) ([]byte, error) {
-	homePath = filepath.Clean(homePath)
-	path = filepath.Clean(path)
-	relativePath, err := filepath.Rel(homePath, path)
-	if err != nil {
-		return nil, fmt.Errorf("%s file path is not relative to compound home: %w", kind, err)
-	}
-	if relativePath == "." || !filepath.IsLocal(relativePath) {
-		return nil, fmt.Errorf("%s file must remain beneath compound home: %s", kind, path)
-	}
-
-	root, err := os.OpenRoot(homePath)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-
-	before, err := lstatRegularPath(root, relativePath, path, kind)
-	if err != nil {
-		return nil, err
-	}
-	file, err := root.Open(relativePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	after, err := lstatRegularPath(root, relativePath, path, kind)
-	if err != nil {
-		return nil, err
-	}
-	if len(before) != len(after) {
-		return nil, fmt.Errorf("%s path must be stable beneath compound home: %s", kind, path)
-	}
-	for index := range before {
-		if !os.SameFile(before[index], after[index]) {
-			return nil, fmt.Errorf("%s path must be stable beneath compound home: %s", kind, path)
-		}
-	}
-	leaf := before[len(before)-1]
-	if !opened.Mode().IsRegular() || !os.SameFile(leaf, opened) {
-		return nil, fmt.Errorf("%s file must be a stable regular file: %s", kind, path)
-	}
-	raw, err := io.ReadAll(file)
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
-func lstatRegularPath(root *os.Root, relativePath, displayPath, kind string) ([]os.FileInfo, error) {
-	components := strings.Split(relativePath, string(filepath.Separator))
-	infos := make([]os.FileInfo, 0, len(components))
-	for index := range components {
-		componentPath := filepath.Join(components[:index+1]...)
-		info, err := root.Lstat(componentPath)
-		if err != nil {
-			return nil, err
-		}
-		leaf := index == len(components)-1
-		if info.Mode()&os.ModeSymlink != 0 {
-			if leaf {
-				return nil, fmt.Errorf("%s file must be a regular file: %s", kind, displayPath)
-			}
-			return nil, fmt.Errorf("%s path must not contain symlink beneath compound home: %s", kind, displayPath)
-		}
-		if leaf {
-			if !info.Mode().IsRegular() {
-				return nil, fmt.Errorf("%s file must be a regular file: %s", kind, displayPath)
-			}
-		} else if !info.IsDir() {
-			return nil, fmt.Errorf("%s path ancestor must be a directory beneath compound home: %s", kind, displayPath)
-		}
-		infos = append(infos, info)
-	}
-	return infos, nil
+	return homepkg.ReadRootedRegularFile(homePath, path, kind)
 }
 
 func strictJSONLScanner(raw []byte, ledger string) *bufio.Scanner {

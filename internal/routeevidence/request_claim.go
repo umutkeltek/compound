@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	homepkg "compound/internal/home"
 )
@@ -97,7 +96,7 @@ func ClaimRequestID(homePath string, claim RequestClaim) error {
 		} else if ok {
 			return fmt.Errorf("execution route evidence request_id %q already claimed as %s", claim.RequestID, existing.ID)
 		}
-		return writeRequestClaimDurable(requestClaimPath(homePath, claim.RequestID), claim)
+		return writeRequestClaimDurable(homePath, requestClaimPath(homePath, claim.RequestID), claim)
 	})
 }
 
@@ -138,15 +137,12 @@ func releaseRequestClaimLocked(homePath string, claim RequestClaim) error {
 	if !present || stored != claim {
 		return fmt.Errorf("execution route evidence request_id %q claim changed before release", claim.RequestID)
 	}
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-	return syncRouteEvidenceDirectory(filepath.Dir(path))
+	return homepkg.RemoveRootedRegularFileDurable(homePath, path, "request claim")
 }
 
 func loadRequestClaim(homePath, requestID string) (RequestClaim, bool, error) {
 	path := requestClaimPath(homePath, requestID)
-	data, err := os.ReadFile(path)
+	data, err := homepkg.ReadRootedRegularFile(homePath, path, "request claim")
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return RequestClaim{}, false, nil
@@ -186,48 +182,11 @@ func requestClaimID(claim RequestClaim) string {
 	return "routeclaim_" + digestHex(data)[:12]
 }
 
-func writeRequestClaimDurable(path string, claim RequestClaim) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
+func writeRequestClaimDurable(homePath, path string, claim RequestClaim) error {
 	data, err := json.MarshalIndent(claim, "", "  ")
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	cleanup := func(cause error) error {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return cause
-	}
 	data = append(data, '\n')
-	if n, err := file.Write(data); err != nil {
-		return cleanup(err)
-	} else if n != len(data) {
-		return cleanup(io.ErrShortWrite)
-	}
-	if err := file.Sync(); err != nil {
-		return cleanup(err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return err
-	}
-	return syncRouteEvidenceDirectory(filepath.Dir(path))
-}
-
-func syncRouteEvidenceDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	syncErr := dir.Sync()
-	closeErr := dir.Close()
-	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
-		return syncErr
-	}
-	return closeErr
+	return homepkg.WriteRootedNewFileDurable(homePath, path, "request claim", data, 0o644)
 }
