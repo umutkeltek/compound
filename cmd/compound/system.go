@@ -12,13 +12,50 @@ import (
 
 func cmdSystem(args []string) {
 	if len(args) == 0 || hasFlag(args, "--help") || hasFlag(args, "-h") {
-		fmt.Fprintln(os.Stderr, "usage: compound system <map|stats|memory-graph|lineage> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage> [--json]")
 		if len(args) == 0 {
 			os.Exit(2)
 		}
 		return
 	}
 	switch args[0] {
+	case "status":
+		if len(args) > 2 || (len(args) == 2 && args[1] != "--json") {
+			fmt.Fprintln(os.Stderr, "usage: compound system status [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		report, err := projection.BuildSystemStatus(homePath, time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "system status:", err)
+			os.Exit(1)
+		}
+		if len(args) == 2 && args[1] == "--json" {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# system status\n\n")
+		fmt.Printf("- verdict: %s\n", report.Verdict)
+		fmt.Printf("- workbench: open=%d needs_claim=%d needs_review=%d in_progress=%d (%s)\n",
+			report.Sections.Workbench.Open, report.Sections.Workbench.NeedsClaim,
+			report.Sections.Workbench.NeedsReview, report.Sections.Workbench.InProgress,
+			report.Sections.Workbench.SourceRef)
+		fmt.Printf("- job_roster: jobs=%d enabled=%d active_errors=%d (%s)\n",
+			report.Sections.JobRoster.JobCount, report.Sections.JobRoster.EnabledCount,
+			report.Sections.JobRoster.ActiveErrorCount, report.Sections.JobRoster.SourceRef)
+		fmt.Printf("- route_evidence: rows=%d tokens=%d (%s)\n",
+			report.Sections.RouteEvidence.RouteEvidenceCount, report.Sections.RouteEvidence.TotalTokens,
+			report.Sections.RouteEvidence.SourceRef)
+		fmt.Printf("- product_authority: products=%d signals=%d reviews=%d (%s)\n",
+			report.Sections.Product.ProductCount, report.Sections.Product.SignalCount,
+			report.Sections.Product.ReviewCount, report.Sections.Product.SourceRef)
+		fmt.Printf("- capability_authority: nodes=%d edges=%d (%s)\n",
+			report.Sections.Capability.NodeCount, report.Sections.Capability.EdgeCount,
+			report.Sections.Capability.SourceRef)
 	case "map":
 		if len(args) > 2 || (len(args) == 2 && args[1] != "--json") {
 			fmt.Fprintln(os.Stderr, "usage: compound system map [--json]")
@@ -143,7 +180,7 @@ func cmdSystem(args []string) {
 		fmt.Printf("- found: %t\n", report.Found)
 		fmt.Printf("- steps: %d\n", len(report.Steps))
 	default:
-		fmt.Fprintln(os.Stderr, "usage: compound system <map|stats|memory-graph|lineage> [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound system <status|map|stats|memory-graph|lineage> [--json]")
 		os.Exit(2)
 	}
 }
