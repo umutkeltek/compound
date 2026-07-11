@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"compound/internal/envelope"
-	homepkg "compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
 	autonomyproof "compound/internal/routeevidence/autonomy"
@@ -60,7 +59,7 @@ var autoAdmitBeforeCommit = func() {}
 func (s *Store) AdmitAuto(workID string, in AutoAdmitInput, now time.Time) (AutoAdmitResult, error) {
 	var out AutoAdmitResult
 	var admitErr error
-	err := homepkg.WithAutonomyAdmissionLock(s.home, func() error {
+	err := s.withLifecycleMutation(func() error {
 		out, admitErr = s.admitAutoLocked(workID, in, now)
 		return admitErr
 	})

@@ -57,6 +57,20 @@ func canTransition(from, to string) bool {
 // Store is the work lifecycle store rooted at a COMPOUND_HOME.
 type Store struct{ home string }
 
+// withLifecycleMutation is the outer transaction boundary for authoritative
+// work writers. The lock order is always autonomy-admission -> work-event:
+// validate the complete shared event log while holding admission, release the
+// event lock, then let the mutation append under that same order. No caller may
+// enter this helper while already holding the work-event lock.
+func (s *Store) withLifecycleMutation(fn func() error) error {
+	return home.WithAutonomyAdmissionLock(s.home, func() error {
+		if _, err := s.eventsFor(""); err != nil {
+			return fmt.Errorf("work lifecycle event log preflight: %w", err)
+		}
+		return fn()
+	})
+}
+
 // Open roots a store at homePath and ensures the work/event habitat dirs exist.
 func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
@@ -303,6 +317,16 @@ func (s *Store) archivedWorkPath(workID string) (string, bool) {
 // rejected (claim-before-you-touch prevents parallel agents colliding on the
 // same surface).
 func (s *Store) Claim(workID, by string, now time.Time) (envelope.WorkEnvelope, error) {
+	var out envelope.WorkEnvelope
+	var claimErr error
+	err := s.withLifecycleMutation(func() error {
+		out, claimErr = s.claimLocked(workID, by, now)
+		return claimErr
+	})
+	return out, err
+}
+
+func (s *Store) claimLocked(workID, by string, now time.Time) (envelope.WorkEnvelope, error) {
 	w, err := s.Get(workID)
 	if err != nil {
 		return w, err
@@ -381,7 +405,7 @@ type AdvanceInput struct {
 func (s *Store) Advance(workID string, in AdvanceInput, now time.Time) (envelope.WorkEnvelope, error) {
 	var out envelope.WorkEnvelope
 	var advanceErr error
-	err := home.WithAutonomyAdmissionLock(s.home, func() error {
+	err := s.withLifecycleMutation(func() error {
 		out, advanceErr = s.advanceLocked(workID, in, now)
 		return advanceErr
 	})
@@ -711,7 +735,7 @@ func (s *Store) validatePendingAdvance(event Event, pending envelope.WorkEnvelop
 func (s *Store) RecordAction(workID string, ai envelope.ActionIntent, pd envelope.PolicyDecision, now time.Time) (envelope.WorkEnvelope, error) {
 	var out envelope.WorkEnvelope
 	var recordErr error
-	err := home.WithAutonomyAdmissionLock(s.home, func() error {
+	err := s.withLifecycleMutation(func() error {
 		out, recordErr = s.recordActionLocked(workID, ai, pd, now)
 		return recordErr
 	})
@@ -817,7 +841,7 @@ var receiptOutcome = map[string]string{"completed": "completed", "failed": "fail
 func (s *Store) Close(workID string, in CloseInput, now time.Time) (CloseResult, error) {
 	var out CloseResult
 	var closeErr error
-	err := home.WithAutonomyAdmissionLock(s.home, func() error {
+	err := s.withLifecycleMutation(func() error {
 		out, closeErr = s.closeLocked(workID, in, now)
 		return closeErr
 	})

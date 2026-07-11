@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"compound/internal/envelope"
-	homepkg "compound/internal/home"
 	"compound/internal/policy"
 )
 
@@ -453,7 +452,7 @@ func validateDirectorProposalInitialState(w envelope.WorkEnvelope) error {
 func (s *Store) admitWork(plan CreatePlan, now time.Time, note string, extraAttached []string) (envelope.WorkEnvelope, error) {
 	var out envelope.WorkEnvelope
 	var admitErr error
-	err := homepkg.WithAutonomyAdmissionLock(s.home, func() error {
+	err := s.withLifecycleMutation(func() error {
 		out, admitErr = s.admitWorkLocked(plan, now, note, extraAttached)
 		return admitErr
 	})
