@@ -300,6 +300,8 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-decision-execute-smoke",
 		"console-standing-law-smoke",
 		"console-attention-consistency-smoke",
+		"console-work-language-smoke",
+		"console-ask-triage-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
 		"profiles-check-installed-only",
@@ -315,13 +317,21 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
-		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke"
+		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-work-language-smoke" || report.Steps[i].Name == "console-ask-triage-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
 		if !stringSliceContains(report.ProofRefs, want) {
 			t.Fatalf("proof refs missing %q: %+v", want, report.ProofRefs)
 		}
+	}
+}
+
+func TestProofCheckMissingConsoleSmokeDependencyEmitsSkipReason(t *testing.T) {
+	step := proofCheckStep{Name: "console-work-trace-smoke", Command: []string{"bun", "scripts/work-trace-smoke.mjs"}, SkipIfMissing: "definitely-missing-proof-tool"}
+	got := runProofCheckStep(t.TempDir(), step, "")
+	if got.Status != "skipped" || got.SkipReason != "required executable definitely-missing-proof-tool not found" {
+		t.Fatalf("silent proof-check skip: %+v", got)
 	}
 }
 
