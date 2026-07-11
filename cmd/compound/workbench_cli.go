@@ -34,6 +34,8 @@ const workbenchOperatorOpportunityMaxRunes = 96
 const workbenchOperatorMissionMaxRunes = 96
 const workbenchOperatorDecisionMaxRunes = 120
 const workbenchOperatorProofMaxRunes = 96
+const workbenchOperatorSummaryOpportunityMaxRunes = 56
+const workbenchOperatorSummaryChoiceMaxRunes = 48
 
 const workbenchUsage = "usage: compound workbench [--json] [--operator] [--advanced|--operator-advanced] [--operator-limit N] [--recent N] [--actor A] [--active-packet-surface S] [--source-packet packet.md] [--packet-dir D] [--capability-task T] [--capability-harness H] [--capability-limit N] [--route-class C] [--route-privacy-sensitive] [--review-area A] [--include-archived]"
 
@@ -954,7 +956,7 @@ func operatorFlowSummary(output workbenchCLIOutput, rows []operatorWorkbenchRow)
 
 func operatorSummaryOpportunity(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
 	if top := operatorTopPriorityRow(rows); top != nil {
-		return "top priority " + top.Status + ": " + top.Opportunity
+		return "top priority " + top.Status + ": " + operatorTruncateRunes(top.Opportunity, workbenchOperatorSummaryOpportunityMaxRunes)
 	}
 	if output.Counts.Open > 0 {
 		return operatorCount(output.Counts.Open, "open work item", "open work items")
@@ -967,7 +969,7 @@ func operatorSummaryOpportunity(output workbenchCLIOutput, rows []operatorWorkbe
 
 func operatorSummaryChoice(output workbenchCLIOutput, rows []operatorWorkbenchRow) string {
 	if top := operatorTopPriorityRow(rows); top != nil && top.Decision != "unknown/not yet proven" {
-		return operatorDecisionText(top.Decision)
+		return operatorTruncateRunes(operatorDecisionText(top.Decision), workbenchOperatorSummaryChoiceMaxRunes)
 	}
 	if output.DispatchNext.CanRun {
 		return "the next governed dispatch step"
