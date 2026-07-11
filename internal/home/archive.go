@@ -539,6 +539,10 @@ func restoreOperationalArchiveLocked(homePath string, opts OperationalRestoreOpt
 // archive index still describes the prior location. Production is a no-op.
 var operationalArchiveBeforeIndexCommit = func(_ string, _ []OperationalArchiveEntry) {}
 
+// operationalArchiveBeforeIndexReplace is a deterministic test seam after the
+// replacement file is durable but before it replaces the canonical index.
+var operationalArchiveBeforeIndexReplace = func(_ string) {}
+
 func operationalArchiveCandidates(homePath string, opts OperationalArchiveOptions, now time.Time) ([]operationalCandidate, error) {
 	kinds, err := operationalArchiveKinds(opts.Kinds)
 	if err != nil {
@@ -1729,6 +1733,7 @@ func atomicRewriteOperationalArchiveRootFile(root *os.Root, name string, data []
 		_ = root.Remove(tempName)
 		return nil, false, err
 	}
+	operationalArchiveBeforeIndexReplace(purpose)
 	if err := root.Rename(tempName, name); err != nil {
 		_ = root.Remove(tempName)
 		return nil, false, err

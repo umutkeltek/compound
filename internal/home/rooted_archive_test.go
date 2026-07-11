@@ -171,6 +171,133 @@ func TestOperationalArchiveIndexPublishRejectsSymlinkSwapAndRollsBack(t *testing
 	}
 }
 
+func TestOperationalArchiveIndexPublishRejectsConcurrentInPlaceAppendAndRollsBack(t *testing.T) {
+	operations := []struct {
+		name string
+	}{
+		{name: "archive"},
+		{name: "restore"},
+	}
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), ".compound")
+			if err := Init(home, "test", archiveTestNow); err != nil {
+				t.Fatal(err)
+			}
+			workRel := "work/work/work_index_preimage_cas.json"
+			workRaw := []byte(`{"id":"work_index_preimage_cas","state":"completed"}`)
+			hotPath := filepath.Join(home, filepath.FromSlash(workRel))
+			archivePath := filepath.Join(OperationalArchiveFilesRoot(home), filepath.FromSlash(workRel))
+			if err := os.WriteFile(hotPath, workRaw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			activeBefore := 0
+			var targetID string
+			if operation.name == "restore" {
+				report, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow)
+				if err != nil || report.ArchivedCount != 1 {
+					t.Fatalf("seed operational archive: report=%+v err=%v", report, err)
+				}
+				activeBefore = 1
+				targetID = report.Entries[0].ID
+			}
+
+			indexPath := OperationalArchiveIndexPath(home)
+			if err := os.MkdirAll(filepath.Dir(indexPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+				if err := os.WriteFile(indexPath, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			indexBefore, err := os.ReadFile(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexBeforeInfo, err := os.Stat(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			concurrentRow := operationalArchiveConcurrentRestoredRow(t, operation.name)
+			wantIndex := append(append([]byte(nil), indexBefore...), concurrentRow...)
+
+			previousHook := operationalArchiveBeforeIndexReplace
+			t.Cleanup(func() { operationalArchiveBeforeIndexReplace = previousHook })
+			var appendErr error
+			hookCalls := 0
+			operationalArchiveBeforeIndexReplace = func(purpose string) {
+				if purpose != "commit" {
+					return
+				}
+				hookCalls++
+				file, err := os.OpenFile(indexPath, os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					appendErr = err
+					return
+				}
+				if _, err := file.Write(concurrentRow); err != nil {
+					appendErr = err
+					_ = file.Close()
+					return
+				}
+				appendErr = file.Close()
+			}
+
+			var operationErr error
+			if operation.name == "archive" {
+				_, operationErr = ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(time.Minute))
+			} else {
+				_, operationErr = RestoreOperationalArchive(home, OperationalRestoreOptions{IDs: []string{targetID}}, archiveTestNow.Add(time.Minute))
+			}
+			operationalArchiveBeforeIndexReplace = previousHook
+			if hookCalls != 1 || appendErr != nil {
+				t.Fatalf("in-place index append hook = calls:%d err:%v", hookCalls, appendErr)
+			}
+			if operationErr == nil {
+				t.Fatalf("%s committed over a concurrent in-place index append", operation.name)
+			}
+
+			indexAfter, err := os.ReadFile(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(indexAfter, wantIndex) {
+				t.Fatalf("%s did not preserve concurrent index row byte-for-byte:\n got %q\nwant %q", operation.name, indexAfter, wantIndex)
+			}
+			indexAfterInfo, err := os.Stat(indexPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !os.SameFile(indexBeforeInfo, indexAfterInfo) {
+				t.Fatalf("%s replaced the concurrently appended index inode", operation.name)
+			}
+			active, err := LoadOperationalArchiveIndex(home)
+			if err != nil || len(active) != activeBefore {
+				t.Fatalf("%s concurrent append changed active archive authority: active=%+v err=%v", operation.name, active, err)
+			}
+			if operation.name == "archive" {
+				assertOperationalArchiveFileState(t, hotPath, workRaw, true)
+				assertOperationalArchiveFileState(t, archivePath, workRaw, false)
+				retry, err := ArchiveOperationalHistory(home, OperationalArchiveOptions{Kinds: []string{"work"}}, archiveTestNow.Add(2*time.Minute))
+				if err != nil || retry.ArchivedCount != 1 {
+					t.Fatalf("archive was not recoverable by clean retry: report=%+v err=%v", retry, err)
+				}
+			} else {
+				assertOperationalArchiveFileState(t, hotPath, workRaw, false)
+				assertOperationalArchiveFileState(t, archivePath, workRaw, true)
+				retry, err := RestoreOperationalArchive(home, OperationalRestoreOptions{IDs: []string{targetID}}, archiveTestNow.Add(2*time.Minute))
+				if err != nil || retry.RestoredCount != 1 {
+					t.Fatalf("restore was not recoverable by clean retry: report=%+v err=%v", retry, err)
+				}
+			}
+		})
+	}
+}
+
 func TestOperationalArchiveIndexPublishRollsBackMultipleMoves(t *testing.T) {
 	home := filepath.Join(t.TempDir(), ".compound")
 	if err := Init(home, "test", archiveTestNow); err != nil {
@@ -368,6 +495,29 @@ func operationalArchiveIndexFixture(t *testing.T) []byte {
 		Kind:          "work",
 		OriginalPath:  "work/work/work_rooted_fixture.json",
 		ArchivePath:   "archives/operational/files/work/work/work_rooted_fixture.json",
+	}
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(raw, '\n')
+}
+
+func operationalArchiveConcurrentRestoredRow(t *testing.T, suffix string) []byte {
+	t.Helper()
+	originalPath := "work/work/work_concurrent_index_" + suffix + ".json"
+	body := []byte(`{"id":"work_concurrent_index","state":"completed"}`)
+	entry := OperationalArchiveEntry{
+		SchemaVersion: OperationalArchiveSchemaVersion,
+		ID:            operationalArchiveID(originalPath),
+		Operation:     "restored",
+		CreatedAt:     archiveTestNow.Add(-time.Minute).UTC().Format(time.RFC3339),
+		Kind:          "work",
+		Status:        "completed",
+		OriginalPath:  originalPath,
+		ArchivePath:   filepath.ToSlash(filepath.Join(OperationalArchiveFilesRel, filepath.FromSlash(originalPath))),
+		Size:          int64(len(body)),
+		SHA256:        operationalArchiveBytesSHA256(body),
 	}
 	raw, err := json.Marshal(entry)
 	if err != nil {
