@@ -1,6 +1,7 @@
 package routeevidence
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -339,6 +340,111 @@ func TestRecordClaimedJoinedRetainsRequestClaimUntilLedgerPublicationIsDurable(t
 				})
 			}
 		})
+	}
+}
+
+func TestRecordClaimedJoinedRejectsSameInodeLedgerAppendBeforePublish(t *testing.T) {
+	home := t.TempDir()
+	ledgerPath := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+
+	seed, err := Build(BuildInput{
+		CreatedAt:     t0.Add(-2 * time.Minute),
+		RequestID:     "gateway:req_preimage_seed",
+		WorkID:        "work_preimage_seed",
+		ClientProfile: "gateway.ingress",
+		Protocol:      "openai-chat-completions",
+		Provider:      "fixture-provider",
+		Model:         "fixture-model",
+		Status:        "completed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordJoined(home, seed); err != nil {
+		t.Fatalf("seed route evidence: %v", err)
+	}
+	before := readFile(t, ledgerPath)
+	beforeInfo, err := os.Stat(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	concurrent, err := Build(BuildInput{
+		CreatedAt:     t0.Add(-time.Minute),
+		RequestID:     "gateway:req_preimage_concurrent",
+		WorkID:        "work_preimage_concurrent",
+		ClientProfile: "gateway.ingress",
+		Protocol:      "openai-chat-completions",
+		Provider:      "fixture-provider",
+		Model:         "fixture-model",
+		Status:        "completed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrentRow, err := json.Marshal(concurrent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrentRow = append(concurrentRow, '\n')
+
+	ev := fixtureEvidence()
+	claim, err := BuildRequestClaim(ev.RequestID, ev.WorkID, ev.ClientProfile, ev.Protocol, ev.SelectedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ClaimRequestID(home, claim); err != nil {
+		t.Fatalf("claim request id: %v", err)
+	}
+
+	previousWrite := writeRouteEvidenceFile
+	t.Cleanup(func() { writeRouteEvidenceFile = previousWrite })
+	injected := false
+	var afterAppendInfo os.FileInfo
+	writeRouteEvidenceFile = func(file *os.File, data []byte) (int, error) {
+		n, err := file.Write(data)
+		if err != nil || n != len(data) || injected {
+			return n, err
+		}
+		injected = true
+		canonical, err := os.OpenFile(ledgerPath, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			return n, err
+		}
+		if _, err := canonical.Write(concurrentRow); err != nil {
+			_ = canonical.Close()
+			return n, err
+		}
+		if err := canonical.Sync(); err != nil {
+			_ = canonical.Close()
+			return n, err
+		}
+		if err := canonical.Close(); err != nil {
+			return n, err
+		}
+		afterAppendInfo, err = os.Stat(ledgerPath)
+		return n, err
+	}
+
+	if _, err := RecordClaimedJoined(home, ev, claim); err == nil {
+		t.Fatal("claimed recorder replaced a ledger that changed after its snapshot")
+	}
+	if !injected {
+		t.Fatal("same-inode append was not injected")
+	}
+	if afterAppendInfo == nil || !os.SameFile(beforeInfo, afterAppendInfo) {
+		t.Fatal("injected append did not mutate the captured ledger inode in place")
+	}
+	want := append(append([]byte(nil), before...), concurrentRow...)
+	after := readFile(t, ledgerPath)
+	if !bytes.Equal(after, want) {
+		t.Fatalf("failed publication did not byte-preserve concurrent ledger row\nwant: %q\ngot:  %q", want, after)
+	}
+	if _, ok, err := LookupRequestID(home, ev.RequestID); err != nil || ok {
+		t.Fatalf("failed publication exposed target request evidence: ok=%v err=%v", ok, err)
+	}
+	if _, err := os.Stat(requestClaimPath(home, ev.RequestID)); err != nil {
+		t.Fatalf("failed publication did not retain durable request claim: %v", err)
 	}
 }
 
