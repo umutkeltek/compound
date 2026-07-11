@@ -10,7 +10,11 @@ node_modules/
 *.private.md
 .compound-private/
 /.claude/
+/.agents/
 /Plans/
+
+# runtime/evidence state produced by lanes (playtest runs etc.) — generated, never committed
+/state/
 
 # External memory systems cloned for audit (P6 evidence-gathering, never vendored)
 /memory/
