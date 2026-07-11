@@ -91,9 +91,6 @@ models:
       classify-extract:
         level: assumed
         evidence: "fixture: local privacy lane requires supervised promotion"
-      judge-critique:
-        level: primary
-        evidence: "fixture: eligible local direct judge"
 routing_defaults:
   classify-extract:
     - auto/extract
@@ -103,4 +100,3 @@ routing_defaults:
     - auto/judge
     - deepseek/deepseek-v4-pro
     - scout/chat
-    - mac/qwen-fixture

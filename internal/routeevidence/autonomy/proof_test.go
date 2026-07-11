@@ -170,7 +170,7 @@ func TestCompileAllowsConcreteDirectSelectedModelToEqualResolvedModel(t *testing
 
 func TestCompileAllowsEligibleLocalDirectLane(t *testing.T) {
 	home := t.TempDir()
-	plan := installPlan(t, home, false)
+	plan := installLocalDirectPlan(t, home)
 	opts := sampleOptions{
 		selectedModel:    "mac/qwen-fixture",
 		resolvedProvider: stringPointer("lmstudio"),
@@ -725,9 +725,48 @@ func installPlan(t *testing.T, home string, assumed bool) autonomy.RoutePlanSnap
 			{ModelID: "auto/judge", ProviderRoute: "auto/judge", Resolution: autonomy.LaneResolution{Mode: "adaptive"}, Tier: "cheap", ClaimLevel: claimLevel, GateRole: gateRole},
 			{ModelID: "deepseek/deepseek-v4-pro", ProviderRoute: "deepseek/deepseek-v4-pro", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "deepseek", Model: "deepseek/deepseek-v4-pro"}}}, Tier: "cheap", ClaimLevel: "primary", GateRole: "eligible"},
 			{ModelID: "scout/chat", ProviderRoute: "scout/chat", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "scout", Model: "scout/chat"}}}, Tier: "free", ClaimLevel: "capable", GateRole: "tripwire_only"},
+		},
+	}
+}
+
+func installLocalDirectPlan(t *testing.T, home string) autonomy.RoutePlanSnapshot {
+	t.Helper()
+	data := []byte(`version: 1
+models:
+  mac/qwen-fixture:
+    provider_route: direct
+    resolution:
+      mode: direct
+      targets:
+        - provider: lmstudio
+          model: qwen-fixture-served
+    tier: local-batch
+    capabilities:
+      judge-critique:
+        level: primary
+routing_defaults:
+  judge-critique:
+    - mac/qwen-fixture
+`)
+	path := filepath.Join(home, "registries", "model-capabilities.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	revision := "sha256:" + hex.EncodeToString(sum[:])
+	plan := autonomy.RoutePlanSnapshot{
+		AuthorityPath:   path,
+		SourceRevision:  revision,
+		CapabilityClass: "judge-critique",
+		Chain: []autonomy.LaneSnapshot{
 			{ModelID: "mac/qwen-fixture", ProviderRoute: "direct", Resolution: autonomy.LaneResolution{Mode: "direct", Targets: []autonomy.ResolvedTarget{{Provider: "lmstudio", Model: "qwen-fixture-served"}}}, Tier: "local-batch", ClaimLevel: "primary", GateRole: "eligible"},
 		},
 	}
+	plan.ID = autonomy.RoutePlanID(plan.CapabilityClass, plan.PrivacySensitive, plan.AuthorityPath, plan.SourceRevision)
+	return plan
 }
 
 func compile(t *testing.T, home string, plan autonomy.RoutePlanSnapshot, samples int) autonomy.Artifact {
