@@ -103,6 +103,32 @@ func TestOSAbsorptionDoctorFlagsMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestOSAbsorptionPermissionPolicyFixtureStaysPendingUntilConsumerProof(t *testing.T) {
+	homePath := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "authority", "os-absorption-permission-policy.json")
+	report, err := ImportOSAbsorptionMatrix(homePath, fixture, time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.RowCount != 1 || report.PendingCount != 1 || report.AbsorbedCount != 0 {
+		t.Fatalf("import counts = rows:%d pending:%d absorbed:%d", report.RowCount, report.PendingCount, report.AbsorbedCount)
+	}
+	matrix, err := LoadOSAbsorptionMatrix(homePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := matrix.Rows[0]
+	if row.ID != "os_source_claude_code_permission_policy" ||
+		row.CompoundOwner != "compound://config/harness-permissions/claude_code" ||
+		row.CurrentRole != "compatibility and reviewed import evidence" ||
+		!strings.Contains(row.RetirementGate, "no independent legacy policy writer") {
+		t.Fatalf("permission-policy absorption row lost its ownership boundary: %+v", row)
+	}
+	if !strings.HasPrefix(row.SourceRevision, "sha256:") || len(row.EvidenceRefs) != 1 {
+		t.Fatalf("permission-policy source provenance missing: %+v", row)
+	}
+}
+
 // TestOSAbsorptionAutoProofDecisionsAndOperatorState is J1's positive proof:
 // os_source_decisions_repo and os_source_operator_state report proof_status=ok
 // with a proof_ref once their REAL consumers (the decisions source-authority
