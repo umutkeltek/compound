@@ -35,9 +35,9 @@ type verdictArtifactPayload struct {
 
 // ExecuteDryRun resumes at target granularity. Completed target findings and
 // run-scoped verdict artifacts are skipped. If a crash leaves partial route
-// evidence without a verdict artifact, the target re-executes fully; route
-// evidence recording is RequestID-idempotent, so existing lens/judge rows are
-// reused instead of appended.
+// evidence without a verdict artifact, the target re-executes fully. Every
+// provider call preflights its deterministic route-attempt identity and records
+// a fresh row, allocating :resumeN when a prior matching attempt exists.
 func ExecuteDryRun(ctx context.Context, homePath string, run Run, caller LensCaller, now func() time.Time) (Run, error) {
 	if caller == nil {
 		return run, fmt.Errorf("no caller configured")
@@ -254,7 +254,11 @@ func executeTargetDryRun(ctx context.Context, homePath string, run Run, target T
 		if err != nil {
 			return TargetFinding{}, tokensUsed, err
 		}
-		requestID := "panel:" + run.ID + ":" + targetDigest(target.Ref) + ":" + included.Ref
+		baseRequestID := "panel:" + run.ID + ":" + targetDigest(target.Ref) + ":" + included.Ref
+		requestID, err := nextPanelRouteRequestID(homePath, baseRequestID, run.WorkID, "compound.panel.lens", run.Route.LensLane)
+		if err != nil {
+			return TargetFinding{}, tokensUsed, err
+		}
 		callResult, callErr := caller.Call(ctx, CallRequest{LensID: included.Ref, TargetRef: target.Ref, Lane: run.Route.LensLane, System: system, User: user})
 		status := "completed"
 		if callErr != nil {
@@ -322,9 +326,13 @@ func callJudge(ctx context.Context, homePath string, run Run, target TargetInput
 	var tokens int
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		requestID := "panel:" + run.ID + ":" + targetDigest(target.Ref) + ":" + judgePromptID
+		baseRequestID := "panel:" + run.ID + ":" + targetDigest(target.Ref) + ":" + judgePromptID
 		if attempt > 0 {
-			requestID += fmt.Sprintf(":retry%d", attempt)
+			baseRequestID += fmt.Sprintf(":retry%d", attempt)
+		}
+		requestID, err := nextPanelRouteRequestID(homePath, baseRequestID, run.WorkID, "compound.panel.judge", run.Route.JudgeLane)
+		if err != nil {
+			return JudgeOutput{}, lastRouteRef, tokens, false, err
 		}
 		callResult, callErr := caller.Call(ctx, CallRequest{LensID: judgePromptID, TargetRef: target.Ref, Lane: run.Route.JudgeLane, System: system, User: user})
 		status := "completed"
@@ -412,10 +420,7 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 		if existing.RecordedVia != routeevidence.RecorderGeneric {
 			return "", fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
 		}
-		if !samePanelRouteRequest(existing, ev) {
-			return "", fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
-		}
-		return existing.ID, nil
+		return "", fmt.Errorf("panel request %s already has route evidence %s; refusing to reuse it for a new provider call", requestID, existing.ID)
 	}
 	recorded, err := routeevidence.RecordJoined(homePath, ev)
 	if err != nil {
@@ -424,16 +429,36 @@ func recordPanelRouteEvidence(homePath string, createdAt time.Time, workID, requ
 	return recorded.Evidence.ID, nil
 }
 
-func samePanelRouteRequest(existing, expected routeevidence.Evidence) bool {
-	if existing.RequestID != expected.RequestID || existing.WorkID != expected.WorkID ||
-		existing.ClientProfile != expected.ClientProfile || existing.Protocol != expected.Protocol ||
-		existing.SelectedTarget != expected.SelectedTarget || existing.Status != expected.Status {
-		return false
+func nextPanelRouteRequestID(homePath, baseRequestID, workID, clientProfile string, lane LaneRef) (string, error) {
+	for resume := 0; ; resume++ {
+		requestID := baseRequestID
+		if resume > 0 {
+			requestID += fmt.Sprintf(":resume%d", resume)
+		}
+		existing, ok, err := routeevidence.LookupRequestID(homePath, requestID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return requestID, nil
+		}
+		if existing.RecordedVia != routeevidence.RecorderGeneric {
+			return "", fmt.Errorf("untrusted route evidence shadows panel request %s: recorded_via=%q", requestID, existing.RecordedVia)
+		}
+		if !samePanelRouteIdentity(existing, requestID, workID, clientProfile, lane) {
+			return "", fmt.Errorf("panel request %s conflicts with existing route evidence %s", requestID, existing.ID)
+		}
 	}
-	return existing.ResolvedProvider == expected.ResolvedProvider &&
-		existing.ResolvedModel == expected.ResolvedModel &&
-		existing.ResolutionSource == expected.ResolutionSource &&
-		existing.GatewayRequestID == expected.GatewayRequestID
+}
+
+func samePanelRouteIdentity(existing routeevidence.Evidence, requestID, workID, clientProfile string, lane LaneRef) bool {
+	return existing.RequestID == requestID &&
+		existing.WorkID == workID &&
+		existing.ClientProfile == clientProfile &&
+		existing.Protocol == "panel-lane" &&
+		existing.SelectedTarget.Provider == "compound-route-plan" &&
+		existing.SelectedTarget.Model == lane.ModelID &&
+		existing.SelectedTarget.Protocol == "panel-lane"
 }
 
 func loadRunTargetInput(homePath, targetKind, ref string) (TargetInput, error) {
