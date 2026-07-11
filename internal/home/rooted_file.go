@@ -10,6 +10,8 @@ import (
 	"syscall"
 )
 
+var syncRootedDirectoryFile = func(_ string, file *os.File) error { return file.Sync() }
+
 // ReadRootedRegularFile reads an owned file only when every path component
 // beneath home is stable and contains no symbolic links.
 func ReadRootedRegularFile(homePath, path, kind string) ([]byte, error) {
@@ -288,7 +290,7 @@ func syncRootedDirectory(root *os.Root, relativePath, displayPath, kind string) 
 		_ = dir.Close()
 		return fmt.Errorf("%s path must be stable beneath compound home: %s", kind, displayPath)
 	}
-	syncErr := dir.Sync()
+	syncErr := syncRootedDirectoryFile(relativePath, dir)
 	closeErr := dir.Close()
 	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) {
 		return syncErr

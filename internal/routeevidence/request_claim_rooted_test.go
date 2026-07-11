@@ -142,6 +142,48 @@ func TestReleaseRequestClaimRejectsSymlinkedOwnedPathWithoutExternalMutation(t *
 	})
 }
 
+func TestReleaseRequestClaimDoesNotDeleteReplacementAfterValidation(t *testing.T) {
+	home, claim, _ := rootedRequestClaimFixture(t)
+	if err := ClaimRequestID(home, claim); err != nil {
+		t.Fatalf("claim request id: %v", err)
+	}
+	claimPath := requestClaimPath(home, claim.RequestID)
+	originalPath := claimPath + ".validated"
+	replacement := claim
+	replacement.RequestID += ":replacement"
+	replacement.ID = requestClaimID(replacement)
+	replacementRaw, err := json.MarshalIndent(replacement, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementRaw = append(replacementRaw, '\n')
+
+	previous := requestClaimBeforeReleaseRemove
+	defer func() { requestClaimBeforeReleaseRemove = previous }()
+	var hookErr error
+	requestClaimBeforeReleaseRemove = func() {
+		if err := os.Rename(claimPath, originalPath); err != nil {
+			hookErr = err
+			return
+		}
+		hookErr = os.WriteFile(claimPath, replacementRaw, 0o644)
+	}
+
+	if err := releaseRequestClaimLocked(home, claim); err == nil {
+		t.Error("request claim release deleted a file substituted after validation")
+	}
+	if hookErr != nil {
+		t.Fatalf("replace validated request claim: %v", hookErr)
+	}
+	got, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatalf("substituted request claim was not restored: %v", err)
+	}
+	if !bytes.Equal(got, replacementRaw) {
+		t.Fatalf("substituted request claim changed:\n got %q\nwant %q", got, replacementRaw)
+	}
+}
+
 func rootedRequestClaimFixture(t *testing.T) (string, RequestClaim, []byte) {
 	t.Helper()
 	home := t.TempDir()

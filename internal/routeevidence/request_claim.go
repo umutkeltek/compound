@@ -17,6 +17,8 @@ import (
 
 const RequestClaimSchemaVersion = "compound.execution_route_request_claim.v0.1"
 
+var requestClaimBeforeReleaseRemove = func() {}
+
 // RequestClaim is a durable, identity-bound right to record one request_id.
 // It closes the route-ledger check-to-call gap without holding the shared
 // authority lock across provider I/O.
@@ -137,6 +139,7 @@ func releaseRequestClaimLocked(homePath string, claim RequestClaim) error {
 	if !present || stored != claim {
 		return fmt.Errorf("execution route evidence request_id %q claim changed before release", claim.RequestID)
 	}
+	requestClaimBeforeReleaseRemove()
 	return homepkg.RemoveRootedRegularFileDurable(homePath, path, "request claim")
 }
 
