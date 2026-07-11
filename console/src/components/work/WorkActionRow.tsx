@@ -92,7 +92,7 @@ export function WorkActionRow({
       const response = await fetch("/api/decision/execute", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ area: data.area, itemId: data.itemId, option: active.value, fields }),
+        body: JSON.stringify({ area: data.area, itemId: data.itemId, option: active.value, fields, confirmed: true }),
       });
       const body = (await response.json().catch(() => null)) as { ok?: boolean; stderr?: string; stdout?: string } | null;
       if (body?.ok) {

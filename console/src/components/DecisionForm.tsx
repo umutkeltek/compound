@@ -37,7 +37,7 @@ function renderField(field: FieldSpec) {
   return (
     <input
       name={field.name}
-      type={field.type === "number" ? "number" : "text"}
+      type={field.type === "number" ? "number" : field.type === "datetime-local" ? "datetime-local" : "text"}
       min={field.min}
       max={field.max}
       step={field.step}

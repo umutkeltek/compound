@@ -175,8 +175,7 @@ export function mapEnvelopeSpine(
       name: "Intent",
       phase: "intent",
       status: "done",
-      description:
-        s(p.success_predicate) || s(p.desired_outcome) || "Work intent recorded.",
+      description: `Predicate — ${s(p.success_predicate) || s(p.desired_outcome) || "work intent recorded"}`,
       meta: [createdAt, owner ? `owner ${owner}` : ""].filter(Boolean),
       noRecord: false,
     },

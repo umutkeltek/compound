@@ -63,6 +63,7 @@ function decisionOptions(act: SingleAct): DecisionOption[] {
 function confirmationDescription(act: SingleAct, chosen: DecisionOption | null): string {
   if (chosen?.description) return chosen.description;
   if (act.mode === "generic" && act.effectDescription) return act.effectDescription;
+  if (act.mode === "generic") return "Records that you reviewed this item. It does not repair, tidy, or otherwise change the underlying system.";
   if (act.mode === "batch-atomic") return `Applies this decision to all ${act.memberCount} items together after confirmation.`;
   return "Review what will change before confirming this decision.";
 }

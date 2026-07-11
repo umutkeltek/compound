@@ -228,7 +228,7 @@ function admissionCard(ap: Json): BoardCard {
     key: id || str(ap.plan_id),
     workId: id,
     displayId: id || str(ap.plan_id),
-    title: str(ap.success_predicate) || str(ap.desired_outcome) || "work plan",
+    title: `Intent: ${str(ap.success_predicate) || str(ap.desired_outcome) || "work plan"}`,
     subtitle: str(ap.work_owner) || str(ap.actor) || "suggestion",
     state,
     tone: toneForState(state),

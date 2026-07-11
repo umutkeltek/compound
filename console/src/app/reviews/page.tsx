@@ -230,8 +230,8 @@ export default async function Decide() {
       </section>
 
       {limitedGroups.length ? (
-        <details className="group overflow-hidden rounded-lg border border-hair bg-panel shadow-sm">
-          <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 marker:hidden">
+        <section aria-labelledby="limited-actions-heading" className="overflow-hidden rounded-lg border border-seam-line bg-panel shadow-sm">
+          <div className="flex items-center gap-3 px-4 py-3">
             <span className="inline-flex h-6 w-6 items-center justify-center rounded-sm bg-soft-2 text-sm text-muted" aria-hidden>!</span>
             <span className="min-w-0 flex-1">
               <span className="block text-xs font-bold uppercase text-muted">Limited actions</span>
@@ -239,11 +239,11 @@ export default async function Decide() {
             </span>
             <span className="mono text-2xs tabular-nums text-faint">{limitedGroups.length}</span>
             <span aria-hidden className="text-sm text-faint transition-transform group-open:rotate-90">›</span>
-          </summary>
+          </div>
           <div className="border-t border-hair p-3">
             <DecideQueue groups={limitedGroups} mutationsEnabled={mutationsEnabled} keyboardShortcuts={false} />
           </div>
-        </details>
+        </section>
       ) : null}
 
       {watchingEntries.length ? (
