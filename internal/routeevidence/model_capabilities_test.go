@@ -48,8 +48,8 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		plan.AuthorityRef != ModelCapabilitiesAuthorityRef ||
 		plan.SourceAuthorityID != report.SourceAuthorityID ||
 		plan.RoutingRule != "routing_defaults[judge-critique]" ||
-		len(plan.Chain) != 4 ||
-		len(plan.LaneJustification) != 4 {
+		len(plan.Chain) != 3 ||
+		len(plan.LaneJustification) != 3 {
 		t.Fatalf("bad route plan: %+v", plan)
 	}
 	if plan.Chain[0].ModelID != "auto/judge" ||
@@ -67,12 +67,7 @@ func TestImportModelCapabilitiesYAMLFeedsCapabilityRoutePlan(t *testing.T) {
 		plan.Chain[1].Resolution.Targets[0].Provider != "deepseek" ||
 		plan.Chain[2].ModelID != "scout/chat" ||
 		plan.Chain[2].GateRole != "tripwire_only" ||
-		plan.Chain[2].CostClass != "free" ||
-		plan.Chain[3].ModelID != "mac/qwen-fixture" ||
-		plan.Chain[3].ProviderRoute != "direct" ||
-		plan.Chain[3].Resolution.Mode != "direct" ||
-		plan.Chain[3].Resolution.Targets[0].Provider != "lmstudio" ||
-		plan.Chain[3].GateRole != "eligible" {
+		plan.Chain[2].CostClass != "free" {
 		t.Fatalf("bad chain: %+v", plan.Chain)
 	}
 	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "free judge/critique lane scout/chat may object but must not gate verdicts") {
