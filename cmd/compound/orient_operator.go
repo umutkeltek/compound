@@ -16,6 +16,7 @@ import (
 	"compound/internal/authority"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/mem"
 	"compound/internal/observation"
@@ -59,6 +60,7 @@ type orientNeedsMe struct {
 	ReadyToApply           int                       `json:"ready_to_apply"`
 	PendingPanelNeedsHuman int                       `json:"pending_panel_needs_human"`
 	ObservationReviews     *orientObservationReviews `json:"observation_reviews,omitempty"`
+	TensionCards           *orientTensionCards       `json:"tension_cards,omitempty"`
 	MemoryReviewCardCount  int                       `json:"memory_review_card_count,omitempty"`
 	MemoryReviewCards      []orientMemoryReviewCard  `json:"memory_review_cards,omitempty"`
 	OperatorGateCardCount  int                       `json:"operator_gate_card_count,omitempty"`
@@ -69,6 +71,18 @@ type orientNeedsMe struct {
 	SourceIntake           *orientSourceIntake       `json:"source_intake,omitempty"`
 	OldestItem             *orientAgedItem           `json:"oldest_item,omitempty"`
 	OldestActionableItem   *orientAgedItem           `json:"oldest_actionable_item,omitempty"`
+}
+
+type orientTensionCards struct {
+	Items    []orientTensionCard `json:"items"`
+	Commands []orientDrillDown   `json:"commands"`
+}
+
+type orientTensionCard struct {
+	ID      string   `json:"id"`
+	Summary string   `json:"summary"`
+	Refs    []string `json:"refs"`
+	Command []string `json:"command"`
 }
 
 type orientMemoryReviewCard struct {
@@ -430,6 +444,9 @@ func buildOrientOperatorReport(homePath string, recent int, now time.Time) (orie
 	if report.NeedsMe.ObservationReviews != nil {
 		report.DrillDown = append(report.DrillDown, report.NeedsMe.ObservationReviews.Commands...)
 	}
+	if report.NeedsMe.TensionCards != nil {
+		report.DrillDown = append(report.DrillDown, report.NeedsMe.TensionCards.Commands...)
+	}
 	if report.NeedsMe.CapabilityFeedback != nil {
 		report.DrillDown = append(report.DrillDown, report.NeedsMe.CapabilityFeedback.Commands...)
 	}
@@ -608,6 +625,7 @@ func buildOrientNeedsMe(homePath string, reviews reviewartifact.QueueReport, wor
 		ObservationReviews: buildOrientObservationReviews(reviews),
 	}
 	out.CapabilityFeedback = buildOrientCapabilityFeedback(homePath, reviews, now)
+	out.TensionCards = buildOrientTensionCards(homePath, reviews, now)
 	out.AdaptationIntake = buildOrientAdaptationIntake(reviews)
 	out.SourceControl = buildOrientSourceControl(reviews)
 	out.SourceIntake = buildOrientSourceIntake(homePath, now)
@@ -889,6 +907,75 @@ func buildOrientObservationReviews(reviews reviewartifact.QueueReport) *orientOb
 		out.NextAction = "review observation panel verdicts; keep lens output evidence/candidate material"
 	}
 	return &out
+}
+
+func buildOrientTensionCards(homePath string, reviews reviewartifact.QueueReport, now time.Time) *orientTensionCards {
+	store, err := mem.Open(homePath)
+	if err != nil {
+		return nil
+	}
+	claims, err := store.AllCurrent()
+	if err != nil {
+		return nil
+	}
+	liveClaims, superseded := map[string]bool{}, map[string]bool{}
+	for _, claim := range claims {
+		liveClaims[claim.ID] = true
+		if claim.Supersedes != "" {
+			superseded[claim.Supersedes] = true
+		}
+	}
+	view, err := decisions.StandingLaw(store, homePath, now)
+	if err != nil {
+		return nil
+	}
+	return selectOrientTensionCards(reviews, liveClaims, superseded, view)
+}
+
+func selectOrientTensionCards(reviews reviewartifact.QueueReport, liveClaims, superseded map[string]bool, view decisions.StandingLawView) *orientTensionCards {
+	items := make([]orientTensionCard, 0, 3)
+	for _, item := range reviews.Items {
+		if len(items) == 3 || item.Area != mem.ReconcileContestedArea || !reviewItemNeedsOwner(item) {
+			continue
+		}
+		refs := claimEvidenceRefs(item.EvidenceRefs)
+		live := len(refs) >= 2
+		for _, ref := range refs {
+			live = live && liveClaims[ref] && !superseded[ref]
+		}
+		if live {
+			items = append(items, orientTensionCard{ID: item.ID, Summary: item.OperatorSummary, Refs: refs, Command: []string{"compound", "reviews", "--area", mem.ReconcileContestedArea}})
+		}
+	}
+	liveClaim, liveDecision := map[string]bool{}, map[string]bool{}
+	for _, record := range view.Records {
+		liveClaim[record.ClaimID], liveDecision[record.DecisionID] = true, true
+	}
+	for _, conflict := range view.Conflicts {
+		if len(items) == 3 || !liveClaim[conflict.ConflictsWithClaim] || !liveDecision[conflict.ConflictsWithDecision] {
+			continue
+		}
+		refs := []string{conflict.CandidateID, conflict.ConflictsWithClaim, conflict.ConflictsWithDecision}
+		summary := fmt.Sprintf("%s conflicts with standing law %s (%s) — supersede %s?", reviewartifact.FirstNonEmpty(conflict.Restatement, conflict.Verbatim, conflict.CandidateID), reviewartifact.FirstNonEmpty(conflict.ConflictingTitle, conflict.ConflictsWithClaim), conflict.ConflictsWithClaim, conflict.ConflictsWithDecision)
+		items = append(items, orientTensionCard{ID: conflict.CandidateID, Summary: summary, Refs: refs, Command: []string{"compound", "decisions", "standing-law"}})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	// Deal-time gate deliberately verifies cited claim/decision IDs against the
+	// current fold and queue disposition. It does not rerun the reconcile
+	// detector or validate non-claim evidence references.
+	return &orientTensionCards{Items: items, Commands: []orientDrillDown{{Label: "tension reviews", Command: []string{"compound", "reviews", "--area", mem.ReconcileContestedArea}}, {Label: "standing-law conflicts", Command: []string{"compound", "decisions", "standing-law"}}}}
+}
+
+func claimEvidenceRefs(refs []string) []string {
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if strings.HasPrefix(ref, "claim_") {
+			out = append(out, ref)
+		}
+	}
+	return out
 }
 
 func buildOrientCapabilityFeedback(homePath string, reviews reviewartifact.QueueReport, now time.Time) *orientCapabilityFeedback {
@@ -1760,6 +1847,13 @@ func printOrientOperatorReport(report orientOperatorReport) {
 			obs.TotalReviewDebt,
 			obs.NextAction,
 		)
+	}
+	if tensions := report.NeedsMe.TensionCards; tensions != nil && len(tensions.Items) > 0 {
+		card := tensions.Items[0]
+		fmt.Printf("- tension_cards: %d headline=%s refs=%s command=%s\n", len(tensions.Items), card.Summary, strings.Join(card.Refs, ","), strings.Join(card.Command, " "))
+		for _, card := range tensions.Items {
+			fmt.Printf(" - tension_card: %s refs=%s question=%s command=%s\n", card.ID, strings.Join(card.Refs, ","), card.Summary, strings.Join(card.Command, " "))
+		}
 	}
 	if feedback := report.NeedsMe.CapabilityFeedback; feedback != nil {
 		fmt.Printf("- capability_feedback: pending=%d applied_reviews=%d applied_edges=%d edge_kinds=%s next=%s\n",

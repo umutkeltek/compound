@@ -9,7 +9,8 @@ import (
 	"compound/internal/reviewartifact"
 )
 
-const reconcileContestedArea = "reconcile-contested"
+const ReconcileContestedArea = "reconcile-contested"
+const reconcileContestedArea = ReconcileContestedArea
 
 const reconcileContestedArtifactSchema = "compound.synthesis_reconcile_contested.v0.1"
 
@@ -183,7 +184,7 @@ func (s *Store) writeReconcileContestedCards(groups *reconcileContestedGroups, m
 			EvidenceRefs: contestedCardEvidenceRefs(card),
 			Card:         card,
 		}
-		if _, err := reviewartifact.Write(s.home, reconcileContestedArea, card.ID, artifact, "  ", renderReconcileContestedMarkdown(card)); err != nil {
+		if _, err := reviewartifact.Write(s.home, ReconcileContestedArea, card.ID, artifact, "  ", renderReconcileContestedMarkdown(card)); err != nil {
 			return cards, err
 		}
 		cards = append(cards, card)

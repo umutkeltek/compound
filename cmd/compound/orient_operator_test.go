@@ -13,6 +13,7 @@ import (
 	"compound/internal/authority"
 	"compound/internal/candidates"
 	"compound/internal/capgraph"
+	"compound/internal/decisions"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/observation"
@@ -21,6 +22,71 @@ import (
 	"compound/internal/reviewartifact"
 	"compound/internal/work"
 )
+
+func TestOrientTensionCardsFalsifiers(t *testing.T) {
+	live := map[string]bool{"claim_a": true, "claim_b": true, "claim_c": true, "claim_law": true}
+	reviews := reviewartifact.QueueReport{Items: []reviewartifact.QueueItem{
+		{Area: mem.ReconcileContestedArea, ID: "card_1", Status: "review_required", Readiness: "needs_review", OperatorSummary: "memory says A but evidence says B — representation correct?", EvidenceRefs: []string{"claim_a", "claim_b"}},
+		{Area: mem.ReconcileContestedArea, ID: "card_2", Status: "review_required", Readiness: "needs_review", OperatorSummary: "memory says B but evidence says C — representation correct?", EvidenceRefs: []string{"claim_b", "claim_c"}},
+	}}
+	view := decisions.StandingLawView{
+		Records:   []decisions.StandingLawRecord{{ClaimID: "claim_law", DecisionID: "decision_law", Title: "Keep the gate"}},
+		Conflicts: []decisions.StandingLawConflict{{CandidateID: "cand_reverse", Restatement: "remove the gate", ConflictsWithClaim: "claim_law", ConflictsWithDecision: "decision_law", ConflictingTitle: "Keep the gate"}},
+	}
+
+	t.Run("f1 bounded detected cards carry sentences ids and commands", func(t *testing.T) {
+		got := selectOrientTensionCards(reviews, live, nil, view)
+		if got == nil || len(got.Items) != 3 {
+			t.Fatalf("tensions = %+v, want three", got)
+		}
+		for _, card := range got.Items {
+			if !strings.HasSuffix(card.Summary, "?") || len(card.Refs) < 2 || len(card.Command) == 0 {
+				t.Fatalf("card lacks question, object ids, or command: %+v", card)
+			}
+		}
+		report := orientOperatorReport{GeneratedAt: "now", NeedsMe: orientNeedsMe{TensionCards: got}}
+		out := captureStdout(t, func() { printOrientOperatorReport(report) })
+		if strings.Count(out, "headline=") != 1 || strings.Count(out, " - tension_card:") != 3 {
+			t.Fatalf("headline/drill-down bounds failed:\n%s", out)
+		}
+	})
+
+	t.Run("f2 superseded sides are stale", func(t *testing.T) {
+		got := selectOrientTensionCards(reviews, live, map[string]bool{"claim_a": true}, decisions.StandingLawView{Conflicts: view.Conflicts})
+		if got == nil || len(got.Items) != 1 || got.Items[0].ID != "card_2" {
+			t.Fatalf("stale cards served: %+v", got)
+		}
+	})
+
+	t.Run("f3 silence and f4 disposition", func(t *testing.T) {
+		cleared := reviews
+		for i := range cleared.Items {
+			cleared.Items[i].Status = "dismissed"
+			cleared.Items[i].Readiness = "no_action"
+		}
+		if got := selectOrientTensionCards(cleared, live, nil, decisions.StandingLawView{}); got != nil {
+			t.Fatalf("cleared cards re-served: %+v", got)
+		}
+		out := captureStdout(t, func() { printOrientOperatorReport(orientOperatorReport{GeneratedAt: "now"}) })
+		if strings.Contains(out, "tension") {
+			t.Fatalf("empty tension scaffolding rendered:\n%s", out)
+		}
+	})
+
+	t.Run("f5 selection is read only", func(t *testing.T) {
+		homePath := t.TempDir()
+		path := filepath.Join(homePath, "sentinel")
+		if err := os.WriteFile(path, []byte("unchanged"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before, _ := os.ReadFile(path)
+		_ = selectOrientTensionCards(reviews, live, nil, view)
+		after, _ := os.ReadFile(path)
+		if string(before) != string(after) {
+			t.Fatal("tension selection mutated test home")
+		}
+	})
+}
 
 func TestOrientOperatorReportMatchesRawHomeState(t *testing.T) {
 	homePath := t.TempDir()
