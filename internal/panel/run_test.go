@@ -275,12 +275,64 @@ func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
 	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxItems: 2, MaxTotalTokens: 4000})
 	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + run.LensSet.Included[0].Ref
+	writePanelCallAttemptFixture(t, home, run, "mcand_example_api_clean", requestID)
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	got, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
+	if err == nil || !strings.Contains(err.Error(), "unresolved route attempt") {
+		t.Fatalf("unresolved reservation did not fail closed: run=%+v err=%v", got, err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("unresolved reservation was detected only after %d provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunGenericRouteCannotResolveCallReservation(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
+	writePanelCallAttemptFixture(t, home, run, "mcand_example_api_clean", requestID)
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     requestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.lens",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.LensLane.ModelID,
+		Usage:         routeevidence.Usage{TotalTokens: 7},
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "unresolved route attempt") {
+		t.Fatalf("generic route evidence resolved a panel-owned reservation: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("generic route evidence permitted %d additional provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunRejectsIncompleteCallReservationIdentity(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + run.LensSet.Included[0].Ref
 	attemptDir := filepath.Join(home, "panel-runs", "attempts", targetDigest(run.ID))
 	if err := os.MkdirAll(attemptDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	attempt, err := json.Marshal(map[string]string{
-		"schema_version": "compound.panel_attempt.v0.1",
+		"schema_version": panelAttemptSchemaVersion,
 		"kind":           "call",
 		"run_id":         run.ID,
 		"target_ref":     "mcand_example_api_clean",
@@ -295,12 +347,97 @@ func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
 	}
 
 	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
-	got, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
-	if err == nil || !strings.Contains(err.Error(), "unresolved route attempt") {
-		t.Fatalf("unresolved reservation did not fail closed: run=%+v err=%v", got, err)
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "incomplete panel call attempt identity") {
+		t.Fatalf("incomplete reservation did not fail closed: %v", err)
 	}
 	if caller.calls != 0 {
-		t.Fatalf("unresolved reservation was detected only after %d provider call(s)", caller.calls)
+		t.Fatalf("incomplete reservation was rejected only after %d provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunRejectsAmbiguousRouteRowsBeforeSpend(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
+	lensRef := run.LensSet.Included[0].Ref
+	requestID := "panel:" + run.ID + ":" + targetDigest("mcand_example_api_clean") + ":" + lensRef
+	build := func(createdAt time.Time) routeevidence.Evidence {
+		ev, err := routeevidence.Build(routeevidence.BuildInput{
+			CreatedAt:     createdAt,
+			RequestID:     requestID,
+			WorkID:        run.WorkID,
+			ClientProfile: "compound.panel.lens",
+			Protocol:      "panel-lane",
+			Provider:      "compound-route-plan",
+			Model:         run.Route.LensLane.ModelID,
+			Usage:         routeevidence.Usage{TotalTokens: 7},
+			Status:        "completed",
+			EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ev
+	}
+	first := build(fixedPanelNow())
+	if _, err := routeevidence.RecordJoined(home, first); err != nil {
+		t.Fatal(err)
+	}
+	second := build(fixedPanelNow().Add(time.Second))
+	data, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger, err := os.OpenFile(filepath.Join(home, "ledger", "execution-route-evidence.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.Write(append(data, '\n')); err != nil {
+		_ = ledger.Close()
+		t.Fatal(err)
+	}
+	if err := ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "ambiguous panel request") {
+		t.Fatalf("duplicate request rows were not rejected: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("ambiguous rows were rejected only after %d provider call(s)", caller.calls)
+	}
+}
+
+func TestExecuteDryRunFailsClosedWhenBoundedCallUsageIsUnknown(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
+	caller := &countingLensCaller{
+		delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")},
+		decorate: func(_ CallRequest, result *CallResult) {
+			result.TotalTokens = 0
+		},
+	}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "unknown token usage") {
+		t.Fatalf("bounded call with unknown usage did not fail closed: %v", err)
+	}
+	if caller.calls != 1 {
+		t.Fatalf("unknown usage was detected after %d provider calls, want 1", caller.calls)
+	}
+}
+
+func TestExecuteDryRunRejectsNonCanonicalRunIDBeforeLocking(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{})
+	run.ID += " "
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "invalid panel run id") {
+		t.Fatalf("non-canonical run id was accepted: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("non-canonical run id reached %d provider call(s)", caller.calls)
 	}
 }
 
@@ -423,6 +560,33 @@ func saveRunnablePlan(t *testing.T, home string, run Run) {
 		t.Fatal(err)
 	}
 	if err := store.SaveRun(run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writePanelCallAttemptFixture(t *testing.T, home string, run Run, targetRef, requestID string) {
+	t.Helper()
+	lane := run.Route.LensLane
+	attempt, err := json.Marshal(panelAttempt{
+		SchemaVersion: panelAttemptSchemaVersion,
+		Kind:          "call",
+		RunID:         run.ID,
+		WorkID:        run.WorkID,
+		TargetRef:     targetRef,
+		RequestID:     requestID,
+		ClientProfile: "compound.panel.lens",
+		CallRole:      run.LensSet.Included[0].Ref,
+		Lane:          &lane,
+		CreatedAt:     fixedPanelNow().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := panelCallAttemptPath(home, run.ID, requestID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(attempt, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
