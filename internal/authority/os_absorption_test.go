@@ -335,6 +335,8 @@ func TestOSAbsorptionOSCapabilityProofBindsCompoundOnlyProjection(t *testing.T) 
 		"shim_sha256:",
 		"entrypoint_sha256:",
 		"projection_sha256:",
+		"bun_sha256:",
+		"bun_version:",
 		"compound_build:",
 		"mrcsrc_aaaaaaaaaaaa",
 	} {
@@ -373,6 +375,24 @@ func TestOSAbsorptionOSCapabilityProofRequiresReviewedSourceDigests(t *testing.T
 	}
 }
 
+func TestOSAbsorptionOSCapabilityProofRejectsUnreviewedProjectionModule(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{projectionShadow: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "unreviewed projection module") {
+		t.Fatalf("an extensionless import must not execute an unreviewed higher-priority module: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsTransientProjectionModuleShadow(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateProjectionShadow: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "source changed") {
+		t.Fatalf("proof must detect a transient projection module shadow even after it is removed: %+v", got)
+	}
+}
+
 func TestOSAbsorptionOSCapabilityProofRejectsAlternateSyntaxAfterReviewedHash(t *testing.T) {
 	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{})
 	reviewedRefs := osCapabilityFixtureSourceDigestRefs(t)
@@ -391,6 +411,25 @@ if (argv[0] === "capability") renamedIndependentResolver(rest);
 	got := doctorOSCapabilityRowWithEvidence(t, fixture.compoundHome, reviewedRefs)
 	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "does not match reviewed") {
 		t.Fatalf("alternate syntax added after review must fail source binding: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsBunSubstitutionAfterReview(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{})
+	reviewedRefs := osCapabilityFixtureSourceDigestRefs(t)
+	bunPath := filepath.Join(os.Getenv("HOME"), ".bun", "bin", "bun")
+	body, err := os.ReadFile(bunPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append(body, []byte("\n# substituted interpreter preserves parity output\n")...)
+	if err := os.WriteFile(bunPath, body, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := doctorOSCapabilityRowWithEvidence(t, fixture.compoundHome, reviewedRefs)
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "Bun digest") {
+		t.Fatalf("a parity-preserving Bun substitution must fail reviewed dependency binding: %+v", got)
 	}
 }
 
@@ -420,6 +459,25 @@ func TestOSAbsorptionOSCapabilityProofRejectsClassSpecificFallback(t *testing.T)
 
 	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "disabled Compound") {
 		t.Fatalf("judge-critique path must fail closed independently of the build path: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsDisabledPacketWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts osCapabilityProofFixture
+	}{
+		{name: "build probe", opts: osCapabilityProofFixture{disabledWritesPacket: true}},
+		{name: "judge probe", opts: osCapabilityProofFixture{secondaryWritesPacket: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := installOSCapabilityProofFixture(t, tc.opts)
+			got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+			if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "wrote an os capability packet") {
+				t.Fatalf("disabled Compound must not leave a capability packet before failing closed: %+v", got)
+			}
+		})
 	}
 }
 
@@ -465,8 +523,17 @@ func TestOSAbsorptionOSCapabilityProofRejectsSourceMutationDuringProbe(t *testin
 	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateEntrypoint: true})
 	got := doctorOSCapabilityRow(t, fixture.compoundHome)
 
-	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "source changed during proof") {
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "source changed") {
 		t.Fatalf("proof must not cite pre-run source bytes after the entrypoint changes: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsSourceSwapAndRestoreDuringProbe(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateRestoreEntrypoint: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "source changed") {
+		t.Fatalf("proof must detect transient source mutation even when bytes are restored: %+v", got)
 	}
 }
 
@@ -474,8 +541,17 @@ func TestOSAbsorptionOSCapabilityProofRejectsBinaryMutationDuringProbe(t *testin
 	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateCompoundBinary: true})
 	got := doctorOSCapabilityRow(t, fixture.compoundHome)
 
-	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "binary changed during proof") {
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "binary changed") {
 		t.Fatalf("proof must not cite a pre-run Compound binary after it changes: %+v", got)
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsBinarySwapAndRestoreDuringProbe(t *testing.T) {
+	fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{mutateRestoreCompound: true})
+	got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+	if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "binary changed") {
+		t.Fatalf("proof must detect transient Compound mutation even when bytes are restored: %+v", got)
 	}
 }
 
@@ -489,6 +565,7 @@ func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentResolverSource(t 
 		`function appendLoopTriggerFireReceipts() {}`,
 		`const TOOL_HINTS = [];`,
 		`const OS_CAPABILITY_FIRES_PATH = "forged";`,
+		`const CAPABILITY_OWNERSHIP = {};`,
 	} {
 		t.Run(source, func(t *testing.T) {
 			fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{entrypointPoison: source})
@@ -496,6 +573,23 @@ func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentResolverSource(t 
 
 			if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "dormant independent resolver") {
 				t.Fatalf("dormant resolver source must fail: %+v", got)
+			}
+		})
+	}
+}
+
+func TestOSAbsorptionOSCapabilityProofRejectsDormantIndependentProjectionSource(t *testing.T) {
+	for _, source := range []string{
+		`const routeInfo = {};`,
+		`function classifyCapability() {}`,
+		`async function readCompoundCapabilitySurface() {}`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			fixture := installOSCapabilityProofFixture(t, osCapabilityProofFixture{projectionPoison: source})
+			got := doctorOSCapabilityRow(t, fixture.compoundHome)
+
+			if got.ProofStatus != "failed" || !strings.Contains(got.ProofDetail, "retired source") {
+				t.Fatalf("dormant projection resolver source must fail: %+v", got)
 			}
 		})
 	}

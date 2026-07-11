@@ -21,15 +21,21 @@ import (
 type osCapabilityProofFixture struct {
 	disabledExitZero          bool
 	secondaryDisabledExitZero bool
+	disabledWritesPacket      bool
+	secondaryWritesPacket     bool
 	disabledAuthorityRefs     []string
 	projectionPoison          string
+	projectionShadow          bool
 	entrypointPoison          string
 	shimPoison                string
 	wrapperOfferID            string
 	nonceWrapperOfferID       string
 	legacyDispatch            bool
 	mutateEntrypoint          bool
+	mutateRestoreEntrypoint   bool
+	mutateProjectionShadow    bool
 	mutateCompoundBinary      bool
+	mutateRestoreCompound     bool
 	resolutionMutator         func(map[string]any)
 }
 
@@ -74,8 +80,11 @@ export async function runCapabilityProxy() {
   if (result.status !== 0) return 2;
   return validateResolution() ? 0 : 2;
 }
-` + opts.projectionPoison + "\n"
+	` + opts.projectionPoison + "\n"
 	writeExecutableFixture(t, filepath.Join(execLane, "os-capability-proxy.ts"), projection)
+	if opts.projectionShadow {
+		writeExecutableFixture(t, filepath.Join(execLane, "os-capability-proxy.tsx"), `export async function runCapabilityProxy() { return 0; }`)
+	}
 
 	shim := `#!/bin/sh
 ` + opts.shimPoison + `
@@ -118,12 +127,39 @@ exec "${HOME}/.bun/bin/bun" "${HOME}/Projects/operating-system/umut-os/exec-lane
 	}
 
 	const taskPlaceholder = "__OS_CAPABILITY_PROOF_TASK__"
+	directTemplate := strings.ReplaceAll(string(directBody), osCapabilityProbeTask, taskPlaceholder)
+	wrapperTemplate := strings.ReplaceAll(string(wrapperBody), osCapabilityProbeTask, taskPlaceholder)
+	secondaryDirectTemplate := strings.ReplaceAll(string(secondaryDirectBody), osCapabilitySecondaryProbeTask, taskPlaceholder)
+	secondaryWrapperTemplate := strings.ReplaceAll(string(secondaryWrapperBody), osCapabilitySecondaryProbeTask, taskPlaceholder)
 	compoundMutation := ""
 	if opts.mutateEntrypoint {
 		compoundMutation += fmt.Sprintf("printf '\\n// mutated during proof\\n' >> %q\n", filepath.Join(execLane, "os.ts"))
 	}
+	if opts.mutateRestoreEntrypoint {
+		entrypointPath := filepath.Join(execLane, "os.ts")
+		backupPath := filepath.Join(root, "reviewed-os.ts")
+		if err := os.WriteFile(backupPath, []byte(entrypoint), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entrypointInfo, err := os.Stat(entrypointPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(backupPath, entrypointInfo.ModTime(), entrypointInfo.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+		compoundMutation += fmt.Sprintf("printf '\\n// transient alternate resolver\\n' >> %q\ncp %q %q\ntouch -r %q %q\n", entrypointPath, backupPath, entrypointPath, backupPath, entrypointPath)
+	}
+	if opts.mutateProjectionShadow {
+		shadowPath := filepath.Join(execLane, "os-capability-proxy.tsx")
+		compoundMutation += fmt.Sprintf("printf 'export async function runCapabilityProxy() { return 0; }\\n' > %q\nrm %q\n", shadowPath, shadowPath)
+	}
 	if opts.mutateCompoundBinary {
 		compoundMutation += "printf '\\n# mutated during proof\\n' >> \"$0\"\n"
+	}
+	compoundBackupPath := filepath.Join(root, "reviewed-compound")
+	if opts.mutateRestoreCompound {
+		compoundMutation += fmt.Sprintf("printf '\\n# transient binary replacement\\n' >> \"$0\"\ncp %q \"$0\"\ntouch -r %q \"$0\"\n", compoundBackupPath, compoundBackupPath)
 	}
 	compoundScript := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = "version" ]; then
@@ -132,20 +168,34 @@ if [ "$1" = "version" ]; then
 fi
 if [ "$1" = "capability" ] && [ "$2" = "resolve" ]; then
 %s
-  if [ "$4" = %q ]; then
-    cat <<'JSON'
+  case "$4" in
+  %q*)
+    cat <<'JSON' | sed "s|%s|$4|g"
 %s
 JSON
     exit 0
-  fi
-  cat <<'JSON'
+    ;;
+  %q*)
+    cat <<'JSON' | sed "s|%s|$4|g"
 %s
 JSON
-  exit 0
+    exit 0
+    ;;
+  esac
 fi
 exit 2
-`, compoundMutation, osCapabilitySecondaryProbeTask, secondaryDirectBody, directBody)
+	`, compoundMutation, osCapabilitySecondaryProbeTask, taskPlaceholder, secondaryDirectTemplate, osCapabilityProbeTask, taskPlaceholder, directTemplate)
 	writeExecutableFixture(t, filepath.Join(binDir, "compound"), compoundScript)
+	if opts.mutateRestoreCompound {
+		writeExecutableFixture(t, compoundBackupPath, compoundScript)
+		compoundInfo, err := os.Stat(filepath.Join(binDir, "compound"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(compoundBackupPath, compoundInfo.ModTime(), compoundInfo.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	disabledAuthorityRefs := opts.disabledAuthorityRefs
 	if disabledAuthorityRefs == nil {
@@ -172,43 +222,72 @@ exit 2
 JSON
 exit 2`, taskPlaceholder, disabledBody)
 	if opts.disabledExitZero {
-		disabledBranch = fmt.Sprintf(`if [ "$3" = %q ]; then
-  cat <<'JSON'
+		disabledBranch = fmt.Sprintf(`case "$3" in
+%q*)
+  cat <<'JSON' | sed "s|%s|$3|g"
 %s
 JSON
   exit 0
-fi
-cat <<'JSON'
+  ;;
+%q*)
+  cat <<'JSON' | sed "s|%s|$3|g"
 %s
 JSON
-exit 0`, osCapabilitySecondaryProbeTask, secondaryWrapperBody, wrapperBody)
+  exit 0
+  ;;
+esac
+exit 2`, osCapabilitySecondaryProbeTask, taskPlaceholder, secondaryWrapperTemplate, osCapabilityProbeTask, taskPlaceholder, wrapperTemplate)
 	} else if opts.secondaryDisabledExitZero {
-		disabledBranch = fmt.Sprintf(`if [ "$3" = %q ]; then
-  cat <<'JSON'
+		disabledBranch = fmt.Sprintf(`case "$3" in
+%q*)
+  cat <<'JSON' | sed "s|%s|$3|g"
 %s
 JSON
   exit 0
-fi
+  ;;
+esac
 cat <<'JSON' | sed "s|%s|$3|g"
 %s
 JSON
-exit 2`, osCapabilitySecondaryProbeTask, secondaryWrapperBody, taskPlaceholder, disabledBody)
+exit 2`, osCapabilitySecondaryProbeTask, taskPlaceholder, secondaryWrapperTemplate, taskPlaceholder, disabledBody)
+	}
+	if opts.disabledWritesPacket {
+		disabledBranch = fmt.Sprintf(`mkdir -p "$OS_CAPABILITY_PACKET_DIR"
+printf '{}\n' > "$OS_CAPABILITY_PACKET_DIR/forged.json"
+%s`, disabledBranch)
+	} else if opts.secondaryWritesPacket {
+		disabledBranch = fmt.Sprintf(`case "$3" in
+%q*)
+  mkdir -p "$OS_CAPABILITY_PACKET_DIR"
+  printf '{}\n' > "$OS_CAPABILITY_PACKET_DIR/forged.json"
+  ;;
+esac
+%s`, osCapabilitySecondaryProbeTask, disabledBranch)
 	}
 	bunScript := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "1.2.3"
+  exit 0
+fi
 if [ "${OS_COMPOUND_CLI:-}" = "off" ]; then
 %s
 fi
-if [ "$3" = %q ]; then
-  cat <<'JSON'
+case "$3" in
+%q*)
+  cat <<'JSON' | sed "s|%s|$3|g"
 %s
 JSON
   exit 0
-fi
-cat <<'JSON'
+  ;;
+%q*)
+  cat <<'JSON' | sed "s|%s|$3|g"
 %s
 JSON
-exit 0
-`, disabledBranch, osCapabilitySecondaryProbeTask, secondaryWrapperBody, wrapperBody)
+  exit 0
+  ;;
+esac
+exit 2
+`, disabledBranch, osCapabilitySecondaryProbeTask, taskPlaceholder, secondaryWrapperTemplate, osCapabilityProbeTask, taskPlaceholder, wrapperTemplate)
 	writeExecutableFixture(t, filepath.Join(userHome, ".bun", "bin", "bun"), bunScript)
 
 	t.Setenv("HOME", userHome)
@@ -258,6 +337,7 @@ func osCapabilityFixtureSourceDigestRefs(t *testing.T) []string {
 		{prefix: osCapabilityShimDigestRef, path: filepath.Join(homePath, ".local", "bin", "os")},
 		{prefix: osCapabilityEntrypointDigestRef, path: filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os.ts")},
 		{prefix: osCapabilityProjectionDigestRef, path: filepath.Join(homePath, "Projects", "operating-system", "umut-os", "exec-lane", "os-capability-proxy.ts")},
+		{prefix: osCapabilityBunDigestRef, path: filepath.Join(homePath, ".bun", "bin", "bun")},
 	}
 	refs := make([]string, 0, len(paths))
 	for _, item := range paths {
@@ -504,6 +584,7 @@ func TestOSCapabilityExpectedSourceDigestsRequireReviewedExactBytes(t *testing.T
 		osCapabilityShimDigestRef + digestBytes(snapshot.shim),
 		osCapabilityEntrypointDigestRef + digestBytes(snapshot.entrypoint),
 		osCapabilityProjectionDigestRef + digestBytes(snapshot.projection),
+		osCapabilityBunDigestRef + digestBytes([]byte("bun")),
 	}
 	expected, err := expectedOSCapabilitySourceDigests(refs)
 	if err != nil {
@@ -515,6 +596,9 @@ func TestOSCapabilityExpectedSourceDigestsRequireReviewedExactBytes(t *testing.T
 
 	if _, err := expectedOSCapabilitySourceDigests(refs[:2]); err == nil {
 		t.Fatal("missing projection digest must fail")
+	}
+	if _, err := expectedOSCapabilitySourceDigests(refs[:3]); err == nil {
+		t.Fatal("missing Bun digest must fail")
 	}
 	malformed := append([]string(nil), refs...)
 	malformed[0] = osCapabilityShimDigestRef + "short"
@@ -528,6 +612,28 @@ func TestOSCapabilityExpectedSourceDigestsRequireReviewedExactBytes(t *testing.T
 	expected.entrypoint = strings.Repeat("0", 64)
 	if err := snapshot.matchesExpected(expected); err == nil {
 		t.Fatal("installed bytes that diverge from reviewed digest must fail")
+	}
+}
+
+func TestOSCapabilityProbeTasksCarryUnpredictableNonceSuffixes(t *testing.T) {
+	for _, base := range []string{osCapabilityProbeTask, osCapabilitySecondaryProbeTask} {
+		first, err := newOSCapabilityProbeTask(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := newOSCapabilityProbeTask(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := base + " nonce="
+		if !strings.HasPrefix(first, prefix) || !strings.HasPrefix(second, prefix) {
+			t.Fatalf("nonce probes must preserve class-bearing template: %q %q", first, second)
+		}
+		firstNonce := strings.TrimPrefix(first, prefix)
+		secondNonce := strings.TrimPrefix(second, prefix)
+		if len(firstNonce) != 32 || !isOSAbsorptionHex(firstNonce) || len(secondNonce) != 32 || !isOSAbsorptionHex(secondNonce) || firstNonce == secondNonce {
+			t.Fatalf("nonce suffixes are not independent 128-bit hex values: %q %q", firstNonce, secondNonce)
+		}
 	}
 }
 

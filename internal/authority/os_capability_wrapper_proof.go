@@ -3,6 +3,7 @@ package authority
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -36,34 +38,45 @@ const (
 	osCapabilityShimDigestRef       = "os_capability_shim_sha256:"
 	osCapabilityEntrypointDigestRef = "os_capability_entrypoint_sha256:"
 	osCapabilityProjectionDigestRef = "os_capability_proxy_sha256:"
+	osCapabilityBunDigestRef        = "os_capability_bun_sha256:"
 )
 
 var (
 	osCapabilityShimSourcePattern = regexp.MustCompile(`(?m)^exec\s+"\$\{HOME\}/\.bun/bin/bun"\s+"\$\{HOME\}([^"]+/exec-lane/os\.ts)"\s+"\$@"\s*$`)
 	osCapabilityBuildPattern      = regexp.MustCompile(`\(build ([a-f0-9]{7,40})\)`)
+	osCapabilityBunVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?\r?\n?$`)
 	osCapabilityDispatchPattern   = regexp.MustCompile(`\bcmd\s*===\s*["']capability["']`)
 	osCapabilityRuntimeIDPattern  = regexp.MustCompile(`^mrcsrc_[a-f0-9]{12}$`)
 	errOSCapabilityOutputLimit    = errors.New("command output exceeds proof size limit")
 )
 
 type osCapabilitySourceSnapshot struct {
-	shimPath       string
-	entrypointPath string
-	projectionPath string
-	shim           []byte
-	entrypoint     []byte
-	projection     []byte
+	shimPath          string
+	entrypointPath    string
+	projectionPath    string
+	projectionDir     string
+	shimInfo          os.FileInfo
+	entrypointInfo    os.FileInfo
+	projectionInfo    os.FileInfo
+	projectionDirInfo os.FileInfo
+	shim              []byte
+	entrypoint        []byte
+	projection        []byte
 }
 
 type osCapabilityBinarySnapshot struct {
-	path   string
-	digest string
+	launcherPath string
+	launcherInfo os.FileInfo
+	path         string
+	digest       string
+	info         os.FileInfo
 }
 
 type osCapabilityExpectedSourceDigests struct {
 	shim       string
 	entrypoint string
 	projection string
+	bun        string
 }
 
 type osCapabilityCommandResult struct {
@@ -120,6 +133,24 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 	if err := source.matchesExpected(expectedSources); err != nil {
 		return osAbsorptionProofResult{reason: "os capability expected source binding: " + err.Error()}
 	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return osAbsorptionProofResult{reason: "resolve os capability Bun home: " + err.Error()}
+	}
+	bunBinary, err := resolveOSCapabilityBinaryAtPath(filepath.Join(userHome, ".bun", "bin", "bun"))
+	if err != nil {
+		return osAbsorptionProofResult{reason: "resolve os capability Bun binary: " + err.Error()}
+	}
+	if bunBinary.digest != expectedSources.bun {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("os capability Bun digest %s does not match reviewed %s", bunBinary.digest, expectedSources.bun)}
+	}
+	bunVersion, err := runOSCapabilityCommand(bunBinary.path, []string{"--version"}, nil)
+	if err != nil || bunVersion.exitCode != 0 || !osCapabilityBunVersionPattern.Match(bunVersion.stdout) {
+		return osAbsorptionProofResult{reason: commandFailure("os capability Bun version", bunVersion, err)}
+	}
+	if err := verifyOSCapabilityBinarySnapshot(bunBinary); err != nil {
+		return osAbsorptionProofResult{reason: "os capability Bun changed during version probe: " + err.Error()}
+	}
 	compoundBinary, err := resolveOSCapabilityBinary()
 	if err != nil {
 		return osAbsorptionProofResult{reason: "resolve installed compound binary: " + err.Error()}
@@ -133,13 +164,27 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 	if err != nil {
 		return osAbsorptionProofResult{reason: "installed compound binary has no build SHA"}
 	}
+	if err := verifyOSCapabilityBinarySnapshot(compoundBinary); err != nil {
+		return osAbsorptionProofResult{reason: "compound binary changed during version probe: " + err.Error()}
+	}
 
+	primaryProbeTask, err := newOSCapabilityProbeTask(osCapabilityProbeTask)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "generate build capability nonce probe: " + err.Error()}
+	}
+	secondaryProbeTask, err := newOSCapabilityProbeTask(osCapabilitySecondaryProbeTask)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "generate review capability nonce probe: " + err.Error()}
+	}
 	probes := []osCapabilityProbe{
-		{task: osCapabilityProbeTask, capabilityClass: "build-implement"},
-		{task: osCapabilitySecondaryProbeTask, capabilityClass: "judge-critique"},
+		{task: primaryProbeTask, capabilityClass: "build-implement"},
+		{task: secondaryProbeTask, capabilityClass: "judge-critique"},
 	}
 	var authorityProof osCapabilityResolutionProof
 	for index, probe := range probes {
+		if err := verifyOSCapabilityBinarySnapshot(compoundBinary); err != nil {
+			return osAbsorptionProofResult{reason: "compound binary changed before direct probe: " + err.Error()}
+		}
 		direct, err := runOSCapabilityCommand(compoundBinary.path, []string{"capability", "resolve", "--json", probe.task}, map[string]string{"COMPOUND_HOME": homePath})
 		if err != nil || direct.exitCode != 0 {
 			return osAbsorptionProofResult{reason: commandFailure("compound capability resolve", direct, err)}
@@ -147,6 +192,15 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 		directProof, err := parseOSCapabilityResolution(direct.stdout, probe.task, probe.capabilityClass)
 		if err != nil {
 			return osAbsorptionProofResult{reason: "compound capability resolve: " + err.Error()}
+		}
+		if err := verifyOSCapabilityBinarySnapshot(compoundBinary); err != nil {
+			return osAbsorptionProofResult{reason: "compound binary changed during direct probe: " + err.Error()}
+		}
+		if err := verifyOSCapabilitySourceSnapshot(source); err != nil {
+			return osAbsorptionProofResult{reason: "os capability source changed before wrapper probe: " + err.Error()}
+		}
+		if err := verifyOSCapabilityBinarySnapshot(bunBinary); err != nil {
+			return osAbsorptionProofResult{reason: "os capability Bun changed before wrapper probe: " + err.Error()}
 		}
 
 		wrapper, err := runOSCapabilityCommand(osPath, []string{"capability", probe.task, "--json"}, map[string]string{
@@ -160,6 +214,15 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 		wrapperProof, err := parseOSCapabilityResolution(wrapper.stdout, probe.task, probe.capabilityClass)
 		if err != nil {
 			return osAbsorptionProofResult{reason: "os capability output: " + err.Error()}
+		}
+		if err := verifyOSCapabilitySourceSnapshot(source); err != nil {
+			return osAbsorptionProofResult{reason: "os capability source changed during wrapper probe: " + err.Error()}
+		}
+		if err := verifyOSCapabilityBinarySnapshot(bunBinary); err != nil {
+			return osAbsorptionProofResult{reason: "os capability Bun changed during wrapper probe: " + err.Error()}
+		}
+		if err := verifyOSCapabilityBinarySnapshot(compoundBinary); err != nil {
+			return osAbsorptionProofResult{reason: "compound binary changed during wrapper probe: " + err.Error()}
 		}
 		if !bytes.Equal(directProof.canonical, wrapperProof.canonical) {
 			return osAbsorptionProofResult{reason: "capability surface parity failed between Compound resolution and os capability projection"}
@@ -178,6 +241,12 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 		} else if !os.IsNotExist(err) {
 			return osAbsorptionProofResult{reason: "inspect disabled Compound packet probe target: " + err.Error()}
 		}
+		if err := verifyOSCapabilitySourceSnapshot(source); err != nil {
+			return osAbsorptionProofResult{reason: "os capability source changed before disabled probe: " + err.Error()}
+		}
+		if err := verifyOSCapabilityBinarySnapshot(bunBinary); err != nil {
+			return osAbsorptionProofResult{reason: "os capability Bun changed before disabled probe: " + err.Error()}
+		}
 		disabled, err := runOSCapabilityCommand(osPath, []string{"capability", probe.task, "--json", "--write-packet"}, map[string]string{
 			"COMPOUND_HOME":            homePath,
 			"OS_COMPOUND_CLI":          "off",
@@ -192,6 +261,12 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 		}
 		if err := validateDisabledOSCapabilityOutput(disabled.stdout, probe.task); err != nil {
 			return osAbsorptionProofResult{reason: "disabled Compound output: " + err.Error()}
+		}
+		if err := verifyOSCapabilitySourceSnapshot(source); err != nil {
+			return osAbsorptionProofResult{reason: "os capability source changed during disabled probe: " + err.Error()}
+		}
+		if err := verifyOSCapabilityBinarySnapshot(bunBinary); err != nil {
+			return osAbsorptionProofResult{reason: "os capability Bun changed during disabled probe: " + err.Error()}
 		}
 		if _, err := os.Stat(packetRoot); err == nil {
 			return osAbsorptionProofResult{reason: "disabled Compound wrote an os capability packet"}
@@ -213,12 +288,21 @@ func osAbsorptionOSCapabilityProof(homePath string, row OSAbsorptionMatrixRow) o
 	if err := verifyOSCapabilityBinarySnapshot(compoundBinary); err != nil {
 		return osAbsorptionProofResult{reason: "compound binary changed during proof: " + err.Error()}
 	}
+	postBunVersion, err := runOSCapabilityCommand(bunBinary.path, []string{"--version"}, nil)
+	if err != nil || postBunVersion.exitCode != 0 || !bytes.Equal(bunVersion.stdout, postBunVersion.stdout) || !bytes.Equal(bunVersion.stderr, postBunVersion.stderr) {
+		return osAbsorptionProofResult{reason: commandFailure("os capability Bun version postcheck", postBunVersion, err)}
+	}
+	if err := verifyOSCapabilityBinarySnapshot(bunBinary); err != nil {
+		return osAbsorptionProofResult{reason: "os capability Bun changed during proof: " + err.Error()}
+	}
 
 	proofRef := fmt.Sprintf(
-		"os_capability_wrapper_authority:shim_sha256:%s;entrypoint_sha256:%s;projection_sha256:%s;compound_sha256:%s;compound_build:%s;probes:%d;classifier=%s@%s;capability=%s@%s;router=%s@%s/%s",
+		"os_capability_wrapper_authority:shim_sha256:%s;entrypoint_sha256:%s;projection_sha256:%s;bun_sha256:%s;bun_version:%s;compound_sha256:%s;compound_build:%s;probes:%d;classifier=%s@%s;capability=%s@%s;router=%s@%s/%s",
 		digestBytes(source.shim),
 		digestBytes(source.entrypoint),
 		digestBytes(source.projection),
+		bunBinary.digest,
+		strings.TrimSpace(string(bunVersion.stdout)),
 		compoundBinary.digest,
 		compoundBuild,
 		len(probes),
@@ -242,7 +326,7 @@ func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, e
 	if err != nil {
 		return osCapabilitySourceSnapshot{}, "", err
 	}
-	shim, err := readRegularBounded(osPath, maxOSCapabilityShimBytes)
+	shim, shimInfo, err := readRegularBoundedSnapshot(osPath, maxOSCapabilityShimBytes)
 	if err != nil {
 		return osCapabilitySourceSnapshot{}, "", err
 	}
@@ -260,7 +344,7 @@ func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, e
 		return osCapabilitySourceSnapshot{}, "", fmt.Errorf("installed os shim targets unexpected entrypoint")
 	}
 	entrypointPath := filepath.Join(homePath, relSource)
-	entrypoint, err := readRegularBounded(entrypointPath, maxOSCapabilityEntrypointBytes)
+	entrypoint, entrypointInfo, err := readRegularBoundedSnapshot(entrypointPath, maxOSCapabilityEntrypointBytes)
 	if err != nil {
 		return osCapabilitySourceSnapshot{}, "", err
 	}
@@ -282,13 +366,18 @@ func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, e
 		`function appendLoopTriggerFireReceipts(`,
 		`TOOL_HINTS`,
 		`OS_CAPABILITY_FIRES_PATH`,
+		`CAPABILITY_OWNERSHIP`,
 	} {
 		if strings.Contains(entryText, forbidden) {
 			return osCapabilitySourceSnapshot{}, "", fmt.Errorf("dormant independent resolver source %q remains", forbidden)
 		}
 	}
 	projectionPath := filepath.Join(filepath.Dir(entrypointPath), "os-capability-proxy.ts")
-	projection, err := readRegularBounded(projectionPath, maxOSCapabilityProjectionBytes)
+	projectionDirInfo, err := snapshotOSCapabilityProjectionResolution(projectionPath)
+	if err != nil {
+		return osCapabilitySourceSnapshot{}, "", err
+	}
+	projection, projectionInfo, err := readRegularBoundedSnapshot(projectionPath, maxOSCapabilityProjectionBytes)
 	if err != nil {
 		return osCapabilitySourceSnapshot{}, "", err
 	}
@@ -296,13 +385,42 @@ func resolveInstalledOSCapabilitySource() (osCapabilitySourceSnapshot, string, e
 		return osCapabilitySourceSnapshot{}, "", err
 	}
 	return osCapabilitySourceSnapshot{
-		shimPath:       osPath,
-		entrypointPath: entrypointPath,
-		projectionPath: projectionPath,
-		shim:           shim,
-		entrypoint:     entrypoint,
-		projection:     projection,
+		shimPath:          osPath,
+		entrypointPath:    entrypointPath,
+		projectionPath:    projectionPath,
+		projectionDir:     filepath.Dir(projectionPath),
+		shimInfo:          shimInfo,
+		entrypointInfo:    entrypointInfo,
+		projectionInfo:    projectionInfo,
+		projectionDirInfo: projectionDirInfo,
+		shim:              shim,
+		entrypoint:        entrypoint,
+		projection:        projection,
 	}, osPath, nil
+}
+
+func snapshotOSCapabilityProjectionResolution(projectionPath string) (os.FileInfo, error) {
+	if filepath.Ext(projectionPath) != ".ts" {
+		return nil, fmt.Errorf("reviewed capability projection is not a TypeScript module")
+	}
+	dirPath := filepath.Dir(projectionPath)
+	dirInfo, err := os.Lstat(dirPath)
+	if err != nil {
+		return nil, err
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("capability projection directory is not a regular directory")
+	}
+	base := strings.TrimSuffix(projectionPath, filepath.Ext(projectionPath))
+	for _, suffix := range []string{"", ".tsx", ".jsx", ".js", ".mjs", ".cjs", ".json", ".mts", ".cts"} {
+		candidate := base + suffix
+		if _, err := os.Lstat(candidate); err == nil {
+			return nil, fmt.Errorf("unreviewed projection module %s can satisfy the extensionless import", candidate)
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect projection module candidate %s: %w", candidate, err)
+		}
+	}
+	return dirInfo, nil
 }
 
 func parseCanonicalOSCapabilityShim(source []byte) (string, error) {
@@ -348,7 +466,8 @@ func validateOSCapabilityProjectionSource(source []byte) error {
 	for _, forbidden := range []string{
 		"skill-manifest", "skills-inventory", "skills-selection-board", "capability-graph.json",
 		"capability-resolver", "model-capabilities.source", "routingdefaults", "free-pool", "loop-map",
-		"resolvecapabilityintent", "searchskillcorpus", "searchcapabilitygraph", "searchmodellane", "collectlooptriggerfires",
+		"resolvecapabilityintent", "classifycapability", "readcompoundcapabilitysurface", "routeinfo",
+		"searchskillcorpus", "searchcapabilitygraph", "searchmodellane", "collectlooptriggerfires",
 		"appendlooptriggerfirereceipts", "tool_hints", "os_capability_fires_path",
 		"readfile", "readdir", "createreadstream", "opensync", "bun.file", "fetch(", "require(", "import(",
 		"execsync", "execfilesync", "execfile(", "spawn(", "fork(",
@@ -361,21 +480,29 @@ func validateOSCapabilityProjectionSource(source []byte) error {
 }
 
 func verifyOSCapabilitySourceSnapshot(snapshot osCapabilitySourceSnapshot) error {
+	projectionDirInfo, err := snapshotOSCapabilityProjectionResolution(snapshot.projectionPath)
+	if err != nil {
+		return err
+	}
+	if snapshot.projectionDir != filepath.Dir(snapshot.projectionPath) || !sameOSCapabilityFileStamp(snapshot.projectionDirInfo, projectionDirInfo) {
+		return fmt.Errorf("%s no longer matches the validated projection module directory", snapshot.projectionDir)
+	}
 	checks := []struct {
 		path     string
 		maxBytes int64
 		want     []byte
+		wantInfo os.FileInfo
 	}{
-		{path: snapshot.shimPath, maxBytes: maxOSCapabilityShimBytes, want: snapshot.shim},
-		{path: snapshot.entrypointPath, maxBytes: maxOSCapabilityEntrypointBytes, want: snapshot.entrypoint},
-		{path: snapshot.projectionPath, maxBytes: maxOSCapabilityProjectionBytes, want: snapshot.projection},
+		{path: snapshot.shimPath, maxBytes: maxOSCapabilityShimBytes, want: snapshot.shim, wantInfo: snapshot.shimInfo},
+		{path: snapshot.entrypointPath, maxBytes: maxOSCapabilityEntrypointBytes, want: snapshot.entrypoint, wantInfo: snapshot.entrypointInfo},
+		{path: snapshot.projectionPath, maxBytes: maxOSCapabilityProjectionBytes, want: snapshot.projection, wantInfo: snapshot.projectionInfo},
 	}
 	for _, check := range checks {
-		got, err := readRegularBounded(check.path, check.maxBytes)
+		got, gotInfo, err := readRegularBoundedSnapshot(check.path, check.maxBytes)
 		if err != nil {
 			return err
 		}
-		if !bytes.Equal(got, check.want) {
+		if !bytes.Equal(got, check.want) || !sameOSCapabilityFileStamp(check.wantInfo, gotInfo) {
 			return fmt.Errorf("%s no longer matches the validated snapshot", check.path)
 		}
 	}
@@ -387,60 +514,85 @@ func resolveOSCapabilityBinary() (osCapabilityBinarySnapshot, error) {
 	if err != nil {
 		return osCapabilityBinarySnapshot{}, err
 	}
-	path, err = filepath.Abs(path)
+	return resolveOSCapabilityBinaryAtPath(path)
+}
+
+func resolveOSCapabilityBinaryAtPath(path string) (osCapabilityBinarySnapshot, error) {
+	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return osCapabilityBinarySnapshot{}, err
 	}
-	path, err = filepath.EvalSymlinks(path)
+	path = absPath
+	launcherPath := path
+	launcherInfo, err := os.Lstat(launcherPath)
 	if err != nil {
 		return osCapabilityBinarySnapshot{}, err
 	}
-	digest, err := digestRegularFileBounded(path, maxOSCapabilityBinaryBytes)
+	path, err = filepath.EvalSymlinks(launcherPath)
 	if err != nil {
 		return osCapabilityBinarySnapshot{}, err
 	}
-	return osCapabilityBinarySnapshot{path: path, digest: digest}, nil
+	digest, info, err := digestRegularFileBoundedSnapshot(path, maxOSCapabilityBinaryBytes)
+	if err != nil {
+		return osCapabilityBinarySnapshot{}, err
+	}
+	return osCapabilityBinarySnapshot{launcherPath: launcherPath, launcherInfo: launcherInfo, path: path, digest: digest, info: info}, nil
 }
 
 func verifyOSCapabilityBinarySnapshot(snapshot osCapabilityBinarySnapshot) error {
-	digest, err := digestRegularFileBounded(snapshot.path, maxOSCapabilityBinaryBytes)
+	launcherInfo, err := os.Lstat(snapshot.launcherPath)
 	if err != nil {
 		return err
 	}
-	if digest != snapshot.digest {
+	resolvedPath, err := filepath.EvalSymlinks(snapshot.launcherPath)
+	if err != nil {
+		return err
+	}
+	if resolvedPath != snapshot.path || !sameOSCapabilityFileStamp(snapshot.launcherInfo, launcherInfo) {
+		return fmt.Errorf("%s no longer resolves through the validated launcher", snapshot.launcherPath)
+	}
+	digest, info, err := digestRegularFileBoundedSnapshot(snapshot.path, maxOSCapabilityBinaryBytes)
+	if err != nil {
+		return err
+	}
+	if digest != snapshot.digest || !sameOSCapabilityFileStamp(snapshot.info, info) {
 		return fmt.Errorf("%s no longer matches the validated binary", snapshot.path)
 	}
 	return nil
 }
 
-func digestRegularFileBounded(path string, maxBytes int64) (string, error) {
-	info, err := os.Lstat(path)
+func digestRegularFileBoundedSnapshot(path string, maxBytes int64) (string, os.FileInfo, error) {
+	before, err := os.Lstat(path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("%s is not a regular file", path)
-	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return "", fmt.Errorf("%s is group/world writable", path)
-	}
-	if info.Size() > maxBytes {
-		return "", fmt.Errorf("%s exceeds proof size limit", path)
+	if err := validateOSCapabilityRegularInfo(path, before, maxBytes); err != nil {
+		return "", nil, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	defer file.Close()
 	hash := sha256.New()
 	written, err := io.Copy(hash, io.LimitReader(file, maxBytes+1))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if written > maxBytes {
-		return "", fmt.Errorf("%s exceeds proof size limit", path)
+		return "", nil, fmt.Errorf("%s exceeds proof size limit", path)
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	after, err := os.Lstat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := validateOSCapabilityRegularInfo(path, after, maxBytes); err != nil {
+		return "", nil, err
+	}
+	if !sameOSCapabilityFileStamp(before, after) {
+		return "", nil, fmt.Errorf("%s changed while hashing", path)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), after, nil
 }
 
 func parseOSCapabilityBuild(body []byte) (string, error) {
@@ -451,6 +603,14 @@ func parseOSCapabilityBuild(body []byte) (string, error) {
 	return string(match[1]), nil
 }
 
+func newOSCapabilityProbeTask(base string) (string, error) {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	return base + " nonce=" + hex.EncodeToString(nonce), nil
+}
+
 func sameOSCapabilityAuthorityBindings(left, right osCapabilityResolutionProof) bool {
 	return left.classifierRevision == right.classifierRevision &&
 		left.graphRevision == right.graphRevision &&
@@ -459,20 +619,117 @@ func sameOSCapabilityAuthorityBindings(left, right osCapabilityResolutionProof) 
 }
 
 func readRegularBounded(path string, maxBytes int64) ([]byte, error) {
-	info, err := os.Lstat(path)
+	body, _, err := readRegularBoundedSnapshot(path, maxBytes)
+	return body, err
+}
+
+func readRegularBoundedSnapshot(path string, maxBytes int64) ([]byte, os.FileInfo, error) {
+	before, err := os.Lstat(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	if err := validateOSCapabilityRegularInfo(path, before, maxBytes); err != nil {
+		return nil, nil, err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	body, err := io.ReadAll(io.LimitReader(file, maxBytes+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateOSCapabilityRegularInfo(path, after, maxBytes); err != nil {
+		return nil, nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, nil, fmt.Errorf("%s exceeds proof size limit", path)
+	}
+	if !sameOSCapabilityFileStamp(before, after) {
+		return nil, nil, fmt.Errorf("%s changed while reading", path)
+	}
+	return body, after, nil
+}
+
+func validateOSCapabilityRegularInfo(path string, info os.FileInfo, maxBytes int64) error {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is not a regular file", path)
+		return fmt.Errorf("%s is not a regular file", path)
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return nil, fmt.Errorf("%s is group/world writable", path)
+		return fmt.Errorf("%s is group/world writable", path)
 	}
 	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("%s exceeds proof size limit", path)
+		return fmt.Errorf("%s exceeds proof size limit", path)
 	}
-	return os.ReadFile(path)
+	return nil
+}
+
+func sameOSCapabilityFileStamp(left, right os.FileInfo) bool {
+	if left == nil || right == nil || !os.SameFile(left, right) ||
+		left.Size() != right.Size() || left.Mode() != right.Mode() || !left.ModTime().Equal(right.ModTime()) {
+		return false
+	}
+	leftSec, leftNSec, leftOK := osCapabilityChangeTime(left)
+	rightSec, rightNSec, rightOK := osCapabilityChangeTime(right)
+	return leftOK == rightOK && (!leftOK || (leftSec == rightSec && leftNSec == rightNSec))
+}
+
+func osCapabilityChangeTime(info os.FileInfo) (int64, int64, bool) {
+	value := reflect.ValueOf(info.Sys())
+	for value.IsValid() && value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return 0, 0, false
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return 0, 0, false
+	}
+	for _, name := range []string{"Ctimespec", "Ctim"} {
+		field := value.FieldByName(name)
+		for field.IsValid() && field.Kind() == reflect.Pointer {
+			if field.IsNil() {
+				break
+			}
+			field = field.Elem()
+		}
+		if field.IsValid() && field.Kind() == reflect.Struct {
+			sec, secOK := osCapabilityReflectInt(field.FieldByName("Sec"))
+			nsec, nsecOK := osCapabilityReflectInt(field.FieldByName("Nsec"))
+			if secOK && nsecOK {
+				return sec, nsec, true
+			}
+		}
+	}
+	sec, secOK := osCapabilityReflectInt(value.FieldByName("Ctime"))
+	nsec, nsecOK := osCapabilityReflectInt(value.FieldByName("Ctimensec"))
+	if secOK && nsecOK {
+		return sec, nsec, true
+	}
+	return 0, 0, false
+}
+
+func osCapabilityReflectInt(value reflect.Value) (int64, bool) {
+	if !value.IsValid() {
+		return 0, false
+	}
+	switch value.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return value.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		unsigned := value.Uint()
+		if unsigned > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(unsigned), true
+	default:
+		return 0, false
+	}
 }
 
 func runOSCapabilityCommand(path string, args []string, overrides map[string]string) (osCapabilityCommandResult, error) {
@@ -670,7 +927,11 @@ func expectedOSCapabilitySourceDigests(evidenceRefs []string) (osCapabilityExpec
 	if err != nil {
 		return osCapabilityExpectedSourceDigests{}, err
 	}
-	return osCapabilityExpectedSourceDigests{shim: shim, entrypoint: entrypoint, projection: projection}, nil
+	bun, err := exactOSCapabilityDigestEvidence(evidenceRefs, osCapabilityBunDigestRef)
+	if err != nil {
+		return osCapabilityExpectedSourceDigests{}, err
+	}
+	return osCapabilityExpectedSourceDigests{shim: shim, entrypoint: entrypoint, projection: projection, bun: bun}, nil
 }
 
 func exactOSCapabilityDigestEvidence(evidenceRefs []string, prefix string) (string, error) {
