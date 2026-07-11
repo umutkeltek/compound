@@ -50,6 +50,13 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
   const checks: Check[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
 
+  {
+    const owner = specFor("source-control-cleanup");
+    const item = { id: "scr_fixture", json_path: "/tmp/scr_fixture.json", actions: [{ argv: ["compound", "authority", "dirty-review", "/tmp/scr_fixture.review.yaml"] }] } as Json;
+    const options = owner?.optionsFor?.(item) ?? [];
+    push("source-control-has-explicit-decision-owner", options.length === 4 && owner?.requiresConfirmation === true, `options=${options.map((option) => option.value).join(",")}`);
+  }
+
   const spec = specFor("route-promotions");
   if (!spec || !spec.optionsFor) {
     return { ok: false, details: ["FAIL route-promotions spec or optionsFor missing"] };

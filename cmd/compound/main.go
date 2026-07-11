@@ -6217,12 +6217,24 @@ func cmdAuthority(args []string) {
 	if args[0] == "dirty-review" {
 		jsonOut := hasFlag(args[1:], "--json")
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--json]")
+			fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--decision D --rationale R] [--json]")
 			os.Exit(2)
 		}
+		var decision, rationale string
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--json":
+			case "--decision", "--rationale":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "authority dirty-review: flag value required")
+					os.Exit(2)
+				}
+				if args[i] == "--decision" {
+					decision = args[i+1]
+				} else {
+					rationale = args[i+1]
+				}
+				i++
 			default:
 				if i != 1 {
 					fmt.Fprintln(os.Stderr, "usage: compound authority dirty-review <review.yaml> [--json]")
@@ -6234,6 +6246,21 @@ func cmdAuthority(args []string) {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "authority dirty-review:", err)
 			os.Exit(1)
+		}
+		if decision != "" || rationale != "" {
+			review.Decision = decision
+			review.Rationale = rationale
+			review.Confidence = 1
+			review.ReviewedAt = time.Now().UTC().Format(time.RFC3339)
+			data, marshalErr := yaml.Marshal(review)
+			if marshalErr != nil {
+				fmt.Fprintln(os.Stderr, "authority dirty-review:", marshalErr)
+				os.Exit(1)
+			}
+			if writeErr := os.WriteFile(args[1], data, 0o600); writeErr != nil {
+				fmt.Fprintln(os.Stderr, "authority dirty-review:", writeErr)
+				os.Exit(1)
+			}
 		}
 		report, err := authority.RecordSourceControlReview(homePath, review, args[1], time.Now())
 		if err != nil {

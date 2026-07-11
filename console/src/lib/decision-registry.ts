@@ -454,6 +454,34 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
    * mirror the Go validator for immediate feedback — the Go validator
    * remains the real gate.
    * -------------------------------------------------------------------- */
+  "source-control-cleanup": {
+    area: "source-control-cleanup",
+    title: "Source-control cleanup review",
+    glyph: "S",
+    accent: "orange",
+    source: "reviews",
+    effectKind: "record",
+    requiresConfirmation: true,
+    argvAllowlist: [["authority", "dirty-review"]],
+    idPattern: /^scr_[a-z0-9]+$/,
+    options: [],
+    optionsFor: (item) => sourceControlReviewYAMLPath(item) ? SOURCE_CONTROL_DECISIONS : [],
+    defaultOption: "owner_action_required",
+    plainLanguage: (item) => ({
+      headline: str(item.operator_summary) || "This repository has uncommitted changes. What should happen?",
+      body: "Choose the owner disposition. This records the decision; it never stages, discards, commits, stashes, or pushes files.",
+      evidence: arr(item.evidence_refs).map(String).slice(0, 8),
+      consequences: { approve: "the selected disposition and rationale become the durable review record", hold: "nothing changes; the dirty-state review remains open" },
+    }),
+    fields: [{ name: "rationale", type: "textarea", label: "Rationale", required: true, placeholder: "Why is this the right disposition?" }],
+    buildArgv: (ctx) => {
+      const path = sourceControlReviewYAMLPath(ctx.item);
+      const rationale = str(ctx.fields.rationale).trim();
+      if (!path || !rationale || !SOURCE_CONTROL_DECISIONS.some((choice) => choice.value === ctx.option)) return null;
+      return ["authority", "dirty-review", path, "--decision", ctx.option, "--rationale", rationale, "--json"];
+    },
+  },
+
   "job-health": {
     area: "job-health",
     title: "Job health review",
@@ -1075,6 +1103,18 @@ const JOB_HEALTH_DECISIONS: { value: string; label: string; tone: Accent; descri
   { value: "no_action", label: "No action needed", tone: "green", description: "Nothing to do right now." },
   { value: "owner_action_done", label: "Already handled", tone: "blue", description: "Verify the owner's fix on the next run." },
 ];
+
+const SOURCE_CONTROL_DECISIONS: DecisionOption[] = [
+  { value: "owner_action_required", label: "Tidy it", tone: "orange", description: "Record that an owner must classify and tidy the changes. No files change now." },
+  { value: "owner_action_done", label: "Already tidied", tone: "blue", description: "Record that the owner already handled the changes; verify with the next snapshot." },
+  { value: "parked", label: "Park it", tone: "gray", description: "Keep the dirty changes intentionally parked and revisit later." },
+  { value: "no_action", label: "Leave as-is", tone: "green", description: "Record that no cleanup action is needed for this snapshot." },
+];
+
+function sourceControlReviewYAMLPath(item: Json): string {
+  const actionPath = arr(arr(item.actions)[0]?.argv).map(String).find((part) => part.endsWith(".review.yaml"));
+  return actionPath ?? arr(item.extra_paths).map(String).find((path) => path.endsWith(".review.yaml")) ?? "";
+}
 
 /** Read the job-health-review draft YAML path off a queue item's
  * `extra_paths` (server-verified live shape: `extra_paths[0]` —
