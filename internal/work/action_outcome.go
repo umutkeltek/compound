@@ -1,6 +1,9 @@
 package work
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +40,21 @@ type ReceiptedActionResult struct {
 	Receipt    envelope.Receipt        `json:"receipt"`
 	Transition envelope.Transition     `json:"transition"`
 	Replayed   bool                    `json:"replayed"`
+}
+
+const receiptedActionPendingSchemaVersion = "compound.receipted_action_pending.v0.1"
+
+// receiptedActionPending is the direct-addressed stage zero that prevents a
+// later action from overtaking an incomplete same-work transaction.
+type receiptedActionPending struct {
+	SchemaVersion     string `json:"schema_version"`
+	WorkID            string `json:"work_id"`
+	ActionID          string `json:"action_intent_id"`
+	PolicyDecisionID  string `json:"policy_decision_id"`
+	ReceiptID         string `json:"receipt_id"`
+	TransitionID      string `json:"transition_id"`
+	CreatedAt         string `json:"created_at"`
+	TransactionDigest string `json:"transaction_digest"`
 }
 
 var receiptedActionBeforeCommit = func() {}
@@ -80,6 +98,16 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	}
 	if err := requestedAction.Validate(); err != nil {
 		return out, fmt.Errorf("action intent invalid: %w", err)
+	}
+	pending, pendingPresent, pendingPath, err := s.preflightReceiptedActionPending(workID)
+	if err != nil {
+		return out, err
+	}
+	if pendingPresent {
+		if pending.ActionID != requestedAction.ID {
+			return out, fmt.Errorf("work %s has pending receipted action %s; cannot record %s", workID, pending.ActionID, requestedAction.ID)
+		}
+		requestedAction.CreatedAt = pending.CreatedAt
 	}
 	claimID := strings.TrimSpace(in.OperationalDecisionClaimID)
 	if claimID == "" {
@@ -171,6 +199,13 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err := transition.Validate(); err != nil {
 		return out, fmt.Errorf("emitted receipted-action transition invalid: %w", err)
 	}
+	expectedPending, err := newReceiptedActionPending(workID, action, decision, receipt, transition)
+	if err != nil {
+		return out, err
+	}
+	if pendingPresent && !reflect.DeepEqual(pending, expectedPending) {
+		return out, fmt.Errorf("work %s pending receipted action %s conflicts with requested transaction", workID, pending.ActionID)
+	}
 
 	decisionPresent, err := s.preflightReceiptedEnvelope("decision", decision.ID, &decision, &envelope.PolicyDecision{})
 	if err != nil {
@@ -226,12 +261,24 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 	if err := validateReceiptedActionPrefix(action.ID, stages); err != nil {
 		return out, err
 	}
-	replayed := false
+	replayed := pendingPresent
+	transactionComplete := true
 	for _, stage := range stages {
 		replayed = replayed || stage.present
+		transactionComplete = transactionComplete && stage.present
 	}
 
 	receiptedActionBeforeCommit()
+	markerOwned := pendingPresent
+	if !transactionComplete && !markerOwned {
+		if err := ensureReceiptedActionPendingDir(filepath.Dir(pendingPath)); err != nil {
+			return out, err
+		}
+		if err := s.writeReceiptedActionBoundary("pending", pendingPath, &expectedPending); err != nil {
+			return out, err
+		}
+		markerOwned = true
+	}
 	for _, item := range []struct {
 		name    string
 		present bool
@@ -261,6 +308,11 @@ func (s *Store) recordReceiptedActionLocked(workID string, in ReceiptedActionInp
 			func() error { return receiptedActionBeforePublish("event") },
 			func() error { return receiptedActionAfterWrite("event") },
 		); err != nil {
+			return out, err
+		}
+	}
+	if markerOwned {
+		if err := s.clearReceiptedActionPending(pendingPath, expectedPending); err != nil {
 			return out, err
 		}
 	}
@@ -322,6 +374,130 @@ func (s *Store) preflightReceiptedEnvelope(kind, id string, expected, target env
 		return false, fmt.Errorf("receipted action %s persisted %s conflicts with requested transaction", id, kind)
 	}
 	return true, nil
+}
+
+func (s *Store) preflightReceiptedActionPending(workID string) (receiptedActionPending, bool, string, error) {
+	var pending receiptedActionPending
+	if filepath.Base(workID) != workID || !strings.HasPrefix(workID, "work_") {
+		return pending, false, "", fmt.Errorf("invalid receipted-action work id %q", workID)
+	}
+	path := filepath.Join(s.home, "work", "receipted-actions", workID+".json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return pending, false, path, nil
+	}
+	if err != nil {
+		return pending, false, path, fmt.Errorf("work %s pending receipted action unreadable: %w", workID, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&pending); err != nil {
+		return pending, false, path, fmt.Errorf("work %s pending receipted action invalid: %w", workID, err)
+	}
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
+		return pending, false, path, fmt.Errorf("work %s pending receipted action invalid: %w", workID, err)
+	}
+	if err := pending.validate(); err != nil {
+		return pending, false, path, fmt.Errorf("work %s pending receipted action invalid: %w", workID, err)
+	}
+	if pending.WorkID != workID {
+		return pending, false, path, fmt.Errorf("work %s pending receipted action belongs to %s", workID, pending.WorkID)
+	}
+	return pending, true, path, nil
+}
+
+func (p receiptedActionPending) validate() error {
+	if p.SchemaVersion != receiptedActionPendingSchemaVersion {
+		return fmt.Errorf("schema_version must be %q", receiptedActionPendingSchemaVersion)
+	}
+	for _, field := range []struct {
+		name, value string
+	}{
+		{"work_id", p.WorkID},
+		{"action_intent_id", p.ActionID},
+		{"policy_decision_id", p.PolicyDecisionID},
+		{"receipt_id", p.ReceiptID},
+		{"transition_id", p.TransitionID},
+		{"created_at", p.CreatedAt},
+		{"transaction_digest", p.TransactionDigest},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("%s required", field.name)
+		}
+	}
+	if filepath.Base(p.WorkID) != p.WorkID || !strings.HasPrefix(p.WorkID, "work_") {
+		return fmt.Errorf("invalid work_id %q", p.WorkID)
+	}
+	for _, item := range []struct {
+		name, value, prefix string
+	}{
+		{"action_intent_id", p.ActionID, "act_"},
+		{"policy_decision_id", p.PolicyDecisionID, "pol_"},
+		{"receipt_id", p.ReceiptID, "rec_"},
+		{"transition_id", p.TransitionID, "tr_"},
+	} {
+		if !strings.HasPrefix(item.value, item.prefix) {
+			return fmt.Errorf("%s must start with %q", item.name, item.prefix)
+		}
+	}
+	if _, err := time.Parse(time.RFC3339, p.CreatedAt); err != nil {
+		return fmt.Errorf("created_at invalid: %w", err)
+	}
+	digest, err := hex.DecodeString(p.TransactionDigest)
+	if err != nil || len(digest) != sha256.Size {
+		return fmt.Errorf("transaction_digest must be a SHA-256 hex digest")
+	}
+	return nil
+}
+
+func newReceiptedActionPending(workID string, action envelope.ActionIntent, decision envelope.PolicyDecision, receipt envelope.Receipt, transition envelope.Transition) (receiptedActionPending, error) {
+	payload := struct {
+		Action     envelope.ActionIntent   `json:"action"`
+		Decision   envelope.PolicyDecision `json:"decision"`
+		Receipt    envelope.Receipt        `json:"receipt"`
+		Transition envelope.Transition     `json:"transition"`
+	}{Action: action, Decision: decision, Receipt: receipt, Transition: transition}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return receiptedActionPending{}, fmt.Errorf("marshal receipted-action pending digest: %w", err)
+	}
+	digest := sha256.Sum256(data)
+	return receiptedActionPending{
+		SchemaVersion: receiptedActionPendingSchemaVersion, WorkID: workID, ActionID: action.ID,
+		PolicyDecisionID: decision.ID, ReceiptID: receipt.ID, TransitionID: transition.ID,
+		CreatedAt: action.CreatedAt, TransactionDigest: hex.EncodeToString(digest[:]),
+	}, nil
+}
+
+func ensureReceiptedActionPendingDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return syncReceiptedActionDir(filepath.Dir(dir))
+}
+
+func (s *Store) clearReceiptedActionPending(path string, expected receiptedActionPending) error {
+	if err := receiptedActionBeforePublish("pending_clear"); err != nil {
+		return err
+	}
+	actual, present, actualPath, err := s.preflightReceiptedActionPending(expected.WorkID)
+	if err != nil {
+		return err
+	}
+	if !present || actualPath != path || !reflect.DeepEqual(actual, expected) {
+		return fmt.Errorf("work %s pending receipted action %s changed before cleanup", expected.WorkID, expected.ActionID)
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	if err := syncReceiptedActionDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return receiptedActionAfterWrite("pending_clear")
 }
 
 func (s *Store) preflightReceiptedActionWorkLink(w envelope.WorkEnvelope, actionID, decisionID string) (bool, bool, error) {

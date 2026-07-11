@@ -190,6 +190,327 @@ func TestRecordReceiptedActionReplaysHistoricalTransactionWithoutRewindingWork(t
 	}
 }
 
+func TestRecordReceiptedActionBlocksNewActionUntilIncompletePrefixRecovers(t *testing.T) {
+	tests := []struct {
+		name            string
+		failureBoundary string
+	}{
+		{name: "after transition before work", failureBoundary: "work"},
+		{name: "after work before event", failureBoundary: "event"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStore(t)
+			w := receiptedActionRunningWork(t, s)
+			claimID := receiptedActionRuling(t, s, "receipted-action-pending-"+strings.ReplaceAll(tc.name, " ", "-"), "", fixedNow)
+			aInput := receiptedActionTestInput(w, claimID, "act_receipted_pending_a_"+tc.failureBoundary, "recorded pending action A", fixedNow.Add(time.Minute))
+			bInput := receiptedActionTestInput(w, claimID, "act_receipted_pending_b_"+tc.failureBoundary, "recorded blocked action B", fixedNow.Add(2*time.Minute))
+			baselineEvents, err := s.admissionEventsFor(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			injected := errors.New("injected before " + tc.failureBoundary)
+			previousBeforeHook := receiptedActionBeforePublish
+			failed := false
+			receiptedActionBeforePublish = func(boundary string) error {
+				if boundary == tc.failureBoundary && !failed {
+					failed = true
+					return injected
+				}
+				return nil
+			}
+			defer func() { receiptedActionBeforePublish = previousBeforeHook }()
+			if result, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute)); !errors.Is(err, injected) || result.Replayed {
+				t.Fatalf("action A did not stop at %s: err=%v result=%+v", tc.failureBoundary, err, result)
+			}
+			receiptedActionBeforePublish = previousBeforeHook
+			if _, err := os.Stat(receiptedActionPendingTestPath(s, w.ID)); err != nil {
+				t.Fatalf("incomplete action A did not retain its pending marker: %v", err)
+			}
+
+			beforeWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeEvents, err := os.ReadFile(s.eventsLog())
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforePending, err := os.ReadFile(receiptedActionPendingTestPath(s, w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(2*time.Minute)); err == nil || result.Replayed || !strings.Contains(err.Error(), "pending receipted action "+aInput.Action.ID) {
+				t.Fatalf("action B crossed pending A: err=%v result=%+v", err, result)
+			}
+			afterBlockedWork, err := os.ReadFile(s.workPath(w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterBlockedEvents, err := os.ReadFile(s.eventsLog())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterBlockedWork) != string(beforeWork) || string(afterBlockedEvents) != string(beforeEvents) {
+				t.Fatal("blocked action B changed work or event chronology")
+			}
+			afterBlockedPending, err := os.ReadFile(receiptedActionPendingTestPath(s, w.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(afterBlockedPending) != string(beforePending) {
+				t.Fatal("blocked action B changed pending ownership")
+			}
+			for _, id := range receiptedActionArtifactIDs(w.ID, bInput.Action.ID, claimID) {
+				if _, err := os.Stat(s.envPath(id)); !os.IsNotExist(err) {
+					t.Fatalf("blocked action B left artifact %s: %v", id, err)
+				}
+			}
+
+			retryA := aInput
+			retryA.Action.CreatedAt = fixedNow.Add(3 * time.Minute).UTC().Format(time.RFC3339)
+			recoveredA, err := s.RecordReceiptedAction(w.ID, retryA, fixedNow.Add(3*time.Minute))
+			if err != nil || !recoveredA.Replayed {
+				t.Fatalf("action A did not recover before B: err=%v result=%+v", err, recoveredA)
+			}
+			assertReceiptedActionConverged(t, s, w.ID, recoveredA)
+
+			recordedB, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(4*time.Minute))
+			if err != nil || recordedB.Replayed {
+				t.Fatalf("action B did not proceed after A converged: err=%v result=%+v", err, recordedB)
+			}
+			afterB, err := s.Get(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(afterB.RunIDs) < 2 || afterB.RunIDs[len(afterB.RunIDs)-2] != recoveredA.Action.ID || afterB.RunIDs[len(afterB.RunIDs)-1] != recordedB.Action.ID || afterB.PolicyDecisionID != recordedB.Decision.ID {
+				t.Fatalf("recovered action order = %v policy=%s, want suffix [%s %s] and policy %s", afterB.RunIDs, afterB.PolicyDecisionID, recoveredA.Action.ID, recordedB.Action.ID, recordedB.Decision.ID)
+			}
+			events, err := s.admissionEventsFor(w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aIndex, bIndex := -1, -1
+			for i, event := range events {
+				if contains(event.Attached, recoveredA.Action.ID) {
+					aIndex = i
+				}
+				if contains(event.Attached, recordedB.Action.ID) {
+					bIndex = i
+				}
+			}
+			if aIndex < 0 || bIndex != aIndex+1 {
+				t.Fatalf("receipted event order A=%d B=%d: %+v", aIndex, bIndex, events)
+			}
+			if len(events) != len(baselineEvents)+2 {
+				t.Fatalf("receipted event count = %d, want baseline %d + A/B", len(events), len(baselineEvents))
+			}
+		})
+	}
+}
+
+func TestRecordReceiptedActionRejectsMalformedPendingRecord(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-malformed-pending", "", fixedNow)
+	in := receiptedActionTestInput(w, claimID, "act_receipted_malformed_pending", "do not cross an invalid pending record", fixedNow.Add(time.Minute))
+	pendingPath := receiptedActionPendingTestPath(s, w.ID)
+	if err := os.MkdirAll(filepath.Dir(pendingPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pendingPath, []byte("{\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.RecordReceiptedAction(w.ID, in, fixedNow.Add(time.Minute))
+	if err == nil || result.Replayed || !strings.Contains(err.Error(), "pending receipted action") {
+		t.Fatalf("malformed pending record did not fail closed: err=%v result=%+v", err, result)
+	}
+	if _, err := os.Stat(s.envPath(in.Action.ID)); !os.IsNotExist(err) {
+		t.Fatalf("malformed pending record allowed action artifact: %v", err)
+	}
+	afterWork, err := os.ReadFile(s.workPath(w.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterEvents, err := os.ReadFile(s.eventsLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterWork) != string(beforeWork) || string(afterEvents) != string(beforeEvents) {
+		t.Fatal("malformed pending record changed work or event state")
+	}
+}
+
+func TestRecordReceiptedActionRejectsPendingRecordChangedBeforeCleanup(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-pending-cleanup-conflict", "", fixedNow)
+	in := receiptedActionTestInput(w, claimID, "act_receipted_pending_cleanup_conflict", "do not clear replaced pending ownership", fixedNow.Add(time.Minute))
+	pendingPath := receiptedActionPendingTestPath(s, w.ID)
+
+	previousBeforeHook := receiptedActionBeforePublish
+	changed := false
+	receiptedActionBeforePublish = func(boundary string) error {
+		if boundary != "pending_clear" || changed {
+			return nil
+		}
+		var pending receiptedActionPending
+		if err := s.readJSON(pendingPath, &pending); err != nil {
+			return err
+		}
+		pending.TransactionDigest = strings.Repeat("0", 64)
+		if err := s.writeJSON(pendingPath, &pending); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	}
+	defer func() { receiptedActionBeforePublish = previousBeforeHook }()
+
+	result, err := s.RecordReceiptedAction(w.ID, in, fixedNow.Add(time.Minute))
+	if err == nil || result.Replayed || !strings.Contains(err.Error(), "changed before cleanup") {
+		t.Fatalf("replaced pending record was cleared: err=%v result=%+v", err, result)
+	}
+	if !changed {
+		t.Fatal("cleanup conflict hook did not replace the pending record")
+	}
+	var persisted receiptedActionPending
+	if err := s.readJSON(pendingPath, &persisted); err != nil {
+		t.Fatalf("replaced pending record was removed: %v", err)
+	}
+	if persisted.TransactionDigest != strings.Repeat("0", 64) {
+		t.Fatalf("pending replacement was overwritten: %+v", persisted)
+	}
+	events, err := s.admissionEventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	matching := 0
+	for _, event := range events {
+		if contains(event.Attached, in.Action.ID) {
+			matching++
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("cleanup conflict lost or duplicated the durable action event: %+v", events)
+	}
+}
+
+func TestRecordReceiptedActionAdoptsLegacyExactPrefixWithoutMarker(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-legacy-pending", "", fixedNow)
+	aInput := receiptedActionTestInput(w, claimID, "act_receipted_legacy_pending_a", "recover the exact legacy prefix", fixedNow.Add(time.Minute))
+	bInput := receiptedActionTestInput(w, claimID, "act_receipted_legacy_pending_b", "do not cross adopted legacy ownership", fixedNow.Add(2*time.Minute))
+
+	previousBeforeHook := receiptedActionBeforePublish
+	failed := false
+	injected := errors.New("injected legacy prefix before work")
+	receiptedActionBeforePublish = func(boundary string) error {
+		if boundary == "work" && !failed {
+			failed = true
+			return injected
+		}
+		return nil
+	}
+	defer func() { receiptedActionBeforePublish = previousBeforeHook }()
+	if _, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute)); !errors.Is(err, injected) {
+		t.Fatalf("did not create legacy prefix: %v", err)
+	}
+	receiptedActionBeforePublish = previousBeforeHook
+	if err := os.Remove(receiptedActionPendingTestPath(s, w.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	failed = false
+	receiptedActionBeforePublish = func(boundary string) error {
+		if boundary == "work" && !failed {
+			failed = true
+			return injected
+		}
+		return nil
+	}
+	retryA := aInput
+	retryA.Action.CreatedAt = fixedNow.Add(3 * time.Minute).UTC().Format(time.RFC3339)
+	if _, err := s.RecordReceiptedAction(w.ID, retryA, fixedNow.Add(3*time.Minute)); !errors.Is(err, injected) {
+		t.Fatalf("legacy exact retry did not adopt before work: %v", err)
+	}
+	receiptedActionBeforePublish = previousBeforeHook
+	pending, present, _, err := s.preflightReceiptedActionPending(w.ID)
+	if err != nil || !present {
+		t.Fatalf("legacy exact retry did not publish pending ownership: err=%v pending=%+v", err, pending)
+	}
+	if pending.ActionID != aInput.Action.ID || pending.CreatedAt != aInput.Action.CreatedAt {
+		t.Fatalf("legacy adoption did not freeze action A: %+v", pending)
+	}
+	if result, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(4*time.Minute)); err == nil || result.Replayed {
+		t.Fatalf("action B crossed adopted legacy prefix: err=%v result=%+v", err, result)
+	}
+	recoveredA, err := s.RecordReceiptedAction(w.ID, retryA, fixedNow.Add(5*time.Minute))
+	if err != nil || !recoveredA.Replayed {
+		t.Fatalf("adopted legacy action A did not converge: err=%v result=%+v", err, recoveredA)
+	}
+	assertReceiptedActionConverged(t, s, w.ID, recoveredA)
+}
+
+func TestRecordReceiptedActionRetainsMarkerWhenCleanupFailsAfterDurableEvent(t *testing.T) {
+	s := newStore(t)
+	w := receiptedActionRunningWork(t, s)
+	claimID := receiptedActionRuling(t, s, "receipted-action-pending-cleanup-retry", "", fixedNow)
+	aInput := receiptedActionTestInput(w, claimID, "act_receipted_pending_cleanup_a", "retain ownership until cleanup succeeds", fixedNow.Add(time.Minute))
+	bInput := receiptedActionTestInput(w, claimID, "act_receipted_pending_cleanup_b", "wait for action A cleanup", fixedNow.Add(2*time.Minute))
+
+	previousBeforeHook := receiptedActionBeforePublish
+	injected := errors.New("injected pending cleanup failure")
+	failed := false
+	receiptedActionBeforePublish = func(boundary string) error {
+		if boundary == "pending_clear" && !failed {
+			failed = true
+			return injected
+		}
+		return nil
+	}
+	defer func() { receiptedActionBeforePublish = previousBeforeHook }()
+	if result, err := s.RecordReceiptedAction(w.ID, aInput, fixedNow.Add(time.Minute)); !errors.Is(err, injected) || result.Replayed {
+		t.Fatalf("cleanup failure did not surface after action A: err=%v result=%+v", err, result)
+	}
+	receiptedActionBeforePublish = previousBeforeHook
+	if _, err := os.Stat(receiptedActionPendingTestPath(s, w.ID)); err != nil {
+		t.Fatalf("cleanup failure removed pending ownership: %v", err)
+	}
+	eventsBeforeRetry, err := s.admissionEventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := s.RecordReceiptedAction(w.ID, bInput, fixedNow.Add(2*time.Minute)); err == nil || result.Replayed {
+		t.Fatalf("action B crossed cleanup-pending A: err=%v result=%+v", err, result)
+	}
+	retryA := aInput
+	retryA.Action.CreatedAt = fixedNow.Add(3 * time.Minute).UTC().Format(time.RFC3339)
+	recoveredA, err := s.RecordReceiptedAction(w.ID, retryA, fixedNow.Add(3*time.Minute))
+	if err != nil || !recoveredA.Replayed {
+		t.Fatalf("action A cleanup retry did not converge: err=%v result=%+v", err, recoveredA)
+	}
+	assertReceiptedActionConverged(t, s, w.ID, recoveredA)
+	eventsAfterRetry, err := s.admissionEventsFor(w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventsAfterRetry) != len(eventsBeforeRetry) {
+		t.Fatalf("cleanup retry duplicated event: before=%d after=%d", len(eventsBeforeRetry), len(eventsAfterRetry))
+	}
+}
+
 func TestRecordReceiptedActionRejectsHistoricalReplayWithCorruptNewerPolicyLink(t *testing.T) {
 	s := newStore(t)
 	w := receiptedActionRunningWork(t, s)
@@ -336,7 +657,7 @@ func TestRecordReceiptedActionTerminalProjectionUsesClosingTransitionReceipt(t *
 }
 
 func TestRecordReceiptedActionRecoversEveryWriteBoundary(t *testing.T) {
-	boundaries := []string{"action", "decision", "receipt", "transition", "work", "event"}
+	boundaries := []string{"pending", "action", "decision", "receipt", "transition", "work", "event", "pending_clear"}
 	phases := []string{"before_publish", "after_publish"}
 	for _, phase := range phases {
 		for _, boundary := range boundaries {
@@ -380,6 +701,15 @@ func TestRecordReceiptedActionRecoversEveryWriteBoundary(t *testing.T) {
 				if first, err := s.RecordReceiptedAction(w.ID, in, fixedNow.Add(time.Minute)); !errors.Is(err, injected) || first.Receipt.ID != "" {
 					t.Fatalf("boundary %s did not expose the injected failure: err=%v result=%+v", boundary, err, first)
 				}
+				_, pendingErr := os.Stat(receiptedActionPendingTestPath(s, w.ID))
+				wantPending := !(boundary == "pending" && phase == "before_publish") &&
+					!(boundary == "pending_clear" && phase == "after_publish")
+				if wantPending && pendingErr != nil {
+					t.Fatalf("boundary %s/%s lost pending ownership: %v", phase, boundary, pendingErr)
+				}
+				if !wantPending && !os.IsNotExist(pendingErr) {
+					t.Fatalf("boundary %s/%s published pending ownership too early: %v", phase, boundary, pendingErr)
+				}
 				receiptedActionBeforePublish = func(string) error { return nil }
 				receiptedActionAfterWrite = func(string) error { return nil }
 
@@ -389,9 +719,16 @@ func TestRecordReceiptedActionRecoversEveryWriteBoundary(t *testing.T) {
 				if err != nil {
 					t.Fatalf("boundary %s retry did not recover: %v", boundary, err)
 				}
-				wantReplayed := phase == "after_publish" || boundary != "action"
+				wantReplayed := phase == "after_publish" || boundary != "pending"
 				if recovered.Replayed != wantReplayed {
 					t.Fatalf("boundary %s/%s retry replayed=%t, want %t: %+v", phase, boundary, recovered.Replayed, wantReplayed, recovered)
+				}
+				wantCreatedAt := action.CreatedAt
+				if boundary == "pending" && phase == "before_publish" {
+					wantCreatedAt = retryIn.Action.CreatedAt
+				}
+				if recovered.Action.CreatedAt != wantCreatedAt {
+					t.Fatalf("boundary %s/%s recovered created_at=%s, want %s", phase, boundary, recovered.Action.CreatedAt, wantCreatedAt)
 				}
 				assertReceiptedActionConverged(t, s, w.ID, recovered)
 
@@ -678,7 +1015,7 @@ func receiptedActionCrashInput(w envelope.WorkEnvelope, claimID, actionID string
 }
 
 func TestRecordReceiptedActionDiscardsTornStagedJSONWrites(t *testing.T) {
-	for _, boundary := range []string{"action", "decision", "receipt", "transition", "work"} {
+	for _, boundary := range []string{"pending", "action", "decision", "receipt", "transition", "work"} {
 		t.Run(boundary, func(t *testing.T) {
 			s := newStore(t)
 			w := receiptedActionRunningWork(t, s)
@@ -778,6 +1115,22 @@ func assertReceiptedActionConverged(t *testing.T, s *Store, workID string, resul
 	if matching != 1 {
 		t.Fatalf("recovered transaction has %d matching events, want exactly one: %+v", matching, events)
 	}
+	if _, err := os.Stat(receiptedActionPendingTestPath(s, workID)); !os.IsNotExist(err) {
+		t.Fatalf("converged transaction left pending marker: %v", err)
+	}
+}
+
+func receiptedActionArtifactIDs(workID, actionID, claimID string) []string {
+	return []string{
+		actionID,
+		idFor("pol_", "receipted-action", workID, actionID, claimID),
+		idFor("rec_", "receipted-action", workID, actionID, claimID),
+		idFor("tr_", "receipted-action", workID, actionID, claimID),
+	}
+}
+
+func receiptedActionPendingTestPath(s *Store, workID string) string {
+	return filepath.Join(s.home, "work", "receipted-actions", workID+".json")
 }
 
 func TestRecordReceiptedActionSerializesDecisionRevocation(t *testing.T) {
