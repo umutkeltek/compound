@@ -56,7 +56,7 @@ func recordRuling(t *testing.T, store *mem.Store, dir, title string) decisions.R
 	rep, err := decisions.Record(store, dir, decisions.RecordInput{
 		Kind:       decisions.KindRuling,
 		Title:      title,
-		ReviewedBy: "umut",
+		ReviewedBy: "operator:test",
 		Now:        time.Unix(1_700_000_100, 0).UTC(),
 	})
 	if err != nil {
