@@ -375,6 +375,39 @@ func TestExecuteDryRunRejectsLegacyUnknownSpendBeforeResume(t *testing.T) {
 	}
 }
 
+func TestExecuteDryRunRejectsLaterUnknownSpendBeforeAnyProviderCall(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	const targetRef = "mcand_example_api_clean"
+	writePanelFixtureTarget(t, home, targetRef)
+	run := buildRunnablePlan(t, home, []string{targetRef}, Budget{})
+	requestID := "panel:" + run.ID + ":" + targetDigest(targetRef) + ":" + judgePromptID
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:     fixedPanelNow(),
+		RequestID:     requestID,
+		WorkID:        run.WorkID,
+		ClientProfile: "compound.panel.judge",
+		Protocol:      "panel-lane",
+		Provider:      "compound-route-plan",
+		Model:         run.Route.JudgeLane.ModelID,
+		Status:        "completed",
+		EvidenceRefs:  []string{routeevidence.ModelCapabilitiesAuthorityRef},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := routeevidence.RecordJoined(home, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &countingLensCaller{delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")}}
+	if _, err := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow); err == nil || !strings.Contains(err.Error(), "unknown token usage") {
+		t.Fatalf("later judge row with unknown spend did not fail closed: %v", err)
+	}
+	if caller.calls != 0 {
+		t.Fatalf("later unknown spend was detected only after %d provider call(s)", caller.calls)
+	}
+}
+
 func TestExecuteDryRunBlocksUnresolvedCallReservationBeforeSpend(t *testing.T) {
 	home := setupPanelPlanHome(t)
 	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
