@@ -46,6 +46,7 @@ function groupsFor(decideCount: number | null | undefined, workCount: number | n
       label: "Know",
       links: [
         { label: "Memory", href: "/memory" },
+        { label: "Standing law", href: "/standing-law" },
         { label: "Capabilities", href: "/map" }, // route renames in Phase 4
         { label: "Sources", href: "/sources" },
       ],
