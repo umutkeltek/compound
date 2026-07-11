@@ -25,7 +25,7 @@ func recordRulingWithID(t *testing.T, store *mem.Store, dir, id, title string) d
 		Kind:       decisions.KindRuling,
 		ID:         id,
 		Title:      title,
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 		Now:        time.Unix(1_700_000_100, 0).UTC(),
 	})
 	if err != nil {

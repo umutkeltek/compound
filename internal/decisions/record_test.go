@@ -97,7 +97,7 @@ func TestRecordRequiresKnownKind(t *testing.T) {
 	_, err = Record(store, home, RecordInput{
 		Kind:       "policy",
 		Title:      "Not a grant/freeze/ruling",
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 	})
 	if err == nil {
 		t.Fatal("record with an unknown --kind must be refused")
@@ -121,7 +121,7 @@ func TestRecordWritesUnderOperatorDirAndImportsThroughDecisionsStore(t *testing.
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 		Scope:      "director-apply",
 		Now:        now,
 	})
@@ -141,7 +141,7 @@ func TestRecordWritesUnderOperatorDirAndImportsThroughDecisionsStore(t *testing.
 	if l.ID != "director-apply-grant-2026-07-10" || l.Kind != KindGrant || l.Status != StatusAccepted {
 		t.Fatalf("lifecycle = %+v", l)
 	}
-	if l.Scope != "director-apply" || l.ReviewedBy != "operator:umut" {
+	if l.Scope != "director-apply" || l.ReviewedBy != "operator:test" {
 		t.Fatalf("scope/reviewed_by not preserved: %+v", l)
 	}
 	if l.Falsifier == "" || l.ReviewTrigger == "" {
@@ -174,7 +174,7 @@ func TestRecordFreezeScopeQualifiers(t *testing.T) {
 		Kind:       KindFreeze,
 		ID:         "direction-freeze-2026-07-10",
 		Title:      "Freeze new-organ/absorption imports",
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 		OwnerGlobs: []string{"compound-authority"},
 		Keywords:   []string{"absorption_debt", "harness_edit"},
 		Now:        time.Date(2026, 7, 10, 12, 5, 0, 0, time.UTC),
@@ -443,7 +443,7 @@ func TestRecordIdempotentReplayReusesClaim(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 		Scope:      "director-apply",
 		Now:        time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
 	}
@@ -485,7 +485,7 @@ func TestRecordUndoOfSupersedesPriorGrant(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10",
 		Title:      "Grant director --apply",
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 		Scope:      "director-apply",
 		Now:        time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC),
 	})
@@ -505,7 +505,7 @@ func TestRecordUndoOfSupersedesPriorGrant(t *testing.T) {
 		Kind:       KindGrant,
 		ID:         "director-apply-grant-2026-07-10-revoke",
 		Title:      "Revoke director --apply grant",
-		ReviewedBy: "operator:umut",
+		ReviewedBy: "operator:test",
 		UndoOf:     "director-apply-grant-2026-07-10",
 		Now:        time.Date(2026, 7, 10, 13, 0, 0, 0, time.UTC),
 	})
