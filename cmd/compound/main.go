@@ -346,7 +346,7 @@ compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | p
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml> | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] SourceObservation or generic ObservationBatch intake
-compound event import-os <events.ndjson> | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; optional trace-backed review finding producer
+compound event import-os <events.ndjson> | event show <trace_id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; forensic reader served from COMPOUND_HOME; optional trace-backed review finding producer
 compound writeback <gate|no-promote>                           OwnerWritebackGate + NoPromoteDecision
 
 retired Gen-1 tombstones:
@@ -450,8 +450,139 @@ func cmdEvent(args []string) {
 		}
 		return
 	}
+	if len(args) >= 1 && args[0] == "show" {
+		jsonOut := false
+		traceID := ""
+		for _, arg := range args[1:] {
+			switch {
+			case arg == "--json":
+				jsonOut = true
+			case strings.HasPrefix(arg, "-"):
+				fmt.Fprintln(os.Stderr, "event show: unknown flag", arg)
+				os.Exit(2)
+			default:
+				if traceID != "" {
+					fmt.Fprintln(os.Stderr, "event show: only one trace id")
+					os.Exit(2)
+				}
+				traceID = arg
+			}
+		}
+		if strings.TrimSpace(traceID) == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound event show <trace_id> [--json]")
+			os.Exit(2)
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		detail, err := eventsource.ShowTrace(homePath, traceID)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "event show:", err)
+			os.Exit(1)
+		}
+		if jsonOut {
+			printJSON(detail)
+			return
+		}
+		fmt.Printf("# event trace %s\n\n", detail.TraceID)
+		fmt.Printf("- authority: %s\n", detail.AuthorityRef)
+		fmt.Printf("- source_ref: %s\n", detail.SourceRef)
+		fmt.Printf("- stream: %s\n", detail.Source.Stream)
+		fmt.Printf("- source_id: %s\n", detail.Source.SourceID)
+		fmt.Printf("- source_line: %d\n", detail.Source.Line)
+		if detail.Source.SourceKind != "" {
+			fmt.Printf("- source_kind: %s\n", detail.Source.SourceKind)
+		}
+		if detail.Source.EventClass != "" {
+			fmt.Printf("- event_class: %s\n", detail.Source.EventClass)
+		}
+		fmt.Printf("- mutation_class: %s\n", detail.Trace.MutationClass)
+		fmt.Printf("- created_at: %s\n", detail.Trace.CreatedAt)
+		if detail.Trace.Actor != "" {
+			fmt.Printf("- actor: %s\n", detail.Trace.Actor)
+		}
+		if detail.Trace.Summary != "" {
+			fmt.Printf("- summary: %s\n", detail.Trace.Summary)
+		}
+		fmt.Printf("- trace_path: %s\n", detail.TracePath)
+		for _, f := range detail.Trace.FilesTouched {
+			fmt.Printf("- file: %s\n", f)
+		}
+		for _, o := range detail.Trace.Outputs {
+			fmt.Printf("- output: %s\n", o)
+		}
+		return
+	}
+	if len(args) >= 1 && args[0] == "list" {
+		jsonOut := false
+		stream := ""
+		limit := 20
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+				jsonOut = true
+			case "--stream":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "event list: --stream needs value")
+					os.Exit(2)
+				}
+				i++
+				stream = args[i]
+			case "--limit":
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "event list: --limit needs value")
+					os.Exit(2)
+				}
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil || n < 0 {
+					fmt.Fprintln(os.Stderr, "event list: --limit must be non-negative integer (0 = all)")
+					os.Exit(2)
+				}
+				limit = n
+			default:
+				fmt.Fprintln(os.Stderr, "event list: unknown arg", args[i])
+				os.Exit(2)
+			}
+		}
+		homePath, err := home.Resolve("")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
+			os.Exit(1)
+		}
+		traces, err := eventsource.ListTraces(homePath, stream, limit)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "event list:", err)
+			os.Exit(1)
+		}
+		report := eventsource.TraceListReport{
+			SchemaVersion: eventsource.TraceListReportSchema,
+			Status:        "ok",
+			AuthorityRef:  eventsource.TraceEventsAuthorityRef,
+			Stream:        stream,
+			Limit:         limit,
+			Count:         len(traces),
+			Traces:        traces,
+		}
+		if jsonOut {
+			printJSON(report)
+			return
+		}
+		fmt.Printf("# event traces\n\n")
+		fmt.Printf("- authority: %s\n", report.AuthorityRef)
+		if stream != "" {
+			fmt.Printf("- stream: %s\n", stream)
+		}
+		fmt.Printf("- count: %d\n", report.Count)
+		for _, trace := range traces {
+			fmt.Printf("- %s %s %s %s\n", trace.ID, trace.CreatedAt, trace.Stream, trace.Summary)
+		}
+		return
+	}
 	if len(args) < 2 || args[0] != "import-os" {
-		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] [--review-root DIR] [--review-summary TEXT] | event authority [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound event import-os <events.ndjson> [--limit N] [--stream NAME] [--review-root DIR] [--review-summary TEXT] | event show <trace_id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json]")
 		os.Exit(2)
 	}
 	homePath, err := home.Resolve("")

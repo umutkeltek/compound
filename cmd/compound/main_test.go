@@ -8929,6 +8929,65 @@ func TestEventImportOSWritesTraceEnvelopeWithoutPromotion(t *testing.T) {
 	}
 }
 
+func TestEventShowAndListServeFromCompoundHome(t *testing.T) {
+	homePath := t.TempDir()
+	t.Setenv("COMPOUND_HOME", homePath)
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+
+	captureStdout(t, func() {
+		cmdEvent([]string{"import-os", fixture, "--stream", "os-control-events"})
+	})
+	authorityOut := captureStdout(t, func() {
+		cmdEvent([]string{"authority", "--json"})
+	})
+	var authorityReport eventsource.AuthorityReport
+	if err := json.Unmarshal([]byte(authorityOut), &authorityReport); err != nil {
+		t.Fatalf("parse authority: %v\n%s", err, authorityOut)
+	}
+	if len(authorityReport.RecentTraces) == 0 {
+		t.Fatalf("no traces to show")
+	}
+	traceID := authorityReport.RecentTraces[0].ID
+
+	// event show <id> --json returns the envelope with its source ref.
+	showOut := captureStdout(t, func() {
+		cmdEvent([]string{"show", traceID, "--json"})
+	})
+	var detail eventsource.TraceDetail
+	if err := json.Unmarshal([]byte(showOut), &detail); err != nil {
+		t.Fatalf("parse show: %v\n%s", err, showOut)
+	}
+	if detail.TraceID != traceID || detail.Status != "ok" {
+		t.Fatalf("show detail = %+v", detail)
+	}
+	if detail.Source.Stream != "os-control-events" || detail.Source.Line < 1 {
+		t.Fatalf("show must carry source ref, got %+v", detail.Source)
+	}
+	if !strings.Contains(detail.SourceRef, fixture) {
+		t.Fatalf("source_ref must drill back to source stream, got %q", detail.SourceRef)
+	}
+	if err := detail.Trace.Validate(); err != nil {
+		t.Fatalf("served trace invalid: %v", err)
+	}
+
+	// event list --json serves summaries scoped to the stream.
+	listOut := captureStdout(t, func() {
+		cmdEvent([]string{"list", "--stream", "os-control-events", "--json"})
+	})
+	var listReport eventsource.TraceListReport
+	if err := json.Unmarshal([]byte(listOut), &listReport); err != nil {
+		t.Fatalf("parse list: %v\n%s", err, listOut)
+	}
+	if listReport.Count != 2 || len(listReport.Traces) != 2 {
+		t.Fatalf("list report = %+v", listReport)
+	}
+	for _, tr := range listReport.Traces {
+		if tr.Stream != "os-control-events" {
+			t.Fatalf("list stream filter leaked %q", tr.Stream)
+		}
+	}
+}
+
 func TestEventImportOSCanProduceTraceBackedReviewFinding(t *testing.T) {
 	homePath := t.TempDir()
 	t.Setenv("COMPOUND_HOME", homePath)

@@ -482,6 +482,177 @@ func LoadAuthority(homePath string, recentLimit int) (AuthorityReport, error) {
 	}, nil
 }
 
+// TraceDetail is the forensic view of one imported OS event: the full
+// TraceEnvelope served from COMPOUND_HOME/events plus a distilled source ref
+// (stream + append-only source path/line) so a reader can drill from compound
+// straight back to the exact line in the append-only OS event stream. This is
+// the read that lets the source stream retire to evidence: historical event
+// reads are served from COMPOUND_HOME, not the umut-os stream.
+type TraceDetail struct {
+	SchemaVersion string                 `json:"schema_version"`
+	Status        string                 `json:"status"`
+	AuthorityRef  string                 `json:"authority_ref"`
+	TraceID       string                 `json:"trace_id"`
+	TracePath     string                 `json:"trace_path"`
+	SourceRef     string                 `json:"source_ref"`
+	Source        envelope.TraceSource   `json:"source"`
+	Trace         envelope.TraceEnvelope `json:"trace"`
+}
+
+// TraceListReport is the machine surface for `event list`: imported trace
+// summaries served from the compound event store, newest first, optionally
+// scoped to one source stream.
+type TraceListReport struct {
+	SchemaVersion string         `json:"schema_version"`
+	Status        string         `json:"status"`
+	AuthorityRef  string         `json:"authority_ref"`
+	Stream        string         `json:"stream,omitempty"`
+	Limit         int            `json:"limit,omitempty"`
+	Count         int            `json:"count"`
+	Traces        []TraceSummary `json:"traces"`
+}
+
+const (
+	TraceShowReportSchema = "compound.event_trace_show_report.v0.1"
+	TraceListReportSchema = "compound.event_trace_list_report.v0.1"
+)
+
+// ShowTrace serves one imported trace by id from COMPOUND_HOME/events. The read
+// is confined to the compound event store (filepath.Base strips any path
+// component the caller passes) and returns a clear not-found error for an
+// unknown id. This is the forensic reader for the os_source_umut_events
+// retirement gate.
+func ShowTrace(homePath, traceID string) (TraceDetail, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return TraceDetail{}, fmt.Errorf("home path required")
+	}
+	id := normalizeTraceID(traceID)
+	if id == "" {
+		return TraceDetail{}, fmt.Errorf("trace id required")
+	}
+	path := filepath.Join(homePath, "events", id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return TraceDetail{}, fmt.Errorf("trace %q not found under %s (unknown trace id — list with `compound event list`)", id, filepath.Join(homePath, "events"))
+		}
+		return TraceDetail{}, err
+	}
+	var tr envelope.TraceEnvelope
+	if err := json.Unmarshal(data, &tr); err != nil {
+		return TraceDetail{}, fmt.Errorf("parse trace %s: %w", path, err)
+	}
+	// A trace_-prefixed file must actually decode to a trace envelope; a bad
+	// file surfaces as an error, never a silent empty read.
+	if err := tr.Validate(); err != nil {
+		return TraceDetail{}, fmt.Errorf("trace %s failed validation: %w", id, err)
+	}
+	return TraceDetail{
+		SchemaVersion: TraceShowReportSchema,
+		Status:        "ok",
+		AuthorityRef:  TraceEventsAuthorityRef,
+		TraceID:       tr.ID,
+		TracePath:     path,
+		SourceRef:     formatSourceRef(tr.Source),
+		Source:        tr.Source,
+		Trace:         tr,
+	}, nil
+}
+
+// ListTraces returns imported trace summaries from the compound event store,
+// newest first, optionally filtered to one source stream. limit<=0 means all.
+func ListTraces(homePath, stream string, limit int) ([]TraceSummary, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return nil, fmt.Errorf("home path required")
+	}
+	stream = strings.TrimSpace(stream)
+	path := filepath.Join(homePath, "events", "traces.ndjson")
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var summaries []TraceSummary
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var tr envelope.TraceEnvelope
+		if err := json.Unmarshal([]byte(line), &tr); err != nil {
+			return nil, fmt.Errorf("parse trace list line %d: %w", lineNo, err)
+		}
+		if stream != "" && tr.Source.Stream != stream {
+			continue
+		}
+		summaries = append(summaries, TraceSummary{
+			ID:            tr.ID,
+			CreatedAt:     tr.CreatedAt,
+			Stream:        tr.Source.Stream,
+			SourceKind:    tr.Source.SourceKind,
+			EventClass:    tr.Source.EventClass,
+			MutationClass: tr.MutationClass,
+			Summary:       tr.Summary,
+		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	// traces.ndjson is append-in-import-order; reverse so the reader sees the
+	// most recently imported traces first.
+	for i, j := 0, len(summaries)-1; i < j; i, j = i+1, j-1 {
+		summaries[i], summaries[j] = summaries[j], summaries[i]
+	}
+	if limit > 0 && len(summaries) > limit {
+		summaries = summaries[:limit]
+	}
+	return summaries, nil
+}
+
+func normalizeTraceID(raw string) string {
+	id := strings.TrimSpace(raw)
+	if id == "" {
+		return ""
+	}
+	// Accept a bare short hash or a fully-qualified trace_<hash>, and tolerate a
+	// pasted filename. filepath.Base defends the read against any path component.
+	id = filepath.Base(id)
+	id = strings.TrimSuffix(id, ".json")
+	if !strings.HasPrefix(id, "trace_") {
+		id = "trace_" + id
+	}
+	return id
+}
+
+func formatSourceRef(src envelope.TraceSource) string {
+	stream := strings.TrimSpace(src.Stream)
+	ref := strings.TrimSpace(src.RawRef)
+	if ref == "" {
+		ref = strings.TrimSpace(src.SourceID)
+	}
+	switch {
+	case stream != "" && ref != "" && src.Line > 0:
+		return fmt.Sprintf("%s@%s:%d", stream, ref, src.Line)
+	case stream != "" && ref != "":
+		return fmt.Sprintf("%s@%s", stream, ref)
+	case ref != "" && src.Line > 0:
+		return fmt.Sprintf("%s:%d", ref, src.Line)
+	case ref != "":
+		return ref
+	case stream != "":
+		return stream
+	default:
+		return src.System
+	}
+}
+
 func countTraceFiles(homePath string) (int, error) {
 	entries, err := os.ReadDir(filepath.Join(homePath, "events"))
 	if err != nil {

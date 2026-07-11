@@ -122,6 +122,181 @@ func TestImportOSEventsAcceptsLegacyProviderEventShape(t *testing.T) {
 	}
 }
 
+// TestImportOSEventsDeltaImportOnlyImportsNewTail is the J10 grown-stream
+// falsifier: an append-only stream that GREW between imports must import only
+// the delta on re-run — never re-import the prefix. Red if dedup double-imports.
+func TestImportOSEventsDeltaImportOnlyImportsNewTail(t *testing.T) {
+	home := t.TempDir()
+	stream := filepath.Join(home, "control-events.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	ev := func(id, ts string) string {
+		return `{"schema_version":1,"id":"` + id + `","ts":"` + ts + `","kind":"lifecycle.tick","event_class":"lifecycle","metadata_quality":"complete","mutation_class":"read_only","producer":{"caller":"cron"},"summary":"tick ` + id + `"}`
+	}
+	writeStream := func(lines ...string) {
+		if err := os.WriteFile(stream, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeStream(ev("evt_a", "2026-06-29T01:00:00Z"), ev("evt_b", "2026-06-29T02:00:00Z"))
+	first, err := ImportOSEvents(home, stream, ImportOptions{Stream: "os-control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Imported != 2 || first.Skipped != 0 {
+		t.Fatalf("first import = %+v", first)
+	}
+
+	// Stream grows by one appended event; the two originals stay byte-identical.
+	writeStream(ev("evt_a", "2026-06-29T01:00:00Z"), ev("evt_b", "2026-06-29T02:00:00Z"), ev("evt_c", "2026-06-29T03:00:00Z"))
+	delta, err := ImportOSEvents(home, stream, ImportOptions{Stream: "os-control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delta.Imported != 1 || delta.Skipped != 2 || len(delta.TraceIDs) != 1 {
+		t.Fatalf("delta import must import ONLY the new tail, got %+v", delta)
+	}
+	if got := len(readLines(t, filepath.Join(home, "events", "traces.ndjson"))); got != 3 {
+		t.Fatalf("trace stream must total 3 (2 prefix + 1 delta), got %d", got)
+	}
+
+	// A third identical replay is a full no-op — the idempotency floor.
+	replay, err := ImportOSEvents(home, stream, ImportOptions{Stream: "os-control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.Imported != 0 || replay.Skipped != 3 {
+		t.Fatalf("replay must add zero traces, got %+v", replay)
+	}
+	if got := len(readLines(t, filepath.Join(home, "events", "traces.ndjson"))); got != 3 {
+		t.Fatalf("replay must not append duplicate traces, got %d", got)
+	}
+}
+
+// TestShowTraceServesEnvelopeWithSourceRef proves the forensic reader: a known
+// id returns the envelope carrying its source provenance (stream + append-only
+// path + line); an unknown id fails with a clear error; a stream reference
+// resolves back to the exact source line.
+func TestShowTraceServesEnvelopeWithSourceRef(t *testing.T) {
+	home := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	report, err := ImportOSEvents(home, fixture, ImportOptions{Stream: "os-control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Imported != 2 {
+		t.Fatalf("setup import = %+v", report)
+	}
+
+	id := report.TraceIDs[0]
+	detail, err := ShowTrace(home, id)
+	if err != nil {
+		t.Fatalf("show known id: %v", err)
+	}
+	if detail.TraceID != id || detail.Status != "ok" || detail.AuthorityRef != TraceEventsAuthorityRef {
+		t.Fatalf("detail header = %+v", detail)
+	}
+	if detail.Source.Stream != "os-control-events" || detail.Source.Line < 1 {
+		t.Fatalf("detail must carry source provenance, got %+v", detail.Source)
+	}
+	if !strings.Contains(detail.SourceRef, "os-control-events@") || !strings.Contains(detail.SourceRef, fixture) {
+		t.Fatalf("source_ref must name stream + source path, got %q", detail.SourceRef)
+	}
+	if !strings.HasSuffix(detail.TracePath, filepath.Join("events", id+".json")) {
+		t.Fatalf("trace served from wrong path: %q", detail.TracePath)
+	}
+	if err := detail.Trace.Validate(); err != nil {
+		t.Fatalf("served trace invalid: %v", err)
+	}
+
+	// Lenient id forms resolve to the same trace; a bogus id fails clearly.
+	if _, err := ShowTrace(home, strings.TrimPrefix(id, "trace_")); err != nil {
+		t.Fatalf("bare-hash id should resolve: %v", err)
+	}
+	if _, err := ShowTrace(home, "trace_deadbeefdead"); err == nil {
+		t.Fatalf("unknown trace id must error")
+	} else if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unknown-id error must be clear, got %v", err)
+	}
+	// A path-traversal id is confined to the event store, not the filesystem.
+	if _, err := ShowTrace(home, "../../etc/passwd"); err == nil {
+		t.Fatalf("path-component id must not escape the event store")
+	}
+}
+
+// TestEveryImportedOSEventReachableByShow is the §c falsifier: an OS event id
+// present in the source stream but unreachable from compound after import is red.
+func TestEveryImportedOSEventReachableByShow(t *testing.T) {
+	home := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	report, err := ImportOSEvents(home, fixture, ImportOptions{Stream: "os-control-events"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reconstruct each source event's trace id and prove ShowTrace reaches it.
+	for _, sourceID := range []string{"evt_20260629T010000Z_alpha", "evt_20260629T020000Z_beta"} {
+		want := idFor("trace_", sourceID)
+		detail, err := ShowTrace(home, want)
+		if err != nil {
+			t.Fatalf("source event %s unreachable from compound: %v", sourceID, err)
+		}
+		if detail.Source.SourceID != sourceID {
+			t.Fatalf("trace %s resolved wrong source id %q", want, detail.Source.SourceID)
+		}
+	}
+	// Every imported trace id is individually reachable.
+	for _, id := range report.TraceIDs {
+		if _, err := ShowTrace(home, id); err != nil {
+			t.Fatalf("imported trace %s unreachable: %v", id, err)
+		}
+	}
+}
+
+// TestListTracesFiltersByStream proves the list form serves from COMPOUND_HOME
+// and scopes to a stream.
+func TestListTracesFiltersByStream(t *testing.T) {
+	home := t.TempDir()
+	fixture := filepath.Join("..", "..", "fixtures", "events", "os-events.ndjson")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+
+	if _, err := ImportOSEvents(home, fixture, ImportOptions{Stream: "os-control-events"}, now); err != nil {
+		t.Fatal(err)
+	}
+	all, err := ListTraces(home, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("list all = %d, want 2", len(all))
+	}
+	matched, err := ListTraces(home, "os-control-events", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matched) != 2 {
+		t.Fatalf("stream filter = %d, want 2", len(matched))
+	}
+	none, err := ListTraces(home, "no-such-stream", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("unknown stream must return zero, got %d", len(none))
+	}
+	limited, err := ListTraces(home, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("limit=1 must cap results, got %d", len(limited))
+	}
+}
+
 func readJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	b, err := os.ReadFile(path)
