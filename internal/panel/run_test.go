@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	homepkg "compound/internal/home"
 	"compound/internal/reviewartifact"
 	"compound/internal/routeevidence"
 )
@@ -1022,6 +1024,111 @@ func TestExecuteDryRunRejectsImportedRequestIDShadow(t *testing.T) {
 	}
 }
 
+func TestExecuteDryRunDoesNotSpendWhenRouteWriterWinsAfterCallAttemptReservation(t *testing.T) {
+	home := setupPanelPlanHome(t)
+	writePanelFixtureTarget(t, home, "mcand_example_api_clean")
+	run := buildRunnablePlan(t, home, []string{"mcand_example_api_clean"}, Budget{MaxTotalTokens: 4000})
+	run.WorkID = "work_panel_cross_writer"
+	saveRunnablePlan(t, home, run)
+
+	lensRef := run.LensSet.Included[0].Ref
+	targetRef := "mcand_example_api_clean"
+	requestID := "panel:" + run.ID + ":" + targetDigest(targetRef) + ":" + lensRef
+	caller := &gatedCountingLensCaller{
+		delegate: FixtureCaller{Dir: filepath.Join("..", "..", "fixtures", "panel")},
+		release:  make(chan struct{}),
+	}
+	type executeResult struct {
+		err error
+	}
+	done := make(chan executeResult, 1)
+
+	err := homepkg.WithAutonomyAdmissionLock(home, func() error {
+		go func() {
+			_, executeErr := ExecuteDryRun(context.Background(), home, run, caller, fixedPanelNow)
+			done <- executeResult{err: executeErr}
+		}()
+
+		waitForPanelAttemptFile(t, panelCallAttemptPath(home, run.ID, requestID))
+		return writeCanonicalCompetingRouteRow(home, run, targetRef, requestID, lensRef)
+	})
+	if err != nil {
+		t.Fatalf("write competing route row under request-id authority: %v", err)
+	}
+	close(caller.release)
+	result := <-done
+	if got := caller.CallCount(); got != 0 {
+		t.Fatalf("competing route writer was detected only after %d provider call(s): %v", got, result.err)
+	}
+	if result.err == nil {
+		t.Fatal("competing route writer did not block panel execution")
+	}
+}
+
+func waitForPanelAttemptFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("inspect panel attempt %s: %v", path, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("panel call attempt was not reserved at %s", path)
+		}
+		runtime.Gosched()
+	}
+}
+
+func writeCanonicalCompetingRouteRow(home string, run Run, targetRef, requestID, lensRef string) error {
+	ev, err := routeevidence.Build(routeevidence.BuildInput{
+		CreatedAt:        fixedPanelNow(),
+		RequestID:        requestID,
+		WorkID:           run.WorkID,
+		ClientProfile:    "compound.panel.lens",
+		Protocol:         "panel-lane",
+		Provider:         "compound-route-plan",
+		Model:            run.Route.LensLane.ModelID,
+		ResolvedProvider: "deepseek",
+		ResolvedModel:    "deepseek/deepseek-v4-pro",
+		ResolutionSource: "gateway_route",
+		GatewayRequestID: "competing-gateway-request-" + targetDigest(targetRef),
+		Usage:            routeevidence.Usage{TotalTokens: 37},
+		Status:           "completed",
+		EvidenceRefs:     []string{routeevidence.ModelCapabilitiesAuthorityRef, "lens:" + lensRef},
+	})
+	if err != nil {
+		return err
+	}
+	ev.RecordedVia = routeevidence.RecorderExternalImport
+	ev, _, err = routeevidence.JoinTransition(ev)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(home, "ledger", "execution-route-evidence.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(append(data, '\n')); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
 type countingLensCaller struct {
 	delegate LensCaller
 	decorate func(CallRequest, *CallResult)
@@ -1032,6 +1139,31 @@ type synchronizedCountingLensCaller struct {
 	delegate LensCaller
 	mu       sync.Mutex
 	calls    int
+}
+
+type gatedCountingLensCaller struct {
+	delegate LensCaller
+	release  chan struct{}
+	mu       sync.Mutex
+	calls    int
+}
+
+func (c *gatedCountingLensCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
+	select {
+	case <-c.release:
+	case <-ctx.Done():
+		return CallResult{}, ctx.Err()
+	}
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return c.delegate.Call(ctx, req)
+}
+
+func (c *gatedCountingLensCaller) CallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 func (c *synchronizedCountingLensCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
