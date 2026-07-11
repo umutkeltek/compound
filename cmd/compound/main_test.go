@@ -5834,9 +5834,15 @@ func TestAuthorityDirtyPlanWritesReviewWithoutMutatingRepo(t *testing.T) {
 }
 
 func TestHookPreToolUseHoldsDirtySourceControlMutation(t *testing.T) {
-	homePath := t.TempDir()
-	t.Setenv("COMPOUND_HOME", homePath)
+	// Home is workspace-local to the target repo (COMPOUND_HOME under the repo it governs),
+	// so the dirty mutation stays IN-SCOPE (compound's own governed repo) and the held
+	// gate-review mint still fires — see internal/hook's scope+dedup guard.
 	repo := initCompoundCommandGitRepo(t)
+	homePath := filepath.Join(repo, ".compound")
+	if err := os.MkdirAll(homePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPOUND_HOME", homePath)
 	target := filepath.Join(repo, "README.md")
 	if err := os.WriteFile(target, []byte("changed\n"), 0o644); err != nil {
 		t.Fatal(err)
