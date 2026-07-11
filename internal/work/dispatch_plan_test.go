@@ -1,9 +1,14 @@
 package work
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -218,6 +223,143 @@ func TestDispatchClaimInjectsTaskScopedSkillOffersIntoWorkerPrompt(t *testing.T)
 	}
 }
 
+func TestAttachDispatchPromptDoesNotOverwriteConcurrentLifecycleMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, *Store, envelope.WorkEnvelope) envelope.WorkEnvelope
+		mutate  func(*Store, envelope.WorkEnvelope) (envelope.WorkEnvelope, error)
+	}{
+		{
+			name: "advance",
+			prepare: func(_ *testing.T, _ *Store, claimed envelope.WorkEnvelope) envelope.WorkEnvelope {
+				return claimed
+			},
+			mutate: func(s *Store, claimed envelope.WorkEnvelope) (envelope.WorkEnvelope, error) {
+				return s.Advance(claimed.ID, AdvanceInput{To: "running", Actor: "dispatch-worker"}, fixedNow.Add(3*time.Minute))
+			},
+		},
+		{
+			name: "close",
+			prepare: func(t *testing.T, s *Store, claimed envelope.WorkEnvelope) envelope.WorkEnvelope {
+				t.Helper()
+				running, err := s.Advance(claimed.ID, AdvanceInput{To: "running", Actor: "dispatch-worker"}, fixedNow.Add(2*time.Minute))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return running
+			},
+			mutate: func(s *Store, running envelope.WorkEnvelope) (envelope.WorkEnvelope, error) {
+				closed, err := s.Close(running.ID, CloseInput{
+					Outcome:   "completed",
+					MoveType:  "control_plane_repair",
+					Actor:     "dispatch-worker",
+					Summary:   "dispatch prompt lifecycle race closed",
+					Changed:   true,
+					ProofRefs: []string{"check:dispatch-prompt-lifecycle-race"},
+				}, fixedNow.Add(4*time.Minute))
+				return closed.Work, err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newStore(t)
+			ready, err := s.Create(CreateInput{
+				Owner:            "compound-core",
+				SuccessPredicate: "dispatch prompt preserves concurrent lifecycle state and links",
+				DesiredOutcome:   "serialize dispatch prompt attachment",
+			}, fixedNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimed, err := s.Claim(ready.ID, "dispatch-worker", fixedNow.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stale := tt.prepare(t, s, claimed)
+			barrier := installDispatchGraphBarrier(t, s)
+			type attachResult struct {
+				prompt dispatchPrompt
+				err    error
+			}
+			attached := make(chan attachResult, 1)
+			go func() {
+				prompt, attachErr := s.attachDispatchPrompt(stale.ID, "dispatch-worker", fixedNow.Add(5*time.Minute))
+				attached <- attachResult{prompt, attachErr}
+			}()
+			release := barrier.waitUntilRead(t)
+			expected, err := tt.mutate(s, stale)
+			if err != nil {
+				t.Fatalf("concurrent %s: %v", tt.name, err)
+			}
+			release()
+			var result attachResult
+			select {
+			case result = <-attached:
+			case <-time.After(5 * time.Second):
+				t.Fatal("dispatch prompt attachment did not finish")
+			}
+			if result.err != nil {
+				t.Fatalf("attach dispatch prompt: %v", result.err)
+			}
+			final, err := s.Get(stale.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if final.State != expected.State ||
+				final.PolicyDecisionID != expected.PolicyDecisionID ||
+				final.IDs.TransitionID != expected.IDs.TransitionID ||
+				!reflect.DeepEqual(final.RunIDs, expected.RunIDs) {
+				t.Fatalf("stale prompt attachment overwrote concurrent %s: final=%+v expected=%+v", tt.name, final, expected)
+			}
+			if final.IDs.ContextPackID == "" || final.IDs.ContextPackID != result.prompt.ContextPackID {
+				t.Fatalf("dispatch context link = %q, prompt=%q", final.IDs.ContextPackID, result.prompt.ContextPackID)
+			}
+			var pack envelope.ContextPack
+			if err := s.readJSON(filepath.Join(s.home, "context", "packs", result.prompt.ContextPackID+".json"), &pack); err != nil {
+				t.Fatal(err)
+			}
+			if got := sourceRevisionValue(pack.SourceRevisions, "work://"+final.ID); got != dispatchWorkRevision(expected) {
+				t.Fatalf("dispatch pack work revision = %q, want %q after concurrent %s", got, dispatchWorkRevision(expected), tt.name)
+			}
+		})
+	}
+}
+
+func TestAttachDispatchPromptRecoversPendingClaimBeforeAttachment(t *testing.T) {
+	s := newStore(t)
+	before, err := s.Create(CreateInput{
+		Owner:            "compound-core",
+		SuccessPredicate: "dispatch prompt recovers one exact pending claim",
+		DesiredOutcome:   "attach dispatch context after claim recovery",
+	}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crashClaimAtBoundary(t, s, before.ID, "dispatch-worker", fixedNow.Add(time.Minute), "work")
+	prompt, err := s.attachDispatchPrompt(before.ID, "dispatch-worker", fixedNow.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("attach dispatch prompt after torn claim: %v", err)
+	}
+	after, err := s.Get(before.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != "claimed" || after.Authority.Owner != "dispatch-worker" || after.IDs.ContextPackID != prompt.ContextPackID {
+		t.Fatalf("pending claim recovery/attachment mismatch: %+v prompt=%+v", after, prompt)
+	}
+	if _, err := os.Stat(s.claimPendingPath(before.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dispatch prompt left pending claim marker: %v", err)
+	}
+	lease, err := s.readLease(before.ID)
+	if err != nil || lease.By != "dispatch-worker" {
+		t.Fatalf("dispatch prompt did not recover exact lease: lease=%+v err=%v", lease, err)
+	}
+	if events := claimEvents(t, s, before.ID); len(events) != 1 {
+		t.Fatalf("dispatch prompt recovery claim events = %d, want one: %+v", len(events), events)
+	}
+}
+
 func TestDispatchClaimBlockedByPolicyDoesNotClaim(t *testing.T) {
 	s := newStore(t)
 	ready, err := s.Create(CreateInput{Owner: "compound-core", SuccessPredicate: "policy hold blocks dispatch claim"}, fixedNow)
@@ -274,6 +416,84 @@ func sourceRevisionExists(revs []envelope.SourceRev, source string) bool {
 		}
 	}
 	return false
+}
+
+func sourceRevisionValue(revs []envelope.SourceRev, source string) string {
+	for _, rev := range revs {
+		if rev.Source == source {
+			return rev.Rev
+		}
+	}
+	return ""
+}
+
+type dispatchGraphBarrier struct {
+	path string
+	body []byte
+}
+
+func installDispatchGraphBarrier(t *testing.T, s *Store) *dispatchGraphBarrier {
+	t.Helper()
+	registryDir := filepath.Join(s.home, "registries")
+	if err := os.MkdirAll(registryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	node := capgraph.Node{
+		ID:       "skill:dispatch-graph-barrier",
+		Kind:     "skill",
+		Name:     "dispatch-graph-barrier",
+		Triggers: []string{"dispatch", "prompt", "lifecycle", "concurrent"},
+		Weight:   1,
+	}
+	body, err := json.Marshal(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append(body, '\n')
+	path := filepath.Join(registryDir, "capability-nodes.jsonl")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatalf("install dispatch graph FIFO: %v", err)
+	}
+	return &dispatchGraphBarrier{path: path, body: body}
+}
+
+func (b *dispatchGraphBarrier) waitUntilRead(t *testing.T) func() {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var writer *os.File
+	for writer == nil {
+		fd, err := syscall.Open(b.path, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			writer = os.NewFile(uintptr(fd), b.path)
+			break
+		}
+		if !errors.Is(err, syscall.ENXIO) {
+			t.Fatalf("open dispatch graph FIFO writer: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("dispatch prompt did not begin reading the capability graph")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := os.Remove(b.path); err != nil {
+		t.Fatalf("replace dispatch graph FIFO: %v", err)
+	}
+	if err := os.WriteFile(b.path, b.body, 0o644); err != nil {
+		t.Fatalf("write replacement dispatch graph: %v", err)
+	}
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			if _, err := writer.Write(b.body); err != nil {
+				t.Errorf("release dispatch graph reader: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Errorf("close dispatch graph FIFO writer: %v", err)
+			}
+		})
+	}
+	t.Cleanup(release)
+	return release
 }
 
 func TestDispatchAdvanceAdvancesOwnClaimedWork(t *testing.T) {
