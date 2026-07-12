@@ -195,6 +195,7 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-instance-pin-smoke", Command: consoleSmokeCommand("scripts/instance-pin-smoke.mjs"), Dir: "console", ProofRef: "console-instance-pin-smoke"},
 		{Name: "console-continue-button-smoke", Command: consoleBunSmokeCommand("scripts/continue-button-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-continue-button-smoke"},
 		{Name: "console-work-action-row-smoke", Command: consoleBunSmokeCommand("scripts/work-action-row-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-work-action-row-smoke"},
+		{Name: "console-mutation-readiness-consumers-smoke", Command: consoleSmokeCommand("scripts/mutation-readiness-consumers-smoke.mjs"), Dir: "console", ProofRef: "console-mutation-readiness-consumers-smoke"},
 		{Name: "console-private-fallback-smoke", Command: consoleSmokeCommand("scripts/private-fallback-smoke.mjs"), Dir: "console", ProofRef: "console-private-fallback-smoke"},
 		{Name: "console-private-runtime-guard-smoke", Command: consoleSmokeCommand("scripts/private-runtime-guard-smoke.mjs"), Dir: "console", ProofRef: "console-private-runtime-guard-smoke"},
 		{Name: "console-move-type-drift-smoke", Command: consoleSmokeCommand("scripts/move-type-drift-smoke.mjs"), Dir: "console", ProofRef: "console-move-type-drift-smoke"},

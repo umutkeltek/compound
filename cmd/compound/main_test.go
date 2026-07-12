@@ -292,6 +292,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-instance-pin-smoke",
 		"console-continue-button-smoke",
 		"console-work-action-row-smoke",
+		"console-mutation-readiness-consumers-smoke",
 		"console-private-fallback-smoke",
 		"console-private-runtime-guard-smoke",
 		"console-move-type-drift-smoke",
