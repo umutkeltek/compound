@@ -1263,7 +1263,10 @@ func (s *Store) doctorEngineHop(eng Engine, add func(name, status, detail string
 	report, err := s.EngineDoctor(ClaimIndexText(cur[0]), 1, eng)
 	detail := fmt.Sprintf("%s ledger_unchanged=%t hits=%d ledger_gen=%d engine_gen=%d", doctorEngineName(report.Engine), report.LedgerUnchanged, len(report.Hits), report.LedgerGen, report.Engine.CorpusGen)
 	if report.OwnerLedgerAdvanced {
-		detail += fmt.Sprintf(" owner_ledger_advanced=true retry_count=%d", report.RetryCount)
+		detail += fmt.Sprintf(" owner_ledger_advanced=true retry_count=%d advanced_rows=%d", report.RetryCount, report.AdvancedRows)
+	}
+	if report.Note != "" {
+		detail += " (" + report.Note + ")"
 	}
 	if err != nil {
 		add("sync/embedding", "fail", detail+": "+err.Error())

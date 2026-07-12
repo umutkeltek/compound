@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,9 +35,61 @@ func TestEngineDoctorProvesLedgerUnchanged(t *testing.T) {
 
 func TestEngineDoctorDetectsEngineLedgerMutation(t *testing.T) {
 	s := storeWith(t, "system:compound", "owner", "ledger")
-	_, err := s.EngineDoctor("ledger", 10, mutatingEngine{s: s})
-	if err == nil || err.Error() != "rented engine mutated owned ledger" {
+	report, err := s.EngineDoctor("ledger", 10, mutatingEngine{s: s})
+	if err == nil || !strings.HasPrefix(err.Error(), "rented engine mutated owned ledger") {
 		t.Fatalf("expected ledger mutation failure, got %v", err)
+	}
+	// The invariant must stay red AND name the offending ledger path the engine wrote.
+	if !strings.Contains(err.Error(), "engine-owned-view") {
+		t.Fatalf("engine mutation must name the offending ledger path: %v", err)
+	}
+	if len(report.EngineViolations) == 0 || !strings.Contains(strings.Join(report.EngineViolations, "; "), "engine-owned-view") {
+		t.Fatalf("expected report.EngineViolations to name the engine-written path: %+v", report)
+	}
+}
+
+// TestEngineDoctorFailsWhenAppendedRowLacksProvenance proves the retry does NOT weaken
+// the invariant: a claim row appended to the ledger WITHOUT producer provenance (empty
+// derivation) is engine-attributed, not a legitimate governed write, so the hop stays red
+// and names the row.
+func TestEngineDoctorFailsWhenAppendedRowLacksProvenance(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	report, err := s.EngineDoctor("ledger", 10, &provenancelessWriterEngine{store: s})
+	if err == nil || !strings.HasPrefix(err.Error(), "rented engine mutated owned ledger") {
+		t.Fatalf("a provenance-less appended row must stay a hard failure, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "without producer provenance") {
+		t.Fatalf("failure must name the missing-provenance row: %v", err)
+	}
+	if len(report.EngineViolations) == 0 {
+		t.Fatalf("expected an engine violation for the provenance-less row: %+v", report)
+	}
+}
+
+// TestEngineDoctorDoesNotBlameEngineForConcurrentGovernedWrite is the real-world
+// falsifier: a SEPARATE compound process appends a governed claim to the owned ledger
+// while the doctor's breadth query runs, and the rented engine never re-indexes to the
+// new generation mid-query (the realistic shape the pre-fix retry condition missed).
+// The doctor must attribute the delta to a legitimate producer, retry once against the
+// fresh gen, and pass with an INFO note — never blame the rented engine.
+func TestEngineDoctorDoesNotBlameEngineForConcurrentGovernedWrite(t *testing.T) {
+	s := storeWith(t, "system:compound", "owner", "ledger")
+	eng := &externalWriterEngine{store: s}
+	report, err := s.EngineDoctor("ledger", 10, eng)
+	if err != nil {
+		t.Fatalf("concurrent governed write must not be blamed on the rented engine: %v; report=%+v", err, report)
+	}
+	if !report.LedgerUnchanged || report.RetryCount != 1 || !report.OwnerLedgerAdvanced {
+		t.Fatalf("expected one stable-snapshot retry after a concurrent governed write: %+v", report)
+	}
+	if report.AdvancedRows < 1 {
+		t.Fatalf("expected advanced-row accounting for the concurrent governed write: %+v", report)
+	}
+	if !strings.Contains(report.Note, "concurrent legit") || !strings.Contains(report.Note, "fresh gen") {
+		t.Fatalf("expected an INFO note naming concurrent legit writers verified against a fresh gen: %+v", report)
+	}
+	if len(report.EngineViolations) != 0 {
+		t.Fatalf("a legit concurrent write must produce no engine violations: %+v", report)
 	}
 }
 
@@ -142,6 +195,91 @@ func (e *ownerAdvancingEngine) Query(text, gate string, allowlist []string, k in
 			return nil, err
 		}
 		_ = e.base.Index(append(e.base.claims, Claim{ID: "claim_owner_advanced"}), e.store.currentGen())
+	}
+	return e.base.Query(text, gate, allowlist, k)
+}
+
+// externalWriterEngine models the REAL concurrent-write shape: a separate compound
+// process (NOT the rented engine) appends a governed claim to the owned ledger while the
+// doctor's breadth query runs. Unlike ownerAdvancingEngine, it deliberately does NOT
+// re-index itself to the new generation — the writer is a different actor, so the engine
+// stays at the pre-query gen. This is exactly the case the old
+// `report.Engine.CorpusGen == afterGen` retry gate could never fire for.
+type externalWriterEngine struct {
+	store *Store
+	base  LexicalEngine
+	wrote bool
+}
+
+func (e *externalWriterEngine) Capabilities() EngineCapabilities {
+	caps := e.base.Capabilities()
+	caps.Name = "external-writer-fixture"
+	return caps
+}
+
+func (e *externalWriterEngine) Index(claims []Claim, gen int64) error {
+	return e.base.Index(claims, gen)
+}
+
+func (e *externalWriterEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
+	if !e.wrote {
+		e.wrote = true
+		err := e.store.withLock(func() error {
+			seq, err := e.store.nextSeq()
+			if err != nil {
+				return err
+			}
+			return appendJSONL(e.store.claimsLog(), Claim{
+				ID: "claim_external_legit", Seq: seq, Entity: "other-session", Predicate: "closed",
+				Object: "governed concurrent write", ValidFrom: t0.Format("2006-01-02T15:04:05Z07:00"),
+				Confidence: 1, Derivation: "deterministic", Visibility: "operational",
+			})
+		})
+		if err != nil {
+			return nil, err
+		}
+		// Deliberately NOT re-indexing the base engine to the new gen: the external writer
+		// is a different actor; the rented engine remains at the pre-query generation.
+	}
+	return e.base.Query(text, gate, allowlist, k)
+}
+
+// provenancelessWriterEngine appends a claim row that skips the governed door's producer
+// provenance (empty derivation). It stands in for a rented engine masquerading a write as
+// a legit concurrent one — the doctor must still refuse it.
+type provenancelessWriterEngine struct {
+	store *Store
+	base  LexicalEngine
+	wrote bool
+}
+
+func (e *provenancelessWriterEngine) Capabilities() EngineCapabilities {
+	caps := e.base.Capabilities()
+	caps.Name = "provenanceless-writer-fixture"
+	return caps
+}
+
+func (e *provenancelessWriterEngine) Index(claims []Claim, gen int64) error {
+	return e.base.Index(claims, gen)
+}
+
+func (e *provenancelessWriterEngine) Query(text, gate string, allowlist []string, k int) ([]Hit, error) {
+	if !e.wrote {
+		e.wrote = true
+		err := e.store.withLock(func() error {
+			seq, err := e.store.nextSeq()
+			if err != nil {
+				return err
+			}
+			return appendJSONL(e.store.claimsLog(), Claim{
+				ID: "claim_no_provenance", Seq: seq, Entity: "engine", Predicate: "wrote",
+				Object: "row without provenance", ValidFrom: t0.Format("2006-01-02T15:04:05Z07:00"),
+				Confidence: 1, Derivation: "", Visibility: "operational",
+			})
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	return e.base.Query(text, gate, allowlist, k)
 }
