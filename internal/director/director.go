@@ -35,6 +35,13 @@ var proposalClassSeverityOrder = []string{
 	"product_loop",
 	"synthesis_contradiction",
 	"review_debt",
+	// decision_preparation ranks just below live review debt: it serves the
+	// operator's decision throughput (a needs-you card sitting past a threshold
+	// gets a brief prepared before the operator looks), so it outranks
+	// self-improvement (harness_edit) and retirement debt (absorption_debt). It
+	// never outranks a class that resolves a real pending item, and it is
+	// propose-only with no autonomy grant.
+	"decision_preparation",
 	// harness_edit ranks just above absorption_debt: the self-harness loop
 	// (proposing bounded edits to editable harness surfaces) is real
 	// improvement work, but self-improvement must never starve an operational
@@ -442,6 +449,11 @@ func scanCandidates(homePath string, now time.Time) ([]candidate, []string) {
 	}
 	if items, err := reviewDebtCandidates(homePath, now); err != nil {
 		warnings = append(warnings, "review debt scan skipped: "+err.Error())
+	} else {
+		out = append(out, items...)
+	}
+	if items, err := decisionPreparationCandidates(homePath, now); err != nil {
+		warnings = append(warnings, "decision preparation scan skipped: "+err.Error())
 	} else {
 		out = append(out, items...)
 	}
