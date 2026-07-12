@@ -41,6 +41,19 @@ type resolvedAutonomyGrant struct {
 	Proof autonomyproof.GrantSnapshot
 }
 
+// HasActiveAutonomyGrant reports whether a complete, safe, operator-reviewed
+// autonomy-evidence-threshold grant is active for the given auto-admit class.
+// It wraps the same resolveAutonomyGrant authority the job_health evidence
+// slice uses, so callers outside the director (e.g. the experiential-smoke
+// circuit deciding whether it may autonomously file ux_friction fix-work) can
+// gate on a real active grant without re-deriving the match semantics or
+// touching markdown/prose. A missing grant returns (false, nil); a malformed
+// or ambiguous grant returns a non-nil error.
+func HasActiveAutonomyGrant(homePath, class string) (bool, error) {
+	_, ok, err := resolveAutonomyGrant(homePath, class)
+	return ok, err
+}
+
 // resolveAutonomyGrant is deliberately stricter than resolveApplyGrant. The
 // broad director-apply grant authorizes filing suggestions; this grant may
 // move exactly one class across proposed -> admitted, so zero or multiple

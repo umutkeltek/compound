@@ -129,6 +129,8 @@ func main() {
 		cmdExecutors(os.Args[2:])
 	case "proof-check":
 		cmdProofCheck(os.Args[2:])
+	case "experiential-smoke":
+		cmdExperientialSmoke(os.Args[2:])
 	case "release":
 		cmdRelease(os.Args[2:])
 	case "reviews":
@@ -4444,90 +4446,135 @@ func cmdReviewsRecordFinding(args []string) {
 		fmt.Fprintln(os.Stderr, "error: --capability must be review.finding or review.summary")
 		os.Exit(2)
 	}
-	target, err := normalizeRunReviewTarget(targetPath)
+	rec, err := recordReviewFinding(recordReviewFindingInput{
+		WorkID:              workID,
+		AutoWork:            autoWork,
+		TargetPath:          targetPath,
+		Summary:             summary,
+		Root:                root,
+		Capability:          capability,
+		EvidenceRefs:        evidenceRefs,
+		SourceArtifactPaths: sourceArtifactPaths,
+		SourceTraceIDs:      sourceTraceIDs,
+	}, time.Now())
 	if err != nil {
+		var denied *reviewFindingDeniedError
+		if errors.As(err, &denied) {
+			printJSON(denied.Decision)
+			os.Exit(gateExit(denied.Decision))
+		}
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
+		os.Exit(1)
 	}
+	printJSON(rec)
+}
+
+// recordReviewFindingInput is the parsed, validated request for the governed
+// review-finding door. It is shared by the `reviews record-finding` CLI wrapper
+// and by any in-process caller (e.g. the experiential-smoke circuit) that must
+// emit a review card through the SAME governed path rather than re-implement it.
+type recordReviewFindingInput struct {
+	WorkID              string
+	AutoWork            bool
+	TargetPath          string
+	Summary             string
+	Root                string
+	Capability          string
+	EvidenceRefs        []string
+	SourceArtifactPaths []string
+	SourceTraceIDs      []string
+}
+
+// reviewFindingDeniedError carries the PolicyDecision when the governed door
+// refuses the write, so a CLI caller can reproduce the exact `printJSON(pd)` +
+// gate-exit behavior while a library caller can treat denial as a plain error.
+type reviewFindingDeniedError struct {
+	Decision envelope.PolicyDecision
+}
+
+func (e *reviewFindingDeniedError) Error() string {
+	return "review finding refused by policy: outcome " + e.Decision.Outcome
+}
+
+// recordReviewFinding is the governed review-finding door extracted as a
+// returning function. It evaluates policy, writes the finding artifact and its
+// markdown sibling only after an allowing PolicyDecision, and records the
+// ActionIntent on the WorkEnvelope. Behavior is identical to the prior inline
+// implementation; the CLI wrapper adds the os.Exit / printJSON shell.
+func recordReviewFinding(in recordReviewFindingInput, now time.Time) (reviewFindingRecord, error) {
+	capability := reviewartifact.FirstNonEmpty(in.Capability, "review.finding")
+	target, err := normalizeRunReviewTarget(in.TargetPath)
+	if err != nil {
+		return reviewFindingRecord{}, err
+	}
+	root := in.Root
 	if root == "" {
 		root, err = os.Getwd()
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 	}
 	root, err = filepath.Abs(root)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	artifactPath := filepath.Join(root, filepath.FromSlash(target))
 	markdownPath := strings.TrimSuffix(artifactPath, filepath.Ext(artifactPath)) + ".md"
-	sourceArtifacts, sourceEvidenceRefs, err := reviewFindingSourceArtifacts(root, sourceArtifactPaths)
+	sourceArtifacts, sourceEvidenceRefs, err := reviewFindingSourceArtifacts(root, in.SourceArtifactPaths)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
+		return reviewFindingRecord{}, err
 	}
 	if _, err := os.Stat(artifactPath); err == nil {
-		fmt.Fprintf(os.Stderr, "error: review finding target already exists: %s\n", artifactPath)
-		os.Exit(1)
+		return reviewFindingRecord{}, fmt.Errorf("review finding target already exists: %s", artifactPath)
 	} else if !os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	if _, err := os.Stat(markdownPath); err == nil {
-		fmt.Fprintf(os.Stderr, "error: review finding markdown target already exists: %s\n", markdownPath)
-		os.Exit(1)
+		return reviewFindingRecord{}, fmt.Errorf("review finding markdown target already exists: %s", markdownPath)
 	} else if !os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	homePath, err := home.Resolve("")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
-		os.Exit(1)
+		return reviewFindingRecord{}, fmt.Errorf("%w (run `compound home init`)", err)
 	}
-	sourceTraces, traceEvidenceRefs, err := reviewFindingSourceTraces(homePath, sourceTraceIDs)
+	sourceTraces, traceEvidenceRefs, err := reviewFindingSourceTraces(homePath, in.SourceTraceIDs)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
+		return reviewFindingRecord{}, err
 	}
 	store, err := work.Open(homePath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
-	now := time.Now()
 	createdAt := reviewartifact.Timestamp(now)
+	workID := in.WorkID
+	evidenceRefs := append([]string{}, in.EvidenceRefs...)
 	evidenceRefs = append(evidenceRefs, sourceEvidenceRefs...)
 	evidenceRefs = append(evidenceRefs, traceEvidenceRefs...)
-	if autoWork {
+	if in.AutoWork {
 		created, err := store.Create(work.CreateInput{
 			Owner:            "compound reviews",
 			SuccessPredicate: "governed review finding recorded at " + target,
-			DesiredOutcome:   strings.TrimSpace(summary),
+			DesiredOutcome:   strings.TrimSpace(in.Summary),
 			EvidenceRefs:     reviewartifact.Unique(append(append([]string{}, evidenceRefs...), target)),
 			Risk:             "tier1",
 			Privacy:          "private",
 		}, now)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 		workID = created.ID
 	} else {
 		w, err := store.Get(workID)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 		if w.State == "completed" || w.State == "failed" || w.State == "cancelled" {
-			fmt.Fprintf(os.Stderr, "error: work %s is %s (terminal); cannot record review finding\n", workID, w.State)
-			os.Exit(1)
+			return reviewFindingRecord{}, fmt.Errorf("work %s is %s (terminal); cannot record review finding", workID, w.State)
 		}
 	}
 	evidenceRefs = reviewartifact.Unique(append(evidenceRefs, "work://"+workID, target))
-	actionID := reviewartifact.ID("act_", workID, capability, target, summary, createdAt)
+	actionID := reviewartifact.ID("act_", workID, capability, target, in.Summary, createdAt)
 	ai := envelope.ActionIntent{
 		Header: envelope.Header{
 			SchemaVersion: envelope.SVActionIntent,
@@ -4548,22 +4595,21 @@ func cmdReviewsRecordFinding(args []string) {
 		MutationClass: "local_reversible",
 		Reversibility: "easy",
 		BlastRadius:   "repo",
-		Preview:       summary,
+		Preview:       in.Summary,
 		RollbackPlan:  "remove the newly written review finding artifact and markdown sibling",
 	}
 	pd := policy.Evaluate(ai, policyConfig(), now)
 	if !policy.Allowed(pd) {
-		printJSON(pd)
-		os.Exit(gateExit(pd))
+		return reviewFindingRecord{}, &reviewFindingDeniedError{Decision: pd}
 	}
 	report := reviewFindingRecord{
 		SchemaVersion:    "compound.review_finding_record.v0.1",
-		ID:               reviewartifact.ID("rvf_", workID, capability, target, summary),
+		ID:               reviewartifact.ID("rvf_", workID, capability, target, in.Summary),
 		CreatedAt:        createdAt,
 		Status:           "recorded",
 		WorkID:           workID,
 		Capability:       capability,
-		Summary:          strings.TrimSpace(summary),
+		Summary:          strings.TrimSpace(in.Summary),
 		TargetPath:       target,
 		ArtifactPath:     artifactPath,
 		MarkdownPath:     markdownPath,
@@ -4582,40 +4628,32 @@ func cmdReviewsRecordFinding(args []string) {
 	}
 	data, err := json.MarshalIndent(report, "", " ")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(artifactPath), 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	if err := os.WriteFile(artifactPath, append(data, '\n'), 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	if err := os.WriteFile(markdownPath, []byte(renderReviewFindingMarkdown(report)), 0o644); err != nil {
 		_ = os.Remove(artifactPath)
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
 	if _, err := store.RecordAction(workID, ai, pd, now); err != nil {
 		_ = os.Remove(artifactPath)
 		_ = os.Remove(markdownPath)
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		return reviewFindingRecord{}, err
 	}
-	if autoWork {
+	if in.AutoWork {
 		if _, err := store.Claim(workID, "compound reviews", now); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 		if _, err := store.Advance(workID, work.AdvanceInput{To: "running", Actor: "compound reviews", Note: "review finding recorded"}, now); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 		if _, err := store.Advance(workID, work.AdvanceInput{To: "verifying", Actor: "compound reviews", VerificationID: target, Note: "review finding artifact written"}, now); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 		if _, err := store.Close(workID, work.CloseInput{
 			Outcome:   "completed",
@@ -4625,11 +4663,10 @@ func cmdReviewsRecordFinding(args []string) {
 			Changed:   true,
 			ProofRefs: []string{target},
 		}, now); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return reviewFindingRecord{}, err
 		}
 	}
-	printJSON(report)
+	return report, nil
 }
 
 func reviewFindingSourceTraces(homePath string, values []string) ([]reviewFindingSourceTrace, []string, error) {
