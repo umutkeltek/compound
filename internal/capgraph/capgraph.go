@@ -549,6 +549,7 @@ func (s *Store) surface(task, harness string, ctx SurfaceContext) ([]Surfaced, e
 			why += fmt.Sprintf(" -false_triggered=%.1f", sub[n.ID])
 		}
 		constraints := capabilityConstraints(n.ID, edges)
+		addReferenceBearingConstraints(&constraints, n)
 		if n.Kind == "instruction_rule" {
 			addInstructionRuleConstraints(&constraints, n)
 		}
@@ -625,21 +626,17 @@ func evidenceMatchedOwnerBonuses(nodes []Node, edges []Edge, taskTokens map[stri
 	return ownerBonus, ownerRefs
 }
 
-func addInstructionRuleConstraints(c *SurfacingConstraints, n Node) {
+func addReferenceBearingConstraints(c *SurfacingConstraints, n Node) {
+	readDetail := "source drilldown requested by matched capability"
+	if n.Kind == "instruction_rule" {
+		readDetail = "context ref requested by matched InstructionRule"
+	}
 	for _, ref := range n.Read {
 		ref = strings.TrimSpace(ref)
 		if ref == "" {
 			continue
 		}
-		c.Required = append(c.Required, SurfacingConstraint{Kind: "read", Ref: ref, Detail: "context ref requested by matched InstructionRule", Confidence: 1})
-	}
-	for _, route := range n.Route {
-		output := strings.TrimSpace(route.Output)
-		destination := strings.TrimSpace(route.Destination)
-		if output == "" || destination == "" {
-			continue
-		}
-		c.Required = append(c.Required, SurfacingConstraint{Kind: "route", Ref: output, Detail: destination, Confidence: 1})
+		c.Required = append(c.Required, SurfacingConstraint{Kind: "read", Ref: ref, Detail: readDetail, Confidence: 1})
 	}
 	for _, boundary := range n.Boundary {
 		boundary = strings.TrimSpace(boundary)
@@ -647,6 +644,19 @@ func addInstructionRuleConstraints(c *SurfacingConstraints, n Node) {
 			continue
 		}
 		c.Conflicts = append(c.Conflicts, SurfacingConstraint{Kind: "boundary", Ref: instructionBoundaryRef(boundary), Detail: boundary, Confidence: 1})
+	}
+	sortConstraints(c.Required)
+	sortConstraints(c.Conflicts)
+}
+
+func addInstructionRuleConstraints(c *SurfacingConstraints, n Node) {
+	for _, route := range n.Route {
+		output := strings.TrimSpace(route.Output)
+		destination := strings.TrimSpace(route.Destination)
+		if output == "" || destination == "" {
+			continue
+		}
+		c.Required = append(c.Required, SurfacingConstraint{Kind: "route", Ref: output, Detail: destination, Confidence: 1})
 	}
 	if n.Tier > 0 {
 		c.Evidence = append(c.Evidence, SurfacingConstraint{Kind: "tier", Ref: fmt.Sprintf("instruction-tier:%d", n.Tier), Detail: "InstructionRule tier", Confidence: 1})
