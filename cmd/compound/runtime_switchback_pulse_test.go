@@ -16,6 +16,7 @@ import (
 const (
 	runtimePulseDoctorChildEnv = "COMPOUND_TEST_RUNTIME_PULSE_DOCTOR_CHILD"
 	runtimePulseRepairChildEnv = "COMPOUND_TEST_RUNTIME_PULSE_REPAIR_CHILD"
+	runtimePulseLiveChildEnv   = "COMPOUND_TEST_RUNTIME_PULSE_LIVE_CHILD"
 	runtimePulsePathEnv        = "COMPOUND_TEST_RUNTIME_PULSE_PATH"
 )
 
@@ -70,8 +71,9 @@ func TestRuntimeRepairPlanSwitchbackPulseFailedHop(t *testing.T) {
 	}
 	receiptPath := writeRuntimePulseCLIReceipt(t, "fail", []runtimePulseCLICheck{
 		{Name: "engine", Area: "engine", Level: "ok", Detail: "synthetic engine is healthy"},
+		{Name: "headroom", Area: "headroom", Level: "ok", Detail: "synthetic optimizer is healthy"},
 		{Name: "config-drift", Area: "config", Level: "warn", Detail: "synthetic config differs"},
-		{Name: "tap:synthetic-capture", Area: "taps", Level: "fail", Detail: "synthetic-capture.invalid is not listening"},
+		{Name: "tap:synthetic capture/one", Area: "taps", Level: "fail", Detail: "synthetic-capture.invalid is not listening"},
 	})
 	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeRepairPlanSwitchbackPulseFailedHop$")
 	cmd.Env = append(os.Environ(),
@@ -106,7 +108,7 @@ func TestRuntimeRepairPlanSwitchbackPulseFailedHop(t *testing.T) {
 	if err := json.Unmarshal(data, &plan); err != nil {
 		t.Fatalf("parse runtime repair plan: %v", err)
 	}
-	if plan.FailedCount != 1 || len(plan.FailedChecks) != 1 || plan.FailedChecks[0].Name != "live:tap:synthetic-capture" {
+	if plan.FailedCount != 1 || len(plan.FailedChecks) != 1 || plan.FailedChecks[0].Name != "live:tap:synthetic capture/one" {
 		t.Fatalf("repair plan lost exact failed hop: %+v", plan)
 	}
 	if !strings.Contains(plan.FailedChecks[0].Detail, "synthetic-capture.invalid is not listening") {
@@ -123,6 +125,31 @@ func TestRuntimeRepairPlanSwitchbackPulseFailedHop(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(homePath, "ledger", "claims.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("pulse repair-plan must not promote claims, stat err=%v", err)
+	}
+}
+
+func TestRuntimeDoctorSwitchbackPulseRejectsLiveFlag(t *testing.T) {
+	if os.Getenv(runtimePulseLiveChildEnv) == "1" {
+		cmdRuntime([]string{"doctor", "--switchback-pulse", os.Getenv(runtimePulsePathEnv), "--live"})
+		return
+	}
+
+	receiptPath := writeRuntimePulseCLIReceipt(t, "ok", []runtimePulseCLICheck{
+		{Name: "engine", Area: "engine", Level: "ok", Detail: "synthetic engine is healthy"},
+		{Name: "headroom", Area: "headroom", Level: "ok", Detail: "synthetic optimizer is healthy"},
+	})
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRuntimeDoctorSwitchbackPulseRejectsLiveFlag$")
+	cmd.Env = append(os.Environ(),
+		runtimePulseLiveChildEnv+"=1",
+		runtimePulsePathEnv+"="+receiptPath,
+	)
+	output, err := cmd.CombinedOutput()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 2 {
+		t.Fatalf("pulse evidence combined with --live should exit 2, err=%v output=%s", err, output)
+	}
+	if !strings.Contains(string(output), "--switchback-pulse cannot be combined with --live") {
+		t.Fatalf("pulse/live conflict missing actionable error: %s", output)
 	}
 }
 
