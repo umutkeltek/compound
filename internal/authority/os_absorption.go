@@ -18,6 +18,7 @@ import (
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
+	"compound/internal/routeevidence"
 	"compound/internal/work"
 )
 
@@ -41,6 +42,22 @@ const (
 	osAbsorptionProofModeWorkPacket    = "work_packet_authority"
 	osAbsorptionProofModeOSCapability  = "os_capability_wrapper_authority"
 	osAbsorptionProofModeServedOrient  = "served_orientation_authority"
+	// osAbsorptionProofModeInfraRegistry proves an infra-os operational
+	// registry (database.yaml/services.yaml) row: installed registry file
+	// exists, its recorded source hash matches the live YAML's current
+	// sha256, and the row's evidence_refs resolve to that ledger record. A
+	// stale hash (the live source changed since import) proves as "pending"
+	// drift, never a silent "ok" or an opaque "failed".
+	osAbsorptionProofModeInfraRegistry = "infra_registry_authority"
+	// osAbsorptionProofModeRegistryOwnership proves ownership (not health) of
+	// an already-live compound_primary registry: the installed registry file
+	// exists under $COMPOUND_HOME/registries/ and its corresponding Load*
+	// authority function parses it without error. It deliberately does not
+	// evaluate the loaded content's own status field (e.g. an
+	// operator-approval-frontier row can be proof_status=ok while its
+	// projected Status says "operator_approval_frontier_failed" — ownership
+	// and health are different axes).
+	osAbsorptionProofModeRegistryOwnership = "registry_ownership_authority"
 
 	osAbsorptionWorkAuthorityRef              = "compound://work"
 	osAbsorptionEffectiveContractAuthorityRef = "compound://contracts/effective-contract"
@@ -259,6 +276,16 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			} else {
 				dr.ProofStatus = "pending"
 			}
+		case osAbsorptionNeedsInfraRegistryProof(row):
+			result, drift := infraRegistryProof(homePath, row)
+			if drift {
+				dr.ProofStatus = "pending"
+				dr.ProofDetail = result.reason
+			} else {
+				applyOSAbsorptionAutoProof(&report, &dr, result)
+			}
+		case osAbsorptionNeedsRegistryOwnershipProof(row):
+			applyOSAbsorptionAutoProof(&report, &dr, registryOwnershipProof(homePath, row))
 		case row.Status == "pending":
 			dr.ProofStatus = "pending"
 		}
@@ -1271,6 +1298,198 @@ func doctorCheck(name string, ok bool, detail string) OSAbsorptionDoctorCheck {
 		status = "fail"
 	}
 	return OSAbsorptionDoctorCheck{Name: name, Status: status, Detail: detail}
+}
+
+// osAbsorptionNeedsInfraRegistryProof matches the os_source_infra_database
+// and os_source_infra_services rows (and any row that opts in via
+// proof_mode): both own a real live infra-os YAML source that can drift
+// independently of the installed $COMPOUND_HOME copy, so their proof must
+// re-hash the live source on every doctor run, not just check installation.
+func osAbsorptionNeedsInfraRegistryProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode == osAbsorptionProofModeInfraRegistry {
+		return true
+	}
+	return row.CompoundOwner == InfraDatabaseAuthorityRef || row.CompoundOwner == InfraServicesAuthorityRef
+}
+
+// infraRegistrySourceAuthorityRefID extracts the single required
+// "source_authority:<id>" evidence_ref that pins a matrix row to one exact
+// ledger record. Requiring this (rather than "any record for this
+// authority_ref") means a matrix row cannot silently ride along on a later,
+// unrelated re-import; the row's own evidence has to name the record.
+func infraRegistrySourceAuthorityRefID(refs []string) (string, error) {
+	const prefix = "source_authority:"
+	id := ""
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, prefix) {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.TrimPrefix(ref, prefix))
+		if candidate == "" {
+			return "", fmt.Errorf("infra registry evidence has empty source_authority ref")
+		}
+		if id != "" {
+			return "", fmt.Errorf("infra registry evidence has duplicate source_authority ref")
+		}
+		id = candidate
+	}
+	if id == "" {
+		return "", fmt.Errorf("infra registry evidence missing source_authority ref")
+	}
+	return id, nil
+}
+
+// infraRegistryProof proves an infra-os operational registry row. The bool
+// return is true only for the drift case: the installed registry and its
+// cited ledger record agree with each other, but the live infra-os source
+// file has since changed. That is reported as proof_status=pending (not
+// failed, not ok) so a source-side edit surfaces as review debt instead of
+// silently flipping the row to unproven with no explanation, or staying
+// falsely "ok".
+func infraRegistryProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptionProofResult, bool) {
+	var (
+		installedPath string
+		loadRecords   func(string) ([]InfraRegistrySourceAuthorityRecord, error)
+		label         string
+	)
+	switch row.CompoundOwner {
+	case InfraDatabaseAuthorityRef:
+		installedPath, loadRecords, label = InfraDatabaseRegistryPath(homePath), LoadInfraDatabaseSourceAuthority, "infra-database"
+	case InfraServicesAuthorityRef:
+		installedPath, loadRecords, label = InfraServicesRegistryPath(homePath), LoadInfraServicesSourceAuthority, "infra-services"
+	default:
+		return osAbsorptionProofResult{reason: fmt.Sprintf("infra registry authority: unrecognized compound_owner %q", row.CompoundOwner)}, false
+	}
+
+	evidenceID, err := infraRegistrySourceAuthorityRefID(row.EvidenceRefs)
+	if err != nil {
+		return osAbsorptionProofResult{reason: label + " " + err.Error()}, false
+	}
+	records, err := loadRecords(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("%s source authority ledger: %v", label, err)}, false
+	}
+	var rec *InfraRegistrySourceAuthorityRecord
+	for i := range records {
+		if records[i].ID == evidenceID {
+			rec = &records[i]
+			break
+		}
+	}
+	if rec == nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("%s evidence ref source_authority:%s does not resolve to a ledger record", label, evidenceID)}, false
+	}
+	if rec.AuthorityRef != row.CompoundOwner {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("%s ledger record %s authority_ref %q differs from row compound_owner %q", label, rec.ID, rec.AuthorityRef, row.CompoundOwner)}, false
+	}
+
+	installedBody, err := os.ReadFile(installedPath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("installed %s registry: %v", label, err)}, false
+	}
+	installedRevision := "sha256:" + digestBytes(installedBody)
+	if installedRevision != rec.SourceRevision {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("%s installed registry sha256 %s does not match ledger record %s revision %s (re-import)", label, installedRevision, rec.ID, rec.SourceRevision)}, false
+	}
+
+	liveSourcePath := strings.TrimSpace(row.SourceRef)
+	if liveSourcePath == "" {
+		return osAbsorptionProofResult{reason: label + " row missing source_ref"}, false
+	}
+	liveBody, err := os.ReadFile(liveSourcePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("%s live source %s: %v", label, liveSourcePath, err)}, false
+	}
+	liveRevision := "sha256:" + digestBytes(liveBody)
+	if liveRevision != rec.SourceRevision {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("%s live source %s sha256 %s has drifted from imported record %s revision %s; re-run authority import-%s to refresh", label, liveSourcePath, liveRevision, rec.ID, rec.SourceRevision, label)}, true
+	}
+
+	return osAbsorptionProofResult{
+		ok: true,
+		proofRef: fmt.Sprintf(
+			"%s:source_authority=%s;revision=%s;installed=%s",
+			osAbsorptionProofModeInfraRegistry,
+			rec.ID,
+			rec.SourceRevision,
+			installedPath,
+		),
+	}, false
+}
+
+// osAbsorptionNeedsRegistryOwnershipProof matches already-live
+// compound_primary registries whose ownership proof is "installed file
+// exists + its own authority command loads it without error" rather than a
+// source-hash drift check (unlike the infra registries, these rows do not
+// each carry one stable, independently-editable upstream source file this
+// doctor can re-hash on every run).
+func osAbsorptionNeedsRegistryOwnershipProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode == osAbsorptionProofModeRegistryOwnership {
+		return true
+	}
+	_, ok := registryOwnershipSpecs("")[row.ID]
+	return ok
+}
+
+// registryOwnershipSpec pairs one matrix row id with the installed-file path
+// and Load* authority call that proves compound owns that registry. load
+// returning a non-nil error (including "not installed") fails the row;
+// load succeeding proves ownership regardless of what the loaded content's
+// own status/health field says (see osAbsorptionProofModeRegistryOwnership).
+type registryOwnershipSpec struct {
+	path string
+	load func() error
+}
+
+func registryOwnershipSpecs(homePath string) map[string]registryOwnershipSpec {
+	return map[string]registryOwnershipSpec{
+		"os_source_standing_grants": {
+			path: policy.StandingGrantsPath(homePath),
+			load: func() error { _, err := policy.LoadStandingGrantsFromHome(homePath); return err },
+		},
+		"os_source_operator_approval_frontier": {
+			path: policy.OperatorApprovalFrontierPath(homePath),
+			load: func() error { _, err := policy.LoadOperatorApprovalFrontierFromHome(homePath); return err },
+		},
+		"os_source_release_goal_holds": {
+			path: policy.ReleaseGoalHoldsPath(homePath),
+			load: func() error { _, err := policy.LoadReleaseGoalHoldsFromHome(homePath); return err },
+		},
+		"os_source_placement_rules": {
+			path: policy.PlacementRulesPath(homePath),
+			load: func() error { _, err := policy.LoadPlacementRulesFromHome(homePath); return err },
+		},
+		"os_source_promotion_criteria": {
+			path: routeevidence.PromotionCriteriaPath(homePath),
+			load: func() error { _, _, err := routeevidence.LoadPromotionCriteria(homePath); return err },
+		},
+		"os_source_model_capabilities": {
+			path: routeevidence.ModelCapabilitiesPath(homePath),
+			load: func() error { _, _, err := routeevidence.LoadModelCapabilitiesFromHome(homePath); return err },
+		},
+		"os_source_job_roster": {
+			path: JobRosterAuthorityPath(homePath),
+			load: func() error { _, err := LoadJobRosterAuthority(homePath); return err },
+		},
+	}
+}
+
+func registryOwnershipProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	spec, ok := registryOwnershipSpecs(homePath)[row.ID]
+	if !ok {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("registry ownership authority: no proof spec for row id %q", row.ID)}
+	}
+	if _, err := os.Stat(spec.path); err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("installed registry file: %v", err)}
+	}
+	if err := spec.load(); err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("authority command: %v", err)}
+	}
+	return osAbsorptionProofResult{
+		ok:       true,
+		proofRef: fmt.Sprintf("%s:file=%s", osAbsorptionProofModeRegistryOwnership, spec.path),
+	}
 }
 
 func cleanStrings(values []string) []string {

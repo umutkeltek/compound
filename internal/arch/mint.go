@@ -80,6 +80,20 @@ var mintHomes = map[string]MintHome{
 		Purpose:  "pure preparation-lane ranking (capability fit, token speed, cost) with a veto seam",
 		Consumer: "work dispatch-plan lane selection via the routeevidence adapter",
 	},
+	// data-sources and services land together (infra-os registry import door,
+	// work_0ccf9361f136): both are evidence, not enforcement — they inform the
+	// os-absorption doctor's infra_registry_authority proof mode and future
+	// runtime/status projections, never block a policy decision themselves.
+	"registry:data-sources": {
+		Class:    MintEvidence,
+		Purpose:  "infra-os database/data-authority registry (database.yaml) installed verbatim under COMPOUND_HOME with source hash + revision recorded",
+		Consumer: "authority os-absorption-doctor's infra_registry_authority proof mode (compound/internal/authority)",
+	},
+	"registry:services": {
+		Class:    MintEvidence,
+		Purpose:  "infra-os services/topology registry (services.yaml) installed verbatim under COMPOUND_HOME with source hash + revision recorded",
+		Consumer: "authority os-absorption-doctor's infra_registry_authority proof mode (compound/internal/authority)",
+	},
 }
 
 // grandfatheredOrgans — internal/ packages present when the ratchet landed (2026-07-12). Pre-law
