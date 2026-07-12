@@ -9,7 +9,390 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 )
+
+const (
+	testMemorySourceRef       = "/synthetic/brain/projects/compound.md"
+	testMemoryEvidenceID      = "ev_memory_ledger_consumed"
+	testMemoryKnowledgePageID = "knowledge_memory_ledger_consumed"
+	testMemoryContextPackID   = "ctx_memory_ledger_consumed"
+	testMemoryContractID      = "contract_memory_ledger_consumed"
+	testMemoryClaimID         = "claim_memory_ledger_proof"
+)
+
+func TestOSAbsorptionDoctorMemoryLedgerAuthorityBindsConsumedContextPack(t *testing.T) {
+	const (
+		sourceRef       = "/synthetic/brain/projects/compound.md"
+		evidenceID      = "ev_memory_ledger_consumed"
+		knowledgePageID = "knowledge_memory_ledger_consumed"
+		contextPackID   = "ctx_memory_ledger_consumed"
+		contractID      = "contract_memory_ledger_consumed"
+		claimID         = "claim_memory_ledger_proof"
+	)
+	homePath := t.TempDir()
+	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
+	memoryRow := row("os_source_brain_project_compound", sourceRef, "absorbed", "compound://ledger/memory", "compound orient", osAbsorptionProofModeMemoryLedger)
+	memoryRow.EvidenceRefs = []string{
+		"knowledge_page:" + knowledgePageID,
+		"context_pack:" + contextPackID,
+	}
+	writeJSONFixture(t, matrixPath, OSAbsorptionSourceMatrix{
+		SchemaVersion: OSAbsorptionMatrixSchema,
+		Rows:          []OSAbsorptionMatrixRow{memoryRow},
+	})
+	if _, err := ImportOSAbsorptionMatrix(homePath, matrixPath, time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("import matrix: %v", err)
+	}
+	writeMemoryLedgerClaimFixture(t, homePath, evidenceID, knowledgePageID, candidates.BasisCuratedPage, sourceRef)
+	writeMemoryLedgerEvidenceFixture(t, homePath, evidenceID, knowledgePageID)
+	writeMemoryLedgerConsumedContextPack(t, homePath, contextPackID, contractID, claimID)
+
+	report, err := OSAbsorptionDoctor(homePath)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	got := report.Rows[0]
+	if got.ProofStatus != "ok" {
+		t.Fatalf("memory-ledger proof should be machine-proven: %+v", got)
+	}
+	for _, want := range []string{
+		"claim=" + claimID,
+		"evidence=" + evidenceID,
+		"context_pack=" + contextPackID,
+		"contract=" + contractID,
+		"memory_rev=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	} {
+		if !strings.Contains(got.ProofRef, want) {
+			t.Fatalf("memory-ledger proof_ref = %q, want %q", got.ProofRef, want)
+		}
+	}
+}
+
+func TestOSAbsorptionDoctorMemoryLedgerAuthorityFailsClosed(t *testing.T) {
+	tests := []struct {
+		name       string
+		options    memoryLedgerAuthorityTestOptions
+		wantDetail string
+	}{
+		{
+			name: "missing ContextPack ref",
+			options: memoryLedgerAuthorityTestOptions{mutateRow: func(row *OSAbsorptionMatrixRow) {
+				row.EvidenceRefs = []string{"knowledge_page:" + testMemoryKnowledgePageID}
+			}},
+			wantDetail: "missing ContextPack ref",
+		},
+		{
+			name: "invalid ContextPack ref",
+			options: memoryLedgerAuthorityTestOptions{mutateRow: func(row *OSAbsorptionMatrixRow) {
+				row.EvidenceRefs[1] = "context_pack:not/a/context"
+			}},
+			wantDetail: "invalid ContextPack id",
+		},
+		{
+			name: "duplicate ContextPack ref",
+			options: memoryLedgerAuthorityTestOptions{mutateRow: func(row *OSAbsorptionMatrixRow) {
+				row.EvidenceRefs = append(row.EvidenceRefs, "context_pack:ctx_memory_ledger_other")
+			}},
+			wantDetail: "duplicate ContextPack ref",
+		},
+		{
+			name:       "missing persisted ContextPack",
+			options:    memoryLedgerAuthorityTestOptions{skipPack: true},
+			wantDetail: "ContextPack " + testMemoryContextPackID,
+		},
+		{
+			name: "missing task intent",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.TaskContract.Intent = ""
+			}}},
+			wantDetail: "missing task intent",
+		},
+		{
+			name: "missing persisted EffectiveContract",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{
+				skipContract: true,
+			}},
+			wantDetail: "EffectiveContract " + testMemoryContractID,
+		},
+		{
+			name: "contract task differs from pack",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutateContract: func(contract *envelope.EffectiveContract) {
+				contract.TaskContract.Intent = "different task"
+			}}},
+			wantDetail: "task contract differs",
+		},
+		{
+			name: "contract omits selected claim",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutateContract: func(contract *envelope.EffectiveContract) {
+				contract.ActiveMemory = nil
+			}}},
+			wantDetail: "missing selected claim",
+		},
+		{
+			name: "contract memory revision differs",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutateContract: func(contract *envelope.EffectiveContract) {
+				contract.SourceRevisions[0].Rev = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			}}},
+			wantDetail: "memory revision",
+		},
+		{
+			name: "private row cannot use public pack and contract",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.Privacy = "public"
+			}}},
+			wantDetail: "privacy",
+		},
+		{
+			name: "pack is not current runtime authority",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.Authority.SourceClass = "generated"
+				pack.Authority.Status = "stale"
+			}}},
+			wantDetail: "runtime/current authority",
+		},
+		{
+			name: "missing memory relevance revision",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.SourceRevisions = nil
+			}}},
+			wantDetail: "missing known source revision",
+		},
+		{
+			name: "claim appears only in ActiveMemory",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.Included = nil
+			}}},
+			wantDetail: "not consumed by ContextPack",
+		},
+		{
+			name: "claim appears only in Included",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.ActiveMemory = nil
+			}}},
+			wantDetail: "not consumed by ContextPack",
+		},
+		{
+			name: "Included claim is stale",
+			options: memoryLedgerAuthorityTestOptions{context: memoryLedgerContextFixtureOptions{mutatePack: func(pack *envelope.ContextPack) {
+				pack.Included[0].Status = "stale"
+			}}},
+			wantDetail: "not consumed by ContextPack",
+		},
+		{
+			name:       "claim lacks a valid promotion basis",
+			options:    memoryLedgerAuthorityTestOptions{promotionBasis: "unknown_basis"},
+			wantDetail: "no durably promoted source-linked claim",
+		},
+		{
+			name: "promoted claim belongs to another source",
+			options: memoryLedgerAuthorityTestOptions{
+				claimKnowledgePageID: "knowledge_unrelated",
+				claimSourceRef:       "/synthetic/brain/projects/unrelated.md",
+			},
+			wantDetail: "no durably promoted source-linked claim",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := installMemoryLedgerAuthorityTestFixture(t, tt.options)
+			if got.ProofStatus != "failed" || got.ProofRef != "" {
+				t.Fatalf("memory-ledger authority must fail closed: %+v", got)
+			}
+			if !strings.Contains(got.ProofDetail, tt.wantDetail) {
+				t.Fatalf("proof detail = %q, want %q", got.ProofDetail, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestOSAbsorptionDoctorMemoryLedgerAuthorityScansPastUnconsumedSourceMatch(t *testing.T) {
+	got := installMemoryLedgerAuthorityTestFixture(t, memoryLedgerAuthorityTestOptions{
+		beforeDoctor: func(t *testing.T, homePath string) {
+			prependMemoryLedgerJSONFixture(t, filepath.Join(homePath, "ledger", "claims.jsonl"), map[string]any{
+				"id":              "claim_memory_ledger_earlier",
+				"seq":             0,
+				"entity":          "system:compound",
+				"predicate":       "os_absorption_end_state",
+				"object":          "earlier source-linked but unconsumed claim",
+				"valid_from":      "2026-07-12T11:59:00Z",
+				"confidence":      0.9,
+				"derivation":      "deterministic",
+				"promotion_basis": candidates.BasisCuratedPage,
+				"qualifiers": map[string]string{
+					"source":      "knowledge_page",
+					"page_id":     testMemoryKnowledgePageID,
+					"source_path": testMemorySourceRef,
+				},
+				"evidence_refs": []string{"cand_memory_ledger_earlier", testMemoryEvidenceID},
+				"visibility":    "contextual",
+				"created_at":    "2026-07-12T11:59:00Z",
+			})
+		},
+	})
+	if got.ProofStatus != "ok" || !strings.Contains(got.ProofRef, "claim="+testMemoryClaimID) {
+		t.Fatalf("proof must scan past earlier unconsumed source match: %+v", got)
+	}
+}
+
+type memoryLedgerAuthorityTestOptions struct {
+	mutateRow            func(*OSAbsorptionMatrixRow)
+	skipPack             bool
+	context              memoryLedgerContextFixtureOptions
+	promotionBasis       string
+	claimKnowledgePageID string
+	claimSourceRef       string
+	beforeDoctor         func(*testing.T, string)
+}
+
+func installMemoryLedgerAuthorityTestFixture(t *testing.T, options memoryLedgerAuthorityTestOptions) OSAbsorptionDoctorRow {
+	t.Helper()
+	homePath := t.TempDir()
+	memoryRow := row("os_source_brain_project_compound", testMemorySourceRef, "absorbed", "compound://ledger/memory", "compound orient", osAbsorptionProofModeMemoryLedger)
+	memoryRow.EvidenceRefs = []string{
+		"knowledge_page:" + testMemoryKnowledgePageID,
+		"context_pack:" + testMemoryContextPackID,
+	}
+	if options.mutateRow != nil {
+		options.mutateRow(&memoryRow)
+	}
+	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
+	writeJSONFixture(t, matrixPath, OSAbsorptionSourceMatrix{
+		SchemaVersion: OSAbsorptionMatrixSchema,
+		Rows:          []OSAbsorptionMatrixRow{memoryRow},
+	})
+	if _, err := ImportOSAbsorptionMatrix(homePath, matrixPath, time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("import matrix: %v", err)
+	}
+	promotionBasis := options.promotionBasis
+	if promotionBasis == "" {
+		promotionBasis = candidates.BasisCuratedPage
+	}
+	knowledgePageID := options.claimKnowledgePageID
+	if knowledgePageID == "" {
+		knowledgePageID = testMemoryKnowledgePageID
+	}
+	sourceRef := options.claimSourceRef
+	if sourceRef == "" {
+		sourceRef = testMemorySourceRef
+	}
+	writeMemoryLedgerClaimFixture(t, homePath, testMemoryEvidenceID, knowledgePageID, promotionBasis, sourceRef)
+	writeMemoryLedgerEvidenceFixture(t, homePath, testMemoryEvidenceID, knowledgePageID)
+	if !options.skipPack {
+		writeMemoryLedgerConsumedContextPack(t, homePath, testMemoryContextPackID, testMemoryContractID, testMemoryClaimID, options.context)
+	}
+	if options.beforeDoctor != nil {
+		options.beforeDoctor(t, homePath)
+	}
+	report, err := OSAbsorptionDoctor(homePath)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if len(report.Rows) != 1 {
+		t.Fatalf("doctor rows = %+v, want one", report.Rows)
+	}
+	return report.Rows[0]
+}
+
+type memoryLedgerContextFixtureOptions struct {
+	mutatePack             func(*envelope.ContextPack)
+	mutateContract         func(*envelope.EffectiveContract)
+	skipContract           bool
+	skipContractValidation bool
+}
+
+func writeMemoryLedgerConsumedContextPack(t *testing.T, homePath, contextPackID, contractID, claimID string, options ...memoryLedgerContextFixtureOptions) {
+	t.Helper()
+	var option memoryLedgerContextFixtureOptions
+	if len(options) > 0 {
+		option = options[0]
+	}
+	claimRef := "claim://" + claimID
+	pack := envelope.ContextPack{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVContextPack,
+			ID:            contextPackID,
+			CreatedAt:     "2026-07-12T12:02:00Z",
+			Producer:      envelope.Producer{Kind: "test", Name: "memory-ledger-authority"},
+			IDs:           envelope.IDs{ContractID: contractID},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		SummaryMD:    "memory-ledger authority fixture",
+		TaskContract: envelope.TaskContract{Intent: "consume compound project memory"},
+		Included: []envelope.IncludedRef{{
+			Ref:         claimRef,
+			SourceClass: "runtime",
+			Reason:      "task-relevant promoted memory",
+			Confidence:  1,
+			Status:      "current",
+		}},
+		Excluded:           []envelope.ExcludedRef{},
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		ActiveMemory:       []string{claimRef},
+		SourceRevisions: []envelope.SourceRev{{
+			Source: "memory://relevance-gated",
+			Rev:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		}},
+		RequiredChecks: []string{},
+		Avoid:          []string{},
+	}
+	if option.mutatePack != nil {
+		option.mutatePack(&pack)
+	}
+	if err := pack.Validate(); err != nil {
+		t.Fatalf("fixture ContextPack invalid: %v", err)
+	}
+	path := filepath.Join(homePath, "context", "packs", contextPackID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFixture(t, path, pack)
+	if option.skipContract {
+		return
+	}
+	contract := envelope.EffectiveContract{
+		Header: envelope.Header{
+			SchemaVersion: envelope.SVEffectiveContract,
+			ID:            contractID,
+			CreatedAt:     pack.CreatedAt,
+			Producer:      envelope.Producer{Kind: "test", Name: "memory-ledger-authority"},
+			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},
+			Privacy:       "private",
+			Risk:          "tier0",
+			EvidenceRefs:  []string{},
+			Uncertainty:   envelope.Uncertainty{Level: "known"},
+		},
+		Harness:            "codex",
+		TaskContract:       pack.TaskContract,
+		ActiveInstructions: []string{},
+		ActiveHooks:        []string{},
+		ActiveDecisions:    []string{},
+		ActiveMemory:       []string{claimRef},
+		Excluded:           []envelope.ExcludedRef{},
+		SourceRevisions:    pack.SourceRevisions,
+		Unknowns:           []string{},
+		Conflicts:          []string{},
+	}
+	if option.mutateContract != nil {
+		option.mutateContract(&contract)
+	}
+	if !option.skipContractValidation {
+		if err := contract.Validate(); err != nil {
+			t.Fatalf("fixture EffectiveContract invalid: %v", err)
+		}
+	}
+	contractPath := filepath.Join(homePath, "contracts", "effective", "2026-07-12", contractID+".json")
+	if err := os.MkdirAll(filepath.Dir(contractPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFixture(t, contractPath, contract)
+}
 
 func TestOSAbsorptionDoctorMemoryLedgerAuthority(t *testing.T) {
 	const (
@@ -100,11 +483,16 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthorityAcceptsHistoricalPromotedClaim(t
 		sourceRef       = "/synthetic/brain/projects/compound.md"
 		evidenceID      = "ev_memory_ledger_historical"
 		knowledgePageID = "knowledge_memory_ledger_historical"
+		contextPackID   = "ctx_memory_ledger_historical"
+		contractID      = "contract_memory_ledger_historical"
 	)
 	homePath := t.TempDir()
 	matrixPath := filepath.Join(t.TempDir(), "matrix.json")
-	memoryRow := row("os_source_brain_project_compound", sourceRef, "pending", "compound://ledger/memory", "compound memory recall", "")
-	memoryRow.EvidenceRefs = []string{"knowledge_page:" + knowledgePageID}
+	memoryRow := row("os_source_brain_project_compound", sourceRef, "absorbed", "compound://ledger/memory", "compound orient", osAbsorptionProofModeMemoryLedger)
+	memoryRow.EvidenceRefs = []string{
+		"knowledge_page:" + knowledgePageID,
+		"context_pack:" + contextPackID,
+	}
 	writeJSONFixture(t, matrixPath, OSAbsorptionSourceMatrix{
 		SchemaVersion: OSAbsorptionMatrixSchema,
 		Rows:          []OSAbsorptionMatrixRow{memoryRow},
@@ -140,6 +528,7 @@ func TestOSAbsorptionDoctorMemoryLedgerAuthorityAcceptsHistoricalPromotedClaim(t
 		"from": "claim_memory_ledger_newer_unrelated",
 		"to":   "claim_memory_ledger_proof",
 	})
+	writeMemoryLedgerConsumedContextPack(t, homePath, contextPackID, contractID, "claim_memory_ledger_proof")
 
 	report, err := OSAbsorptionDoctor(homePath)
 	if err != nil {
@@ -223,6 +612,21 @@ func appendMemoryLedgerJSONFixture(t *testing.T, path string, value any) {
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func prependMemoryLedgerJSONFixture(t *testing.T, path string, value any) {
+	t.Helper()
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(append(body, '\n'), existing...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

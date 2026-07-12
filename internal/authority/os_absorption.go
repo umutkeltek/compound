@@ -6,10 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"compound/internal/candidates"
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
@@ -249,7 +251,9 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		case osAbsorptionNeedsServedOrientationProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionServedOrientationProof(homePath, row))
 		case osAbsorptionNeedsMemoryLedgerProof(row):
-			if rec, ok := memoryLedgerProofRecord(homePath, row); ok {
+			if row.ProofMode == osAbsorptionProofModeMemoryLedger {
+				applyOSAbsorptionAutoProof(&report, &dr, memoryLedgerAuthorityProof(homePath, row))
+			} else if rec, ok := memoryLedgerProofRecord(homePath, row); ok {
 				dr.ProofStatus = "ok"
 				dr.ProofRef = rec
 			} else {
@@ -402,7 +406,10 @@ func osAbsorptionNeedsCapabilityProof(row OSAbsorptionMatrixRow) bool {
 }
 
 func osAbsorptionNeedsMemoryLedgerProof(row OSAbsorptionMatrixRow) bool {
-	return row.CompoundOwner == "compound://ledger/memory" || row.ProofMode == osAbsorptionProofModeMemoryLedger
+	if row.ProofMode != "" {
+		return row.ProofMode == osAbsorptionProofModeMemoryLedger
+	}
+	return row.CompoundOwner == "compound://ledger/memory"
 }
 
 func memoryLedgerProofRecord(homePath string, row OSAbsorptionMatrixRow) (proofRef string, ok bool) {
@@ -502,6 +509,222 @@ func memoryLedgerClaimEvidenceRef(claim mem.Claim) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func memoryLedgerAuthorityProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	contextPackID, err := memoryLedgerContextPackEvidenceID(row.EvidenceRefs)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	pack, err := readOSAbsorptionContextPack(homePath, contextPackID)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	if pack.Authority.SourceClass != "runtime" || pack.Authority.Status != "current" {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s is not runtime/current authority", pack.ID)}
+	}
+	if pack.Privacy != row.Privacy {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s privacy %q differs from row privacy %q", pack.ID, pack.Privacy, row.Privacy)}
+	}
+	if strings.TrimSpace(pack.TaskContract.Intent) == "" {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing task intent", pack.ID)}
+	}
+	contractID := strings.TrimSpace(pack.IDs.ContractID)
+	if !safeOSAbsorptionRuntimeID(contractID, "contract_") {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing or invalid EffectiveContract id %q", pack.ID, contractID)}
+	}
+	memoryRevision := osAbsorptionContextPackRevision(pack, "memory://relevance-gated")
+	if !knownMemoryLedgerRevision(memoryRevision) {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing known source revision for memory://relevance-gated", pack.ID)}
+	}
+	contract, err := readMemoryLedgerEffectiveContract(homePath, pack, contractID)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	if contract.Authority.SourceClass != "runtime" || contract.Authority.Status != "current" {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s is not runtime/current authority", contract.ID)}
+	}
+	if contract.Privacy != row.Privacy {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s privacy %q differs from row privacy %q", contract.ID, contract.Privacy, row.Privacy)}
+	}
+	if !sameMemoryLedgerTaskContract(pack.TaskContract, contract.TaskContract) {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s task contract differs from ContextPack %s", contract.ID, pack.ID)}
+	}
+	if contractRevision := osAbsorptionEffectiveContractRevision(contract, "memory://relevance-gated"); contractRevision != memoryRevision {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s memory revision %q differs from ContextPack %s revision %q", contract.ID, contractRevision, pack.ID, memoryRevision)}
+	}
+	packCreatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(pack.CreatedAt))
+	if err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s created_at invalid: %v", pack.ID, err)}
+	}
+
+	store, err := mem.OpenReadOnly(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "memory ledger: " + err.Error()}
+	}
+	claims, err := store.LedgerClaims()
+	if err != nil {
+		return osAbsorptionProofResult{reason: "memory ledger claims: " + err.Error()}
+	}
+	evidence, err := store.Evidence()
+	if err != nil {
+		return osAbsorptionProofResult{reason: "memory ledger evidence: " + err.Error()}
+	}
+	rowRefs := make(map[string]bool, len(row.EvidenceRefs))
+	for _, ref := range row.EvidenceRefs {
+		if ref = memoryLedgerCanonicalRef(ref); ref != "" {
+			rowRefs[ref] = true
+		}
+	}
+	evidenceByID := make(map[string]mem.EvidenceItem, len(evidence))
+	for _, item := range evidence {
+		evidenceByID[item.ID] = item
+	}
+
+	sourceMatch := false
+	temporalMismatch := false
+	packConsumedMatch := false
+	for _, claim := range claims {
+		if !safeOSAbsorptionRuntimeID(strings.TrimSpace(claim.ID), "claim_") ||
+			!candidates.ValidBasis(strings.TrimSpace(claim.PromotionBasis)) {
+			continue
+		}
+		evidenceRef, matched := memoryLedgerClaimSourceRef(row, rowRefs, evidenceByID, claim)
+		if !matched {
+			continue
+		}
+		if !safeOSAbsorptionRuntimeID(evidenceRef, "ev_") {
+			continue
+		}
+		if _, exists := evidenceByID[evidenceRef]; !exists {
+			continue
+		}
+		sourceMatch = true
+		claimCreatedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(claim.CreatedAt))
+		if err != nil || claimCreatedAt.After(packCreatedAt) {
+			temporalMismatch = true
+			continue
+		}
+		claimRef := "claim://" + claim.ID
+		if !containsOSAbsorptionRef(pack.ActiveMemory, claimRef) ||
+			!memoryLedgerPackIncludesCurrentClaim(pack, claimRef) {
+			continue
+		}
+		packConsumedMatch = true
+		if !containsOSAbsorptionRef(contract.ActiveMemory, claimRef) {
+			continue
+		}
+		return osAbsorptionProofResult{
+			ok: true,
+			proofRef: fmt.Sprintf(
+				"%s:claim=%s;evidence=%s;context_pack=%s;contract=%s;memory_rev=%s",
+				osAbsorptionProofModeMemoryLedger,
+				claim.ID,
+				evidenceRef,
+				pack.ID,
+				contractID,
+				memoryRevision,
+			),
+		}
+	}
+	if packConsumedMatch {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("EffectiveContract %s missing selected claim consumed by ContextPack %s", contract.ID, pack.ID)}
+	}
+	if temporalMismatch {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("source-linked promoted claim postdates ContextPack %s", pack.ID)}
+	}
+	if sourceMatch {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("durably promoted source-linked claim not consumed by ContextPack %s in both ActiveMemory and Included(runtime/current)", pack.ID)}
+	}
+	return osAbsorptionProofResult{reason: "no durably promoted source-linked claim with persisted evidence"}
+}
+
+func memoryLedgerContextPackEvidenceID(refs []string) (string, error) {
+	id := ""
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, osAbsorptionContextPackEvidenceRef) {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.TrimPrefix(ref, osAbsorptionContextPackEvidenceRef))
+		if !safeOSAbsorptionRuntimeID(candidate, "ctx_") {
+			return "", fmt.Errorf("memory ledger authority has invalid ContextPack id %q", candidate)
+		}
+		if id != "" {
+			return "", fmt.Errorf("memory ledger authority has duplicate ContextPack ref")
+		}
+		id = candidate
+	}
+	if id == "" {
+		return "", fmt.Errorf("memory ledger authority missing ContextPack ref")
+	}
+	return id, nil
+}
+
+func readMemoryLedgerEffectiveContract(homePath string, pack envelope.ContextPack, contractID string) (envelope.EffectiveContract, error) {
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(pack.CreatedAt))
+	if err != nil {
+		return envelope.EffectiveContract{}, fmt.Errorf("ContextPack %s created_at invalid: %w", pack.ID, err)
+	}
+	path := filepath.Join(homePath, "contracts", "effective", createdAt.UTC().Format("2006-01-02"), contractID+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return envelope.EffectiveContract{}, fmt.Errorf("EffectiveContract %s at %s: %w", contractID, path, err)
+	}
+	var contract envelope.EffectiveContract
+	if err := json.Unmarshal(body, &contract); err != nil {
+		return envelope.EffectiveContract{}, fmt.Errorf("EffectiveContract %s parse: %w", contractID, err)
+	}
+	if contract.ID != contractID {
+		return envelope.EffectiveContract{}, fmt.Errorf("EffectiveContract path id %s contains %s", contractID, contract.ID)
+	}
+	if err := contract.Validate(); err != nil {
+		return envelope.EffectiveContract{}, fmt.Errorf("EffectiveContract %s invalid: %w", contractID, err)
+	}
+	return contract, nil
+}
+
+func knownMemoryLedgerRevision(revision string) bool {
+	const prefix = "sha256:"
+	revision = strings.TrimSpace(revision)
+	digest := strings.TrimPrefix(revision, prefix)
+	return strings.HasPrefix(revision, prefix) && len(digest) == 64 && isOSAbsorptionHex(digest)
+}
+
+func sameMemoryLedgerTaskContract(left, right envelope.TaskContract) bool {
+	return left.Intent == right.Intent &&
+		left.Mode == right.Mode &&
+		left.DesiredOutcome == right.DesiredOutcome &&
+		left.SuccessPredicate == right.SuccessPredicate &&
+		slices.Equal(left.NonGoals, right.NonGoals) &&
+		left.ProofMedium == right.ProofMedium
+}
+
+func osAbsorptionEffectiveContractRevision(contract envelope.EffectiveContract, ref string) string {
+	for _, revision := range contract.SourceRevisions {
+		if revision.Source == ref {
+			return strings.TrimSpace(revision.Rev)
+		}
+	}
+	return ""
+}
+
+func memoryLedgerPackIncludesCurrentClaim(pack envelope.ContextPack, claimRef string) bool {
+	for _, included := range pack.Included {
+		if included.Ref == claimRef && included.SourceClass == "runtime" && included.Status == "current" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsOSAbsorptionRef(refs []string, want string) bool {
+	for _, ref := range refs {
+		if ref == want {
+			return true
+		}
+	}
+	return false
 }
 
 // osAbsorptionNeedsWorkPacketProof matches the OS packet directory wrapper.
