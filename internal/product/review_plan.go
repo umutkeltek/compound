@@ -242,6 +242,7 @@ func RenderReviewYAMLDraft(plan ReviewPlan) string {
 	fmt.Fprintln(&b, "rationale: \"\"")
 	fmt.Fprintln(&b, "confidence: -1")
 	fmt.Fprintln(&b, "next_action: \"TODO: next action after reviewed evidence\"")
+	fmt.Fprintln(&b, "reviewed_by: TODO_reviewed_by_actor")
 	fmt.Fprintln(&b, "evidence_refs:")
 	for _, ref := range plan.EvidenceRefs {
 		fmt.Fprintf(&b, " - %s\n", ref)

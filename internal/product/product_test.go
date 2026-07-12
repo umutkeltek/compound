@@ -1134,6 +1134,7 @@ func validReview() Review {
 		Rationale:     "movement exists but evidence is not causal",
 		Confidence:    0.5,
 		EvidenceRefs:  []string{"fixture"},
+		ReviewedBy:    "operator",
 	}
 }
 

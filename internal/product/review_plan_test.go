@@ -120,6 +120,7 @@ func TestReviewPlanRecordsGatedReviewArtifactsWithoutResolvingHypothesis(t *test
 	yamlDraft = strings.ReplaceAll(yamlDraft, "TODO_result_supported_refuted_or_inconclusive", "supported")
 	yamlDraft = strings.ReplaceAll(yamlDraft, "rationale: \"\"", "rationale: \"signal moved in expected direction after confounder review\"")
 	yamlDraft = strings.ReplaceAll(yamlDraft, "confidence: -1", "confidence: 0.61")
+	yamlDraft = strings.ReplaceAll(yamlDraft, "TODO_reviewed_by_actor", "operator")
 	reviewPath := filepath.Join(t.TempDir(), "product-review.yaml")
 	if err := os.WriteFile(reviewPath, []byte(yamlDraft), 0o644); err != nil {
 		t.Fatal(err)

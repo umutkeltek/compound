@@ -322,6 +322,7 @@ func TestDryRunDerivedHypothesisClosesAfterSignalReview(t *testing.T) {
 		Confidence:    0.72,
 		NextAction:    "prepare the next bounded outbound experiment",
 		EvidenceRefs:  reviewPlan.EvidenceRefs,
+		ReviewedBy:    "operator",
 	}
 	reviewReport, err := ApplyReview(home, store, review, "fixture/product-review.review.yaml", tProduct.Add(8*24*time.Hour+time.Hour))
 	if err != nil {
@@ -504,6 +505,7 @@ func seedLoopModelHome(t *testing.T) string {
 		Confidence:    0.7,
 		NextAction:    "keep measuring one more window",
 		EvidenceRefs:  []string{"product_signal:sig_loop_conversion_reviewed", "fixture:review"},
+		ReviewedBy:    "operator",
 		ReviewedAt:    "2026-07-02T08:00:00Z",
 	}
 	if _, err := ApplyReview(home, store, review, "fixture/review.yaml", loopTestNow.Add(-4*time.Hour)); err != nil {

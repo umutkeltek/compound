@@ -245,6 +245,7 @@ type Review struct {
 	Confidence    float64  `json:"confidence" yaml:"confidence"`
 	NextAction    string   `json:"next_action,omitempty" yaml:"next_action,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty" yaml:"reviewed_by,omitempty"`
 	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
 	AppliedAt     string   `json:"applied_at,omitempty" yaml:"applied_at,omitempty"`
 	EvidenceID    string   `json:"evidence_id,omitempty" yaml:"evidence_id,omitempty"`
@@ -308,6 +309,7 @@ type ReviewReport struct {
 	HypothesisID string   `json:"hypothesis_id"`
 	ReviewID     string   `json:"review_id"`
 	Result       string   `json:"result"`
+	ReviewedBy   string   `json:"reviewed_by"`
 	EvidenceID   string   `json:"evidence_id"`
 	EvidenceRefs []string `json:"evidence_refs"`
 	TransitionID string   `json:"transition_id,omitempty"`
@@ -322,6 +324,7 @@ type ReviewArtifactRecord struct {
 	HypothesisID  string   `json:"hypothesis_id"`
 	ReviewID      string   `json:"review_id"`
 	Result        string   `json:"result"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty"`
 	EvidenceID    string   `json:"evidence_id"`
 	EvidenceRefs  []string `json:"evidence_refs,omitempty"`
 	TransitionID  string   `json:"transition_id,omitempty"`
@@ -383,6 +386,14 @@ type DoctorReport struct {
 	SourceIssues        []ProductSourceIssue  `json:"source_issues,omitempty"`
 	MissingEvidenceRefs []string              `json:"missing_evidence_refs,omitempty"`
 	ASCSignalStaleness  []ASCSignalStaleness  `json:"asc_signal_staleness,omitempty"`
+	// Provenance debt (read-only; existing records are never rewritten).
+	// unattributed_judgments = product review records with no named actor;
+	// agent_annotated_judgments = records attributed to an agent lane that
+	// annotate but never substitute for an operator adjudication.
+	UnattributedJudgments     int      `json:"unattributed_judgments"`
+	UnattributedJudgmentIDs   []string `json:"unattributed_judgment_ids,omitempty"`
+	AgentAnnotatedJudgments   int      `json:"agent_annotated_judgments"`
+	AgentAnnotatedJudgmentIDs []string `json:"agent_annotated_judgment_ids,omitempty"`
 }
 
 type ASCSignalStaleness struct {
@@ -760,7 +771,7 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 		SourceKind: "repo",
 		SourceID:   review.SourceRef,
 		QuoteText:  review.Rationale,
-		Actor:      "tool",
+		Actor:      review.ReviewedBy,
 	}, now)
 	if err != nil {
 		return ReviewReport{}, err
@@ -779,6 +790,7 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 		Kind:         "product_review",
 		ProductID:    review.ProductID,
 		ObjectID:     review.ID,
+		Actor:        review.ReviewedBy,
 		SourceTrace:  "product_review:" + review.ID,
 		BeforeRefs:   compact(append([]string{"product_hypothesis:" + candidate.ID}, review.EvidenceRefs...)),
 		AfterRefs:    compact(append([]string{"product_hypothesis:" + candidate.ID, "product_review:" + review.ID, evidence.ID}, candidate.EvidenceRefs...)),
@@ -797,6 +809,7 @@ func ApplyReview(homePath string, store *mem.Store, review Review, sourcePath st
 		HypothesisID: review.HypothesisID,
 		ReviewID:     review.ID,
 		Result:       review.Result,
+		ReviewedBy:   review.ReviewedBy,
 		EvidenceID:   evidence.ID,
 		EvidenceRefs: candidate.EvidenceRefs,
 		TransitionID: tr.ID,
@@ -821,6 +834,7 @@ func recordReviewArtifactResult(homePath string, review Review, sourcePath strin
 		HypothesisID:  report.HypothesisID,
 		ReviewID:      report.ReviewID,
 		Result:        report.Result,
+		ReviewedBy:    review.ReviewedBy,
 		EvidenceID:    report.EvidenceID,
 		EvidenceRefs:  reviewartifact.Unique(report.EvidenceRefs),
 		TransitionID:  report.TransitionID,
@@ -1382,6 +1396,9 @@ func ValidateReview(review Review) error {
 	if len(review.EvidenceRefs) == 0 {
 		return fmt.Errorf("review evidence_refs required")
 	}
+	if strings.TrimSpace(review.ReviewedBy) == "" || strings.Contains(review.ReviewedBy, "TODO") {
+		return fmt.Errorf("review reviewed_by required (name the judge; agent lanes annotate, operators adjudicate)")
+	}
 	return nil
 }
 
@@ -1505,6 +1522,14 @@ func DoctorWithOptions(homePath, productID string, opts DoctorOptions) (DoctorRe
 	report.ReviewReadyCount = len(report.ReviewReady)
 	report.SourceIssueCount = len(report.SourceIssues)
 	report.ASCSignalStaleness = staleASCSignals(tl.Signals, productID, now, opts.RegisteredASCAppRefs)
+	unattributedIDs, agentAnnotatedIDs, err := scanProductJudgmentProvenance(homePath, productID)
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	report.UnattributedJudgmentIDs = unattributedIDs
+	report.UnattributedJudgments = len(unattributedIDs)
+	report.AgentAnnotatedJudgmentIDs = agentAnnotatedIDs
+	report.AgentAnnotatedJudgments = len(agentAnnotatedIDs)
 	if report.PendingReviewCount > 0 || report.SourceIssueCount > 0 {
 		report.Status = "needs_review"
 	}
@@ -1512,6 +1537,84 @@ func DoctorWithOptions(homePath, productID string, opts DoctorOptions) (DoctorRe
 		report.Status = "warn"
 	}
 	return report, nil
+}
+
+// OperatorAdjudicated reports whether a product-judgment actor represents an
+// operator adjudication rather than an agent annotation. It mirrors the panel
+// sidecar rule (664e1a7 / the 2026-07-02 provenance ruling): an unattributed or
+// agent-attributed judgment annotates the record but never clears an
+// operator-gated pending/approval state. Only an explicit operator role token
+// (or the configured operator identity) adjudicates; every other named actor —
+// including agent lanes like codex/claude — is an annotation.
+func OperatorAdjudicated(actor string) bool {
+	a := strings.ToLower(strings.TrimSpace(actor))
+	if a == "" {
+		return false
+	}
+	for _, token := range operatorActorTokens() {
+		if a == strings.ToLower(strings.TrimSpace(token)) {
+			return true
+		}
+	}
+	return false
+}
+
+// operatorActorTokens is the set of actor strings that count as an operator
+// adjudication. It stays identity-free for the public repo (role tokens only)
+// but honors the same env override the panel lane uses.
+func operatorActorTokens() []string {
+	tokens := []string{"operator", "owner", "human"}
+	for _, key := range []string{"COMPOUND_OPERATOR_ID", "COMPOUND_REVIEWED_BY"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			tokens = append(tokens, v)
+		}
+	}
+	return tokens
+}
+
+// scanProductJudgmentProvenance reads (never rewrites) the product-review
+// records on disk for productID and buckets them by attribution:
+// unattributed (no actor) and agent-annotated (a named actor that is not an
+// operator adjudication). Records missing/unreadable are skipped, not mutated.
+func scanProductJudgmentProvenance(homePath, productID string) (unattributed, agentAnnotated []string, err error) {
+	dir := filepath.Join(homePath, "reviews", "product-reviews")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reviewed.json") {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if readErr != nil {
+			return nil, nil, readErr
+		}
+		var rec ReviewArtifactRecord
+		if json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		if rec.SchemaVersion != "compound.product_review_record.v0.1" || rec.ProductID != productID {
+			continue
+		}
+		id := rec.ID
+		if id == "" {
+			id = strings.TrimSuffix(entry.Name(), ".reviewed.json")
+		}
+		if strings.TrimSpace(rec.ReviewedBy) == "" {
+			unattributed = append(unattributed, id)
+			continue
+		}
+		if !OperatorAdjudicated(rec.ReviewedBy) {
+			agentAnnotated = append(agentAnnotated, id)
+		}
+	}
+	sort.Strings(unattributed)
+	sort.Strings(agentAnnotated)
+	return unattributed, agentAnnotated, nil
 }
 
 func NeedsWriteback(report DoctorReport) bool {
@@ -1649,6 +1752,7 @@ type LoopTransitionInput struct {
 	Kind         string
 	ProductID    string
 	ObjectID     string
+	Actor        string // producer lane_id: who authored this loop move (provenance)
 	SourceTrace  string
 	BeforeRefs   []string
 	AfterRefs    []string
@@ -1676,7 +1780,7 @@ func BuildLoopTransition(in LoopTransitionInput, now time.Time) (envelope.Transi
 			SchemaVersion: envelope.SVTransition,
 			ID:            stableID("tr_", in.Kind, in.ProductID, in.ObjectID),
 			CreatedAt:     now.UTC().Format(time.RFC3339),
-			Producer:      envelope.Producer{Kind: "cli", Name: "compound"},
+			Producer:      envelope.Producer{Kind: "cli", Name: "compound", LaneID: strings.TrimSpace(in.Actor)},
 			IDs:           envelope.IDs{WorkID: stableID("work_product_", in.Kind, in.ProductID, in.ObjectID)},
 			Scope:         envelope.Scope{ProductID: in.ProductID},
 			Authority:     envelope.Authority{SourceClass: "runtime", Status: "current"},

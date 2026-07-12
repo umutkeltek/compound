@@ -346,7 +346,7 @@ compound capability <add|resolve|surface|observe|consume|consume-receipts|list|g
 compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
-compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml> | source-issue-plan --product P --issue I [--target file] | review <review.yaml> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
+compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml> | source-issue-plan --product P --issue I [--target file] | review <review.yaml> --reviewed-by <actor> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
                                                                Product registry + signal/hypothesis loop
 compound source observe <source-observation.yaml> | observe-batch <batch.json> (--dry-run|--apply-product-signals|--apply-source-observations|--apply-knowledge|--apply-route-evidence|--apply-events|--review-candidates) [--json] | intake [--limit N] [--json] | intake-work-plan --card <card_id> [--actor A] [--json] SourceObservation or generic ObservationBatch intake
 compound event import-os <events.ndjson> | event show <trace_id> [--json] | event list [--stream NAME] [--limit N] [--json] | event authority [--json] OS-style append-only events -> TraceEnvelope evidence; forensic reader served from COMPOUND_HOME; optional trace-backed review finding producer
@@ -6467,7 +6467,7 @@ func cmdAuthority(args []string) {
 }
 
 func productUsage() string {
-	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> [--actor A] [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
+	return "usage: compound product authority [--json] | import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | change-stream <candidates.md> | hypothesis-plan --candidate <candidate_id> [--target <file>] | observation-verdict-plan --verdict <panel-verdict.json> [--target <file>] | observation-verdict-review <review.yaml> | review-plan --hypothesis <hypothesis_id> --signal <signal_id> [--target <file>] | action-plan --product <product_id> --card <card_id> [--target <file>] | action-work-plan --reviewed <reviewed.json> --actor <actor> [--json] | source-issue-plan --product <product_id> --issue <issue_id> [--target <file>] | outbound-dry-run-plan --reviewed-receipt <reviewed.json> [--target <file>] | review <review.yaml> --reviewed-by <actor> | action-review <review.yaml> | source-issue-review <review.yaml> | outbound-dry-run-review <review.yaml> | timeline <product_id> | doctor <product_id> [--writeback]"
 }
 
 func loadProductSignalArg(args []string) (product.SignalDocument, string, error) {
@@ -6948,16 +6948,33 @@ func cmdProduct(args []string) {
 		fmt.Printf("- review: %s\n", paths.ReviewPath)
 		fmt.Printf("- review_yaml: %s\n", paths.ReviewYAMLPath)
 	case "review":
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml>")
+		rest := args[1:]
+		reviewedBy := strings.TrimSpace(flagValue(rest, "--reviewed-by"))
+		if reviewedBy == "" {
+			reviewedBy = strings.TrimSpace(flagValue(rest, "--actor"))
+		}
+		reviewPath := ""
+		for i := 0; i < len(rest); i++ {
+			switch rest[i] {
+			case "--reviewed-by", "--actor":
+				i++ // skip the flag value
+			default:
+				if !strings.HasPrefix(rest[i], "--") && reviewPath == "" {
+					reviewPath = rest[i]
+				}
+			}
+		}
+		if reviewPath == "" || reviewedBy == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound product review <review.yaml> --reviewed-by <actor>")
 			os.Exit(2)
 		}
-		review, err := product.LoadReview(args[1])
+		review, err := product.LoadReview(reviewPath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product review:", err)
 			os.Exit(1)
 		}
-		report, err := product.ApplyReview(homePath, store, review, args[1], time.Now())
+		review.ReviewedBy = reviewedBy
+		report, err := product.ApplyReview(homePath, store, review, reviewPath, time.Now())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "product review:", err)
 			os.Exit(1)
@@ -6967,6 +6984,7 @@ func cmdProduct(args []string) {
 		fmt.Printf("- product: %s\n", report.ProductID)
 		fmt.Printf("- hypothesis: %s\n", report.HypothesisID)
 		fmt.Printf("- result: %s\n", report.Result)
+		fmt.Printf("- reviewed_by: %s\n", report.ReviewedBy)
 		fmt.Printf("- evidence: %s\n", report.EvidenceID)
 		fmt.Printf("- evidence_refs: %d\n", len(report.EvidenceRefs))
 		if report.TransitionID != "" {
@@ -7025,13 +7043,12 @@ func cmdProduct(args []string) {
 		fmt.Printf("- reviewed: %s\n", report.ReviewedPath)
 	case "action-work-plan":
 		reviewedPath := flagValue(args[1:], "--reviewed")
-		actor := flagValue(args[1:], "--actor")
+		actor := strings.TrimSpace(flagValue(args[1:], "--actor"))
 		jsonOut := hasFlag(args[1:], "--json")
-		if actor == "" {
-			actor = "codex"
-		}
-		if reviewedPath == "" {
-			fmt.Fprintln(os.Stderr, "usage: compound product action-work-plan --reviewed <reviewed.json> [--actor A] [--json]")
+		if reviewedPath == "" || actor == "" {
+			// No silent default actor: fabricated provenance on the last door
+			// before a work draft is worse than missing provenance.
+			fmt.Fprintln(os.Stderr, "usage: compound product action-work-plan --reviewed <reviewed.json> --actor <actor> [--json]")
 			os.Exit(2)
 		}
 		draft, err := product.BuildActionWorkDraft(homePath, reviewedPath)

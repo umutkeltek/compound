@@ -75,6 +75,7 @@ type ActionReview struct {
 	Rationale     string   `json:"rationale" yaml:"rationale"`
 	Confidence    float64  `json:"confidence" yaml:"confidence"`
 	EvidenceRefs  []string `json:"evidence_refs" yaml:"evidence_refs"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty" yaml:"reviewed_by,omitempty"`
 	ReviewedAt    string   `json:"reviewed_at,omitempty" yaml:"reviewed_at,omitempty"`
 	SourceRef     string   `json:"source_ref,omitempty" yaml:"source_ref,omitempty"`
 }
@@ -90,6 +91,7 @@ type ActionReviewReport struct {
 	PlanID        string   `json:"plan_id"`
 	ReviewID      string   `json:"review_id"`
 	Decision      string   `json:"decision"`
+	ReviewedBy    string   `json:"reviewed_by,omitempty"`
 	EvidenceRefs  []string `json:"evidence_refs"`
 	ReviewPath    string   `json:"review_path,omitempty"`
 	ReviewedPath  string   `json:"reviewed_path,omitempty"`
@@ -289,6 +291,7 @@ func RenderActionReviewYAML(plan ActionPlan) string {
 	fmt.Fprintln(&b, "decision: TODO_decision_propose_work_park_reject")
 	fmt.Fprintln(&b, "rationale: TODO_rationale")
 	fmt.Fprintln(&b, "confidence: TODO_confidence_0_to_1")
+	fmt.Fprintln(&b, "reviewed_by: TODO_reviewed_by_actor")
 	fmt.Fprintln(&b, "evidence_refs:")
 	for _, ref := range plan.EvidenceRefs {
 		fmt.Fprintf(&b, " - %q\n", ref)
@@ -437,6 +440,7 @@ func ApplyActionReview(homePath string, review ActionReview, sourcePath string, 
 		PlanID:        plan.ID,
 		ReviewID:      review.ID,
 		Decision:      review.Decision,
+		ReviewedBy:    strings.TrimSpace(review.ReviewedBy),
 		EvidenceRefs:  evidenceRefs,
 		ReviewPath:    strings.TrimSpace(sourcePath),
 		Warnings: []string{
@@ -480,6 +484,9 @@ func ValidateActionReview(review ActionReview) error {
 	}
 	if strings.Contains(review.Decision, "TODO") || strings.TrimSpace(review.Rationale) == "" || strings.Contains(review.Rationale, "TODO") {
 		return fmt.Errorf("action review rationale and decision must be completed")
+	}
+	if strings.TrimSpace(review.ReviewedBy) == "" || strings.Contains(review.ReviewedBy, "TODO") {
+		return fmt.Errorf("action review reviewed_by required (name the judge; agent lanes annotate, operators adjudicate)")
 	}
 	if review.Confidence < 0 || review.Confidence > 1 {
 		return fmt.Errorf("action review confidence must be between 0 and 1")

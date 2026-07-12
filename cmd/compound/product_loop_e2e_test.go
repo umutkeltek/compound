@@ -63,6 +63,7 @@ func TestObservationProductLoopActionToWorkEnvelopeProof(t *testing.T) {
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_decision_propose_work_park_reject", "propose_work")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_rationale", "observation signal needs a reviewed work envelope before any product action")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_confidence_0_to_1", "0.75")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_reviewed_by_actor", "operator")
 	reviewPath := filepath.Join(t.TempDir(), "product-action.review.yaml")
 	if err := os.WriteFile(reviewPath, []byte(reviewYAML), 0o644); err != nil {
 		t.Fatal(err)

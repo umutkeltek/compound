@@ -87,6 +87,7 @@ func TestActionPlanMakesLoopActionCardReviewableWithoutProductMutation(t *testin
 	reviewYAML := strings.ReplaceAll(string(reviewDraft), "TODO_decision_propose_work_park_reject", "propose_work")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_rationale", "make this reviewed card available for a later work proposal")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_confidence_0_to_1", "0.7")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_reviewed_by_actor", "operator")
 	reviewPath := filepath.Join(filepath.Dir(paths.ReviewYAMLPath), "reviewed-action.review.yaml")
 	if err := os.WriteFile(reviewPath, []byte(reviewYAML), 0o644); err != nil {
 		t.Fatal(err)

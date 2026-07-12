@@ -8205,7 +8205,7 @@ signal:
 		t.Fatal(err)
 	}
 	reviewOut := captureStdout(t, func() {
-		cmdProduct([]string{"review", reviewYAMLPath})
+		cmdProduct([]string{"review", reviewYAMLPath, "--reviewed-by", "operator"})
 	})
 	if !strings.Contains(reviewOut, "# product review "+plan.ReviewDraft.ReviewID) ||
 		!strings.Contains(reviewOut, "- status: updated") ||
@@ -12671,6 +12671,7 @@ func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *tes
 	reviewYAML := strings.ReplaceAll(string(draft), "TODO_decision_propose_work_park_reject", "propose_work")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_rationale", "CLI reviewed action card before work admission")
 	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_confidence_0_to_1", "0.74")
+	reviewYAML = strings.ReplaceAll(reviewYAML, "TODO_reviewed_by_actor", "operator")
 	if err := os.WriteFile(reviewYAMLPath, []byte(reviewYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -12699,7 +12700,7 @@ func TestProductActionPlanAndReviewCLIExposeActionCardsThroughReviewQueue(t *tes
 		t.Fatal(err)
 	}
 	workPlanOut := captureStdout(t, func() {
-		cmdProduct([]string{"action-work-plan", "--reviewed", reviewedPath, "--json"})
+		cmdProduct([]string{"action-work-plan", "--reviewed", reviewedPath, "--actor", "operator", "--json"})
 	})
 	var workPlanReport struct {
 		Status        string                  `json:"status"`
@@ -13050,6 +13051,7 @@ func seedCLIProductActionLoop(t *testing.T, homePath string, store *mem.Store) {
 		Confidence:    0.76,
 		NextAction:    "prepare one bounded onboarding experiment proposal",
 		EvidenceRefs:  []string{"product_signal:sig_action_cli_activation", "fixture:action-cli-review"},
+		ReviewedBy:    "operator",
 	}
 	if _, err := product.ApplyReview(homePath, store, review, "fixture/action-cli-review.yaml", cliTestNow.Add(8*24*time.Hour)); err != nil {
 		t.Fatal(err)

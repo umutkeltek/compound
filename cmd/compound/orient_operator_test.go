@@ -1185,6 +1185,7 @@ func seedOrientProductLoopProjectionHome(t *testing.T, homePath string, now time
 		Rationale:     "Conversion moved but sample is still too small.",
 		Confidence:    0.61,
 		NextAction:    "keep screenshot one more window",
+		ReviewedBy:    "operator",
 		ReviewedAt:    now.Add(-30 * time.Minute).Format(time.RFC3339),
 		EvidenceRefs:  []string{"product_signal:sig_orient_conversion", "fixture:orient-review"},
 	}
