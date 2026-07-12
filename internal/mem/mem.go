@@ -202,7 +202,14 @@ type Position struct {
 }
 
 // Store is the memory ledger rooted at a COMPOUND_HOME.
-type Store struct{ home string }
+type Store struct {
+	home string
+
+	// entityLoader is a test seam for proving that cluster folds do not reload
+	// the append-only entity registry once per claim. Production stores leave it
+	// nil and read the registry from disk through loadEntities.
+	entityLoader func() ([]Entity, error)
+}
 
 func Open(homePath string) (*Store, error) {
 	if strings.TrimSpace(homePath) == "" {
@@ -688,7 +695,12 @@ func reinforcesEdge(from string, prior Claim, c Candidate, seq int64, now time.T
 func (s *Store) reinforceIfEcho(c Candidate, now time.Time) (bool, error) {
 	var reinforced bool
 	err := s.withLock(func() error {
-		prior, hasPrior, err := s.currentClusterClaim(c, 0)
+		entities, err := s.Entities()
+		if err != nil {
+			return err
+		}
+		resolver := newEntityResolver(entities)
+		prior, hasPrior, err := s.currentClusterClaimWithResolver(c, 0, resolver)
 		if err != nil {
 			return err
 		}
@@ -699,7 +711,7 @@ func (s *Store) reinforceIfEcho(c Candidate, now time.Time) (bool, error) {
 				return nil
 			}
 		} else {
-			prior, hasPrior, err = s.currentEchoClaim(c, 0)
+			prior, hasPrior, err = s.currentEchoClaimWithResolver(c, 0, resolver)
 			if err != nil {
 				return err
 			}
@@ -1032,6 +1044,14 @@ func (s *Store) currentClaim(entity, predicate string, asOf int64) (Claim, bool,
 }
 
 func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, error) {
+	entities, err := s.Entities()
+	if err != nil {
+		return Claim{}, false, err
+	}
+	return s.currentClusterClaimWithResolver(cand, asOf, newEntityResolver(entities))
+}
+
+func (s *Store) currentClusterClaimWithResolver(cand Candidate, asOf int64, resolver *entityResolver) (Claim, bool, error) {
 	claims, err := s.loadClaimsAsOf(asOf)
 	if err != nil {
 		return Claim{}, false, err
@@ -1039,10 +1059,7 @@ func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, er
 	if asOf == 0 {
 		asOf = s.maxSeq(claims)
 	}
-	want, err := s.candidateClusterKey(cand)
-	if err != nil {
-		return Claim{}, false, err
-	}
+	want := candidateClusterKeyWithResolver(resolver, cand)
 	superseded, err := s.supersededAsOf(asOf)
 	if err != nil {
 		return Claim{}, false, err
@@ -1053,10 +1070,7 @@ func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, er
 		if claim.Seq > asOf || superseded[claim.ID] {
 			continue
 		}
-		got, err := s.claimClusterKey(claim)
-		if err != nil {
-			return Claim{}, false, err
-		}
+		got := claimClusterKeyWithResolver(resolver, claim)
 		if sameClusterKey(got, want) && (!found || claim.Seq > best.Seq) {
 			best, found = claim, true
 		}
@@ -1065,6 +1079,14 @@ func (s *Store) currentClusterClaim(cand Candidate, asOf int64) (Claim, bool, er
 }
 
 func (s *Store) currentEchoClaim(cand Candidate, asOf int64) (Claim, bool, error) {
+	entities, err := s.Entities()
+	if err != nil {
+		return Claim{}, false, err
+	}
+	return s.currentEchoClaimWithResolver(cand, asOf, newEntityResolver(entities))
+}
+
+func (s *Store) currentEchoClaimWithResolver(cand Candidate, asOf int64, resolver *entityResolver) (Claim, bool, error) {
 	claims, err := s.loadClaimsAsOf(asOf)
 	if err != nil {
 		return Claim{}, false, err
@@ -1072,10 +1094,7 @@ func (s *Store) currentEchoClaim(cand Candidate, asOf int64) (Claim, bool, error
 	if asOf == 0 {
 		asOf = s.maxSeq(claims)
 	}
-	want, err := s.candidateEchoKey(cand)
-	if err != nil {
-		return Claim{}, false, err
-	}
+	want := candidateEchoKeyWithResolver(resolver, cand)
 	superseded, err := s.supersededAsOf(asOf)
 	if err != nil {
 		return Claim{}, false, err
@@ -1086,10 +1105,7 @@ func (s *Store) currentEchoClaim(cand Candidate, asOf int64) (Claim, bool, error
 		if claim.Seq > asOf || superseded[claim.ID] || !SameClaimObject(claim.Object, cand.Object) || !sameQualifiers(claim.Qualifiers, cand.Qualifiers) {
 			continue
 		}
-		got, err := s.claimEchoKey(claim)
-		if err != nil {
-			return Claim{}, false, err
-		}
+		got := claimEchoKeyWithResolver(resolver, claim)
 		if sameClusterKey(got, want) && (!found || claim.Seq > best.Seq) {
 			best, found = claim, true
 		}

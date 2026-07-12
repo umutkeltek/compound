@@ -53,6 +53,13 @@ func (s *Store) RegisterEntity(e Entity, now time.Time) (Entity, error) {
 
 // Entities loads the registry (append-only, last-wins by slug, deterministic order).
 func (s *Store) Entities() ([]Entity, error) {
+	if s.entityLoader != nil {
+		return s.entityLoader()
+	}
+	return s.loadEntities()
+}
+
+func (s *Store) loadEntities() ([]Entity, error) {
 	byID := map[string]Entity{}
 	var order []string
 	err := readJSONL(s.entitiesLog(), func(line []byte) error {
@@ -85,6 +92,28 @@ func (s *Store) ResolveEntity(token string) (EntityResolution, error) {
 	if err != nil {
 		return EntityResolution{}, err
 	}
+	return resolveEntity(ents, token), nil
+}
+
+type entityResolver struct {
+	entities []Entity
+	cache    map[string]EntityResolution
+}
+
+func newEntityResolver(entities []Entity) *entityResolver {
+	return &entityResolver{entities: entities, cache: map[string]EntityResolution{}}
+}
+
+func (r *entityResolver) Resolve(token string) EntityResolution {
+	if resolved, ok := r.cache[token]; ok {
+		return resolved
+	}
+	resolved := resolveEntity(r.entities, token)
+	r.cache[token] = resolved
+	return resolved
+}
+
+func resolveEntity(ents []Entity, token string) EntityResolution {
 	tok := strings.TrimSpace(token)
 	low := strings.ToLower(tok)
 	// rank: slug(3) > identifier(2) > alias(1) > path(0); keep the best tier each entity matches.
@@ -115,7 +144,7 @@ func (s *Store) ResolveEntity(token string) (EntityResolution, error) {
 		}
 	}
 	if len(best) == 0 {
-		return EntityResolution{Status: "unresolved"}, nil
+		return EntityResolution{Status: "unresolved"}
 	}
 	highest := -1
 	for _, tier := range best {
@@ -134,9 +163,9 @@ func (s *Store) ResolveEntity(token string) (EntityResolution, error) {
 		// More than one distinct entity matched at the same strongest tier:
 		// preserve uncertainty instead of letting lower-precedence matches
 		// force ambiguity over an explicit id or identifier.
-		return EntityResolution{Status: "multi", Slug: strings.Join(slugs, ",")}, nil
+		return EntityResolution{Status: "multi", Slug: strings.Join(slugs, ",")}
 	}
-	return EntityResolution{Slug: slugs[0], Status: "resolved", Via: via[slugs[0]]}, nil
+	return EntityResolution{Slug: slugs[0], Status: "resolved", Via: via[slugs[0]]}
 }
 
 // isPathPrefix reports whether tok is the path identifier id itself or a path nested under it —

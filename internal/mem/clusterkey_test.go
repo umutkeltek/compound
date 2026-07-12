@@ -1,6 +1,7 @@
 package mem
 
 import (
+	"fmt"
 	"os"
 	"testing"
 )
@@ -43,6 +44,73 @@ func TestStoreClusterKeyDoesNotGuessAmbiguousEntity(t *testing.T) {
 	want := "shared\x1flanguage\x1fdecision"
 	if got != want {
 		t.Fatalf("ambiguous entity ClusterKey = %q, want raw fallback %q", got, want)
+	}
+}
+
+func TestCurrentClusterLookupsLoadEntitySnapshotOnce(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.RegisterEntity(Entity{Slug: "project:api", Kind: "project", Aliases: []string{"API"}}, t0); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 64; i++ {
+		claim := Claim{
+			ID:         fmt.Sprintf("claim_%02d", i),
+			Seq:        int64(i + 1),
+			Entity:     "project:api",
+			Predicate:  fmt.Sprintf("fact_%02d", i),
+			Object:     "same value",
+			ClaimType:  "status",
+			Qualifiers: map[string]string{"domain": "runtime"},
+		}
+		if err := appendJSONL(s.claimsLog(), &claim); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	loads := 0
+	s.entityLoader = func() ([]Entity, error) {
+		loads++
+		return s.loadEntities()
+	}
+	cand := Candidate{
+		Entity:     "API",
+		Predicate:  "fact_63",
+		Object:     "same value",
+		ClaimType:  "status",
+		Qualifiers: map[string]string{"domain": "runtime"},
+	}
+
+	if got, found, err := s.currentClusterClaim(cand, 0); err != nil {
+		t.Fatal(err)
+	} else if !found || got.ID != "claim_63" {
+		t.Fatalf("current cluster claim = %+v found=%v, want claim_63", got, found)
+	}
+	if loads != 1 {
+		t.Fatalf("current cluster entity-registry loads = %d, want 1 regardless of claim count", loads)
+	}
+
+	loads = 0
+	if got, found, err := s.currentEchoClaim(cand, 0); err != nil {
+		t.Fatal(err)
+	} else if !found || got.ID != "claim_63" {
+		t.Fatalf("current echo claim = %+v found=%v, want claim_63", got, found)
+	}
+	if loads != 1 {
+		t.Fatalf("current echo entity-registry loads = %d, want 1 regardless of claim count", loads)
+	}
+
+	loads = 0
+	echo := cand
+	echo.Predicate = "new_fact"
+	reinforced, err := s.reinforceIfEcho(echo, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reinforced {
+		t.Fatal("broad echo should reinforce the current claim after an exact-slot miss")
+	}
+	if loads != 1 {
+		t.Fatalf("exact-miss plus broad-echo entity-registry loads = %d, want one shared snapshot", loads)
 	}
 }
 

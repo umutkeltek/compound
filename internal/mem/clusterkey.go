@@ -38,13 +38,11 @@ func (c Candidate) Topic() string {
 
 // ClusterKey resolves the entity through the registry when there is one unambiguous slug.
 func (s *Store) ClusterKey(entity, topic, claimType string) (string, error) {
-	resolved := entity
-	if r, err := s.ResolveEntity(entity); err != nil {
+	entities, err := s.Entities()
+	if err != nil {
 		return "", err
-	} else if r.Status == "resolved" {
-		resolved = r.Slug
 	}
-	return ClusterKey(resolved, topic, claimType), nil
+	return clusterKeyWithResolver(newEntityResolver(entities), entity, topic, claimType), nil
 }
 
 func (s *Store) candidateClusterKey(c Candidate) (string, error) {
@@ -64,13 +62,45 @@ func (s *Store) claimEchoKey(c Claim) (string, error) {
 }
 
 func (s *Store) claimSlotKey(entity, predicate, claimType string, qualifiers map[string]string, fallbackID string) (string, error) {
-	resolved := entity
-	if r, err := s.ResolveEntity(entity); err != nil {
+	entities, err := s.Entities()
+	if err != nil {
 		return "", err
-	} else if r.Status == "resolved" {
+	}
+	return claimSlotKeyWithResolver(newEntityResolver(entities), entity, predicate, claimType, qualifiers, fallbackID), nil
+}
+
+func clusterKeyWithResolver(resolver *entityResolver, entity, topic, claimType string) string {
+	resolved := entity
+	if r := resolver.Resolve(entity); r.Status == "resolved" {
 		resolved = r.Slug
 	}
-	return ClaimSlotKey(resolved, predicate, claimType, qualifiers, fallbackID), nil
+	return ClusterKey(resolved, topic, claimType)
+}
+
+func candidateClusterKeyWithResolver(resolver *entityResolver, c Candidate) string {
+	return claimSlotKeyWithResolver(resolver, c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, "")
+}
+
+func claimClusterKeyWithResolver(resolver *entityResolver, c Claim) string {
+	return claimSlotKeyWithResolver(resolver, c.Entity, c.Predicate, c.ClaimType, c.Qualifiers, c.ID)
+}
+
+func candidateEchoKeyWithResolver(resolver *entityResolver, c Candidate) string {
+	entity := decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, "")
+	return clusterKeyWithResolver(resolver, entity, c.Topic(), c.ClaimType)
+}
+
+func claimEchoKeyWithResolver(resolver *entityResolver, c Claim) string {
+	entity := decisionClusterEntity(c.Entity, c.ClaimType, c.Qualifiers, c.ID)
+	return clusterKeyWithResolver(resolver, entity, c.Topic(), c.ClaimType)
+}
+
+func claimSlotKeyWithResolver(resolver *entityResolver, entity, predicate, claimType string, qualifiers map[string]string, fallbackID string) string {
+	resolved := entity
+	if r := resolver.Resolve(entity); r.Status == "resolved" {
+		resolved = r.Slug
+	}
+	return ClaimSlotKey(resolved, predicate, claimType, qualifiers, fallbackID)
 }
 
 func sameClusterKey(a, b string) bool {
