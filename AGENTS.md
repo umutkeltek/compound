@@ -98,6 +98,8 @@ loop compound provides:
 
 ## Commit & safety
 - Scoped commits, clear boundaries (source/contracts; tests/fixtures; docs). Do not "commit all."
-- **Do not push to a public remote without explicit operator confirmation** + a redact scan.
+- **Push is pre-authorized** (standing operator grant 2026-07-12): a normal `git push` of committed work to the
+  project's existing remote — public included — needs no per-push confirmation. Two floors remain: a clean
+  redact scan before any public push, and force-push/history rewrites still require explicit confirmation.
 - Stop and ask before deleting/archiving major surfaces, changing approval boundaries, spending, publishing, or
   any irreversible/external action. Prove the change by a state delta, not a report.

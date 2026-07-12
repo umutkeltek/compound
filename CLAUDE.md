@@ -23,7 +23,8 @@ It applies to Claude Code identically. This file only adds Claude-specific notes
   document" failed unless a real executor will consume it. The path is the source of truth, not the plan.
 - **This repo is destined to be public.** `docs_private/` is gitignored (never tracked/shipped) — never write a
   personal path/credential/account/real-product/private-tool name into a tracked file, including comments. Run
-  a redact scan before any push; never push to a public remote without explicit operator confirmation.
+  a redact scan before any push; a clean scan is the push gate (standing grant 2026-07-12 — no per-push
+  confirmation; force-push/history rewrites still ask).
 
 ## Claude-specific
 - Prefer the smallest change that proves the slice. Verify by a command's real output or a passing test.
