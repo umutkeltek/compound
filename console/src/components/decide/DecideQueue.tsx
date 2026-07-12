@@ -9,7 +9,8 @@ import { Button, FreshnessChip } from "@/components/kit";
 import { remainingDecideMembers } from "@/lib/decide-members";
 import { genericReviewResolutionActs } from "@/lib/decide-resolution-acts";
 import type { DecideBrief, DecideBriefOption, DecideDomain, DecideGroup, DecideMember } from "@/lib/decide-model";
-import { decideActIdentity } from "@/lib/governed-action-client";
+import { decideActIdentity, RATIONALE_REQUIRED_MESSAGE } from "@/lib/governed-action-client";
+import { ownerUnavailableMessage } from "@/lib/glossary";
 import { GovernedAct, type ExecuteResult } from "./GovernedAct";
 
 /* Domain hue is accent-only (glyph tile + dot); the needs-you seam is amber. */
@@ -203,7 +204,7 @@ function EnumerableApply({
   const apply = useCallback(async (operatorRationale: string) => {
     if (!mutationsEnabled || running || included.length === 0) return;
     if (requiresRationale && !operatorRationale.trim()) {
-      setError("Rationale is required.");
+      setError(RATIONALE_REQUIRED_MESSAGE);
       return;
     }
     setRunning(true);
@@ -335,8 +336,9 @@ function EnumerableApply({
               <Dialog.Close asChild><Button variant="secondary" disabled={running}>Cancel</Button></Dialog.Close>
               <Button
                 variant="primary"
-                disabled={running || (requiresRationale && !rationale.trim())}
+                disabled={running}
                 onClick={() => void apply(rationale)}
+                title={requiresRationale && !rationale.trim() ? RATIONALE_REQUIRED_MESSAGE : undefined}
               >
                 {running ? `Applying ${progress?.done ?? 0}/${progress?.total ?? included.length}…` : `Confirm ${included.length}`}
               </Button>
@@ -387,12 +389,17 @@ const CAPABILITY_TONE: Record<DecideGroup["capability"]["kind"], string> = {
 };
 
 function CapabilityStatus({ group, compact = false }: { group: DecideGroup; compact?: boolean }) {
+  // The compact badge stays terse by design (a status pill, not a sentence);
+  // the hover title carries the named-owner detail so even the list row
+  // never leaves an operator with just the bare "Owner action unavailable"
+  // label and nothing else.
+  const detail = group.capability.kind === "unavailable" ? ownerUnavailableMessage(group.area) : group.capability.detail;
   return (
     <span
       className={`inline-flex shrink-0 items-center rounded-pill border font-semibold ${CAPABILITY_TONE[group.capability.kind]} ${
         compact ? "px-2 py-0.5 text-2xs" : "px-2.5 py-1 text-xs"
       }`}
-      title={group.capability.detail}
+      title={detail}
     >
       {group.capability.label}
     </span>
@@ -548,8 +555,7 @@ function DecisionDetail({
         <div>
           {act.mode === "copy" ? (
             <div className="grid gap-2 border-l-2 border-seam-line pl-3">
-              <p className="text-sm font-semibold text-seam">Primary action unavailable</p>
-              <p className="text-xs leading-relaxed text-muted">The requested change cannot be completed here yet. You can park or dismiss the review without changing its underlying authority.</p>
+              <p className="text-sm font-semibold text-seam">{ownerUnavailableMessage(group.area)}</p>
               {reviewResolutionActs.map((resolutionAct) => (
                 <GovernedAct
                   key={resolutionAct.actionId}
