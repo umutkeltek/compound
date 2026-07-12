@@ -302,6 +302,8 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		"console-attention-consistency-smoke",
 		"console-work-language-smoke",
 		"console-ask-triage-smoke",
+		"console-representation-falsifiers-smoke",
+		"console-representation-cluster-guard-smoke",
 		"bun-tools-test",
 		"architecture-doctor-strict",
 		"profiles-check-installed-only",
@@ -317,7 +319,7 @@ func TestProofCheckDryRunListsDeterministicGates(t *testing.T) {
 		if report.Steps[i].ProofRef != want || report.Steps[i].Status != "planned" {
 			t.Fatalf("step %d = %+v, want proof %s planned", i, report.Steps[i], want)
 		}
-		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-work-language-smoke" || report.Steps[i].Name == "console-ask-triage-smoke"
+		isBunConsoleSmoke := report.Steps[i].Name == "console-work-trace-smoke" || report.Steps[i].Name == "console-generic-actions-smoke" || report.Steps[i].Name == "console-view-registry-smoke" || report.Steps[i].Name == "console-decide-brief-smoke" || report.Steps[i].Name == "console-decision-execute-smoke" || report.Steps[i].Name == "console-standing-law-smoke" || report.Steps[i].Name == "console-work-language-smoke" || report.Steps[i].Name == "console-ask-triage-smoke" || report.Steps[i].Name == "console-representation-falsifiers-smoke"
 		if strings.HasPrefix(report.Steps[i].Name, "console-") && report.Steps[i].Name != "console-tsc" && !isBunConsoleSmoke && !sameStringSlicePrefix(report.Steps[i].Command, []string{"node", "--experimental-strip-types"}) {
 			t.Fatalf("console smoke step %s command = %+v, want node --experimental-strip-types", report.Steps[i].Name, report.Steps[i].Command)
 		}
