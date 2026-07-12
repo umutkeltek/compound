@@ -16,7 +16,7 @@ import { resolve } from "node:path";
  * only node: builtins (no local extensionless imports it cannot resolve).
  */
 
-const { computeInstancePin, instanceUnpinnedBlockedResponse, INSTANCE_PIN } =
+const { computeInstancePin, computeConsoleMutationReadiness, instanceUnpinnedBlockedResponse, INSTANCE_PIN } =
   await import("../src/lib/instance-pin.ts");
 const { COMPOUND_HOME } = await import("../src/lib/compound.ts");
 
@@ -44,6 +44,24 @@ assert.equal(pinnedA.home, resolve(scratchA), "pin binds its own home");
 assert.notEqual(pinnedA.home, resolve(scratchB), "scratch-A pin must never equal scratch-B");
 assert.notEqual(pinnedA.home, canonical, "scratch-A pin must never equal the canonical default");
 assert.equal(instanceUnpinnedBlockedResponse(pinnedA), null, "explicitly pinned instance may mutate");
+
+// 3b. Render-time readiness is the conjunction of the mutation flag and the
+// frozen instance pin. The flag alone must never advertise a live act.
+assert.deepEqual(
+  computeConsoleMutationReadiness(true, unpinned),
+  { flagEnabled: true, instancePinned: false, ready: false },
+  "enabled flag on an unpinned instance must remain read-only",
+);
+assert.deepEqual(
+  computeConsoleMutationReadiness(false, pinnedA),
+  { flagEnabled: false, instancePinned: true, ready: false },
+  "pinned instance without the mutation flag must remain read-only",
+);
+assert.deepEqual(
+  computeConsoleMutationReadiness(true, pinnedA),
+  { flagEnabled: true, instancePinned: true, ready: true },
+  "only flag + explicit pin may expose live mutations",
+);
 
 // 4. Home identity: distinct homes hash distinct; two spellings of the same
 //    absolute home hash identical (relative spellings can't smuggle a mismatch).

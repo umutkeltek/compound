@@ -192,6 +192,8 @@ func proofCheckSteps(baseRef string) ([]proofCheckStep, error) {
 		{Name: "console-tsc", Command: []string{"./node_modules/.bin/tsc", "--noEmit"}, Dir: "console", ProofRef: "console-tsc-noemit"},
 		{Name: "console-smoke", Command: consoleSmokeCommand("scripts/smoke.mjs"), Dir: "console", ProofRef: "console-smoke"},
 		{Name: "console-mutation-gate-smoke", Command: consoleSmokeCommand("scripts/mutation-guard-smoke.mjs"), Dir: "console", ProofRef: "console-mutation-gate-smoke"},
+		{Name: "console-instance-pin-smoke", Command: consoleSmokeCommand("scripts/instance-pin-smoke.mjs"), Dir: "console", ProofRef: "console-instance-pin-smoke"},
+		{Name: "console-continue-button-smoke", Command: consoleBunSmokeCommand("scripts/continue-button-smoke.mjs"), Dir: "console", SkipIfMissing: "bun", ProofRef: "console-continue-button-smoke"},
 		{Name: "console-private-fallback-smoke", Command: consoleSmokeCommand("scripts/private-fallback-smoke.mjs"), Dir: "console", ProofRef: "console-private-fallback-smoke"},
 		{Name: "console-private-runtime-guard-smoke", Command: consoleSmokeCommand("scripts/private-runtime-guard-smoke.mjs"), Dir: "console", ProofRef: "console-private-runtime-guard-smoke"},
 		{Name: "console-move-type-drift-smoke", Command: consoleSmokeCommand("scripts/move-type-drift-smoke.mjs"), Dir: "console", ProofRef: "console-move-type-drift-smoke"},
