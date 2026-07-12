@@ -31,6 +31,14 @@ const (
 	promotionRecommendationHoldInsufficient = "hold_insufficient_evidence"
 	promotionRecommendationHoldFailing      = "hold_failing"
 	promotionMalformedActionShapeRepair     = "shape_repair"
+	promotionReviewStatusReviewRequired     = "review_required"
+	// promotionReviewStatusFiled marks a route-promotion review as recorded
+	// provenance only, not operator review-debt. It MUST stay one of the terminal
+	// statuses in internal/director reviewStatusTerminal so demote and hold_failing
+	// authority outcomes — which have no operator-resolvable recording path
+	// (RecordPromotionHoldReview records only hold_insufficient_evidence) — do not
+	// strand the director's review-debt queue forever.
+	promotionReviewStatusFiled = "recorded"
 )
 
 type PromotionCriteriaRegistry struct {
@@ -350,7 +358,7 @@ func buildPromotionReview(in promotionReviewInput) PromotionReview {
 		SchemaVersion:                 PromotionReviewSchemaVersion,
 		ID:                            promotionReviewID(in.LaneID, in.CapabilityClass),
 		CreatedAt:                     rfc3339(in.Now),
-		Status:                        "review_required",
+		Status:                        promotionReviewStatusFor(recommendation),
 		Recommendation:                recommendation,
 		Reason:                        reason,
 		LaneID:                        in.LaneID,
@@ -415,6 +423,31 @@ func promotionRecommendation(level string, criteriaMatched bool, criterion Promo
 		return promotionRecommendationPromote, "primary", "criteria satisfied for capable -> primary" + malformedReason
 	default:
 		return promotionRecommendationHoldInsufficient, "", "claim level is not promotion-eligible" + malformedReason
+	}
+}
+
+// promotionReviewStatusFor picks the emitted status for a route-promotion review.
+// promote and hold_insufficient_evidence surface as operator review-debt: promote
+// awaits an authority decision brief and hold_insufficient is cleared with
+// `compound route promotion-record`. demote and hold_failing are automated
+// authority outcomes with no operator-resolvable recording path, so they are
+// emitted as recorded provenance — the full artifact is still written to disk —
+// instead of stranding the director's review-debt queue forever.
+func promotionReviewStatusFor(recommendation string) string {
+	if promotionRecommendationIsAuthorityOutcome(recommendation) {
+		return promotionReviewStatusFiled
+	}
+	return promotionReviewStatusReviewRequired
+}
+
+// promotionRecommendationIsAuthorityOutcome reports whether a recommendation is an
+// automated/authority outcome that carries no operator-resolvable review action.
+func promotionRecommendationIsAuthorityOutcome(recommendation string) bool {
+	switch strings.TrimSpace(recommendation) {
+	case promotionRecommendationDemote, promotionRecommendationHoldFailing:
+		return true
+	default:
+		return false
 	}
 }
 

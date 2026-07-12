@@ -238,6 +238,130 @@ func TestPromotionMalformedActionShapeRepair(t *testing.T) {
 	}
 }
 
+// directorReviewStatusTerminal mirrors internal/director reviewStatusTerminal
+// (director.go). reviewDebtCandidates scans reviewartifact.Queue directly —
+// without the promotion annotator — and treats any review whose own status field
+// is NOT in this terminal set as unresolvable review-debt. Route-promotion demote
+// and hold_failing recommendations have no operator-resolvable recording path
+// (RecordPromotionHoldReview records only hold_insufficient_evidence), so emitting
+// them with status "review_required" strands the director's queue forever. The
+// whitelist is mirrored here so this invariant fails loudly if either the director
+// or the emitter drifts.
+func directorReviewStatusTerminal(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "ok", "applied", "resolved", "accepted", "recorded", "candidate_recorded":
+		return true
+	default:
+		return false
+	}
+}
+
+// TestEvaluateLanePromotionsAuthorityOutcomesAreNotReviewDebt reproduces the
+// review_debt flood: demote and hold_failing route-promotion reviews were emitted
+// with status "review_required" (non-terminal) yet had no operator recording path,
+// so the director booked them as permanent, unresolvable review-debt. The fix
+// emits them as recorded provenance (terminal status) while still writing the full
+// artifact to disk.
+func TestEvaluateLanePromotionsAuthorityOutcomesAreNotReviewDebt(t *testing.T) {
+	cases := []struct {
+		name       string
+		claimLevel string
+		statuses   []string
+		wantRec    string
+	}{
+		{
+			name:       "capable failing demote",
+			claimLevel: "capable",
+			statuses:   []string{"completed", "failed", "completed", "failed"},
+			wantRec:    promotionRecommendationDemote,
+		},
+		{
+			name:       "assumed failing hold_failing",
+			claimLevel: "assumed",
+			statuses:   []string{"completed", "failed", "completed", "failed"},
+			wantRec:    promotionRecommendationHoldFailing,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			laneID := "local/test-judge"
+			writePromotionModelCapabilities(t, home, laneID, tc.claimLevel)
+			writePromotionCriteria(t, home)
+			recordPromotionRows(t, home, laneID, tc.statuses, 24*time.Hour)
+
+			reviews, err := EvaluateLanePromotions(home, t0.Add(10*time.Hour))
+			if err != nil {
+				t.Fatalf("evaluate promotions: %v", err)
+			}
+			if len(reviews) != 1 {
+				t.Fatalf("reviews = %+v, want one", reviews)
+			}
+			review := reviews[0]
+			if review.Recommendation != tc.wantRec {
+				t.Fatalf("recommendation = %q, want %q", review.Recommendation, tc.wantRec)
+			}
+			// The fix: emitted with a director-terminal status so it is never
+			// booked as unresolvable review-debt. Pre-fix status was
+			// "review_required" (non-terminal), which stranded the queue.
+			if !directorReviewStatusTerminal(review.Status) {
+				t.Fatalf("%s review status = %q is not a director-terminal status; it strands the review-debt queue", tc.wantRec, review.Status)
+			}
+			// Provenance must survive: the full artifact is still written to disk
+			// with the recommendation, reason, and evidence intact.
+			data, err := os.ReadFile(review.ArtifactPaths.PlanPath)
+			if err != nil {
+				t.Fatalf("read provenance artifact: %v", err)
+			}
+			var persisted PromotionReview
+			if err := json.Unmarshal(data, &persisted); err != nil {
+				t.Fatalf("parse provenance artifact: %v", err)
+			}
+			if persisted.Recommendation != tc.wantRec || persisted.Status != review.Status {
+				t.Fatalf("provenance artifact mismatch: %+v", persisted)
+			}
+			if strings.TrimSpace(persisted.Reason) == "" || len(persisted.EvidenceRefs) == 0 {
+				t.Fatalf("provenance artifact dropped reason/evidence: %+v", persisted)
+			}
+		})
+	}
+}
+
+// TestEvaluateLanePromotionsHoldInsufficientStaysResolvableReviewDebt is the
+// regression guard: hold_insufficient_evidence keeps its unchanged behavior —
+// emitted as operator review-debt (non-terminal "review_required") and still
+// clearable through RecordPromotionHoldReview.
+func TestEvaluateLanePromotionsHoldInsufficientStaysResolvableReviewDebt(t *testing.T) {
+	home := t.TempDir()
+	laneID := "local/test-judge"
+	writePromotionModelCapabilities(t, home, laneID, "assumed")
+	writePromotionCriteria(t, home)
+	// Two samples < min_samples 3 -> hold_insufficient_evidence.
+	recordPromotionRows(t, home, laneID, []string{"completed", "completed"}, 72*time.Hour)
+
+	reviews, err := EvaluateLanePromotions(home, t0.Add(10*time.Hour))
+	if err != nil {
+		t.Fatalf("evaluate promotions: %v", err)
+	}
+	if len(reviews) != 1 {
+		t.Fatalf("reviews = %+v, want one", reviews)
+	}
+	review := reviews[0]
+	if review.Recommendation != promotionRecommendationHoldInsufficient {
+		t.Fatalf("recommendation = %q, want %q", review.Recommendation, promotionRecommendationHoldInsufficient)
+	}
+	if review.Status != "review_required" || directorReviewStatusTerminal(review.Status) {
+		t.Fatalf("hold_insufficient status = %q must remain non-terminal operator review-debt", review.Status)
+	}
+	report, err := RecordPromotionHoldReview(home, review.ArtifactPaths.PlanPath, "hold until more route evidence meets criteria", t0.Add(11*time.Hour))
+	if err != nil {
+		t.Fatalf("record hold review: %v", err)
+	}
+	if report.Status != "recorded" || report.Decision != "hold_recorded" || report.ReviewID != review.ID {
+		t.Fatalf("hold review report = %+v", report)
+	}
+}
+
 func TestRecordPromotionHoldReviewRejectsMutatingRecommendation(t *testing.T) {
 	home := t.TempDir()
 	paths, err := reviewartifact.Write(home, routePromotionReviewArea, "route_promotion_promote_guard", PromotionReview{
