@@ -110,6 +110,7 @@ func TestSwitchbackPulseRejectsStaleReceipt(t *testing.T) {
   "mode": "fast",
   "overall": "ok",
   "summary": {"ok": 1, "warn": 0, "fail": 0},
+  "duration_ms": 20,
   "checks": [{"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"}]
 }`, now.Add(-16*time.Minute).Format(time.RFC3339))
 
@@ -119,6 +120,73 @@ func TestSwitchbackPulseRejectsStaleReceipt(t *testing.T) {
 	}
 	if report.Status != "fail" || checkStatus(report, "live:freshness") != "fail" || !NeedsWriteback(report) {
 		t.Fatalf("stale receipt did not fail closed: %+v", report)
+	}
+}
+
+func TestSwitchbackPulseRejectsInvalidReceiptMetadata(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		mode         string
+		durationJSON string
+	}{
+		{name: "missing mode", mode: "", durationJSON: "10"},
+		{name: "unknown mode", mode: "slow", durationJSON: "10"},
+		{name: "missing duration", mode: "fast", durationJSON: "null"},
+		{name: "negative duration", mode: "fast", durationJSON: "-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@1",
+  "ts": %q,
+  "mode": %q,
+  "overall": "ok",
+  "summary": {"ok": 1, "warn": 0, "fail": 0},
+  "duration_ms": %s,
+  "checks": [{"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"}]
+}`, now.Add(-time.Minute).Format(time.RFC3339), tt.mode, tt.durationJSON)
+
+			report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Status != "fail" || checkStatus(report, "live:receipt") != "fail" || !NeedsWriteback(report) {
+				t.Fatalf("invalid receipt metadata did not fail closed: %+v", report)
+			}
+		})
+	}
+}
+
+func TestSwitchbackPulseRejectsInvalidOrFutureTimestamp(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		timestamp string
+	}{
+		{name: "invalid RFC3339", timestamp: "not-a-timestamp"},
+		{name: "future beyond skew", timestamp: now.Add(2 * time.Minute).Format(time.RFC3339)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@1",
+  "ts": %q,
+  "mode": "fast",
+  "overall": "ok",
+  "summary": {"ok": 1, "warn": 0, "fail": 0},
+  "duration_ms": 10,
+  "checks": [{"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"}]
+}`, tt.timestamp)
+
+			report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Status != "fail" || checkStatus(report, "live:freshness") != "fail" || !NeedsWriteback(report) {
+				t.Fatalf("invalid receipt timestamp did not fail closed: %+v", report)
+			}
+		})
 	}
 }
 
