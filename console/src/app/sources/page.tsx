@@ -4,6 +4,7 @@ import { Card, Chip, EmptyState, FreshnessChip, Stat, type Accent } from "@/comp
 import { arr, getSourceConnections, str, type Json } from "@/lib/compound";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 
 export const dynamic = "force-dynamic";
 
@@ -189,7 +190,7 @@ export default async function SourcesPage() {
   const projection = await getSourceConnections();
   const connections = arr(projection?.connections);
   const counts = (projection?.counts ?? {}) as Json;
-  const mutationsEnabled = consoleMutationsEnabled();
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   return (
     <div className="flex flex-col gap-6">

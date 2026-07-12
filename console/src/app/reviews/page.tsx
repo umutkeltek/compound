@@ -5,6 +5,7 @@ import { arr, getReviews, num, str, type Json } from "@/lib/compound";
 import { partitionDecideGroupsByOwnerWorkflow } from "@/lib/decide-members";
 import { ago } from "@/lib/time";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildDecideGroups, domainForArea, type DecideGroup } from "@/lib/decide-model";
 import { areaPlain } from "@/lib/glossary";
 import { areaOf, bandOf, externalReviewRows, groupsForBand } from "@/lib/review-data";
@@ -178,7 +179,7 @@ function WatchingRow({ entry, itemByID }: { entry: Json; itemByID: Map<string, J
 export default async function Decide() {
   const [reviews, attention] = await Promise.all([getReviews(), getAttention()]);
   const itemByID = buildItemIndex(reviews);
-  const mutationsEnabled = consoleMutationsEnabled();
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   const externalRows = externalReviewRows(reviews);
   const externalNeedsYou = externalRows.filter((r) => bandOf(r) !== "watching");

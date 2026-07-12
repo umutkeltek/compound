@@ -4,6 +4,7 @@ import { MemoryGraphPanel } from "@/components/memory/MemoryGraphPanel";
 import { buildAdjudicationModel, type AdjudicationCardModel } from "@/components/memory/model";
 import { BrainIcon, DatabaseIcon, DocIcon, EmptyState, FreshnessChip, PageHeader, SectionHeader } from "@/components/kit";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { loadMemoryCounts, loadProposedMemorySplit } from "@/lib/memory-data";
 import { loadMemoryEgoGraph, type EgoGraph } from "@/lib/map/memory-graph";
 
@@ -41,7 +42,7 @@ export default async function Memory({
     seed ? loadMemoryEgoGraph(seed, { maxNodes: 60 }) : Promise.resolve<EgoGraph | null>(null),
   ]);
 
-  const mutationsEnabled = consoleMutationsEnabled();
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
   const models = actionable
     .map(buildAdjudicationModel)
     .filter((m): m is AdjudicationCardModel => Boolean(m));

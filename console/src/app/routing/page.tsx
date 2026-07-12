@@ -8,6 +8,7 @@ import { FreshnessChip, PageHeader, RouteIcon, SectionHeader } from "@/component
 import { getAttention } from "@/lib/attention";
 import { getReviews, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildRoutePromotionModel, getModelLanes, getRouteTraffic } from "@/lib/routing";
 
 export const dynamic = "force-dynamic";
@@ -70,7 +71,7 @@ export default async function RoutingPage() {
   ]);
 
   const promotion = buildRoutePromotionModel(reviews, attention);
-  const mutationsEnabled = consoleMutationsEnabled();
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   return (
     <div className="flex flex-col gap-8">
