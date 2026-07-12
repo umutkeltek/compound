@@ -36,8 +36,11 @@ func cmdCapability(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err, "(run `compound home init`)")
 		os.Exit(1)
 	}
+	sub, rest := args[0], args[1:]
 	var store *capgraph.Store
-	if args[0] == "resolve" {
+	if sub == "import-skills" && hasFlag(rest, "--dry-run") {
+		// Dry-runs inspect source and prior authority without creating graph state.
+	} else if sub == "resolve" {
 		store, err = capgraph.OpenReadOnly(homePath)
 	} else {
 		store, err = capgraph.Open(homePath)
@@ -46,7 +49,6 @@ func cmdCapability(args []string) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	sub, rest := args[0], args[1:]
 	flag := func(name string) string {
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == name && i+1 < len(rest) {
