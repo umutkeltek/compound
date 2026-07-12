@@ -33,7 +33,7 @@ function CountChip({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-export function ContinueCard({ model }: { model: ContinueModel }) {
+export function ContinueCard({ model, mutationsReady }: { model: ContinueModel; mutationsReady: boolean }) {
   return (
     <section
       className="rounded-lg border border-hair bg-panel px-5 py-4 shadow-sm"
@@ -54,7 +54,7 @@ export function ContinueCard({ model }: { model: ContinueModel }) {
       </div>
 
       <div className="mt-3">
-        <ContinueButton request={model.request} />
+        <ContinueButton request={model.request} mutationsReady={mutationsReady} />
       </div>
 
       {model.blockedOn.length > 0 ? (

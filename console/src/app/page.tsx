@@ -23,6 +23,7 @@ import {
 } from "@/lib/briefing";
 import { arr, getExecutors, num, runJson, str } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { moveTypeGroup, summarizeMoveTypeMix } from "@/lib/move-mix";
 import { toDate } from "@/lib/time";
 
@@ -42,7 +43,7 @@ export default async function Briefing() {
   ]);
 
   const now = new Date();
-  const mutationsEnabled = consoleMutationsEnabled();
+  const mutationsEnabled = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   // Attention — the ONE projection. Groups arrive leverage-sorted; `top` is the
   // single highest-leverage gate. Never re-ranked client-side.
@@ -107,7 +108,7 @@ export default async function Briefing() {
         classA={classAWaiting}
       />
 
-      <ContinueCard model={continueModel} />
+      <ContinueCard model={continueModel} mutationsReady={mutationsEnabled} />
 
       <section>
         <SectionLabel>Decide</SectionLabel>

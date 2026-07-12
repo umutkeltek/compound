@@ -167,13 +167,24 @@ function ContinueSummary({ result }: { result: Result }) {
   );
 }
 
-export function ContinueButton({ request }: { request: ContinueRequest | null }) {
+function CopyOnlyContinue({ request }: { request: ContinueRequest }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-hair bg-soft px-3 py-2">
+      <div className="text-[12px] font-semibold text-muted">Copy command</div>
+      <CliCaption argv={request.command[0] === "compound" ? request.command.slice(1) : request.command} />
+      <p className="text-[11.5px] leading-relaxed text-muted">
+        This console is read-only until it is launched with an explicit home via <code>compound console --operator</code>.
+      </p>
+    </div>
+  );
+}
+
+function LiveContinueButton({ request }: { request: ContinueRequest }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
 
   async function run() {
-    if (!request) return;
     setPending(true);
     setResult(null);
     try {
@@ -208,26 +219,20 @@ export function ContinueButton({ request }: { request: ContinueRequest | null })
     }
   }
 
-  if (!request && !result) return null;
-
   return (
     <div className="flex flex-col gap-2 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
-      {request ? (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={pending}
-              onClick={run}
-              className="rounded-lg bg-emerald-600 px-3 py-2 text-[12px] font-semibold text-white disabled:cursor-wait disabled:opacity-55"
-            >
-              {pending ? "Continuing..." : "Continue"}
-            </button>
-            <CliCaption argv={request.command[0] === "compound" ? request.command.slice(1) : request.command} />
-          </div>
-          <p className="text-[11.5px] leading-relaxed text-emerald-800">{request.note}</p>
-        </>
-      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          disabled={pending}
+          onClick={run}
+          className="rounded-lg bg-emerald-600 px-3 py-2 text-[12px] font-semibold text-white disabled:cursor-wait disabled:opacity-55"
+        >
+          {pending ? "Continuing..." : "Continue"}
+        </button>
+        <CliCaption argv={request.command[0] === "compound" ? request.command.slice(1) : request.command} />
+      </div>
+      <p className="text-[11.5px] leading-relaxed text-emerald-800">{request.note}</p>
 
       {result ? (
         <div
@@ -240,4 +245,15 @@ export function ContinueButton({ request }: { request: ContinueRequest | null })
       ) : null}
     </div>
   );
+}
+
+export function ContinueButton({
+  request,
+  mutationsReady,
+}: {
+  request: ContinueRequest | null;
+  mutationsReady: boolean;
+}) {
+  if (!request) return null;
+  return mutationsReady ? <LiveContinueButton request={request} /> : <CopyOnlyContinue request={request} />;
 }

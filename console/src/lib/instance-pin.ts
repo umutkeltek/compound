@@ -35,6 +35,12 @@ export type InstancePin = {
   explicit: boolean;
 };
 
+export type ConsoleMutationReadiness = {
+  flagEnabled: boolean;
+  instancePinned: boolean;
+  ready: boolean;
+};
+
 /**
  * Pure home->pin computation. Exported so the falsifier can drive both branches
  * (pinned / unpinned) without reloading the module.
@@ -49,6 +55,19 @@ export function computeInstancePin(env: NodeJS.ProcessEnv = process.env): Instan
 
 /** Frozen at module load: the pin for THIS server process. */
 export const INSTANCE_PIN: InstancePin = computeInstancePin(process.env);
+
+/**
+ * The one render-time mutation readiness contract. The environment flag is
+ * necessary but never sufficient: a live action is honest only when this
+ * process is also frozen to an explicit COMPOUND_HOME.
+ */
+export function computeConsoleMutationReadiness(
+  flagEnabled: boolean,
+  pin: InstancePin = INSTANCE_PIN,
+): ConsoleMutationReadiness {
+  const instancePinned = pin.explicit;
+  return { flagEnabled, instancePinned, ready: flagEnabled && instancePinned };
+}
 
 /**
  * Mutation gate: refuse to mutate when the serving instance was not started with
