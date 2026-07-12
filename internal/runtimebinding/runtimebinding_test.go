@@ -80,6 +80,19 @@ func TestDoctorWithLiveProbes(t *testing.T) {
 	}
 }
 
+func TestDoctorWithLiveProbesRequiresCoverage(t *testing.T) {
+	report := DoctorWithLiveProbes(context.Background(), validBundle(), time.Now())
+	if report.Status != "fail" {
+		t.Fatalf("status = %q, want fail; checks=%+v", report.Status, report.Checks)
+	}
+	if got := checkStatus(report, "live:coverage"); got != "fail" {
+		t.Fatalf("live coverage check = %q, want fail; checks=%+v", got, report.Checks)
+	}
+	if !NeedsWriteback(report) {
+		t.Fatal("missing live coverage should enter runtime writeback")
+	}
+}
+
 func TestDoctorWithLiveProbesFailsUnavailableEvidence(t *testing.T) {
 	b := validBundle()
 	b.RuntimeProbes = []RuntimeProbe{
