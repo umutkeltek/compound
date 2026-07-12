@@ -56,7 +56,7 @@ export function ConsoleEnv({
     >
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Mutation gates" provenance="local" seamTone={mutationsEnabled ? "seam" : "good"}>
-          <KV k="consoleMutationsEnabled()" v={mutationsEnabled ? "true" : "false"} />
+          <KV k="effective readiness" v={mutationsEnabled ? "ready" : "read-only"} />
           <KV k="mutation flag" v={mutationFlagEnabled ? "enabled" : "disabled"} />
           <KV k="instance pin" v={instancePinned ? "explicit" : "missing"} />
           <KV k="privateFallbacksEnabled()" v={privateFallbacks ? "true" : "false"} />
