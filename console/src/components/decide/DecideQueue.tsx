@@ -553,6 +553,9 @@ function DecisionDetail({
 
       <section className="border-t border-hair bg-soft/60 px-4 py-4">
         <div>
+          {group.capability.kind === "unavailable" && act.mode !== "copy" ? (
+            <p className="mb-2 text-sm font-semibold text-seam">{ownerUnavailableMessage(group.area)}</p>
+          ) : null}
           {act.mode === "copy" ? (
             <div className="grid gap-2 border-l-2 border-seam-line pl-3">
               <p className="text-sm font-semibold text-seam">{ownerUnavailableMessage(group.area)}</p>
