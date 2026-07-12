@@ -39,6 +39,7 @@ export function WorkLenses({
   openCount,
   initialTrace,
   laneTraffic,
+  mutationsReady,
 }: {
   stages: PipelineStageModel[];
   columns: BoardColumnModel[];
@@ -46,6 +47,7 @@ export function WorkLenses({
   openCount: number;
   initialTrace: string | null;
   laneTraffic: LaneTrafficReport;
+  mutationsReady: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -97,7 +99,7 @@ export function WorkLenses({
         </Tabs.Content>
       </Tabs.Root>
 
-      <TraceDrawer workId={trace} onClose={closeTrace} />
+      <TraceDrawer workId={trace} onClose={closeTrace} mutationsReady={mutationsReady} />
     </>
   );
 }

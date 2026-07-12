@@ -13,7 +13,15 @@ import type { WorkActionRowData } from "@/lib/work-pipeline";
  * inline and prominent, and a first-class "Open trace" button raises the
  * envelope-spine drawer — the id page and the board share one trace surface.
  */
-export function WorkDetailActions({ workId, actionRow }: { workId: string; actionRow: WorkActionRowData }) {
+export function WorkDetailActions({
+  workId,
+  actionRow,
+  mutationsReady,
+}: {
+  workId: string;
+  actionRow: WorkActionRowData;
+  mutationsReady: boolean;
+}) {
   const [traceOpen, setTraceOpen] = useState(false);
 
   return (
@@ -28,9 +36,9 @@ export function WorkDetailActions({ workId, actionRow }: { workId: string; actio
         </Button>
       </div>
 
-      <WorkActionRow data={actionRow} dense />
+      <WorkActionRow data={actionRow} mutationsReady={mutationsReady} dense />
 
-      <TraceDrawer workId={traceOpen ? workId : null} onClose={() => setTraceOpen(false)} />
+      <TraceDrawer workId={traceOpen ? workId : null} onClose={() => setTraceOpen(false)} mutationsReady={mutationsReady} />
     </div>
   );
 }

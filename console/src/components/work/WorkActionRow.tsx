@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Button, ConfirmDialog } from "@/components/kit";
+import { CliCaption } from "@/components/CopyCmd";
 import type { ActionOption, WorkActionRowData } from "@/lib/work-pipeline";
 
 /*
@@ -42,7 +43,7 @@ const INPUT =
   "w-full rounded-md border border-hair bg-panel px-3 py-2 text-sm text-ink outline-none " +
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus";
 
-export function WorkActionRow({
+function LiveWorkActionRow({
   data,
   onDone,
   dense = false,
@@ -196,4 +197,43 @@ export function WorkActionRow({
       {error && !active ? <p className="mt-1 text-xs text-crit">{error}</p> : null}
     </>
   );
+}
+
+function CopyOnlyWorkActions({ data, dense }: { data: WorkActionRowData; dense: boolean }) {
+  return (
+    <div className={`flex flex-col gap-2 ${dense ? "" : "items-end"}`}>
+      {data.options.map((option) => (
+        <div key={option.value} className="flex max-w-full flex-wrap items-center gap-2 rounded-md border border-hair bg-soft px-3 py-2">
+          <span className="text-xs font-semibold text-muted">Copy {option.label} command</span>
+          <CliCaption argv={option.argv} />
+        </div>
+      ))}
+      <p className="text-xs text-muted">
+        This console is read-only until it is launched with an explicit home via <code>compound console --operator</code>.
+      </p>
+    </div>
+  );
+}
+
+export function WorkActionRow({
+  data,
+  mutationsReady,
+  onDone,
+  dense = false,
+}: {
+  data: WorkActionRowData;
+  mutationsReady: boolean;
+  onDone?: () => void;
+  dense?: boolean;
+}) {
+  if (!data.hasTransitions || data.options.length === 0) {
+    return (
+      <p className="text-xs text-muted">
+        No governed move is available from <span className="mono text-2xs">{data.state || "this state"}</span> —
+        this work is terminal or waiting on an executor.
+      </p>
+    );
+  }
+  if (!mutationsReady) return <CopyOnlyWorkActions data={data} dense={dense} />;
+  return <LiveWorkActionRow data={data} onDone={onDone} dense={dense} />;
 }

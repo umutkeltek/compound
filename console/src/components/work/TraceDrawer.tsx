@@ -127,7 +127,15 @@ function Spine({ payload }: { payload: TracePayload }) {
   );
 }
 
-export function TraceDrawer({ workId, onClose }: { workId: string | null; onClose: () => void }) {
+export function TraceDrawer({
+  workId,
+  onClose,
+  mutationsReady,
+}: {
+  workId: string | null;
+  onClose: () => void;
+  mutationsReady: boolean;
+}) {
   const [payload, setPayload] = useState<TracePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -169,7 +177,7 @@ export function TraceDrawer({ workId, onClose }: { workId: string | null; onClos
         payload ? (
           <div className="w-full">
             <div className="mb-2 text-2xs font-bold uppercase tracking-wide text-faint">Move this work</div>
-            <WorkActionRow data={payload.actionRow} onDone={onClose} />
+            <WorkActionRow data={payload.actionRow} mutationsReady={mutationsReady} onDone={onClose} />
           </div>
         ) : null
       }
