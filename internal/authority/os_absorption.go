@@ -42,6 +42,20 @@ const (
 	osAbsorptionProofModeWorkPacket    = "work_packet_authority"
 	osAbsorptionProofModeOSCapability  = "os_capability_wrapper_authority"
 	osAbsorptionProofModeServedOrient  = "served_orientation_authority"
+	// osAbsorptionProofModeOSSkills and osAbsorptionProofModeOSStatus prove the
+	// os_source_os_skills_cli and os_source_os_status_cli wrapper rows. Unlike
+	// os_capability_wrapper_authority (a pure zero-native-logic proxy), `os
+	// skills` and `os status` are dashboards that blend genuine live compound
+	// authority reads with retained-native operational probes (skill corpus
+	// registries; daemon/launchd, switchback, ledger, capacity telemetry).
+	// These proof modes verify ONLY the compound-sourced slice is real
+	// (digest-anchored entrypoint, no fabrication before the genuine
+	// compoundCommand()+execFileSync/spawnSync call, and a live parity probe
+	// cross-checked against a direct `compound` invocation); the retained
+	// native reads are not required to disappear, only to stay honestly named
+	// in the matrix row.
+	osAbsorptionProofModeOSSkills = "os_skills_wrapper_authority"
+	osAbsorptionProofModeOSStatus = "os_status_wrapper_authority"
 	// osAbsorptionProofModeInfraRegistry proves an infra-os operational
 	// registry (database.yaml/services.yaml) row: installed registry file
 	// exists, its recorded source hash matches the live YAML's current
@@ -255,6 +269,22 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionWorkPacketProof(homePath, row))
 		case osAbsorptionNeedsOSCapabilityProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionOSCapabilityProof(homePath, row))
+		case osAbsorptionNeedsOSSkillsProof(row):
+			result, drift := osAbsorptionOSSkillsProof(homePath, row)
+			if drift {
+				dr.ProofStatus = "pending"
+				dr.ProofDetail = result.reason
+			} else {
+				applyOSAbsorptionAutoProof(&report, &dr, result)
+			}
+		case osAbsorptionNeedsOSStatusProof(row):
+			result, drift := osAbsorptionOSStatusProof(homePath, row)
+			if drift {
+				dr.ProofStatus = "pending"
+				dr.ProofDetail = result.reason
+			} else {
+				applyOSAbsorptionAutoProof(&report, &dr, result)
+			}
 		case osAbsorptionNeedsCapabilityProof(row):
 			if rec, ok := capabilityAuthorityProofRecord(row, capRecords); ok {
 				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{ok: true, proofRef: rec.ID})
@@ -303,7 +333,18 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 		doctorCheck("installed", report.Installed, fmt.Sprintf("%s rows=%d", report.AuthorityPath, report.RowCount)),
 		doctorCheck("required_fields", report.MissingRequiredCount == 0, fmt.Sprintf("missing=%d", report.MissingRequiredCount)),
 		doctorCheck("capability_auto_proofs", report.AutoProofCount >= 3 && report.FailedAutoProofCount == 0, fmt.Sprintf("auto=%d failed=%d", report.AutoProofCount, report.FailedAutoProofCount)),
-		doctorCheck("pending_retirement_gates", report.PendingWithGateCount >= 4, fmt.Sprintf("pending_with_gate=%d", report.PendingWithGateCount)),
+		// This floor is a liveness/honesty sanity check ("the matrix still
+		// names real, gated pending work — it hasn't been gamed into
+		// 100% absorbed"), not a target to hit. It tracks the real,
+		// currently-known pending backlog and is expected to step DOWN as
+		// rows are honestly resolved (most recently: os_source_os_skills_cli
+		// and os_source_os_status_cli moved from pending to proven wrapper
+		// rows here, dropping the live count from 5 to 3 — see
+		// os_source_brain_solo_builder_doctrine, os_source_gbrain,
+		// os_source_umut_events). Re-tune it down again the next time a
+		// pending row is honestly resolved; never raise it to paper over a
+		// regression.
+		doctorCheck("pending_retirement_gates", report.PendingWithGateCount >= 3, fmt.Sprintf("pending_with_gate=%d", report.PendingWithGateCount)),
 	)
 	report.Status = "ok"
 	for _, check := range report.Checks {
