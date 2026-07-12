@@ -82,17 +82,24 @@ func (s *Store) attachDispatchPrompt(workID, actor string, now time.Time) (dispa
 		return dispatchPrompt{
 			ContextPackID:       pack.ID,
 			CapabilitiesOffered: offers,
-			Markdown:            renderDispatchPrompt(committed, offers),
+			Markdown:            renderDispatchPrompt(committed, pack.TaskContract, offers),
 		}, nil
 	}
 }
 
 func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now time.Time) (envelope.ContextPack, error) {
+	taskContract, contractID, err := s.dispatchTaskContract(w)
+	if err != nil {
+		return envelope.ContextPack{}, err
+	}
 	task := strings.TrimSpace(strings.Join(compactStrings(
 		w.CanonicalSurface,
-		w.DesiredOutcome,
-		w.SuccessPredicate,
-		strings.Join(w.NonGoals, " "),
+		taskContract.Intent,
+		taskContract.DesiredOutcome,
+		taskContract.SuccessPredicate,
+		strings.Join(taskContract.NonGoals, " "),
+		taskContract.Mode,
+		taskContract.ProofMedium,
 	), " "))
 	cwd, err := os.Getwd()
 	if err != nil || strings.TrimSpace(cwd) == "" {
@@ -101,6 +108,7 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 	pack := envelope.ContextPack{
 		Header:             newHeader(envelope.SVContextPack, idFor("ctx_", "dispatch", w.ID, actor, task), now, w.ID, "", w.Privacy, "tier0"),
 		SummaryMD:          fmt.Sprintf("Dispatch context for %s. Capability offers are task-scoped hints, not execution.", w.ID),
+		TaskContract:       taskContract,
 		Included:           []envelope.IncludedRef{},
 		Excluded:           []envelope.ExcludedRef{{Ref: dispatchWorkerPromptContractRef, Reason: dispatchWorkerPromptContractNote}},
 		CapabilityOffers:   []envelope.CapabilityOffer{},
@@ -112,6 +120,7 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 		RequiredChecks:     []string{},
 		Avoid:              []string{},
 	}
+	pack.IDs.ContractID = contractID
 	pack.Scope.Surface = cwd
 	if !capgraph.Exists(s.home) {
 		return pack, nil
@@ -153,6 +162,36 @@ func (s *Store) dispatchContextPack(w envelope.WorkEnvelope, actor string, now t
 		pack.SourceRevisions = append(pack.SourceRevisions, envelope.SourceRev{Source: capgraph.CapabilityGraphAuthorityRef, Rev: rev})
 	}
 	return pack, nil
+}
+
+func (s *Store) dispatchTaskContract(w envelope.WorkEnvelope) (envelope.TaskContract, string, error) {
+	fallback := envelope.TaskContract{
+		Intent:           strings.TrimSpace(firstNonEmpty(w.DesiredOutcome, w.SuccessPredicate)),
+		Mode:             "execute",
+		DesiredOutcome:   strings.TrimSpace(w.DesiredOutcome),
+		SuccessPredicate: strings.TrimSpace(w.SuccessPredicate),
+		NonGoals:         compactStrings(w.NonGoals...),
+		ProofMedium:      strings.TrimSpace(w.ProofMedium),
+	}
+	contextPackID := strings.TrimSpace(w.IDs.ContextPackID)
+	if contextPackID == "" {
+		return fallback, "", nil
+	}
+	var previous envelope.ContextPack
+	path := filepath.Join(s.home, "context", "packs", contextPackID+".json")
+	if err := s.readJSON(path, &previous); err != nil {
+		return envelope.TaskContract{}, "", fmt.Errorf("read originating context pack %q: %w", contextPackID, err)
+	}
+	if previous.ID != contextPackID {
+		return envelope.TaskContract{}, "", fmt.Errorf("originating context pack id %q does not match artifact id %q", contextPackID, previous.ID)
+	}
+	if err := previous.Validate(); err != nil {
+		return envelope.TaskContract{}, "", fmt.Errorf("originating context pack %q invalid: %w", contextPackID, err)
+	}
+	if previous.TaskContract.IsZero() {
+		return fallback, previous.IDs.ContractID, nil
+	}
+	return previous.TaskContract, previous.IDs.ContractID, nil
 }
 
 func dispatchWorkRevision(w envelope.WorkEnvelope) string {
@@ -207,13 +246,27 @@ func dispatchCapabilityOffer(offer envelope.CapabilityOffer) DispatchCapabilityO
 	}
 }
 
-func renderDispatchPrompt(w envelope.WorkEnvelope, offers []DispatchCapabilityOffer) string {
+func renderDispatchPrompt(w envelope.WorkEnvelope, task envelope.TaskContract, offers []DispatchCapabilityOffer) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Dispatch Work %s\n\n", w.ID)
 	if strings.TrimSpace(w.CanonicalSurface) != "" {
 		fmt.Fprintf(&b, "- surface: %s\n", w.CanonicalSurface)
 	}
 	fmt.Fprintln(&b)
+	if !task.IsZero() {
+		fmt.Fprintln(&b, "## TASK CONTRACT")
+		fmt.Fprintln(&b)
+		if task.Intent != "" {
+			fmt.Fprintf(&b, "- intent: %s\n", task.Intent)
+		}
+		if task.Mode != "" {
+			fmt.Fprintf(&b, "- mode: %s\n", task.Mode)
+		}
+		if task.ProofMedium != "" {
+			fmt.Fprintf(&b, "- proof_medium: %s\n", task.ProofMedium)
+		}
+		fmt.Fprintln(&b)
+	}
 	fmt.Fprintln(&b, "## LOAD THESE SKILLS")
 	fmt.Fprintln(&b)
 	if len(offers) == 0 {
@@ -226,18 +279,22 @@ func renderDispatchPrompt(w envelope.WorkEnvelope, offers []DispatchCapabilityOf
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## TASK")
 	fmt.Fprintln(&b)
-	if strings.TrimSpace(w.DesiredOutcome) != "" {
-		fmt.Fprintln(&b, w.DesiredOutcome)
+	if desiredOutcome := strings.TrimSpace(firstNonEmpty(task.DesiredOutcome, w.DesiredOutcome)); desiredOutcome != "" {
+		fmt.Fprintln(&b, desiredOutcome)
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "## SUCCESS")
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, w.SuccessPredicate)
-	if len(w.NonGoals) > 0 {
+	fmt.Fprintln(&b, firstNonEmpty(task.SuccessPredicate, w.SuccessPredicate))
+	nonGoals := task.NonGoals
+	if len(nonGoals) == 0 {
+		nonGoals = w.NonGoals
+	}
+	if len(nonGoals) > 0 {
 		fmt.Fprintln(&b)
 		fmt.Fprintln(&b, "## NON-GOALS")
 		fmt.Fprintln(&b)
-		for _, item := range w.NonGoals {
+		for _, item := range nonGoals {
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 	}

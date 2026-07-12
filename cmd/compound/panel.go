@@ -18,7 +18,7 @@ import (
 
 func cmdPanel(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|show <run_id> [--json]>")
+		fmt.Fprintln(os.Stderr, "usage: compound panel <import-lenses <manifest>|lenses --target-kind K [--domain D] [--task T] [--json]|plan [--work-id work_...] --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]|run --plan <run_id> (--fixtures <dir>|--openai-compatible-url U|--apply) [--api-key-env ENV] [--model-override lane=model]... [--host-context-limit N] [--skip-loaded-context-preflight] [--json]|verdict-record (--review <panel_verdict.json>|--group <group_key>) --rationale <text> --reviewed-by <actor> [--json]|feedback-plan --verdict <panel_verdict.json> [--json]|feedback-review <review.yaml> [--json]|show <run_id> [--json]>")
 		os.Exit(2)
 	}
 
@@ -317,6 +317,8 @@ func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {
 	jsonOut := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--work-id":
+			in.WorkID = requirePanelValue(args, &i, "panel plan")
 		case "--target-kind":
 			in.TargetKind = requirePanelValue(args, &i, "panel plan")
 		case "--domain":
@@ -355,7 +357,7 @@ func parsePanelPlanArgs(args []string) (panel.PlanInput, bool) {
 		}
 	}
 	if strings.TrimSpace(in.TargetKind) == "" {
-		fmt.Fprintln(os.Stderr, "usage: compound panel plan --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]")
+		fmt.Fprintln(os.Stderr, "usage: compound panel plan [--work-id work_...] --target-kind K [--domain D] [--task T] [--target REF]... [--state S]... [--limit N] [--privacy-sensitive|--not-privacy-sensitive REASON] [--supervised|--unsupervised] [--max-items N] [--max-tokens N] [--max-usd-micros N] [--json]")
 		os.Exit(2)
 	}
 	return in, jsonOut

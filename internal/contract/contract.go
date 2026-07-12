@@ -234,13 +234,14 @@ func ResolveRepoKind(flag, cwd string) (kind, via string) {
 
 // Input is a resolved orientation request (repo kind already resolved by the caller).
 type Input struct {
-	Harness     string
-	Cwd         string
-	Task        string
-	RepoKind    string
-	RepoKindVia string // "flag" | "<marker path>" | "default"
-	Mode        string // observe | plan | execute | review
-	Topic       string // optional topic slug; when set, ambient recall narrows to this topic's subtree. Empty = behavior unchanged.
+	Harness      string
+	Cwd          string
+	Task         string
+	TaskContract envelope.TaskContract
+	RepoKind     string
+	RepoKindVia  string // "flag" | "<marker path>" | "default"
+	Mode         string // observe | plan | execute | review
+	Topic        string // optional topic slug; when set, ambient recall narrows to this topic's subtree. Empty = behavior unchanged.
 }
 
 const installedHooksSchemaVersion = "compound.installed_hooks.v0.1"
@@ -365,7 +366,8 @@ func Compile(in Input, pol OrientationPolicy, now time.Time) envelope.EffectiveC
 	return envelope.EffectiveContract{
 		Header:             header(envelope.SVEffectiveContract, contractIDForInput(in), now, in),
 		Harness:            in.Harness,
-		TaskMode:           in.Mode,
+		TaskMode:           resolvedTaskContract(in).Mode,
+		TaskContract:       resolvedTaskContract(in),
 		ActiveInstructions: orEmpty(active),
 		ActiveHooks:        []string{},
 		ActiveDecisions:    []string{},
@@ -563,6 +565,7 @@ func Pack(in Input, pol OrientationPolicy, now time.Time) envelope.ContextPack {
 	return envelope.ContextPack{
 		Header:             hdr,
 		SummaryMD:          summary,
+		TaskContract:       resolvedTaskContract(in),
 		Included:           incl,
 		Excluded:           excl,
 		ActiveInstructions: orEmpty(active),
@@ -3361,7 +3364,47 @@ func inputIDParts(in Input) []string {
 	if topic := strings.TrimSpace(in.Topic); topic != "" {
 		parts = append(parts, "topic:"+topic)
 	}
+	if taskContractAddsMeaning(in) {
+		data, _ := json.Marshal(resolvedTaskContract(in))
+		digest := sha256.Sum256(data)
+		parts = append(parts, "task_contract:"+hex.EncodeToString(digest[:]))
+	}
 	return parts
+}
+
+func resolvedTaskContract(in Input) envelope.TaskContract {
+	task := in.TaskContract
+	if intent := strings.TrimSpace(in.Task); intent != "" {
+		task.Intent = intent
+	} else {
+		task.Intent = strings.TrimSpace(task.Intent)
+	}
+	if mode := strings.TrimSpace(in.Mode); mode != "" {
+		task.Mode = mode
+	} else {
+		task.Mode = strings.TrimSpace(task.Mode)
+	}
+	task.DesiredOutcome = strings.TrimSpace(task.DesiredOutcome)
+	task.SuccessPredicate = strings.TrimSpace(task.SuccessPredicate)
+	task.ProofMedium = strings.TrimSpace(task.ProofMedium)
+	nonGoals := make([]string, 0, len(task.NonGoals))
+	for _, nonGoal := range task.NonGoals {
+		if nonGoal = strings.TrimSpace(nonGoal); nonGoal != "" {
+			nonGoals = append(nonGoals, nonGoal)
+		}
+	}
+	task.NonGoals = nonGoals
+	return task
+}
+
+func taskContractAddsMeaning(in Input) bool {
+	task := resolvedTaskContract(in)
+	return task.Intent != strings.TrimSpace(in.Task) ||
+		task.Mode != strings.TrimSpace(in.Mode) ||
+		task.DesiredOutcome != "" ||
+		task.SuccessPredicate != "" ||
+		len(task.NonGoals) > 0 ||
+		task.ProofMedium != ""
 }
 
 func modeIDPart(mode string) string {

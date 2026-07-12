@@ -37,6 +37,11 @@ type FixtureCaller struct {
 	Dir string
 }
 
+// allowsBoundWorkWithoutOperationLease marks fixture-only calls as synthetic:
+// they have no provider spend or external side effect. Real callers remain
+// blocked for bound work until Work owns a delegated operation lease.
+func (FixtureCaller) allowsBoundWorkWithoutOperationLease() bool { return true }
+
 func (f FixtureCaller) Call(ctx context.Context, req CallRequest) (CallResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CallResult{}, err

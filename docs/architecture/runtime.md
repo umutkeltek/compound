@@ -78,6 +78,21 @@ Current evidence-autonomy status:
   attested same-WorkID Panel feeder exist, production eligibility has no
   legitimate sample and remains fail closed.
 
+Task meaning is an additive value on the existing spine, not a tenth envelope
+or a second task identity. `EffectiveContract` and `ContextPack` may carry one
+provider-neutral `TaskContract` (intent, mode, desired outcome, success
+predicate, non-goals, proof medium); legacy v0.1 objects without it remain
+valid. Dispatch preserves the frozen value and its originating `contract_id`
+while CapabilityGraph results remain offers. `panel plan --work-id work_...`
+binds a nonterminal parent before any model call, freezes that task contract
+into the Panel run, and fixture-only lens/judge evidence records the same
+`work_id`. A non-fixture caller and bound apply both fail closed until Work owns
+a delegated operation lease spanning provider spend and target mutation; Panel
+therefore cannot claim, advance, mutate, or close the parent in this slice. The
+parent owner remains the sole terminal Receipt/Transition authority. This path
+is still `recorded_via=generic`, not the attested
+`trusted_panel_runtime` required for autonomous production eligibility.
+
 Hung off one root `work_id`. The header matters more than any body — it prevents *retrieved ≠ relevant ≠
 authoritative ≠ current*.
 

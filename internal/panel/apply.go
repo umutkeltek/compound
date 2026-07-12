@@ -32,6 +32,12 @@ func Apply(homePath string, run Run, now func() time.Time) (Run, error) {
 	if run.Status != "verdicts_recorded" && run.Status != "applied" {
 		return run, fmt.Errorf("panel apply requires verdicts_recorded or applied run, got %q", run.Status)
 	}
+	if run.WorkBound {
+		if err := validatePanelWorkBinding(homePath, run); err != nil {
+			return run, err
+		}
+		return run, fmt.Errorf("bound panel apply requires a delegated work operation lease; no mutation performed")
+	}
 	store, err := Open(homePath)
 	if err != nil {
 		return run, err

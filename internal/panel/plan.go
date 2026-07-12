@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"compound/internal/candidates"
+	"compound/internal/envelope"
 )
 
 type PlanInput struct {
+	WorkID                string   `json:"work_id,omitempty"`
 	TargetKind            string   `json:"target_kind"`
 	TargetRefs            []string `json:"target_refs"`
 	States                []string `json:"states"`
@@ -46,6 +48,10 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 		nowFn = time.Now
 	}
 	now := nowFn().UTC()
+	binding, err := resolvePanelWorkBinding(homePath, in.WorkID)
+	if err != nil {
+		return Run{}, err
+	}
 	targetKind := strings.TrimSpace(in.TargetKind)
 	if targetKind == "" {
 		return Run{}, fmt.Errorf("target kind required")
@@ -54,7 +60,15 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 	if err != nil {
 		return Run{}, err
 	}
-	selection, err := SelectLensesWithContext(homePath, targetKind, LensContext{Domain: in.Domain, Task: in.Task})
+	taskText := strings.TrimSpace(in.Task)
+	if binding.bound {
+		boundTaskText := firstPanelTaskText(binding.task)
+		if taskText != "" && taskText != boundTaskText {
+			return Run{}, fmt.Errorf("panel --task conflicts with task contract bound to work_id %s", binding.workID)
+		}
+		taskText = boundTaskText
+	}
+	selection, err := SelectLensesWithContext(homePath, targetKind, LensContext{Domain: in.Domain, Task: taskText})
 	if err != nil {
 		return Run{}, err
 	}
@@ -64,9 +78,12 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 	}
 	run := Run{
 		SchemaVersion: RunSchemaVersion,
-		ID:            newRunID(now, targetKind, targets),
+		ID:            newRunID(now, targetKind, targets, binding.workID, binding.task),
 		CreatedAt:     now.Format(time.RFC3339),
 		Status:        "planned",
+		WorkID:        binding.workID,
+		WorkBound:     binding.bound,
+		TaskContract:  binding.task,
 		TargetKind:    targetKind,
 		Supervised:    supervised,
 		Targets:       targets,
@@ -76,6 +93,9 @@ func BuildPlan(homePath string, in PlanInput, nowFn func() time.Time) (Run, erro
 		CountsBefore:  countsBefore,
 		CountsAfter:   copyCounts(countsBefore),
 		EvidenceRefs:  []string{},
+	}
+	if !binding.bound {
+		run.TaskContract = envelope.TaskContract{Intent: taskText, Mode: "review"}
 	}
 	if gapID, err := recordMissingDomainLensCandidate(homePath, targetKind, in, selection); err != nil {
 		return Run{}, err
@@ -303,10 +323,16 @@ func copyCounts(in map[string]int) map[string]int {
 	return out
 }
 
-func newRunID(now time.Time, targetKind string, targets []Target) string {
+func newRunID(now time.Time, targetKind string, targets []Target, workID string, task envelope.TaskContract) string {
 	parts := []string{targetKind, now.UTC().Format(time.RFC3339Nano)}
 	for _, target := range targets {
 		parts = append(parts, target.Ref)
+	}
+	if workID = strings.TrimSpace(workID); workID != "" {
+		parts = append(parts, "work:"+workID)
+		if data, err := json.Marshal(task); err == nil {
+			parts = append(parts, "task_contract:"+string(data))
+		}
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return "prun_" + now.UTC().Format("20060102T150405Z") + "_" + hex.EncodeToString(sum[:])[:12]

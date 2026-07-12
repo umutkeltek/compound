@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"compound/internal/envelope"
 	"compound/internal/routeevidence"
 )
 
@@ -20,26 +21,28 @@ const RunSchemaVersion = "compound.panel_run.v0.1"
 const SynthesisSchemaVersion = "compound.panel_synthesis.v0.1"
 
 type Run struct {
-	SchemaVersion string          `json:"schema_version"`
-	ID            string          `json:"id"`
-	CreatedAt     string          `json:"created_at"`
-	Status        string          `json:"status"`
-	WorkID        string          `json:"work_id,omitempty"`
-	ReceiptID     string          `json:"receipt_id,omitempty"`
-	TransitionID  string          `json:"transition_id,omitempty"`
-	TargetKind    string          `json:"target_kind"`
-	Supervised    bool            `json:"supervised"`
-	Supervision   string          `json:"supervision,omitempty"`
-	Targets       []Target        `json:"targets"`
-	LensSet       LensSet         `json:"lens_set"`
-	Route         RoutePlan       `json:"route"`
-	Budget        Budget          `json:"budget"`
-	Findings      []TargetFinding `json:"findings"`
-	CountsBefore  map[string]int  `json:"counts_before"`
-	CountsAfter   map[string]int  `json:"counts_after"`
-	EvidenceRefs  []string        `json:"evidence_refs"`
-	StoppedReason string          `json:"stopped_reason,omitempty"`
-	NextAction    string          `json:"next_action,omitempty"`
+	SchemaVersion string                `json:"schema_version"`
+	ID            string                `json:"id"`
+	CreatedAt     string                `json:"created_at"`
+	Status        string                `json:"status"`
+	WorkID        string                `json:"work_id,omitempty"`
+	WorkBound     bool                  `json:"work_bound,omitempty"`
+	TaskContract  envelope.TaskContract `json:"task_contract,omitzero"`
+	ReceiptID     string                `json:"receipt_id,omitempty"`
+	TransitionID  string                `json:"transition_id,omitempty"`
+	TargetKind    string                `json:"target_kind"`
+	Supervised    bool                  `json:"supervised"`
+	Supervision   string                `json:"supervision,omitempty"`
+	Targets       []Target              `json:"targets"`
+	LensSet       LensSet               `json:"lens_set"`
+	Route         RoutePlan             `json:"route"`
+	Budget        Budget                `json:"budget"`
+	Findings      []TargetFinding       `json:"findings"`
+	CountsBefore  map[string]int        `json:"counts_before"`
+	CountsAfter   map[string]int        `json:"counts_after"`
+	EvidenceRefs  []string              `json:"evidence_refs"`
+	StoppedReason string                `json:"stopped_reason,omitempty"`
+	NextAction    string                `json:"next_action,omitempty"`
 }
 
 type Target struct {
@@ -281,6 +284,12 @@ func (r Run) Validate() error {
 		errs = append(errs, "status required")
 	} else if !has(panelStatuses, r.Status) {
 		errs = append(errs, fmt.Sprintf("status must be one of %s", keys(panelStatuses)))
+	}
+	if r.WorkBound && strings.TrimSpace(r.WorkID) == "" {
+		errs = append(errs, "work_id required when work_bound")
+	}
+	if err := r.TaskContract.Validate(); err != nil {
+		errs = append(errs, err.Error())
 	}
 	if strings.TrimSpace(r.TargetKind) == "" {
 		errs = append(errs, "target_kind required")

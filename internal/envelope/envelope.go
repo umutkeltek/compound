@@ -171,6 +171,40 @@ type MutationPolicy struct {
 	RequiresActionIntent      bool `json:"requires_action_intent"`
 	IrreversibleRequiresHuman bool `json:"irreversible_requires_human"`
 }
+
+// TaskContract is the provider- and harness-neutral meaning of one task. It is
+// a value carried by the existing envelope spine, not a new envelope or source
+// of identity; concrete tools, models, and routes remain compiled outputs.
+type TaskContract struct {
+	Intent           string   `json:"intent,omitempty"`
+	Mode             string   `json:"mode,omitempty"`
+	DesiredOutcome   string   `json:"desired_outcome,omitempty"`
+	SuccessPredicate string   `json:"success_predicate,omitempty"`
+	NonGoals         []string `json:"non_goals,omitempty"`
+	ProofMedium      string   `json:"proof_medium,omitempty"`
+}
+
+// IsZero lets additive task contracts remain absent on legacy v0.1 artifacts.
+func (t TaskContract) IsZero() bool {
+	return strings.TrimSpace(t.Intent) == "" &&
+		strings.TrimSpace(t.Mode) == "" &&
+		strings.TrimSpace(t.DesiredOutcome) == "" &&
+		strings.TrimSpace(t.SuccessPredicate) == "" &&
+		len(t.NonGoals) == 0 &&
+		strings.TrimSpace(t.ProofMedium) == ""
+}
+
+func (t TaskContract) Validate() error {
+	v := &verr{}
+	validateTaskContract(v, "task_contract", t)
+	return v.result("task_contract")
+}
+
+func validateTaskContract(v *verr, field string, task TaskContract) {
+	v.enum(field+".mode", task.Mode, RequestedModes, false)
+	v.enum(field+".proof_medium", task.ProofMedium, ProofMedia, false)
+}
+
 type HookReadiness struct {
 	Harness         string                `json:"harness"`
 	Hook            string                `json:"hook"`
@@ -214,6 +248,7 @@ type EffectiveContract struct {
 	Header
 	Harness            string            `json:"harness"`
 	TaskMode           string            `json:"task_mode,omitempty"`
+	TaskContract       TaskContract      `json:"task_contract,omitzero"`
 	ActiveInstructions []string          `json:"active_instructions"`
 	ActiveHooks        []string          `json:"active_hooks"`
 	HookRoster         []HookRosterEntry `json:"hook_roster,omitempty"`
@@ -235,6 +270,10 @@ func (e *EffectiveContract) Validate() error {
 	v := &verr{}
 	e.Header.validate(v, SVEffectiveContract, "contract_")
 	v.req("harness", e.Harness)
+	validateTaskContract(v, "task_contract", e.TaskContract)
+	if taskMode, contractMode := strings.TrimSpace(e.TaskMode), strings.TrimSpace(e.TaskContract.Mode); taskMode != "" && contractMode != "" && taskMode != contractMode {
+		v.addf("task_mode %q conflicts with task_contract.mode %q", taskMode, contractMode)
+	}
 	validateCapabilityOffers(v, "capability_offers", e.CapabilityOffers)
 	return v.result(e.Kind())
 }
@@ -331,6 +370,7 @@ type NegativeCard struct {
 type ContextPack struct {
 	Header
 	SummaryMD          string            `json:"summary_md"`
+	TaskContract       TaskContract      `json:"task_contract,omitzero"`
 	Included           []IncludedRef     `json:"included"`
 	Excluded           []ExcludedRef     `json:"excluded"`
 	CapabilityOffers   []CapabilityOffer `json:"capability_offers,omitempty"`
@@ -351,6 +391,7 @@ func (e *ContextPack) Kind() string { return "context_pack" }
 func (e *ContextPack) Validate() error {
 	v := &verr{}
 	e.Header.validate(v, SVContextPack, "ctx_")
+	validateTaskContract(v, "task_contract", e.TaskContract)
 	for i, inc := range e.Included {
 		v.enum(fmt.Sprintf("included[%d].source_class", i), inc.SourceClass, SourceClasses, true)
 		v.enum(fmt.Sprintf("included[%d].status", i), inc.Status, AuthorityStatuses, false)
