@@ -211,6 +211,8 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory import-topics <topics.json> [--json]"
 	case "temperature":
 		return "usage: compound memory temperature [--json] [--rebuild]"
+	case "observation":
+		return "usage: compound memory observation [--json] [--record]"
 	case "canon":
 		return "usage: compound memory canon [--json]"
 	case "volatile-restore":
@@ -228,7 +230,7 @@ func memoryUsage(sub string) string {
 	case "search":
 		return "usage: compound memory search --lane L <query> [--k N] [--json]"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|temperature [--rebuild]|observation [--json] [--record]|doctor>"
 	}
 }
 
@@ -1726,6 +1728,8 @@ func cmdMemory(args []string) {
 		cmdMemoryImportTopics(store, rest)
 	case "temperature":
 		cmdMemoryTemperature(homePath, rest)
+	case "observation":
+		cmdMemoryObservation(homePath, rest)
 	case "canon":
 		cmdMemoryCanon(store, rest)
 	case "volatile-restore":
