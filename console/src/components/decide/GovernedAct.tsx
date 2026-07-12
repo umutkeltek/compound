@@ -10,7 +10,7 @@ import { Button, Field } from "@/components/kit";
 import type { DecideAct, DecideCapability } from "@/lib/decide-model";
 import type { DecisionExecutionEffect, DecisionExecutionRefs } from "@/lib/decision-execute";
 import type { DecisionOption, FieldSpec } from "@/lib/decision-registry";
-import { buildDecideActionRequest, decideActIdentity, type GovernedSubmitKind } from "@/lib/governed-action-client";
+import { buildDecideActionRequest, decideActIdentity, fieldValidationMessage, type GovernedSubmitKind } from "@/lib/governed-action-client";
 
 export type ExecuteResult = {
   ok: boolean;
@@ -245,7 +245,7 @@ export function GovernedAct({
       if (field.required && !String(values[field.name] ?? "").trim()) {
         setState("error");
         setInvalidField(field.name);
-        setMessage(`${field.label} is required.`);
+        setMessage(fieldValidationMessage(field));
         const control = formRef.current?.elements.namedItem(field.name);
         if (control instanceof HTMLElement) control.focus();
         return false;
@@ -404,6 +404,7 @@ export function GovernedAct({
                 disabled={state === "pending"}
                 invalid={invalidField === field.name}
                 describedBy={invalidField === field.name ? validationMessageId : undefined}
+                errorMessage={invalidField === field.name ? message ?? undefined : undefined}
               />
             ))}
           </div>
@@ -421,7 +422,12 @@ export function GovernedAct({
           {buttonLabel}
         </Button>
       </div>
-      {!open && state === "error" && message ? <span id={validationMessageId} role="alert" className="text-xs leading-snug text-crit">{message}</span> : null}
+      {/* A field-level error already renders inline next to its own Field control
+          (above) — this banner only covers non-field errors: the decision-option
+          choice, or a server-side failure surfaced after submit. */}
+      {!open && state === "error" && message && !(invalidField && invalidField !== "decision_option") ? (
+        <span id={validationMessageId} role="alert" className="text-xs leading-snug text-crit">{message}</span>
+      ) : null}
       {outcome ? <DecisionOutcome result={outcome} effectKind={effectKind} /> : null}
 
       <Dialog.Root open={open} onOpenChange={setOpen}>
