@@ -211,6 +211,7 @@ func Doctor(repoRoot string, strict bool) Report {
 		f = append(f, checkOperatorSourceControlProjectionContract(repoRoot)...)
 		f = append(f, checkASCDailySignalsPublicBoundaryContract(repoRoot)...)
 		f = append(f, checkBuildFreshnessContract(repoRoot)...)
+		f = append(f, checkMintTwoClassHome(repoRoot)...)
 	}
 	f = append(f, convergenceDebt(strict)...)
 	ok := true
