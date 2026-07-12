@@ -519,3 +519,18 @@ body {
   .seg-active { animation: none; }
   .hovercard-in[data-state="open"] { animation: none; }
 }
+
+/* Transitions ticker (DESIGN.md §9.6) — a genuinely NEW chip streaming in:
+   fade+slide `--dur-slower`, no bounce, per §5's "streaming-in generative
+   blocks" rule. Applied only at first mount (the ticker keys chips by their
+   ts+work_id+to dedupe key and never re-adds one already seen), so a
+   reconnect replaying the backlog never re-triggers this. */
+@keyframes chip-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chip-in { animation: chip-in var(--dur-slower) var(--ease-out); }
+
+@media (prefers-reduced-motion: reduce) {
+  .chip-in { animation: none; }
+}

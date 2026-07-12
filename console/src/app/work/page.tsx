@@ -1,6 +1,7 @@
 import { FreshnessChip, PageHeader } from "@/components/kit";
 import { WorkLenses } from "@/components/work/WorkLenses";
 import { arr, getSourceConnections, getWorkbench, runJson, str } from "@/lib/compound";
+import { buildLaneTraffic } from "@/lib/lane-traffic";
 import { buildBoard, buildOffered, buildPipeline } from "@/lib/work-pipeline";
 
 export const dynamic = "force-dynamic";
@@ -17,13 +18,14 @@ export default async function WorkPage({
 }) {
   const { trace } = await searchParams;
 
-  const [workbench, sources, suggestions, packets] = await Promise.all([
+  const [workbench, sources, suggestions, packets, laneTraffic] = await Promise.all([
     getWorkbench(),
     getSourceConnections(),
     // Read-only: `director propose --dry-run` creates nothing (verified); the
     // suggestions feed the Propose stage. Fail-soft to null.
     runJson(["director", "propose", "--dry-run", "--json"]),
     runJson(["packets", "list", "--json"]),
+    buildLaneTraffic(),
   ]);
 
   const open = arr(workbench?.open);
@@ -59,6 +61,7 @@ export default async function WorkPage({
         offered={offered}
         openCount={open.length}
         initialTrace={initialTrace}
+        laneTraffic={laneTraffic}
       />
     </div>
   );

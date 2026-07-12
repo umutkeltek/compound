@@ -5,9 +5,12 @@ import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
 import { BoardLens } from "@/components/work/BoardLens";
+import { CapsuleColumns } from "@/components/work/CapsuleColumns";
 import { OfferedLens } from "@/components/work/OfferedLens";
 import { PipelineLens } from "@/components/work/PipelineLens";
 import { TraceDrawer } from "@/components/work/TraceDrawer";
+import { TransitionsTicker } from "@/components/work/TransitionsTicker";
+import type { LaneTrafficReport } from "@/lib/lane-traffic";
 import type { BoardColumnModel, OfferedPacketModel, PipelineStageModel } from "@/lib/work-pipeline";
 
 /**
@@ -16,6 +19,11 @@ import type { BoardColumnModel, OfferedPacketModel, PipelineStageModel } from "@
  * Offered packets — with ONE Trace drawer mounted once and opened by any card
  * in any lens. The open trace is mirrored into `?trace=<id>` so it is
  * deep-linkable and shareable (Briefing's pipeline strip links straight here).
+ *
+ * Above the lenses: the DESIGN.md §9.6 "information flow" ambient row — the
+ * live Transitions ticker (streams over /api/stream) and CapsuleColumns lane
+ * traffic — visible regardless of which lens tab is active, since both are
+ * ambient organism-is-alive signal, not lens-scoped data.
  */
 
 type TabKey = "pipeline" | "board" | "offered";
@@ -30,12 +38,14 @@ export function WorkLenses({
   offered,
   openCount,
   initialTrace,
+  laneTraffic,
 }: {
   stages: PipelineStageModel[];
   columns: BoardColumnModel[];
   offered: OfferedPacketModel[];
   openCount: number;
   initialTrace: string | null;
+  laneTraffic: LaneTrafficReport;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -56,7 +66,12 @@ export function WorkLenses({
 
   return (
     <>
-      <Tabs.Root defaultValue="pipeline" className="flex flex-col gap-4">
+      <div className="grid gap-4 lg:grid-cols-[3fr_2fr]">
+        <TransitionsTicker onOpenTrace={openTrace} />
+        <CapsuleColumns report={laneTraffic} />
+      </div>
+
+      <Tabs.Root defaultValue="pipeline" className="mt-4 flex flex-col gap-4">
         <Tabs.List className="inline-flex w-fit items-center gap-1 rounded-lg border border-hair bg-soft p-1">
           <Tabs.Trigger value={"pipeline" satisfies TabKey} className={TAB_CLASS}>
             Pipeline
