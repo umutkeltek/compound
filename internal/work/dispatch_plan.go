@@ -7,7 +7,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"compound/internal/laneselect"
 )
+
+// PreparationLaneSelector is the injected adapter that ranks preparation-class lanes from the
+// Compound model-router registry + route-evidence throughput. cmd/compound wires it to
+// routeevidence.PlanPreparationLane. It breaks the work<->routeevidence import cycle: work
+// depends only on the pure laneselect types and calls the adapter through this seam. A nil
+// selector (pure work-package tests that do not inject one) means preparation routing is
+// unavailable and dispatch falls back to the codex default.
+var PreparationLaneSelector func(homePath, class string, now time.Time) (*laneselect.PreparationLaneRanking, error)
 
 const DispatchPlanSchemaVersion = "compound.work_dispatch_plan.v0.1"
 const DispatchClaimSchemaVersion = "compound.work_dispatch_claim.v0.1"
@@ -30,6 +40,11 @@ type DispatchPlanOptions struct {
 	SourcePacketRisk      string
 	SourcePacketPrivacy   string
 	SourcePacketContextID string
+	// CapabilityClass, when set to a preparation class (see routeevidence.IsPreparationClass)
+	// and no explicit Actor is given, routes the dispatch to a lane chosen by the
+	// preparation-lane selection instead of the "codex" default. Empty or non-preparation
+	// classes keep today's behavior byte-identical.
+	CapabilityClass string
 }
 
 type DispatchPlan struct {
@@ -47,6 +62,11 @@ type DispatchPlan struct {
 	NoAction      string              `json:"no_action,omitempty"`
 	Warnings      []string            `json:"warnings,omitempty"`
 	Integrity     []string            `json:"integrity,omitempty"`
+	// LaneSelection is the preparation-lane routing receipt (Law 9): the ranked candidates,
+	// their fit/speed/cost inputs, and the winning lane whose id became the dispatch Actor.
+	// Present only when a preparation-class dispatch ran the selection; omitted (and behavior
+	// byte-identical) for every other dispatch.
+	LaneSelection *laneselect.PreparationLaneRanking `json:"lane_selection,omitempty"`
 }
 
 type DispatchPlanSource struct {
@@ -271,11 +291,42 @@ type DispatchStepRunResult struct {
 	Integrity       []string             `json:"integrity,omitempty"`
 }
 
-func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
-	actor := strings.TrimSpace(opts.Actor)
-	if actor == "" {
-		actor = "codex"
+// resolveDispatchActor decides which lane (actor) a dispatch runs as. An explicit Actor is
+// always honored. When no Actor is given and the work is a preparation class, the
+// preparation-lane selection picks the lane by capability-class fit, token-generation speed
+// above the floor, then cost — replacing the historical hardcoded "codex" default with a
+// choice made from Compound-owned evidence (model-router registry + route-evidence
+// throughput). The selection ranking is returned so it lands in the DispatchPlan receipt.
+// Any other case (empty class, non-preparation class, no eligible lane, missing registry)
+// falls back to "codex" byte-identically, surfacing a warning when a selection was attempted.
+func (s *Store) resolveDispatchActor(opts DispatchPlanOptions, now time.Time) (actor string, selection *laneselect.PreparationLaneRanking, warnings []string) {
+	actor = strings.TrimSpace(opts.Actor)
+	if actor != "" {
+		return actor, nil, nil
 	}
+	class := strings.TrimSpace(opts.CapabilityClass)
+	if !laneselect.IsPreparationClass(class) {
+		return "codex", nil, nil
+	}
+	if PreparationLaneSelector == nil {
+		return "codex", nil, []string{"preparation lane selection unavailable: no selector wired"}
+	}
+	ranking, err := PreparationLaneSelector(s.home, class, now)
+	if err != nil {
+		return "codex", nil, []string{"preparation lane selection unavailable: " + err.Error()}
+	}
+	if ranking == nil || ranking.Winner == nil {
+		status := "no ranking"
+		if ranking != nil {
+			status = ranking.Status
+		}
+		return "codex", ranking, []string{fmt.Sprintf("preparation lane selection found no eligible lane (%s); using default actor", status)}
+	}
+	return ranking.Winner.Lane, ranking, nil
+}
+
+func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchPlan, error) {
+	actor, laneSelection, laneWarnings := s.resolveDispatchActor(opts, now)
 	var source *DispatchPlanSource
 	if strings.TrimSpace(opts.SourcePacketPath) != "" {
 		sourcePreview, err := dispatchPlanSourcePreview(opts.SourcePacketPath, dispatchSourceState(opts))
@@ -306,6 +357,10 @@ func (s *Store) DispatchPlan(now time.Time, opts DispatchPlanOptions) (DispatchP
 			"does not import source packets",
 		},
 		Integrity: append([]string{}, report.Integrity...),
+	}
+	plan.LaneSelection = laneSelection
+	if len(laneWarnings) > 0 {
+		plan.Warnings = append(plan.Warnings, laneWarnings...)
 	}
 	if source != nil {
 		plan.Warnings = append(plan.Warnings, "source packet is preview-only; use work import-packet or mutating dispatch command to import")

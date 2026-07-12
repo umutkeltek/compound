@@ -486,11 +486,11 @@ func cmdWork(args []string) {
 			fmt.Printf("result: %s\n", result.ResultPath)
 		}
 	case "dispatch-plan":
-		usage := "usage: compound work dispatch-plan [--actor A] [--source-packet packet.md preview-only] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
+		usage := "usage: compound work dispatch-plan [--actor A] [--capability-class classify-extract|draft-prose] [--source-packet packet.md preview-only] [--source-state proposed|ready] [--source-owner O] [--source-context-pack ctx] [--source-risk tier1] [--source-privacy private] [--json] [--dry-run]"
 		for i := 0; i < len(rest); i++ {
 			switch rest[i] {
 			case "--json", "--dry-run":
-			case "--actor", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy":
+			case "--actor", "--capability-class", "--source-packet", "--source-state", "--source-owner", "--source-context-pack", "--source-risk", "--source-privacy":
 				if i+1 >= len(rest) {
 					fmt.Fprintln(os.Stderr, usage)
 					os.Exit(2)
@@ -503,6 +503,7 @@ func cmdWork(args []string) {
 		}
 		plan, err := store.DispatchPlan(time.Now(), work.DispatchPlanOptions{
 			Actor:                 flag("--actor"),
+			CapabilityClass:       flag("--capability-class"),
 			Record:                !has("--dry-run"),
 			SourcePacketPath:      flag("--source-packet"),
 			SourcePacketState:     flag("--source-state"),
@@ -526,6 +527,14 @@ func cmdWork(args []string) {
 			}
 		} else {
 			fmt.Printf("dispatch-plan %s status=%s no_action=%s\n", plan.ID, plan.Status, plan.NoAction)
+		}
+		if plan.LaneSelection != nil {
+			sel := plan.LaneSelection
+			if sel.Winner != nil {
+				fmt.Printf("lane_selection: class=%s winner=%s floor=%.1ft/s status=%s (%s)\n", sel.CapabilityClass, sel.Winner.Lane, sel.FloorTokensPerSecond, sel.Status, sel.Winner.Rationale)
+			} else {
+				fmt.Printf("lane_selection: class=%s status=%s (no eligible lane)\n", sel.CapabilityClass, sel.Status)
+			}
 		}
 		if plan.PlanPath != "" {
 			fmt.Printf("plan: %s\n", plan.PlanPath)
