@@ -1,0 +1,172 @@
+import fs from "node:fs";
+import path from "node:path";
+
+import { fieldValidationMessage, RATIONALE_REQUIRED_MESSAGE } from "./governed-action-client";
+import { ownerUnavailableMessage } from "./glossary";
+
+/**
+ * Falsifiers for the two Decide-page presentation bugs the operator
+ * browser-reproduced: (1) clicking a primary act with an empty required
+ * field silently did nothing — no visible feedback; (2) 11 "Owner action
+ * unavailable" cards named no owner and no operator escape hatch.
+ *
+ * This repo's console tests are pure-function `.selftest.ts` files (no DOM
+ * renderer is wired in — see decide-model-brief.selftest.ts, ask-triage.
+ * selftest.ts). So this file proves two things for each bug: (a) the pure
+ * copy function computes the right plain-language text, and (b) the
+ * component source files actually CALL that function at the exact site that
+ * used to silently no-op / render the bare label — a grep-on-source wiring
+ * proof (same pattern as ask-triage.selftest.ts), so a correct-but-unused
+ * helper cannot pass this test the way it could pass a function-only test.
+ */
+
+const SRC_ROOT = path.resolve(process.cwd(), "src");
+
+function read(relPath: string): string {
+  return fs.readFileSync(path.join(SRC_ROOT, relPath), "utf8");
+}
+
+export type SelfTestResult = { ok: boolean; details: string[] };
+
+export function runDecideDecisionFeedbackSelfTest(): SelfTestResult {
+  const details: string[] = [];
+  let ok = true;
+  const fail = (msg: string) => { ok = false; details.push(`FAIL: ${msg}`); };
+  const pass = (msg: string) => details.push(`ok: ${msg}`);
+
+  /* ---------- f1: empty-required-field validation feedback ---------- */
+
+  // (a) The rationale/reason textbox gets the plain-language line the
+  // operator asked for, not a terse "<Label> is required." fragment.
+  {
+    const msg = fieldValidationMessage({ name: "rationale", label: "Rationale" });
+    if (msg !== RATIONALE_REQUIRED_MESSAGE || !/reasoning/i.test(msg) || !/why/i.test(msg)) {
+      fail(`rationale field validation message not plain-language: ${JSON.stringify(msg)}`);
+    } else {
+      pass("empty rationale field gets the plain-language 'add one line of reasoning' message");
+    }
+    const reasonMsg = fieldValidationMessage({ name: "reason", label: "Reason" });
+    if (reasonMsg !== RATIONALE_REQUIRED_MESSAGE) {
+      fail(`reason field should share the rationale copy, got ${JSON.stringify(reasonMsg)}`);
+    } else {
+      pass("empty reason field shares the same plain-language copy as rationale");
+    }
+  }
+
+  // (b) Other required fields (e.g. numeric confidence) still get a message
+  // — never silently blocked — but distinct generic copy.
+  {
+    const msg = fieldValidationMessage({ name: "confidence", label: "Confidence" });
+    if (!msg || msg === RATIONALE_REQUIRED_MESSAGE || !/Confidence/.test(msg)) {
+      fail(`non-rationale required field must still get a labeled message, got ${JSON.stringify(msg)}`);
+    } else {
+      pass("non-rationale required fields still surface a labeled plain-language message");
+    }
+  }
+
+  // (c) GovernedAct.tsx (the single-item "Review decision" primary act) must
+  // actually WIRE fieldValidationMessage into its validation path and render
+  // it as an inline errorMessage on the Field itself — not just import it
+  // unused. On base this call site set `message` to the bare
+  // `${field.label} is required.` template literal directly; that inline
+  // silent-feedback pattern must be gone.
+  {
+    const src = read("components/decide/GovernedAct.tsx");
+    if (!/fieldValidationMessage\(field\)/.test(src)) {
+      fail("GovernedAct.tsx validateDraft() no longer calls fieldValidationMessage(field) — the plain-language copy is unwired");
+    } else if (/setMessage\(`\$\{field\.label\} is required\.`\)/.test(src)) {
+      fail("GovernedAct.tsx still sets the old terse '${field.label} is required.' message — not replaced");
+    } else {
+      pass("GovernedAct.tsx's validateDraft() computes the message via fieldValidationMessage(field)");
+    }
+    if (!/errorMessage=\{invalidField === field\.name \? message/.test(src)) {
+      fail("GovernedAct.tsx does not pass the validation message to <Field> as errorMessage — feedback would not render next to the field");
+    } else {
+      pass("GovernedAct.tsx passes the invalid field's message to <Field errorMessage=…> so it renders next to the field, not just far below the button");
+    }
+  }
+
+  // (d) Field.tsx (the shared form-control kit component) must render that
+  // errorMessage directly inside the same <label> as the control — i.e.
+  // "next to the field", not merely somewhere on the page.
+  {
+    const src = read("components/kit/Field.tsx");
+    if (!/errorMessage\?:\s*string/.test(src)) {
+      fail("Field.tsx has no errorMessage prop — no per-field inline message contract exists");
+    } else if (!/invalid && errorMessage/.test(src)) {
+      fail("Field.tsx does not conditionally render the errorMessage when invalid");
+    } else {
+      pass("Field.tsx renders the inline errorMessage directly under its own control when invalid");
+    }
+  }
+
+  // (e) The batch-enumerable path (EnumerableApply's Rationale textarea +
+  // Confirm button) had a DEAD validation check: `apply()` already tested
+  // `requiresRationale && !rationale.trim()`, but the Confirm button was
+  // disabled by that exact same condition — so the check could never run
+  // and the operator saw a button that just didn't respond. Prove the
+  // disablement no longer includes the rationale condition (so the click
+  // reaches apply() and its existing check can actually fire), and that the
+  // message it sets matches the plain-language copy.
+  {
+    const src = read("components/decide/DecideQueue.tsx");
+    if (!/setError\(RATIONALE_REQUIRED_MESSAGE\)/.test(src)) {
+      fail("DecideQueue.tsx EnumerableApply no longer sets the plain-language RATIONALE_REQUIRED_MESSAGE on empty rationale");
+    } else {
+      pass("DecideQueue.tsx EnumerableApply surfaces RATIONALE_REQUIRED_MESSAGE when rationale is empty");
+    }
+    if (/disabled=\{running \|\| \(requiresRationale && !rationale\.trim\(\)\)\}/.test(src)) {
+      fail("DecideQueue.tsx Confirm button is still disabled purely by empty rationale — apply()'s validation check stays dead code and the click silently no-ops");
+    } else {
+      pass("DecideQueue.tsx Confirm button no longer silently blocks on empty rationale — clicking it reaches the validation check that shows the message");
+    }
+  }
+
+  /* ---------- f2: missing-owner naming (not the bare label) ---------- */
+
+  // (f) The pure owner-unavailable message names the specific area and the
+  // honest state, and is never literally the old bare label.
+  {
+    const msg = ownerUnavailableMessage("route-promotions");
+    if (msg === "Owner action unavailable") {
+      fail("ownerUnavailableMessage returned the bare legacy label instead of a named line");
+    } else if (!/route promotions/.test(msg)) {
+      fail(`ownerUnavailableMessage does not name the area, got ${JSON.stringify(msg)}`);
+    } else if (!/park\/dismiss/i.test(msg)) {
+      fail(`ownerUnavailableMessage does not say what the operator can still do, got ${JSON.stringify(msg)}`);
+    } else {
+      pass(`ownerUnavailableMessage("route-promotions") names the owner and the honest state: ${JSON.stringify(msg)}`);
+    }
+  }
+
+  // (g) Two different areas must produce two different messages — proves
+  // the text is actually derived from the group's area, not a second
+  // hardcoded generic string standing in for the first.
+  {
+    const a = ownerUnavailableMessage("route-promotions");
+    const b = ownerUnavailableMessage("synthesis-contradictions");
+    if (a === b) fail("ownerUnavailableMessage does not vary by area — looks like a second hardcoded generic string");
+    else pass("ownerUnavailableMessage varies by area (derived from the read model, not a second generic constant)");
+  }
+
+  // (h) DecideQueue.tsx must actually call ownerUnavailableMessage at both
+  // render sites that used to show the bare label: the CapabilityStatus
+  // badge's tooltip detail, and the DecisionDetail copy-mode card body. And
+  // the old generic, non-naming paragraph must be gone from the card body.
+  {
+    const src = read("components/decide/DecideQueue.tsx");
+    const callSites = src.match(/ownerUnavailableMessage\(/g)?.length ?? 0;
+    if (callSites < 2) {
+      fail(`expected ownerUnavailableMessage(...) wired at both the badge tooltip and the card body, found ${callSites} call site(s)`);
+    } else {
+      pass(`ownerUnavailableMessage(...) is wired at ${callSites} render sites in DecideQueue.tsx`);
+    }
+    if (/Primary action unavailable/.test(src)) {
+      fail("DecideQueue.tsx still renders the old generic 'Primary action unavailable' heading instead of the named-owner line");
+    } else {
+      pass("the old generic 'Primary action unavailable' heading is gone — replaced by the named-owner line");
+    }
+  }
+
+  return { ok, details };
+}
