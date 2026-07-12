@@ -157,6 +157,15 @@ func Doctor(b Bundle) DoctorReport {
 
 func DoctorWithLiveProbes(ctx context.Context, b Bundle, now time.Time) DoctorReport {
 	report := Doctor(b)
+	if len(b.RuntimeProbes) == 0 {
+		report.Status = "fail"
+		report.Checks = append(report.Checks, Check{
+			Name:   "live:coverage",
+			Status: "fail",
+			Detail: "live verification requested but no runtime probes are configured",
+		})
+		return report
+	}
 	for i, probe := range b.RuntimeProbes {
 		check := runProbe(ctx, probe, i, now)
 		if check.Status != "ok" {
