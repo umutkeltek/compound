@@ -1,6 +1,7 @@
 package authority
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,7 @@ import (
 	"compound/internal/capgraph"
 	"compound/internal/decisions"
 	"compound/internal/envelope"
+	"compound/internal/eventsource"
 	"compound/internal/home"
 	"compound/internal/mem"
 	"compound/internal/policy"
@@ -72,6 +74,17 @@ const (
 	// projected Status says "operator_approval_frontier_failed" — ownership
 	// and health are different axes).
 	osAbsorptionProofModeRegistryOwnership = "registry_ownership_authority"
+	// osAbsorptionProofModeEventSource proves an events_dir row (the umut-os
+	// events/ directory): every live .ndjson file under source_ref (README.md
+	// and any non-.ndjson file excluded) has at least one
+	// compound/internal/eventsource source-authority record, the highest
+	// historical Imported+Skipped total ever recorded for that file covers its
+	// CURRENT non-blank line count (a file that grew since the last `event
+	// import-os` run proves "pending" drift naming the file, never a silent
+	// "ok"), and a sample of TraceIDs from the most recent record that actually
+	// imported new traces resolves to a real TraceEnvelope file under
+	// COMPOUND_HOME/events/ (a missing trace file fails the row closed).
+	osAbsorptionProofModeEventSource = "event_source_authority"
 
 	osAbsorptionWorkAuthorityRef              = "compound://work"
 	osAbsorptionEffectiveContractAuthorityRef = "compound://contracts/effective-contract"
@@ -286,10 +299,12 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 				applyOSAbsorptionAutoProof(&report, &dr, result)
 			}
 		case osAbsorptionNeedsCapabilityProof(row):
-			if rec, ok := capabilityAuthorityProofRecord(row, capRecords); ok {
-				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{ok: true, proofRef: rec.ID})
+			result, drift := capabilityAuthorityProof(row, capRecords)
+			if drift {
+				dr.ProofStatus = "pending"
+				dr.ProofDetail = result.reason
 			} else {
-				applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionProofResult{reason: "no matching capability source-authority record for " + row.SourceRef})
+				applyOSAbsorptionAutoProof(&report, &dr, result)
 			}
 		case osAbsorptionNeedsDecisionsProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionDecisionsProof(homePath))
@@ -308,6 +323,14 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			}
 		case osAbsorptionNeedsInfraRegistryProof(row):
 			result, drift := infraRegistryProof(homePath, row)
+			if drift {
+				dr.ProofStatus = "pending"
+				dr.ProofDetail = result.reason
+			} else {
+				applyOSAbsorptionAutoProof(&report, &dr, result)
+			}
+		case osAbsorptionNeedsEventSourceProof(row):
+			result, drift := eventSourceAuthorityProof(homePath, row)
 			if drift {
 				dr.ProofStatus = "pending"
 				dr.ProofDetail = result.reason
@@ -440,6 +463,125 @@ func capabilityAuthorityProofRecord(row OSAbsorptionMatrixRow, records []capgrap
 		return rec, true
 	}
 	return capgraph.SourceAuthorityRecord{}, false
+}
+
+// capabilityAuthorityProof dispatches capability_source_authority proof for
+// one row. A row with no absorb_subset_file evidence_refs takes the legacy,
+// unchanged whole-directory path (exact (SourcePath, SourceRevision) string
+// equality against a capsrc record) so already-green rows like the recipes
+// row (os_source_brain_solo_builder_os) are unaffected. A row that declares
+// an enumerated absorb-subset (e.g. os_source_brain_solo_builder_doctrine,
+// which absorbed only 2 of 36 files in its source_ref tree) instead takes the
+// subset-scoped path: only the named files are ever read or hashed, so
+// out-of-row churn elsewhere in the same directory can never flip the row.
+// The bool return is true only for subset drift (pending), mirroring
+// infraRegistryProof's (result, drift) shape.
+func capabilityAuthorityProof(row OSAbsorptionMatrixRow, records []capgraph.SourceAuthorityRecord) (osAbsorptionProofResult, bool) {
+	subset := osAbsorptionCapabilitySubsetFiles(row.EvidenceRefs)
+	if len(subset) == 0 {
+		if rec, ok := capabilityAuthorityProofRecord(row, records); ok {
+			return osAbsorptionProofResult{ok: true, proofRef: rec.ID}, false
+		}
+		return osAbsorptionProofResult{reason: "no matching capability source-authority record for " + row.SourceRef}, false
+	}
+	return capabilityAuthoritySubsetProof(row, records, subset)
+}
+
+// osAbsorptionCapabilitySubsetFiles parses "absorb_subset_file:<relative
+// path>:sha256:<hash>" entries out of a ref list into relative-path -> sha256
+// hex digest. A row (or capsrc record) with no such entries declares no
+// subset, which is exactly the legacy whole-directory signal.
+func osAbsorptionCapabilitySubsetFiles(refs []string) map[string]string {
+	const prefix = "absorb_subset_file:"
+	const hashMarker = ":sha256:"
+	subset := map[string]string{}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(ref, prefix)
+		idx := strings.LastIndex(rest, hashMarker)
+		if idx < 0 {
+			continue
+		}
+		file := strings.TrimSpace(rest[:idx])
+		hash := strings.TrimSpace(rest[idx+len(hashMarker):])
+		if file == "" || hash == "" {
+			continue
+		}
+		subset[file] = hash
+	}
+	return subset
+}
+
+// capabilityAuthoritySubsetProof re-hashes, on every doctor run, exactly the
+// files the row's absorb-subset names (never the rest of source_ref) and
+// requires a capsrc record whose own absorb_subset_file evidence matches that
+// exact declared subset — tying the row to the specific import that absorbed
+// it. A subset file whose live sha256 no longer matches the absorbed hash is
+// reported as pending drift naming the file (never a silent ok); files
+// outside the subset are never read, so evidence-only/out-of-row churn (e.g.
+// PORTFOLIO-MAP.md next to ETHOS.md) can never affect the row.
+func capabilityAuthoritySubsetProof(row OSAbsorptionMatrixRow, records []capgraph.SourceAuthorityRecord, subset map[string]string) (osAbsorptionProofResult, bool) {
+	sourceDir := strings.TrimSpace(row.SourceRef)
+	if sourceDir == "" {
+		return osAbsorptionProofResult{reason: "capability source authority subset: row missing source_ref"}, false
+	}
+
+	var rec *capgraph.SourceAuthorityRecord
+	for i := range records {
+		candidate := records[i]
+		if candidate.AuthorityRef != capgraph.CapabilityGraphAuthorityRef {
+			continue
+		}
+		if strings.TrimSpace(candidate.SourcePath) != sourceDir {
+			continue
+		}
+		if capabilitySubsetsEqual(osAbsorptionCapabilitySubsetFiles(candidate.EvidenceRefs), subset) {
+			rec = &records[i]
+			break
+		}
+	}
+	if rec == nil {
+		return osAbsorptionProofResult{reason: "no capability source-authority record corroborates the declared absorb-subset for " + sourceDir}, false
+	}
+
+	files := make([]string, 0, len(subset))
+	for file := range subset {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+
+	for _, file := range files {
+		wantHash := subset[file]
+		livePath := filepath.Join(sourceDir, file)
+		body, err := os.ReadFile(livePath)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("capability source authority subset file %s: %v", livePath, err)}, false
+		}
+		liveHash := digestBytes(body)
+		if liveHash != wantHash {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("capability source authority subset file %s has drifted since import (live sha256:%s, absorbed sha256:%s); re-run capability import-skills to refresh", livePath, liveHash, wantHash)}, true
+		}
+	}
+
+	return osAbsorptionProofResult{
+		ok:       true,
+		proofRef: fmt.Sprintf("%s;absorb_subset=%s", rec.ID, strings.Join(files, ",")),
+	}, false
+}
+
+func capabilitySubsetsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for file, hash := range a {
+		if b[file] != hash {
+			return false
+		}
+	}
+	return true
 }
 
 func missingOSAbsorptionFields(row OSAbsorptionMatrixRow) []string {
@@ -1457,6 +1599,164 @@ func infraRegistryProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptio
 			installedPath,
 		),
 	}, false
+}
+
+// osAbsorptionNeedsEventSourceProof matches the os_source_umut_events row
+// (and any row that opts in via proof_mode): its compound_owner is the real
+// trace-envelope authority ref eventsource.TraceEventsAuthorityRef, and its
+// source_kind marks it as an events directory rather than a single file.
+func osAbsorptionNeedsEventSourceProof(row OSAbsorptionMatrixRow) bool {
+	if row.ProofMode == osAbsorptionProofModeEventSource {
+		return true
+	}
+	return row.CompoundOwner == eventsource.TraceEventsAuthorityRef && row.SourceKind == "events_dir"
+}
+
+// osAbsorptionEventSourceTraceSpotCheckSample bounds how many TraceIDs from
+// the most recent import-bearing record are spot-checked per file, so a
+// stream with hundreds of trace ids doesn't turn every doctor run into a
+// full filesystem walk.
+const osAbsorptionEventSourceTraceSpotCheckSample = 5
+
+// eventSourceAuthorityProof proves the os_source_umut_events row directly
+// against live eventsource.LoadSourceAuthority evidence, with zero new
+// imports: every live *.ndjson file under row.SourceRef (README.md and any
+// non-.ndjson file excluded) must have at least one matching source-authority
+// record, and the highest historical Imported+Skipped total ever recorded for
+// that file must cover the file's CURRENT non-blank line count. Because
+// compound event import-os always rescans a source file from line 1 on every
+// run, one run's Imported+Skipped already equals the non-blank lines it saw
+// at that time; taking the max across a file's records is therefore a
+// monotonically safe "best known coverage" for an append-only source (any
+// lines appended after the last full pass, without a re-import, make the
+// live count exceed that max and correctly report pending drift). The bool
+// return is true only for that drift case, mirroring infraRegistryProof's
+// (result, drift) shape; a resolvable trace-id mismatch is reported as a hard
+// failure (drift=false, ok=false), never a silent pending or ok.
+func eventSourceAuthorityProof(homePath string, row OSAbsorptionMatrixRow) (osAbsorptionProofResult, bool) {
+	sourceDir := strings.TrimSpace(row.SourceRef)
+	if sourceDir == "" || !filepath.IsAbs(sourceDir) {
+		return osAbsorptionProofResult{reason: "event source authority: source_ref must be an absolute directory"}, false
+	}
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: source directory %s: %v", sourceDir, err)}, false
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if name == "README.md" {
+			continue
+		}
+		if strings.ToLower(filepath.Ext(name)) != ".ndjson" {
+			continue
+		}
+		files = append(files, name)
+	}
+	sort.Strings(files)
+	if len(files) == 0 {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: no .ndjson files found under %s", sourceDir)}, false
+	}
+
+	records, err := eventsource.LoadSourceAuthority(homePath)
+	if err != nil {
+		return osAbsorptionProofResult{reason: "event source authority: " + err.Error()}, false
+	}
+	byFile := map[string][]eventsource.SourceAuthorityRecord{}
+	for _, rec := range records {
+		recPath := strings.TrimSpace(rec.SourcePath)
+		if filepath.Dir(recPath) != sourceDir {
+			continue
+		}
+		base := filepath.Base(recPath)
+		byFile[base] = append(byFile[base], rec)
+	}
+
+	eventsDir := filepath.Join(homePath, "events")
+	var proofRefs []string
+	for _, name := range files {
+		fileRecords := byFile[name]
+		if len(fileRecords) == 0 {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: %s has no eventsource.LoadSourceAuthority record under %s", name, sourceDir)}, true
+		}
+
+		maxCoverage := 0
+		var latestWithTraces eventsource.SourceAuthorityRecord
+		haveLatestWithTraces := false
+		var bestCoverageRecord eventsource.SourceAuthorityRecord
+		for _, rec := range fileRecords {
+			coverage := rec.Imported + rec.Skipped
+			if coverage >= maxCoverage {
+				maxCoverage = coverage
+				bestCoverageRecord = rec
+			}
+			if len(rec.TraceIDs) == 0 {
+				continue
+			}
+			if !haveLatestWithTraces || rec.CreatedAt > latestWithTraces.CreatedAt {
+				latestWithTraces = rec
+				haveLatestWithTraces = true
+			}
+		}
+
+		currentLines, err := osAbsorptionNonBlankLineCount(filepath.Join(sourceDir, name))
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: read %s: %v", name, err)}, false
+		}
+		if maxCoverage < currentLines {
+			return osAbsorptionProofResult{reason: fmt.Sprintf(
+				"event source authority: %s has %d line(s) appended since import (best recorded imported+skipped=%d, current non-blank lines=%d); re-run `compound event import-os` to refresh",
+				name, currentLines-maxCoverage, maxCoverage, currentLines,
+			)}, true
+		}
+
+		if haveLatestWithTraces {
+			sample := latestWithTraces.TraceIDs
+			if len(sample) > osAbsorptionEventSourceTraceSpotCheckSample {
+				sample = sample[:osAbsorptionEventSourceTraceSpotCheckSample]
+			}
+			for _, traceID := range sample {
+				tracePath := filepath.Join(eventsDir, traceID+".json")
+				if _, err := os.Stat(tracePath); err != nil {
+					return osAbsorptionProofResult{reason: fmt.Sprintf("event source authority: trace %s from record %s does not resolve under %s: %v", traceID, latestWithTraces.ID, eventsDir, err)}, false
+				}
+			}
+			proofRefs = append(proofRefs, latestWithTraces.ID)
+		} else {
+			proofRefs = append(proofRefs, bestCoverageRecord.ID)
+		}
+	}
+
+	proofRefs = mergeStrings(proofRefs)
+	sort.Strings(proofRefs)
+	return osAbsorptionProofResult{ok: true, proofRef: strings.Join(proofRefs, ",")}, false
+}
+
+// osAbsorptionNonBlankLineCount counts non-blank lines in path the same way
+// eventsource.ImportOSEvents does (raw := strings.TrimSpace(line); blank
+// lines are skipped and never counted), so the comparison against a record's
+// Imported+Skipped total is apples-to-apples.
+func osAbsorptionNonBlankLineCount(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	count := 0
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) != "" {
+			count++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // osAbsorptionNeedsRegistryOwnershipProof matches already-live
