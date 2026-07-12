@@ -1,6 +1,8 @@
 import { FreshnessChip, PageHeader } from "@/components/kit";
 import { WorkLenses } from "@/components/work/WorkLenses";
 import { arr, getSourceConnections, getWorkbench, runJson, str } from "@/lib/compound";
+import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildLaneTraffic } from "@/lib/lane-traffic";
 import { buildBoard, buildOffered, buildPipeline } from "@/lib/work-pipeline";
 
@@ -37,6 +39,7 @@ export default async function WorkPage({
   const offered = buildOffered(arr(packets?.items));
 
   const initialTrace = str(trace).match(/^work_[a-z0-9]+$/) ? str(trace) : null;
+  const mutationsReady = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   return (
     <div className="flex flex-col gap-6">
@@ -62,6 +65,7 @@ export default async function WorkPage({
         openCount={open.length}
         initialTrace={initialTrace}
         laneTraffic={laneTraffic}
+        mutationsReady={mutationsReady}
       />
     </div>
   );

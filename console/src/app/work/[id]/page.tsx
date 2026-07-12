@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { Card, Chip, EmptyState, StateBadge } from "@/components/ui";
 import { WorkDetailActions } from "@/components/work/WorkDetailActions";
 import { arr, getWork, str } from "@/lib/compound";
+import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 import { buildActionRow } from "@/lib/work-pipeline";
 import {
   enrichWorkItem,
@@ -82,6 +84,7 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
     "Proof expectation has not been surfaced for this work item.";
 
   const actionRow = buildActionRow(id, state);
+  const mutationsReady = computeConsoleMutationReadiness(consoleMutationsEnabled()).ready;
 
   return (
     <div className="flex flex-col gap-6">
@@ -150,7 +153,7 @@ export default async function WorkDetail({ params }: { params: Promise<{ id: str
 
           <Card title="Move & trace" accent="blue" glyph="→">
             <div className="flex flex-col gap-3">
-              <WorkDetailActions workId={id} actionRow={actionRow} />
+              <WorkDetailActions workId={id} actionRow={actionRow} mutationsReady={mutationsReady} />
 
               {packet?.path ? (
                 <details>
