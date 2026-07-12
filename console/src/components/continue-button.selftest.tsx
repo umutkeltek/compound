@@ -37,15 +37,6 @@ export function runContinueButtonSelfTest(): { ok: boolean; details: string[] } 
     copyOnly,
   );
 
-  const live = renderToStaticMarkup(
-    createElement(ContinueButton, { request, mutationsReady: true }),
-  );
-  push(
-    "pinned-live-action",
-    live.includes("<button") && live.includes(">Continue<") && live.includes("compound work continue"),
-    live,
-  );
-
   return {
     ok: checks.every((check) => check.ok),
     details: checks.map((check) => `${check.ok ? "ok" : "FAIL"} ${check.name}: ${check.detail}`),

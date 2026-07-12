@@ -10,4 +10,4 @@ if (!result.ok) {
   process.exit(1);
 }
 
-console.log("continue-button smoke ok: unready instances are copy-only; ready instances expose the live act");
+console.log("continue-button smoke ok: unready instances are copy-only and never mount the live act");
