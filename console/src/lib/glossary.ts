@@ -76,6 +76,19 @@ export function areaPlain(area: string): string {
   return AREA_GLOSSARY[area] ?? "A review area awaiting a decision.";
 }
 
+/**
+ * Replaces the bare "Owner action unavailable" label with a plain-language
+ * line naming the missing owner workflow and the honest state — the card is
+ * read-only and park/dismiss remain available (decide-resolution-acts.ts
+ * always offers them for a copy-mode card). Derived from the area already
+ * carried by the read model (DecideGroup.area) — never invents server
+ * authority or a new capability.
+ */
+export function ownerUnavailableMessage(area: string): string {
+  const label = area ? area.replace(/-/g, " ") : "this";
+  return `No ${label} owner workflow is built yet — this card is read-only; park/dismiss still works.`;
+}
+
 export function movePlain(moveType: string): string {
   return MOVE_TYPE_GLOSSARY[moveType] ?? "A recorded move in the work's lifecycle.";
 }

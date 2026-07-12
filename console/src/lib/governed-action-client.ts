@@ -1,11 +1,26 @@
 import type { HeadlineActDescriptor } from "./briefing";
 import type { DecideAct } from "./decide-model";
+import type { FieldSpec } from "./decision-registry";
 
 export type ClientDecideAct = Extract<DecideAct, { mode: "bespoke" | "batch-atomic" | "generic" }>;
 export type GovernedSubmitKind = "preview" | "direct" | "confirm";
 
 function confirmedFor(kind: GovernedSubmitKind): boolean {
   return kind === "confirm";
+}
+
+/**
+ * Plain-language copy for a required field the operator left empty — the
+ * fix for the silent no-op: clicking the primary act with an empty required
+ * field (most often the rationale/reason textbox) must show this message
+ * right next to the field, not just block the click invisibly.
+ */
+export const RATIONALE_REQUIRED_MESSAGE =
+  "Add one line of reasoning first — decisions are recorded with their why.";
+
+export function fieldValidationMessage(field: Pick<FieldSpec, "name" | "label">): string {
+  if (field.name === "rationale" || field.name === "reason") return RATIONALE_REQUIRED_MESSAGE;
+  return `${field.label} is required before you can continue.`;
 }
 
 export function decideActIdentity(act: ClientDecideAct): string {
