@@ -8307,10 +8307,14 @@ func loadRuntimeReportOrExit(args []string, label string, live bool, now time.Ti
 			continue
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				continue
+				fmt.Fprintf(os.Stderr, "%s: unknown option %s\n", label, args[i])
+				os.Exit(2)
 			}
 			if path == "" {
 				path = args[i]
+			} else {
+				fmt.Fprintf(os.Stderr, "%s: choose exactly one runtime evidence source\n", label)
+				os.Exit(2)
 			}
 		}
 	}
@@ -8319,6 +8323,10 @@ func loadRuntimeReportOrExit(args []string, label string, live bool, now time.Ti
 		os.Exit(2)
 	}
 	if sourceKind == "switchback-pulse" {
+		if live {
+			fmt.Fprintf(os.Stderr, "%s: --switchback-pulse cannot be combined with --live\n", label)
+			os.Exit(2)
+		}
 		report, err := runtimebinding.LoadSwitchbackPulseReport(path, now)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, label+":", err)

@@ -7,11 +7,15 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
 	SwitchbackPulseSchema = "switchback/pulse@1"
-	SwitchbackPulseMaxAge = 15 * time.Minute
+	// The source collector runs on a 15-minute cadence; five minutes of bounded
+	// scheduler/runtime jitter must not flap healthy evidence stale.
+	SwitchbackPulseMaxAge = 20 * time.Minute
 
 	switchbackPulseFutureSkew = time.Minute
 	switchbackPulseMaxBytes   = 1 << 20
@@ -26,7 +30,7 @@ type switchbackPulseReceipt struct {
 	Mode       string                 `json:"mode"`
 	Overall    string                 `json:"overall"`
 	Summary    switchbackPulseSummary `json:"summary"`
-	DurationMS int64                  `json:"duration_ms"`
+	DurationMS *int64                 `json:"duration_ms"`
 	Checks     []switchbackPulseCheck `json:"checks"`
 }
 
@@ -93,6 +97,16 @@ func switchbackPulseDoctorReport(receipt switchbackPulseReceipt, now time.Time) 
 		return report
 	}
 	add("live:schema", "ok", SwitchbackPulseSchema)
+	mode := strings.ToLower(strings.TrimSpace(receipt.Mode))
+	if mode != "fast" && mode != "live" {
+		add("live:receipt", "fail", "receipt mode must be fast or live")
+		return report
+	}
+	if receipt.DurationMS == nil || *receipt.DurationMS < 0 {
+		add("live:receipt", "fail", "receipt duration_ms must be present and non-negative")
+		return report
+	}
+	add("live:receipt", "ok", fmt.Sprintf("mode=%s duration_ms=%d", mode, *receipt.DurationMS))
 
 	observedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(receipt.Timestamp))
 	if err != nil {
@@ -128,9 +142,10 @@ func switchbackPulseDoctorReport(receipt switchbackPulseReceipt, now time.Time) 
 
 	actual := switchbackPulseSummary{}
 	seen := make(map[string]struct{}, len(receipt.Checks))
+	coreCoverage := map[string]bool{"engine": false, "headroom": false}
 	for _, sourceCheck := range receipt.Checks {
-		name := strings.TrimSpace(sourceCheck.Name)
-		if !validSwitchbackPulseIdentifier(name) {
+		name := sourceCheck.Name
+		if !validSwitchbackPulseLabel(name) {
 			add("live:coverage", "fail", "pulse receipt contains an invalid check name")
 			actual.Fail++
 			continue
@@ -141,9 +156,12 @@ func switchbackPulseDoctorReport(receipt switchbackPulseReceipt, now time.Time) 
 			continue
 		}
 		seen[name] = struct{}{}
+		if _, required := coreCoverage[name]; required {
+			coreCoverage[name] = true
+		}
 
-		area := strings.TrimSpace(sourceCheck.Area)
-		if !validSwitchbackPulseIdentifier(area) {
+		area := sourceCheck.Area
+		if !validSwitchbackPulseLabel(area) {
 			add("live:"+name, "fail", "pulse check area is invalid")
 			actual.Fail++
 			continue
@@ -163,6 +181,17 @@ func switchbackPulseDoctorReport(receipt switchbackPulseReceipt, now time.Time) 
 			continue
 		}
 		add("live:"+name, level, switchbackPulseDetail(area, sourceCheck.Detail))
+	}
+	var missingCore []string
+	for _, name := range []string{"engine", "headroom"} {
+		if !coreCoverage[name] {
+			missingCore = append(missingCore, name)
+		}
+	}
+	if len(missingCore) > 0 {
+		add("live:coverage", "fail", "pulse receipt missing required checks: "+strings.Join(missingCore, ", "))
+	} else {
+		add("live:coverage", "ok", "required checks present: engine, headroom")
 	}
 
 	if receipt.Summary != actual {
@@ -188,23 +217,30 @@ func switchbackPulseDoctorReport(receipt switchbackPulseReceipt, now time.Time) 
 	return report
 }
 
-func validSwitchbackPulseIdentifier(value string) bool {
-	if value == "" || len(value) > switchbackPulseMaxName {
+func validSwitchbackPulseLabel(value string) bool {
+	if strings.TrimSpace(value) == "" || !utf8.ValidString(value) {
 		return false
 	}
-	for i := 0; i < len(value); i++ {
-		char := value[i]
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
-			(char >= '0' && char <= '9') || char == ':' || char == '.' || char == '_' || char == '-' {
-			continue
+	count := 0
+	for _, char := range value {
+		count++
+		if count > switchbackPulseMaxName || unicode.IsControl(char) || unicode.In(char, unicode.Cf) {
+			return false
 		}
-		return false
 	}
 	return true
 }
 
 func switchbackPulseDetail(area, detail string) string {
-	clean := strings.Join(strings.Fields(detail), " ")
+	var safe strings.Builder
+	for _, char := range detail {
+		if unicode.IsControl(char) || unicode.In(char, unicode.Cf) {
+			safe.WriteByte(' ')
+			continue
+		}
+		safe.WriteRune(char)
+	}
+	clean := strings.Join(strings.Fields(safe.String()), " ")
 	runes := []rune(clean)
 	if len(runes) > switchbackPulseMaxDetail {
 		clean = string(runes[:switchbackPulseMaxDetail])
