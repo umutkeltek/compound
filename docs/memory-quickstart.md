@@ -17,6 +17,9 @@ the ledger. You can prove that last claim with `memory engine-doctor` (below).
   - an Ollama server exposing `POST /v1/embeddings` with an embedding model pulled
     (e.g. `nomic-embed-text`, 768-dim), or
   - any other server that speaks the OpenAI `/v1/embeddings` shape (LM Studio, etc.).
+
+  Don't have one running yet? With Ollama installed it is two commands, once:
+  `ollama serve` (if it isn't already running) and `ollama pull nomic-embed-text` (~274 MB).
 - Nothing else. No account, no cloud key, no external service.
 
 ## 1. Build
