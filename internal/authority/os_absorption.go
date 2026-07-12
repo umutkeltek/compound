@@ -38,9 +38,13 @@ const (
 	osAbsorptionProofModeOperatorState = "operator_state_registry"
 	osAbsorptionProofModeWorkPacket    = "work_packet_authority"
 	osAbsorptionProofModeOSCapability  = "os_capability_wrapper_authority"
+	osAbsorptionProofModeServedOrient  = "served_orientation_authority"
 
-	osAbsorptionWorkAuthorityRef  = "compound://work"
-	osAbsorptionPacketEvidenceRef = "packet_sha256:"
+	osAbsorptionWorkAuthorityRef              = "compound://work"
+	osAbsorptionEffectiveContractAuthorityRef = "compound://contracts/effective-contract"
+	osAbsorptionPacketEvidenceRef             = "packet_sha256:"
+	osAbsorptionServedEntrypointEvidenceRef   = "served_entrypoint:"
+	osAbsorptionContextPackEvidenceRef        = "context_pack:"
 )
 
 type OSAbsorptionSourceMatrix struct {
@@ -242,6 +246,8 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionDecisionsProof(homePath))
 		case osAbsorptionNeedsOperatorStateProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionOperatorStateProof(homePath))
+		case osAbsorptionNeedsServedOrientationProof(row):
+			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionServedOrientationProof(homePath, row))
 		case osAbsorptionNeedsMemoryLedgerProof(row):
 			if rec, ok := memoryLedgerProofRecord(homePath, row); ok {
 				dr.ProofStatus = "ok"
@@ -542,6 +548,16 @@ func osAbsorptionNeedsOperatorStateProof(row OSAbsorptionMatrixRow) bool {
 	return row.CompoundOwner == policy.OperatorStateAuthorityRef
 }
 
+func osAbsorptionNeedsServedOrientationProof(row OSAbsorptionMatrixRow) bool {
+	tupleMatches := row.Status == "absorbed" &&
+		row.CompoundOwner == osAbsorptionEffectiveContractAuthorityRef &&
+		(row.ID == "os_source_umut_live_start" || row.ID == "os_source_umut_whole_system_map")
+	if row.ProofMode != "" {
+		return row.ProofMode == osAbsorptionProofModeServedOrient && tupleMatches
+	}
+	return tupleMatches
+}
+
 // osAbsorptionProofResult is the outcome of one row's auto-proof attempt.
 type osAbsorptionProofResult struct {
 	ok       bool
@@ -583,6 +599,167 @@ func osAbsorptionOperatorStateProof(homePath string) osAbsorptionProofResult {
 		return osAbsorptionProofResult{reason: "operator-state registry at " + path + " is empty"}
 	}
 	return osAbsorptionProofResult{ok: true, proofRef: policy.OperatorStateAuthorityRef}
+}
+
+type osAbsorptionServedOrientationEvidence struct {
+	entrypoints   map[string]string
+	contextPackID string
+}
+
+func osAbsorptionServedOrientationProof(homePath string, row OSAbsorptionMatrixRow) osAbsorptionProofResult {
+	evidence, err := parseOSAbsorptionServedOrientationEvidence(row.EvidenceRefs)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+
+	digests := make(map[string]string, len(evidence.entrypoints))
+	for _, harness := range []string{"codex", "claude"} {
+		path := evidence.entrypoints[harness]
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("%s entrypoint %s: %v", harness, path, err)}
+		}
+		if err := validateOSAbsorptionServedEntrypoint(harness, row.SourceRef, string(body)); err != nil {
+			return osAbsorptionProofResult{reason: err.Error()}
+		}
+		digests[harness] = digestBytes(body)
+	}
+
+	pack, err := readOSAbsorptionContextPack(homePath, evidence.contextPackID)
+	if err != nil {
+		return osAbsorptionProofResult{reason: err.Error()}
+	}
+	for _, ref := range []string{
+		"control-plane://orientation-map",
+		"control-plane://workflow-contract",
+		"control-plane://sop-packets",
+		"memory://relevance-gated",
+	} {
+		if !osAbsorptionContextPackIncludes(pack, ref) {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing included ref %s", pack.ID, ref)}
+		}
+		rev := osAbsorptionContextPackRevision(pack, ref)
+		if rev == "" || rev == "unknown" {
+			return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing source revision for %s", pack.ID, ref)}
+		}
+	}
+	if strings.TrimSpace(pack.IDs.ContractID) == "" {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing EffectiveContract id", pack.ID)}
+	}
+	if strings.TrimSpace(pack.TaskContract.Intent) == "" {
+		return osAbsorptionProofResult{reason: fmt.Sprintf("ContextPack %s missing task intent", pack.ID)}
+	}
+
+	return osAbsorptionProofResult{
+		ok: true,
+		proofRef: fmt.Sprintf(
+			"%s:context_pack=%s;contract=%s;codex_sha256=%s;claude_sha256=%s",
+			osAbsorptionProofModeServedOrient,
+			pack.ID,
+			pack.IDs.ContractID,
+			digests["codex"],
+			digests["claude"],
+		),
+	}
+}
+
+func parseOSAbsorptionServedOrientationEvidence(refs []string) (osAbsorptionServedOrientationEvidence, error) {
+	evidence := osAbsorptionServedOrientationEvidence{entrypoints: map[string]string{}}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		switch {
+		case strings.HasPrefix(ref, osAbsorptionServedEntrypointEvidenceRef):
+			parts := strings.SplitN(strings.TrimPrefix(ref, osAbsorptionServedEntrypointEvidenceRef), ":", 2)
+			if len(parts) != 2 || (parts[0] != "codex" && parts[0] != "claude") || strings.TrimSpace(parts[1]) == "" {
+				return evidence, fmt.Errorf("served orientation evidence has invalid entrypoint ref %q", ref)
+			}
+			if evidence.entrypoints[parts[0]] != "" {
+				return evidence, fmt.Errorf("served orientation evidence has duplicate %s entrypoint", parts[0])
+			}
+			evidence.entrypoints[parts[0]] = strings.TrimSpace(parts[1])
+		case strings.HasPrefix(ref, osAbsorptionContextPackEvidenceRef):
+			id := strings.TrimSpace(strings.TrimPrefix(ref, osAbsorptionContextPackEvidenceRef))
+			if !safeOSAbsorptionRuntimeID(id, "ctx_") {
+				return evidence, fmt.Errorf("served orientation evidence has invalid ContextPack id %q", id)
+			}
+			if evidence.contextPackID != "" {
+				return evidence, fmt.Errorf("served orientation evidence has duplicate ContextPack ref")
+			}
+			evidence.contextPackID = id
+		}
+	}
+	for _, harness := range []string{"codex", "claude"} {
+		if evidence.entrypoints[harness] == "" {
+			return evidence, fmt.Errorf("served orientation evidence missing %s entrypoint ref", harness)
+		}
+	}
+	if evidence.contextPackID == "" {
+		return evidence, fmt.Errorf("served orientation evidence missing ContextPack ref")
+	}
+	return evidence, nil
+}
+
+func validateOSAbsorptionServedEntrypoint(harness, sourceRef, body string) error {
+	required := []string{
+		"<!-- GENERATED from operating-system/umut-os/spine/steering.config.ts;",
+		"## Orient first — Compound (the served contract)",
+		"compound orient --harness " + harness + " --task \"<task>\"",
+		"source-in-place evidence",
+		"rollback",
+		sourceRef,
+	}
+	for _, want := range required {
+		if !strings.Contains(body, want) {
+			return fmt.Errorf("%s entrypoint missing %q", harness, want)
+		}
+	}
+	for _, retired := range []string{
+		"## Orient first — umut-os",
+		"FIRST action is recall",
+		"**Recall first:**",
+	} {
+		if strings.Contains(body, retired) {
+			return fmt.Errorf("%s entrypoint retains retired first-action directive %q", harness, retired)
+		}
+	}
+	return nil
+}
+
+func readOSAbsorptionContextPack(homePath, id string) (envelope.ContextPack, error) {
+	path := filepath.Join(homePath, "context", "packs", id+".json")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return envelope.ContextPack{}, fmt.Errorf("ContextPack %s at %s: %w", id, path, err)
+	}
+	var pack envelope.ContextPack
+	if err := json.Unmarshal(body, &pack); err != nil {
+		return envelope.ContextPack{}, fmt.Errorf("ContextPack %s parse: %w", id, err)
+	}
+	if pack.ID != id {
+		return envelope.ContextPack{}, fmt.Errorf("ContextPack path id %s contains %s", id, pack.ID)
+	}
+	if err := pack.Validate(); err != nil {
+		return envelope.ContextPack{}, fmt.Errorf("ContextPack %s invalid: %w", id, err)
+	}
+	return pack, nil
+}
+
+func osAbsorptionContextPackIncludes(pack envelope.ContextPack, ref string) bool {
+	for _, included := range pack.Included {
+		if included.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func osAbsorptionContextPackRevision(pack envelope.ContextPack, ref string) string {
+	for _, revision := range pack.SourceRevisions {
+		if revision.Source == ref {
+			return strings.TrimSpace(revision.Rev)
+		}
+	}
+	return ""
 }
 
 // osAbsorptionWorkPacketProof proves both halves of packet absorption:
