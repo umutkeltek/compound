@@ -345,7 +345,7 @@ compound capability <add|resolve|surface|observe|consume|consume-receipts|list|g
   compound authority import [f] | path <f> | path-registry <f> | git <repo> [--json] | dirty-plan <repo> [--work-id id] [--json] | dirty-review <review.yaml> [--json] | import-os-absorption <matrix.json> | os-absorption [--json] | os-absorption-doctor [--json] | import-infra-database <database.yaml> | import-infra-services <services.yaml> | import-job-roster <f> | import-job-token-governance <f> | job-roster-authority [--json] | job-health-plan | job-health-review <review.yaml> [--decision <enum>] [--rationale <text>] [--confidence <0..1>] [--next-action <text>] [--json] | resolve <token> | <entity> import/query authority through spine memory
   compound decisions import [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] [--policy <DEC.md>] [--policy-dir <dir>] | decisions authority [--source <md>] [--source-dir <dir>] [--source-kind note] [--policy <DEC.md>] [--policy-dir <dir>] [--json] | decisions candidate-plan --candidate C [--target file] | decisions [--kind=K] | decisions doctor | decisions source-doctor --template <md> [--format-doc <md>] | decisions repair-plan [--policy-dir <dir>] [--source <md>] [--source-dir <dir>] [--source-kind note] [--brain <md>] | decisions repair-apply --plan <json> [--write-reviewed]
                                                                   import/query decisions through spine memory; verify source format; emit/apply lifecycle repair artifacts
-compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live probes + gated writeback/review artifacts
+compound runtime doctor [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] [--writeback] | runtime repair-plan [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] | runtime repair-review <review.yaml> RuntimeBinding health/live evidence + gated writeback/review artifacts
 compound projection doctor <freshness.yaml> [--writeback] [--source-observe] | projection dashboard-read-model <read-model.json> [--max-age-hours N] [--writeback] [--source-observe] | projection repair-plan <freshness.yaml> | projection repair-review <review.yaml>
                                                                ProjectionFreshness + gated writeback/source observation/regeneration review
 compound product import <product.yaml>|--project-contract <project.yaml> [--release <release.yaml>] | signal <signal.yaml>|--asc-datapoints <json> --product <id> --app-id <asc_id> [--metric <metric>]|--asc-sales-series <jsonl> --product <id> --app-id <asc_id> --before <range> --after <range> --change-event <text> [--metric <metric>]|--gsc-report <json> --product <id> --site <site> [--metric <metric>]|--ga4-report <json> --product <id> --property <id> [--metric <metric>]|--adsense-report <json> --product <id> --account <id> [--metric <metric>] | loops [--product <id>] [--json] [--recent N] [--stale-days D] | canonical-metrics <json> --product <id> | hypothesis-plan --candidate C [--target file] | observation-verdict-plan --verdict <panel-verdict.json> [--target file] | observation-verdict-review <review.yaml> | source-issue-plan --product P --issue I [--target file] | review <review.yaml> --reviewed-by <actor> | source-issue-review <review.yaml> | timeline <product> | doctor <product> [--writeback]
@@ -8159,19 +8159,20 @@ func cmdRuntime(args []string) {
 }
 
 func runtimeUsage() string {
-	return "usage: compound runtime doctor [--project-contract] <yaml> [--live] [--writeback] | runtime repair-plan [--project-contract] <yaml> [--live] | runtime repair-review <review.yaml>"
+	return "usage: compound runtime doctor [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] [--writeback] | runtime repair-plan [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] | runtime repair-review <review.yaml>"
 }
 
 func cmdRuntimeDoctor(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract] <yaml> [--live] [--writeback]")
+		fmt.Fprintln(os.Stderr, "usage: compound runtime doctor [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live] [--writeback]")
 		os.Exit(2)
 	}
-	report := loadRuntimeReportOrExit(args, "runtime doctor", hasFlag(args, "--live"))
+	now := time.Now()
+	report := loadRuntimeReportOrExit(args, "runtime doctor", hasFlag(args, "--live"), now)
 	printRuntimeDoctorReport(report)
 	if report.Status != "ok" {
 		if hasFlag(args, "--writeback") {
-			result, err := runRuntimeWriteback(report, time.Now())
+			result, err := runRuntimeWriteback(report, now)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "runtime writeback:", err)
 				os.Exit(1)
@@ -8192,7 +8193,7 @@ func cmdRuntimeDoctor(args []string) {
 
 func cmdRuntimeRepairPlan(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: compound runtime repair-plan [--project-contract] <yaml> [--live]")
+		fmt.Fprintln(os.Stderr, "usage: compound runtime repair-plan [--project-contract <yaml> | --switchback-pulse <json> | <yaml>] [--live]")
 		os.Exit(2)
 	}
 	now := time.Now()
@@ -8201,7 +8202,7 @@ func cmdRuntimeRepairPlan(args []string) {
 		fmt.Fprintln(os.Stderr, "runtime repair-plan:", err)
 		os.Exit(1)
 	}
-	report := loadRuntimeReportOrExit(args, "runtime repair-plan", hasFlag(args, "--live"))
+	report := loadRuntimeReportOrExit(args, "runtime repair-plan", hasFlag(args, "--live"), now)
 	if !runtimebinding.NeedsWriteback(report) {
 		fmt.Fprintf(os.Stderr, "runtime repair-plan: runtime %s ok; no repair plan needed\n", report.ServiceID)
 		os.Exit(1)
@@ -8273,17 +8274,33 @@ func cmdRuntimeRepairReview(args []string) {
 	fmt.Printf("- reviewed: %s\n", report.ReviewPath)
 }
 
-func loadRuntimeReportOrExit(args []string, label string, live bool) runtimebinding.DoctorReport {
+func loadRuntimeReportOrExit(args []string, label string, live bool, now time.Time) runtimebinding.DoctorReport {
 	path := ""
-	load := runtimebinding.Load
+	sourceKind := "bundle"
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--project-contract":
-			load = runtimebinding.LoadProjectContract
+			if sourceKind != "bundle" || path != "" {
+				fmt.Fprintf(os.Stderr, "%s: choose exactly one runtime evidence source\n", label)
+				os.Exit(2)
+			}
 			if i+1 >= len(args) {
 				fmt.Fprintf(os.Stderr, "usage: compound %s --project-contract <project.yaml>\n", label)
 				os.Exit(2)
 			}
+			sourceKind = "project-contract"
+			path = args[i+1]
+			i++
+		case "--switchback-pulse":
+			if sourceKind != "bundle" || path != "" {
+				fmt.Fprintf(os.Stderr, "%s: choose exactly one runtime evidence source\n", label)
+				os.Exit(2)
+			}
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "usage: compound %s --switchback-pulse <pulse.json>\n", label)
+				os.Exit(2)
+			}
+			sourceKind = "switchback-pulse"
 			path = args[i+1]
 			i++
 		case "--live", "--writeback":
@@ -8298,8 +8315,21 @@ func loadRuntimeReportOrExit(args []string, label string, live bool) runtimebind
 		}
 	}
 	if path == "" {
-		fmt.Fprintf(os.Stderr, "usage: compound %s [--project-contract] <yaml>\n", label)
+		fmt.Fprintf(os.Stderr, "usage: compound %s [--project-contract <project.yaml> | --switchback-pulse <pulse.json> | <bundle.yaml>]\n", label)
 		os.Exit(2)
+	}
+	if sourceKind == "switchback-pulse" {
+		report, err := runtimebinding.LoadSwitchbackPulseReport(path, now)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, label+":", err)
+			os.Exit(1)
+		}
+		return report
+	}
+
+	load := runtimebinding.Load
+	if sourceKind == "project-contract" {
+		load = runtimebinding.LoadProjectContract
 	}
 	bundle, err := load(path)
 	if err != nil {
@@ -8307,7 +8337,7 @@ func loadRuntimeReportOrExit(args []string, label string, live bool) runtimebind
 		os.Exit(1)
 	}
 	if live {
-		return runtimebinding.DoctorWithLiveProbes(context.Background(), bundle, time.Now())
+		return runtimebinding.DoctorWithLiveProbes(context.Background(), bundle, now)
 	}
 	return runtimebinding.Doctor(bundle)
 }
