@@ -417,7 +417,7 @@ export function GovernedAct({
           disabled={!mutationsEnabled || state === "pending" || (options.length > 1 && !selectedOption)}
           onClick={() => void trigger()}
           className={stateClass}
-          title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act from the console."}
+          title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
         >
           {buttonLabel}
         </Button>

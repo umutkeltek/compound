@@ -294,7 +294,7 @@ function EnumerableApply({
           variant="primary"
           disabled={!mutationsEnabled || running || included.length === 0}
           onClick={trigger}
-          title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act."}
+          title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
         >
           {running
             ? `Applying ${progress?.done ?? 0}/${progress?.total ?? included.length}…`

@@ -244,7 +244,7 @@ export function AdjudicationCard({
             disabled={!mutationsEnabled || state === "pending"}
             onClick={() => void submit()}
             className={stateClass}
-            title={mutationsEnabled ? undefined : "Set COMPOUND_CONSOLE_MUTATIONS=1 to act from the console."}
+            title={mutationsEnabled ? undefined : "Launch via 'compound console --operator' to act from a pinned console."}
           >
             {state === "pending" ? "Recording…" : `Record · ${selected?.label ?? option}`}
           </Button>
