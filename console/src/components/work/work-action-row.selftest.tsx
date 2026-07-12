@@ -14,6 +14,7 @@ export function runWorkActionRowSelfTest(): { ok: boolean; details: string[] } {
       {
         value: "claimed",
         label: "Start",
+        tone: "primary",
         description: "Claim this work for an executor.",
         terminal: false,
         needsSummary: false,
