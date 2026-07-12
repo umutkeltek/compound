@@ -173,6 +173,15 @@ type CapabilityRouteLane struct {
 	SupervisionRequired bool           `json:"supervision_required,omitempty"`
 	Justification       string         `json:"justification"`
 	OmitReason          string         `json:"omit_reason,omitempty"`
+	// AccountProjectionRevision is the imported account projection's source_revision, stamped on
+	// every lane the account-admission gate evaluated (see account_projection.go). Empty when the
+	// gate did not run (no/stale projection) or the lane maps to no gated provider.
+	AccountProjectionRevision string `json:"account_projection_revision,omitempty"`
+	// AccountAdmission is the account-admission gate's decision for this lane: "omitted" (zero
+	// healthy accounts for its provider), "admitted" (mapped provider, at least one healthy
+	// account, or no data for it), or "ungated" (harness maps to no gated provider). Empty when the
+	// gate did not run.
+	AccountAdmission string `json:"account_admission,omitempty"`
 }
 
 // PendingRouteObservation is read-only review debt visible to route planners.
@@ -401,6 +410,13 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 		PrivacySensitive:  opts.PrivacySensitive,
 		RoutingRule:       "routing_defaults[" + capabilityClass + "]",
 	}
+	// Account-admission gate: refuse a subscription lane whose provider (via switchback's imported,
+	// identity-free account projection) has zero healthy fresh accounts, so work fails over BEFORE
+	// hitting a lane with no live credential. The projection is loaded once; absent -> no gate
+	// (byte-identical fail-open, F4); present-but-stale (>6h by its own imported_at) -> no gate,
+	// warned (F7). See account_projection.go.
+	accountGate := resolveAccountAdmissionGate(homePath, now)
+	var accountOmitted []CapabilityRouteLane
 	for i, modelID := range defaults {
 		model := manifest.Models[modelID]
 		lane := capabilityRouteLane(capabilityClass, modelID, model, i)
@@ -409,8 +425,35 @@ func PlanCapabilityRoute(homePath, capabilityClass string, opts CapabilityRouteP
 			plan.Omitted = append(plan.Omitted, lane)
 			continue
 		}
+		if accountGate.active {
+			if key, ok := laneAccountProviderKey(lane); ok {
+				lane.AccountProjectionRevision = accountGate.projection.SourceRevision
+				if entry, present := accountGate.projection.Providers[key]; present && entry.HealthyAccountCount == 0 {
+					lane.AccountAdmission = AccountAdmissionOmitted
+					lane.OmitReason = fmt.Sprintf("no healthy accounts for provider=%s (total=%d, revision=%s)", key, entry.TotalAccountCount, lane.AccountProjectionRevision)
+					plan.Omitted = append(plan.Omitted, lane)
+					accountOmitted = append(accountOmitted, lane)
+					continue
+				}
+				lane.AccountAdmission = AccountAdmissionAdmitted
+			} else {
+				lane.AccountAdmission = AccountAdmissionUngated
+			}
+		}
 		plan.Chain = append(plan.Chain, lane)
 		plan.LaneJustification = append(plan.LaneJustification, lane.Justification)
+	}
+	// Account admission must NEVER return zero lanes: if admission omits alone emptied the chain,
+	// resurrect them with a loud warning. Privacy-only emptiness still blocks below, unchanged.
+	if len(plan.Chain) == 0 && len(accountOmitted) > 0 {
+		plan.Chain, plan.Omitted = resurrectAccountAdmissionLanes(plan.Chain, plan.Omitted, accountOmitted)
+		for _, lane := range accountOmitted {
+			plan.LaneJustification = append(plan.LaneJustification, lane.Justification)
+			plan.Warnings = append(plan.Warnings, "account admission gate resurrected "+lane.ModelID+": all mapped providers have zero healthy accounts, routing anyway")
+		}
+	}
+	if accountGate.warning != "" {
+		plan.Warnings = append(plan.Warnings, accountGate.warning)
 	}
 	if opts.PrivacySensitive && len(plan.Omitted) > 0 {
 		plan.Warnings = append(plan.Warnings, "privacy-sensitive plan omitted non-local-batch lanes")
