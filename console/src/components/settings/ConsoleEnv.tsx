@@ -26,11 +26,15 @@ const COVERAGE_LABEL: Record<AreaCoverage, string> = {
  */
 export function ConsoleEnv({
   mutationsEnabled,
+  mutationFlagEnabled,
+  instancePinned,
   privateFallbacks,
   attention,
   generatedAt,
 }: {
   mutationsEnabled: boolean;
+  mutationFlagEnabled: boolean;
+  instancePinned: boolean;
   privateFallbacks: boolean;
   attention: AttentionReport | null;
   generatedAt?: string;
@@ -53,12 +57,14 @@ export function ConsoleEnv({
       <div className="grid gap-4 md:grid-cols-2">
         <Card title="Mutation gates" provenance="local" seamTone={mutationsEnabled ? "seam" : "good"}>
           <KV k="consoleMutationsEnabled()" v={mutationsEnabled ? "true" : "false"} />
+          <KV k="mutation flag" v={mutationFlagEnabled ? "enabled" : "disabled"} />
+          <KV k="instance pin" v={instancePinned ? "explicit" : "missing"} />
           <KV k="privateFallbacksEnabled()" v={privateFallbacks ? "true" : "false"} />
           <DoctrineNote>
             <span className="mt-2 block">
               {mutationsEnabled
                 ? "Mutations are enabled — governed acts run through /api/decision/execute behind the argv allowlist. Every act is still a human click (DEC-0021: nothing auto-runs)."
-                : "Read-only. With the mutation gate off, no act can run from the console; every governed act shows as its copy-command instead."}
+                : "Read-only. Live acts require both the mutation flag and an explicit instance home; unavailable acts stay copy-only."}
             </span>
           </DoctrineNote>
         </Card>

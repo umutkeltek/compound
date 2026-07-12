@@ -9,6 +9,7 @@ import { RoutingModels } from "@/components/settings/RoutingModels";
 import { getAttention } from "@/lib/attention";
 import { privateFallbacksEnabled, runCompound, runJson, str, type Json } from "@/lib/compound";
 import { consoleMutationsEnabled } from "@/lib/console-mutations";
+import { computeConsoleMutationReadiness } from "@/lib/instance-pin";
 
 export const dynamic = "force-dynamic";
 
@@ -87,7 +88,7 @@ export default async function Settings() {
     harnessListText(),
   ]);
 
-  const mutationsEnabled = consoleMutationsEnabled();
+  const mutationReadiness = computeConsoleMutationReadiness(consoleMutationsEnabled());
   const privateFallbacks = privateFallbacksEnabled();
   const gen = (value: Json | null): string | undefined => str(value?.generated_at) || undefined;
 
@@ -122,7 +123,9 @@ export default async function Settings() {
       <MemoryLenses engine={engine} />
       <HarnessesHooks harnessText={harnessText} hooks={hooks} />
       <ConsoleEnv
-        mutationsEnabled={mutationsEnabled}
+        mutationsEnabled={mutationReadiness.ready}
+        mutationFlagEnabled={mutationReadiness.flagEnabled}
+        instancePinned={mutationReadiness.instancePinned}
         privateFallbacks={privateFallbacks}
         attention={attention}
         generatedAt={str(attention?.generated_at) || undefined}
