@@ -1,0 +1,132 @@
+package runtimebinding
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSwitchbackPulseFailedHopReport(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@1",
+  "ts": %q,
+  "mode": "fast",
+  "overall": "fail",
+  "summary": {"ok": 1, "warn": 1, "fail": 1},
+  "duration_ms": 42,
+  "checks": [
+    {"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"},
+    {"name": "config-drift", "area": "config", "level": "warn", "detail": "synthetic config differs"},
+    {"name": "tap:synthetic-capture", "area": "taps", "level": "fail", "detail": "synthetic-capture.invalid is not listening"}
+  ]
+}`, now.Add(-time.Minute).Format(time.RFC3339))
+
+	report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "fail" || report.ServiceID != "service:switchback" || report.Owner != "project:switchback" {
+		t.Fatalf("unexpected report identity/status: %+v", report)
+	}
+	if got := checkStatus(report, "live:config-drift"); got != "warn" {
+		t.Fatalf("warning status = %q, checks=%+v", got, report.Checks)
+	}
+	if got := checkStatus(report, "live:tap:synthetic-capture"); got != "fail" {
+		t.Fatalf("failed hop status = %q, checks=%+v", got, report.Checks)
+	}
+	detail := checkDetail(report, "live:tap:synthetic-capture")
+	if !strings.Contains(detail, "area=taps") || !strings.Contains(detail, "synthetic-capture.invalid is not listening") {
+		t.Fatalf("failed hop detail was not preserved safely: %q", detail)
+	}
+	if !NeedsWriteback(report) {
+		t.Fatal("failed pulse should enter runtime writeback")
+	}
+
+	plan, err := BuildRepairPlan(report, RepairRefs{WritebackGateID: "owg_synthetic_pulse"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.FailedCount != 1 || len(plan.FailedChecks) != 1 || plan.FailedChecks[0].Name != "live:tap:synthetic-capture" {
+		t.Fatalf("repair plan did not preserve the exact failed hop: %+v", plan)
+	}
+}
+
+func TestSwitchbackPulseHealthyReport(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@1",
+  "ts": %q,
+  "mode": "fast",
+  "overall": "ok",
+  "summary": {"ok": 2, "warn": 0, "fail": 0},
+  "duration_ms": 21,
+  "checks": [
+    {"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"},
+    {"name": "headroom", "area": "headroom", "level": "ok", "detail": "synthetic optimizer is healthy"}
+  ]
+}`, now.Add(-time.Minute).Format(time.RFC3339))
+
+	report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "ok" {
+		t.Fatalf("status = %q, checks=%+v", report.Status, report.Checks)
+	}
+	for _, name := range []string{"live:schema", "live:freshness", "live:engine", "live:headroom"} {
+		if got := checkStatus(report, name); got != "ok" {
+			t.Fatalf("%s = %q, checks=%+v", name, got, report.Checks)
+		}
+	}
+}
+
+func TestSwitchbackPulseRejectsSchemaMismatch(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@2",
+  "ts": %q,
+  "mode": "fast",
+  "overall": "ok",
+  "summary": {"ok": 1, "warn": 0, "fail": 0},
+  "checks": [{"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"}]
+}`, now.Add(-time.Minute).Format(time.RFC3339))
+
+	report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "fail" || checkStatus(report, "live:schema") != "fail" || !NeedsWriteback(report) {
+		t.Fatalf("schema mismatch did not fail closed: %+v", report)
+	}
+}
+
+func TestSwitchbackPulseRejectsStaleReceipt(t *testing.T) {
+	now := time.Date(2026, 7, 12, 20, 0, 0, 0, time.UTC)
+	body := fmt.Sprintf(`{
+  "schema": "switchback/pulse@1",
+  "ts": %q,
+  "mode": "fast",
+  "overall": "ok",
+  "summary": {"ok": 1, "warn": 0, "fail": 0},
+  "checks": [{"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"}]
+}`, now.Add(-16*time.Minute).Format(time.RFC3339))
+
+	report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "fail" || checkStatus(report, "live:freshness") != "fail" || !NeedsWriteback(report) {
+		t.Fatalf("stale receipt did not fail closed: %+v", report)
+	}
+}
+
+func checkDetail(report DoctorReport, name string) string {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check.Detail
+		}
+	}
+	return ""
+}
