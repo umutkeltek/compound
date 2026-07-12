@@ -113,9 +113,12 @@ func TestSwitchbackPulseRejectsStaleReceipt(t *testing.T) {
   "ts": %q,
   "mode": "fast",
   "overall": "ok",
-  "summary": {"ok": 1, "warn": 0, "fail": 0},
+  "summary": {"ok": 2, "warn": 0, "fail": 0},
   "duration_ms": 20,
-  "checks": [{"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"}]
+  "checks": [
+    {"name": "engine", "area": "engine", "level": "ok", "detail": "synthetic engine is healthy"},
+    {"name": "headroom", "area": "headroom", "level": "ok", "detail": "synthetic optimizer is healthy"}
+  ]
 }`, now.Add(-21*time.Minute).Format(time.RFC3339))
 
 	report, err := ReadSwitchbackPulseReport(strings.NewReader(body), now)
