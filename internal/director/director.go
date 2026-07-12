@@ -823,12 +823,10 @@ func jobHealthCandidates(homePath string, now time.Time) ([]candidate, error) {
 //
 // Every manual/failed row becomes a candidate (bounded further by the
 // per-run cap and class-fair round-robin). Only ONE pending row is proposed
-// per run, chosen by ascending row ID — the matrix's IDs are stable and
-// lexicographic order is simplest to reason about and reproduce without
-// encoding a second wave-order table that could drift from the workstream
-// doc. If that row's retirement gate names an operator-only next step (the
-// gate/consumer/proof text mentions "operator"), the proposal names the gate
-// instead of instructing the gated step.
+// per run. Pending rows are considered by ascending row ID, but an
+// operator-gated row does not block a later actionable row; if all are gated,
+// the lowest ID remains visible. A gated proposal names the gate instead of
+// instructing the gated step.
 func absorptionDebtCandidates(homePath string, now time.Time) ([]candidate, error) {
 	doctor, err := authority.OSAbsorptionDoctor(homePath)
 	if err != nil {
@@ -863,7 +861,14 @@ func absorptionDebtCandidates(homePath string, now time.Time) ([]candidate, erro
 	}
 	if len(pending) > 0 {
 		sort.Slice(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
-		out = append(out, absorptionPendingCandidate(pending[0], rowsByID[pending[0].ID]))
+		selected := pending[0]
+		for _, dr := range pending {
+			if absorptionOperatorGateText(rowsByID[dr.ID]) == "" {
+				selected = dr
+				break
+			}
+		}
+		out = append(out, absorptionPendingCandidate(selected, rowsByID[selected.ID]))
 	}
 	return out, nil
 }

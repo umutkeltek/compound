@@ -228,6 +228,11 @@ func (s *Store) visibleWireEdges(cur []Claim, minConf float64) ([]WireEdge, erro
 // compares new extractions against (RetrievedPriorState). Public accessor over currentVisible.
 func (s *Store) AllCurrent() ([]Claim, error) { return s.currentVisible() }
 
+// LedgerClaims returns every immutable claim row in the append-only ledger,
+// including superseded history. Authority proofs use it when the existence of
+// an earned promotion matters independently of current recall visibility.
+func (s *Store) LedgerClaims() ([]Claim, error) { return s.loadClaimsRaw() }
+
 // AllCurrentOperationalDecisions returns the runtime decision-control subset
 // with its own protected supersession fold. Only another stamped/legacy
 // operator decision may hide one of these claims; an ordinary memory edge or

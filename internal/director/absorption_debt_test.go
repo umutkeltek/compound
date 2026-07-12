@@ -177,6 +177,57 @@ func TestAbsorptionDebtNamesOperatorGateWithoutInstructingExecution(t *testing.T
 	}
 }
 
+func TestAbsorptionDebtCandidatesSkipOperatorGatedHead(t *testing.T) {
+	home := seededDirectorHome(t)
+	const (
+		gatedID      = "os_source_001_operator_gated"
+		actionableID = "os_source_002_actionable"
+	)
+	seedOSAbsorptionMatrix(t, home, directorTestNow, []authority.OSAbsorptionMatrixRow{
+		absorptionRow(gatedID, "legacy://operator-gated", "pending",
+			"compound://registries/test-owner-gated", "gated consumer", "proof pending",
+			"blocked on operator confirmation"),
+		absorptionRow(actionableID, "legacy://actionable", "pending",
+			"compound://registries/test-owner-actionable", "actionable consumer", "proof pending",
+			"verify the Compound consumer"),
+	})
+
+	candidates, err := absorptionDebtCandidates(home, directorTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("pending absorption candidate count = %d; want 1: %+v", len(candidates), candidates)
+	}
+	if got := candidates[0].SourceID; got != actionableID {
+		t.Fatalf("pending absorption candidate source = %q; want actionable row %q (lowest row %q is operator-gated)", got, actionableID, gatedID)
+	}
+}
+
+func TestAbsorptionDebtCandidatesFallBackToLowestIDWhenAllPendingRowsOperatorGated(t *testing.T) {
+	home := seededDirectorHome(t)
+	const lowestID = "os_source_001_operator_gated"
+	seedOSAbsorptionMatrix(t, home, directorTestNow, []authority.OSAbsorptionMatrixRow{
+		absorptionRow(lowestID, "legacy://operator-gated-low", "pending",
+			"compound://registries/test-owner-gated-low", "low consumer", "proof pending",
+			"blocked on operator confirmation for low row"),
+		absorptionRow("os_source_002_operator_gated", "legacy://operator-gated-high", "pending",
+			"compound://registries/test-owner-gated-high", "high consumer", "proof pending",
+			"blocked on operator confirmation for high row"),
+	})
+
+	candidates, err := absorptionDebtCandidates(home, directorTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("pending absorption candidate count = %d; want 1: %+v", len(candidates), candidates)
+	}
+	if got := candidates[0].SourceID; got != lowestID {
+		t.Fatalf("all-gated pending absorption candidate source = %q; want lowest row %q", got, lowestID)
+	}
+}
+
 func seedOSAbsorptionMatrix(t *testing.T, home string, now time.Time, rows []authority.OSAbsorptionMatrixRow) {
 	t.Helper()
 	matrixPath := filepath.Join(t.TempDir(), "os-absorption-source-matrix.json")

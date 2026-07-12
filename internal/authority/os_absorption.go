@@ -14,6 +14,7 @@ import (
 	"compound/internal/decisions"
 	"compound/internal/envelope"
 	"compound/internal/home"
+	"compound/internal/mem"
 	"compound/internal/policy"
 	"compound/internal/work"
 )
@@ -33,6 +34,7 @@ const (
 	// auto-proof mechanism regardless of its compound_owner string.
 	osAbsorptionProofModeCapability    = "capability_source_authority"
 	osAbsorptionProofModeDecisions     = "decisions_source_authority"
+	osAbsorptionProofModeMemoryLedger  = "memory_ledger_authority"
 	osAbsorptionProofModeOperatorState = "operator_state_registry"
 	osAbsorptionProofModeWorkPacket    = "work_packet_authority"
 	osAbsorptionProofModeOSCapability  = "os_capability_wrapper_authority"
@@ -240,6 +242,13 @@ func OSAbsorptionDoctor(homePath string) (OSAbsorptionDoctorReport, error) {
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionDecisionsProof(homePath))
 		case osAbsorptionNeedsOperatorStateProof(row):
 			applyOSAbsorptionAutoProof(&report, &dr, osAbsorptionOperatorStateProof(homePath))
+		case osAbsorptionNeedsMemoryLedgerProof(row):
+			if rec, ok := memoryLedgerProofRecord(homePath, row); ok {
+				dr.ProofStatus = "ok"
+				dr.ProofRef = rec
+			} else {
+				dr.ProofStatus = "pending"
+			}
 		case row.Status == "pending":
 			dr.ProofStatus = "pending"
 		}
@@ -384,6 +393,109 @@ func osAbsorptionNeedsCapabilityProof(row OSAbsorptionMatrixRow) bool {
 		return true
 	}
 	return row.CompoundOwner == capgraph.CapabilityGraphAuthorityRef && row.Status == "absorbed"
+}
+
+func osAbsorptionNeedsMemoryLedgerProof(row OSAbsorptionMatrixRow) bool {
+	return row.CompoundOwner == "compound://ledger/memory" || row.ProofMode == osAbsorptionProofModeMemoryLedger
+}
+
+func memoryLedgerProofRecord(homePath string, row OSAbsorptionMatrixRow) (proofRef string, ok bool) {
+	store, err := mem.OpenReadOnly(homePath)
+	if err != nil {
+		return "", false
+	}
+	claims, err := store.LedgerClaims()
+	if err != nil {
+		return "", false
+	}
+	evidence, err := store.Evidence()
+	if err != nil {
+		return "", false
+	}
+
+	rowRefs := make(map[string]bool, len(row.EvidenceRefs))
+	for _, ref := range row.EvidenceRefs {
+		if ref = memoryLedgerCanonicalRef(ref); ref != "" {
+			rowRefs[ref] = true
+		}
+	}
+	evidenceByID := make(map[string]mem.EvidenceItem, len(evidence))
+	for _, item := range evidence {
+		evidenceByID[item.ID] = item
+	}
+
+	for _, claim := range claims {
+		if strings.TrimSpace(claim.PromotionBasis) == "" {
+			continue
+		}
+		if evidenceRef, matched := memoryLedgerClaimSourceRef(row, rowRefs, evidenceByID, claim); matched {
+			return fmt.Sprintf("%s:claim=%s;evidence=%s", osAbsorptionProofModeMemoryLedger, claim.ID, evidenceRef), true
+		}
+	}
+	return "", false
+}
+
+func memoryLedgerClaimSourceRef(row OSAbsorptionMatrixRow, rowRefs map[string]bool, evidenceByID map[string]mem.EvidenceItem, claim mem.Claim) (string, bool) {
+	proofEvidence, hasProofEvidence := memoryLedgerClaimEvidenceRef(claim)
+	for _, ref := range claim.EvidenceRefs {
+		canonical := memoryLedgerCanonicalRef(ref)
+		if canonical != "" && rowRefs[canonical] {
+			if strings.HasPrefix(canonical, "evidence:") {
+				return memoryLedgerProofEvidenceRef(ref), true
+			}
+			if hasProofEvidence {
+				return proofEvidence, true
+			}
+		}
+		if strings.TrimSpace(ref) == row.SourceRef && hasProofEvidence {
+			return proofEvidence, true
+		}
+		item, exists := evidenceByID[strings.TrimPrefix(canonical, "evidence:")]
+		if !exists {
+			continue
+		}
+		if rowRefs[memoryLedgerCanonicalRef(item.SourceID)] || strings.TrimSpace(item.SourceID) == row.SourceRef {
+			return item.ID, true
+		}
+	}
+	if pageID := strings.TrimSpace(claim.Qualifiers["page_id"]); hasProofEvidence && pageID != "" && rowRefs[memoryLedgerCanonicalRef("knowledge_page:"+pageID)] {
+		return proofEvidence, true
+	}
+	for _, key := range []string{"source_path", "source_ref"} {
+		if sourceRef := strings.TrimSpace(claim.Qualifiers[key]); hasProofEvidence && sourceRef != "" && sourceRef == row.SourceRef {
+			return proofEvidence, true
+		}
+	}
+	return "", false
+}
+
+func memoryLedgerCanonicalRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	switch {
+	case strings.HasPrefix(ref, "evidence:"):
+		return "evidence:" + strings.TrimSpace(strings.TrimPrefix(ref, "evidence:"))
+	case strings.HasPrefix(ref, "knowledge_page:"):
+		return "knowledge_page:" + strings.TrimSpace(strings.TrimPrefix(ref, "knowledge_page:"))
+	case strings.HasPrefix(ref, "ev_"):
+		return "evidence:" + ref
+	case strings.HasPrefix(ref, "knowledge_"):
+		return "knowledge_page:" + ref
+	default:
+		return ref
+	}
+}
+
+func memoryLedgerProofEvidenceRef(ref string) string {
+	return strings.TrimPrefix(memoryLedgerCanonicalRef(ref), "evidence:")
+}
+
+func memoryLedgerClaimEvidenceRef(claim mem.Claim) (string, bool) {
+	for _, ref := range claim.EvidenceRefs {
+		if canonical := memoryLedgerCanonicalRef(ref); strings.HasPrefix(canonical, "evidence:") {
+			return strings.TrimPrefix(canonical, "evidence:"), true
+		}
+	}
+	return "", false
 }
 
 // osAbsorptionNeedsWorkPacketProof matches the OS packet directory wrapper.

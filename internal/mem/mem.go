@@ -215,6 +215,24 @@ func Open(homePath string) (*Store, error) {
 	return &Store{home: homePath}, nil
 }
 
+// OpenReadOnly opens an existing memory ledger without creating runtime
+// directories. Read-only authority proofs use it so observing an absent or
+// partial home never changes that home.
+func OpenReadOnly(homePath string) (*Store, error) {
+	if strings.TrimSpace(homePath) == "" {
+		return nil, fmt.Errorf("no COMPOUND_HOME (run `compound home init`)")
+	}
+	ledger := filepath.Join(homePath, "ledger")
+	info, err := os.Stat(ledger)
+	if err != nil {
+		return nil, fmt.Errorf("open memory ledger read-only: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("open memory ledger read-only: %s is not a directory", ledger)
+	}
+	return &Store{home: homePath}, nil
+}
+
 // HomePath exposes the runtime root to sibling authority owners that must
 // coordinate one cross-object critical section. It is not an authority read;
 // callers still use the owning package for ledger operations.
