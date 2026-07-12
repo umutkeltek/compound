@@ -7,18 +7,20 @@ That constraint keeps it a control surface instead of a second runtime owner.
 ## Run
 
 ```bash
-cd console
-bun install
-bun run dev # http://localhost:3777
+compound console --operator # pins COMPOUND_HOME and enables governed local acts
 ```
 
 Requirements: `compound` binary on PATH, or `COMPOUND_BIN=/path/to/compound`;
-`COMPOUND_HOME` defaults to `~/.compound`.
+the operator launcher resolves and explicitly pins `COMPOUND_HOME`. A direct
+`bun run dev` without an explicit home remains read-only even when the mutation
+flag is set, because silently defaulting a write target is unsafe.
 
 Optional local-only gates:
 
-- `COMPOUND_CONSOLE_MUTATIONS=1` enables POST mutation routes. Without it,
-  console stays copy-command/read-only.
+- `COMPOUND_CONSOLE_MUTATIONS=1` is necessary but not sufficient for POST
+  mutation routes. The serving process must also start with an explicit
+  `COMPOUND_HOME`; otherwise the console stays copy-command/read-only and the
+  API fails closed.
 - `COMPOUND_CONSOLE_SESSION_TOKEN=<token>` additionally requires header
   `x-compound-console-token` on mutation and private document requests.
 - `COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1` enables temporary direct reads from
@@ -34,8 +36,9 @@ Optional local-only gates:
   disabled unless `COMPOUND_CONSOLE_PRIVATE_FALLBACKS=1`, require local operator
   requests, and return `scope: private_local`.
 - Most acts surface exact CLI commands you copy. Mutation routes are
-  default-off, require `COMPOUND_CONSOLE_MUTATIONS=1`, require same-origin
-  localhost POSTs, and execute through the server-resolved decision endpoint.
+  default-off, require `COMPOUND_CONSOLE_MUTATIONS=1` plus an explicit frozen
+  `COMPOUND_HOME`, require same-origin localhost POSTs, and execute through the
+  server-resolved decision endpoint.
   Legacy mutation routes are compatibility adapters only.
 - If a card cannot name a projection or an explicit private fallback, it does
   not ship.
