@@ -237,7 +237,7 @@ func routeUsage(sub string) string {
 	case "promotion-record":
 		return "usage: compound route promotion-record --review <route_promotion.json> --rationale <text> [--json]"
 	default:
-		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
+		return "usage: compound route <evidence-authority [--json] [--recent N]|import <execution-route-evidence.json>|import-model-capabilities <model-capabilities.yaml>|import-promotion-criteria <promotion-criteria.yaml>|promotion-review [--lane ID] [--json]|promotion-record --review <route_promotion.json> --rationale <text> [--json]|import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N]|import-account-projection <admin-accounts.json>|cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record]|outcome-review [(--route-id ID|--route-evidence file)] (--receipt file|--receipt-id ID|--work-id ID) [--target file] [--record]|plan (--candidate C [--target file]|--capability-class C [--privacy-sensitive])>"
 	}
 }
 
@@ -308,6 +308,7 @@ compound proof-check [--json] [--dry-run] [--repo P] deterministic local gate bu
   compound route promotion-record --review route_promotion.json --rationale TEXT [--json] Record reviewed hold decision, no authority mutation
   compound route evidence-authority [--json] [--recent N] read-only route evidence authority
   compound route import-provider-ledger <provider-calls.ndjson> [--limit N|--tail N] provider-call NDJSON -> route/cost projections
+  compound route import-account-projection <admin-accounts.json>  switchback/admin-accounts@1 -> projections/account-projection.json (lane admission gate)
   compound route cost-doctor <provider-calls.ndjson> [--limit N|--tail N] [--record] provider cost coverage -> route observation/no-promote
   compound route outcome-review (--route-id ID|--route-evidence file) --receipt file [--target file] [--record] join route evidence to work outcome
   compound route plan --candidate C [--target file]              route_observation candidate -> reviewed routing-policy draft
@@ -2893,6 +2894,30 @@ func cmdRoute(args []string) {
 			fmt.Printf("- last_transition: %s\n", last.Transition.ID)
 		}
 		fmt.Println("- verdict: metadata_only_not_task_success")
+		return
+	}
+	if args[0] == "import-account-projection" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: compound route import-account-projection <admin-accounts.json>")
+			os.Exit(2)
+		}
+		report, err := routeevidence.ImportAccountProjectionFile(homePath, args[1], time.Now())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "route import-account-projection:", err)
+			os.Exit(1)
+		}
+		fmt.Println("# route import-account-projection")
+		fmt.Printf("- schema_version: %s\n", report.SchemaVersion)
+		if report.SourceRevision != "" {
+			fmt.Printf("- source_revision: %s\n", report.SourceRevision)
+		}
+		fmt.Printf("- imported_at: %s\n", report.ImportedAt)
+		fmt.Printf("- providers: %d\n", report.ProviderCount)
+		if len(report.Providers) > 0 {
+			fmt.Printf("- provider_keys: %s\n", strings.Join(report.Providers, ","))
+		}
+		fmt.Printf("- projection: %s\n", report.ProjectionPath)
+		fmt.Println("- verdict: projection_not_governed_registry")
 		return
 	}
 	if args[0] == "cost-doctor" {
