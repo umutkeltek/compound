@@ -290,6 +290,9 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	if req.Receipt == nil || req.Receipt.StateDelta.Summary == "" || req.Receipt.Next.ReviewTrigger == "" {
 		t.Fatalf("receipt summary incomplete: %+v", req.Receipt)
 	}
+	if req.SourcePrivacy != "private" {
+		t.Fatalf("request source privacy = %q, want most-restrictive private", req.SourcePrivacy)
+	}
 	if req.Receipt.Cost.ModelCalls == nil {
 		t.Fatalf("receipt cost metadata missing: %+v", req.Receipt.Cost)
 	}
@@ -340,6 +343,9 @@ func TestBuildLLMExtractionRequestFromSpineSources(t *testing.T) {
 	}
 	if len(trace.Candidates) != 1 || !hasString(trace.Candidates[0].EvidenceRefs, hook.OutputRef) {
 		t.Fatalf("output_ref evidence not preserved: %+v", trace.Candidates)
+	}
+	if trace.Candidates[0].Visibility != "private" {
+		t.Fatalf("grounded candidate visibility = %q, want source-derived private", trace.Candidates[0].Visibility)
 	}
 	if req.PriorCoverage.CurrentClaims != 1 || req.PriorCoverage.Decisions != 1 {
 		t.Fatalf("prior coverage = %+v", req.PriorCoverage)

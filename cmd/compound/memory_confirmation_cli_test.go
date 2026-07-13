@@ -36,15 +36,21 @@ func TestMemoryAdjudicateExplicitConfirmationCLI(t *testing.T) {
 	if _, err := store.Adjudicate(captured[0].ID, candidates.Park, "work_user_shadow", cliTestNow); err != nil {
 		t.Fatal(err)
 	}
-	confirmation, err := store.RecordEvidence(mem.EvidenceItem{
-		SourceKind: "operator_confirmation",
-		SourceID:   captured[0].ID,
-		QuoteText:  "Keep this as my communication preference.",
-		Actor:      "operator:test",
-	}, cliTestNow)
-	if err != nil {
-		t.Fatal(err)
+	confirmationOut := captureStdout(t, func() {
+		cmdMemory([]string{
+			"confirmation", captured[0].ID,
+			"--quote", "Keep this as my communication preference.",
+			"--reviewed-by", "operator:test",
+		})
+	})
+	if !strings.Contains(confirmationOut, "recorded confirmation") {
+		t.Fatalf("confirmation output = %q", confirmationOut)
 	}
+	evidence, err := store.Evidence()
+	if err != nil || len(evidence) != 1 {
+		t.Fatalf("confirmation evidence = %+v, err=%v", evidence, err)
+	}
+	confirmation := evidence[0]
 
 	out := captureStdout(t, func() {
 		cmdMemory([]string{

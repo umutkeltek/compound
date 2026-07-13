@@ -62,6 +62,9 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 		t.Fatalf("session end produced = %+v", sessionEnd.Produced)
 	}
 	receipt := sessionEnd.Produced[0].(*envelope.Receipt)
+	if receipt.Privacy != "private" {
+		t.Fatalf("SessionEnd receipt privacy = %q, want private", receipt.Privacy)
+	}
 	if len(receipt.EvidenceRefs) != 1 || !strings.HasPrefix(receipt.EvidenceRefs[0], "transcript-span:sha256:") {
 		t.Fatalf("receipt span evidence = %v", receipt.EvidenceRefs)
 	}
@@ -89,6 +92,9 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 	}
 	if !stringSliceContains(request.SourceRefs, spanRef) {
 		t.Fatalf("grounded request source refs = %v, want %s", request.SourceRefs, spanRef)
+	}
+	if request.SourcePrivacy != "private" {
+		t.Fatalf("grounded request source privacy = %q, want private", request.SourcePrivacy)
 	}
 	confidence := 0.96
 	response := distiller.LLMExtractionResponse{
@@ -129,17 +135,11 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 	if err != nil || len(parked) != 1 {
 		t.Fatalf("parked candidates = %+v, err=%v", parked, err)
 	}
-	if parked[0].PromotionBasis != "" || !stringSliceContains(parked[0].EvidenceRefs, spanRef) {
+	if parked[0].PromotionBasis != "" || parked[0].Visibility != "private" || !stringSliceContains(parked[0].EvidenceRefs, spanRef) {
 		t.Fatalf("parked candidate gained authority or lost grounding: %+v", parked[0])
 	}
 
-	confirmation, err := memoryStore.RecordEvidence(mem.EvidenceItem{
-		SourceKind: "operator_confirmation",
-		SourceID:   parked[0].ID,
-		QuoteText:  "Keep this as my communication preference.",
-		Actor:      "operator:synthetic",
-		Visibility: "private",
-	}, cliTestNow)
+	confirmation, err := memoryStore.RecordOperatorConfirmation(parked[0].ID, "Keep this as my communication preference.", "operator:synthetic", cliTestNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +148,7 @@ func TestUserAwarenessChainSurvivesDisposableStateAndKeepsPromptSubmitModelFree(
 		t.Fatal(err)
 	}
 	if promoted.Claim == nil || promoted.Claim.PromotionBasis != candidates.BasisExplicitConfirmation ||
+		promoted.Claim.Visibility != "private" || confirmation.Visibility != "private" ||
 		!stringSliceContains(promoted.Claim.EvidenceRefs, spanRef) ||
 		!stringSliceContains(promoted.Claim.EvidenceRefs, confirmation.ID) {
 		t.Fatalf("confirmed claim = %+v", promoted.Claim)

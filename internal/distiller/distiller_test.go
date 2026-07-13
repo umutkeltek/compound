@@ -452,22 +452,27 @@ func TestDuplicateParkedMemoryCandidateUsesNoPromote(t *testing.T) {
 	}
 }
 
-// With a valid promotion basis, the same candidate PROMOTES and the basis is persisted on the claim
-// (the recallable "why" of canon — the first convergence increment of memory.PromotionBasis onto mem).
-func TestLiveModePromotesWithBasisPersisted(t *testing.T) {
+// A trace may not self-mint explicit confirmation. That basis is reserved for
+// the governed operator-confirmation adapter, so reference/model-shaped input
+// parks without carrying authority into the candidate.
+func TestLiveModeParksUnprovenExplicitConfirmation(t *testing.T) {
 	home, store := setup(t)
 	raw := `{"trace_ref":"t","candidates":[{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95,"promotion_basis":"` + candidates.BasisExplicitConfirmation + `"}]}`
 	res := runWith(t, home, store, raw, DefaultPolicy())
 	d := res.Decisions[0]
-	if d.Verdict != Promote || d.ClaimID == "" {
-		t.Fatalf("a memory with an explicit_confirmation basis must promote; got %q claim=%q", d.Verdict, d.ClaimID)
+	if d.Verdict != Park || d.ClaimID != "" {
+		t.Fatalf("unproven explicit_confirmation = verdict %q claim=%q, want parked", d.Verdict, d.ClaimID)
 	}
-	if d.PromotionBasis != candidates.BasisExplicitConfirmation {
-		t.Errorf("the decision should record the basis; got %q", d.PromotionBasis)
+	if d.PromotionBasis != "" {
+		t.Errorf("untrusted trace retained reserved basis %q", d.PromotionBasis)
 	}
 	cur, _ := store.AllCurrent()
-	if len(cur) != 1 || cur[0].PromotionBasis != candidates.BasisExplicitConfirmation {
-		t.Errorf("the promoted claim must carry the basis; got %+v", cur)
+	if len(cur) != 0 {
+		t.Fatalf("unproven trace wrote claims: %+v", cur)
+	}
+	parked, err := store.AllCandidates()
+	if err != nil || len(parked) != 1 || parked[0].State != "parked" || parked[0].PromotionBasis != "" {
+		t.Fatalf("parked candidate = %+v, err=%v", parked, err)
 	}
 }
 
