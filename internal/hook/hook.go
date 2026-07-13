@@ -26,6 +26,13 @@ import (
 	"compound/internal/work"
 )
 
+// MaxContextChars is the whole-session context budget a ContextPack is capped at (see
+// buildContextRequest). It doubles as the tool-output externalization threshold: a single tool
+// body at or beyond the entire context budget must never flood the window — postToolUse captures
+// it to the rebuildable, content-addressed blob store and replaces it with a compact pointer (C3).
+// One number, one meaning ("as big as the whole context"), so the two stay tied by construction.
+const MaxContextChars = 6000
+
 // hookEnum maps the dashed CLI/fixture name to the HookEvent enum name.
 var hookEnum = map[string]string{
 	"session-start":      "SessionStart",
@@ -72,7 +79,8 @@ type Fixture struct {
 	Used              []string                      `json:"used,omitempty"`
 	Missed            []string                      `json:"missed,omitempty"`
 	FalseTriggered    []string                      `json:"false_triggered,omitempty"`
-	Tool              string                        `json:"tool,omitempty"` // post-tool-use
+	Tool              string                        `json:"tool,omitempty"`        // post-tool-use
+	ToolOutput        string                        `json:"tool_output,omitempty"` // post-tool-use: the tool's response body; large bodies are externalized (C3), never inlined
 	Placement         *policy.PlacementGuardContext `json:"placement,omitempty"`
 
 	// AdapterSideEffects are governed artifacts prepared by a live harness
@@ -141,7 +149,7 @@ func Run(fx Fixture, deps Deps, now time.Time) (Result, error) {
 	case "PreToolUse":
 		res, err = preToolUse(name, fx, deps, now)
 	case "PostToolUse":
-		res, err = postToolUse(name, fx, now)
+		res, err = postToolUse(name, fx, deps, now)
 	case "SessionEnd", "Stop":
 		res, err = sessionEnd(name, fx, deps, now)
 	default:
@@ -651,9 +659,28 @@ func openGateReviewExists(store *work.Store, sc policy.SourceControlContext) (bo
 	return false, nil
 }
 
-func postToolUse(name string, fx Fixture, now time.Time) (Result, error) {
+func postToolUse(name string, fx Fixture, deps Deps, now time.Time) (Result, error) {
 	ev := newEvent(name, fx, "ok", hashStr(fx.Tool), []string{fx.Tool}, now)
-	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: "recorded tool event: " + orDash(fx.Tool) + " (ToolEvent/ArtifactRef land at P6+)"}, nil
+	summary := "recorded tool event: " + orDash(fx.Tool) + " (ToolEvent/ArtifactRef land at P6+)"
+	// C3: a tool body at or beyond the whole context budget must never flood the window. Externalize
+	// it to the rebuildable, content-addressed blob store and mint ONE observed-class candidate; only
+	// the compact pointer flows back into the summary — never the body. Below-threshold output and
+	// homeless invocations keep the byte-identical legacy path.
+	if body := fx.ToolOutput; len(body) > MaxContextChars && strings.TrimSpace(deps.HomePath) != "" {
+		store, err := mem.Open(deps.HomePath)
+		if err != nil {
+			return Result{}, fmt.Errorf("post-tool-use externalize tool output: %w", err)
+		}
+		cid, pointer, err := store.CaptureToolOutput(fx.Tool, fx.WorkID, body, now)
+		if err != nil {
+			return Result{}, fmt.Errorf("post-tool-use externalize tool output: %w", err)
+		}
+		ref := "observed/tool-output/" + cid
+		ev.SideEffects = append(ev.SideEffects, ref)
+		ev.OutputRef = ref
+		summary = fmt.Sprintf("recorded tool event: %s — externalized %d-byte output as observed candidate (%s); retrieve via `compound memory show-output %s`", orDash(fx.Tool), len(body), pointer, cid)
+	}
+	return Result{Event: ev, Produced: []envelope.Envelope{}, Summary: summary}, nil
 }
 
 // sessionEnd handles both the SessionEnd and Stop hooks. They share this receipt/close
@@ -795,7 +822,7 @@ func buildContextRequest(name string, fx Fixture, ec envelope.EffectiveContract,
 		TaskGuess:     fx.Task,
 		RequestedMode: mode,
 		Constraints: envelope.CtxConstraints{
-			MaxContextChars:         6000,
+			MaxContextChars:         MaxContextChars,
 			AllowPrivateMemory:      false,
 			AllowRawCorpus:          false,
 			AllowProvisionalReviews: false,

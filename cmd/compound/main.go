@@ -237,8 +237,10 @@ func memoryUsage(sub string) string {
 		return "usage: compound memory bakeoff <init [--queries file] [--force]|run --queries file [--engine bin] [--k N] [--json]>"
 	case "search":
 		return "usage: compound memory search --lane L <query> [--k N] [--json]"
+	case "show-output":
+		return "usage: compound memory show-output <cid>  (writes the exact externalized tool-output body for sha256:<hex> to stdout)"
 	default:
-		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|temperature [--rebuild]|observation [--json] [--record]|doctor>"
+		return "usage: compound memory <candidate <trace.json>|candidates --json|import-page <markdown>|import-topics <topics.json>|confirmation <candidate_id> --quote <text> --reviewed-by operator:<id>|adjudicate <id> --verdict V|recall [entity] [--as-of N] [--topic topic-slug] [--include-needs-review] [--include-evidence]|timeline <entity>|fold [--entity E] [--json]|position <entity> [--as-of N] [--topic topic-slug] [--json]|graph <seed> [--direction up|down] [--kind K]|write-plan --candidate C --target brain.md|query <text>|search --lane L <query>|show-output <cid>|canon [--json]|aliases <show|rebuild|expand Q>|engine-doctor <text>|engine-compare <text> [--allow-expansion]|engine-config|bakeoff <init|run>|temperature [--rebuild]|observation [--json] [--record]|doctor>"
 	}
 }
 
@@ -2150,6 +2152,21 @@ func cmdMemory(args []string) {
 		}
 		if report.Cleared {
 			fmt.Println("- cleared: true")
+		}
+	case "show-output":
+		// C3: retrieve the full externalized tool-output body for a content id captured at the
+		// PostToolUse seam. The body lives only in the rebuildable blob store (never the ledger,
+		// never ambient recall); this is the sole v1 door back to it. A missing/malformed cid is an
+		// explicit error, never a silent empty.
+		cid := pos()
+		if strings.TrimSpace(cid) == "" {
+			fmt.Fprintln(os.Stderr, "usage: compound memory show-output <cid>")
+			os.Exit(2)
+		}
+		body, err := store.ReadToolOutput(cid)
+		die(err)
+		if _, err := os.Stdout.Write(body); err != nil {
+			die(err)
 		}
 	case "doctor":
 		var r mem.Report

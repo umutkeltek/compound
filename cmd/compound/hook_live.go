@@ -29,19 +29,20 @@ type hookCommandArgs struct {
 }
 
 type claudeLiveHookInput struct {
-	HookEventName  string         `json:"hook_event_name"`
-	SessionID      string         `json:"session_id"`
-	Cwd            string         `json:"cwd"`
-	Prompt         string         `json:"prompt"`
-	ToolName       string         `json:"tool_name"`
-	ToolInput      map[string]any `json:"tool_input"`
-	Matcher        string         `json:"matcher"`
-	TranscriptPath string         `json:"transcript_path"`
-	TurnID         string         `json:"turn_id"`
-	StopHookActive bool           `json:"stop_hook_active"`
-	LastAssistant  string         `json:"last_assistant_message"`
-	WorkID         string         `json:"work_id"`
-	CompoundWorkID string         `json:"compound_work_id"`
+	HookEventName  string          `json:"hook_event_name"`
+	SessionID      string          `json:"session_id"`
+	Cwd            string          `json:"cwd"`
+	Prompt         string          `json:"prompt"`
+	ToolName       string          `json:"tool_name"`
+	ToolInput      map[string]any  `json:"tool_input"`
+	ToolResponse   json.RawMessage `json:"tool_response"` // post-tool-use: the tool's output body; large bodies are externalized (C3)
+	Matcher        string          `json:"matcher"`
+	TranscriptPath string          `json:"transcript_path"`
+	TurnID         string          `json:"turn_id"`
+	StopHookActive bool            `json:"stop_hook_active"`
+	LastAssistant  string          `json:"last_assistant_message"`
+	WorkID         string          `json:"work_id"`
+	CompoundWorkID string          `json:"compound_work_id"`
 }
 
 type claudeHookSpecificOutput struct {
@@ -148,6 +149,10 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		if fx.Tool == "" {
 			fx.Tool = "unknown"
 		}
+		// C3: carry the tool response body so a large one is externalized at the seam (blob +
+		// observed candidate + pointer) instead of flooding context. work_id grounds the candidate.
+		fx.ToolOutput = liveToolOutput(in.ToolResponse)
+		fx.WorkID = firstNonEmpty(in.WorkID, in.CompoundWorkID)
 	case "session-end", "stop":
 		fx.WorkID = firstNonEmpty(in.WorkID, in.CompoundWorkID)
 		fx.SessionID = strings.TrimSpace(in.SessionID)
@@ -161,6 +166,22 @@ func liveHookFixture(parsed hookCommandArgs, data []byte, now time.Time) (hook.F
 		fx.Summary = "session-end receipt from live hook event " + firstNonEmpty(fx.SessionID, fx.WorkID, "unknown-session")
 	}
 	return fx, nil
+}
+
+// liveToolOutput normalizes a claude-code PostToolUse tool_response into the body C3 externalizes:
+// a JSON string (e.g. a Bash tool's stdout) is decoded to its underlying text, so the round-trip is
+// the real output rather than an escaped JSON token; a structured response is carried as its raw
+// JSON. Absent/null stays empty (the byte-identical legacy path — nothing to externalize).
+func liveToolOutput(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return trimmed
 }
 
 func liveTask(in claudeLiveHookInput) string {

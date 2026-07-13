@@ -45,6 +45,7 @@ var Dirs = func() []string {
 		"context/requests", "context/packs", "context/injections",
 		"inbox/knowledge-extractions",
 		"ledger",
+		"observed/tool-output", // rebuildable, content-addressed externalized tool-output bodies (C3); NEVER under ledger
 		"registries",
 		"artifacts/sha256", "artifacts/refs",
 		"indexes",
