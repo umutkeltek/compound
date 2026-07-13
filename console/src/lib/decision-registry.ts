@@ -371,7 +371,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         label: "Grant it",
         tone: "green",
         description:
-          "Record an autonomy grant so proven job-health work starts without you. Every start still writes a receipt and one switch halts it.",
+          "Record an autonomy grant so proven job-health work enters the queue on its own. Every entry still writes a receipt and one switch halts it.",
       },
     ],
     defaultOption: "grant",
@@ -382,12 +382,12 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
       const noun = waiting === 1 ? "item is" : "items are";
       return {
         // What never changes — the calm guardrail, led with before the tradeoff.
-        headline: `Let the system admit ${plain} work on its own?`,
+        headline: `Let proven ${plain} work enter the queue on its own?`,
         body:
           "Anything external, destructive, irreversible, financial, or security-related still always comes to you. No grant can override that.",
         consequences: {
           // if you act → what changes; if you wait → why it is here.
-          approve: `after the system has closed enough ${plain} items cleanly (you set the bar below), new ones start without you — every start writes a receipt, and one switch halts it`,
+          approve: `after the system has closed enough ${plain} items cleanly (you set the bar below), new ones enter the queue on their own — every entry writes a receipt, and one switch halts it`,
           hold: `${waiting} ${plain} ${noun} waiting; each currently needs your click`,
         },
       };
@@ -417,7 +417,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         "--min-window-days", String(windowDays),
         "--max-failures", String(failures),
         "--reviewed-by", "operator-console",
-        "--title", `Let the system admit ${cls.replace(/_/g, "-")} work on its own`,
+        "--title", `Let proven ${cls.replace(/_/g, "-")} work enter the queue on its own`,
         "--json",
       ];
     },
@@ -427,7 +427,7 @@ export const REGISTRY: Record<string, DecisionAreaSpec> = {
         "decisions", "record", "--kind", "grant", "--scope", "autonomy-evidence-threshold",
         "--auto-admit-class", cls, "--min-terminal-samples", "5", "--min-window-days", "7",
         "--max-failures", "0", "--reviewed-by", "operator-console",
-        "--title", `Let the system admit ${cls.replace(/_/g, "-")} work on its own`, "--json",
+        "--title", `Let proven ${cls.replace(/_/g, "-")} work enter the queue on its own`, "--json",
       ];
     },
   },

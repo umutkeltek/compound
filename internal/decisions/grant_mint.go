@@ -25,7 +25,7 @@ import (
 )
 
 // autonomyGrantMintArea is the condition-gated Decide area that surfaces the
-// "let the system admit this class on its own" grant as a plain-language card.
+// "let proven work enter the queue on its own" grant as a plain-language card.
 const autonomyGrantMintArea = "autonomy-grant-mint"
 
 // autoAdmitCapableClasses mirrors the single enabled evidence-autonomy slice
@@ -184,10 +184,10 @@ func autonomyGrantMintItem(class string, waiting int) (reviewartifact.QueueItem,
 		NextAction: "grant autonomy for " + plain + " admission, or keep clicking each one",
 	}
 	card := reviewartifact.OperatorCard{
-		Summary:      "Let the system admit " + plain + " work on its own?",
+		Summary:      "Let proven " + plain + " work enter the queue on its own?",
 		ContextLabel: "Autonomy grant",
 		GroupKey:     autonomyGrantMintArea + "|" + class,
-		Unlock:       "Granting lets proven " + plain + " work start without you.",
+		Unlock:       "Granting lets proven " + plain + " work enter the queue without a per-item ask.",
 	}
 	if err := reviewartifact.SetOperatorCard(&item, card, reviewartifact.SummarySourceAnnotator, reviewartifact.BandNeedsYou); err != nil {
 		return reviewartifact.QueueItem{}, err
@@ -200,7 +200,7 @@ func autonomyGrantMintItem(class string, waiting int) (reviewartifact.QueueItem,
 func autonomyGrantMintDecisionCard(class string, waiting int) *reviewartifact.DecisionCard {
 	plain := plainAutonomyClass(class)
 	return &reviewartifact.DecisionCard{
-		Claim: "Let the system admit " + plain + " work on its own?",
+		Claim: "Let proven " + plain + " work enter the queue on its own?",
 		Why: []reviewartifact.DecisionCardReason{
 			{
 				Label:    "why now",
@@ -211,15 +211,15 @@ func autonomyGrantMintDecisionCard(class string, waiting int) *reviewartifact.De
 				Label:    "what changes",
 				Question: "What changes if you grant it?",
 				Detail: "After the system has closed enough " + plain + " items cleanly (you set the bar below), " +
-					"new ones start without you. Every start writes a receipt, and one switch halts it.",
+					"new ones enter the queue without your click — nothing runs outside the normal executor and proof path. Every entry writes a receipt, and one switch halts it.",
 			},
 		},
 		Choices: []reviewartifact.DecisionCardChoice{
 			{
 				ID:    "grant",
 				Label: "Grant it",
-				Effect: "Records an autonomy grant so proven " + plain + " work starts without you; " +
-					"every start still writes a receipt and one switch halts it.",
+				Effect: "Records an autonomy grant so proven " + plain + " work enters the queue on its own; " +
+					"every entry still writes a receipt and one switch halts it.",
 			},
 		},
 		Boundary: []string{
@@ -275,7 +275,7 @@ func autonomyGrantMintAction(class string) reviewartifact.Action {
 // autonomyGrantMintRecordTitle is the --title the record carries. The console
 // buildArgv must produce the identical title so the two mint paths agree.
 func autonomyGrantMintRecordTitle(class string) string {
-	return "Let the system admit " + plainAutonomyClass(class) + " work on its own"
+	return "Let proven " + plainAutonomyClass(class) + " work enter the queue on its own"
 }
 
 func autonomyGrantMintID(class string) string {

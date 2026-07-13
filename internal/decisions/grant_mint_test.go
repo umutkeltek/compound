@@ -97,10 +97,10 @@ func TestGrantMintEmitsOneCardWhenWorkWaitsAndNoGrant(t *testing.T) {
 	}
 	// Plain-language copy is the whole point: pin the verbatim strings so a
 	// future edit that breaks operator legibility reds here.
-	if item.OperatorSummary != "Let the system admit job-health work on its own?" {
+	if item.OperatorSummary != "Let proven job-health work enter the queue on its own?" {
 		t.Fatalf("operator summary drifted from the packet copy: %q", item.OperatorSummary)
 	}
-	if item.DecisionCard.Claim != "Let the system admit job-health work on its own?" {
+	if item.DecisionCard.Claim != "Let proven job-health work enter the queue on its own?" {
 		t.Fatalf("decision claim drifted: %q", item.DecisionCard.Claim)
 	}
 	wantWhy := "1 job-health item is waiting; each currently needs your click."
@@ -129,7 +129,7 @@ func TestGrantMintEmitsOneCardWhenWorkWaitsAndNoGrant(t *testing.T) {
 		"--min-window-days", "7",
 		"--max-failures", "0",
 		"--reviewed-by", "operator-console",
-		"--title", "Let the system admit job-health work on its own",
+		"--title", "Let proven job-health work enter the queue on its own",
 		"--json",
 	}
 	if !equalStrings(argv, wantArgv) {

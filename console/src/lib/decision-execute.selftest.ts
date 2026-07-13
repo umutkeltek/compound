@@ -694,7 +694,7 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
       "--min-window-days", "7",
       "--max-failures", "0",
       "--reviewed-by", "operator-console",
-      "--title", "Let the system admit job-health work on its own",
+      "--title", "Let proven job-health work enter the queue on its own",
       "--json",
     ];
     const reject = (fields: Record<string, string>) =>
@@ -710,7 +710,7 @@ export async function runDecisionExecuteSelfTest(): Promise<{ ok: boolean; detai
         reject({ min_terminal_samples: "5", min_window_days: "7", max_failures: "5" }) == null &&
         reject({ min_terminal_samples: "0", min_window_days: "7", max_failures: "0" }) == null &&
         reject({ min_terminal_samples: "abc", min_window_days: "7", max_failures: "0" }) == null &&
-        pl?.headline === "Let the system admit job-health work on its own?" &&
+        pl?.headline === "Let proven job-health work enter the queue on its own?" &&
         pl?.body.startsWith("Anything external, destructive, irreversible, financial, or security-related") === true &&
         pl?.consequences?.hold === "3 job-health items are waiting; each currently needs your click",
       `argv=${argv?.join(" ") ?? "null"} preview=${String(grant?.supportsPreview)} hold=${pl?.consequences?.hold ?? "none"}`,
