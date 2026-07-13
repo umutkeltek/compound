@@ -183,6 +183,7 @@ func TestSourceControlDirtyExactRecordedMutationReviewAvoidsOnlyDirtyEscalation(
     "status":"recorded",
     "decision":"authorize_mutation",
     "review_id":"scrr_exact",
+	"plan_digest":"sha256:exact-plan",
     "owner_work_id":"work_owner",
     "action_work_id":"work_test",
     "repo_id":"repo:demo",
