@@ -535,10 +535,11 @@ func normalizeSourceControlMutationBinding(snapshot SourceControlSnapshot, bindi
 		if target == "" {
 			continue
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(root, target)
+		var err error
+		target, err = canonicalSourceControlMutationTarget(root, target)
+		if err != nil {
+			return SourceControlMutationBinding{}, err
 		}
-		target = filepath.Clean(target)
 		rel, err := filepath.Rel(root, target)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return SourceControlMutationBinding{}, fmt.Errorf("source-control mutation target %q outside git root", target)
@@ -550,6 +551,29 @@ func normalizeSourceControlMutationBinding(snapshot SourceControlSnapshot, bindi
 		return SourceControlMutationBinding{}, err
 	}
 	return binding, nil
+}
+
+func canonicalSourceControlMutationTarget(root, target string) (string, error) {
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	target = filepath.Clean(target)
+	if canonical, err := filepath.EvalSymlinks(target); err == nil {
+		return canonical, nil
+	}
+	parent, err := nearestExistingParent(target)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(parent, target)
+	if err != nil {
+		return "", err
+	}
+	canonicalParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(canonicalParent, rel)), nil
 }
 
 func validateNormalizedSourceControlMutationBinding(binding SourceControlMutationBinding) error {
