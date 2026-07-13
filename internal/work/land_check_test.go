@@ -109,21 +109,18 @@ func TestLandCheckFailsClosedForDirtyTargetAndMovedSnapshot(t *testing.T) {
 	}
 	attachLandingCommit(t, store, w.ID, candidate, now.Add(30*time.Second))
 
-	report, err := store.LandCheck(w.ID, LandCheckOptions{
+	_, err = store.LandCheck(w.ID, LandCheckOptions{
 		RepoPath:        repo,
 		CandidateTipSHA: candidate,
 		TargetRef:       "main",
 		ExpectedMainSHA: strings.Repeat("f", 40),
 	}, now.Add(time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Status != "main_moved" {
-		t.Fatalf("expected main_moved, got %+v", report)
+	if err == nil || !strings.Contains(err.Error(), "not delivery authority") {
+		t.Fatalf("caller expected-main snapshot must not replace bound authority, got %v", err)
 	}
 
 	writeLandingFile(t, filepath.Join(repo, "dirty.txt"), "uncommitted\n")
-	report, err = store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
+	report, err := store.LandCheck(w.ID, LandCheckOptions{RepoPath: repo, CandidateTipSHA: candidate, TargetRef: "main"}, now.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +714,7 @@ func localGitDelivery(repo, base string) *envelope.GitDeliveryContract {
 		TargetWorktreeRoot: repo,
 		TargetLocalRef:     "refs/heads/main",
 		ExpectedBaseSHA:    base,
-		PublicationMode:   "local_only",
+		PublicationMode:    "local_only",
 	}
 }
 
@@ -726,7 +723,7 @@ func publishedGitDelivery(repo, base string) *envelope.GitDeliveryContract {
 		TargetWorktreeRoot: repo,
 		TargetLocalRef:     "refs/heads/main",
 		ExpectedBaseSHA:    base,
-		PublicationMode:   "required",
-		PublicationRef:    "refs/remotes/origin/main",
+		PublicationMode:    "required",
+		PublicationRef:     "refs/remotes/origin/main",
 	}
 }
