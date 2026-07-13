@@ -662,8 +662,27 @@ func (s *Store) raiseSeedsForCorroborations(proposals []SynthesisCorroborationPr
 			return err
 		}
 		for _, proposal := range proposals {
+			candidate, err := s.getCandidate(proposal.SeedCandidateID)
+			if err != nil {
+				return err
+			}
+			if !openSeedCandidate(candidate, now) {
+				continue
+			}
 			if mark, ok := marks[proposal.SeedCandidateID]; ok && len(mark.Refs) > 0 {
 				continue
+			}
+			// Corroboration earns immunity from decay. Persist that recoverable
+			// candidate projection before the append-only authority edge: if the
+			// later edge write fails, retry can safely try again.
+			if strings.TrimSpace(candidate.ExpiresAt) != "" {
+				candidate.ExpiresAt = ""
+				if strings.TrimSpace(candidate.Reason) == "" || strings.Contains(candidate.Reason, "expiry") || strings.Contains(candidate.Reason, "park with expiry") {
+					candidate.Reason = "corroborated; expiry cleared"
+				}
+				if err := candidates.WriteCandidate(s.home, candidates.Memory, candidate.ID, &candidate); err != nil {
+					return err
+				}
 			}
 			seq, err := s.nextSeq()
 			if err != nil {
@@ -680,17 +699,6 @@ func (s *Store) raiseSeedsForCorroborations(proposals []SynthesisCorroborationPr
 			}
 			if err := appendJSONL(s.edgesLog(), &edge); err != nil {
 				return err
-			}
-			// Corroboration earns immunity from decay: clear expiry so the landfill
-			// sweep can never silently drop a raised seed (decisions-down falsifier).
-			if c, err := s.getCandidate(proposal.SeedCandidateID); err == nil {
-				if strings.TrimSpace(c.ExpiresAt) != "" {
-					c.ExpiresAt = ""
-					if strings.TrimSpace(c.Reason) == "" || strings.Contains(c.Reason, "expiry") || strings.Contains(c.Reason, "park with expiry") {
-						c.Reason = "corroborated; expiry cleared"
-					}
-					_ = candidates.WriteCandidate(s.home, candidates.Memory, c.ID, &c)
-				}
 			}
 			marks[proposal.SeedCandidateID] = candidateReviewMark{Refs: []string{proposal.ID}}
 			raised = append(raised, SynthesisSeedReview{
