@@ -3,10 +3,15 @@ package authority
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"hash"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,40 +23,42 @@ import (
 const SourceControlSchemaVersion = "compound.source_control_snapshot.v0.1"
 
 type SourceControlSnapshot struct {
-	SchemaVersion string `json:"schema_version"`
-	RepoID        string `json:"repo_id"`
-	RequestedPath string `json:"requested_path,omitempty"`
-	GitRoot       string `json:"git_root"`
-	Remote        string `json:"remote,omitempty"`
-	Branch        string `json:"branch,omitempty"`
-	Head          string `json:"head,omitempty"`
-	Upstream      string `json:"upstream,omitempty"`
-	Ahead         int    `json:"ahead"`
-	Behind        int    `json:"behind"`
-	Status        string `json:"status"` // clean | dirty
-	Staged        int    `json:"staged"`
-	Unstaged      int    `json:"unstaged"`
-	Untracked     int    `json:"untracked"`
-	ChangedPaths  int    `json:"changed_paths"`
-	EvidenceRef   string `json:"evidence_ref"`
+	SchemaVersion           string `json:"schema_version"`
+	RepoID                  string `json:"repo_id"`
+	RequestedPath           string `json:"requested_path,omitempty"`
+	GitRoot                 string `json:"git_root"`
+	Remote                  string `json:"remote,omitempty"`
+	Branch                  string `json:"branch,omitempty"`
+	Head                    string `json:"head,omitempty"`
+	Upstream                string `json:"upstream,omitempty"`
+	Ahead                   int    `json:"ahead"`
+	Behind                  int    `json:"behind"`
+	Status                  string `json:"status"` // clean | dirty
+	Staged                  int    `json:"staged"`
+	Unstaged                int    `json:"unstaged"`
+	Untracked               int    `json:"untracked"`
+	ChangedPaths            int    `json:"changed_paths"`
+	ChangedStateFingerprint string `json:"changed_state_fingerprint,omitempty"`
+	EvidenceRef             string `json:"evidence_ref"`
 }
 
 type SourceControlReport struct {
-	EntityRef      string `json:"entity_ref"`
-	Status         string `json:"status"`
-	GitRoot        string `json:"git_root"`
-	Branch         string `json:"branch,omitempty"`
-	Head           string `json:"head,omitempty"`
-	Remote         string `json:"remote,omitempty"`
-	Upstream       string `json:"upstream,omitempty"`
-	Ahead          int    `json:"ahead"`
-	Behind         int    `json:"behind"`
-	Staged         int    `json:"staged"`
-	Unstaged       int    `json:"unstaged"`
-	Untracked      int    `json:"untracked"`
-	ChangedPaths   int    `json:"changed_paths"`
-	CandidateCount int    `json:"candidate_count"`
-	EvidenceRef    string `json:"evidence_ref"`
+	EntityRef               string `json:"entity_ref"`
+	Status                  string `json:"status"`
+	GitRoot                 string `json:"git_root"`
+	Branch                  string `json:"branch,omitempty"`
+	Head                    string `json:"head,omitempty"`
+	Remote                  string `json:"remote,omitempty"`
+	Upstream                string `json:"upstream,omitempty"`
+	Ahead                   int    `json:"ahead"`
+	Behind                  int    `json:"behind"`
+	Staged                  int    `json:"staged"`
+	Unstaged                int    `json:"unstaged"`
+	Untracked               int    `json:"untracked"`
+	ChangedPaths            int    `json:"changed_paths"`
+	ChangedStateFingerprint string `json:"changed_state_fingerprint,omitempty"`
+	CandidateCount          int    `json:"candidate_count"`
+	EvidenceRef             string `json:"evidence_ref"`
 }
 
 // ImportGitSnapshot reads live git state with read-only git commands and turns
@@ -65,21 +72,22 @@ func ImportGitSnapshot(path string, existing []mem.Entity) (SourceControlSnapsho
 	entity := mergeSourceControlEntity(snap, existing)
 	facts := sourceControlCandidates(snap)
 	report := SourceControlReport{
-		EntityRef:      entity.Slug,
-		Status:         snap.Status,
-		GitRoot:        snap.GitRoot,
-		Branch:         snap.Branch,
-		Head:           snap.Head,
-		Remote:         snap.Remote,
-		Upstream:       snap.Upstream,
-		Ahead:          snap.Ahead,
-		Behind:         snap.Behind,
-		Staged:         snap.Staged,
-		Unstaged:       snap.Unstaged,
-		Untracked:      snap.Untracked,
-		ChangedPaths:   snap.ChangedPaths,
-		CandidateCount: len(facts),
-		EvidenceRef:    snap.EvidenceReference(),
+		EntityRef:               entity.Slug,
+		Status:                  snap.Status,
+		GitRoot:                 snap.GitRoot,
+		Branch:                  snap.Branch,
+		Head:                    snap.Head,
+		Remote:                  snap.Remote,
+		Upstream:                snap.Upstream,
+		Ahead:                   snap.Ahead,
+		Behind:                  snap.Behind,
+		Staged:                  snap.Staged,
+		Unstaged:                snap.Unstaged,
+		Untracked:               snap.Untracked,
+		ChangedPaths:            snap.ChangedPaths,
+		ChangedStateFingerprint: snap.ChangedStateFingerprint,
+		CandidateCount:          len(facts),
+		EvidenceRef:             snap.EvidenceReference(),
 	}
 	return snap, entity, facts, report, nil
 }
@@ -96,6 +104,9 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 		return SourceControlSnapshot{}, fmt.Errorf("git root: %w", err)
 	}
 	root = strings.TrimSpace(root)
+	if canonical, canonicalErr := filepath.EvalSymlinks(root); canonicalErr == nil {
+		root = canonical
+	}
 	remote, _ := gitOutput(ctx, root, "config", "--get", "remote.origin.url")
 	branch, _ := gitOutput(ctx, root, "branch", "--show-current")
 	head, _ := gitOutput(ctx, root, "rev-parse", "--short=12", "HEAD")
@@ -116,23 +127,29 @@ func ReadGitSnapshot(path string) (SourceControlSnapshot, error) {
 	if changed > 0 {
 		status = "dirty"
 	}
+	fingerprint, err := readChangedStateFingerprint(ctx, root)
+	if err != nil {
+		return SourceControlSnapshot{}, fmt.Errorf("git changed-state fingerprint: %w", err)
+	}
+	repositoryID := repoID(strings.TrimSpace(remote), root)
 	snap := SourceControlSnapshot{
-		SchemaVersion: SourceControlSchemaVersion,
-		RepoID:        repoID(strings.TrimSpace(remote), root),
-		RequestedPath: requestedPath,
-		GitRoot:       root,
-		Remote:        strings.TrimSpace(remote),
-		Branch:        strings.TrimSpace(branch),
-		Head:          strings.TrimSpace(head),
-		Upstream:      strings.TrimSpace(upstream),
-		Ahead:         ahead,
-		Behind:        behind,
-		Status:        status,
-		Staged:        staged,
-		Unstaged:      unstaged,
-		Untracked:     untracked,
-		ChangedPaths:  changed,
-		EvidenceRef:   sourceControlEvidenceRef(repoID(strings.TrimSpace(remote), root), strings.TrimSpace(head)),
+		SchemaVersion:           SourceControlSchemaVersion,
+		RepoID:                  repositoryID,
+		RequestedPath:           requestedPath,
+		GitRoot:                 root,
+		Remote:                  strings.TrimSpace(remote),
+		Branch:                  strings.TrimSpace(branch),
+		Head:                    strings.TrimSpace(head),
+		Upstream:                strings.TrimSpace(upstream),
+		Ahead:                   ahead,
+		Behind:                  behind,
+		Status:                  status,
+		Staged:                  staged,
+		Unstaged:                unstaged,
+		Untracked:               untracked,
+		ChangedPaths:            changed,
+		ChangedStateFingerprint: fingerprint,
+		EvidenceRef:             sourceControlEvidenceRef(repositoryID, strings.TrimSpace(head), fingerprint),
 	}
 	return snap, nil
 }
@@ -141,15 +158,121 @@ func (s SourceControlSnapshot) EvidenceReference() string {
 	if strings.TrimSpace(s.EvidenceRef) != "" {
 		return s.EvidenceRef
 	}
-	return sourceControlEvidenceRef(s.RepoID, s.Head)
+	return sourceControlEvidenceRef(s.RepoID, s.Head, s.ChangedStateFingerprint)
 }
 
-func sourceControlEvidenceRef(repoID, head string) string {
+func sourceControlEvidenceRef(repoID, head, fingerprint string) string {
 	head = strings.TrimSpace(head)
 	if head == "" {
 		head = "unknown-head"
 	}
-	return "source-control:" + repoID + ":" + head
+	ref := "source-control:" + repoID + ":" + head
+	if fingerprint = strings.TrimSpace(fingerprint); fingerprint != "" {
+		ref += ":" + fingerprint
+	}
+	return ref
+}
+
+// readChangedStateFingerprint binds the complete dirty state, not only counters:
+// porcelain-v2 paths/status, every index stage/blob, and the current bytes for
+// modified/deleted/untracked paths. A staged/unstaged flip therefore changes the
+// digest even when the working-tree bytes do not.
+func readChangedStateFingerprint(ctx context.Context, root string) (string, error) {
+	status, err := gitOutput(ctx, root, "status", "--porcelain=v2", "-z", "--untracked-files=all")
+	if err != nil {
+		return "", err
+	}
+	index, err := gitOutput(ctx, root, "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", err
+	}
+	changed, err := gitOutput(ctx, root, "ls-files", "-m", "-d", "-o", "--exclude-standard", "-z")
+	if err != nil {
+		return "", err
+	}
+
+	h := sha256.New()
+	writeFingerprintFrame(h, "schema", []byte("compound.git_changed_state.v0.1"))
+	writeFingerprintFrame(h, "status", []byte(status))
+	writeFingerprintFrame(h, "index", []byte(index))
+	paths := uniqueNULPaths(changed)
+	for _, path := range paths {
+		state, stateErr := changedPathState(ctx, root, path)
+		if stateErr != nil {
+			return "", fmt.Errorf("path %q: %w", path, stateErr)
+		}
+		writeFingerprintFrame(h, "path", []byte(filepath.ToSlash(path)))
+		writeFingerprintFrame(h, "worktree", state)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func uniqueNULPaths(raw string) []string {
+	seen := map[string]struct{}{}
+	for _, path := range strings.Split(raw, "\x00") {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			seen[path] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for path := range seen {
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func changedPathState(ctx context.Context, root, path string) ([]byte, error) {
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("path escapes git root")
+	}
+	abs := filepath.Join(root, clean)
+	info, err := os.Lstat(abs)
+	if os.IsNotExist(err) {
+		return []byte("missing"), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	prefix := []byte(info.Mode().String() + "\x00")
+	switch {
+	case info.Mode().IsRegular():
+		f, openErr := os.Open(abs)
+		if openErr != nil {
+			return nil, openErr
+		}
+		defer f.Close()
+		digest := sha256.New()
+		if _, copyErr := io.Copy(digest, f); copyErr != nil {
+			return nil, copyErr
+		}
+		return append(prefix, []byte("sha256:"+hex.EncodeToString(digest.Sum(nil)))...), nil
+	case info.Mode()&os.ModeSymlink != 0:
+		target, linkErr := os.Readlink(abs)
+		if linkErr != nil {
+			return nil, linkErr
+		}
+		return append(prefix, []byte("symlink:"+target)...), nil
+	case info.IsDir():
+		nestedRoot, rootErr := gitOutput(ctx, abs, "rev-parse", "--show-toplevel")
+		if rootErr == nil && strings.TrimSpace(nestedRoot) != "" && strings.TrimSpace(nestedRoot) != root {
+			nested, nestedErr := readChangedStateFingerprint(ctx, strings.TrimSpace(nestedRoot))
+			if nestedErr != nil {
+				return nil, nestedErr
+			}
+			return append(prefix, []byte("nested-git:"+nested)...), nil
+		}
+		return append(prefix, []byte("directory")...), nil
+	default:
+		return append(prefix, []byte("special")...), nil
+	}
+}
+
+func writeFingerprintFrame(h hash.Hash, label string, value []byte) {
+	fmt.Fprintf(h, "%s:%d:", label, len(value))
+	_, _ = h.Write(value)
 }
 
 func gitInspectionPath(path string) (requestedPath, inspectDir string, err error) {
