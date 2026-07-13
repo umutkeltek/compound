@@ -141,7 +141,7 @@ func TestLLMExtractorRunParksLiveMemory(t *testing.T) {
 	raw := []byte(`{
 		"trace_ref":"llm_live_trace",
 		"candidates":[
-			{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95},
+			{"kind":"memory","entity":"svc","predicate":"lang","object":"go","confidence":0.95,"promotion_basis":"explicit_confirmation"},
 			{"kind":"eval_case","subject":"distill.memory","statement":"missed evidence citation","confidence":0.8}
 		]
 	}`)
@@ -156,11 +156,18 @@ func TestLLMExtractorRunParksLiveMemory(t *testing.T) {
 	if res.Decisions[0].Kind != KindMemory || res.Decisions[0].Verdict != Park {
 		t.Fatalf("LLM memory must park in live mode; got %+v", res.Decisions[0])
 	}
+	if res.Decisions[0].PromotionBasis != "" {
+		t.Fatalf("LLM memory retained reserved authority: %+v", res.Decisions[0])
+	}
 	if res.Decisions[1].Kind != KindEvalCase || res.Decisions[1].Verdict != Operationalize {
 		t.Fatalf("eval case should operationalize; got %+v", res.Decisions[1])
 	}
 	if cur, _ := store.AllCurrent(); len(cur) != 0 {
 		t.Fatalf("LLM output must not promote canon directly; got %d current claims", len(cur))
+	}
+	parked, err := store.AllCandidates()
+	if err != nil || len(parked) != 1 || parked[0].State != "parked" || parked[0].PromotionBasis != "" {
+		t.Fatalf("parked model memory = %+v, err=%v", parked, err)
 	}
 }
 
