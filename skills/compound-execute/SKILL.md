@@ -20,8 +20,11 @@ LATEST-22..24). This skill replaces re-deriving that round pattern per session. 
   items genuinely collide — otherwise pick and proceed.
 - NO free-floating execution: if the task has no envelope, create one FIRST
   (`compound work create --owner <surface> --predicate "<falsifiable done-state>" --by
-  orchestrator --state running`). The K1 incident rule: unenveloped work is invisible to
-  liveness probes.
+  orchestrator --state ready`, then claim + advance). For source-controlled work, creation must
+  also bind `--target-worktree-root <canonical-root> --target-local-ref refs/heads/<target>
+  --expected-base-sha <full-sha>` and exactly one of `--publication-ref
+  refs/remotes/<remote>/<target>` or `--local-only`. The K1 incident rule: unenveloped work is
+  invisible to liveness probes; a `commit:*` artifact on an unbound envelope cannot complete.
 - **Footgun (2026-07-09):** `compound work dispatch-claim` with NO ARGS claims the next ready item
   for real. Never run mutation verbs argless to probe usage — read `compound work` verb list or the
   dispatch-plan JSON instead.
@@ -71,10 +74,11 @@ worktrees don't contain docs_private).
 ## 4 · Dispatch (worktree discipline)
 
 In the dispatch prompt, always include: the packet ABSOLUTE path · the envelope id · "read
-AGENTS.md first" · **the expected base SHA + ff-forward instruction** (Agent worktrees cut from the
-spawn-time checked-out ref, observed 15-21 commits stale, 4/4 executors on 2026-07-09) · commit
-incrementally, no push, no main, no install · the handoff report format. Executors NEVER touch the
-real `$COMPOUND_HOME` (test homes only) unless the packet names ONE specific evidence-file write.
+AGENTS.md first" · commit incrementally, no push, no main, no install · the handoff report format.
+For source-controlled work, the exact target root/local ref/base/publication contract comes from
+the admitted WorkEnvelope and is rendered by dispatch; caller prose is not authority. Executors
+NEVER touch the real `$COMPOUND_HOME` (test homes only) unless the packet names ONE specific
+evidence-file write.
 
 ## 5 · Watch (a "running" status is a claim, not evidence)
 
@@ -96,11 +100,17 @@ the check is one command. If held: do NOT land, do NOT close — bank the branch
 
 Non-negotiable additions learned 2026-07-09: land and cleanup are SEPARATE commands; if the guard
 trips, main moved — rebase, re-battery, retry; tree-identity before worktree removal.
+After local landing (and normal publication when the envelope requires it), record the live proof
+with `compound work land-check <work_id> --tip <full-candidate-sha> --actor <lease-holder>`. The
+command reads target and publication authority from the WorkEnvelope; do not certify from a clone
+or replace the bound refs with caller arguments.
 
 ## 7 · Close with proofs (no proof refs, no close)
 
-`compound work close-plan <id> …` then `compound work close <id> --outcome … --move-type … 
+`compound work close-plan <id> …` then `compound work close <id> --outcome … --move-type …
 --proof-ref commit:… --proof-ref check:<falsifier> --proof-ref live:<real-flow observation>`.
+The recorded successful land-check is attached to the WorkEnvelope and close-plan must discover it;
+local-target-only state remains `awaiting_publication` when publication is required.
 `rule_delta` REQUIRES a failure/rule/check/guard proof ref. A live proof (the anti-"landed ≠
 working" observation — real home, real flow) belongs on every close whose change has a runtime
 surface.
@@ -124,7 +134,9 @@ final message — gates are decisions, not homework; everything else should alre
 
 - DEC-0021 stands: this skill smooths YOUR ceremony; it never auto-runs queued work. The scheduler
   rung (launchd `dispatch-step` under kill-switch) is W9's trust-dial decision — operator-gated.
-- Push gate, whitelist installs, destructive ops: present-and-stop, always.
+- Force-push/history rewrite/new-remote, whitelist installs, destructive ops: present-and-stop.
+  Normal pushes to the existing remote follow the standing grant and still require a clean redact
+  scan before public publication.
 
 ## Codex dispatch contract (learned 2026-07-11, burn-wave v1 — 3 dispatch-side failures)
 - **Never let Codex clone into /private/tmp.** The sandbox edit-guard rejects patches there ("writing outside of the project"), Bun is denied its temp dir, and fresh clones lack node_modules → jobs return BROKEN or zero-work. **The ORCHESTRATOR pre-creates a linked worktree under the repo's `.claude/worktrees/` (inside $HOME, where approval_policy + xhigh reasoning apply), pre-copies `console/node_modules` + `docs_private` (cp -Rc), and dispatches Codex INTO it** ("work in place, commit on this branch, report SHAs").
