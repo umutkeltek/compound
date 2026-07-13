@@ -1,6 +1,7 @@
 package envelope
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -134,6 +135,39 @@ func TestAllKindsValidateAndRoundTrip(t *testing.T) {
 		if err := RoundTrip(e); err != nil {
 			t.Errorf("%s: round-trip: %v", e.Kind(), err)
 		}
+	}
+}
+
+func TestWorkEnvelopeExpectedBaseSHARoundTripsAndLegacyMissingFieldLoads(t *testing.T) {
+	const baseSHA = "0123456789abcdef0123456789abcdef01234567"
+	w := WorkEnvelope{
+		Header:           hdr(SVWork, "work_expected_base"),
+		Owner:            "compound",
+		State:            "ready",
+		SuccessPredicate: "candidate lands from its frozen base",
+		ExpectedBaseSHA:  baseSHA,
+	}
+	if err := RoundTrip(&w); err != nil {
+		t.Fatalf("expected-base work round-trip: %v", err)
+	}
+
+	legacyJSON := `{"schema_version":"compound.work.v0.1","id":"work_legacy_base","created_at":"2026-06-28T00:00:00Z","producer":{"kind":"cli","name":"compound"},"authority":{"source_class":"runtime","status":"current"},"privacy":"private","risk":"tier1","evidence_refs":[],"uncertainty":{"level":"known"},"owner":"compound","state":"ready","success_predicate":"legacy remains valid","non_goals":[],"run_ids":[],"artifact_ids":[],"verification_ids":[],"memory_candidate_ids":[]}`
+	var legacy WorkEnvelope
+	if err := json.Unmarshal([]byte(legacyJSON), &legacy); err != nil {
+		t.Fatalf("decode legacy work: %v", err)
+	}
+	if legacy.ExpectedBaseSHA != "" {
+		t.Fatalf("legacy expected_base_sha = %q, want empty", legacy.ExpectedBaseSHA)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy work without expected_base_sha must remain valid: %v", err)
+	}
+
+	invalid := w
+	invalid.ID = "work_invalid_base"
+	invalid.ExpectedBaseSHA = "ABCDEF"
+	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "expected_base_sha") {
+		t.Fatalf("invalid expected_base_sha should fail validation, got %v", err)
 	}
 }
 
