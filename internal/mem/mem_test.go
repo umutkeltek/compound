@@ -209,6 +209,97 @@ func TestAdjudicatePromoteRequiresPromotionBasis(t *testing.T) {
 	}
 }
 
+func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {
+	s := newStore(t)
+	spanRef := "transcript-span:sha256:session:line:1:sha256:preference"
+	seed := cand("operator", "preference.communication", "prefer concise progress updates", "")
+	seed.PromotionBasis = ""
+	seed.ClaimType = "preference"
+	seed.EvidenceRefs = []string{spanRef, spanRef}
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+	candidateID := captured[0].ID
+	if _, err := s.Adjudicate(candidateID, "park", "work_user_shadow", t0); err != nil {
+		t.Fatalf("park: %v", err)
+	}
+
+	mismatched, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "operator_confirmation",
+		SourceID:   "cand_other",
+		QuoteText:  "Confirmed for another candidate.",
+		Actor:      "operator:test",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonOperator, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "operator_confirmation",
+		SourceID:   candidateID,
+		QuoteText:  "Agent attempted confirmation.",
+		Actor:      "agent:test",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKind, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "session_note",
+		SourceID:   candidateID,
+		QuoteText:  "Operator-like text in the wrong evidence kind.",
+		Actor:      "operator:test",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		ref  string
+	}{
+		{name: "missing", ref: ""},
+		{name: "bogus", ref: "ev_missing"},
+		{name: "mismatched candidate", ref: mismatched.ID},
+		{name: "non operator", ref: nonOperator.ID},
+		{name: "wrong kind", ref: wrongKind.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.AdjudicateExplicitConfirmation(candidateID, tc.ref, "work_user_shadow", t0); err == nil {
+				t.Fatalf("confirmation ref %q should fail", tc.ref)
+			}
+			if claims, err := s.loadClaims(); err != nil || len(claims) != 0 {
+				t.Fatalf("invalid confirmation wrote claims=%d err=%v", len(claims), err)
+			}
+		})
+	}
+
+	confirmation, err := s.RecordEvidence(EvidenceItem{
+		SourceKind: "operator_confirmation",
+		SourceID:   candidateID,
+		QuoteText:  "Yes, keep this as my communication preference.",
+		Actor:      "operator:test",
+	}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.AdjudicateExplicitConfirmation(candidateID, confirmation.ID, "work_user_shadow", t0)
+	if err != nil {
+		t.Fatalf("explicit confirmation: %v", err)
+	}
+	if res.Claim == nil || res.Claim.PromotionBasis != candidates.BasisExplicitConfirmation {
+		t.Fatalf("promoted claim = %+v", res.Claim)
+	}
+	wantEvidence := []string{candidateID, spanRef, confirmation.ID}
+	if len(res.Claim.EvidenceRefs) != len(wantEvidence) {
+		t.Fatalf("claim evidence = %v, want %v", res.Claim.EvidenceRefs, wantEvidence)
+	}
+	for i, want := range wantEvidence {
+		if res.Claim.EvidenceRefs[i] != want {
+			t.Fatalf("claim evidence[%d] = %q, want %q (%v)", i, res.Claim.EvidenceRefs[i], want, res.Claim.EvidenceRefs)
+		}
+	}
+}
+
 func TestOperationalDecisionFoldIgnoresGenericSameSlotShadow(t *testing.T) {
 	s := newStore(t)
 	legacy := Claim{
