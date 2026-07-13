@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -429,6 +430,17 @@ func validateCapabilityOfferConstraints(v *verr, field string, values []Capabili
 	}
 }
 
+// GitDeliveryContract binds source-controlled completion to one exact local
+// target and one explicit publication policy. The bound worktree is authority;
+// land-check callers may assert it, but may never replace it.
+type GitDeliveryContract struct {
+	TargetWorktreeRoot string `json:"target_worktree_root"`
+	TargetLocalRef     string `json:"target_local_ref"`
+	ExpectedBaseSHA    string `json:"expected_base_sha"`
+	PublicationMode    string `json:"publication_mode"`
+	PublicationRef     string `json:"publication_ref,omitempty"`
+}
+
 type WorkEnvelope struct {
 	Header
 	Owner            string `json:"owner"`
@@ -439,21 +451,22 @@ type WorkEnvelope struct {
 	// TargetSurface is admitted only while that surface is actively whitelisted in the
 	// policy-owned editable-surfaces registry (see internal/policy/editable_surfaces.go).
 	TargetSurface string `json:"target_surface,omitempty"`
-	// ExpectedBaseSHA freezes the full Git object id the executor branch must descend from.
-	// It is optional for backward compatibility and for work with no source-control delivery,
-	// but when present it is the landing invariant's authority rather than a re-derived note.
-	ExpectedBaseSHA    string   `json:"expected_base_sha,omitempty"`
-	State              string   `json:"state"`
-	DesiredOutcome     string   `json:"desired_outcome,omitempty"`
-	SuccessPredicate   string   `json:"success_predicate"`
-	NonGoals           []string `json:"non_goals"`
-	ProofMedium        string   `json:"proof_medium,omitempty"`
-	RouteDecisionID    string   `json:"route_decision_id,omitempty"`
-	PolicyDecisionID   string   `json:"policy_decision_id,omitempty"`
-	RunIDs             []string `json:"run_ids"`
-	ArtifactIDs        []string `json:"artifact_ids"`
-	VerificationIDs    []string `json:"verification_ids"`
-	MemoryCandidateIDs []string `json:"memory_candidate_ids"`
+	// ExpectedBaseSHA is the legacy, incomplete pre-contract field. It remains
+	// readable so existing envelopes do not become corrupt, but new admissions
+	// must use GitDelivery and completed commit-bearing work fails closed without it.
+	ExpectedBaseSHA    string               `json:"expected_base_sha,omitempty"`
+	GitDelivery        *GitDeliveryContract `json:"git_delivery,omitempty"`
+	State              string               `json:"state"`
+	DesiredOutcome     string               `json:"desired_outcome,omitempty"`
+	SuccessPredicate   string               `json:"success_predicate"`
+	NonGoals           []string             `json:"non_goals"`
+	ProofMedium        string               `json:"proof_medium,omitempty"`
+	RouteDecisionID    string               `json:"route_decision_id,omitempty"`
+	PolicyDecisionID   string               `json:"policy_decision_id,omitempty"`
+	RunIDs             []string             `json:"run_ids"`
+	ArtifactIDs        []string             `json:"artifact_ids"`
+	VerificationIDs    []string             `json:"verification_ids"`
+	MemoryCandidateIDs []string             `json:"memory_candidate_ids"`
 }
 
 func (e *WorkEnvelope) Kind() string { return "work" }
@@ -467,7 +480,59 @@ func (e *WorkEnvelope) Validate() error {
 	if base := strings.TrimSpace(e.ExpectedBaseSHA); base != "" && !validFullGitObjectID(base) {
 		v.addf("expected_base_sha must be a lowercase full Git object id (40 or 64 hex characters)")
 	}
+	if e.GitDelivery != nil {
+		validateGitDeliveryContract(v, *e.GitDelivery)
+	}
 	return v.result(e.Kind())
+}
+
+func validateGitDeliveryContract(v *verr, contract GitDeliveryContract) {
+	root := strings.TrimSpace(contract.TargetWorktreeRoot)
+	if root == "" {
+		v.addf("git_delivery.target_worktree_root is required")
+	} else {
+		if !filepath.IsAbs(root) {
+			v.addf("git_delivery.target_worktree_root must be absolute")
+		}
+		if filepath.Clean(root) != root {
+			v.addf("git_delivery.target_worktree_root must be a clean canonical path")
+		}
+	}
+	localRef := strings.TrimSpace(contract.TargetLocalRef)
+	if !validBoundGitRef(localRef, "refs/heads/") {
+		v.addf("git_delivery.target_local_ref must be a canonical refs/heads/* ref")
+	}
+	if !validFullGitObjectID(strings.TrimSpace(contract.ExpectedBaseSHA)) {
+		v.addf("git_delivery.expected_base_sha must be a lowercase full Git object id (40 or 64 hex characters)")
+	}
+	switch strings.TrimSpace(contract.PublicationMode) {
+	case "required":
+		publicationRef := strings.TrimSpace(contract.PublicationRef)
+		if !validBoundGitRef(publicationRef, "refs/remotes/") {
+			v.addf("git_delivery.publication_ref must be a canonical remote-tracking refs/remotes/* ref")
+		} else if validBoundGitRef(localRef, "refs/heads/") {
+			branch := strings.TrimPrefix(localRef, "refs/heads/")
+			if !strings.HasSuffix(publicationRef, "/"+branch) {
+				v.addf("git_delivery.publication_ref must track the target_local_ref branch")
+			}
+		}
+	case "local_only":
+		if strings.TrimSpace(contract.PublicationRef) != "" {
+			v.addf("git_delivery.publication_ref must be empty when publication_mode is local_only")
+		}
+	default:
+		v.addf("git_delivery.publication_mode must be required or local_only")
+	}
+}
+
+func validBoundGitRef(value, prefix string) bool {
+	if !strings.HasPrefix(value, prefix) || len(value) <= len(prefix) {
+		return false
+	}
+	if strings.ContainsAny(value, " ~^:?*[\\") || strings.Contains(value, "..") || strings.Contains(value, "//") || strings.HasSuffix(value, "/") || strings.HasSuffix(value, ".") || strings.HasSuffix(value, ".lock") || strings.Contains(value, "@{") {
+		return false
+	}
+	return true
 }
 
 func validFullGitObjectID(value string) bool {
