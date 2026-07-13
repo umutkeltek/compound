@@ -743,6 +743,64 @@ func TestPartialPromotionRecoveryUsesHistoricalClaimAfterInterveningPromotion(t 
 	}
 }
 
+func TestPartialPromotionRecoveryReusesPersistedTransition(t *testing.T) {
+	s := newStore(t)
+	seed := cand("project:api", "runtime", "go", "")
+	seed.PromotionBasis = candidates.BasisTrustedDeterministic
+	seed.ClaimType = "status"
+	captured, err := s.Capture([]Candidate{seed}, t0)
+	if err != nil || len(captured) != 1 {
+		t.Fatalf("capture = %+v, err=%v", captured, err)
+	}
+
+	candidatePath := filepath.Join(s.candDir(), captured[0].ID+".json")
+	if err := os.Chmod(candidatePath, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Adjudicate(captured[0].ID, "promote", "work_projection_failure", t0); err == nil {
+		t.Fatal("promotion succeeded despite read-only candidate projection")
+	}
+	claimsAfterFailure, err := s.loadClaims()
+	if err != nil || len(claimsAfterFailure) != 1 {
+		t.Fatalf("partial promotion claims = %+v, err=%v", claimsAfterFailure, err)
+	}
+	eventsPath := filepath.Join(s.home, "events")
+	eventsAfterFailure, err := os.ReadDir(eventsPath)
+	if err != nil || len(eventsAfterFailure) != 1 {
+		t.Fatalf("partial promotion events = %+v, err=%v", eventsAfterFailure, err)
+	}
+	firstEventName := eventsAfterFailure[0].Name()
+	firstEventBytes, err := os.ReadFile(filepath.Join(eventsPath, firstEventName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(candidatePath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := s.Adjudicate(captured[0].ID, "promote", "work_projection_failure", t0.Add(time.Second))
+	if err != nil || recovered.Claim == nil || recovered.Transition == nil {
+		t.Fatalf("projection failure did not recover: %+v, err=%v", recovered, err)
+	}
+	if recovered.Claim.ID != claimsAfterFailure[0].ID {
+		t.Fatalf("recovery minted another claim: recovered=%s original=%s", recovered.Claim.ID, claimsAfterFailure[0].ID)
+	}
+	eventsAfterRecovery, err := os.ReadDir(eventsPath)
+	if err != nil || len(eventsAfterRecovery) != 1 {
+		t.Fatalf("recovery duplicated transition: %+v, err=%v", eventsAfterRecovery, err)
+	}
+	if eventsAfterRecovery[0].Name() != firstEventName {
+		t.Fatalf("recovery replaced transition identity: got=%s want=%s", eventsAfterRecovery[0].Name(), firstEventName)
+	}
+	eventBytesAfterRecovery, err := os.ReadFile(filepath.Join(eventsPath, firstEventName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(eventBytesAfterRecovery) != string(firstEventBytes) {
+		t.Fatal("recovery rewrote the already-persisted transition")
+	}
+}
+
 func TestAdjudicateExplicitConfirmationRequiresMatchingOperatorEvidence(t *testing.T) {
 	s := newStore(t)
 	spanRef := "transcript-span:sha256:session:line:1:sha256:preference"
