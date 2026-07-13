@@ -29,6 +29,11 @@ This skill replaces re-deriving the "standing session rules" from
 - Queued work discipline: **proposed ≠ held** — dispatch consumes proposed work. If you intend
   to execute something yourself, claim it at import time; otherwise another lane will pick it
   up and you get double execution.
+- Read the current WorkEnvelope before source-controlled landing. A current envelope owns the
+  canonical target/ref/base/publication contract; do not reconstruct it from the executor's cwd.
+  If a nonterminal legacy envelope lacks `git_delivery`, stop the landing and use the
+  operator-provenance same-state `work advance` binding command in `compound-execute` §0. Never
+  replace the envelope or choose `--local-only` merely to make close pass.
 - **Stalled-WIP exception** (lived 2026-07-10, volatile land): main-tree WIP idle ≥15 min (check
   mtimes; use a bounded watcher, not blind sleep) does NOT block a land when your merge is pure
   ff AND `git diff --name-only <base>..<tip>` ∩ their dirty files = ∅. Then: back up their diff

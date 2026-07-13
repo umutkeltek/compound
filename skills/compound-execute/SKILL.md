@@ -25,6 +25,20 @@ LATEST-22..24). This skill replaces re-deriving that round pattern per session. 
   --expected-base-sha <full-sha>` and exactly one of `--publication-ref
   refs/remotes/<remote>/<target>` or `--local-only`. The K1 incident rule: unenveloped work is
   invisible to liveness probes; a `commit:*` artifact on an unbound envelope cannot complete.
+- If a source-controlled legacy envelope is already nonterminal but lacks `git_delivery`, do not
+  recreate it or work around close proof. An operator may bind the complete contract once through
+  the existing same-state advance seam (add `--steal --reason` when another actor holds the lease):
+
+  ```bash
+  compound work advance <work_id> --to <current-state> --by operator:<id> \
+    --steal --reason "operator-approved legacy delivery binding" \
+    --target-worktree-root <canonical-root> --target-local-ref refs/heads/<target> \
+    --expected-base-sha <captured-target-base> --publication-ref refs/remotes/<remote>/<target>
+  ```
+
+  Ordinary executor actors, partial declarations, lifecycle-transition-plus-bind, and rebinding
+  are rejected. Use `--local-only` only when non-publication is an intentional task contract, not
+  as a shortcut around push proof.
 - **Footgun (2026-07-09):** `compound work dispatch-claim` with NO ARGS claims the next ready item
   for real. Never run mutation verbs argless to probe usage — read `compound work` verb list or the
   dispatch-plan JSON instead.
